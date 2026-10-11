@@ -204,6 +204,13 @@ tika_config! {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ParserConfigs {
+    pub(crate) pdf: PdfParserConfig,
+    pub(crate) office: OfficeParserConfig,
+    pub(crate) ocr: TesseractOcrConfig,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

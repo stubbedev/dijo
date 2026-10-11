@@ -23,9 +23,7 @@ pub use extractor::*;
 mod tika {
     mod jni_utils;
     mod parse;
-    mod parse_embedded;
     mod wrappers;
-    pub use parse::*;
-    pub use parse_embedded::*;
-    pub use wrappers::JReaderInputStream;
+    pub(crate) use parse::*;
+    pub(crate) use wrappers::JReaderInputStream;
 }

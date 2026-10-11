@@ -20,10 +20,10 @@ public class AgentRunner {
 
         var res = TikaNativeMain.parseFileToString(
                 args[0],
-                100_000,                             // char limit
                 new PDFParserConfig(),
                 new OfficeParserConfig(),
                 new TesseractOCRConfig(),
+                100_000,                             // char limit
                 false);                              // plain text, not XML
 
         if (res.isError()) {

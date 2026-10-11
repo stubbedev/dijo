@@ -1,121 +1,28 @@
 [
   {
     "name": "ai.yobix.TikaNativeMain",
-    "methods": [
-      {
-        "name": "extractEmbedded",
-        "parameterTypes": [
-          "java.lang.String",
-          "org.apache.tika.parser.pdf.PDFParserConfig",
-          "org.apache.tika.parser.microsoft.OfficeParserConfig",
-          "org.apache.tika.parser.ocr.TesseractOCRConfig"
-        ]
-      },
-      {
-        "name": "extractEmbeddedFromBytes",
-        "parameterTypes": [
-          "java.nio.ByteBuffer",
-          "org.apache.tika.parser.pdf.PDFParserConfig",
-          "org.apache.tika.parser.microsoft.OfficeParserConfig",
-          "org.apache.tika.parser.ocr.TesseractOCRConfig"
-        ]
-      },
-      {
-        "name": "describe",
-        "parameterTypes": [
-          "java.lang.Throwable"
-        ]
-      }
-    ]
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.yobix.StringResult",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.yobix.ReaderResult",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
   },
   {
     "name": "ai.yobix.EmbeddedExtractResult",
-    "fields": [
-      {
-        "name": "errorCode"
-      },
-      {
-        "name": "errorMessage"
-      },
-      {
-        "name": "embeddedDocuments"
-      }
-    ],
-    "methods": [
-      {
-        "name": "<init>",
-        "parameterTypes": [
-          "java.util.List"
-        ]
-      },
-      {
-        "name": "<init>",
-        "parameterTypes": [
-          "byte",
-          "java.lang.String"
-        ]
-      },
-      {
-        "name": "getErrorCode",
-        "parameterTypes": []
-      },
-      {
-        "name": "getErrorMessage",
-        "parameterTypes": []
-      },
-      {
-        "name": "getEmbeddedDocuments",
-        "parameterTypes": []
-      },
-      {
-        "name": "hasError",
-        "parameterTypes": []
-      }
-    ]
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
   },
   {
     "name": "ai.yobix.EmbeddedExtractResult$EmbeddedDocument",
-    "fields": [
-      {
-        "name": "resourceName"
-      },
-      {
-        "name": "contentType"
-      },
-      {
-        "name": "content"
-      },
-      {
-        "name": "embeddedRelationshipId"
-      }
-    ],
-    "methods": [
-      {
-        "name": "<init>",
-        "parameterTypes": [
-          "java.lang.String",
-          "java.lang.String",
-          "[B",
-          "java.lang.String"
-        ]
-      },
-      {
-        "name": "getResourceName",
-        "parameterTypes": []
-      },
-      {
-        "name": "getContentType",
-        "parameterTypes": []
-      },
-      {
-        "name": "getContent",
-        "parameterTypes": []
-      },
-      {
-        "name": "getEmbeddedRelationshipId",
-        "parameterTypes": []
-      }
-    ]
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
   },
   {
     "name": "java.util.ArrayList",

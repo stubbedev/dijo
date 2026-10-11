@@ -22,7 +22,7 @@ mod test_utils;
 fn test_extract_bytes_to_stream(file_name: &str, target_dist: f64) {
     let extractor = Extractor::new();
 
-    let bytes = fs::read(&format!("../test_files/documents/{}", file_name)).unwrap();
+    let bytes = fs::read(format!("../test_files/documents/{}", file_name)).unwrap();
     let (mut stream, metadata) = extractor.extract_bytes(&bytes).unwrap();
 
     let mut buffer = Vec::new();
@@ -33,7 +33,7 @@ fn test_extract_bytes_to_stream(file_name: &str, target_dist: f64) {
     let expected =
         fs::read_to_string(format!("../test_files/expected_result/{}.txt", file_name)).unwrap();
 
-    let dist = cosine(&expected.trim(), &extracted.trim());
+    let dist = cosine(expected.trim(), extracted.trim());
     assert!(
         dist > target_dist,
         "Cosine similarity is less than {} for file: {}, dist: {}",
@@ -65,7 +65,7 @@ fn test_extract_bytes_to_stream_ara_ocr_png() {
         .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR));
 
     // extract file with extractor
-    let bytes = fs::read(&"../test_files/documents/ara-ocr.png".to_string()).unwrap();
+    let bytes = fs::read("../test_files/documents/ara-ocr.png").unwrap();
     let (mut stream, _metadata) = extractor.extract_bytes(&bytes).unwrap();
 
     let mut buffer = Vec::new();
@@ -75,8 +75,7 @@ fn test_extract_bytes_to_stream_ara_ocr_png() {
     println!("{}", extracted);
 
     // read expected string
-    let expected =
-        fs::read_to_string("../test_files/expected_result/ara-ocr.png.txt".to_string()).unwrap();
+    let expected = fs::read_to_string("../test_files/expected_result/ara-ocr.png.txt").unwrap();
 
     let dist = cosine(&expected, &extracted);
     assert!(
@@ -84,7 +83,7 @@ fn test_extract_bytes_to_stream_ara_ocr_png() {
         "Cosine similarity is less than 0.9 for file: ara-ocr.png, dist: {}",
         dist
     );
-    println!("{}: {}", "ara-ocr.png", dist);
+    println!("ara-ocr.png: {}", dist);
 }
 
 #[test]

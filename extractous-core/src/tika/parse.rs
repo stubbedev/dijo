@@ -1,294 +1,141 @@
 use std::sync::OnceLock;
 
+use crate::config::ParserConfigs;
+use crate::embedded::EmbeddedExtractResult;
 use crate::errors::ExtractResult;
 use crate::tika::jni_utils::*;
 use crate::tika::wrappers::*;
-use crate::{
-    CharSet, Metadata, OfficeParserConfig, PdfParserConfig, StreamReader, TesseractOcrConfig,
-};
-use jni::objects::JValue;
-use jni::{AttachGuard, JavaVM};
+use crate::{CharSet, Metadata, StreamReader};
+use jni::objects::{JObject, JValue};
+use jni::{AttachGuard, JNIEnv, JavaVM};
+
+const TIKA_NATIVE_MAIN: &str = "ai/yobix/TikaNativeMain";
+const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
+                                 Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
+                                 Lorg/apache/tika/parser/ocr/TesseractOCRConfig;";
 
 /// Returns a reference to the shared VM isolate
 /// Instead of creating a new VM for every tika call, we create a single VM that is shared
 /// throughout the application.
 pub(crate) fn vm() -> &'static JavaVM {
-    // static items do not call `Drop` on program termination
     static GRAAL_VM: OnceLock<JavaVM> = OnceLock::new();
     GRAAL_VM.get_or_init(create_vm_isolate)
 }
 
-fn get_vm_attach_current_thread() -> ExtractResult<AttachGuard<'static>> {
-    // Attaching a thead that is already attached is a no-op. Good to have this in case this method
-    // is called from another thread
-    let env = vm().attach_current_thread()?;
-    Ok(env)
+fn attach_current_thread() -> ExtractResult<AttachGuard<'static>> {
+    Ok(vm().attach_current_thread()?)
 }
 
-fn parse_to_stream(
-    mut env: AttachGuard<'static>,
-    data_source_val: JValue,
-    char_set: &CharSet,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-    method_name: &str,
-    signature: &str,
-) -> ExtractResult<(StreamReader, Metadata)> {
-    let charset_name_val = jni_new_string_as_jvalue(&mut env, &char_set.to_string())?;
-    let [j_pdf_conf, j_office_conf, j_ocr_conf] =
-        java_parser_configs(&mut env, pdf_conf, office_conf, ocr_conf)?;
+/// Where a document is read from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Source<'a> {
+    File(&'a str),
+    Bytes(&'a [u8]),
+    Url(&'a str),
+}
 
-    // Make the java parse call
-    let call_result = jni_call_static_method(
+impl Source<'_> {
+    fn method_suffix(&self) -> &'static str {
+        match self {
+            Source::File(_) => "File",
+            Source::Bytes(_) => "Bytes",
+            Source::Url(_) => "Url",
+        }
+    }
+
+    fn java_type(&self) -> &'static str {
+        match self {
+            Source::File(_) | Source::Url(_) => "Ljava/lang/String;",
+            Source::Bytes(_) => "Ljava/nio/ByteBuffer;",
+        }
+    }
+
+    fn into_java<'local>(self, env: &mut JNIEnv<'local>) -> ExtractResult<JObject<'local>> {
+        match self {
+            Source::File(text) | Source::Url(text) => Ok(jni_new_string(env, text)?.into()),
+            Source::Bytes(bytes) => {
+                Ok(jni_new_direct_buffer(env, bytes.as_ptr().cast_mut(), bytes.len())?.into())
+            }
+        }
+    }
+}
+
+fn call_tika<'local>(
+    env: &mut JNIEnv<'local>,
+    source: Source,
+    method: &str,
+    configs: &ParserConfigs,
+    tail_signature: &str,
+    tail_args: &[JValue],
+) -> ExtractResult<JObject<'local>> {
+    let source_obj = source.into_java(env)?;
+    let [pdf, office, ocr] = java_parser_configs(env, configs)?;
+    let signature = format!("({}{CONFIGS_SIGNATURE}{tail_signature}", source.java_type());
+    let mut args = Vec::with_capacity(4 + tail_args.len());
+    args.extend([
+        JValue::Object(&source_obj),
+        JValue::Object(&pdf),
+        JValue::Object(&office),
+        JValue::Object(&ocr),
+    ]);
+    args.extend_from_slice(tail_args);
+    Ok(jni_call_static_method(env, TIKA_NATIVE_MAIN, method, &signature, &args)?.l()?)
+}
+
+/// Parses a document into a stream of its text, decoded with `char_set`.
+pub(crate) fn parse_to_stream(
+    source: Source,
+    char_set: &CharSet,
+    configs: &ParserConfigs,
+    as_xml: bool,
+) -> ExtractResult<(StreamReader, Metadata)> {
+    let mut env = attach_current_thread()?;
+    let char_set_obj: JObject = jni_new_string(&mut env, &char_set.to_string())?.into();
+    let result = call_tika(
         &mut env,
-        "ai/yobix/TikaNativeMain",
-        method_name,
-        signature,
-        &[
-            data_source_val,
-            (&charset_name_val).into(),
-            (&j_pdf_conf).into(),
-            (&j_office_conf).into(),
-            (&j_ocr_conf).into(),
-            JValue::Bool(if as_xml { 1 } else { 0 }),
-        ],
-    );
-    let call_result_obj = call_result?.l()?;
-
-    // Create and process the JReaderResult
-    let result = JReaderResult::new(&mut env, call_result_obj)?;
-    let j_reader = JReaderInputStream::new(env, result.java_reader)?;
-
-    Ok((StreamReader { inner: j_reader }, result.metadata))
+        source,
+        &format!("parse{}", source.method_suffix()),
+        configs,
+        "Ljava/lang/String;Z)Lai/yobix/ReaderResult;",
+        &[JValue::Object(&char_set_obj), JValue::Bool(as_xml.into())],
+    )?;
+    let (reader, metadata) = reader_result(&mut env, result)?;
+    let inner = JReaderInputStream::new(env, reader)?;
+    Ok((StreamReader { inner }, metadata))
 }
 
-pub fn parse_file(
-    file_path: &str,
-    char_set: &CharSet,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-) -> ExtractResult<(StreamReader, Metadata)> {
-    let mut env = get_vm_attach_current_thread()?;
-
-    let file_path_val = jni_new_string_as_jvalue(&mut env, file_path)?;
-    parse_to_stream(
-        env,
-        (&file_path_val).into(),
-        char_set,
-        pdf_conf,
-        office_conf,
-        ocr_conf,
-        as_xml,
-        "parseFile",
-        "(Ljava/lang/String;\
-        Ljava/lang/String;\
-        Lorg/apache/tika/parser/pdf/PDFParserConfig;\
-        Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-        Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
-        Z\
-        )Lai/yobix/ReaderResult;",
-    )
-}
-
-pub fn parse_bytes(
-    buffer: &[u8],
-    char_set: &CharSet,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-) -> ExtractResult<(StreamReader, Metadata)> {
-    let mut env = get_vm_attach_current_thread()?;
-
-    // Because we know the buffer is used for reading only, cast it to *mut u8 to satisfy the
-    // jni_new_direct_buffer call, which requires a mutable pointer
-    let mut_ptr: *mut u8 = buffer.as_ptr() as *mut u8;
-
-    let byte_buffer = jni_new_direct_buffer(&mut env, mut_ptr, buffer.len())?;
-
-    parse_to_stream(
-        env,
-        (&byte_buffer).into(),
-        char_set,
-        pdf_conf,
-        office_conf,
-        ocr_conf,
-        as_xml,
-        "parseBytes",
-        "(Ljava/nio/ByteBuffer;\
-        Ljava/lang/String;\
-        Lorg/apache/tika/parser/pdf/PDFParserConfig;\
-        Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-        Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
-        Z\
-        )Lai/yobix/ReaderResult;",
-    )
-}
-
-pub fn parse_url(
-    url: &str,
-    char_set: &CharSet,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-) -> ExtractResult<(StreamReader, Metadata)> {
-    let mut env = get_vm_attach_current_thread()?;
-
-    let url_val = jni_new_string_as_jvalue(&mut env, url)?;
-    parse_to_stream(
-        env,
-        (&url_val).into(),
-        char_set,
-        pdf_conf,
-        office_conf,
-        ocr_conf,
-        as_xml,
-        "parseUrl",
-        "(Ljava/lang/String;\
-        Ljava/lang/String;\
-        Lorg/apache/tika/parser/pdf/PDFParserConfig;\
-        Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-        Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
-        Z\
-        )Lai/yobix/ReaderResult;",
-    )
-}
-
-/// Parses a file to a JStringResult using the Apache Tika library.
-pub fn parse_to_string(
-    mut env: AttachGuard,
-    data_source_val: JValue,
+/// Parses a document into a string of at most `max_length` characters.
+pub(crate) fn parse_to_string(
+    source: Source,
     max_length: i32,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
+    configs: &ParserConfigs,
     as_xml: bool,
-    method_name: &str,
-    signature: &str,
 ) -> ExtractResult<(String, Metadata)> {
-    let [j_pdf_conf, j_office_conf, j_ocr_conf] =
-        java_parser_configs(&mut env, pdf_conf, office_conf, ocr_conf)?;
-
-    let call_result = jni_call_static_method(
+    let mut env = attach_current_thread()?;
+    let result = call_tika(
         &mut env,
-        "ai/yobix/TikaNativeMain",
-        method_name,
-        signature,
-        &[
-            data_source_val,
-            JValue::Int(max_length),
-            (&j_pdf_conf).into(),
-            (&j_office_conf).into(),
-            (&j_ocr_conf).into(),
-            JValue::Bool(if as_xml { 1 } else { 0 }),
-        ],
-    );
-    let call_result_obj = call_result?.l()?;
-
-    // Create and process the JStringResult
-    let result = JStringResult::new(&mut env, call_result_obj)?;
-    Ok((result.content, result.metadata))
+        source,
+        &format!("parse{}ToString", source.method_suffix()),
+        configs,
+        "IZ)Lai/yobix/StringResult;",
+        &[JValue::Int(max_length), JValue::Bool(as_xml.into())],
+    )?;
+    string_result(&mut env, result)
 }
 
-/// Parses a file to a string using the Apache Tika library.
-pub fn parse_file_to_string(
-    file_path: &str,
-    max_length: i32,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-) -> ExtractResult<(String, Metadata)> {
-    let mut env = get_vm_attach_current_thread()?;
-
-    let file_path_val = jni_new_string_as_jvalue(&mut env, file_path)?;
-    parse_to_string(
-        env,
-        (&file_path_val).into(),
-        max_length,
-        pdf_conf,
-        office_conf,
-        ocr_conf,
-        as_xml,
-        "parseFileToString",
-        "(Ljava/lang/String;\
-        I\
-        Lorg/apache/tika/parser/pdf/PDFParserConfig;\
-        Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-        Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
-        Z\
-        )Lai/yobix/StringResult;",
-    )
-}
-
-/// Parses bytes to a string using the Apache Tika library.
-pub fn parse_bytes_to_string(
-    buffer: &[u8],
-    max_length: i32,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-) -> ExtractResult<(String, Metadata)> {
-    let mut env = get_vm_attach_current_thread()?;
-
-    // Because we know the buffer is used for reading only, cast it to *mut u8 to satisfy the
-    // jni_new_direct_buffer call, which requires a mutable pointer
-    let mut_ptr: *mut u8 = buffer.as_ptr() as *mut u8;
-
-    let byte_buffer = jni_new_direct_buffer(&mut env, mut_ptr, buffer.len())?;
-
-    parse_to_string(
-        env,
-        (&byte_buffer).into(),
-        max_length,
-        pdf_conf,
-        office_conf,
-        ocr_conf,
-        as_xml,
-        "parseBytesToString",
-        "(Ljava/nio/ByteBuffer;\
-        I\
-        Lorg/apache/tika/parser/pdf/PDFParserConfig;\
-        Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-        Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
-        Z\
-        )Lai/yobix/StringResult;",
-    )
-}
-
-/// Parses a url to a string using the Apache Tika library.
-pub fn parse_url_to_string(
-    url: &str,
-    max_length: i32,
-    pdf_conf: &PdfParserConfig,
-    office_conf: &OfficeParserConfig,
-    ocr_conf: &TesseractOcrConfig,
-    as_xml: bool,
-) -> ExtractResult<(String, Metadata)> {
-    let mut env = get_vm_attach_current_thread()?;
-
-    let url_val = jni_new_string_as_jvalue(&mut env, url)?;
-    parse_to_string(
-        env,
-        (&url_val).into(),
-        max_length,
-        pdf_conf,
-        office_conf,
-        ocr_conf,
-        as_xml,
-        "parseUrlToString",
-        "(Ljava/lang/String;\
-        I\
-        Lorg/apache/tika/parser/pdf/PDFParserConfig;\
-        Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-        Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
-        Z\
-        )Lai/yobix/StringResult;",
-    )
+/// Extracts the documents embedded in a document, such as images and attachments.
+pub(crate) fn extract_embedded(
+    source: Source,
+    configs: &ParserConfigs,
+) -> ExtractResult<EmbeddedExtractResult> {
+    let mut env = attach_current_thread()?;
+    let result = call_tika(
+        &mut env,
+        source,
+        &format!("extractEmbedded{}", source.method_suffix()),
+        configs,
+        ")Lai/yobix/EmbeddedExtractResult;",
+        &[],
+    )?;
+    embedded_result(&mut env, result)
 }

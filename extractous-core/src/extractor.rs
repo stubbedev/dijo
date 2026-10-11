@@ -1,7 +1,9 @@
+use crate::config::ParserConfigs;
 use crate::errors::ExtractResult;
 use crate::tika;
 use crate::tika::JReaderInputStream;
-use crate::{OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
+use crate::tika::Source;
+use crate::{EmbeddedExtractResult, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use std::collections::HashMap;
 use strum_macros::{Display, EnumString};
 
@@ -62,9 +64,7 @@ impl std::io::Read for StreamReader {
 pub struct Extractor {
     extract_string_max_length: i32,
     encoding: CharSet,
-    pdf_config: PdfParserConfig,
-    office_config: OfficeParserConfig,
-    ocr_config: TesseractOcrConfig,
+    configs: ParserConfigs,
     xml_output: bool,
 }
 
@@ -73,9 +73,7 @@ impl Default for Extractor {
         Self {
             extract_string_max_length: 500_000, // 500KB
             encoding: CharSet::UTF_8,
-            pdf_config: PdfParserConfig::default(),
-            office_config: OfficeParserConfig::default(),
-            ocr_config: TesseractOcrConfig::default(),
+            configs: ParserConfigs::default(),
             xml_output: false,
         }
     }
@@ -103,19 +101,19 @@ impl Extractor {
 
     /// Set the configuration for the PDF parser
     pub fn set_pdf_config(mut self, config: PdfParserConfig) -> Self {
-        self.pdf_config = config;
+        self.configs.pdf = config;
         self
     }
 
     /// Set the configuration for the Office parser
     pub fn set_office_config(mut self, config: OfficeParserConfig) -> Self {
-        self.office_config = config;
+        self.configs.office = config;
         self
     }
 
     /// Set the configuration for the Tesseract OCR
     pub fn set_ocr_config(mut self, config: TesseractOcrConfig) -> Self {
-        self.ocr_config = config;
+        self.configs.ocr = config;
         self
     }
 
@@ -128,107 +126,71 @@ impl Extractor {
     /// Extracts text from a file path. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_file(&self, file_path: &str) -> ExtractResult<(StreamReader, Metadata)> {
-        tika::parse_file(
-            file_path,
-            &self.encoding,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            self.xml_output,
-        )
+        self.extract_to_stream(Source::File(file_path))
     }
 
     /// Extracts text from a byte buffer. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_bytes(&self, buffer: &[u8]) -> ExtractResult<(StreamReader, Metadata)> {
-        tika::parse_bytes(
-            buffer,
-            &self.encoding,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            self.xml_output,
-        )
+        self.extract_to_stream(Source::Bytes(buffer))
     }
 
     /// Extracts text from an url. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_url(&self, url: &str) -> ExtractResult<(StreamReader, Metadata)> {
-        tika::parse_url(
-            url,
-            &self.encoding,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            self.xml_output,
-        )
+        self.extract_to_stream(Source::Url(url))
     }
 
     /// Extracts text from a file path. Returns a tuple with string that is of maximum length
     /// of the extractor's `extract_string_max_length` and metadata.
     pub fn extract_file_to_string(&self, file_path: &str) -> ExtractResult<(String, Metadata)> {
-        tika::parse_file_to_string(
-            file_path,
-            self.extract_string_max_length,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            self.xml_output,
-        )
+        self.extract_to_string(Source::File(file_path))
     }
 
     /// Extracts text from a byte buffer. Returns a tuple with string that is of maximum length
     /// of the extractor's `extract_string_max_length` and metadata.
     pub fn extract_bytes_to_string(&self, buffer: &[u8]) -> ExtractResult<(String, Metadata)> {
-        tika::parse_bytes_to_string(
-            buffer,
-            self.extract_string_max_length,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            self.xml_output,
-        )
+        self.extract_to_string(Source::Bytes(buffer))
     }
 
     /// Extracts text from a URL. Returns a tuple with string that is of maximum length
     /// of the extractor's `extract_string_max_length` and metadata.
     pub fn extract_url_to_string(&self, url: &str) -> ExtractResult<(String, Metadata)> {
-        tika::parse_url_to_string(
-            url,
-            self.extract_string_max_length,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            self.xml_output,
-        )
+        self.extract_to_string(Source::Url(url))
     }
 
-    /// Extracts all embedded documents/resources from a file (images, attachments, etc.).
+    /// Extracts all embedded documents/resources (images, attachments, etc.) from a file.
     /// This is similar to Apache Tika Server's /unpack/all endpoint.
-    /// Returns an EmbeddedExtractResult containing all embedded documents.
     pub fn extract_embedded_from_file(
         &self,
         file_path: &str,
-    ) -> ExtractResult<crate::EmbeddedExtractResult> {
-        tika::extract_embedded_from_file(
-            file_path,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-        )
+    ) -> ExtractResult<EmbeddedExtractResult> {
+        tika::extract_embedded(Source::File(file_path), &self.configs)
     }
 
     /// Extracts all embedded documents/resources from a byte buffer.
-    /// Returns an EmbeddedExtractResult containing all embedded documents.
     pub fn extract_embedded_from_bytes(
         &self,
         buffer: &[u8],
-    ) -> ExtractResult<crate::EmbeddedExtractResult> {
-        tika::extract_embedded_from_bytes(
-            buffer,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
+    ) -> ExtractResult<EmbeddedExtractResult> {
+        tika::extract_embedded(Source::Bytes(buffer), &self.configs)
+    }
+
+    /// Extracts all embedded documents/resources from the document at a URL.
+    pub fn extract_embedded_from_url(&self, url: &str) -> ExtractResult<EmbeddedExtractResult> {
+        tika::extract_embedded(Source::Url(url), &self.configs)
+    }
+
+    fn extract_to_stream(&self, source: Source) -> ExtractResult<(StreamReader, Metadata)> {
+        tika::parse_to_stream(source, &self.encoding, &self.configs, self.xml_output)
+    }
+
+    fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
+        tika::parse_to_string(
+            source,
+            self.extract_string_max_length,
+            &self.configs,
+            self.xml_output,
         )
     }
 }
@@ -263,7 +225,7 @@ mod tests {
         let (content, metadata) = result.unwrap();
         assert_eq!(content.trim(), expected_content.trim());
         assert!(
-            metadata.len() > 0,
+            !metadata.is_empty(),
             "Metadata should contain at least one entry"
         );
     }
@@ -273,8 +235,7 @@ mod tests {
         let mut buffer = Vec::new();
         reader.read_to_end(&mut buffer).unwrap();
 
-        let content = String::from_utf8(buffer).unwrap();
-        content
+        String::from_utf8(buffer).unwrap()
     }
 
     #[test]
@@ -290,7 +251,7 @@ mod tests {
 
         assert_eq!(content.trim(), expected_content.trim());
         assert!(
-            metadata.len() > 0,
+            !metadata.is_empty(),
             "Metadata should contain at least one entry"
         );
     }
@@ -316,7 +277,7 @@ mod tests {
 
         assert_eq!(content.trim(), expected_content.trim());
         assert!(
-            metadata.len() > 0,
+            !metadata.is_empty(),
             "Metadata should contain at least one entry"
         );
     }
@@ -325,13 +286,13 @@ mod tests {
     fn extract_url_test() {
         // Parse url by extractous
         let extractor = Extractor::new();
-        let result = extractor.extract_url(&TEST_URL);
+        let result = extractor.extract_url(TEST_URL);
         let (reader, metadata) = result.unwrap();
         let content = read_content_from_stream(reader);
 
         assert!(content.contains("Google"));
         assert!(
-            metadata.len() > 0,
+            !metadata.is_empty(),
             "Metadata should contain at least one entry"
         );
     }
@@ -343,11 +304,11 @@ mod tests {
         let result = extractor.extract_file_to_string(TEST_FILE);
         let (content, metadata) = result.unwrap();
         assert!(
-            content.len() > 0,
+            !content.is_empty(),
             "Metadata should contain at least one entry"
         );
         assert!(
-            metadata.len() > 0,
+            !metadata.is_empty(),
             "Metadata should contain at least one entry"
         );
     }

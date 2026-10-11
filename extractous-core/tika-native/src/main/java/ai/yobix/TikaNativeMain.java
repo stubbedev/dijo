@@ -102,10 +102,10 @@ public class TikaNativeMain {
      */
     public static StringResult parseFileToString(
             String filePath,
-            int maxLength,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig,
+            int maxLength,
             boolean asXML
             // maybe replace with a single config class
     ) {
@@ -133,10 +133,10 @@ public class TikaNativeMain {
      */
     public static StringResult parseUrlToString(
             String urlString,
-            int maxLength,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig,
+            int maxLength,
             boolean asXML
     ) {
         try {
@@ -168,10 +168,10 @@ public class TikaNativeMain {
      */
     public static StringResult parseBytesToString(
             ByteBuffer data,
-            int maxLength,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig,
+            int maxLength,
             boolean asXML
     ) {
         final Metadata metadata = new Metadata();
@@ -241,10 +241,10 @@ public class TikaNativeMain {
      */
     public static ReaderResult parseFile(
             String filePath,
-            String charsetName,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig,
+            String charsetName,
             boolean asXML
     ) {
         try {
@@ -276,10 +276,10 @@ public class TikaNativeMain {
      */
     public static ReaderResult parseUrl(
             String urlString,
-            String charsetName,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig,
+            String charsetName,
             boolean asXML
     ) {
         try {
@@ -292,7 +292,7 @@ public class TikaNativeMain {
         } catch (MalformedURLException e) {
             return new ReaderResult((byte) 2, "Malformed URL error occurred " + describe(e));
         } catch (URISyntaxException e) {
-            return new ReaderResult((byte) 3, "Malformed URI error occurred: " + describe(e));
+            return new ReaderResult((byte) 2, "Malformed URI error occurred: " + describe(e));
         } catch (java.io.IOException e) {
             return new ReaderResult((byte) 1, "IO error occurred: " + describe(e));
         }
@@ -307,10 +307,10 @@ public class TikaNativeMain {
      */
     public static ReaderResult parseBytes(
             ByteBuffer data,
-            String charsetName,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig,
+            String charsetName,
             boolean asXML
     ) {
         final byte[] bytes = new byte[data.remaining()];
@@ -383,23 +383,18 @@ public class TikaNativeMain {
     }
 
     /**
-     * Extracts all embedded documents/resources from a file (images, attachments, etc.)
+     * Extracts all embedded documents/resources (images, attachments, etc.) from a file.
      * This is similar to Tika Server's /unpack/all endpoint
-     * 
-     * @param filePath the path of the file to extract embedded content from
-     * @return EmbeddedExtractResult containing all embedded documents
      */
-    public static EmbeddedExtractResult extractEmbedded(
+    public static EmbeddedExtractResult extractEmbeddedFile(
             String filePath,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig
     ) {
         try {
-            final Path path = Paths.get(filePath);
             final Metadata metadata = new Metadata();
-            final TikaInputStream stream = TikaInputStream.get(path, metadata);
-            
+            final TikaInputStream stream = TikaInputStream.get(Paths.get(filePath), metadata);
             return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
         } catch (IOException e) {
             return new EmbeddedExtractResult((byte) 1, "Could not open file: " + describe(e));
@@ -408,11 +403,8 @@ public class TikaNativeMain {
 
     /**
      * Extracts all embedded documents/resources from a byte buffer
-     * 
-     * @param data the byte buffer containing the document
-     * @return EmbeddedExtractResult containing all embedded documents
      */
-    public static EmbeddedExtractResult extractEmbeddedFromBytes(
+    public static EmbeddedExtractResult extractEmbeddedBytes(
             ByteBuffer data,
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
@@ -421,8 +413,27 @@ public class TikaNativeMain {
         final Metadata metadata = new Metadata();
         final ByteBufferInputStream inStream = new ByteBufferInputStream(data);
         final TikaInputStream stream = TikaInputStream.get(inStream, new TemporaryResources(), metadata);
-        
         return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
+    }
+
+    /**
+     * Extracts all embedded documents/resources from the document at a URL
+     */
+    public static EmbeddedExtractResult extractEmbeddedUrl(
+            String urlString,
+            PDFParserConfig pdfConfig,
+            OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig
+    ) {
+        try {
+            final Metadata metadata = new Metadata();
+            final TikaInputStream stream = TikaInputStream.get(new URI(urlString).toURL(), metadata);
+            return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
+        } catch (URISyntaxException | MalformedURLException e) {
+            return new EmbeddedExtractResult((byte) 2, "Malformed URL error occurred: " + describe(e));
+        } catch (IOException e) {
+            return new EmbeddedExtractResult((byte) 1, "IO error occurred: " + describe(e));
+        }
     }
 
     /**
@@ -500,14 +511,12 @@ public class TikaNativeMain {
             
             wrapper.parse(stream, handler, metadata, parseContext);
             
-            return new EmbeddedExtractResult(embeddedDocuments);
+            return new EmbeddedExtractResult(embeddedDocuments, metadata);
             
         } catch (IOException e) {
             return new EmbeddedExtractResult((byte) 1, "IO error occurred: " + describe(e));
-        } catch (SAXException e) {
-            return new EmbeddedExtractResult((byte) 2, "SAX error occurred: " + describe(e));
-        } catch (TikaException e) {
-            return new EmbeddedExtractResult((byte) 3, "Tika error occurred: " + describe(e));
+        } catch (SAXException | TikaException e) {
+            return new EmbeddedExtractResult((byte) 2, "Parse error occurred : " + describe(e));
         } catch (Exception e) {
             return new EmbeddedExtractResult((byte) 99, "Unexpected error: " + describe(e));
         } finally {

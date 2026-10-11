@@ -1,40 +1,37 @@
 package ai.yobix;
 
 import java.util.List;
-import java.util.ArrayList;
+import org.apache.tika.metadata.Metadata;
 
 /**
  * Result class for embedded document extraction operations
  */
 public class EmbeddedExtractResult {
-    private final byte errorCode;
+    private final byte status;
     private final String errorMessage;
     private final List<EmbeddedDocument> embeddedDocuments;
+    private final Metadata metadata;
 
-    /**
-     * Success result constructor
-     */
-    public EmbeddedExtractResult(List<EmbeddedDocument> embeddedDocuments) {
-        this.errorCode = 0;
+    public EmbeddedExtractResult(List<EmbeddedDocument> embeddedDocuments, Metadata metadata) {
+        this.status = 0;
         this.errorMessage = null;
         this.embeddedDocuments = embeddedDocuments;
+        this.metadata = metadata;
     }
 
-    /**
-     * Error result constructor
-     */
-    public EmbeddedExtractResult(byte errorCode, String errorMessage) {
-        this.errorCode = errorCode;
+    public EmbeddedExtractResult(byte status, String errorMessage) {
+        this.status = status;
         this.errorMessage = errorMessage;
-        this.embeddedDocuments = new ArrayList<>();
+        this.embeddedDocuments = null;
+        this.metadata = null;
     }
 
-    public boolean hasError() {
-        return errorCode != 0;
+    public boolean isError() {
+        return status != 0;
     }
 
-    public byte getErrorCode() {
-        return errorCode;
+    public byte getStatus() {
+        return status;
     }
 
     public String getErrorMessage() {
@@ -45,9 +42,10 @@ public class EmbeddedExtractResult {
         return embeddedDocuments;
     }
 
-    /**
-     * Represents a single embedded document/resource
-     */
+    public Metadata getMetadata() {
+        return metadata;
+    }
+
     public static class EmbeddedDocument {
         private final String resourceName;
         private final String contentType;
