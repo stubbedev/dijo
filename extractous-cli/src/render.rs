@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
 
 use extractous_core::{Extractor, Metadata, StreamReader};
 
 use crate::cli::Format;
+use serde::Serialize;
+
 use crate::schema::{self, ExtractionError, Source, Status, SCHEMA_VERSION};
+use crate::structure::{self, ElementKind, Unit};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -47,6 +50,8 @@ pub fn render(
     match options.format {
         Format::Text | Format::Xhtml => render_text(opened, options, sink),
         Format::Json => render_json(opened, path, display, options, sink),
+        Format::Pages => render_parts(opened, path, display, options, Unit::Pages, sink),
+        Format::Elements => render_parts(opened, path, display, options, Unit::Elements, sink),
     }
 }
 
@@ -109,33 +114,27 @@ fn render_text(
     })
 }
 
-fn render_json(
-    opened: Result<(StreamReader, Metadata), String>,
-    path: &Path,
-    display: &str,
-    options: RenderOptions,
-    sink: &mut dyn Write,
-) -> io::Result<Outcome> {
-    write!(sink, "{{\"schema_version\":{SCHEMA_VERSION},\"source\":")?;
+fn write_document_start(sink: &mut dyn Write, path: &Path, display: &str) -> io::Result<()> {
+    write!(
+        sink,
+        "{{\"schema_version\":{SCHEMA_VERSION},\"kind\":\"document\",\"source\":"
+    )?;
     serde_json::to_writer(&mut *sink, &source(path, display))?;
+    Ok(())
+}
 
-    let (outcome, metadata) = match opened {
-        Err(error) => (outcome(None, Some(error), None), None),
-        Ok((mut stream, _)) => {
-            sink.write_all(b",\"text\":\"")?;
-            let mut copied = copy(&mut stream, sink, write_json_string_content)?;
-            sink.write_all(b"\"")?;
-            let metadata = final_metadata(&stream, &mut copied);
-            (outcome(Some(&copied), None, metadata.as_ref()), metadata)
-        }
-    };
-
-    if let Some(mime_type) = metadata.as_ref().and_then(schema::mime_type) {
+fn write_document_end(
+    sink: &mut dyn Write,
+    outcome: &Outcome,
+    metadata: Option<&Metadata>,
+    options: RenderOptions,
+) -> io::Result<()> {
+    if let Some(mime_type) = metadata.and_then(schema::mime_type) {
         write_field(sink, "mime_type", &mime_type)?;
     }
     write_field(sink, "status", &outcome.status)?;
     write_field(sink, "errors", &outcome.errors)?;
-    if let Some(metadata) = &metadata {
+    if let Some(metadata) = metadata {
         if options.metadata {
             write_field(sink, "metadata", &schema::normalize(metadata))?;
         }
@@ -147,7 +146,90 @@ fn render_json(
             )?;
         }
     }
-    sink.write_all(b"}\n")?;
+    sink.write_all(b"}\n")
+}
+
+fn render_json(
+    opened: Result<(StreamReader, Metadata), String>,
+    path: &Path,
+    display: &str,
+    options: RenderOptions,
+    sink: &mut dyn Write,
+) -> io::Result<Outcome> {
+    write_document_start(sink, path, display)?;
+    let (outcome, metadata) = match opened {
+        Err(error) => (outcome(None, Some(error), None), None),
+        Ok((mut stream, _)) => {
+            sink.write_all(b",\"text\":\"")?;
+            let mut copied = copy(&mut stream, sink, write_json_string_content)?;
+            sink.write_all(b"\"")?;
+            let metadata = final_metadata(&stream, &mut copied);
+            (outcome(Some(&copied), None, metadata.as_ref()), metadata)
+        }
+    };
+    write_document_end(sink, &outcome, metadata.as_ref(), options)?;
+    Ok(outcome)
+}
+
+#[derive(Serialize)]
+struct PartRecord<'a> {
+    schema_version: u32,
+    kind: &'static str,
+    source: PartSource<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    element: Option<ElementKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<u8>,
+    text: &'a str,
+}
+
+#[derive(Serialize)]
+struct PartSource<'a> {
+    path: &'a str,
+}
+
+fn render_parts(
+    opened: Result<(StreamReader, Metadata), String>,
+    path: &Path,
+    display: &str,
+    options: RenderOptions,
+    unit: Unit,
+    sink: &mut dyn Write,
+) -> io::Result<Outcome> {
+    let (outcome, metadata) = match opened {
+        Err(error) => (outcome(None, Some(error), None), None),
+        Ok((mut stream, _)) => {
+            let mut bytes = 0;
+            let split = structure::split(BufReader::new(&mut stream), unit, &mut |part| {
+                bytes += part.text.len() as u64;
+                let record = PartRecord {
+                    schema_version: SCHEMA_VERSION,
+                    kind: if part.element.is_some() {
+                        "element"
+                    } else {
+                        "page"
+                    },
+                    source: PartSource { path: display },
+                    page: part.page,
+                    element: part.element.map(|(kind, _)| kind),
+                    level: part.element.and_then(|(_, level)| level),
+                    text: &part.text,
+                };
+                serde_json::to_writer(&mut *sink, &record)?;
+                sink.write_all(b"\n")
+            })?;
+            let mut copied = Copied {
+                bytes,
+                error: split.err(),
+            };
+            let metadata = final_metadata(&stream, &mut copied);
+            (outcome(Some(&copied), None, metadata.as_ref()), metadata)
+        }
+    };
+    write_document_start(sink, path, display)?;
+    write_document_end(sink, &outcome, metadata.as_ref(), options)?;
     Ok(outcome)
 }
 

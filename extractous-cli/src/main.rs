@@ -3,6 +3,7 @@ mod inputs;
 mod render;
 mod schema;
 mod spool;
+mod structure;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -146,7 +147,10 @@ fn configure(args: &ExtractArgs) -> Extractor {
         ocr = ocr.set_language(languages.as_str());
     }
     Extractor::new()
-        .set_xml_output(args.format == Format::Xhtml)
+        .set_xml_output(matches!(
+            args.format,
+            Format::Xhtml | Format::Pages | Format::Elements
+        ))
         .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(strategy))
         .set_ocr_config(ocr)
 }
@@ -235,7 +239,7 @@ fn run(
         None if workers == 1 => Sink::Stdout,
         None => Sink::Spooled(spool.path(&format!("{index}.out"))),
     };
-    let keep_failed = args.format == Format::Json;
+    let keep_failed = matches!(args.format, Format::Json | Format::Pages | Format::Elements);
     let rendered = write_sink(&sink, keep_failed, |writer| {
         render::render(
             extractor,

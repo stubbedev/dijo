@@ -358,3 +358,75 @@ fn partial_results_succeed_unless_strict() {
     let strict = extractous(&["--strict", &document("partially-damaged.zip")]);
     assert_eq!(strict.status.code(), Some(1));
 }
+
+fn records(format: &str, input: &str) -> Vec<serde_json::Value> {
+    let output = extractous(&["--format", format, "--metadata", input]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let records: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for record in &records {
+        assert_matches_schema(record);
+    }
+    records
+}
+
+#[test]
+fn pages_are_streamed_in_order_then_closed_by_the_document() {
+    let records = records("pages", &document("2022_Q3_AAPL.pdf"));
+    let (document_record, pages) = records.split_last().unwrap();
+    assert_eq!(pages.len(), 28);
+    for (index, page) in pages.iter().enumerate() {
+        assert_eq!(page["kind"], "page");
+        assert_eq!(page["page"], index + 1);
+    }
+    assert!(pages[0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("UNITED STATES"));
+    assert_eq!(document_record["kind"], "document");
+    assert_eq!(document_record["status"], "complete");
+    assert_eq!(document_record["metadata"]["page_count"], 28);
+    assert!(document_record.get("text").is_none());
+}
+
+#[test]
+fn slides_are_pages() {
+    let records = records("pages", &document("simple.pptx"));
+    let slides: Vec<_> = records
+        .iter()
+        .filter(|record| record.get("page").is_some())
+        .collect();
+    assert_eq!(slides.len(), 2);
+    assert_eq!(slides[1]["page"], 2);
+    assert!(slides[1]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("Things to think about"));
+}
+
+#[test]
+fn an_unpaged_document_is_one_page_record() {
+    let records = records("pages", &document("category-level.docx"));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["kind"], "page");
+    assert!(records[0].get("page").is_none());
+}
+
+#[test]
+fn elements_carry_their_structure() {
+    let records = records("elements", &document("category-level.docx"));
+    let heading = records
+        .iter()
+        .find(|record| record["element"] == "heading")
+        .unwrap();
+    assert_eq!(heading["level"], 1);
+    assert_eq!(heading["text"], "A Heading 1");
+    assert!(records.iter().any(|record| record["element"] == "paragraph"
+        && record["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Call me Ishmael")));
+    assert_eq!(records.last().unwrap()["kind"], "document");
+}

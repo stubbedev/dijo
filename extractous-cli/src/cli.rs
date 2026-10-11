@@ -52,11 +52,11 @@ pub struct ExtractArgs {
     pub format: Format,
 
     /// Include metadata: Tika's keys on standard error for text and xhtml, the normalised fields
-    /// inline for json.
+    /// inline for json, pages and elements.
     #[arg(short, long, env = "EXTRACTOUS_METADATA")]
     pub metadata: bool,
 
-    /// Include Tika's raw metadata keys and values in json output.
+    /// Include Tika's raw metadata keys and values in json, pages and elements output.
     #[arg(long, env = "EXTRACTOUS_RAW_METADATA")]
     pub raw_metadata: bool,
 
@@ -91,6 +91,12 @@ pub enum Format {
     Xhtml,
     /// One JSON object per input, one per line, following schema/output-v1.schema.json.
     Json,
+    /// One JSON object per page (or the whole text when the format has no pages), then one
+    /// object per input with its status and metadata.
+    Pages,
+    /// One JSON object per heading, paragraph, list item or table, with its page, then one
+    /// object per input with its status and metadata.
+    Elements,
 }
 
 impl Format {
@@ -99,6 +105,7 @@ impl Format {
             Format::Text => "txt",
             Format::Xhtml => "xhtml",
             Format::Json => "json",
+            Format::Pages | Format::Elements => "ndjson",
         }
     }
 }

@@ -461,6 +461,7 @@ dependencies = [
  "extractous-core",
  "jiff",
  "jsonschema",
+ "quick-xml",
  "serde",
  "serde_json",
  "walkdir",

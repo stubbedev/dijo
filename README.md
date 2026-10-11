@@ -32,12 +32,13 @@ extractous -f xhtml report.docx               # Tika's XHTML
 extractous -f json -m *.pdf                   # one JSON object per file, with metadata
 extractous -r -o out/ archive/                # one output file per input, mirroring archive/
 cat scan.tiff | extractous --ocr-lang deu -   # standard input, OCR in German
+extractous -f pages manual.pdf                # one JSON line per page, for search indexing
 extractous detect mystery.bin                 # application/pdf
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `-f, --format text\|xhtml\|json` | Plain text (default), Tika XHTML, or one JSON object per input per line |
+| `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
@@ -56,11 +57,11 @@ on a usage error.
 
 ## JSON output
 
-`--format json` writes one object per input per line, following the versioned schema in
+`--format json` writes one `"kind":"document"` object per input per line, following the versioned schema in
 [`schema/output-v1.schema.json`](schema/output-v1.schema.json):
 
 ```json
-{"schema_version":1,
+{"schema_version":1,"kind":"document",
  "source":{"path":"report.pdf","size":266240,"blake3":"0b9b01a7..."},
  "text":"...",
  "mime_type":"application/pdf",
@@ -68,6 +69,11 @@ on a usage error.
  "errors":[],
  "metadata":{"title":"...","authors":["..."],"created":{"utc":"2022-07-29T10:03:21Z"},"page_count":28}}
 ```
+
+`--format pages` writes one record per page (`{"kind":"page","page":3,"text":...}`; slides count as pages, and a format
+without pages is one record), and `--format elements` one per heading, paragraph, list item or table
+(`{"kind":"element","element":"heading","level":1,"page":3,"text":...}`), each as soon as it is complete, followed by a
+`"kind":"document"` record carrying the status, errors and metadata that are only known at the end.
 
 `metadata` (with `-m`) holds normalised fields filled from whichever Tika key a format uses: dates are RFC 3339 in UTC,
 or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are

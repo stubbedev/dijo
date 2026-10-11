@@ -20,6 +20,7 @@ serde_json = "1.0.154"
 jiff = "0.2.38"
 blake3 = "1.8.7"
 walkdir = "2.5.0"
+quick-xml = "0.38.4"
 
 [dev-dependencies]
 jsonschema = { version = "0.58.6", default-features = false }
