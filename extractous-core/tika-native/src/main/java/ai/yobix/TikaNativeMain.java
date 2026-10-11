@@ -73,21 +73,42 @@ public class TikaNativeMain {
     }
 
     /**
-     * Parses the given file and returns its type as a mime type
-     *
-     * @param filePath: the path of the file to be parsed
-     * @return StringResult
+     * Detects the media type of a file with Tika's default detector (MIME magic, container
+     * inspection and the file name).
      */
-    public static StringResult detect(String filePath) {
-        final Path path = Paths.get(filePath);
+    public static StringResult detectFile(String filePath) {
         final Metadata metadata = new Metadata();
+        try (final TikaInputStream stream = TikaInputStream.get(Paths.get(filePath), metadata)) {
+            return new StringResult(tika.detect(stream, metadata), metadata);
+        } catch (IOException e) {
+            return new StringResult((byte) 1, "Could not open file: " + describe(e));
+        }
+    }
 
-        try (final InputStream stream = TikaInputStream.get(path, metadata)) {
-            final String result = tika.detect(stream, metadata);
-            return new StringResult(result, metadata);
+    /**
+     * Detects the media type of a document held in a byte buffer.
+     */
+    public static StringResult detectBytes(ByteBuffer data) {
+        final Metadata metadata = new Metadata();
+        try (final TikaInputStream stream = TikaInputStream.get(
+                new ByteBufferInputStream(data), new TemporaryResources(), metadata)) {
+            return new StringResult(tika.detect(stream, metadata), metadata);
+        } catch (IOException e) {
+            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
+        }
+    }
 
-        } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, describe(e));
+    /**
+     * Detects the media type of the document at a URL.
+     */
+    public static StringResult detectUrl(String urlString) {
+        final Metadata metadata = new Metadata();
+        try (final TikaInputStream stream = TikaInputStream.get(new URI(urlString).toURL(), metadata)) {
+            return new StringResult(tika.detect(stream, metadata), metadata);
+        } catch (URISyntaxException | MalformedURLException e) {
+            return new StringResult((byte) 2, "Malformed URL error occurred: " + describe(e));
+        } catch (IOException e) {
+            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
         }
     }
 

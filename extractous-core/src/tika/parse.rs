@@ -141,3 +141,20 @@ pub(crate) fn extract_embedded(
     )?;
     embedded_result(&mut env, result)
 }
+
+/// Detects the media type of a document with Tika's default detector.
+pub(crate) fn detect(source: Source) -> ExtractResult<String> {
+    let mut env = attach_current_thread()?;
+    let source_obj = source.into_java(&mut env)?;
+    let signature = format!("({})Lai/yobix/StringResult;", source.java_type());
+    let result = jni_call_static_method(
+        &mut env,
+        TIKA_NATIVE_MAIN,
+        &format!("detect{}", source.method_suffix()),
+        &signature,
+        &[JValue::Object(&source_obj)],
+    )?
+    .l()?;
+    let (media_type, _) = string_result(&mut env, result)?;
+    Ok(media_type)
+}

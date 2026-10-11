@@ -20,6 +20,22 @@ pub enum CharSet {
     UTF_16BE,
 }
 
+/// A media type as detected by Apache Tika, such as `application/pdf`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MediaType(String);
+
+impl MediaType {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for MediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// StreamReader implements std::io::Read
 ///
 /// Can be used to perform buffered reading. For example:
@@ -179,6 +195,23 @@ impl Extractor {
     /// Extracts all embedded documents/resources from the document at a URL.
     pub fn extract_embedded_from_url(&self, url: &str) -> ExtractResult<EmbeddedExtractResult> {
         tika::extract_embedded(Source::Url(url), &self.configs)
+    }
+
+    /// Detects the media type of a file, such as `application/pdf`, from its content, its
+    /// container structure and its name.
+    pub fn detect_file(&self, file_path: &str) -> ExtractResult<MediaType> {
+        tika::detect(Source::File(file_path)).map(MediaType)
+    }
+
+    /// Detects the media type of a document held in memory from its content and container
+    /// structure.
+    pub fn detect_bytes(&self, buffer: &[u8]) -> ExtractResult<MediaType> {
+        tika::detect(Source::Bytes(buffer)).map(MediaType)
+    }
+
+    /// Detects the media type of the document at a URL.
+    pub fn detect_url(&self, url: &str) -> ExtractResult<MediaType> {
+        tika::detect(Source::Url(url)).map(MediaType)
     }
 
     fn extract_to_stream(&self, source: Source) -> ExtractResult<(StreamReader, Metadata)> {
