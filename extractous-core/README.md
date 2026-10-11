@@ -112,32 +112,10 @@ fn main() {
   However, to achieve one of Extractous goals, which is speed and efficiency, we do not set up any Tika as a servers or
   run any Java code. We instead, compile [Apache Tika](https://tika.apache.org/) as native shared libraries and use
   them on our Rust core as ffi. [GraalVm](https://www.graalvm.org/) is required to build Tika as native libs.
-* The provided build script already takes care of installing the required GraalVM JDK. However, if you want to use a
-  specific local version, you can do so by setting the GRAALVM_HOME environment variable
-* We recommend using [sdkman](https://sdkman.io/install) to install GraalVM JDKs
-* `sdk install java 23.0.1-graalce`
-* To be able to use it from IDEA, on Ubuntu for example add `GRAALVM_HOME=$HOME/.sdkman/candidates/java/23.0.1-graalce` to `/etc/environment`
-* Confirm that GraalVM is installed correctly by running `java -version`. You should see something like:
-```text
-openjdk 23.0.1 2024-10-15
-OpenJDK Runtime Environment GraalVM CE 23.0.1+11.1 (build 23.0.1+11-jvmci-b01)
-OpenJDK 64-Bit Server VM GraalVM CE 23.0.1+11.1 (build 23.0.1+11-jvmci-b01, mixed mode, sharing)
-```
-* On macOS the official GraalVM JDKs fail to work with code that use java awt. On macOS, we recommend using
-  Bellsoft Liberica NIK
-* `sdk install java 24.1.1.r23-nik`
-* Extractous supports OCR through [tesseract](https://github.com/tesseract-ocr/tesseract), make sure tesseract is
-installed on your system because some of the OCR tests will fail if no tesseract is found.
-* `sudo apt install tesseract-ocr`
-* Install any language extensions you want. for example to install German and Arabic:
-* `sudo apt install tesseract-ocr-deu tesseract-ocr-ara`
-* On Mac
-* `brew install tesseract tesseract-lang`
+* Every development dependency (Rust toolchain, cargo-nextest, GraalVM CE, tesseract with the English, German and
+  Arabic language data used by the OCR tests, and just) is provided by
+  [devenv](https://devenv.sh). Enter it with `devenv shell`, or run `direnv allow` once to load it automatically.
 
-### Building Extractous
-* To build Extractous, just run:
-* `cargo build`
-
-### Running Tests
-* To run tests, just run:
-* `cargo test`
+### Building and testing
+* All commands are recipes in the repository `justfile`; run `just` to list them.
+* `just build` builds Extractous, `just test` runs the tests with cargo-nextest and `just check` runs every gate.
