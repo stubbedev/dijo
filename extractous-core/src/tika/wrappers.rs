@@ -1,3 +1,4 @@
+use crate::config::JavaValue;
 use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::{
     jni_call_method, jni_jobject_to_string, jni_new_string_as_jvalue,
@@ -224,219 +225,55 @@ impl<'local> JReaderResult<'local> {
     }
 }
 
-/// Wrapper for [`JObject`]s that contain `org.apache.tika.parser.pdf.PDFParserConfig`.
-/// Looks up the class and method IDs on creation rather than for every method call.
-pub(crate) struct JPDFParserConfig<'local> {
-    pub(crate) internal: JObject<'local>,
-}
-
-impl<'local> JPDFParserConfig<'local> {
-    /// Creates a new object instance of `JPDFParserConfig` in the java world
-    /// keeps reference to the object and method IDs for later use
-    pub(crate) fn new(env: &mut JNIEnv<'local>, config: &PdfParserConfig) -> ExtractResult<Self> {
-        // Create the java object
-        let class = env.find_class("org/apache/tika/parser/pdf/PDFParserConfig")?;
-        let obj = env.new_object(&class, "()V", &[])?;
-
-        // Call the setters
-        // Make sure all of these methods are declared in jni-config.json file, otherwise
-        // java method not found exception will be thrown
-        jni_call_method(
-            env,
-            &obj,
-            "setExtractInlineImages",
-            "(Z)V",
-            &[JValue::from(config.extract_inline_images)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setExtractUniqueInlineImagesOnly",
-            "(Z)V",
-            &[JValue::from(config.extract_unique_inline_images_only)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setExtractMarkedContent",
-            "(Z)V",
-            &[JValue::from(config.extract_marked_content)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setExtractAnnotationText",
-            "(Z)V",
-            &[JValue::from(config.extract_annotation_text)],
-        )?;
-        // The PdfOcrStrategy enum names must match the Java org.apache.tika.parser.pdf
-        // .PDFParserConfig$OCR_STRATEGY enum names
-        let ocr_str_val = jni_new_string_as_jvalue(env, &config.ocr_strategy.to_string())?;
-        jni_call_method(
-            env,
-            &obj,
-            "setOcrStrategy",
-            "(Ljava/lang/String;)V",
-            &[(&ocr_str_val).into()],
-        )?;
-
-        Ok(Self { internal: obj })
+fn new_java_config<'local>(
+    env: &mut JNIEnv<'local>,
+    class: &str,
+    settings: impl Iterator<Item = (&'static str, JavaValue)>,
+) -> ExtractResult<JObject<'local>> {
+    let obj = env.new_object(class, "()V", &[])?;
+    for (setter, value) in settings {
+        match value {
+            JavaValue::Bool(val) => {
+                jni_call_method(env, &obj, setter, "(Z)V", &[JValue::from(val)])?
+            }
+            JavaValue::Int(val) => {
+                jni_call_method(env, &obj, setter, "(I)V", &[JValue::from(val)])?
+            }
+            JavaValue::Str(val) => {
+                let string = jni_new_string_as_jvalue(env, &val)?;
+                jni_call_method(
+                    env,
+                    &obj,
+                    setter,
+                    "(Ljava/lang/String;)V",
+                    &[(&string).into()],
+                )?
+            }
+        };
     }
+    Ok(obj)
 }
 
-/// Wrapper for [`JObject`]s that contain `org.apache.tika.parser.microsoft.OfficeParserConfig`.
-pub(crate) struct JOfficeParserConfig<'local> {
-    pub(crate) internal: JObject<'local>,
-}
-
-impl<'local> JOfficeParserConfig<'local> {
-    /// Creates a new object instance of `JOfficeParserConfig` in the java world
-    /// keeps reference to the object for later use
-    pub(crate) fn new(
-        env: &mut JNIEnv<'local>,
-        config: &OfficeParserConfig,
-    ) -> ExtractResult<Self> {
-        // Create the java object
-        let class = env.find_class("org/apache/tika/parser/microsoft/OfficeParserConfig")?;
-        let obj = env.new_object(&class, "()V", &[])?;
-
-        // Call the setters
-        // Make sure all of these methods are declared in jni-config.json file, otherwise
-        // java method not found exception will be thrown
-        jni_call_method(
+/// Creates the Java PDF, Office and Tesseract configurations, in that order.
+pub(crate) fn java_parser_configs<'local>(
+    env: &mut JNIEnv<'local>,
+    pdf_conf: &PdfParserConfig,
+    office_conf: &OfficeParserConfig,
+    ocr_conf: &TesseractOcrConfig,
+) -> ExtractResult<[JObject<'local>; 3]> {
+    Ok([
+        new_java_config(env, PdfParserConfig::JAVA_CLASS, pdf_conf.java_settings())?,
+        new_java_config(
             env,
-            &obj,
-            "setExtractMacros",
-            "(Z)V",
-            &[JValue::from(config.extract_macros)],
-        )?;
-        jni_call_method(
+            OfficeParserConfig::JAVA_CLASS,
+            office_conf.java_settings(),
+        )?,
+        new_java_config(
             env,
-            &obj,
-            "setIncludeDeletedContent",
-            "(Z)V",
-            &[JValue::from(config.include_deleted_content)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setIncludeMoveFromContent",
-            "(Z)V",
-            &[JValue::from(config.include_move_from_content)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setIncludeShapeBasedContent",
-            "(Z)V",
-            &[JValue::from(config.include_shape_based_content)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setIncludeHeadersAndFooters",
-            "(Z)V",
-            &[JValue::from(config.include_headers_and_footers)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setIncludeMissingRows",
-            "(Z)V",
-            &[JValue::from(config.include_missing_rows)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setIncludeSlideNotes",
-            "(Z)V",
-            &[JValue::from(config.include_slide_notes)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setIncludeSlideMasterContent",
-            "(Z)V",
-            &[JValue::from(config.include_slide_master_content)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setConcatenatePhoneticRuns",
-            "(Z)V",
-            &[JValue::from(config.concatenate_phonetic_runs)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setExtractAllAlternativesFromMSG",
-            "(Z)V",
-            &[JValue::from(config.extract_all_alternatives_from_msg)],
-        )?;
-
-        Ok(Self { internal: obj })
-    }
-}
-
-/// Wrapper for [`JObject`]s that contain `org.apache.tika.parser.ocr.TesseractOCRConfig`.
-pub(crate) struct JTesseractOcrConfig<'local> {
-    pub(crate) internal: JObject<'local>,
-}
-impl<'local> JTesseractOcrConfig<'local> {
-    /// Creates a new object instance of `JTesseractOcrConfig` in the java world
-    /// keeps reference to the object for later use
-    pub(crate) fn new(
-        env: &mut JNIEnv<'local>,
-        config: &TesseractOcrConfig,
-    ) -> ExtractResult<Self> {
-        // Create the java object
-        let class = env.find_class("org/apache/tika/parser/ocr/TesseractOCRConfig")?;
-        let obj = env.new_object(&class, "()V", &[])?;
-
-        // Call the setters
-        // Make sure all of these methods are declared in jni-config.json file, otherwise
-        // java method not found exception will be thrown
-        jni_call_method(
-            env,
-            &obj,
-            "setDensity",
-            "(I)V",
-            &[JValue::from(config.density)],
-        )?;
-        jni_call_method(env, &obj, "setDepth", "(I)V", &[JValue::from(config.depth)])?;
-        jni_call_method(
-            env,
-            &obj,
-            "setTimeoutSeconds",
-            "(I)V",
-            &[JValue::from(config.timeout_seconds)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setEnableImagePreprocessing",
-            "(Z)V",
-            &[JValue::from(config.enable_image_preprocessing)],
-        )?;
-        jni_call_method(
-            env,
-            &obj,
-            "setApplyRotation",
-            "(Z)V",
-            &[JValue::from(config.apply_rotation)],
-        )?;
-
-        let lang_string_val = jni_new_string_as_jvalue(env, &config.language)?;
-        jni_call_method(
-            env,
-            &obj,
-            "setLanguage",
-            "(Ljava/lang/String;)V",
-            &[(&lang_string_val).into()],
-        )?;
-
-        Ok(Self { internal: obj })
-    }
+            TesseractOcrConfig::JAVA_CLASS,
+            ocr_conf.java_settings(),
+        )?,
+    ])
 }
 
 /// Wrapper for [`JObject`]s that contain `ai.yobix.EmbeddedExtractResult`.

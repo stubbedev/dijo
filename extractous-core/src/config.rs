@@ -11,286 +11,241 @@ pub enum PdfOcrStrategy {
     AUTO,
 }
 
-/// PDF parsing configuration settings
-///
-/// These settings are used to configure the behavior of the PDF parsing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PdfParserConfig {
-    pub(crate) ocr_strategy: PdfOcrStrategy,
-    pub(crate) extract_inline_images: bool,
-    pub(crate) extract_unique_inline_images_only: bool,
-    pub(crate) extract_marked_content: bool,
-    pub(crate) extract_annotation_text: bool,
+pub(crate) enum JavaValue {
+    Bool(bool),
+    Int(i32),
+    Str(String),
 }
 
-impl Default for PdfParserConfig {
-    fn default() -> Self {
-        Self {
-            ocr_strategy: PdfOcrStrategy::AUTO,
-            extract_inline_images: false,
-            extract_unique_inline_images_only: false,
-            extract_marked_content: false,
-            extract_annotation_text: true,
+pub(crate) trait IntoJavaValue {
+    fn into_java_value(self) -> JavaValue;
+}
+
+impl IntoJavaValue for bool {
+    fn into_java_value(self) -> JavaValue {
+        JavaValue::Bool(self)
+    }
+}
+
+impl IntoJavaValue for i32 {
+    fn into_java_value(self) -> JavaValue {
+        JavaValue::Int(self)
+    }
+}
+
+impl IntoJavaValue for String {
+    fn into_java_value(self) -> JavaValue {
+        JavaValue::Str(self)
+    }
+}
+
+impl IntoJavaValue for PdfOcrStrategy {
+    fn into_java_value(self) -> JavaValue {
+        JavaValue::Str(self.to_string())
+    }
+}
+
+macro_rules! tika_config {
+    (
+        $(#[$meta:meta])*
+        $name:ident => $java_class:literal {
+            $(
+                $(#[$doc:meta])*
+                $setter:ident($field:ident: $ty:ty) => $java_setter:literal,
+            )*
         }
-    }
-}
-
-impl PdfParserConfig {
-    /// Creates a new instance of PdfParserConfig with default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets the OCR strategy for PDF parsing.
-    /// Default: AUTO.
-    pub fn set_ocr_strategy(mut self, val: PdfOcrStrategy) -> Self {
-        self.ocr_strategy = val;
-        self
-    }
-
-    /// If true, extract the literal inline embedded OBXImages. Beware: some PDF documents of
-    /// modest  size (~4MB) can contain thousands of embedded images totaling > 2.5 GB.
-    /// Also, there can be surprisingly large memory consumption
-    /// and/ or out of memory errors. Along the same lines, note that this does not extract
-    /// "logical" images. Some PDF writers break up a single logical image into hundreds of
-    /// little images. With this option set to true, you might get those hundreds of little images.
-    /// NOTE ALSO: this extracts the raw images without clipping, rotation, masks, color inversion,
-    /// etc. The images that this extracts may look nothing like what a human would expect given
-    /// the appearance of the PDF. Set to true only with the greatest caution.
-    /// Default: false.
-    pub fn set_extract_inline_images(mut self, val: bool) -> Self {
-        self.extract_inline_images = val;
-        self
-    }
-
-    /// Multiple pages within a PDF file might refer to the same underlying image.
-    /// If extractUniqueInlineImagesOnly is set to false, the parser will call the EmbeddedExtractor
-    /// each time the image appears on a page. This might be desired for some use cases. However,
-    /// to avoid duplication of extracted images, set this to true. The default is true.
-    /// Note that uniqueness is determined only by the underlying PDF COSObject id, not by file hash
-    /// or similar equality metric. If the PDF actually contains multiple copies of the same
-    /// image -- all with different object ids -- then all images will be extracted.
-    /// For this parameter to have any effect, extractInlineImages must be set to true.
-    /// Default: false.
-    pub fn set_extract_unique_inline_images_only(mut self, val: bool) -> Self {
-        self.extract_unique_inline_images_only = val;
-        self
-    }
-
-    /// If the PDF contains marked content, try to extract text and its marked structure.
-    /// Default: false.
-    pub fn set_extract_marked_content(mut self, val: bool) -> Self {
-        self.extract_marked_content = val;
-        self
-    }
-
-    /// If the PDF contains annotations, try to extract the text of the annotations.
-    /// Default: true.
-    pub fn set_extract_annotation_text(mut self, val: bool) -> Self {
-        self.extract_annotation_text = val;
-        self
-    }
-}
-
-/// Microsoft Office parser configuration settings
-///
-/// These settings are used to configure the behavior of the MSOffice parsing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct OfficeParserConfig {
-    pub(crate) extract_macros: bool,
-    pub(crate) include_deleted_content: bool,
-    pub(crate) include_move_from_content: bool,
-    pub(crate) include_shape_based_content: bool,
-    pub(crate) include_headers_and_footers: bool,
-    pub(crate) include_missing_rows: bool,
-    pub(crate) include_slide_notes: bool,
-    pub(crate) include_slide_master_content: bool,
-    pub(crate) concatenate_phonetic_runs: bool,
-    pub(crate) extract_all_alternatives_from_msg: bool,
-}
-
-impl Default for OfficeParserConfig {
-    fn default() -> Self {
-        Self {
-            extract_macros: false,
-            include_deleted_content: false,
-            include_move_from_content: false,
-            include_shape_based_content: true,
-            include_headers_and_footers: false,
-            include_missing_rows: false,
-            include_slide_notes: true,
-            include_slide_master_content: true,
-            concatenate_phonetic_runs: true,
-            extract_all_alternatives_from_msg: false,
+    ) => {
+        $(#[$meta])*
+        ///
+        /// Every setting left unset keeps the default of Apache Tika's
+        #[doc = concat!("`", $java_class, "`.")]
+        #[derive(Debug, Clone, Default, PartialEq)]
+        pub struct $name {
+            $($field: Option<$ty>,)*
         }
-    }
-}
 
-impl OfficeParserConfig {
-    /// Creates a new instance of OfficeParserConfig with default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
+        impl $name {
+            /// Creates a configuration that keeps all of Apache Tika's defaults.
+            pub fn new() -> Self {
+                Self::default()
+            }
 
-    /// Sets whether MSOffice parsers should extract macros.
-    /// Default: false.
-    pub fn set_extract_macros(mut self, val: bool) -> Self {
-        self.extract_macros = val;
-        self
-    }
+            $(
+                $(#[$doc])*
+                pub fn $setter(mut self, val: impl Into<$ty>) -> Self {
+                    self.$field = Some(val.into());
+                    self
+                }
+            )*
 
-    /// Sets whether the docx parser should include deleted content.
-    /// Default: false.
-    pub fn set_include_deleted_content(mut self, val: bool) -> Self {
-        self.include_deleted_content = val;
-        self
-    }
+            pub(crate) const JAVA_CLASS: &'static str = $java_class;
 
-    /// With track changes on for the docx parser, when a section is moved, the content is stored in
-    /// both the "moveFrom" section and in the "moveTo" section. If you'd like to include the
-    /// section both in its original location (moveFrom) and in its new location (moveTo),
-    /// set this to true. Default: false
-    pub fn set_include_move_from_content(mut self, val: bool) -> Self {
-        self.include_move_from_content = val;
-        self
-    }
-
-    /// In Excel and Word, there can be text stored within drawing shapes.
-    /// (In PowerPoint everything is in a Shape) If you'd like to skip processing these to look
-    /// for text, set this to false
-    /// Default: true
-    pub fn set_include_shape_based_content(mut self, val: bool) -> Self {
-        self.include_shape_based_content = val;
-        self
-    }
-
-    /// Whether to include headers and footers. This only operates on headers and footers in
-    /// Word and Excel, not master slide content in PowerPoint.
-    /// Default: true
-    pub fn set_include_headers_and_footers(mut self, val: bool) -> Self {
-        self.include_headers_and_footers = val;
-        self
-    }
-
-    /// For table-like formats, and tables within other formats, should missing rows in sparse
-    /// tables be output where detected? The default is to only output rows defined within the
-    /// file, which avoid lots of blank lines, but means layout isn't preserved.
-    /// Default: false
-    pub fn set_include_missing_rows(mut self, val: bool) -> Self {
-        self.include_missing_rows = val;
-        self
-    }
-
-    /// Whether to process slide notes content. If set to false, the parser will skip the text
-    /// content and all embedded objects from the slide notes in ppt and pptxm.
-    /// Default: true
-    pub fn set_include_slide_notes(mut self, val: bool) -> Self {
-        self.include_slide_notes = val;
-        self
-    }
-
-    /// Whether to include contents from any of the three types of masters -- slide, notes,
-    /// handout -- in a .ppt or pptxm file. If set to false, the parser will not extract text
-    /// or embedded objects from any of the masters.
-    /// Default: true
-    pub fn set_include_slide_master_content(mut self, val: bool) -> Self {
-        self.include_slide_master_content = val;
-        self
-    }
-
-    /// Microsoft Excel files can sometimes contain phonetic (furigana) strings.
-    /// This sets whether the parser will concatenate the phonetic runs to the original text.
-    /// This is currently only supported by the xls and xlsx parsers (not the xlsb parser).
-    /// Default: true.
-    pub fn set_concatenate_phonetic_runs(mut self, val: bool) -> Self {
-        self.concatenate_phonetic_runs = val;
-        self
-    }
-
-    /// Some .msg files can contain body content in html, rtf and/or text. The default behavior
-    /// is to pick the first non-null value and include only that. If you'd like to extract all
-    /// non-null body content, which is likely duplicative, set this value to true.
-    /// Default: false
-    pub fn set_extract_all_alternatives_from_msg(mut self, val: bool) -> Self {
-        self.extract_all_alternatives_from_msg = val;
-        self
-    }
-}
-
-/// Tesseract OCR configuration settings
-///
-/// These settings are used to configure the behavior of the optical image recognition.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TesseractOcrConfig {
-    pub(crate) density: i32,
-    pub(crate) depth: i32,
-    pub(crate) timeout_seconds: i32,
-    pub(crate) enable_image_preprocessing: bool,
-    pub(crate) apply_rotation: bool,
-    pub(crate) language: String,
-}
-
-impl Default for TesseractOcrConfig {
-    fn default() -> Self {
-        Self {
-            density: 300,
-            depth: 4,
-            timeout_seconds: 130,
-            enable_image_preprocessing: false,
-            apply_rotation: false,
-            language: "eng".to_string(),
+            pub(crate) fn java_settings(&self) -> impl Iterator<Item = (&'static str, JavaValue)> {
+                [$(
+                    self.$field
+                        .clone()
+                        .map(|val| ($java_setter, val.into_java_value())),
+                )*]
+                .into_iter()
+                .flatten()
+            }
         }
+    };
+}
+
+tika_config! {
+    /// PDF parsing configuration settings
+    PdfParserConfig => "org/apache/tika/parser/pdf/PDFParserConfig" {
+        /// Sets the OCR strategy for PDF parsing.
+        set_ocr_strategy(ocr_strategy: PdfOcrStrategy) => "setOcrStrategy",
+
+        /// If true, extract the literal inline embedded OBXImages. Beware: some PDF documents of
+        /// modest size (~4MB) can contain thousands of embedded images totaling > 2.5 GB.
+        /// Also, there can be surprisingly large memory consumption
+        /// and/ or out of memory errors. Along the same lines, note that this does not extract
+        /// "logical" images. Some PDF writers break up a single logical image into hundreds of
+        /// little images. With this option set to true, you might get those hundreds of little images.
+        /// NOTE ALSO: this extracts the raw images without clipping, rotation, masks, color inversion,
+        /// etc. The images that this extracts may look nothing like what a human would expect given
+        /// the appearance of the PDF. Set to true only with the greatest caution.
+        set_extract_inline_images(extract_inline_images: bool) => "setExtractInlineImages",
+
+        /// Multiple pages within a PDF file might refer to the same underlying image.
+        /// If false, the parser will call the EmbeddedExtractor each time the image appears on a
+        /// page. This might be desired for some use cases. However, to avoid duplication of
+        /// extracted images, set this to true.
+        /// Note that uniqueness is determined only by the underlying PDF COSObject id, not by file hash
+        /// or similar equality metric. If the PDF actually contains multiple copies of the same
+        /// image -- all with different object ids -- then all images will be extracted.
+        /// For this parameter to have any effect, extract_inline_images must be set to true.
+        set_extract_unique_inline_images_only(extract_unique_inline_images_only: bool) => "setExtractUniqueInlineImagesOnly",
+
+        /// If the PDF contains marked content, try to extract text and its marked structure.
+        set_extract_marked_content(extract_marked_content: bool) => "setExtractMarkedContent",
+
+        /// If the PDF contains annotations, try to extract the text of the annotations.
+        set_extract_annotation_text(extract_annotation_text: bool) => "setExtractAnnotationText",
     }
 }
 
-impl TesseractOcrConfig {
-    /// Creates a new instance of TesseractOcrConfig with default settings.
-    pub fn new() -> Self {
-        Self::default()
+tika_config! {
+    /// Microsoft Office parser configuration settings
+    OfficeParserConfig => "org/apache/tika/parser/microsoft/OfficeParserConfig" {
+        /// Sets whether MSOffice parsers should extract macros.
+        set_extract_macros(extract_macros: bool) => "setExtractMacros",
+
+        /// Sets whether the docx parser should include deleted content.
+        set_include_deleted_content(include_deleted_content: bool) => "setIncludeDeletedContent",
+
+        /// With track changes on for the docx parser, when a section is moved, the content is stored in
+        /// both the "moveFrom" section and in the "moveTo" section. If you'd like to include the
+        /// section both in its original location (moveFrom) and in its new location (moveTo),
+        /// set this to true.
+        set_include_move_from_content(include_move_from_content: bool) => "setIncludeMoveFromContent",
+
+        /// In Excel and Word, there can be text stored within drawing shapes.
+        /// (In PowerPoint everything is in a Shape) If you'd like to skip processing these to look
+        /// for text, set this to false.
+        set_include_shape_based_content(include_shape_based_content: bool) => "setIncludeShapeBasedContent",
+
+        /// Whether to include headers and footers. This only operates on headers and footers in
+        /// Word and Excel, not master slide content in PowerPoint.
+        set_include_headers_and_footers(include_headers_and_footers: bool) => "setIncludeHeadersAndFooters",
+
+        /// For table-like formats, and tables within other formats, should missing rows in sparse
+        /// tables be output where detected? Tika's default only outputs rows defined within the
+        /// file, which avoids lots of blank lines, but means layout isn't preserved.
+        set_include_missing_rows(include_missing_rows: bool) => "setIncludeMissingRows",
+
+        /// Whether to process slide notes content. If set to false, the parser will skip the text
+        /// content and all embedded objects from the slide notes in ppt and pptxm.
+        set_include_slide_notes(include_slide_notes: bool) => "setIncludeSlideNotes",
+
+        /// Whether to include contents from any of the three types of masters -- slide, notes,
+        /// handout -- in a .ppt or pptxm file. If set to false, the parser will not extract text
+        /// or embedded objects from any of the masters.
+        set_include_slide_master_content(include_slide_master_content: bool) => "setIncludeSlideMasterContent",
+
+        /// Microsoft Excel files can sometimes contain phonetic (furigana) strings.
+        /// This sets whether the parser will concatenate the phonetic runs to the original text.
+        /// This is currently only supported by the xls and xlsx parsers (not the xlsb parser).
+        set_concatenate_phonetic_runs(concatenate_phonetic_runs: bool) => "setConcatenatePhoneticRuns",
+
+        /// Some .msg files can contain body content in html, rtf and/or text. Tika's default picks
+        /// the first non-null value and includes only that. If you'd like to extract all
+        /// non-null body content, which is likely duplicative, set this value to true.
+        set_extract_all_alternatives_from_msg(extract_all_alternatives_from_msg: bool) => "setExtractAllAlternativesFromMSG",
+    }
+}
+
+tika_config! {
+    /// Tesseract OCR configuration settings
+    TesseractOcrConfig => "org/apache/tika/parser/ocr/TesseractOCRConfig" {
+        /// Sets the DPI (dots per inch) of the image to be processed.
+        set_density(density: i32) => "setDensity",
+
+        /// Sets the color depth of the image to be processed.
+        set_depth(depth: i32) => "setDepth",
+
+        /// Sets the maximum time in seconds that Tesseract should spend on OCR.
+        set_timeout_seconds(timeout_seconds: i32) => "setTimeoutSeconds",
+
+        /// Sets whether Tesseract should enable image preprocessing.
+        set_enable_image_preprocessing(enable_image_preprocessing: bool) => "setEnableImagePreprocessing",
+
+        /// Sets whether Tesseract should apply rotation to the image before OCR.
+        set_apply_rotation(apply_rotation: bool) => "setApplyRotation",
+
+        /// Sets the tesseract language dictionary to be used for OCR.
+        /// Languages are nominally an [ISO-639-2 codes](https://en.wikipedia.org/wiki/List_of_ISO_639-2_codes).
+        /// Multiple languages may be specified, separated by plus characters. e.g.
+        /// "chi_tra+chi_sim+script/Arabic"
+        set_language(language: String) => "setLanguage",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setters(settings: impl Iterator<Item = (&'static str, JavaValue)>) -> Vec<&'static str> {
+        settings.map(|(setter, _)| setter).collect()
     }
 
-    /// Sets whether Tesseract should apply rotation to the image before OCR.
-    /// Default: false.
-    pub fn set_apply_rotation(mut self, val: bool) -> Self {
-        self.apply_rotation = val;
-        self
+    #[test]
+    fn unset_settings_keep_tika_defaults() {
+        assert!(setters(PdfParserConfig::new().java_settings()).is_empty());
+        assert!(setters(OfficeParserConfig::new().java_settings()).is_empty());
+        assert!(setters(TesseractOcrConfig::new().java_settings()).is_empty());
     }
 
-    /// Sets the DPI (dots per inch) of the image to be processed.
-    /// Default: 300.
-    pub fn set_density(mut self, val: i32) -> Self {
-        self.density = val;
-        self
+    #[test]
+    fn set_settings_reach_their_java_setters() {
+        let settings: Vec<_> = PdfParserConfig::new()
+            .set_extract_unique_inline_images_only(false)
+            .set_ocr_strategy(PdfOcrStrategy::OCR_ONLY)
+            .java_settings()
+            .collect();
+
+        assert!(matches!(
+            settings.as_slice(),
+            [
+                ("setOcrStrategy", JavaValue::Str(strategy)),
+                ("setExtractUniqueInlineImagesOnly", JavaValue::Bool(false)),
+            ] if strategy == "OCR_ONLY"
+        ));
     }
 
-    /// Sets the color depth of the image to be processed.
-    /// Default: 8.
-    pub fn set_depth(mut self, val: i32) -> Self {
-        self.depth = val;
-        self
-    }
+    #[test]
+    fn language_accepts_str() {
+        let settings: Vec<_> = TesseractOcrConfig::new()
+            .set_language("deu")
+            .java_settings()
+            .collect();
 
-    /// Sets whether Tesseract should enable image preprocessing.
-    /// Default: false.
-    pub fn set_enable_image_preprocessing(mut self, val: bool) -> Self {
-        self.enable_image_preprocessing = val;
-        self
-    }
-
-    /// Sets the tesseract language dictionary to be used for OCR.
-    /// Languages are nominally an [ISO-639-2 codes](https://en.wikipedia.org/wiki/List_of_ISO_639-2_codes).
-    /// Multiple languages may be specified, separated by plus characters. e.g.
-    /// "chi_tra+chi_sim+script/Arabic"
-    /// Default: "eng".
-    pub fn set_language(mut self, val: &str) -> Self {
-        self.language = val.to_string();
-        self
-    }
-
-    /// Sets the maximum time in seconds that Tesseract should spend on OCR.
-    /// Default: 120.
-    pub fn set_timeout_seconds(mut self, val: i32) -> Self {
-        self.timeout_seconds = val;
-        self
+        assert!(matches!(
+            settings.as_slice(),
+            [("setLanguage", JavaValue::Str(language))] if language == "deu"
+        ));
     }
 }

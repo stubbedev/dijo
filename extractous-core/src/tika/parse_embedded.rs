@@ -2,9 +2,7 @@ use crate::embedded::{EmbeddedDocument, EmbeddedExtractResult};
 use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::{jni_call_static_method, jni_new_string_as_jvalue};
 use crate::tika::vm;
-use crate::tika::wrappers::{
-    JEmbeddedExtractResult, JOfficeParserConfig, JPDFParserConfig, JTesseractOcrConfig,
-};
+use crate::tika::wrappers::{java_parser_configs, JEmbeddedExtractResult};
 use crate::{OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use jni::objects::JValue;
 use jni::AttachGuard;
@@ -27,9 +25,8 @@ pub fn extract_embedded_from_file(
     let file_path_val = jni_new_string_as_jvalue(&mut env, file_path)?;
 
     // Create Java config objects
-    let j_pdf_conf = JPDFParserConfig::new(&mut env, pdf_conf)?;
-    let j_office_conf = JOfficeParserConfig::new(&mut env, office_conf)?;
-    let j_ocr_conf = JTesseractOcrConfig::new(&mut env, ocr_conf)?;
+    let [j_pdf_conf, j_office_conf, j_ocr_conf] =
+        java_parser_configs(&mut env, pdf_conf, office_conf, ocr_conf)?;
 
     // Call the Java method
     let result = jni_call_static_method(
@@ -43,9 +40,9 @@ pub fn extract_embedded_from_file(
         )Lai/yobix/EmbeddedExtractResult;",
         &[
             (&file_path_val).into(),
-            (&j_pdf_conf.internal).into(),
-            (&j_office_conf.internal).into(),
-            (&j_ocr_conf.internal).into(),
+            (&j_pdf_conf).into(),
+            (&j_office_conf).into(),
+            (&j_ocr_conf).into(),
         ],
     )?;
 
@@ -101,9 +98,8 @@ pub fn extract_embedded_from_bytes(
         unsafe { env.new_direct_byte_buffer(buffer_copy.as_mut_ptr(), buffer_copy.len())? };
 
     // Create Java config objects
-    let j_pdf_conf = JPDFParserConfig::new(&mut env, pdf_conf)?;
-    let j_office_conf = JOfficeParserConfig::new(&mut env, office_conf)?;
-    let j_ocr_conf = JTesseractOcrConfig::new(&mut env, ocr_conf)?;
+    let [j_pdf_conf, j_office_conf, j_ocr_conf] =
+        java_parser_configs(&mut env, pdf_conf, office_conf, ocr_conf)?;
 
     // Call the Java method
     let result = jni_call_static_method(
@@ -117,9 +113,9 @@ pub fn extract_embedded_from_bytes(
         )Lai/yobix/EmbeddedExtractResult;",
         &[
             JValue::Object(&byte_buffer),
-            (&j_pdf_conf.internal).into(),
-            (&j_office_conf.internal).into(),
-            (&j_ocr_conf.internal).into(),
+            (&j_pdf_conf).into(),
+            (&j_office_conf).into(),
+            (&j_ocr_conf).into(),
         ],
     )?;
 

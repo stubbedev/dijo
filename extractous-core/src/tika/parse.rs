@@ -37,9 +37,8 @@ fn parse_to_stream(
     signature: &str,
 ) -> ExtractResult<(StreamReader, Metadata)> {
     let charset_name_val = jni_new_string_as_jvalue(&mut env, &char_set.to_string())?;
-    let j_pdf_conf = JPDFParserConfig::new(&mut env, pdf_conf)?;
-    let j_office_conf = JOfficeParserConfig::new(&mut env, office_conf)?;
-    let j_ocr_conf = JTesseractOcrConfig::new(&mut env, ocr_conf)?;
+    let [j_pdf_conf, j_office_conf, j_ocr_conf] =
+        java_parser_configs(&mut env, pdf_conf, office_conf, ocr_conf)?;
 
     // Make the java parse call
     let call_result = jni_call_static_method(
@@ -50,9 +49,9 @@ fn parse_to_stream(
         &[
             data_source_val,
             (&charset_name_val).into(),
-            (&j_pdf_conf.internal).into(),
-            (&j_office_conf.internal).into(),
-            (&j_ocr_conf.internal).into(),
+            (&j_pdf_conf).into(),
+            (&j_office_conf).into(),
+            (&j_ocr_conf).into(),
             JValue::Bool(if as_xml { 1 } else { 0 }),
         ],
     );
@@ -172,9 +171,8 @@ pub fn parse_to_string(
     method_name: &str,
     signature: &str,
 ) -> ExtractResult<(String, Metadata)> {
-    let j_pdf_conf = JPDFParserConfig::new(&mut env, pdf_conf)?;
-    let j_office_conf = JOfficeParserConfig::new(&mut env, office_conf)?;
-    let j_ocr_conf = JTesseractOcrConfig::new(&mut env, ocr_conf)?;
+    let [j_pdf_conf, j_office_conf, j_ocr_conf] =
+        java_parser_configs(&mut env, pdf_conf, office_conf, ocr_conf)?;
 
     let call_result = jni_call_static_method(
         &mut env,
@@ -184,9 +182,9 @@ pub fn parse_to_string(
         &[
             data_source_val,
             JValue::Int(max_length),
-            (&j_pdf_conf.internal).into(),
-            (&j_office_conf.internal).into(),
-            (&j_ocr_conf.internal).into(),
+            (&j_pdf_conf).into(),
+            (&j_office_conf).into(),
+            (&j_ocr_conf).into(),
             JValue::Bool(if as_xml { 1 } else { 0 }),
         ],
     );
