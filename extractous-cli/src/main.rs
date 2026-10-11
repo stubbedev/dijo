@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
@@ -165,7 +165,7 @@ enum Sink {
 /// The result of one input, emitted in input order by the main thread.
 struct Finished {
     display: String,
-    output: Result<Option<PathBuf>, String>,
+    output: Result<Option<PathBuf>, SinkFailure>,
     metadata: Option<Metadata>,
     status: Status,
     errors: Vec<String>,
@@ -196,6 +196,9 @@ fn extract(args: &ExtractArgs) -> bool {
             let sender = sender.clone();
             let (inputs, next, extractor, spool) = (&inputs, &next, &extractor, &spool);
             scope.spawn(move || loop {
+                if STDOUT_CLOSED.load(Ordering::Relaxed) {
+                    break;
+                }
                 let index = next.fetch_add(1, Ordering::Relaxed);
                 let Some(input) = inputs.get(index) else {
                     break;
@@ -278,28 +281,47 @@ fn run(
     }
 }
 
+/// Why an input's output could not be written.
+enum SinkFailure {
+    StdoutClosed,
+    Failed(String),
+}
+
+/// Set once standard output is closed by its reader, after which nothing more is extracted.
+static STDOUT_CLOSED: AtomicBool = AtomicBool::new(false);
+
+fn stdout_closed(error: &io::Error) -> bool {
+    let closed = error.kind() == io::ErrorKind::BrokenPipe;
+    if closed {
+        STDOUT_CLOSED.store(true, Ordering::Relaxed);
+    }
+    closed
+}
+
 fn write_sink(
     sink: &Sink,
     keep_failed: bool,
     render: impl FnOnce(&mut dyn Write) -> io::Result<render::Outcome>,
-) -> Result<render::Outcome, String> {
-    match sink {
+) -> Result<render::Outcome, SinkFailure> {
+    let (target, written) = match sink {
         Sink::Stdout => {
             let mut stdout = BufWriter::new(io::stdout().lock());
-            render(&mut stdout)
-                .and_then(|outcome| stdout.flush().map(|()| outcome))
-                .map_err(|e| sink_error("standard output", &e))
+            let written = render(&mut stdout).and_then(|outcome| stdout.flush().map(|()| outcome));
+            ("standard output".to_string(), written)
         }
-        Sink::Spooled(path) => {
-            write_file(path, render).map_err(|e| sink_error(&path.display().to_string(), &e))
+        Sink::Spooled(path) => (path.display().to_string(), write_file(path, render)),
+        Sink::OutputFile(path) => (
+            path.display().to_string(),
+            write_file_atomically(path, keep_failed, render),
+        ),
+    };
+    written.map_err(|error| {
+        if matches!(sink, Sink::Stdout) && stdout_closed(&error) {
+            SinkFailure::StdoutClosed
+        } else {
+            SinkFailure::Failed(format!("Failed to write {target}: {error}"))
         }
-        Sink::OutputFile(path) => write_file_atomically(path, keep_failed, render)
-            .map_err(|e| sink_error(&path.display().to_string(), &e)),
-    }
-}
-
-fn sink_error(target: &str, error: &io::Error) -> String {
-    format!("Failed to write {target}: {error}")
+    })
 }
 
 fn write_file(
@@ -345,7 +367,7 @@ fn emit_in_order(
     for (index, finished) in receiver {
         pending.insert(index, finished);
         while let Some(finished) = pending.remove(&next) {
-            succeeded &= emit(finished, format, strict);
+            succeeded &= !STDOUT_CLOSED.load(Ordering::Relaxed) && emit(finished, format, strict);
             next += 1;
         }
     }
@@ -365,11 +387,14 @@ fn emit(finished: Finished, format: Format, strict: bool) -> bool {
                 .and_then(|_| fs::remove_file(&spooled));
             if let Err(error) = copied {
                 succeeded = false;
-                stdout_failed(&error);
+                if !stdout_closed(&error) {
+                    report("standard output", &error.to_string());
+                }
             }
         }
         Ok(None) => {}
-        Err(error) => {
+        Err(SinkFailure::StdoutClosed) => succeeded = false,
+        Err(SinkFailure::Failed(error)) => {
             succeeded = false;
             report(&finished.display, &error);
         }

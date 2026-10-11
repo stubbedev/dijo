@@ -430,3 +430,26 @@ fn elements_carry_their_structure() {
             .starts_with("Call me Ishmael")));
     assert_eq!(records.last().unwrap()["kind"], "document");
 }
+
+#[test]
+fn a_closed_stdout_stops_quietly() {
+    use std::io::Read;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(["--jobs", "1"])
+        .args(std::iter::repeat_n(document("2022_Q3_AAPL.pdf"), 20))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first_bytes = [0; 16];
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_exact(&mut first_bytes)
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "");
+}
