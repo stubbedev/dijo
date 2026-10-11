@@ -36,8 +36,8 @@ fn main() {
         );
     }
 
-    let windows = required_env("CARGO_CFG_TARGET_OS") == "windows";
-    let graalvm_home = graalvm_home(windows);
+    let platform = Platform::from_target_os(&required_env("CARGO_CFG_TARGET_OS"));
+    let graalvm_home = graalvm_home(platform);
     let fingerprint = fingerprint(&source_dir, &graalvm_home);
     let libs_dir = out_dir.join("libs");
 
@@ -49,9 +49,15 @@ fn main() {
                 }
             }),
             None => {
-                let native_dir = gradle_build(&source_dir, &out_dir, &graalvm_home, windows);
+                let native_dir = gradle_build(&source_dir, &out_dir, &graalvm_home, platform);
                 install_libs(&out_dir, &libs_dir, |staging_dir| {
-                    compress_native_libraries(&native_dir, staging_dir, &graalvm_home, &fingerprint)
+                    compress_native_libraries(
+                        &native_dir,
+                        staging_dir,
+                        &graalvm_home,
+                        platform,
+                        &fingerprint,
+                    )
                 });
             }
         }
@@ -60,11 +66,36 @@ fn main() {
     write_native_module(&out_dir, &libs_dir, &fingerprint);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Windows,
+    MacOs,
+    OtherUnix,
+}
+
+impl Platform {
+    fn from_target_os(target_os: &str) -> Self {
+        match target_os {
+            "windows" => Platform::Windows,
+            "macos" => Platform::MacOs,
+            _ => Platform::OtherUnix,
+        }
+    }
+
+    fn dynamic_library_extension(self) -> &'static str {
+        match self {
+            Platform::Windows => "dll",
+            Platform::MacOs => "dylib",
+            Platform::OtherUnix => "so",
+        }
+    }
+}
+
 fn required_env(name: &str) -> String {
     env::var(name).unwrap_or_else(|e| panic!("Cargo did not provide {name}: {e}"))
 }
 
-fn graalvm_home(windows: bool) -> PathBuf {
+fn graalvm_home(platform: Platform) -> PathBuf {
     let home = env::var_os("GRAALVM_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -73,7 +104,7 @@ fn graalvm_home(windows: bool) -> PathBuf {
                  tika-native/build.gradle requires; the devenv shell provides it."
             )
         });
-    let native_image = home.join("bin").join(if windows {
+    let native_image = home.join("bin").join(if platform == Platform::Windows {
         "native-image.cmd"
     } else {
         "native-image"
@@ -141,14 +172,23 @@ fn find_built_libs(out_dir: &Path, fingerprint: &str) -> Option<PathBuf> {
         .find(|libs| read_fingerprint(libs).as_deref() == Some(fingerprint))
 }
 
-fn gradle_build(source_dir: &Path, out_dir: &Path, graalvm_home: &Path, windows: bool) -> PathBuf {
+fn gradle_build(
+    source_dir: &Path,
+    out_dir: &Path,
+    graalvm_home: &Path,
+    platform: Platform,
+) -> PathBuf {
     let work_dir = out_dir.join("tika-native");
     remove_dir_if_exists(&work_dir);
     for input in TIKA_NATIVE_INPUTS {
         copy_tree(&source_dir.join(input), &work_dir.join(input));
     }
 
-    let gradlew = work_dir.join(if windows { "gradlew.bat" } else { "gradlew" });
+    let gradlew = work_dir.join(if platform == Platform::Windows {
+        "gradlew.bat"
+    } else {
+        "gradlew"
+    });
     println!(
         "Building tika_native with the GraalVM JDK at {}",
         graalvm_home.display()
@@ -181,10 +221,11 @@ fn compress_native_libraries(
     native_dir: &Path,
     staging_dir: &Path,
     graalvm_home: &Path,
+    platform: Platform,
     fingerprint: &str,
 ) {
     for path in list_dir(native_dir) {
-        if path.extension() == Some(OsStr::new("h")) {
+        if path.extension() != Some(OsStr::new(platform.dynamic_library_extension())) {
             continue;
         }
         let mut content = read_file(&path);

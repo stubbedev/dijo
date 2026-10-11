@@ -1,0 +1,6 @@
+[test-groups]
+ocr = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/ocr|png/)'
+test-group = 'ocr'
