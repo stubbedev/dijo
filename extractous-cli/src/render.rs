@@ -34,6 +34,19 @@ struct Copied {
     error: Option<ExtractionError>,
 }
 
+/// An extraction whose text has not been read yet, or why it could not start.
+pub type Opened = Result<(StreamReader, Metadata), ExtractionError>;
+
+/// Starts extracting `path`; Tika has detected the type and found a parser once this returns.
+pub fn open(extractor: &Extractor, path: &Path) -> Opened {
+    let path = path.to_str().ok_or_else(|| {
+        ExtractionError::from_message(format!("{} is not valid UTF-8", path.display()))
+    })?;
+    extractor
+        .extract_file(path)
+        .map_err(|e| ExtractionError::from_error(&e))
+}
+
 /// Writes the extraction of `path` to `sink`. Extraction failures are reported in the returned
 /// outcome; an `Err` means the sink itself could not be written.
 pub fn render(
@@ -43,16 +56,17 @@ pub fn render(
     options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
-    let opened = path
-        .to_str()
-        .ok_or_else(|| {
-            ExtractionError::from_message(format!("{} is not valid UTF-8", path.display()))
-        })
-        .and_then(|path| {
-            extractor
-                .extract_file(path)
-                .map_err(|e| ExtractionError::from_error(&e))
-        });
+    render_opened(open(extractor, path), path, display, options, sink)
+}
+
+/// Writes an extraction that was already opened.
+pub fn render_opened(
+    opened: Opened,
+    path: &Path,
+    display: &str,
+    options: RenderOptions,
+    sink: &mut dyn Write,
+) -> io::Result<Outcome> {
     match options.format {
         Format::Text | Format::Xhtml => render_text(opened, options, sink),
         Format::Json => render_json(opened, path, display, options, sink),
@@ -107,7 +121,7 @@ fn final_metadata(stream: &StreamReader, copied: &mut Copied) -> Option<Metadata
 }
 
 fn render_text(
-    opened: Result<(StreamReader, Metadata), ExtractionError>,
+    opened: Opened,
     options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
@@ -159,7 +173,7 @@ fn write_document_end(
 }
 
 fn render_json(
-    opened: Result<(StreamReader, Metadata), ExtractionError>,
+    opened: Opened,
     path: &Path,
     display: &str,
     options: RenderOptions,
@@ -200,7 +214,7 @@ struct PartSource<'a> {
 }
 
 fn render_parts(
-    opened: Result<(StreamReader, Metadata), ExtractionError>,
+    opened: Opened,
     path: &Path,
     display: &str,
     options: RenderOptions,

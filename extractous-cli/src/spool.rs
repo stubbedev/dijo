@@ -1,6 +1,6 @@
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +18,10 @@ impl Spool {
         let dir = std::env::temp_dir().join(format!("extractous-{}-{nanos}", process::id()));
         fs::create_dir(&dir)?;
         Ok(Self { dir })
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn path(&self, name: &str) -> PathBuf {

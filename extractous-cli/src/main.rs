@@ -2,6 +2,8 @@ mod cli;
 mod inputs;
 mod render;
 mod schema;
+mod server;
+mod settings;
 mod spool;
 mod structure;
 
@@ -15,11 +17,9 @@ use std::sync::mpsc;
 use std::thread;
 
 use clap::Parser;
-use extractous_core::{
-    Extractor, Metadata, Password, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig,
-};
+use extractous_core::{Extractor, Metadata, Password};
 
-use cli::{Cli, Command, ExtractArgs, Format, InputArgs, Ocr};
+use cli::{Cli, Command, ExtractArgs, Format, InputArgs};
 use inputs::{Input, InputError, Source};
 use render::RenderOptions;
 use schema::Status;
@@ -29,6 +29,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let succeeded = match cli.command {
         Some(Command::Detect(args)) => detect(&args),
+        Some(Command::Serve(args)) => server::serve(&args),
         None => extract(&cli.extract),
     };
     if succeeded {
@@ -138,26 +139,6 @@ fn stdout_failed(error: &io::Error) -> bool {
     false
 }
 
-fn configure(args: &ExtractArgs, passwords: Vec<Password>) -> Extractor {
-    let (strategy, skip_ocr) = match args.ocr {
-        Ocr::Auto => (PdfOcrStrategy::AUTO, false),
-        Ocr::Never => (PdfOcrStrategy::NO_OCR, true),
-        Ocr::Always => (PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION, false),
-    };
-    let mut ocr = TesseractOcrConfig::new().set_skip_ocr(skip_ocr);
-    if let Some(languages) = &args.ocr_lang {
-        ocr = ocr.set_language(languages.as_str());
-    }
-    Extractor::new()
-        .set_passwords(passwords)
-        .set_xml_output(matches!(
-            args.format,
-            Format::Xhtml | Format::Pages | Format::Elements
-        ))
-        .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(strategy))
-        .set_ocr_config(ocr)
-}
-
 /// The `--password` values in order, then the lines of `--password-file`.
 fn read_passwords(args: &ExtractArgs) -> Result<Vec<Password>, String> {
     let mut passwords: Vec<Password> = args.passwords.iter().map(Password::new).collect();
@@ -212,7 +193,7 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let extractor = configure(args, passwords);
+    let extractor = settings::extractor(args.format, args.ocr, args.ocr_lang.as_deref(), passwords);
     let workers = args.jobs.get().min(inputs.len().max(1));
     let next = AtomicUsize::new(0);
     let (sender, receiver) = mpsc::channel::<(usize, Finished)>();

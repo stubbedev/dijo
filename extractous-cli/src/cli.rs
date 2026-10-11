@@ -29,6 +29,41 @@ pub enum Command {
     /// Print the media type Apache Tika detects for each input: the type alone for a single
     /// input, `PATH: TYPE` lines for several.
     Detect(InputArgs),
+    /// Run an HTTP server: POST a document to /extract or /detect.
+    Serve(ServeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// Address and port to listen on; port 0 picks a free one.
+    #[arg(long, default_value = "127.0.0.1:9998", env = "EXTRACTOUS_LISTEN")]
+    pub listen: std::net::SocketAddr,
+
+    /// Extraction workers, each with its own GraalVM isolate.
+    #[arg(long, env = "EXTRACTOUS_WORKERS", default_value_t = default_jobs())]
+    pub workers: NonZeroUsize,
+
+    /// Requests that may wait for a worker before new ones get 503.
+    #[arg(long, env = "EXTRACTOUS_QUEUE", default_value_t = 16)]
+    pub queue: usize,
+
+    /// Largest accepted request body in bytes; larger uploads get 413. Unlimited by default.
+    #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_INPUT_BYTES")]
+    pub max_input_bytes: Option<u64>,
+
+    /// Seconds a request may take from upload to the end of its response; slower ones get 504
+    /// or are cut off.
+    #[arg(long, value_name = "SECONDS", env = "EXTRACTOUS_TIMEOUT")]
+    pub timeout: Option<u64>,
+
+    /// Seconds in-flight requests get to finish after a shutdown signal.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        env = "EXTRACTOUS_SHUTDOWN_GRACE",
+        default_value_t = 30
+    )]
+    pub shutdown_grace: u64,
 }
 
 #[derive(Debug, Args)]

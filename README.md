@@ -56,6 +56,29 @@ everything that extracted is written and the failures are reported. The exit sta
 every input, 1 when nothing could be extracted from at least one (with `--strict`, when any part of one failed) and 2
 on a usage error.
 
+## Server
+
+```sh
+extractous serve --listen 0.0.0.0:9998 --workers 8
+curl --data-binary @report.pdf -H 'X-Extractous-Filename: report.pdf' localhost:9998/extract
+curl --data-binary @report.pdf 'localhost:9998/extract?format=json&metadata=true'
+curl --data-binary @mystery.bin localhost:9998/detect
+```
+
+| Endpoint | |
+| --- | --- |
+| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Extractous-Password` headers, an optional file name hint in `X-Extractous-Filename`. |
+| `POST /detect` | The detected media type, as text. |
+| `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
+| `GET /metrics` | Prometheus metrics: requests by endpoint and status, failures by category, extraction time per media type, bytes in and out, workers and requests in flight. |
+
+Each worker runs its own GraalVM isolate. Uploads are spooled to disk and the response streams as it is extracted.
+When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
+extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
+come back as 200 with their status in the JSON. `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
+request (408 while uploading, 504 before extraction starts, a cut connection after). SIGTERM stops accepting and waits
+`--shutdown-grace` seconds for running requests.
+
 ## JSON output
 
 `--format json` writes one `"kind":"document"` object per input per line, following the versioned schema in

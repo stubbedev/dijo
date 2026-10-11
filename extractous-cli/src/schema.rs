@@ -62,6 +62,20 @@ pub enum ErrorCategory {
     Internal,
 }
 
+impl ErrorCategory {
+    pub fn name(self) -> &'static str {
+        match self {
+            ErrorCategory::Unreadable => "unreadable",
+            ErrorCategory::Corrupt => "corrupt",
+            ErrorCategory::Encrypted => "encrypted",
+            ErrorCategory::Unsupported => "unsupported",
+            ErrorCategory::LimitExceeded => "limit-exceeded",
+            ErrorCategory::Timeout => "timeout",
+            ErrorCategory::Internal => "internal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractionError {
     pub category: ErrorCategory,
@@ -373,6 +387,25 @@ mod tests {
             )])),
             Some("text/html".to_string())
         );
+    }
+
+    #[test]
+    fn category_names_match_their_serialized_form() {
+        for category in [
+            ErrorCategory::Unreadable,
+            ErrorCategory::Corrupt,
+            ErrorCategory::Encrypted,
+            ErrorCategory::Unsupported,
+            ErrorCategory::LimitExceeded,
+            ErrorCategory::Timeout,
+            ErrorCategory::Internal,
+        ] {
+            assert_eq!(
+                serde_json::to_value(category).unwrap(),
+                category.name(),
+                "{category:?}"
+            );
+        }
     }
 
     #[test]
