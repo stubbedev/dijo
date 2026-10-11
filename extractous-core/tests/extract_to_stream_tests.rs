@@ -99,3 +99,20 @@ fn test_extract_bytes_to_stream_does_not_read_the_caller_buffer_after_returning(
 
     assert_eq!(extracted.trim(), text.trim());
 }
+
+#[test]
+fn test_extract_file_to_stream_ocr_only_deu_ocr_pdf() {
+    let extractor = Extractor::new()
+        .set_ocr_config(TesseractOcrConfig::new().set_language("deu"))
+        .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY));
+
+    let (mut stream, _) = extractor
+        .extract_file("../test_files/documents/deu-ocr.pdf")
+        .unwrap();
+    let mut extracted = String::new();
+    stream.read_to_string(&mut extracted).unwrap();
+
+    let expected = fs::read_to_string("../test_files/expected_result/deu-ocr.pdf.txt").unwrap();
+    let dist = cosine(&expected, &extracted);
+    assert!(dist > 0.9, "Cosine similarity for deu-ocr.pdf is {dist}");
+}
