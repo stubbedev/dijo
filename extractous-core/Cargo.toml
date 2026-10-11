@@ -8,7 +8,6 @@ description = "Text and metadata extraction for PDF, Office, email and many othe
 license = "Apache-2.0"
 repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
-readme = "../README.md"
 keywords = ["unstructured", "tika", "text", "pdf", "parser"]
 categories = ["parsing", "text-processing"]
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["extractous-core"]
+members = ["extractous-core", "extractous-cli"]
 
 [profile.release]
 opt-level = 3

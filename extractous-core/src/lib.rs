@@ -1,4 +1,6 @@
-#![doc = include_str!("../../README.md")]
+//! Text and metadata extraction through Apache Tika compiled to native code with GraalVM. This
+//! is the implementation behind the `extractous` command line; its API is internal and changes
+//! freely.
 // errors module
 mod errors;
 pub use errors::*;

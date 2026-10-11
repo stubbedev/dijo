@@ -1,86 +1,54 @@
 # Extractous
 
-Text and metadata extraction for documents, from Rust, without a JVM.
+Extract text and metadata from documents on the command line, without a JVM.
 
 This is a fork of [yobix-ai/extractous](https://github.com/yobix-ai/extractous). Every format is parsed by
 [Apache Tika](https://tika.apache.org/), compiled ahead of time with [GraalVM](https://www.graalvm.org/) native-image
-into a shared library (`libtika_native`) that the Rust crate calls through JNI. No Java runtime is installed or
-started; Tika runs as native code inside your process.
+into a shared library that the `extractous` binary calls through JNI. No Java runtime is installed or started; Tika
+runs as native code inside the process.
 
 ## Install
 
-The fork is not published to crates.io. Depend on it from git:
-
-```toml
-[dependencies]
-extractous-core = { git = "https://github.com/stubbedev/extractous" }
+```sh
+cargo install --locked --git https://github.com/stubbedev/extractous extractous
 ```
 
-Building the crate compiles Tika, so the build machine needs a GraalVM JDK with `native-image`, pointed to by
-`GRAALVM_HOME`, matching the version `extractous-core/tika-native/build.gradle` requires. The first build takes a few
-minutes; later builds reuse the compiled library until the Tika sources or the GraalVM release change.
+Building compiles Tika, so the build machine needs a GraalVM JDK with `native-image`, pointed to by `GRAALVM_HOME`,
+matching the version `extractous-core/tika-native/build.gradle` requires. The first build takes a few minutes; later
+builds reuse the compiled library until the Tika sources or the GraalVM release change.
 
 The compiled library and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...) are
-embedded in the crate, compressed (about 36 MB). On first use they are unpacked into
+embedded in the binary, compressed (about 36 MB). On first use they are unpacked into
 `$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
-Windows) and loaded from there, so a binary using the crate runs wherever it is copied, without setting a library path.
+Windows) and loaded from there, so the binary runs wherever it is copied.
 
 OCR runs the `tesseract` executable, which must be on `PATH` together with the language data you request.
 
 ## Usage
 
-The entry point is `Extractor`, configured with a consuming builder.
-
-Extract a file to a string:
-
-```rust,no_run
-use extractous_core::Extractor;
-
-let extractor = Extractor::new().set_extract_string_max_length(1000);
-let (text, metadata) = extractor.extract_file_to_string("document.pdf").unwrap();
-println!("{text}");
-println!("{metadata:?}");
+```sh
+extractous report.pdf                         # plain text to standard output
+extractous -f xhtml report.docx               # Tika's XHTML
+extractous -f json -m *.pdf                   # one JSON object per file, with metadata
+extractous -r -o out/ archive/                # one output file per input, mirroring archive/
+cat scan.tiff | extractous --ocr-lang deu -   # standard input, OCR in German
+extractous detect mystery.bin                 # application/pdf
 ```
 
-Stream the content of a file, URL or byte slice through `std::io::Read`:
+| Option | Meaning |
+| --- | --- |
+| `-f, --format text\|xhtml\|json` | Plain text (default), Tika XHTML, or one JSON object per input per line |
+| `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
+| `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
+| `-r, --recursive` | Descend into directories, in sorted order |
+| `-j, --jobs <N>` | Inputs extracted in parallel (default: number of cores); output stays in input order |
+| `--ocr auto\|never\|always` | OCR pages and images without text (default), never, or every PDF page as well |
+| `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara` |
 
-```rust,no_run
-use std::io::Read;
-use extractous_core::Extractor;
-
-let extractor = Extractor::new();
-let (mut stream, metadata) = extractor.extract_file("document.docx").unwrap();
-// or: extractor.extract_url("https://example.com/")
-// or: extractor.extract_bytes(&bytes)
-let mut text = String::new();
-stream.read_to_string(&mut text).unwrap();
-```
-
-Set `set_xml_output(true)` to receive Tika's XHTML instead of plain text.
-
-OCR a scanned PDF in German:
-
-```rust,no_run
-use extractous_core::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
-
-let extractor = Extractor::new()
-    .set_ocr_config(TesseractOcrConfig::new().set_language("deu"))
-    .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY));
-let (text, _) = extractor.extract_file_to_string("scan.pdf").unwrap();
-```
-
-`Unable to extract PDF content` from an OCR run usually means the requested tesseract language data is missing.
-
-Unpack embedded documents (images, attachments) from a container:
-
-```rust,no_run
-use extractous_core::Extractor;
-
-let result = Extractor::new().extract_embedded_from_file("workbook.xlsx").unwrap();
-for document in &result.documents {
-    println!("{} {} {} bytes", document.resource_name, document.content_type, document.size());
-}
-```
+Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRACTOUS_JOBS`, ...); `extractous --help`
+lists them. Errors go to standard error with the input path and the full Java cause chain, and one failed input does
+not stop the others. The exit status is 0 when every input succeeded, 1 when at least one failed and 2 on a usage
+error.
 
 ## Supported formats
 
@@ -103,7 +71,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | Recipe | What it does |
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
-| `just build` | Build the crate, compiling Tika on first run |
+| `just build` | Build the workspace, compiling Tika on first run |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just lint` | Clippy over every target, warnings fail |
 | `just fmt` | Format every Rust source |
