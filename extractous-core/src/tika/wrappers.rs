@@ -9,22 +9,22 @@ use crate::{Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use bytemuck::cast_slice_mut;
 use jni::objects::{GlobalRef, JByteArray, JObject, JValue};
 use jni::JNIEnv;
-use std::sync::Arc;
 
 use crate::isolate::Isolate;
 
+/// What `ParsingInputStream.readInto` returns when its deadline passes before more text.
+const TIMED_OUT: i32 = -2;
+
 /// Wrapper for the `ai.yobix.ParsingInputStream` that yields the extracted text. Each read hands
 /// Java the caller's buffer as a direct `ByteBuffer`, so the text is copied once, straight into it.
-/// The stream keeps its isolate alive; `isolate` is declared last so the Java reference is
-/// released before the isolate can be destroyed.
 pub struct JInputStream {
     internal: GlobalRef,
     finished: bool,
-    isolate: Arc<Isolate>,
+    isolate: &'static Isolate,
 }
 
 impl JInputStream {
-    pub(crate) fn new(isolate: Arc<Isolate>, internal: GlobalRef) -> Self {
+    pub(crate) fn new(isolate: &'static Isolate, internal: GlobalRef) -> Self {
         Self {
             internal,
             finished: false,
@@ -69,10 +69,11 @@ impl JInputStream {
             &[JValue::Object(&target)],
         )?
         .i()?;
-        if read < 0 {
-            return Ok(0);
+        match read {
+            TIMED_OUT => Err(Error::Timeout),
+            read if read < 0 => Ok(0),
+            read => Ok(read as usize),
         }
-        Ok(read as usize)
     }
 }
 

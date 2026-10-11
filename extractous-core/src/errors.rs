@@ -33,6 +33,9 @@ pub enum Error {
 
     #[error("The final metadata is only available once the stream has been read to the end")]
     StreamNotFinished,
+
+    #[error("The extraction exceeded its time limit")]
+    Timeout,
 }
 
 impl From<Error> for io::Error {

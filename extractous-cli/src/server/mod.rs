@@ -37,6 +37,7 @@ const PASSWORD_HEADER: &str = "x-extractous-password";
 const FILENAME_HEADER: &str = "x-extractous-filename";
 const RESPONSE_CHUNKS_IN_FLIGHT: usize = 8;
 const IO_THREADS: usize = 2;
+const RESPONSE_DEADLINE_GRACE: Duration = Duration::from_secs(5);
 
 type ResponseBody = BoxBody<Bytes, io::Error>;
 
@@ -303,6 +304,7 @@ fn parse_flag(name: &str, value: &str) -> Result<bool, String> {
 
 fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, String> {
     let mut extract = ExtractRequest {
+        deadline: None,
         format: Format::Text,
         metadata: false,
         raw_metadata: false,
@@ -354,13 +356,20 @@ async fn detect(request: Request<Incoming>, state: &Arc<State>) -> Response<Resp
     run(Task::Detect, request, state).await
 }
 
-async fn run(task: Task, request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
+async fn run(
+    mut task: Task,
+    request: Request<Incoming>,
+    state: &Arc<State>,
+) -> Response<ResponseBody> {
     let Some(admission) = Admission::try_new(state) else {
         return busy();
     };
     let deadline = state
         .timeout
         .map(|timeout| tokio::time::Instant::now() + timeout);
+    if let (Task::Extract(extract), Some(deadline)) = (&mut task, deadline) {
+        extract.deadline = Some(deadline.into_std());
+    }
     let name = request
         .headers()
         .get(FILENAME_HEADER)
@@ -405,10 +414,12 @@ async fn run(task: Task, request: Request<Incoming>, state: &Arc<State>) -> Resp
         return busy();
     }
     let head: Result<Head, _> = match deadline {
-        Some(deadline) => match tokio::time::timeout_at(deadline, head).await {
-            Ok(head) => head,
-            Err(_) => return error(504, "Extraction did not start in time"),
-        },
+        Some(deadline) => {
+            match tokio::time::timeout_at(deadline + RESPONSE_DEADLINE_GRACE, head).await {
+                Ok(head) => head,
+                Err(_) => return error(504, "Extraction did not start in time"),
+            }
+        }
         None => head.await,
     };
     let Ok(head) = head else {
@@ -420,7 +431,9 @@ async fn run(task: Task, request: Request<Incoming>, state: &Arc<State>) -> Resp
             let mut response = Response::new(
                 StreamedBody {
                     receiver: body,
-                    deadline: deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline))),
+                    deadline: deadline.map(|deadline| {
+                        Box::pin(tokio::time::sleep_until(deadline + RESPONSE_DEADLINE_GRACE))
+                    }),
                     _admission: admission,
                 }
                 .boxed(),
@@ -434,8 +447,9 @@ async fn run(task: Task, request: Request<Incoming>, state: &Arc<State>) -> Resp
     }
 }
 
-/// The text a worker produces, ended early with an error once the request's deadline passes,
-/// which closes the connection and makes the worker stop at its next write.
+/// The text a worker produces. The worker itself stops at the request's deadline and closes its
+/// output with a timeout error; if it has not finished a little after that, the body ends with an
+/// error, which closes the connection and makes the worker stop at its next write.
 struct StreamedBody {
     receiver: mpsc::Receiver<Bytes>,
     deadline: Option<Pin<Box<Sleep>>>,

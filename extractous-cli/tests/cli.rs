@@ -507,3 +507,23 @@ fn a_wrong_password_fails_with_status_one() {
     assert_eq!(output.status.code(), Some(1));
     assert!(!stderr(&output).contains("not-it"));
 }
+
+#[test]
+fn a_timeout_keeps_the_text_extracted_before_it() {
+    let started = std::time::Instant::now();
+    let objects = json_objects(&[
+        "--timeout",
+        "3",
+        "--ocr",
+        "always",
+        &document("2022_Q3_AAPL.pdf"),
+    ]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["status"], "partial");
+    assert!(objects[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("UNITED STATES"));
+    assert_eq!(objects[0]["errors"][0]["category"], "timeout");
+}

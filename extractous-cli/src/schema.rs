@@ -128,6 +128,7 @@ impl ExtractionError {
         let category = match error {
             extractous_core::Error::IoError(_) => ErrorCategory::Unreadable,
             extractous_core::Error::Encrypted(_) => ErrorCategory::Encrypted,
+            extractous_core::Error::Timeout => ErrorCategory::Timeout,
             _ => return Self::from_message(message),
         };
         Self {

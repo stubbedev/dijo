@@ -212,3 +212,22 @@ fn test_skip_ocr_extracts_no_text_from_an_image() {
         .unwrap();
     assert!(content.trim().is_empty(), "{content}");
 }
+
+#[test]
+fn test_a_timeout_ends_a_slow_stream() {
+    let started = std::time::Instant::now();
+    let (mut stream, _) = Extractor::new()
+        .set_ocr_config(TesseractOcrConfig::new().set_language("ara"))
+        .set_timeout(std::time::Duration::from_millis(300))
+        .extract_file("../test_files/documents/ara-ocr.png")
+        .unwrap();
+    let error = stream.read_to_end(&mut Vec::new()).unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let inner = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<extractous_core::Error>());
+    assert!(
+        matches!(inner, Some(extractous_core::Error::Timeout)),
+        "{error:?}"
+    );
+}

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::{ParserConfigs, Password};
 use crate::embedded::EmbeddedExtractResult;
@@ -79,6 +79,15 @@ fn call_tika<'local>(
     Ok(jni_call_static_method(env, TIKA_NATIVE_MAIN, method, &signature, &args)?.l()?)
 }
 
+/// The timeout in milliseconds as Java takes it: 0 for none, and at least 1 for any limit.
+fn timeout_millis(timeout: Option<Duration>) -> i64 {
+    timeout.map_or(0, |timeout| {
+        i64::try_from(timeout.as_millis())
+            .unwrap_or(i64::MAX)
+            .max(1)
+    })
+}
+
 fn in_local_frame<T>(
     isolate: &Isolate,
     f: impl FnOnce(&mut JNIEnv<'_>) -> ExtractResult<T>,
@@ -88,12 +97,13 @@ fn in_local_frame<T>(
 
 /// Parses a document into a stream of its text, decoded with `char_set`.
 pub(crate) fn parse_to_stream(
-    isolate: &Arc<Isolate>,
+    isolate: &'static Isolate,
     source: Source,
     char_set: &CharSet,
     configs: &ParserConfigs,
     password: Option<&Password>,
     as_xml: bool,
+    timeout: Option<Duration>,
 ) -> ExtractResult<(StreamReader, Metadata)> {
     let (stream, metadata) = in_local_frame(isolate, |env| {
         let char_set_obj: JObject = jni_new_string(env, &char_set.to_string())?.into();
@@ -103,13 +113,17 @@ pub(crate) fn parse_to_stream(
             &format!("parse{}", source.method_suffix()),
             configs,
             password,
-            "Ljava/lang/String;Z)Lai/yobix/ReaderResult;",
-            &[JValue::Object(&char_set_obj), JValue::Bool(as_xml.into())],
+            "Ljava/lang/String;ZJ)Lai/yobix/ReaderResult;",
+            &[
+                JValue::Object(&char_set_obj),
+                JValue::Bool(as_xml.into()),
+                JValue::Long(timeout_millis(timeout)),
+            ],
         )?;
         let (stream, metadata) = reader_result(env, result)?;
         Ok::<_, Error>((env.new_global_ref(stream)?, metadata))
     })?;
-    let inner = JInputStream::new(Arc::clone(isolate), stream);
+    let inner = JInputStream::new(isolate, stream);
     Ok((StreamReader { inner }, metadata))
 }
 

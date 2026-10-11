@@ -228,32 +228,37 @@ public class TikaNativeMain {
 
     public static ReaderResult parseFile(
             String filePath, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
+            long timeoutMillis) {
         return parse(file(filePath), pdfConfig, officeConfig, tesseractConfig, password,
-                charsetName, asXML);
+                charsetName, asXML, timeoutMillis);
     }
 
     public static ReaderResult parseBytes(
             ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
+            long timeoutMillis) {
         return parse(copiedBytes(data), pdfConfig, officeConfig, tesseractConfig, password,
-                charsetName, asXML);
+                charsetName, asXML, timeoutMillis);
     }
 
     public static ReaderResult parseUrl(
             String url, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
+            long timeoutMillis) {
         return parse(url(url), pdfConfig, officeConfig, tesseractConfig, password,
-                charsetName, asXML);
+                charsetName, asXML, timeoutMillis);
     }
 
     /**
      * Parses a document on a worker thread into a stream of its text encoded with charsetName.
-     * Byte input is copied first because the parse outlives this call.
+     * Byte input is copied first because the parse outlives this call. Reads wait at most
+     * timeoutMillis from now for text (0 for no limit).
      */
     private static ReaderResult parse(
             Source source, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
+            long timeoutMillis) {
         final Metadata metadata = new Metadata();
         final TikaInputStream stream;
         try {
@@ -265,7 +270,7 @@ public class TikaNativeMain {
             final InputStream text = new ParsingInputStream(
                     PARSER, stream, metadata,
                     parseContext(pdfConfig, officeConfig, tesseractConfig, password),
-                    asXML, Charset.forName(charsetName));
+                    asXML, Charset.forName(charsetName), timeoutMillis);
             return new ReaderResult(text, metadata);
         } catch (IOException e) {
             return new ReaderResult(parseFailureStatus(e), parseFailed(e));

@@ -1,13 +1,13 @@
 use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
 use crate::errors::ExtractResult;
-use crate::isolate::{default_isolate, Isolate};
+use crate::isolate::isolate;
 use crate::tika;
 use crate::tika::JInputStream;
 use crate::tika::Source;
 use crate::{EmbeddedExtractResult, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::time::Duration;
 use strum_macros::{Display, EnumString};
 
 /// Metadata type alias
@@ -97,7 +97,7 @@ pub struct Extractor {
     configs: ParserConfigs,
     xml_output: bool,
     passwords: Vec<Password>,
-    isolate: Option<Arc<Isolate>>,
+    timeout: Option<Duration>,
 }
 
 impl Default for Extractor {
@@ -108,7 +108,7 @@ impl Default for Extractor {
             configs: ParserConfigs::default(),
             xml_output: false,
             passwords: Vec::new(),
-            isolate: None,
+            timeout: None,
         }
     }
 }
@@ -151,9 +151,10 @@ impl Extractor {
         self
     }
 
-    /// Run this extractor's extractions in `isolate` instead of the process-wide default one.
-    pub fn set_isolate(mut self, isolate: Arc<Isolate>) -> Self {
-        self.isolate = Some(isolate);
+    /// Limits how long a streamed extraction may take, from the moment it starts: a read that
+    /// would wait past it fails with [`Error::Timeout`] and the text read so far stands.
+    pub fn set_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
@@ -231,18 +232,18 @@ impl Extractor {
     /// Detects the media type of a file, such as `application/pdf`, from its content, its
     /// container structure and its name.
     pub fn detect_file(&self, file_path: &str) -> ExtractResult<MediaType> {
-        tika::detect(self.isolate()?.as_ref(), Source::File(file_path)).map(MediaType)
+        tika::detect(isolate()?, Source::File(file_path)).map(MediaType)
     }
 
     /// Detects the media type of a document held in memory from its content and container
     /// structure.
     pub fn detect_bytes(&self, buffer: &[u8]) -> ExtractResult<MediaType> {
-        tika::detect(self.isolate()?.as_ref(), Source::Bytes(buffer)).map(MediaType)
+        tika::detect(isolate()?, Source::Bytes(buffer)).map(MediaType)
     }
 
     /// Detects the media type of the document at a URL.
     pub fn detect_url(&self, url: &str) -> ExtractResult<MediaType> {
-        tika::detect(self.isolate()?.as_ref(), Source::Url(url)).map(MediaType)
+        tika::detect(isolate()?, Source::Url(url)).map(MediaType)
     }
 
     /// Runs `attempt` without a password and, if Tika reports the document as encrypted, with
@@ -263,32 +264,26 @@ impl Extractor {
             .ok_or(encrypted)
     }
 
-    fn isolate(&self) -> ExtractResult<Arc<Isolate>> {
-        match &self.isolate {
-            Some(isolate) => Ok(Arc::clone(isolate)),
-            None => default_isolate(),
-        }
-    }
-
     fn extract_to_stream(&self, source: Source) -> ExtractResult<(StreamReader, Metadata)> {
-        let isolate = self.isolate()?;
+        let isolate = isolate()?;
         self.with_passwords(|password| {
             tika::parse_to_stream(
-                &isolate,
+                isolate,
                 source,
                 &self.encoding,
                 &self.configs,
                 password,
                 self.xml_output,
+                self.timeout,
             )
         })
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
-        let isolate = self.isolate()?;
+        let isolate = isolate()?;
         self.with_passwords(|password| {
             tika::parse_to_string(
-                &isolate,
+                isolate,
                 source,
                 self.extract_string_max_length,
                 &self.configs,
@@ -299,9 +294,9 @@ impl Extractor {
     }
 
     fn extract_embedded(&self, source: Source) -> ExtractResult<EmbeddedExtractResult> {
-        let isolate = self.isolate()?;
+        let isolate = isolate()?;
         self.with_passwords(|password| {
-            tika::extract_embedded(&isolate, source, &self.configs, password)
+            tika::extract_embedded(isolate, source, &self.configs, password)
         })
     }
 }

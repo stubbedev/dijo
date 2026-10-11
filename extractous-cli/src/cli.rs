@@ -39,7 +39,7 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:9998", env = "EXTRACTOUS_LISTEN")]
     pub listen: std::net::SocketAddr,
 
-    /// Extraction workers, each with its own GraalVM isolate.
+    /// Extraction worker threads.
     #[arg(long, env = "EXTRACTOUS_WORKERS", default_value_t = default_jobs())]
     pub workers: NonZeroUsize,
 
@@ -114,6 +114,11 @@ pub struct ExtractArgs {
     /// A file of passwords to try on encrypted documents, one per line, after any --password.
     #[arg(long, value_name = "FILE", env = "EXTRACTOUS_PASSWORD_FILE")]
     pub password_file: Option<PathBuf>,
+
+    /// Seconds each input may take; when they run out, the text extracted so far is kept and
+    /// the input is reported as partial (or failed, if there was none).
+    #[arg(long, value_name = "SECONDS", env = "EXTRACTOUS_TIMEOUT")]
+    pub timeout: Option<u64>,
 
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]

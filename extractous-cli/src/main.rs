@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use clap::Parser;
 use extractous_core::{Extractor, Metadata, Password};
@@ -193,7 +194,13 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let extractor = settings::extractor(args.format, args.ocr, args.ocr_lang.as_deref(), passwords);
+    let extractor = settings::extractor(
+        args.format,
+        args.ocr,
+        args.ocr_lang.as_deref(),
+        passwords,
+        args.timeout.map(Duration::from_secs),
+    );
     let workers = args.jobs.get().min(inputs.len().max(1));
     let next = AtomicUsize::new(0);
     let (sender, receiver) = mpsc::channel::<(usize, Finished)>();

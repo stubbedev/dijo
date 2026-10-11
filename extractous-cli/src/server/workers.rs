@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Instant;
 
 use bytes::Bytes;
-use extractous_core::{Isolate, Password};
+use extractous_core::{keep_current_thread_attached, Password};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
 use crate::cli::{Format, Ocr};
@@ -17,6 +17,7 @@ use crate::settings;
 const BODY_CHUNK_SIZE: usize = 64 * 1024;
 
 pub struct ExtractRequest {
+    pub deadline: Option<Instant>,
     pub format: Format,
     pub metadata: bool,
     pub raw_metadata: bool,
@@ -47,7 +48,8 @@ pub struct Job {
 
 pub struct QueueFull;
 
-/// A fixed set of extraction threads, each with its own isolate, fed through a bounded queue.
+/// A fixed set of extraction threads, attached to the isolate for good, fed through a bounded
+/// queue.
 pub struct Pool {
     sender: mpsc::SyncSender<Job>,
 }
@@ -64,21 +66,16 @@ impl Pool {
             thread::Builder::new()
                 .name(format!("extractous worker {index}"))
                 .spawn(move || {
-                    let isolate = match Isolate::new().and_then(|isolate| {
-                        isolate.keep_current_thread_attached().map(|()| isolate)
-                    }) {
-                        Ok(isolate) => isolate,
-                        Err(error) => {
-                            let _ = ready_sender.send(Err(error.to_string()));
-                            return;
-                        }
-                    };
+                    if let Err(error) = keep_current_thread_attached() {
+                        let _ = ready_sender.send(Err(error.to_string()));
+                        return;
+                    }
                     let _ = ready_sender.send(Ok(()));
                     drop(ready_sender);
                     metrics
                         .workers
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    work(&receiver, &isolate, &metrics);
+                    work(&receiver, &metrics);
                 })
                 .map_err(|e| format!("Failed to start worker {index}: {e}"))?;
         }
@@ -97,7 +94,7 @@ impl Pool {
     }
 }
 
-fn work(receiver: &Mutex<mpsc::Receiver<Job>>, isolate: &Arc<Isolate>, metrics: &Metrics) {
+fn work(receiver: &Mutex<mpsc::Receiver<Job>>, metrics: &Metrics) {
     loop {
         let job = receiver.lock().expect("job queue lock").recv();
         let Ok(Job {
@@ -110,8 +107,8 @@ fn work(receiver: &Mutex<mpsc::Receiver<Job>>, isolate: &Arc<Isolate>, metrics: 
             return;
         };
         match task {
-            Task::Extract(request) => extract(&request, &upload, head, body, isolate, metrics),
-            Task::Detect => detect(&upload, head, isolate),
+            Task::Extract(request) => extract(&request, &upload, head, body, metrics),
+            Task::Detect => detect(&upload, head),
         }
     }
 }
@@ -140,7 +137,6 @@ fn extract(
     upload: &Upload,
     head: oneshot::Sender<Head>,
     body: async_mpsc::Sender<Bytes>,
-    isolate: &Arc<Isolate>,
     metrics: &Metrics,
 ) {
     let started = Instant::now();
@@ -149,8 +145,10 @@ fn extract(
         request.ocr,
         request.ocr_lang.as_deref(),
         request.passwords.clone(),
-    )
-    .set_isolate(Arc::clone(isolate));
+        request
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now())),
+    );
     let path = upload.path();
     let display = upload.display();
     let opened = render::open(&extractor, path);
@@ -209,8 +207,8 @@ fn extract(
     }
 }
 
-fn detect(upload: &Upload, head: oneshot::Sender<Head>, isolate: &Arc<Isolate>) {
-    let extractor = extractous_core::Extractor::new().set_isolate(Arc::clone(isolate));
+fn detect(upload: &Upload, head: oneshot::Sender<Head>) {
+    let extractor = extractous_core::Extractor::new();
     let detected = upload
         .path()
         .to_str()

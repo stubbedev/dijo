@@ -41,6 +41,7 @@ extractous detect mystery.bin                 # application/pdf
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
+| `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
@@ -72,7 +73,8 @@ curl --data-binary @mystery.bin localhost:9998/detect
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics: requests by endpoint and status, failures by category, extraction time per media type, bytes in and out, workers and requests in flight. |
 
-Each worker runs its own GraalVM isolate. Uploads are spooled to disk and the response streams as it is extracted.
+Extraction runs on a fixed pool of worker threads (`--workers`). Uploads are spooled to disk and the response streams as
+it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
 come back as 200 with their status in the JSON. `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
