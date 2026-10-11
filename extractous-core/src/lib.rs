@@ -17,10 +17,13 @@ pub use embedded::*;
 mod extractor;
 pub use extractor::*;
 
+mod isolate;
+pub use isolate::Isolate;
+
 // tika module, not exposed outside this crate
 mod tika {
     mod jni_utils;
-    mod native;
+    pub(crate) mod native;
     mod parse;
     mod wrappers;
     pub(crate) use parse::*;

@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::OnceLock;
 
 use flate2::read::GzDecoder;
 use jni::{sys, JavaVM};
@@ -14,15 +15,20 @@ include!(concat!(env!("OUT_DIR"), "/native.rs"));
 type CreateJavaVm =
     unsafe extern "system" fn(*mut *mut sys::JavaVM, *mut *mut c_void, *mut c_void) -> sys::jint;
 
-/// The loaded Tika native library and the VM isolate created from it. The library stays
-/// loaded for as long as this value lives, which is the life of the process.
-pub(crate) struct Runtime {
-    pub(crate) vm: JavaVM,
+/// The Tika native library, loaded once and kept loaded for the life of the process.
+struct Loaded {
+    dir: PathBuf,
+    create_java_vm: CreateJavaVm,
     _library: Library,
 }
 
-/// Unpacks the embedded native libraries, loads Tika from them and creates the VM isolate.
-pub(crate) fn start() -> Result<Runtime, String> {
+fn loaded() -> Result<&'static Loaded, String> {
+    static LOADED: OnceLock<Result<Loaded, String>> = OnceLock::new();
+    LOADED.get_or_init(load).as_ref().map_err(Clone::clone)
+}
+
+/// Unpacks the embedded native libraries and loads Tika from them.
+fn load() -> Result<Loaded, String> {
     let dir = install_dir()?;
     #[cfg(windows)]
     search_dependencies_in(&dir)?;
@@ -31,9 +37,9 @@ pub(crate) fn start() -> Result<Runtime, String> {
         .map_err(|e| format!("Failed to load {}: {e}", library_path.display()))?;
     let create_java_vm = *unsafe { library.get::<CreateJavaVm>(b"JNI_CreateJavaVM\0") }
         .map_err(|e| format!("{} has no JNI_CreateJavaVM: {e}", library_path.display()))?;
-    let vm = create_vm_isolate(create_java_vm, &dir)?;
-    Ok(Runtime {
-        vm,
+    Ok(Loaded {
+        dir,
+        create_java_vm,
         _library: library,
     })
 }
@@ -122,9 +128,11 @@ fn unpack(staging: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates a new graalvm isolate using the invocation api. A [GraalVM isolate](https://medium.com/graalvm/isolates-and-compressed-references-more-flexible-and-efficient-memory-management-for-graalvm-a044cc50b67e) is a disjoint heap
-/// that allows multiple tasks in the same VM instance to run independently.
-fn create_vm_isolate(create_java_vm: CreateJavaVm, library_dir: &Path) -> Result<JavaVM, String> {
+/// Creates a new GraalVM isolate: a disjoint heap, so work in one isolate cannot exhaust or
+/// corrupt another. Each call to JNI_CreateJavaVM in a native image creates one.
+pub(crate) fn create_isolate() -> Result<JavaVM, String> {
+    let loaded = loaded()?;
+    let library_dir = loaded.dir.as_path();
     let library_path = library_dir.to_str().ok_or_else(|| {
         format!(
             "The native library directory {} is not UTF-8",
@@ -133,16 +141,13 @@ fn create_vm_isolate(create_java_vm: CreateJavaVm, library_dir: &Path) -> Result
     })?;
     let library_path_option = CString::new(format!("-Djava.library.path={library_path}"))
         .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))?;
-    let mut vm_options = [
-        sys::JavaVMOption {
-            optionString: library_path_option.as_ptr().cast_mut(),
-            extraInfo: std::ptr::null_mut(),
-        },
-        sys::JavaVMOption {
-            optionString: c"-Djava.awt.headless=true".as_ptr().cast_mut(),
-            extraInfo: std::ptr::null_mut(),
-        },
-    ];
+    let mut vm_options =
+        [library_path_option.as_c_str(), c"-Djava.awt.headless=true"].map(|option| {
+            sys::JavaVMOption {
+                optionString: option.as_ptr().cast_mut(),
+                extraInfo: std::ptr::null_mut(),
+            }
+        });
     let mut args = sys::JavaVMInitArgs {
         version: sys::JNI_VERSION_1_8,
         nOptions: vm_options.len() as sys::jint,
@@ -153,7 +158,7 @@ fn create_vm_isolate(create_java_vm: CreateJavaVm, library_dir: &Path) -> Result
     let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
 
     let code = unsafe {
-        create_java_vm(
+        (loaded.create_java_vm)(
             &mut vm,
             &mut env as *mut *mut sys::JNIEnv as *mut *mut c_void,
             &mut args as *mut sys::JavaVMInitArgs as *mut c_void,

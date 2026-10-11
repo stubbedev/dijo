@@ -42,6 +42,3 @@ quick-xml = { version = "0.38.4", features = ["encoding"] }
 walkdir = "2.5.0"
 flate2 = "1.1.5"
 object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }
-
-[features]
-stream-attachguard = []

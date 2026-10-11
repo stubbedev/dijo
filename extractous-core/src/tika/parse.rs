@@ -1,14 +1,14 @@
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 use crate::config::{ParserConfigs, Password};
 use crate::embedded::EmbeddedExtractResult;
 use crate::errors::{Error, ExtractResult};
+use crate::isolate::Isolate;
 use crate::tika::jni_utils::*;
-use crate::tika::native;
 use crate::tika::wrappers::*;
 use crate::{CharSet, Metadata, StreamReader};
 use jni::objects::{JObject, JValue};
-use jni::{AttachGuard, JNIEnv, JavaVM};
+use jni::JNIEnv;
 
 const TIKA_NATIVE_MAIN: &str = "ai/yobix/TikaNativeMain";
 const LOCAL_FRAME_CAPACITY: i32 = 32;
@@ -16,19 +16,6 @@ const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
                                  Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
                                  Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
                                  Ljava/lang/String;";
-
-/// Returns the VM isolate shared by every extraction in the process, starting it on first use.
-pub(crate) fn vm() -> ExtractResult<&'static JavaVM> {
-    static RUNTIME: OnceLock<Result<native::Runtime, String>> = OnceLock::new();
-    match RUNTIME.get_or_init(native::start) {
-        Ok(runtime) => Ok(&runtime.vm),
-        Err(message) => Err(Error::NativeLibrary(message.clone())),
-    }
-}
-
-fn attach_current_thread() -> ExtractResult<AttachGuard<'static>> {
-    Ok(vm()?.attach_current_thread()?)
-}
 
 /// Where a document is read from.
 #[derive(Debug, Clone, Copy)]
@@ -92,20 +79,23 @@ fn call_tika<'local>(
     Ok(jni_call_static_method(env, TIKA_NATIVE_MAIN, method, &signature, &args)?.l()?)
 }
 
-fn in_local_frame<T>(f: impl FnOnce(&mut JNIEnv<'_>) -> ExtractResult<T>) -> ExtractResult<T> {
-    attach_current_thread()?.with_local_frame(LOCAL_FRAME_CAPACITY, f)
+fn in_local_frame<T>(
+    isolate: &Isolate,
+    f: impl FnOnce(&mut JNIEnv<'_>) -> ExtractResult<T>,
+) -> ExtractResult<T> {
+    isolate.attach()?.with_local_frame(LOCAL_FRAME_CAPACITY, f)
 }
 
 /// Parses a document into a stream of its text, decoded with `char_set`.
 pub(crate) fn parse_to_stream(
+    isolate: &Arc<Isolate>,
     source: Source,
     char_set: &CharSet,
     configs: &ParserConfigs,
     password: Option<&Password>,
     as_xml: bool,
 ) -> ExtractResult<(StreamReader, Metadata)> {
-    let mut env = attach_current_thread()?;
-    let (stream, metadata) = env.with_local_frame(LOCAL_FRAME_CAPACITY, |env| {
+    let (stream, metadata) = in_local_frame(isolate, |env| {
         let char_set_obj: JObject = jni_new_string(env, &char_set.to_string())?.into();
         let result = call_tika(
             env,
@@ -119,19 +109,20 @@ pub(crate) fn parse_to_stream(
         let (stream, metadata) = reader_result(env, result)?;
         Ok::<_, Error>((env.new_global_ref(stream)?, metadata))
     })?;
-    let inner = JInputStream::new(env, stream);
+    let inner = JInputStream::new(Arc::clone(isolate), stream);
     Ok((StreamReader { inner }, metadata))
 }
 
 /// Parses a document into a string of at most `max_length` characters.
 pub(crate) fn parse_to_string(
+    isolate: &Isolate,
     source: Source,
     max_length: i32,
     configs: &ParserConfigs,
     password: Option<&Password>,
     as_xml: bool,
 ) -> ExtractResult<(String, Metadata)> {
-    in_local_frame(|env| {
+    in_local_frame(isolate, |env| {
         let result = call_tika(
             env,
             source,
@@ -147,11 +138,12 @@ pub(crate) fn parse_to_string(
 
 /// Extracts the documents embedded in a document, such as images and attachments.
 pub(crate) fn extract_embedded(
+    isolate: &Isolate,
     source: Source,
     configs: &ParserConfigs,
     password: Option<&Password>,
 ) -> ExtractResult<EmbeddedExtractResult> {
-    in_local_frame(|env| {
+    in_local_frame(isolate, |env| {
         let result = call_tika(
             env,
             source,
@@ -166,8 +158,8 @@ pub(crate) fn extract_embedded(
 }
 
 /// Detects the media type of a document with Tika's default detector.
-pub(crate) fn detect(source: Source) -> ExtractResult<String> {
-    in_local_frame(|env| {
+pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String> {
+    in_local_frame(isolate, |env| {
         let source_obj = source.into_java(env)?;
         let signature = format!("({})Lai/yobix/StringResult;", source.java_type());
         let result = jni_call_static_method(

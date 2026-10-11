@@ -5,30 +5,30 @@ use crate::tika::jni_utils::{
     jni_call_method, jni_jobject_to_string, jni_new_direct_buffer, jni_new_string_as_jvalue,
     jni_tika_metadata_to_rust_metadata,
 };
-use crate::tika::vm;
 use crate::{Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use bytemuck::cast_slice_mut;
 use jni::objects::{GlobalRef, JByteArray, JObject, JValue};
-use jni::{AttachGuard, JNIEnv};
+use jni::JNIEnv;
+use std::sync::Arc;
+
+use crate::isolate::Isolate;
 
 /// Wrapper for the `ai.yobix.ParsingInputStream` that yields the extracted text. Each read hands
 /// Java the caller's buffer as a direct `ByteBuffer`, so the text is copied once, straight into it.
+/// The stream keeps its isolate alive; `isolate` is declared last so the Java reference is
+/// released before the isolate can be destroyed.
 pub struct JInputStream {
     internal: GlobalRef,
     finished: bool,
-    #[cfg(feature = "stream-attachguard")]
-    _guard: AttachGuard<'static>,
+    isolate: Arc<Isolate>,
 }
 
 impl JInputStream {
-    pub(crate) fn new(guard: AttachGuard<'static>, internal: GlobalRef) -> Self {
-        #[cfg(not(feature = "stream-attachguard"))]
-        drop(guard);
+    pub(crate) fn new(isolate: Arc<Isolate>, internal: GlobalRef) -> Self {
         Self {
             internal,
             finished: false,
-            #[cfg(feature = "stream-attachguard")]
-            _guard: guard,
+            isolate,
         }
     }
 
@@ -40,8 +40,9 @@ impl JInputStream {
     }
 
     fn read_into(&mut self, buf: &mut [u8]) -> ExtractResult<usize> {
-        let read = vm()?
-            .attach_current_thread()?
+        let read = self
+            .isolate
+            .attach()?
             .with_local_frame(4, |env| self.read_in_frame(env, buf))?;
         if read == 0 {
             self.finished = true;
@@ -53,8 +54,8 @@ impl JInputStream {
         if !self.finished {
             return Err(Error::StreamNotFinished);
         }
-        vm()?
-            .attach_current_thread()?
+        self.isolate
+            .attach()?
             .with_local_frame(8, |env| java_result_metadata(env, self.internal.as_obj()))
     }
 
@@ -77,7 +78,7 @@ impl JInputStream {
 
 impl Drop for JInputStream {
     fn drop(&mut self) {
-        if let Ok(mut env) = vm().and_then(|vm| Ok(vm.attach_current_thread()?)) {
+        if let Ok(mut env) = self.isolate.attach() {
             env.with_local_frame(2, |env| -> ExtractResult<()> {
                 jni_call_method(env, &self.internal, "close", "()V", &[])?;
                 Ok(())
