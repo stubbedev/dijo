@@ -229,36 +229,38 @@ public class TikaNativeMain {
     public static ReaderResult parseFile(
             String filePath, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
-            long timeoutMillis) {
+            long timeoutMillis, String embeddedSpoolDir, long embeddedByteBudget) {
         return parse(file(filePath), pdfConfig, officeConfig, tesseractConfig, password,
-                charsetName, asXML, timeoutMillis);
+                charsetName, asXML, timeoutMillis, embeddedSpoolDir, embeddedByteBudget);
     }
 
     public static ReaderResult parseBytes(
             ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
-            long timeoutMillis) {
+            long timeoutMillis, String embeddedSpoolDir, long embeddedByteBudget) {
         return parse(copiedBytes(data), pdfConfig, officeConfig, tesseractConfig, password,
-                charsetName, asXML, timeoutMillis);
+                charsetName, asXML, timeoutMillis, embeddedSpoolDir, embeddedByteBudget);
     }
 
     public static ReaderResult parseUrl(
             String url, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
-            long timeoutMillis) {
+            long timeoutMillis, String embeddedSpoolDir, long embeddedByteBudget) {
         return parse(url(url), pdfConfig, officeConfig, tesseractConfig, password,
-                charsetName, asXML, timeoutMillis);
+                charsetName, asXML, timeoutMillis, embeddedSpoolDir, embeddedByteBudget);
     }
 
     /**
      * Parses a document on a worker thread into a stream of its text encoded with charsetName.
      * Byte input is copied first because the parse outlives this call. Reads wait at most
-     * timeoutMillis from now for text (0 for no limit).
+     * timeoutMillis from now for text (0 for no limit). With an embeddedSpoolDir, documents
+     * embedded in this one are copied there, up to embeddedByteBudget bytes in all, instead of
+     * being parsed inline.
      */
     private static ReaderResult parse(
             Source source, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
             TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML,
-            long timeoutMillis) {
+            long timeoutMillis, String embeddedSpoolDir, long embeddedByteBudget) {
         final Metadata metadata = new Metadata();
         final TikaInputStream stream;
         try {
@@ -266,11 +268,18 @@ public class TikaNativeMain {
         } catch (IOException | URISyntaxException e) {
             return new ReaderResult(COULD_NOT_OPEN, couldNotOpen(e));
         }
+        final ParseContext parseContext =
+                parseContext(pdfConfig, officeConfig, tesseractConfig, password);
+        final EmbeddedSpooler spooler = embeddedSpoolDir == null
+                ? null
+                : new EmbeddedSpooler(Paths.get(embeddedSpoolDir), embeddedByteBudget);
+        if (spooler != null) {
+            parseContext.set(EmbeddedDocumentExtractor.class, spooler);
+        }
         try {
             final InputStream text = new ParsingInputStream(
-                    PARSER, stream, metadata,
-                    parseContext(pdfConfig, officeConfig, tesseractConfig, password),
-                    asXML, Charset.forName(charsetName), timeoutMillis);
+                    PARSER, stream, metadata, parseContext, asXML, Charset.forName(charsetName),
+                    timeoutMillis, spooler);
             return new ReaderResult(text, metadata);
         } catch (IOException e) {
             return new ReaderResult(parseFailureStatus(e), parseFailed(e));

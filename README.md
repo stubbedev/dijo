@@ -42,6 +42,8 @@ extractous detect mystery.bin                 # application/pdf
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
+| `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
+| `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate`: nesting depth, number of embedded documents, and bytes they may expand to |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
@@ -106,6 +108,16 @@ or marked `unknown_offset` when the document gave no offset; multi-valued fields
 available with `--raw-metadata`. `status` is `complete`, `partial` (some text before an error), `encrypted` (no password opened it) or `failed`, and
 every error carries a category and its full cause chain. Decrypted documents report `"encrypted":true,"decrypted":true`
 in `metadata`; passwords never appear in output or errors.
+
+### Embedded documents
+
+With `--embedded separate` (or `embedded=separate` on the server) every document inside an input (archive members,
+email attachments, objects embedded in Office files, images in documents) is extracted as a document of its own,
+depth first, right after its container. Each record names the input in `source.path` and the document's place inside
+it in `source.embedded_path` (`mail.eml/numbers.xlsx/image1.png`), with its size and BLAKE3 hash. A document whose
+content already appeared in the same input is reported once more only as `"duplicate_of"` its first occurrence. In
+text output each embedded document starts with a `=== path ===` line. Exceeding a limit skips that subtree with a
+`limit-exceeded` error instead of failing the input.
 
 ## Supported formats
 

@@ -7,17 +7,19 @@ use bytes::Bytes;
 use extractous_core::{keep_current_thread_attached, Password};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
-use crate::cli::{Format, Ocr};
+use crate::cli::{Embedded, Format, Ocr};
 use crate::render::{self, RenderOptions};
 use crate::schema::{self, ErrorCategory};
 use crate::server::metrics::Metrics;
 use crate::server::upload::Upload;
 use crate::settings;
+use crate::tree::{self, Limits};
 
 const BODY_CHUNK_SIZE: usize = 64 * 1024;
 
 pub struct ExtractRequest {
     pub deadline: Option<Instant>,
+    pub embedded: Embedded,
     pub format: Format,
     pub metadata: bool,
     pub raw_metadata: bool,
@@ -151,6 +153,10 @@ fn extract(
     );
     let path = upload.path();
     let display = upload.display();
+    if request.embedded == Embedded::Separate {
+        extract_tree(request, &extractor, upload, head, body, metrics);
+        return;
+    }
     let opened = render::open(&extractor, path);
     let mime_type = opened
         .as_ref()
@@ -165,8 +171,8 @@ fn extract(
             metadata: false,
             raw_metadata: false,
         };
-        if render::render_opened(Err(error.clone()), path, display, options, &mut document).is_ok()
-        {
+        let source = render::source(path, display, None);
+        if render::render_opened(Err(error.clone()), &source, options, &mut document).is_ok() {
             metrics.failure(error.category.name());
             let _ = head.send(Head {
                 status: status_for(error.category),
@@ -197,13 +203,77 @@ fn extract(
             metrics,
         },
     );
-    let rendered = render::render_opened(opened, path, display, options, &mut writer)
+    let source = render::source(path, display, None);
+    let rendered = render::render_opened(opened, &source, options, &mut writer)
         .and_then(|outcome| writer.flush().map(|()| outcome));
     if let Ok(outcome) = rendered {
         for error in &outcome.errors {
             metrics.failure(error.category.name());
         }
         metrics.extraction(&mime_type, started.elapsed());
+    }
+}
+
+/// Extracts a document and every document embedded in it as separate records. The status of each
+/// is in its own record, so the response is 200 from the start.
+fn extract_tree(
+    request: &ExtractRequest,
+    extractor: &extractous_core::Extractor,
+    upload: &Upload,
+    head: oneshot::Sender<Head>,
+    body: async_mpsc::Sender<Bytes>,
+    metrics: &Metrics,
+) {
+    let content_type = match request.format {
+        Format::Json => content_type(Format::Pages),
+        format => content_type(format),
+    };
+    let scratch = upload.scratch();
+    if let Err(error) = std::fs::create_dir(&scratch) {
+        let _ = head.send(Head {
+            status: 500,
+            content_type: "application/json",
+            body: Some(Bytes::from(error_body(&format!(
+                "Failed to create {}: {error}",
+                scratch.display()
+            )))),
+        });
+        return;
+    }
+    let started = head.send(Head {
+        status: 200,
+        content_type,
+        body: None,
+    });
+    if started.is_err() {
+        return;
+    }
+    let options = RenderOptions {
+        format: request.format,
+        metadata: request.metadata,
+        raw_metadata: request.raw_metadata,
+    };
+    let mut writer = BufWriter::with_capacity(
+        BODY_CHUNK_SIZE,
+        ChannelWriter {
+            sender: body,
+            metrics,
+        },
+    );
+    let rendered = tree::render_tree(
+        extractor,
+        upload.path(),
+        upload.display(),
+        options,
+        Limits::DEFAULT,
+        &scratch,
+        &mut writer,
+    )
+    .and_then(|outcome| writer.flush().map(|()| outcome));
+    if let Ok(outcome) = rendered {
+        for error in &outcome.errors {
+            metrics.failure(error.category.name());
+        }
     }
 }
 

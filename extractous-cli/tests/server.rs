@@ -315,3 +315,27 @@ fn a_slow_extraction_ends_with_a_timeout_in_the_document() {
     assert_eq!(document["status"], "partial");
     assert_eq!(document["errors"][0]["category"], "timeout");
 }
+
+#[test]
+fn separate_embedded_documents_stream_as_records() {
+    let server = Server::start(&[]);
+    let response = server.post_file("/extract?format=json&embedded=separate", &[], "nested.zip");
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.header("content-type"),
+        Some("application/x-ndjson")
+    );
+    let paths: Vec<String> = response
+        .text()
+        .lines()
+        .map(|line| {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            record["source"]["embedded_path"]
+                .as_str()
+                .unwrap_or("<root>")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(paths.len(), 8);
+    assert!(paths.contains(&"mail.eml/numbers.xlsx/image1.png".to_string()));
+}

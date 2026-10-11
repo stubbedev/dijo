@@ -186,6 +186,8 @@ impl ExtractionError {
 pub struct Source {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blake3: Option<String>,

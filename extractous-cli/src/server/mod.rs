@@ -27,7 +27,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Sleep;
 
-use crate::cli::{Format, Ocr, ServeArgs};
+use crate::cli::{Embedded, Format, Ocr, ServeArgs};
 use crate::spool::Spool;
 use metrics::Metrics;
 use upload::UploadError;
@@ -305,6 +305,7 @@ fn parse_flag(name: &str, value: &str) -> Result<bool, String> {
 fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, String> {
     let mut extract = ExtractRequest {
         deadline: None,
+        embedded: Embedded::Inline,
         format: Format::Text,
         metadata: false,
         raw_metadata: false,
@@ -335,6 +336,10 @@ fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, 
                     Ocr::from_str(&value, false).map_err(|_| format!("Unknown ocr {value:?}"))?
             }
             "ocr_lang" => extract.ocr_lang = Some(value),
+            "embedded" => {
+                extract.embedded = Embedded::from_str(&value, false)
+                    .map_err(|_| format!("Unknown embedded {value:?}"))?
+            }
             other => return Err(format!("Unknown query parameter {other:?}")),
         }
     }

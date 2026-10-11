@@ -43,6 +43,7 @@ public class ParsingInputStream extends InputStream {
     private final Semaphore space = new Semaphore(QUEUED_CHUNKS);
     private final ChunkOutputStream output = new ChunkOutputStream();
     private final Metadata metadata;
+    private final EmbeddedSpooler spooler;
     private final long deadline;
     private volatile boolean closed;
     private volatile Throwable failure;
@@ -54,9 +55,10 @@ public class ParsingInputStream extends InputStream {
      */
     public ParsingInputStream(Parser parser, InputStream stream, Metadata metadata,
                               ParseContext context, boolean outputXml, Charset charset,
-                              long timeoutMillis)
+                              long timeoutMillis, EmbeddedSpooler spooler)
             throws IOException {
         this.metadata = metadata;
+        this.spooler = spooler;
         this.deadline = timeoutMillis > 0
                 ? System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
                 : Long.MAX_VALUE;
@@ -141,6 +143,13 @@ public class ParsingInputStream extends InputStream {
 
     public Metadata getMetadata() {
         return metadata;
+    }
+
+    /** The embedded documents spooled while parsing; complete once the text has ended. */
+    public SpooledEmbedded[] getEmbedded() {
+        return spooler == null
+                ? new SpooledEmbedded[0]
+                : spooler.spooled().toArray(new SpooledEmbedded[0]);
     }
 
     @Override

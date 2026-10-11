@@ -4,8 +4,11 @@ use crate::errors::ExtractResult;
 use crate::isolate::isolate;
 use crate::tika;
 use crate::tika::JInputStream;
-use crate::tika::Source;
-use crate::{EmbeddedExtractResult, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
+use crate::tika::{Source, StreamOptions};
+use crate::{
+    EmbeddedExtractResult, EmbeddedSpool, OfficeParserConfig, PdfParserConfig, SpooledEmbedded,
+    TesseractOcrConfig,
+};
 use std::collections::HashMap;
 use std::time::Duration;
 use strum_macros::{Display, EnumString};
@@ -68,6 +71,13 @@ impl StreamReader {
     /// parser found while producing the text. Available once the stream has been read to the end.
     pub fn metadata(&self) -> ExtractResult<Metadata> {
         self.inner.metadata()
+    }
+
+    /// The embedded documents copied to the spool given to
+    /// [`Extractor::extract_file_spooling_embedded`], in the order they appear. Available once
+    /// the stream has been read to the end.
+    pub fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
+        self.inner.embedded()
     }
 }
 
@@ -174,19 +184,30 @@ impl Extractor {
     /// Extracts text from a file path. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_file(&self, file_path: &str) -> ExtractResult<(StreamReader, Metadata)> {
-        self.extract_to_stream(Source::File(file_path))
+        self.extract_to_stream(Source::File(file_path), None)
+    }
+
+    /// Like [`Extractor::extract_file`], but documents embedded in this one are copied to
+    /// `spool` instead of contributing their text, for the caller to extract in their own right.
+    /// The stream's [`StreamReader::embedded`] lists them once it has been read.
+    pub fn extract_file_spooling_embedded(
+        &self,
+        file_path: &str,
+        spool: &EmbeddedSpool,
+    ) -> ExtractResult<(StreamReader, Metadata)> {
+        self.extract_to_stream(Source::File(file_path), Some(spool))
     }
 
     /// Extracts text from a byte buffer. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_bytes(&self, buffer: &[u8]) -> ExtractResult<(StreamReader, Metadata)> {
-        self.extract_to_stream(Source::Bytes(buffer))
+        self.extract_to_stream(Source::Bytes(buffer), None)
     }
 
     /// Extracts text from an url. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_url(&self, url: &str) -> ExtractResult<(StreamReader, Metadata)> {
-        self.extract_to_stream(Source::Url(url))
+        self.extract_to_stream(Source::Url(url), None)
     }
 
     /// Extracts text from a file path. Returns a tuple with string that is of maximum length
@@ -264,18 +285,20 @@ impl Extractor {
             .ok_or(encrypted)
     }
 
-    fn extract_to_stream(&self, source: Source) -> ExtractResult<(StreamReader, Metadata)> {
+    fn extract_to_stream(
+        &self,
+        source: Source,
+        embedded: Option<&EmbeddedSpool>,
+    ) -> ExtractResult<(StreamReader, Metadata)> {
         let isolate = isolate()?;
+        let options = StreamOptions {
+            char_set: self.encoding,
+            as_xml: self.xml_output,
+            timeout: self.timeout,
+            embedded,
+        };
         self.with_passwords(|password| {
-            tika::parse_to_stream(
-                isolate,
-                source,
-                &self.encoding,
-                &self.configs,
-                password,
-                self.xml_output,
-                self.timeout,
-            )
+            tika::parse_to_stream(isolate, source, &self.configs, password, &options)
         })
     }
 

@@ -527,3 +527,120 @@ fn a_timeout_keeps_the_text_extracted_before_it() {
         .contains("UNITED STATES"));
     assert_eq!(objects[0]["errors"][0]["category"], "timeout");
 }
+
+fn embedded_paths(objects: &[serde_json::Value]) -> Vec<String> {
+    objects
+        .iter()
+        .map(|object| {
+            object["source"]["embedded_path"]
+                .as_str()
+                .unwrap_or("<root>")
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn separate_embedded_documents_carry_their_paths() {
+    let objects = json_objects(&["--embedded", "separate", &document("nested.zip")]);
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    assert_eq!(
+        embedded_paths(&objects),
+        [
+            "<root>",
+            "mail.eml",
+            "mail.eml/numbers.xlsx",
+            "mail.eml/numbers.xlsx/image1.png",
+            "copy-a.txt",
+            "copy-b.txt",
+            "inner.zip",
+            "inner.zip/notes.txt",
+        ]
+    );
+    assert_eq!(objects[1]["mime_type"], "message/rfc822");
+    assert!(objects[1]["text"]
+        .as_str()
+        .unwrap()
+        .contains("The spreadsheet is attached."));
+    assert!(!objects[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("The spreadsheet is attached."));
+    assert_eq!(objects[5]["duplicate_of"], "copy-a.txt");
+    assert_eq!(
+        objects[5]["source"]["blake3"],
+        objects[4]["source"]["blake3"]
+    );
+    assert!(objects[7]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Notes inside the inner archive."));
+}
+
+#[test]
+fn separate_text_output_labels_each_embedded_document() {
+    let output = extractous(&["--embedded", "separate", &document("nested.zip")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("=== mail.eml/numbers.xlsx ==="));
+    assert!(text.contains("=== copy-b.txt (same as copy-a.txt) ==="));
+}
+
+#[test]
+fn embedded_limits_skip_subtrees_as_limit_exceeded() {
+    let deep = json_objects(&[
+        "--embedded",
+        "separate",
+        "--max-depth",
+        "1",
+        &document("nested.zip"),
+    ]);
+    let skipped = deep
+        .iter()
+        .find(|object| object["source"]["embedded_path"] == "mail.eml/numbers.xlsx")
+        .unwrap();
+    assert_eq!(skipped["status"], "failed");
+    assert_eq!(skipped["errors"][0]["category"], "limit-exceeded");
+    assert_eq!(deep[0]["status"], "complete");
+    let strict = extractous(&[
+        "--embedded",
+        "separate",
+        "--max-depth",
+        "1",
+        "--strict",
+        &document("nested.zip"),
+    ]);
+    assert_eq!(strict.status.code(), Some(1));
+    assert!(stderr(&strict).contains("Nested deeper than 1 levels"));
+    assert!(!embedded_paths(&deep).contains(&"mail.eml/numbers.xlsx/image1.png".to_string()));
+
+    let few = json_objects(&[
+        "--embedded",
+        "separate",
+        "--max-embedded",
+        "2",
+        &document("nested.zip"),
+    ]);
+    assert_eq!(
+        few.iter()
+            .filter(|object| object["errors"][0]["category"] == "limit-exceeded")
+            .count(),
+        4
+    );
+
+    let small = json_objects(&[
+        "--embedded",
+        "separate",
+        "--max-expanded-bytes",
+        "100",
+        &document("nested.zip"),
+    ]);
+    assert!(small
+        .iter()
+        .any(|object| object["errors"][0]["category"] == "limit-exceeded"));
+    for object in deep.iter().chain(&few).chain(&small) {
+        assert_matches_schema(object);
+    }
+}

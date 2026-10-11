@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::tree::Limits;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "extractous",
@@ -120,6 +122,35 @@ pub struct ExtractArgs {
     #[arg(long, value_name = "SECONDS", env = "EXTRACTOUS_TIMEOUT")]
     pub timeout: Option<u64>,
 
+    /// How documents embedded in an input (attachments, archive members, embedded objects) are
+    /// handled: inline adds their text to the input's, separate extracts each as a document of
+    /// its own, recursively, with its path inside the input and its hash, referencing repeats.
+    #[arg(long, value_enum, default_value_t = Embedded::Inline, env = "EXTRACTOUS_EMBEDDED")]
+    pub embedded: Embedded,
+
+    /// With --embedded separate: how deep to descend into embedded documents.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 16,
+        env = "EXTRACTOUS_MAX_DEPTH"
+    )]
+    pub max_depth: usize,
+
+    /// With --embedded separate: how many embedded documents one input may contain.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 10_000,
+        env = "EXTRACTOUS_MAX_EMBEDDED"
+    )]
+    pub max_embedded: usize,
+
+    /// With --embedded separate: how many bytes the embedded documents of one input may expand
+    /// to in all, which stops decompression bombs.
+    #[arg(long, value_name = "BYTES", default_value_t = Limits::DEFAULT.max_expanded_bytes, env = "EXTRACTOUS_MAX_EXPANDED_BYTES")]
+    pub max_expanded_bytes: u64,
+
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]
     pub output: Option<PathBuf>,
@@ -163,6 +194,12 @@ impl Format {
             Format::Pages | Format::Elements => "ndjson",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Embedded {
+    Inline,
+    Separate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

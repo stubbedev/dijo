@@ -52,6 +52,10 @@
               "type": "string",
               "pattern": "^[0-9a-f]{64}$",
               "description": "BLAKE3 hash of the input."
+            },
+            "embedded_path": {
+              "type": "string",
+              "description": "With --embedded separate: the path of an embedded document inside the input, such as `inbox.mbox/msg-1.eml/report.docx`."
             }
           }
         },
@@ -162,6 +166,10 @@
               "type": "string"
             }
           }
+        },
+        "duplicate_of": {
+          "type": "string",
+          "description": "With --embedded separate: the embedded path of the first document in this input with the same content, which was extracted instead."
         }
       },
       "description": "One per input: the whole result in `--format json`, or the closing record after the pages or elements of `--format pages` and `--format elements`."
@@ -191,6 +199,9 @@
           "additionalProperties": false,
           "properties": {
             "path": {
+              "type": "string"
+            },
+            "embedded_path": {
               "type": "string"
             }
           }
@@ -231,6 +242,9 @@
           "additionalProperties": false,
           "properties": {
             "path": {
+              "type": "string"
+            },
+            "embedded_path": {
               "type": "string"
             }
           }

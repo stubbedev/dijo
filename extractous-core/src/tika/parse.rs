@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::config::{ParserConfigs, Password};
-use crate::embedded::EmbeddedExtractResult;
+use crate::embedded::{EmbeddedExtractResult, EmbeddedSpool};
 use crate::errors::{Error, ExtractResult};
 use crate::isolate::Isolate;
 use crate::tika::jni_utils::*;
@@ -96,28 +96,52 @@ fn in_local_frame<T>(
 }
 
 /// Parses a document into a stream of its text, decoded with `char_set`.
+/// How a streamed extraction is encoded, bounded and treats embedded documents.
+pub(crate) struct StreamOptions<'a> {
+    pub(crate) char_set: CharSet,
+    pub(crate) as_xml: bool,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) embedded: Option<&'a EmbeddedSpool>,
+}
+
+/// Parses a document into a stream of its text.
 pub(crate) fn parse_to_stream(
     isolate: &'static Isolate,
     source: Source,
-    char_set: &CharSet,
     configs: &ParserConfigs,
     password: Option<&Password>,
-    as_xml: bool,
-    timeout: Option<Duration>,
+    options: &StreamOptions,
 ) -> ExtractResult<(StreamReader, Metadata)> {
     let (stream, metadata) = in_local_frame(isolate, |env| {
-        let char_set_obj: JObject = jni_new_string(env, &char_set.to_string())?.into();
+        let char_set_obj: JObject = jni_new_string(env, &options.char_set.to_string())?.into();
+        let spool_dir_obj: JObject = match options.embedded {
+            Some(spool) => {
+                let dir = spool.dir.to_str().ok_or_else(|| {
+                    Error::IoError(format!(
+                        "The embedded document directory {} is not UTF-8",
+                        spool.dir.display()
+                    ))
+                })?;
+                jni_new_string(env, dir)?.into()
+            }
+            None => JObject::null(),
+        };
+        let byte_budget = options.embedded.map_or(0, |spool| {
+            i64::try_from(spool.byte_budget).unwrap_or(i64::MAX)
+        });
         let result = call_tika(
             env,
             source,
             &format!("parse{}", source.method_suffix()),
             configs,
             password,
-            "Ljava/lang/String;ZJ)Lai/yobix/ReaderResult;",
+            "Ljava/lang/String;ZJLjava/lang/String;J)Lai/yobix/ReaderResult;",
             &[
                 JValue::Object(&char_set_obj),
-                JValue::Bool(as_xml.into()),
-                JValue::Long(timeout_millis(timeout)),
+                JValue::Bool(options.as_xml.into()),
+                JValue::Long(timeout_millis(options.timeout)),
+                JValue::Object(&spool_dir_obj),
+                JValue::Long(byte_budget),
             ],
         )?;
         let (stream, metadata) = reader_result(env, result)?;

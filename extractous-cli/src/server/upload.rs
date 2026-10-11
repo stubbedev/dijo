@@ -23,6 +23,11 @@ impl Upload {
         &self.path
     }
 
+    /// A directory, inside this upload's own, for documents embedded in it.
+    pub fn scratch(&self) -> PathBuf {
+        self.dir.join("embedded")
+    }
+
     /// The name the document is reported under: the client's file name hint, or `upload`.
     pub fn display(&self) -> &str {
         &self.display

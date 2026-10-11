@@ -6,6 +6,7 @@ mod server;
 mod settings;
 mod spool;
 mod structure;
+mod tree;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,7 +21,7 @@ use std::time::Duration;
 use clap::Parser;
 use extractous_core::{Extractor, Metadata, Password};
 
-use cli::{Cli, Command, ExtractArgs, Format, InputArgs};
+use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs};
 use inputs::{Input, InputError, Source};
 use render::RenderOptions;
 use schema::Status;
@@ -257,18 +258,33 @@ fn run(
         None => Sink::Spooled(spool.path(&format!("{index}.out"))),
     };
     let keep_failed = matches!(args.format, Format::Json | Format::Pages | Format::Elements);
-    let rendered = write_sink(&sink, keep_failed, |writer| {
-        render::render(
-            extractor,
-            path,
-            &input.display,
-            RenderOptions {
-                format: args.format,
-                metadata: args.metadata,
-                raw_metadata: args.raw_metadata,
-            },
-            writer,
-        )
+    let options = RenderOptions {
+        format: args.format,
+        metadata: args.metadata,
+        raw_metadata: args.raw_metadata,
+    };
+    let rendered = write_sink(&sink, keep_failed, |writer| match args.embedded {
+        Embedded::Inline => render::render(extractor, path, &input.display, options, writer),
+        Embedded::Separate => {
+            let scratch = spool.path(&format!("{index}.embedded"));
+            fs::create_dir(&scratch)?;
+            let limits = tree::Limits {
+                max_depth: args.max_depth,
+                max_documents: args.max_embedded,
+                max_expanded_bytes: args.max_expanded_bytes,
+            };
+            let rendered = tree::render_tree(
+                extractor,
+                path,
+                &input.display,
+                options,
+                limits,
+                &scratch,
+                writer,
+            );
+            fs::remove_dir_all(&scratch)?;
+            rendered
+        }
     });
     match rendered {
         Ok(outcome) => Finished {

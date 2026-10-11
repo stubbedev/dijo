@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
 
-use extractous_core::{Extractor, Metadata, StreamReader};
+use extractous_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, StreamReader};
 
 use crate::cli::Format;
 use serde::Serialize;
@@ -20,12 +20,14 @@ pub struct RenderOptions {
     pub raw_metadata: bool,
 }
 
-/// What extracting one input produced besides the output written to the sink.
+/// What extracting one document produced besides the output written to the sink.
 #[derive(Debug)]
 pub struct Outcome {
     pub status: Status,
     pub errors: Vec<ExtractionError>,
     pub metadata: Option<Metadata>,
+    /// The documents embedded in this one, when they were spooled rather than inlined.
+    pub embedded: Vec<SpooledEmbedded>,
 }
 
 /// Text read from a stream until it ended or failed.
@@ -47,6 +49,17 @@ pub fn open(extractor: &Extractor, path: &Path) -> Opened {
         .map_err(|e| ExtractionError::from_error(&e))
 }
 
+/// Starts extracting `path` with the documents embedded in it copied to `spool` instead of
+/// contributing their text.
+pub fn open_spooling(extractor: &Extractor, path: &Path, spool: &EmbeddedSpool) -> Opened {
+    let path = path.to_str().ok_or_else(|| {
+        ExtractionError::from_message(format!("{} is not valid UTF-8", path.display()))
+    })?;
+    extractor
+        .extract_file_spooling_embedded(path, spool)
+        .map_err(|e| ExtractionError::from_error(&e))
+}
+
 /// Writes the extraction of `path` to `sink`. Extraction failures are reported in the returned
 /// outcome; an `Err` means the sink itself could not be written.
 pub fn render(
@@ -56,22 +69,22 @@ pub fn render(
     options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
-    render_opened(open(extractor, path), path, display, options, sink)
+    let source = source(path, display, None);
+    render_opened(open(extractor, path), &source, options, sink)
 }
 
-/// Writes an extraction that was already opened.
+/// Writes an extraction that was already opened, reporting it under `source`.
 pub fn render_opened(
     opened: Opened,
-    path: &Path,
-    display: &str,
+    source: &Source,
     options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
     match options.format {
         Format::Text | Format::Xhtml => render_text(opened, options, sink),
-        Format::Json => render_json(opened, path, display, options, sink),
-        Format::Pages => render_parts(opened, path, display, options, Unit::Pages, sink),
-        Format::Elements => render_parts(opened, path, display, options, Unit::Elements, sink),
+        Format::Json => render_json(opened, source, options, sink),
+        Format::Pages => render_parts(opened, source, options, Unit::Pages, sink),
+        Format::Elements => render_parts(opened, source, options, Unit::Elements, sink),
     }
 }
 
@@ -103,19 +116,24 @@ fn outcome(
         status,
         errors,
         metadata: None,
+        embedded: Vec::new(),
     }
 }
 
-/// Fetches the metadata Tika finished with; a failure to do so fails the extraction.
-fn final_metadata(stream: &StreamReader, copied: &mut Copied) -> Option<Metadata> {
+/// Fetches the metadata Tika finished with and the documents it spooled; a failure to do so
+/// fails the extraction.
+fn finish(stream: &StreamReader, copied: &mut Copied) -> (Option<Metadata>, Vec<SpooledEmbedded>) {
     if copied.error.is_some() {
-        return None;
+        return (None, Vec::new());
     }
-    match stream.metadata() {
-        Ok(metadata) => Some(metadata),
+    match stream
+        .metadata()
+        .and_then(|metadata| Ok((metadata, stream.embedded()?)))
+    {
+        Ok((metadata, embedded)) => (Some(metadata), embedded),
         Err(error) => {
             copied.error = Some(ExtractionError::from_error(&error));
-            None
+            (None, Vec::new())
         }
     }
 }
@@ -130,23 +148,24 @@ fn render_text(
         Err(error) => return Ok(outcome(None, Some(error), None)),
     };
     let mut copied = copy(&mut stream, sink, |chunk, sink| sink.write_all(chunk))?;
-    let metadata = final_metadata(&stream, &mut copied);
+    let (metadata, embedded) = finish(&stream, &mut copied);
     Ok(Outcome {
         metadata: metadata.clone().filter(|_| options.metadata),
+        embedded,
         ..outcome(Some(&copied), None, metadata.as_ref())
     })
 }
 
-fn write_document_start(sink: &mut dyn Write, path: &Path, display: &str) -> io::Result<()> {
+pub fn write_document_start(sink: &mut dyn Write, source: &Source) -> io::Result<()> {
     write!(
         sink,
         "{{\"schema_version\":{SCHEMA_VERSION},\"kind\":\"document\",\"source\":"
     )?;
-    serde_json::to_writer(&mut *sink, &source(path, display))?;
+    serde_json::to_writer(&mut *sink, source)?;
     Ok(())
 }
 
-fn write_document_end(
+pub fn write_document_end(
     sink: &mut dyn Write,
     outcome: &Outcome,
     metadata: Option<&Metadata>,
@@ -174,20 +193,23 @@ fn write_document_end(
 
 fn render_json(
     opened: Opened,
-    path: &Path,
-    display: &str,
+    source: &Source,
     options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
-    write_document_start(sink, path, display)?;
+    write_document_start(sink, source)?;
     let (outcome, metadata) = match opened {
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
             sink.write_all(b",\"text\":\"")?;
             let mut copied = copy(&mut stream, sink, write_json_string_content)?;
             sink.write_all(b"\"")?;
-            let metadata = final_metadata(&stream, &mut copied);
-            (outcome(Some(&copied), None, metadata.as_ref()), metadata)
+            let (metadata, embedded) = finish(&stream, &mut copied);
+            let outcome = Outcome {
+                embedded,
+                ..outcome(Some(&copied), None, metadata.as_ref())
+            };
+            (outcome, metadata)
         }
     };
     write_document_end(sink, &outcome, metadata.as_ref(), options)?;
@@ -211,12 +233,13 @@ struct PartRecord<'a> {
 #[derive(Serialize)]
 struct PartSource<'a> {
     path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedded_path: Option<&'a str>,
 }
 
 fn render_parts(
     opened: Opened,
-    path: &Path,
-    display: &str,
+    source: &Source,
     options: RenderOptions,
     unit: Unit,
     sink: &mut dyn Write,
@@ -234,7 +257,10 @@ fn render_parts(
                     } else {
                         "page"
                     },
-                    source: PartSource { path: display },
+                    source: PartSource {
+                        path: &source.path,
+                        embedded_path: source.embedded_path.as_deref(),
+                    },
                     page: part.page,
                     element: part.element.map(|(kind, _)| kind),
                     level: part.element.and_then(|(_, level)| level),
@@ -247,11 +273,15 @@ fn render_parts(
                 bytes,
                 error: split.err().map(ExtractionError::from_message),
             };
-            let metadata = final_metadata(&stream, &mut copied);
-            (outcome(Some(&copied), None, metadata.as_ref()), metadata)
+            let (metadata, embedded) = finish(&stream, &mut copied);
+            let outcome = Outcome {
+                embedded,
+                ..outcome(Some(&copied), None, metadata.as_ref())
+            };
+            (outcome, metadata)
         }
     };
-    write_document_start(sink, path, display)?;
+    write_document_start(sink, source)?;
     write_document_end(sink, &outcome, metadata.as_ref(), options)?;
     Ok(outcome)
 }
@@ -262,7 +292,9 @@ fn write_field(sink: &mut dyn Write, name: &str, value: &impl serde::Serialize) 
     Ok(())
 }
 
-fn source(path: &Path, display: &str) -> Source {
+/// The provenance of a document: the input it came from, where inside it when embedded, and its
+/// size and BLAKE3 hash.
+pub fn source(path: &Path, display: &str, embedded_path: Option<String>) -> Source {
     let digest = fs::File::open(path).and_then(|mut file| {
         let mut hasher = blake3::Hasher::new();
         let size = io::copy(&mut file, &mut hasher)?;
@@ -274,6 +306,7 @@ fn source(path: &Path, display: &str) -> Source {
     };
     Source {
         path: display.to_string(),
+        embedded_path,
         size,
         blake3,
     }

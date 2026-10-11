@@ -1,5 +1,5 @@
 use crate::config::{JavaValue, ParserConfigs};
-use crate::embedded::{EmbeddedDocument, EmbeddedExtractResult};
+use crate::embedded::{EmbeddedDocument, EmbeddedExtractResult, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::{
     jni_call_method, jni_jobject_to_string, jni_new_direct_buffer, jni_new_string_as_jvalue,
@@ -7,8 +7,9 @@ use crate::tika::jni_utils::{
 };
 use crate::{Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use bytemuck::cast_slice_mut;
-use jni::objects::{GlobalRef, JByteArray, JObject, JValue};
+use jni::objects::{GlobalRef, JByteArray, JObject, JObjectArray, JValue};
 use jni::JNIEnv;
+use std::path::PathBuf;
 
 use crate::isolate::Isolate;
 
@@ -57,6 +58,30 @@ impl JInputStream {
         self.isolate
             .attach()?
             .with_local_frame(8, |env| java_result_metadata(env, self.internal.as_obj()))
+    }
+
+    pub(crate) fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
+        if !self.finished {
+            return Err(Error::StreamNotFinished);
+        }
+        self.isolate.attach()?.with_local_frame(16, |env| {
+            let array = jni_call_method(
+                env,
+                &self.internal,
+                "getEmbedded",
+                "()[Lai/yobix/SpooledEmbedded;",
+                &[],
+            )?
+            .l()?;
+            let array = JObjectArray::from(array);
+            let length = env.get_array_length(&array)?;
+            (0..length)
+                .map(|index| {
+                    let item = env.get_object_array_element(&array, index)?;
+                    spooled_embedded(env, &item)
+                })
+                .collect()
+        })
     }
 
     fn read_in_frame(&self, env: &mut JNIEnv<'_>, buf: &mut [u8]) -> ExtractResult<usize> {
@@ -186,6 +211,20 @@ pub(crate) fn embedded_result<'local>(
     })
 }
 
+fn spooled_embedded<'local>(
+    env: &mut JNIEnv<'local>,
+    item: &JObject<'local>,
+) -> ExtractResult<SpooledEmbedded> {
+    Ok(SpooledEmbedded {
+        name: required_string(env, item, "getName")?,
+        content_type: optional_string(env, item, "getContentType")?,
+        path: PathBuf::from(required_string(env, item, "getPath")?),
+        size: u64::try_from(jni_call_method(env, item, "getSize", "()J", &[])?.j()?)
+            .map_err(|_| Error::Unknown("SpooledEmbedded.getSize was negative".to_string()))?,
+        truncated: jni_call_method(env, item, "isTruncated", "()Z", &[])?.z()?,
+    })
+}
+
 fn optional_string<'local>(
     env: &mut JNIEnv<'local>,
     obj: &JObject<'local>,
@@ -205,7 +244,7 @@ fn required_string<'local>(
 ) -> ExtractResult<String> {
     optional_string(env, obj, getter)?.ok_or_else(|| {
         Error::Unknown(format!(
-            "EmbeddedDocument.{getter} returned null for a value Tika always sets"
+            "{getter} returned null for a value that is always set"
         ))
     })
 }

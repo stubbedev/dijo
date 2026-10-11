@@ -20,6 +20,11 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "ai.yobix.SpooledEmbedded",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "ai.yobix.EmbeddedExtractResult",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true
