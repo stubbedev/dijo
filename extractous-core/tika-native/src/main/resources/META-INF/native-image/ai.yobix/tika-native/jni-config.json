@@ -19,6 +19,12 @@
           "org.apache.tika.parser.microsoft.OfficeParserConfig",
           "org.apache.tika.parser.ocr.TesseractOCRConfig"
         ]
+      },
+      {
+        "name": "describe",
+        "parameterTypes": [
+          "java.lang.Throwable"
+        ]
       }
     ]
   },

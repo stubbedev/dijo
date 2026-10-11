@@ -53,6 +53,26 @@ public class TikaNativeMain {
     private static final Tika tika = new Tika();
 
     /**
+     * Renders a throwable and every cause behind it as "class: message", outermost first,
+     * so callers see why an operation failed and not only its outermost wrapper.
+     */
+    public static String describe(Throwable throwable) {
+        final StringBuilder description = new StringBuilder();
+        final java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Throwable t = throwable; t != null && seen.add(t); t = t.getCause()) {
+            if (description.length() > 0) {
+                description.append(" <- caused by ");
+            }
+            description.append(t.getClass().getName());
+            if (t.getMessage() != null) {
+                description.append(": ").append(t.getMessage());
+            }
+        }
+        return description.toString();
+    }
+
+    /**
      * Parses the given file and returns its type as a mime type
      *
      * @param filePath: the path of the file to be parsed
@@ -67,7 +87,7 @@ public class TikaNativeMain {
             return new StringResult(result, metadata);
 
         } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, e.getMessage());
+            return new StringResult((byte) 1, describe(e));
         }
     }
 
@@ -99,9 +119,9 @@ public class TikaNativeMain {
             // No need to close the stream because parseToString does so
             return new StringResult(result, metadata);
         } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, "Could not open file: " + e.getMessage());
+            return new StringResult((byte) 1, "Could not open file: " + describe(e));
         } catch (TikaException e) {
-            return new StringResult((byte) 2, "Parse error occurred : " + e.getMessage());
+            return new StringResult((byte) 2, "Parse error occurred : " + describe(e));
         }
     }
 
@@ -130,13 +150,13 @@ public class TikaNativeMain {
             return new StringResult(result, metadata);
 
         } catch (MalformedURLException e) {
-            return new StringResult((byte) 2, "Malformed URL error occurred " + e.getMessage());
+            return new StringResult((byte) 2, "Malformed URL error occurred " + describe(e));
         } catch (URISyntaxException e) {
-            return new StringResult((byte) 2, "Malformed URI error occurred: " + e.getMessage());
+            return new StringResult((byte) 2, "Malformed URI error occurred: " + describe(e));
         } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, "IO error occurred: " + e.getMessage());
+            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
         } catch (TikaException e) {
-            return new StringResult((byte) 2, "Parse error occurred : " + e.getMessage());
+            return new StringResult((byte) 2, "Parse error occurred : " + describe(e));
         }
     }
 
@@ -164,9 +184,9 @@ public class TikaNativeMain {
             // No need to close the stream because parseToString does so
             return new StringResult(result, metadata);
         } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, "IO error occurred: " + e.getMessage());
+            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
         } catch (TikaException e) {
-            return new StringResult((byte) 2, "Parse error occurred : " + e.getMessage());
+            return new StringResult((byte) 2, "Parse error occurred : " + describe(e));
         }
     }
 
@@ -243,7 +263,7 @@ public class TikaNativeMain {
             return parse(stream, metadata, charsetName, pdfConfig, officeConfig, tesseractConfig, asXML);
 
         } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 1, "Could not open file: " + e.getMessage());
+            return new ReaderResult((byte) 1, "Could not open file: " + describe(e));
         }
     }
 
@@ -270,11 +290,11 @@ public class TikaNativeMain {
             return parse(stream, metadata, charsetName, pdfConfig, officeConfig, tesseractConfig, asXML);
 
         } catch (MalformedURLException e) {
-            return new ReaderResult((byte) 2, "Malformed URL error occurred " + e.getMessage());
+            return new ReaderResult((byte) 2, "Malformed URL error occurred " + describe(e));
         } catch (URISyntaxException e) {
-            return new ReaderResult((byte) 3, "Malformed URI error occurred: " + e.getMessage());
+            return new ReaderResult((byte) 3, "Malformed URI error occurred: " + describe(e));
         } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 1, "IO error occurred: " + e.getMessage());
+            return new ReaderResult((byte) 1, "IO error occurred: " + describe(e));
         }
     }
 
@@ -335,7 +355,7 @@ public class TikaNativeMain {
             return new ReaderResult(readerInputStream, metadata);
 
         } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 1, "IO error occurred: " + e.getMessage());
+            return new ReaderResult((byte) 1, "IO error occurred: " + describe(e));
         }
 
     }
@@ -383,7 +403,7 @@ public class TikaNativeMain {
             
             return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
         } catch (IOException e) {
-            return new EmbeddedExtractResult((byte) 1, "Could not open file: " + e.getMessage());
+            return new EmbeddedExtractResult((byte) 1, "Could not open file: " + describe(e));
         }
     }
 
@@ -484,13 +504,13 @@ public class TikaNativeMain {
             return new EmbeddedExtractResult(embeddedDocuments);
             
         } catch (IOException e) {
-            return new EmbeddedExtractResult((byte) 1, "IO error occurred: " + e.getMessage());
+            return new EmbeddedExtractResult((byte) 1, "IO error occurred: " + describe(e));
         } catch (SAXException e) {
-            return new EmbeddedExtractResult((byte) 2, "SAX error occurred: " + e.getMessage());
+            return new EmbeddedExtractResult((byte) 2, "SAX error occurred: " + describe(e));
         } catch (TikaException e) {
-            return new EmbeddedExtractResult((byte) 3, "Tika error occurred: " + e.getMessage());
+            return new EmbeddedExtractResult((byte) 3, "Tika error occurred: " + describe(e));
         } catch (Exception e) {
-            return new EmbeddedExtractResult((byte) 99, "Unexpected error: " + e.getClass().getName() + ": " + e.getMessage());
+            return new EmbeddedExtractResult((byte) 99, "Unexpected error: " + describe(e));
         } finally {
             try {
                 stream.close();

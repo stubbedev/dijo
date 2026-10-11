@@ -7,7 +7,7 @@ use jni::objects::{JByteBuffer, JObject, JObjectArray, JString, JValue, JValueOw
 use jni::{sys, JNIEnv, JavaVM};
 use std::collections::HashMap;
 
-/// Calls a static method and prints any thrown exceptions to stderr
+/// Wraps memory owned by Rust in a Java direct byte buffer without copying it
 pub fn jni_new_direct_buffer<'local>(
     env: &mut JNIEnv<'local>,
     data: *mut u8,
@@ -19,7 +19,7 @@ pub fn jni_new_direct_buffer<'local>(
     Ok(direct_byte_buffer)
 }
 
-/// Calls a static method and prints any thrown exceptions to stderr
+/// Calls a static method, turning a thrown Java exception into [`Error::JavaException`]
 pub fn jni_call_static_method<'local>(
     env: &mut JNIEnv<'local>,
     class: &str,
@@ -30,17 +30,12 @@ pub fn jni_call_static_method<'local>(
     let call_result = env.call_static_method(class, method, signature, args);
     match call_result {
         Ok(result) => Ok(result),
-        Err(error) => match error {
-            jni::errors::Error::JavaException => {
-                jni_check_exception(env)?;
-                Err(Error::JniError(error))
-            }
-            _ => Err(Error::JniError(error)),
-        },
+        Err(jni::errors::Error::JavaException) => Err(take_java_exception(env)),
+        Err(error) => Err(Error::JniError(error)),
     }
 }
 
-/// Calls an object method and prints any thrown exceptions to stderr
+/// Calls an object method, turning a thrown Java exception into [`Error::JavaException`]
 pub fn jni_call_method<'local>(
     env: &mut JNIEnv<'local>,
     obj: &JObject<'local>,
@@ -51,13 +46,8 @@ pub fn jni_call_method<'local>(
     let call_result = env.call_method(obj, method, signature, args);
     match call_result {
         Ok(result) => Ok(result),
-        Err(error) => match error {
-            jni::errors::Error::JavaException => {
-                jni_check_exception(env)?;
-                Err(Error::JniError(error))
-            }
-            _ => Err(Error::JniError(error)),
-        },
+        Err(jni::errors::Error::JavaException) => Err(take_java_exception(env)),
+        Err(error) => Err(Error::JniError(error)),
     }
 }
 
@@ -143,15 +133,26 @@ pub fn jni_tika_metadata_to_rust_metadata<'local>(
     Ok(metadata)
 }
 
-/// Checks if there is an exception in the jni environment, describes it to
-/// the stderr and finally clears it
-pub fn jni_check_exception(env: &mut JNIEnv) -> ExtractResult<bool> {
-    if env.exception_check()? {
-        env.exception_describe()?;
+/// Clears the pending Java exception and turns it into an [`Error::JavaException`] that
+/// carries the class and message of the exception and of every cause behind it.
+pub fn take_java_exception(env: &mut JNIEnv) -> Error {
+    let describe = |env: &mut JNIEnv| -> ExtractResult<String> {
+        let throwable = env.exception_occurred()?;
         env.exception_clear()?;
-        return Ok(true);
+        let description = env
+            .call_static_method(
+                "ai/yobix/TikaNativeMain",
+                "describe",
+                "(Ljava/lang/Throwable;)Ljava/lang/String;",
+                &[JValue::Object(&throwable)],
+            )?
+            .l()?;
+        jni_jobject_to_string(env, description)
+    };
+    match describe(env) {
+        Ok(description) => Error::JavaException(description),
+        Err(error) => error,
     }
-    Ok(false)
 }
 
 /// Creates a new graalvm isolate using the invocation api. A [GraalVM isolate](https://medium.com/graalvm/isolates-and-compressed-references-more-flexible-and-efficient-memory-management-for-graalvm-a044cc50b67e) is a disjoint heap
