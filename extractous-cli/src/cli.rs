@@ -10,8 +10,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     about = "Extract text and metadata from documents with Apache Tika compiled to native code",
     long_about = "Extract text and metadata from documents with Apache Tika compiled to native code.\n\n\
                   Every option can also be set through the environment variable shown with it.\n\n\
-                  Exit status: 0 when every input succeeded, 1 when at least one failed, 2 on a \
-                  usage error.",
+                  Exit status: 0 when text was extracted from every input, 1 when nothing could be \
+                  extracted from at least one (or, with --strict, when any part of one failed), 2 \
+                  on a usage error.",
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true
 )]
@@ -58,6 +59,11 @@ pub struct ExtractArgs {
     /// Include Tika's raw metadata keys and values in json output.
     #[arg(long, env = "EXTRACTOUS_RAW_METADATA")]
     pub raw_metadata: bool,
+
+    /// Fail (exit status 1) when any part of an input could not be extracted, not only when
+    /// nothing could.
+    #[arg(long, env = "EXTRACTOUS_STRICT")]
+    pub strict: bool,
 
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]

@@ -63,6 +63,44 @@ pub enum ErrorCategory {
 pub struct ExtractionError {
     pub category: ErrorCategory,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+}
+
+const RECORDED_EXCEPTION_PREFIX: &str = "X-TIKA:EXCEPTION:";
+const EMBEDDED_EXCEPTION_KEYS: [&str; 2] = ["embedded_exception", "embedded_stream_exception"];
+
+/// Failures Tika recovered from and recorded in the metadata instead of failing the parse, such
+/// as an embedded document that could not be read or a damaged PDF page.
+pub fn recorded_failures(metadata: &Metadata) -> Vec<ExtractionError> {
+    let mut keys: Vec<&String> = metadata
+        .keys()
+        .filter(|key| key.starts_with(RECORDED_EXCEPTION_PREFIX))
+        .collect();
+    keys.sort();
+    keys.into_iter()
+        .flat_map(|key| {
+            let kind = &key[RECORDED_EXCEPTION_PREFIX.len()..];
+            let location = EMBEDDED_EXCEPTION_KEYS
+                .contains(&kind)
+                .then(|| "embedded document".to_string());
+            metadata[key].iter().map(move |trace| ExtractionError {
+                location: location.clone(),
+                ..ExtractionError::from_message(summarize_stack_trace(trace))
+            })
+        })
+        .collect()
+}
+
+/// Turns a Java stack trace into the `class: message <- caused by class: message` form the rest
+/// of the errors use.
+fn summarize_stack_trace(trace: &str) -> String {
+    trace
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with(char::is_whitespace))
+        .map(|line| line.strip_prefix("Caused by: ").unwrap_or(line).trim_end())
+        .collect::<Vec<_>>()
+        .join(" <- caused by ")
 }
 
 impl ExtractionError {
@@ -85,13 +123,18 @@ impl ExtractionError {
             || message.contains("Truncated")
             || message.contains("EOFException")
             || message.contains("CorruptedFileException")
+            || message.contains("InvalidFormatException")
             || message.contains("TIKA-198")
         {
             ErrorCategory::Corrupt
         } else {
             ErrorCategory::Internal
         };
-        Self { category, message }
+        Self {
+            category,
+            message,
+            location: None,
+        }
     }
 }
 
@@ -259,6 +302,31 @@ mod tests {
             }]
         );
         assert_eq!(normalized.title, None);
+    }
+
+    #[test]
+    fn recorded_failures_condense_stack_traces() {
+        let trace = "org.apache.tika.exception.TikaException: Error creating OOXML extractor\n\
+                     \tat org.apache.tika.parser.microsoft.ooxml.OOXMLParser.parse(OOXMLParser.java:117)\n\
+                     Caused by: java.io.IOException: Truncated ZIP file\n\
+                     \t... 12 more\n";
+        let failures = recorded_failures(&metadata(&[
+            ("X-TIKA:EXCEPTION:embedded_exception", &[trace]),
+            (
+                "X-TIKA:Parsed-By",
+                &["org.apache.tika.parser.DefaultParser"],
+            ),
+        ]));
+        assert_eq!(
+            failures,
+            [ExtractionError {
+                category: ErrorCategory::Corrupt,
+                message: "org.apache.tika.exception.TikaException: Error creating OOXML extractor \
+                          <- caused by java.io.IOException: Truncated ZIP file"
+                    .to_string(),
+                location: Some("embedded document".to_string()),
+            }]
+        );
     }
 
     #[test]

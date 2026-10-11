@@ -53,22 +53,28 @@ pub fn render(
 fn outcome(
     copied: Option<&Copied>,
     open_error: Option<String>,
-    metadata: Option<Metadata>,
+    final_metadata: Option<&Metadata>,
 ) -> Outcome {
     let error = open_error.or_else(|| copied.and_then(|copied| copied.error.clone()));
+    let errors: Vec<ExtractionError> = error
+        .into_iter()
+        .map(ExtractionError::from_message)
+        .chain(
+            final_metadata
+                .map(schema::recorded_failures)
+                .unwrap_or_default(),
+        )
+        .collect();
     let produced_text = copied.is_some_and(|copied| copied.bytes > 0);
-    let status = match (&error, produced_text) {
-        (None, _) => Status::Complete,
-        (Some(_), true) => Status::Partial,
-        (Some(_), false) => Status::Failed,
+    let status = match (errors.is_empty(), produced_text) {
+        (true, _) => Status::Complete,
+        (false, true) => Status::Partial,
+        (false, false) => Status::Failed,
     };
     Outcome {
         status,
-        errors: error
-            .into_iter()
-            .map(ExtractionError::from_message)
-            .collect(),
-        metadata,
+        errors,
+        metadata: None,
     }
 }
 
@@ -96,11 +102,11 @@ fn render_text(
         Err(error) => return Ok(outcome(None, Some(error), None)),
     };
     let mut copied = copy(&mut stream, sink, |chunk, sink| sink.write_all(chunk))?;
-    let metadata = options
-        .metadata
-        .then(|| final_metadata(&stream, &mut copied))
-        .flatten();
-    Ok(outcome(Some(&copied), None, metadata))
+    let metadata = final_metadata(&stream, &mut copied);
+    Ok(Outcome {
+        metadata: metadata.clone().filter(|_| options.metadata),
+        ..outcome(Some(&copied), None, metadata.as_ref())
+    })
 }
 
 fn render_json(
@@ -120,7 +126,7 @@ fn render_json(
             let mut copied = copy(&mut stream, sink, write_json_string_content)?;
             sink.write_all(b"\"")?;
             let metadata = final_metadata(&stream, &mut copied);
-            (outcome(Some(&copied), None, None), metadata)
+            (outcome(Some(&copied), None, metadata.as_ref()), metadata)
         }
     };
 

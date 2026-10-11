@@ -203,7 +203,7 @@ fn extract(args: &ExtractArgs) -> bool {
             });
         }
         drop(sender);
-        emit_in_order(receiver, args.format)
+        emit_in_order(receiver, args.format, args.strict)
     })
 }
 
@@ -319,7 +319,7 @@ fn write_file_atomically(
     let partial = path.with_added_extension(format!("partial-{}", std::process::id()));
     let written = write_file(&partial, render);
     match written {
-        Ok(outcome) if outcome.status == Status::Complete || keep_failed => {
+        Ok(outcome) if outcome.status != Status::Failed || keep_failed => {
             fs::rename(&partial, path)?;
             Ok(outcome)
         }
@@ -330,22 +330,30 @@ fn write_file_atomically(
     }
 }
 
-fn emit_in_order(receiver: mpsc::Receiver<(usize, Finished)>, format: Format) -> bool {
+fn emit_in_order(
+    receiver: mpsc::Receiver<(usize, Finished)>,
+    format: Format,
+    strict: bool,
+) -> bool {
     let mut pending = BTreeMap::new();
     let mut next = 0;
     let mut succeeded = true;
     for (index, finished) in receiver {
         pending.insert(index, finished);
         while let Some(finished) = pending.remove(&next) {
-            succeeded &= emit(finished, format);
+            succeeded &= emit(finished, format, strict);
             next += 1;
         }
     }
     succeeded
 }
 
-fn emit(finished: Finished, format: Format) -> bool {
-    let mut succeeded = finished.status == Status::Complete;
+fn emit(finished: Finished, format: Format, strict: bool) -> bool {
+    let mut succeeded = match finished.status {
+        Status::Complete => true,
+        Status::Partial => !strict,
+        Status::Failed => false,
+    };
     match finished.output {
         Ok(Some(spooled)) => {
             let copied = fs::File::open(&spooled)

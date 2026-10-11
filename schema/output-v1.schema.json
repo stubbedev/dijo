@@ -29,7 +29,8 @@
         "additionalProperties": false,
         "properties": {
           "category": { "enum": ["unreadable", "corrupt", "encrypted", "unsupported", "limit-exceeded", "timeout", "internal"] },
-          "message": { "type": "string", "description": "The error with its full Java cause chain." }
+          "message": { "type": "string", "description": "The error with its full Java cause chain." },
+          "location": { "type": "string", "description": "Where in the input the failure happened, such as `embedded document`, when known." }
         }
       }
     },

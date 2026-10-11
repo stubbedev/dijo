@@ -278,6 +278,7 @@ fn json_output_follows_the_published_schema() {
         "sample.eml",
         "sample.html",
         "ara-ocr.png",
+        "partially-damaged.zip",
         "does-not-exist.pdf",
     ]
     .iter()
@@ -333,4 +334,27 @@ fn metadata_is_normalised_per_format() {
     assert_eq!(objects[5]["mime_type"], "text/html");
     assert_eq!(metadata(5)["title"], "Sample page");
     assert_eq!(metadata(5)["authors"][0], "Grace Hopper");
+}
+
+#[test]
+fn damaged_parts_make_a_partial_result() {
+    let objects = json_objects(&[&document("partially-damaged.zip")]);
+    let object = &objects[0];
+    assert_eq!(object["status"], "partial");
+    assert!(object["text"]
+        .as_str()
+        .unwrap()
+        .contains("This part of the archive extracts fine."));
+    assert_eq!(object["errors"][0]["category"], "corrupt");
+    assert_eq!(object["errors"][0]["location"], "embedded document");
+}
+
+#[test]
+fn partial_results_succeed_unless_strict() {
+    let lenient = extractous(&[&document("partially-damaged.zip")]);
+    assert!(lenient.status.success(), "{}", stderr(&lenient));
+    assert!(stderr(&lenient).contains("Error creating OOXML extractor"));
+
+    let strict = extractous(&["--strict", &document("partially-damaged.zip")]);
+    assert_eq!(strict.status.code(), Some(1));
 }

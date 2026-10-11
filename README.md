@@ -39,6 +39,7 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json` | Plain text (default), Tika XHTML, or one JSON object per input per line |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
+| `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
 | `-r, --recursive` | Descend into directories, in sorted order |
@@ -48,8 +49,10 @@ extractous detect mystery.bin                 # application/pdf
 
 Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRACTOUS_JOBS`, ...); `extractous --help`
 lists them. Errors go to standard error with the input path and the full Java cause chain, and one failed input does
-not stop the others. The exit status is 0 when every input succeeded, 1 when at least one failed and 2 on a usage
-error.
+not stop the others. Damage inside an input (an unreadable attachment, a broken page) does not discard the rest of it:
+everything that extracted is written and the failures are reported. The exit status is 0 when text was extracted from
+every input, 1 when nothing could be extracted from at least one (with `--strict`, when any part of one failed) and 2
+on a usage error.
 
 ## JSON output
 
