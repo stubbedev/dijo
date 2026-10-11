@@ -1,4 +1,4 @@
-use extractous::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+use extractous::{CharSet, Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
 use std::fs;
 use std::io::Read;
 use test_case::test_case;
@@ -115,4 +115,75 @@ fn test_extract_file_to_stream_ocr_only_deu_ocr_pdf() {
     let expected = fs::read_to_string("../test_files/expected_result/deu-ocr.pdf.txt").unwrap();
     let dist = cosine(&expected, &extracted);
     assert!(dist > 0.9, "Cosine similarity for deu-ocr.pdf is {dist}");
+}
+
+#[test]
+fn test_extract_file_to_stream_honours_the_encoding() {
+    let path = "../test_files/documents/category-level.docx";
+    let mut utf8 = String::new();
+    Extractor::new()
+        .extract_file(path)
+        .unwrap()
+        .0
+        .read_to_string(&mut utf8)
+        .unwrap();
+
+    let mut utf16 = Vec::new();
+    Extractor::new()
+        .set_encoding(CharSet::UTF_16BE)
+        .extract_file(path)
+        .unwrap()
+        .0
+        .read_to_end(&mut utf16)
+        .unwrap();
+    let (pairs, rest) = utf16.as_chunks::<2>();
+    assert!(rest.is_empty(), "odd number of UTF-16 bytes");
+    let units: Vec<u16> = pairs.iter().map(|pair| u16::from_be_bytes(*pair)).collect();
+
+    assert_eq!(String::from_utf16(&units).unwrap(), utf8);
+}
+
+#[test]
+fn test_many_unread_streams_do_not_block_each_other() {
+    let text = "every stream keeps its own parse running\n".repeat(50_000);
+    let extractor = Extractor::new();
+    let mut streams: Vec<_> = (0..16)
+        .map(|_| extractor.extract_bytes(text.as_bytes()).unwrap().0)
+        .collect();
+
+    while let Some(mut stream) = streams.pop() {
+        let mut extracted = String::new();
+        stream.read_to_string(&mut extracted).unwrap();
+        assert_eq!(extracted.trim(), text.trim());
+    }
+}
+
+#[test]
+fn test_streams_from_many_threads() {
+    let path = "../test_files/documents/category-level.docx";
+    let mut expected = String::new();
+    Extractor::new()
+        .extract_file(path)
+        .unwrap()
+        .0
+        .read_to_string(&mut expected)
+        .unwrap();
+
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                let extractor = Extractor::new();
+                for _ in 0..10 {
+                    let mut extracted = String::new();
+                    extractor
+                        .extract_file(path)
+                        .unwrap()
+                        .0
+                        .read_to_string(&mut extracted)
+                        .unwrap();
+                    assert_eq!(extracted, expected);
+                }
+            });
+        }
+    });
 }

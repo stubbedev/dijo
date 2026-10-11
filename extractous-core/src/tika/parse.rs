@@ -11,6 +11,7 @@ use jni::objects::{JObject, JValue};
 use jni::{AttachGuard, JNIEnv, JavaVM};
 
 const TIKA_NATIVE_MAIN: &str = "ai/yobix/TikaNativeMain";
+const LOCAL_FRAME_CAPACITY: i32 = 32;
 const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
                                  Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
                                  Lorg/apache/tika/parser/ocr/TesseractOCRConfig;";
@@ -84,6 +85,10 @@ fn call_tika<'local>(
     Ok(jni_call_static_method(env, TIKA_NATIVE_MAIN, method, &signature, &args)?.l()?)
 }
 
+fn in_local_frame<T>(f: impl FnOnce(&mut JNIEnv<'_>) -> ExtractResult<T>) -> ExtractResult<T> {
+    attach_current_thread()?.with_local_frame(LOCAL_FRAME_CAPACITY, f)
+}
+
 /// Parses a document into a stream of its text, decoded with `char_set`.
 pub(crate) fn parse_to_stream(
     source: Source,
@@ -92,17 +97,20 @@ pub(crate) fn parse_to_stream(
     as_xml: bool,
 ) -> ExtractResult<(StreamReader, Metadata)> {
     let mut env = attach_current_thread()?;
-    let char_set_obj: JObject = jni_new_string(&mut env, &char_set.to_string())?.into();
-    let result = call_tika(
-        &mut env,
-        source,
-        &format!("parse{}", source.method_suffix()),
-        configs,
-        "Ljava/lang/String;Z)Lai/yobix/ReaderResult;",
-        &[JValue::Object(&char_set_obj), JValue::Bool(as_xml.into())],
-    )?;
-    let (reader, metadata) = reader_result(&mut env, result)?;
-    let inner = JReaderInputStream::new(env, reader)?;
+    let (stream, metadata) = env.with_local_frame(LOCAL_FRAME_CAPACITY, |env| {
+        let char_set_obj: JObject = jni_new_string(env, &char_set.to_string())?.into();
+        let result = call_tika(
+            env,
+            source,
+            &format!("parse{}", source.method_suffix()),
+            configs,
+            "Ljava/lang/String;Z)Lai/yobix/ReaderResult;",
+            &[JValue::Object(&char_set_obj), JValue::Bool(as_xml.into())],
+        )?;
+        let (stream, metadata) = reader_result(env, result)?;
+        Ok::<_, Error>((env.new_global_ref(stream)?, metadata))
+    })?;
+    let inner = JInputStream::new(env, stream);
     Ok((StreamReader { inner }, metadata))
 }
 
@@ -113,16 +121,17 @@ pub(crate) fn parse_to_string(
     configs: &ParserConfigs,
     as_xml: bool,
 ) -> ExtractResult<(String, Metadata)> {
-    let mut env = attach_current_thread()?;
-    let result = call_tika(
-        &mut env,
-        source,
-        &format!("parse{}ToString", source.method_suffix()),
-        configs,
-        "IZ)Lai/yobix/StringResult;",
-        &[JValue::Int(max_length), JValue::Bool(as_xml.into())],
-    )?;
-    string_result(&mut env, result)
+    in_local_frame(|env| {
+        let result = call_tika(
+            env,
+            source,
+            &format!("parse{}ToString", source.method_suffix()),
+            configs,
+            "IZ)Lai/yobix/StringResult;",
+            &[JValue::Int(max_length), JValue::Bool(as_xml.into())],
+        )?;
+        string_result(env, result)
+    })
 }
 
 /// Extracts the documents embedded in a document, such as images and attachments.
@@ -130,31 +139,33 @@ pub(crate) fn extract_embedded(
     source: Source,
     configs: &ParserConfigs,
 ) -> ExtractResult<EmbeddedExtractResult> {
-    let mut env = attach_current_thread()?;
-    let result = call_tika(
-        &mut env,
-        source,
-        &format!("extractEmbedded{}", source.method_suffix()),
-        configs,
-        ")Lai/yobix/EmbeddedExtractResult;",
-        &[],
-    )?;
-    embedded_result(&mut env, result)
+    in_local_frame(|env| {
+        let result = call_tika(
+            env,
+            source,
+            &format!("extractEmbedded{}", source.method_suffix()),
+            configs,
+            ")Lai/yobix/EmbeddedExtractResult;",
+            &[],
+        )?;
+        embedded_result(env, result)
+    })
 }
 
 /// Detects the media type of a document with Tika's default detector.
 pub(crate) fn detect(source: Source) -> ExtractResult<String> {
-    let mut env = attach_current_thread()?;
-    let source_obj = source.into_java(&mut env)?;
-    let signature = format!("({})Lai/yobix/StringResult;", source.java_type());
-    let result = jni_call_static_method(
-        &mut env,
-        TIKA_NATIVE_MAIN,
-        &format!("detect{}", source.method_suffix()),
-        &signature,
-        &[JValue::Object(&source_obj)],
-    )?
-    .l()?;
-    let (media_type, _) = string_result(&mut env, result)?;
-    Ok(media_type)
+    in_local_frame(|env| {
+        let source_obj = source.into_java(env)?;
+        let signature = format!("({})Lai/yobix/StringResult;", source.java_type());
+        let result = jni_call_static_method(
+            env,
+            TIKA_NATIVE_MAIN,
+            &format!("detect{}", source.method_suffix()),
+            &signature,
+            &[JValue::Object(&source_obj)],
+        )?
+        .l()?;
+        let (media_type, _) = string_result(env, result)?;
+        Ok(media_type)
+    })
 }

@@ -521,29 +521,6 @@
         {
             "methods": [
                 {
-                    "name": "close",
-                    "parameterTypes": []
-                },
-                {
-                    "name": "read",
-                    "parameterTypes": [
-                        "byte[]"
-                    ]
-                },
-                {
-                    "name": "read",
-                    "parameterTypes": [
-                        "byte[]",
-                        "int",
-                        "int"
-                    ]
-                }
-            ],
-            "type": "org.apache.commons.io.input.ReaderInputStream"
-        },
-        {
-            "methods": [
-                {
                     "name": "<init>",
                     "parameterTypes": []
                 },

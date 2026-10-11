@@ -1,7 +1,7 @@
 use crate::config::ParserConfigs;
 use crate::errors::ExtractResult;
 use crate::tika;
-use crate::tika::JReaderInputStream;
+use crate::tika::JInputStream;
 use crate::tika::Source;
 use crate::{EmbeddedExtractResult, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use std::collections::HashMap;
@@ -15,8 +15,11 @@ pub type Metadata = HashMap<String, Vec<String>>;
 #[allow(non_camel_case_types)]
 pub enum CharSet {
     #[default]
+    #[strum(serialize = "UTF-8")]
     UTF_8,
+    #[strum(serialize = "US-ASCII")]
     US_ASCII,
+    #[strum(serialize = "UTF-16BE")]
     UTF_16BE,
 }
 
@@ -54,7 +57,7 @@ impl std::fmt::Display for MediaType {
 /// ```
 ///
 pub struct StreamReader {
-    pub(crate) inner: JReaderInputStream,
+    pub(crate) inner: JInputStream,
 }
 
 impl std::io::Read for StreamReader {

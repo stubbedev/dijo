@@ -15,6 +15,11 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "ai.yobix.ParsingInputStream",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "ai.yobix.EmbeddedExtractResult",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true

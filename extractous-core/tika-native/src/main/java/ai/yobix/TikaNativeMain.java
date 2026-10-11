@@ -1,6 +1,5 @@
 package ai.yobix;
 
-import org.apache.commons.io.input.ReaderInputStream;
 import org.apache.commons.io.IOUtils;
 import org.apache.tika.Tika;
 import org.apache.tika.config.TikaConfig;
@@ -34,14 +33,12 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Reader;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -51,6 +48,20 @@ import java.io.ByteArrayOutputStream;
 public class TikaNativeMain {
 
     private static final Tika tika = new Tika();
+    private static final Parser PARSER = new AutoDetectParser(TikaConfig.getDefaultConfig());
+
+    private static ParseContext parseContext(
+            PDFParserConfig pdfConfig,
+            OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig
+    ) {
+        final ParseContext parseContext = new ParseContext();
+        parseContext.set(Parser.class, PARSER);
+        parseContext.set(PDFParserConfig.class, pdfConfig);
+        parseContext.set(OfficeParserConfig.class, officeConfig);
+        parseContext.set(TesseractOCRConfig.class, tesseractConfig);
+        return parseContext;
+    }
 
     /**
      * Renders a throwable and every cause behind it as "class: message", outermost first,
@@ -231,16 +242,8 @@ public class TikaNativeMain {
         }
 
         try {
-            final TikaConfig config = TikaConfig.getDefaultConfig();
-            final ParseContext parsecontext = new ParseContext();
-            final Parser parser = new AutoDetectParser(config);
-
-            parsecontext.set(Parser.class, parser);
-            parsecontext.set(PDFParserConfig.class, pdfConfig);
-            parsecontext.set(OfficeParserConfig.class, officeConfig);
-            parsecontext.set(TesseractOCRConfig.class, tesseractConfig);
-
-            parser.parse(stream, handlerForParser, metadata, parsecontext);
+            PARSER.parse(stream, handlerForParser, metadata,
+                    parseContext(pdfConfig, officeConfig, tesseractConfig));
         } catch (SAXException e) {
             if (!WriteLimitReachedException.isWriteLimitReached(e)) {
                 // This should never happen with BodyContentHandler...
@@ -254,7 +257,7 @@ public class TikaNativeMain {
 
 
     /**
-     * Parses the given file and returns its content as Reader. The reader can be used
+     * Parses the given file and returns its text as an encoded byte stream. The stream can be used
      * to read chunks and must be closed when reading is finished
      *
      * @param filePath the path of the file
@@ -289,7 +292,7 @@ public class TikaNativeMain {
     }
 
     /**
-     * Parses the given Url and returns its content as Reader. The reader can be used
+     * Parses the given Url and returns its text as an encoded byte stream. The stream can be used
      * to read chunks and must be closed when reading is finished
      *
      * @param urlString the url to be parsed
@@ -320,7 +323,7 @@ public class TikaNativeMain {
     }
 
     /**
-     * Parses the given array of bytes and return its content as Reader. The reader can be used
+     * Parses the given array of bytes and return its text as an encoded byte stream. The stream can be used
      * to read chunks and must be closed when reading is finished
      *
      * @param data an array of bytes
@@ -352,32 +355,13 @@ public class TikaNativeMain {
             boolean asXML
     ) {
         try {
-
-            final TikaConfig config = TikaConfig.getDefaultConfig();
-            final ParseContext parsecontext = new ParseContext();
-            final Parser parser = new AutoDetectParser(config);
-            final Charset charset = Charset.forName(charsetName, StandardCharsets.UTF_8);
-
-            parsecontext.set(Parser.class, parser);
-            parsecontext.set(PDFParserConfig.class, pdfConfig);
-            parsecontext.set(OfficeParserConfig.class, officeConfig);
-            parsecontext.set(TesseractOCRConfig.class, tesseractConfig);
-
-            //final Reader reader = new org.apache.tika.parser.ParsingReader(parser, inputStream, metadata, parsecontext);
-            final Reader reader = new ParsingReader(parser, inputStream, metadata, parsecontext, asXML, charset.name());
-
-            // Convert Reader which works with chars to ReaderInputStream which works with bytes
-            ReaderInputStream readerInputStream = ReaderInputStream.builder()
-                    .setReader(reader)
-                    .setCharset(charset)
-                    .get();
-
-            return new ReaderResult(readerInputStream, metadata);
-
+            final ParseContext parseContext = parseContext(pdfConfig, officeConfig, tesseractConfig);
+            final InputStream text = new ParsingInputStream(
+                    PARSER, inputStream, metadata, parseContext, asXML, Charset.forName(charsetName));
+            return new ReaderResult(text, metadata);
         } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 1, "IO error occurred: " + describe(e));
+            return new ReaderResult((byte) 2, "Parse error occurred : " + describe(e));
         }
-
     }
 
     /**
@@ -470,15 +454,7 @@ public class TikaNativeMain {
         final List<EmbeddedExtractResult.EmbeddedDocument> embeddedDocuments = new ArrayList<>();
         
         try {
-            final TikaConfig config = TikaConfig.getDefaultConfig();
-            final ParseContext parseContext = new ParseContext();
-            final Parser baseParser = new AutoDetectParser(config);
-            
-            // Configure parse context
-            parseContext.set(Parser.class, baseParser);
-            parseContext.set(PDFParserConfig.class, pdfConfig);
-            parseContext.set(OfficeParserConfig.class, officeConfig);
-            parseContext.set(TesseractOCRConfig.class, tesseractConfig);
+            final ParseContext parseContext = parseContext(pdfConfig, officeConfig, tesseractConfig);
             
             // Custom embedded document extractor
             EmbeddedDocumentExtractor embeddedExtractor = new EmbeddedDocumentExtractor() {
@@ -525,7 +501,7 @@ public class TikaNativeMain {
             parseContext.set(EmbeddedDocumentExtractor.class, embeddedExtractor);
             
             // Use RecursiveParserWrapper to extract all embedded content
-            RecursiveParserWrapper wrapper = new RecursiveParserWrapper(baseParser);
+            RecursiveParserWrapper wrapper = new RecursiveParserWrapper(PARSER);
             BasicContentHandlerFactory factory = new BasicContentHandlerFactory(
                 BasicContentHandlerFactory.HANDLER_TYPE.TEXT, -1);
             RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(factory);

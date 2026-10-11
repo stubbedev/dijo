@@ -1,31 +1,24 @@
 package ai.yobix;
 
-import org.apache.commons.io.input.ReaderInputStream;
+import java.io.InputStream;
 import org.apache.tika.metadata.Metadata;
 
 public class ReaderResult {
 
-    private final ReaderInputStream reader;
+    private final InputStream stream;
     private final byte status;
     private final String errorMessage;
     private final Metadata metadata;
 
-    public ReaderResult(ReaderInputStream reader) {
-        this.reader = reader;
-        this.status = 0;
-        this.errorMessage = null;
-        this.metadata = null;
-    }
-
-    public ReaderResult(ReaderInputStream reader, Metadata metadata) {
-        this.reader = reader;
+    public ReaderResult(InputStream stream, Metadata metadata) {
+        this.stream = stream;
         this.status = 0;
         this.errorMessage = null;
         this.metadata = metadata;
     }
 
     public ReaderResult(byte status, String errorMessage) {
-        this.reader = null;
+        this.stream = null;
         this.status = status;
         this.errorMessage = errorMessage;
         this.metadata = null;
@@ -35,8 +28,8 @@ public class ReaderResult {
      * Returns the result Reader or null if there is an error
      * @return Reader reader
      */
-    public ReaderInputStream getReader() {
-        return reader;
+    public InputStream getStream() {
+        return stream;
     }
 
     public boolean isError() {
@@ -71,6 +64,6 @@ public class ReaderResult {
     }
 
     public String toString() {
-        return "status:" + this.status + " error: " + this.errorMessage + " reader: "+ this.reader;
+        return "status:" + this.status + " error: " + this.errorMessage + " stream: " + this.stream;
     }
 }

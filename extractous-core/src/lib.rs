@@ -1,8 +1,4 @@
 #![doc = include_str!("../../README.md")]
-/// Default buffer size - optimized for better performance
-/// Increased from 32KB to 256KB for better throughput based on benchmarks
-pub(crate) const DEFAULT_BUF_SIZE: usize = 262144; // 256KB
-
 // errors module
 mod errors;
 pub use errors::*;
@@ -26,5 +22,5 @@ mod tika {
     mod parse;
     mod wrappers;
     pub(crate) use parse::*;
-    pub(crate) use wrappers::JReaderInputStream;
+    pub(crate) use wrappers::JInputStream;
 }
