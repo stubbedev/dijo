@@ -60,6 +60,14 @@ pub struct StreamReader {
     pub(crate) inner: JInputStream,
 }
 
+impl StreamReader {
+    /// The document's metadata as Tika left it after parsing, which includes everything the
+    /// parser found while producing the text. Available once the stream has been read to the end.
+    pub fn metadata(&self) -> ExtractResult<Metadata> {
+        self.inner.metadata()
+    }
+}
+
 impl std::io::Read for StreamReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read(buf)

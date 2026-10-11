@@ -27,6 +27,9 @@ pub enum Error {
 
     #[error("Native library error: {0}")]
     NativeLibrary(String),
+
+    #[error("The final metadata is only available once the stream has been read to the end")]
+    StreamNotFinished,
 }
 
 impl From<Error> for io::Error {

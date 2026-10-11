@@ -196,6 +196,9 @@ tika_config! {
         /// Sets whether Tesseract should apply rotation to the image before OCR.
         set_apply_rotation(apply_rotation: bool) => "setApplyRotation",
 
+        /// If true, no OCR runs at all, not even on images or on PDFs with an OCR strategy.
+        set_skip_ocr(skip_ocr: bool) => "setSkipOcr",
+
         /// Sets the tesseract language dictionary to be used for OCR.
         /// Languages are nominally an [ISO-639-2 codes](https://en.wikipedia.org/wiki/List_of_ISO_639-2_codes).
         /// Multiple languages may be specified, separated by plus characters. e.g.

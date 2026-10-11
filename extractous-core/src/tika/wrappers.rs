@@ -15,6 +15,7 @@ use jni::{AttachGuard, JNIEnv};
 /// Java the caller's buffer as a direct `ByteBuffer`, so the text is copied once, straight into it.
 pub struct JInputStream {
     internal: GlobalRef,
+    finished: bool,
     #[cfg(feature = "stream-attachguard")]
     _guard: AttachGuard<'static>,
 }
@@ -25,6 +26,7 @@ impl JInputStream {
         drop(guard);
         Self {
             internal,
+            finished: false,
             #[cfg(feature = "stream-attachguard")]
             _guard: guard,
         }
@@ -38,9 +40,22 @@ impl JInputStream {
     }
 
     fn read_into(&mut self, buf: &mut [u8]) -> ExtractResult<usize> {
+        let read = vm()?
+            .attach_current_thread()?
+            .with_local_frame(4, |env| self.read_in_frame(env, buf))?;
+        if read == 0 {
+            self.finished = true;
+        }
+        Ok(read)
+    }
+
+    pub(crate) fn metadata(&self) -> ExtractResult<Metadata> {
+        if !self.finished {
+            return Err(Error::StreamNotFinished);
+        }
         vm()?
             .attach_current_thread()?
-            .with_local_frame(4, |env| self.read_in_frame(env, buf))
+            .with_local_frame(8, |env| java_result_metadata(env, self.internal.as_obj()))
     }
 
     fn read_in_frame(&self, env: &mut JNIEnv<'_>, buf: &mut [u8]) -> ExtractResult<usize> {

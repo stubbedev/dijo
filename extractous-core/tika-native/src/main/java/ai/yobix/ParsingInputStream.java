@@ -30,6 +30,7 @@ public class ParsingInputStream extends InputStream {
     private final BlockingQueue<byte[]> chunks = new LinkedBlockingQueue<>();
     private final Semaphore space = new Semaphore(QUEUED_CHUNKS);
     private final ChunkOutputStream output = new ChunkOutputStream();
+    private final Metadata metadata;
     private volatile boolean closed;
     private volatile Throwable failure;
     private byte[] current;
@@ -38,6 +39,7 @@ public class ParsingInputStream extends InputStream {
     public ParsingInputStream(Parser parser, InputStream stream, Metadata metadata,
                               ParseContext context, boolean outputXml, Charset charset)
             throws IOException {
+        this.metadata = metadata;
         ParseThreads.run(() -> parse(parser, stream, metadata, context, outputXml, charset),
                 () -> chunks.add(END));
 
@@ -121,6 +123,10 @@ public class ParsingInputStream extends InputStream {
         target.put(current, position, count);
         position += count;
         return count;
+    }
+
+    public Metadata getMetadata() {
+        return metadata;
     }
 
     @Override

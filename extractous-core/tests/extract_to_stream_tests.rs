@@ -187,3 +187,28 @@ fn test_streams_from_many_threads() {
         }
     });
 }
+
+#[test]
+fn test_stream_metadata_is_final_after_reading_to_the_end() {
+    let (mut stream, initial) = Extractor::new()
+        .extract_file("../test_files/documents/2022_Q3_AAPL.pdf")
+        .unwrap();
+    assert!(matches!(
+        stream.metadata(),
+        Err(extractous_core::Error::StreamNotFinished)
+    ));
+    stream.read_to_end(&mut Vec::new()).unwrap();
+
+    let metadata = stream.metadata().unwrap();
+    assert_eq!(metadata.get("xmpTPg:NPages"), Some(&vec!["28".to_string()]));
+    assert!(metadata.len() > initial.len());
+}
+
+#[test]
+fn test_skip_ocr_extracts_no_text_from_an_image() {
+    let (content, _) = Extractor::new()
+        .set_ocr_config(TesseractOcrConfig::new().set_skip_ocr(true))
+        .extract_file_to_string("../test_files/documents/ara-ocr.png")
+        .unwrap();
+    assert!(content.trim().is_empty(), "{content}");
+}
