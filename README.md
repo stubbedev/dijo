@@ -38,6 +38,7 @@ extractous detect mystery.bin                 # application/pdf
 | Option | Meaning |
 | --- | --- |
 | `-f, --format text\|xhtml\|json` | Plain text (default), Tika XHTML, or one JSON object per input per line |
+| `--raw-metadata` | Add Tika's own metadata keys to json output |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
 | `-r, --recursive` | Descend into directories, in sorted order |
@@ -49,6 +50,26 @@ Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRA
 lists them. Errors go to standard error with the input path and the full Java cause chain, and one failed input does
 not stop the others. The exit status is 0 when every input succeeded, 1 when at least one failed and 2 on a usage
 error.
+
+## JSON output
+
+`--format json` writes one object per input per line, following the versioned schema in
+[`schema/output-v1.schema.json`](schema/output-v1.schema.json):
+
+```json
+{"schema_version":1,
+ "source":{"path":"report.pdf","size":266240,"blake3":"0b9b01a7..."},
+ "text":"...",
+ "mime_type":"application/pdf",
+ "status":"complete",
+ "errors":[],
+ "metadata":{"title":"...","authors":["..."],"created":{"utc":"2022-07-29T10:03:21Z"},"page_count":28}}
+```
+
+`metadata` (with `-m`) holds normalised fields filled from whichever Tika key a format uses: dates are RFC 3339 in UTC,
+or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are
+available with `--raw-metadata`. `status` is `complete`, `partial` (some text before an error) or `failed`, and every
+error carries a category and its full cause chain.
 
 ## Supported formats
 

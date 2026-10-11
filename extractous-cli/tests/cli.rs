@@ -89,7 +89,7 @@ fn json_is_one_object_per_input_with_metadata() {
     assert_eq!(objects.len(), 2);
     assert_eq!(objects[0]["source"]["path"], document("simple.odt"));
     assert_eq!(objects[0]["status"], "complete");
-    assert_eq!(objects[1]["metadata"]["xmpTPg:NPages"][0], "28");
+    assert_eq!(objects[1]["metadata"]["page_count"], 28);
 }
 
 #[test]
@@ -241,4 +241,96 @@ fn ocr_language_reaches_tesseract() {
         "{}",
         stdout(&output)
     );
+}
+
+fn json_objects(args: &[&str]) -> Vec<serde_json::Value> {
+    let mut all = vec!["--format", "json", "--metadata", "--raw-metadata"];
+    all.extend_from_slice(args);
+    let output = extractous(&all);
+    stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn assert_matches_schema(object: &serde_json::Value) {
+    let schema: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string("../schema/output-v1.schema.json").unwrap())
+            .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let errors: Vec<String> = validator
+        .iter_errors(object)
+        .map(|error| format!("{} at {}", error, error.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn json_output_follows_the_published_schema() {
+    let inputs: Vec<String> = [
+        "2022_Q3_AAPL.pdf",
+        "category-level.docx",
+        "simple.odt",
+        "simple.doc",
+        "vodafone.xlsx",
+        "simple.pptx",
+        "winter-sports.epub",
+        "sample.eml",
+        "sample.html",
+        "ara-ocr.png",
+        "does-not-exist.pdf",
+    ]
+    .iter()
+    .map(|name| document(name))
+    .collect();
+    let args: Vec<&str> = inputs.iter().map(String::as_str).collect();
+    let objects = json_objects(&args);
+    assert_eq!(objects.len(), inputs.len());
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    assert_eq!(objects.last().unwrap()["status"], "failed");
+    assert_eq!(
+        objects.last().unwrap()["errors"][0]["category"],
+        "unreadable"
+    );
+}
+
+#[test]
+fn metadata_is_normalised_per_format() {
+    let objects = json_objects(&[
+        &document("2022_Q3_AAPL.pdf"),
+        &document("category-level.docx"),
+        &document("simple.pptx"),
+        &document("winter-sports.epub"),
+        &document("sample.eml"),
+        &document("sample.html"),
+    ]);
+    let metadata = |index: usize| &objects[index]["metadata"];
+
+    assert_eq!(objects[0]["mime_type"], "application/pdf");
+    assert_eq!(metadata(0)["page_count"], 28);
+    assert_eq!(metadata(0)["encrypted"], true);
+    assert_eq!(metadata(0)["created"]["utc"], "2022-07-29T10:03:21Z");
+    assert_eq!(
+        metadata(0)["authors"][0],
+        "EDGAR Online, a division of Donnelley Financial Solutions"
+    );
+
+    assert_eq!(metadata(1)["language"][0]["code"], "en-US");
+    assert_eq!(metadata(1)["modified"]["utc"], "2023-09-26T15:58:44Z");
+
+    assert_eq!(metadata(2)["title"], "Title Slide");
+    assert_eq!(metadata(2)["page_count"], 2);
+
+    assert_eq!(metadata(3)["created"]["utc"], "2023-02-26T09:19:44.326437Z");
+    assert_eq!(metadata(3)["language"][0]["code"], "en");
+
+    assert_eq!(objects[4]["mime_type"], "message/rfc822");
+    assert_eq!(metadata(4)["title"], "Notes on the Analytical Engine");
+    assert_eq!(metadata(4)["created"]["utc"], "2024-03-05T13:30:00Z");
+
+    assert_eq!(objects[5]["mime_type"], "text/html");
+    assert_eq!(metadata(5)["title"], "Sample page");
+    assert_eq!(metadata(5)["authors"][0], "Grace Hopper");
 }

@@ -1,130 +1,194 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
 use extractous_core::{Extractor, Metadata, StreamReader};
 
 use crate::cli::Format;
+use crate::schema::{self, ExtractionError, Source, Status, SCHEMA_VERSION};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
-/// What extracting one input produced besides the output written to the sink.
-#[derive(Debug, Default)]
-pub struct Outcome {
-    pub metadata: Option<Metadata>,
-    pub error: Option<String>,
+#[derive(Debug, Clone, Copy)]
+pub struct RenderOptions {
+    pub format: Format,
+    pub metadata: bool,
+    pub raw_metadata: bool,
 }
 
-/// Writes the extraction of `path` to `sink` in `format`. Extraction failures are reported in
-/// the returned outcome; an `Err` means the sink itself could not be written.
+/// What extracting one input produced besides the output written to the sink.
+#[derive(Debug)]
+pub struct Outcome {
+    pub status: Status,
+    pub errors: Vec<ExtractionError>,
+    pub metadata: Option<Metadata>,
+}
+
+/// Text read from a stream until it ended or failed.
+struct Copied {
+    bytes: u64,
+    error: Option<String>,
+}
+
+/// Writes the extraction of `path` to `sink`. Extraction failures are reported in the returned
+/// outcome; an `Err` means the sink itself could not be written.
 pub fn render(
     extractor: &Extractor,
     path: &Path,
     display: &str,
-    format: Format,
-    include_metadata: bool,
+    options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
     let opened = path
         .to_str()
         .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
         .and_then(|path| extractor.extract_file(path).map_err(|e| e.to_string()));
-    match format {
-        Format::Text | Format::Xhtml => render_text(opened, include_metadata, sink),
-        Format::Json => render_json(opened, display, include_metadata, sink),
+    match options.format {
+        Format::Text | Format::Xhtml => render_text(opened, options, sink),
+        Format::Json => render_json(opened, path, display, options, sink),
+    }
+}
+
+fn outcome(
+    copied: Option<&Copied>,
+    open_error: Option<String>,
+    metadata: Option<Metadata>,
+) -> Outcome {
+    let error = open_error.or_else(|| copied.and_then(|copied| copied.error.clone()));
+    let produced_text = copied.is_some_and(|copied| copied.bytes > 0);
+    let status = match (&error, produced_text) {
+        (None, _) => Status::Complete,
+        (Some(_), true) => Status::Partial,
+        (Some(_), false) => Status::Failed,
+    };
+    Outcome {
+        status,
+        errors: error
+            .into_iter()
+            .map(ExtractionError::from_message)
+            .collect(),
+        metadata,
+    }
+}
+
+/// Fetches the metadata Tika finished with; a failure to do so fails the extraction.
+fn final_metadata(stream: &StreamReader, copied: &mut Copied) -> Option<Metadata> {
+    if copied.error.is_some() {
+        return None;
+    }
+    match stream.metadata() {
+        Ok(metadata) => Some(metadata),
+        Err(error) => {
+            copied.error = Some(error.to_string());
+            None
+        }
     }
 }
 
 fn render_text(
     opened: Result<(StreamReader, Metadata), String>,
-    include_metadata: bool,
+    options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
     let mut stream = match opened {
         Ok((stream, _)) => stream,
-        Err(error) => return Ok(failed(error)),
+        Err(error) => return Ok(outcome(None, Some(error), None)),
     };
-    if let Err(error) = copy(&mut stream, sink, |chunk, sink| sink.write_all(chunk))? {
-        return Ok(failed(error));
-    }
-    Ok(finish(&stream, include_metadata))
+    let mut copied = copy(&mut stream, sink, |chunk, sink| sink.write_all(chunk))?;
+    let metadata = options
+        .metadata
+        .then(|| final_metadata(&stream, &mut copied))
+        .flatten();
+    Ok(outcome(Some(&copied), None, metadata))
 }
 
 fn render_json(
     opened: Result<(StreamReader, Metadata), String>,
+    path: &Path,
     display: &str,
-    include_metadata: bool,
+    options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
-    sink.write_all(b"{\"source\":{\"path\":")?;
-    serde_json::to_writer(&mut *sink, display)?;
-    sink.write_all(b"}")?;
+    write!(sink, "{{\"schema_version\":{SCHEMA_VERSION},\"source\":")?;
+    serde_json::to_writer(&mut *sink, &source(path, display))?;
 
-    let outcome = match opened {
-        Err(error) => failed(error),
+    let (outcome, metadata) = match opened {
+        Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
             sink.write_all(b",\"text\":\"")?;
-            let copied = copy(&mut stream, sink, write_json_string_content)?;
+            let mut copied = copy(&mut stream, sink, write_json_string_content)?;
             sink.write_all(b"\"")?;
-            match copied {
-                Err(error) => failed(error),
-                Ok(()) => finish(&stream, include_metadata),
-            }
+            let metadata = final_metadata(&stream, &mut copied);
+            (outcome(Some(&copied), None, None), metadata)
         }
     };
 
-    match &outcome.error {
-        None => sink.write_all(b",\"status\":\"complete\",\"errors\":[]")?,
-        Some(error) => {
-            sink.write_all(b",\"status\":\"failed\",\"errors\":[")?;
-            serde_json::to_writer(&mut *sink, error)?;
-            sink.write_all(b"]")?;
+    if let Some(mime_type) = metadata.as_ref().and_then(schema::mime_type) {
+        write_field(sink, "mime_type", &mime_type)?;
+    }
+    write_field(sink, "status", &outcome.status)?;
+    write_field(sink, "errors", &outcome.errors)?;
+    if let Some(metadata) = &metadata {
+        if options.metadata {
+            write_field(sink, "metadata", &schema::normalize(metadata))?;
+        }
+        if options.raw_metadata {
+            write_field(
+                sink,
+                "raw_metadata",
+                &metadata.iter().collect::<BTreeMap<_, _>>(),
+            )?;
         }
     }
-    if let Some(metadata) = &outcome.metadata {
-        sink.write_all(b",\"metadata\":")?;
-        serde_json::to_writer(&mut *sink, &metadata.iter().collect::<BTreeMap<_, _>>())?;
-    }
     sink.write_all(b"}\n")?;
-    Ok(Outcome {
-        metadata: None,
-        error: outcome.error,
-    })
+    Ok(outcome)
 }
 
-fn failed(error: String) -> Outcome {
-    Outcome {
-        metadata: None,
-        error: Some(error),
+fn write_field(sink: &mut dyn Write, name: &str, value: &impl serde::Serialize) -> io::Result<()> {
+    write!(sink, ",\"{name}\":")?;
+    serde_json::to_writer(&mut *sink, value)?;
+    Ok(())
+}
+
+fn source(path: &Path, display: &str) -> Source {
+    let digest = fs::File::open(path).and_then(|mut file| {
+        let mut hasher = blake3::Hasher::new();
+        let size = io::copy(&mut file, &mut hasher)?;
+        Ok((size, hasher.finalize().to_hex().to_string()))
+    });
+    let (size, blake3) = match digest {
+        Ok((size, hash)) => (Some(size), Some(hash)),
+        Err(_) => (None, None),
+    };
+    Source {
+        path: display.to_string(),
+        size,
+        blake3,
     }
 }
 
-fn finish(stream: &StreamReader, include_metadata: bool) -> Outcome {
-    if !include_metadata {
-        return Outcome::default();
-    }
-    match stream.metadata() {
-        Ok(metadata) => Outcome {
-            metadata: Some(metadata),
-            error: None,
-        },
-        Err(error) => failed(error.to_string()),
-    }
-}
-
-/// Copies the extracted text into the sink. The outer result fails when the sink does; the inner
-/// one when extraction does.
+/// Copies the extracted text into the sink; fails only when the sink does.
 fn copy(
     stream: &mut StreamReader,
     sink: &mut dyn Write,
     write: impl Fn(&[u8], &mut dyn Write) -> io::Result<()>,
-) -> io::Result<Result<(), String>> {
+) -> io::Result<Copied> {
     let mut buffer = vec![0; READ_BUFFER_SIZE];
+    let mut bytes = 0;
     loop {
         match stream.read(&mut buffer) {
-            Ok(0) => return Ok(Ok(())),
-            Ok(read) => write(&buffer[..read], sink)?,
-            Err(error) => return Ok(Err(error.to_string())),
+            Ok(0) => return Ok(Copied { bytes, error: None }),
+            Ok(read) => {
+                write(&buffer[..read], sink)?;
+                bytes += read as u64;
+            }
+            Err(error) => {
+                return Ok(Copied {
+                    bytes,
+                    error: Some(error.to_string()),
+                })
+            }
         }
     }
 }

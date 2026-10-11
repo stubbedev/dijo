@@ -1,6 +1,7 @@
 mod cli;
 mod inputs;
 mod render;
+mod schema;
 mod spool;
 
 use std::collections::BTreeMap;
@@ -17,6 +18,8 @@ use extractous_core::{Extractor, Metadata, PdfOcrStrategy, PdfParserConfig, Tess
 
 use cli::{Cli, Command, ExtractArgs, Format, InputArgs, Ocr};
 use inputs::{Input, InputError, Source};
+use render::RenderOptions;
+use schema::Status;
 use spool::Spool;
 
 fn main() -> ExitCode {
@@ -160,7 +163,8 @@ struct Finished {
     display: String,
     output: Result<Option<PathBuf>, String>,
     metadata: Option<Metadata>,
-    error: Option<String>,
+    status: Status,
+    errors: Vec<String>,
 }
 
 fn extract(args: &ExtractArgs) -> bool {
@@ -218,7 +222,8 @@ fn run(
                 display: error.display.clone(),
                 output: Ok(None),
                 metadata: None,
-                error: Some(error.message.clone()),
+                status: Status::Failed,
+                errors: vec![error.message.clone()],
             }
         }
     };
@@ -236,26 +241,36 @@ fn run(
             extractor,
             path,
             &input.display,
-            args.format,
-            args.metadata,
+            RenderOptions {
+                format: args.format,
+                metadata: args.metadata,
+                raw_metadata: args.raw_metadata,
+            },
             writer,
         )
     });
-    let (output, outcome) = match rendered {
-        Ok(outcome) => (
-            Ok(match sink {
+    match rendered {
+        Ok(outcome) => Finished {
+            display: input.display.clone(),
+            output: Ok(match sink {
                 Sink::Spooled(path) => Some(path),
                 Sink::Stdout | Sink::OutputFile(_) => None,
             }),
-            outcome,
-        ),
-        Err(error) => (Err(error), render::Outcome::default()),
-    };
-    Finished {
-        display: input.display.clone(),
-        output,
-        metadata: outcome.metadata,
-        error: outcome.error,
+            metadata: outcome.metadata,
+            status: outcome.status,
+            errors: outcome
+                .errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect(),
+        },
+        Err(error) => Finished {
+            display: input.display.clone(),
+            output: Err(error),
+            metadata: None,
+            status: Status::Failed,
+            errors: Vec::new(),
+        },
     }
 }
 
@@ -304,7 +319,7 @@ fn write_file_atomically(
     let partial = path.with_added_extension(format!("partial-{}", std::process::id()));
     let written = write_file(&partial, render);
     match written {
-        Ok(outcome) if outcome.error.is_none() || keep_failed => {
+        Ok(outcome) if outcome.status == Status::Complete || keep_failed => {
             fs::rename(&partial, path)?;
             Ok(outcome)
         }
@@ -330,7 +345,7 @@ fn emit_in_order(receiver: mpsc::Receiver<(usize, Finished)>, format: Format) ->
 }
 
 fn emit(finished: Finished, format: Format) -> bool {
-    let mut succeeded = finished.error.is_none();
+    let mut succeeded = finished.status == Status::Complete;
     match finished.output {
         Ok(Some(spooled)) => {
             let copied = fs::File::open(&spooled)
@@ -356,7 +371,7 @@ fn emit(finished: Finished, format: Format) -> bool {
             }
         }
     }
-    if let Some(error) = &finished.error {
+    for error in &finished.errors {
         report(&finished.display, error);
     }
     succeeded

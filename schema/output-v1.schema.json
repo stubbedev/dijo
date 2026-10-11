@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/stubbedev/extractous/schema/output-v1.schema.json",
+  "title": "extractous output, schema version 1",
+  "description": "One object per extracted input, as written by `extractous --format json`.",
+  "type": "object",
+  "required": ["schema_version", "source", "status", "errors"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "source": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "The input as given; `-` for standard input." },
+        "size": { "type": "integer", "minimum": 0, "description": "Size of the input in bytes." },
+        "blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "BLAKE3 hash of the input." }
+      }
+    },
+    "text": { "type": "string", "description": "Extracted text, or XHTML. Absent when the input could not be opened." },
+    "mime_type": { "type": "string", "description": "Detected media type without parameters." },
+    "status": { "enum": ["complete", "partial", "failed"] },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "category": { "enum": ["unreadable", "corrupt", "encrypted", "unsupported", "limit-exceeded", "timeout", "internal"] },
+          "message": { "type": "string", "description": "The error with its full Java cause chain." }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Normalised metadata, present with --metadata. Fields that are unknown are omitted.",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "authors": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "created": { "$ref": "#/$defs/date" },
+        "modified": { "$ref": "#/$defs/date" },
+        "language": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["code"],
+            "additionalProperties": false,
+            "properties": { "code": { "type": "string" } }
+          }
+        },
+        "page_count": { "type": "integer", "minimum": 0 },
+        "encrypted": { "type": "boolean" }
+      }
+    },
+    "raw_metadata": {
+      "type": "object",
+      "description": "Tika's metadata keys and values, present with --raw-metadata.",
+      "additionalProperties": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "$defs": {
+    "date": {
+      "description": "RFC 3339. `utc` when the source gave an offset, `unknown_offset` when it did not; never assumed local.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["utc"],
+          "additionalProperties": false,
+          "properties": { "utc": { "type": "string", "format": "date-time" } }
+        },
+        {
+          "type": "object",
+          "required": ["unknown_offset"],
+          "additionalProperties": false,
+          "properties": { "unknown_offset": { "type": "string" } }
+        }
+      ]
+    }
+  }
+}

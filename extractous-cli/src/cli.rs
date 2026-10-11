@@ -50,9 +50,14 @@ pub struct ExtractArgs {
     #[arg(short, long, value_enum, default_value_t = Format::Text, env = "EXTRACTOUS_FORMAT")]
     pub format: Format,
 
-    /// Include metadata: on standard error for text and xhtml, inline for json.
+    /// Include metadata: Tika's keys on standard error for text and xhtml, the normalised fields
+    /// inline for json.
     #[arg(short, long, env = "EXTRACTOUS_METADATA")]
     pub metadata: bool,
+
+    /// Include Tika's raw metadata keys and values in json output.
+    #[arg(long, env = "EXTRACTOUS_RAW_METADATA")]
+    pub raw_metadata: bool,
 
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]
@@ -78,7 +83,7 @@ pub enum Format {
     Text,
     /// Apache Tika's XHTML.
     Xhtml,
-    /// One JSON object per input, one per line.
+    /// One JSON object per input, one per line, following schema/output-v1.schema.json.
     Json,
 }
 
