@@ -1,398 +1,231 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
+use std::hash::{DefaultHasher, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
+const TIKA_NATIVE_INPUTS: [&str; 5] = ["build.gradle", "gradle", "gradlew", "gradlew.bat", "src"];
+const FINGERPRINT_FILE: &str = ".fingerprint";
+
 fn main() {
-    // Exit early when building docs or when running clippy
-    if env::var("DOCS_RS").is_ok() {
+    if env::var_os("DOCS_RS").is_some() {
         return;
     }
 
-    // Set tika_native source directory
-    let root_dir = env::var("CARGO_MANIFEST_DIR").map(PathBuf::from).unwrap();
-    let tika_native_source_dir = root_dir.join("tika-native");
+    let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
+    let out_dir = PathBuf::from(required_env("OUT_DIR"));
+    for input in TIKA_NATIVE_INPUTS {
+        println!(
+            "cargo:rerun-if-changed={}",
+            source_dir.join(input).display()
+        );
+    }
+    println!("cargo:rerun-if-env-changed=GRAALVM_HOME");
 
-    // Main build output directory
-    let out_dir = env::var("OUT_DIR").map(PathBuf::from).unwrap();
-    let libs_out_dir = out_dir.join("libs"); // out_dir subdir to copy the built libs to
-
-    // Just for debugging
-    // let graal_home = env::var("GRAALVM_HOME");
-    // let java_home = env::var("JAVA_HOME");
-    // println!("cargo:warning=GRAALVM_HOME: {:?}", graal_home);
-    // println!("cargo:warning=JAVA_HOME: {:?}", java_home);
-    //println!("cargo:warning=dist_dir: {}", dist_dir.display());
-    //println!("cargo:warning=out_dir: {}", out_dir.display());
-    //println!("cargo:warning=tika_native_dir: {:?}", tika_native_dir);
-    let tika_native_dir = out_dir.join("tika-native");
-    let mut need_build = false;
-    if is_dir_updated(&tika_native_source_dir, &tika_native_dir) {
-        println!("Lib tika_native files were updated");
-        fs_extra::dir::remove(&libs_out_dir).ok();
-        fs_extra::dir::remove(&tika_native_dir).ok();
-        need_build = true;
-        // Launch the gradle build
-    } else {
-        println!("Lib tika_native files were not updated");
+    let host = required_env("HOST");
+    let target = required_env("TARGET");
+    if host != target {
+        panic!(
+            "Cross-compiling is not supported: GraalVM native-image builds tika_native for the \
+             host {host}, not for the target {target}"
+        );
     }
 
-    // Try to find already built libs
-    match find_already_built_libs(&out_dir) {
-        Some(libs_dir) => {
-            // ignore if libs_dir/.. is the same as out_dir
-            if out_dir.join("libs") != libs_dir {
-                // If the libs are already built, copy them to the output directory
-                copy_build_artifacts(&libs_dir, &libs_out_dir);
-            }
-        }
-        None => {
-            need_build = true;
-        }
+    let windows = required_env("CARGO_CFG_TARGET_OS") == "windows";
+    let graalvm_home = graalvm_home(windows);
+    let fingerprint = fingerprint(&source_dir, &graalvm_home);
+    let libs_dir = out_dir.join("libs");
+
+    if read_fingerprint(&libs_dir).as_deref() != Some(fingerprint.as_str()) {
+        let built = find_built_libs(&out_dir, &fingerprint)
+            .unwrap_or_else(|| gradle_build(&source_dir, &out_dir, &graalvm_home, windows));
+        install_libs(&built, &out_dir, &libs_dir, &fingerprint);
     }
 
-    // Launch the gradle build
-    if need_build {
-        gradle_build(&tika_native_source_dir, &out_dir, &libs_out_dir);
-    }
-
-    // Tell cargo to look for shared libraries in the specified directory
-    println!("cargo:rustc-link-search={}", libs_out_dir.display());
-
-    // Tell cargo to tell rustc to link the `tika_native` shared library.
-    let lib_tika_name = if cfg!(target_os = "windows") {
+    println!("cargo:rustc-link-search={}", libs_dir.display());
+    let lib_tika_name = if windows {
         "libtika_native"
     } else {
         "tika_native"
     };
-    println!("cargo:rustc-link-lib=dylib={}", lib_tika_name);
+    println!("cargo:rustc-link-lib=dylib={lib_tika_name}");
 }
 
-/// Searches for directories two levels up from `out_dir` and checks if any of them
-/// have two subdirectories: "libs" and "tika-native".
-fn find_already_built_libs(out_dir: &Path) -> Option<PathBuf> {
-    // Traverse two levels up going to the build dir (target/debug/build)
-    if let Some(parent_dir) = out_dir.parent().and_then(|p| p.parent()) {
-        // Iterate over the entries in (target/debug/build)
-        if let Ok(entries) = fs::read_dir(parent_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                // Check if the current entry is a directory
-                if path.is_dir() {
-                    // Get the directory name as a string and check if it starts with "extractous-"
-                    if let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) {
-                        if dir_name.starts_with("extractous-") {
-                            // Check if both "libs" and "tika-native" exist in this directory
-                            let libs_dir = path.join("out").join("libs");
-                            let tika_native_dir = path.join("out").join("tika-native");
-
-                            if libs_dir.is_dir() && tika_native_dir.is_dir() {
-                                return Some(libs_dir);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+fn required_env(name: &str) -> String {
+    env::var(name).unwrap_or_else(|e| panic!("Cargo did not provide {name}: {e}"))
 }
 
-fn is_dir_updated(src: &Path, dest: &Path) -> bool {
-    for entry in WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
-        if entry.file_type().is_file() {
-            let src_file = entry.path();
-            let relative_path = src_file.strip_prefix(src).unwrap();
-            let dest_file = dest.join(relative_path);
-
-            if !dest_file.exists() {
-                // File does not exist in the destination directory
-                return true;
-            }
-
-            let src_modified = match fs::metadata(src_file).and_then(|meta| meta.modified()) {
-                Ok(time) => time,
-                Err(_) => continue, // Skip unreadable files
-            };
-
-            let dest_modified = match fs::metadata(&dest_file).and_then(|meta| meta.modified()) {
-                Ok(time) => time,
-                Err(_) => return true, // File in dest is inaccessible
-            };
-
-            if src_modified > dest_modified {
-                // Source file is newer than the destination file
-                return true;
-            }
-        }
-    }
-    // All checks passed
-    false
-}
-
-// Run the gradle build command to build tika-native
-fn gradle_build(tika_native_source_dir: &Path, out_dir: &Path, libs_out_dir: &Path) {
-    let jdk_install_dir = out_dir.join("graalvm-jdk"); // out_dir subdir where jdk is downloaded
-    let tika_native_dir = out_dir.join("tika-native"); // out_dir subdir where the gradle build is run
-
-    // Try to find a GraalVM JDK or install one if not found
-    let graalvm_home = get_graalvm_home(&jdk_install_dir);
-
-    println!("Using GraalVM JDK found at {}", graalvm_home.display());
-    println!("Building tika_native libs this might take a while ... Please be patient!!");
-
-    if is_dir_updated(tika_native_source_dir, &tika_native_dir) {
-        println!("Lib tika_native files were updated");
-        fs_extra::dir::remove(&tika_native_dir).ok();
-    }
-    // Because build script are not allowed to change files outside of OUT_DIR
-    // we need to copy the tika-native source directory to OUT_DIR and call gradle build there
-    if !tika_native_dir.is_dir() {
-        fs_extra::dir::copy(
-            tika_native_source_dir,
-            out_dir,
-            &fs_extra::dir::CopyOptions::new(),
-        )
-        .expect("Failed to copy tika-native source to OUT_DIR");
-    }
-
-    let gradlew = if cfg!(target_os = "windows") {
-        tika_native_dir.join("gradlew.bat")
+fn graalvm_home(windows: bool) -> PathBuf {
+    let home = env::var_os("GRAALVM_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "GRAALVM_HOME is not set. Building tika_native needs the GraalVM JDK that \
+                 tika-native/build.gradle requires; the devenv shell provides it."
+            )
+        });
+    let native_image = home.join("bin").join(if windows {
+        "native-image.cmd"
     } else {
-        tika_native_dir.join("gradlew")
-    };
+        "native-image"
+    });
+    if !native_image.is_file() {
+        panic!(
+            "GRAALVM_HOME={} is not a GraalVM JDK: {} does not exist",
+            home.display(),
+            native_image.display()
+        );
+    }
+    home
+}
 
-    // Launch the gradle build
-    Command::new(gradlew)
-        .current_dir(&tika_native_dir)
+fn read_file(path: &Path) -> Vec<u8> {
+    fs::read(path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+fn fingerprint(source_dir: &Path, graalvm_home: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    let release = read_file(&graalvm_home.join("release"));
+    hasher.write_usize(release.len());
+    hasher.write(&release);
+    for input in TIKA_NATIVE_INPUTS {
+        for entry in WalkDir::new(source_dir.join(input)).sort_by_file_name() {
+            let entry =
+                entry.unwrap_or_else(|e| panic!("Failed to walk {}: {e}", source_dir.display()));
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let relative = entry.path().strip_prefix(source_dir).unwrap();
+            let name = relative.as_os_str().as_encoded_bytes();
+            let content = read_file(entry.path());
+            hasher.write_usize(name.len());
+            hasher.write(name);
+            hasher.write_usize(content.len());
+            hasher.write(&content);
+        }
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+fn read_fingerprint(libs_dir: &Path) -> Option<String> {
+    match fs::read_to_string(libs_dir.join(FINGERPRINT_FILE)) {
+        Ok(fingerprint) => Some(fingerprint),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => panic!(
+            "Failed to read the fingerprint in {}: {e}",
+            libs_dir.display()
+        ),
+    }
+}
+
+fn find_built_libs(out_dir: &Path, fingerprint: &str) -> Option<PathBuf> {
+    let build_dir = out_dir.parent()?.parent()?;
+    fs::read_dir(build_dir)
+        .unwrap_or_else(|e| panic!("Failed to list {}: {e}", build_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("Failed to list {}: {e}", build_dir.display()))
+                .path()
+        })
+        .filter(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.starts_with("extractous-"))
+        })
+        .map(|path| path.join("out").join("libs"))
+        .find(|libs| read_fingerprint(libs).as_deref() == Some(fingerprint))
+}
+
+fn gradle_build(source_dir: &Path, out_dir: &Path, graalvm_home: &Path, windows: bool) -> PathBuf {
+    let work_dir = out_dir.join("tika-native");
+    remove_dir_if_exists(&work_dir);
+    for input in TIKA_NATIVE_INPUTS {
+        copy_tree(&source_dir.join(input), &work_dir.join(input));
+    }
+
+    let gradlew = work_dir.join(if windows { "gradlew.bat" } else { "gradlew" });
+    println!(
+        "Building tika_native with the GraalVM JDK at {}",
+        graalvm_home.display()
+    );
+    let status = Command::new(&gradlew)
+        .current_dir(&work_dir)
         .arg("--no-daemon")
         .arg("nativeCompile")
         .env("JAVA_HOME", graalvm_home)
         .status()
-        .expect("Failed to build tika-native");
-
-    let build_path = tika_native_dir.join("build/native/nativeCompile");
-    copy_build_artifacts(&build_path, libs_out_dir);
-
-    println!("Successfully built libs 🚀");
-}
-
-pub fn copy_build_artifacts(from_path: &Path, to_dir: &Path) {
-    let artifacts: Vec<PathBuf> = fs::read_dir(from_path)
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to list build artifacts in {}: {}",
-                from_path.display(),
-                e
-            )
-        })
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|e| {
-                    panic!("Failed to read entry of {}: {}", from_path.display(), e)
-                })
-                .path()
-        })
-        .filter(|path| path.extension() != Some(OsStr::new("h")))
-        .collect();
-
-    fs::create_dir_all(to_dir)
-        .unwrap_or_else(|e| panic!("Failed to create {}: {}", to_dir.display(), e));
-    for artifact in &artifacts {
-        let dest = to_dir.join(artifact.file_name().unwrap());
-        match fs::remove_file(&dest) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => panic!("Failed to remove stale {}: {}", dest.display(), e),
-        }
-        fs::copy(artifact, &dest).unwrap_or_else(|e| {
-            panic!(
-                "Failed to copy {} to {}: {}",
-                artifact.display(),
-                dest.display(),
-                e
-            )
-        });
+        .unwrap_or_else(|e| panic!("Failed to run {}: {e}", gradlew.display()));
+    if !status.success() {
+        panic!("{} nativeCompile failed: {status}", gradlew.display());
     }
+    work_dir.join("build").join("native").join("nativeCompile")
 }
 
-// * Firsts checks if we have a valid GRAALVM JDK installed by checking GRAALVM_HOME
-// * If not, checks if JAVA_HOME is set and points to a valid GraalVM JDK
-// * If not, downloads and installs GraalVM CE
-pub fn get_graalvm_home(install_dir: &PathBuf) -> PathBuf {
-    let graalvm_home_env = env::var("GRAALVM_HOME");
-    match graalvm_home_env {
-        Ok(graalvm_home_val) => {
-            // Check that native-image is in GRAALVM_HOME/bin
-            let graalvm_home = PathBuf::from(graalvm_home_val);
-            check_graalvm(&graalvm_home, true);
-            graalvm_home
+fn install_libs(from_dir: &Path, out_dir: &Path, libs_dir: &Path, fingerprint: &str) {
+    let staging_dir = out_dir.join("libs.staging");
+    remove_dir_if_exists(&staging_dir);
+    create_dir(&staging_dir);
+
+    for entry in fs::read_dir(from_dir)
+        .unwrap_or_else(|e| panic!("Failed to list {}: {e}", from_dir.display()))
+    {
+        let path = entry
+            .unwrap_or_else(|e| panic!("Failed to list {}: {e}", from_dir.display()))
+            .path();
+        let name = path.file_name().unwrap();
+        if path.extension() == Some(OsStr::new("h")) || name == FINGERPRINT_FILE {
+            continue;
         }
-        Err(_) => {
-            let java_home_env = env::var("JAVA_HOME");
-            match java_home_env {
-                Ok(java_home_val) => {
-                    // Check that native-image is in JAVA_HOME/bin if not install GraalVM CE
-                    let mut graalvm_home = PathBuf::from(java_home_val);
-                    if !check_graalvm(&graalvm_home, false) {
-                        graalvm_home = install_graalvm_ce(install_dir);
-                        check_graalvm(&graalvm_home, true);
-                    }
-                    graalvm_home
-                }
-                Err(_) => {
-                    // If no JAVA_HOME is set, try to download and install GraalVM CE
-                    let graalvm_home = install_graalvm_ce(install_dir);
-                    check_graalvm(&graalvm_home, true);
-                    graalvm_home
-                }
-            }
-        }
+        copy_file(&path, &staging_dir.join(name));
     }
-}
+    let fingerprint_path = staging_dir.join(FINGERPRINT_FILE);
+    fs::write(&fingerprint_path, fingerprint)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", fingerprint_path.display()));
 
-// checks if GraalVM JDK is valid by checking if native-image is found in [graalvm_home]/bin
-pub fn check_graalvm(graalvm_home: &Path, panic: bool) -> bool {
-    let native_image_exe = if cfg!(target_os = "windows") {
-        "native-image.cmd"
-    } else {
-        "native-image"
-    };
-
-    // Check that native-image is in [graalvm_home]/bin
-    let native_image = graalvm_home.join("bin").join(native_image_exe);
-    let exists = native_image.exists();
-    if panic && !exists {
+    remove_dir_if_exists(libs_dir);
+    fs::rename(&staging_dir, libs_dir).unwrap_or_else(|e| {
         panic!(
-            "Your GraalVM JDK installation is pointing to: {}. Please make sure \
-                it is a valid GraalVM JDK. {}",
-            graalvm_home.display(),
-            graalvm_install_help_msg()
-        );
-    }
-    exists
+            "Failed to move {} to {}: {e}",
+            staging_dir.display(),
+            libs_dir.display()
+        )
+    });
 }
 
-fn graalvm_install_help_msg() -> String {
-    let sdkman_graalvm_version = if cfg!(target_os = "macos") {
-        "24.1.1.r23-nik" // Bellsoft Liberika r23 means jdk 23
-    } else {
-        "23.0.1-graalce"
-    };
-
-    format!(
-        "\nWe recommend using sdkman to install and \
-                manage different JDKs. See https://sdkman.io/usage for more information.\n\
-                You can install graalvm using:\n  \
-                sdk install java {} \n  \
-                sdk use java {}",
-        sdkman_graalvm_version, sdkman_graalvm_version
-    )
-}
-
-pub fn install_graalvm_ce(install_dir: &PathBuf) -> PathBuf {
-    let (base_url, archive_ext, main_dir) = if cfg!(target_os = "windows") {
-        let url = if cfg!(target_arch = "x86_64") {
-            "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-23.0.1/graalvm-community-jdk-23.0.1_windows-x64_bin.zip"
+fn copy_tree(from: &Path, to: &Path) {
+    for entry in WalkDir::new(from) {
+        let entry = entry.unwrap_or_else(|e| panic!("Failed to walk {}: {e}", from.display()));
+        let relative = entry.path().strip_prefix(from).unwrap();
+        let dest = if relative.as_os_str().is_empty() {
+            to.to_path_buf()
         } else {
-            panic!("Unsupported windows architecture");
+            to.join(relative)
         };
-        (url, "zip", "graalvm-community-openjdk-23.0.1+11.1")
-    } else if cfg!(target_os = "macos") {
-        let (url, dir) = if cfg!(target_arch = "x86_64") {
-            ("https://github.com/bell-sw/LibericaNIK/releases/download/24.1.1+1-23.0.1+13/bellsoft-liberica-vm-full-openjdk23.0.1+13-24.1.1+1-macos-amd64.tar.gz",
-             "bellsoft-liberica-vm-full-openjdk23-24.1.1/Contents/Home")
-        } else if cfg!(target_arch = "aarch64") {
-            ("https://github.com/bell-sw/LibericaNIK/releases/download/24.1.1+1-23.0.1+13/bellsoft-liberica-vm-openjdk23.0.1+13-24.1.1+1-macos-aarch64.tar.gz",
-             "bellsoft-liberica-vm-openjdk23-24.1.1/Contents/Home")
+        if entry.file_type().is_dir() {
+            create_dir(&dest);
         } else {
-            panic!("Unsupported macos architecture ");
-        };
-        (url, "tar.gz", dir)
-    } else {
-        // Use Bellsoft Liberica NIK for Linux to get proper AWT support
-        let (url, dir) = if cfg!(target_arch = "x86_64") {
-            ("https://download.bell-sw.com/vm/24.1.1/bellsoft-liberica-vm-full-openjdk23.0.1+13-24.1.1+1-linux-amd64.tar.gz",
-             "bellsoft-liberica-vm-full-openjdk23-24.1.1")
-        } else if cfg!(target_arch = "aarch64") {
-            ("https://download.bell-sw.com/vm/24.1.1/bellsoft-liberica-vm-full-openjdk23.0.1+13-24.1.1+1-linux-aarch64.tar.gz",
-             "bellsoft-liberica-vm-full-openjdk23-24.1.1")
-        } else {
-            panic!("Unsupported linux architecture");
-        };
-        (url, "tar.gz", dir)
-    };
-
-    let graalvm_home = install_dir.join(main_dir);
-
-    // Download and GraalVM CE
-    if !graalvm_home.exists() {
-        fs::create_dir_all(install_dir).unwrap();
-        let archive_path = install_dir
-            .join("graalvm-ce-archive")
-            .with_extension(archive_ext);
-
-        // Download the GraalVM archive file if it was not downloaded before
-        if !archive_path.exists() {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(60 * 5)) // 5 minutes
-                .build()
-                .unwrap();
-            let response = client.get(base_url).send().unwrap();
-            // copy the resp bytes to a buffer first. This will prevent creating a corrupt archive
-            // in case of a download error
-            let mut buffer: Vec<u8> = vec![];
-            io::copy(
-                &mut response
-                    .bytes()
-                    .unwrap_or_else(|_| panic!("Failed to download GraalVM JDK from {}", base_url))
-                    .as_ref(),
-                &mut buffer,
-            )
-            .unwrap();
-            //let mut out = fs::File::create(&archive_path).unwrap();
-            //out.write_all(&buffer).unwrap();
-            fs::write(&archive_path, &buffer).expect("Failed to write archive file");
-        }
-
-        // Extract the archive file
-        if archive_path.exists() {
-            println!("Extracting GraalVM JDK archive {}", archive_path.display());
-
-            if cfg!(target_os = "windows") {
-                let archive_file = fs::File::open(&archive_path).unwrap();
-                let mut archive =
-                    zip::ZipArchive::new(std::io::BufReader::new(archive_file)).unwrap();
-
-                for i in 0..archive.len() {
-                    let mut file = archive.by_index(i).unwrap();
-                    let outpath = install_dir.join(file.name());
-
-                    if file.is_dir() {
-                        fs::create_dir_all(&outpath).unwrap();
-                    } else {
-                        if let Some(parent) = outpath.parent() {
-                            if !parent.exists() {
-                                fs::create_dir_all(parent).unwrap();
-                            }
-                        }
-                        let mut outfile = fs::File::create(&outpath).unwrap();
-                        io::copy(&mut file, &mut outfile).unwrap();
-                    }
-                }
-            } else {
-                let tar_gz_file = fs::File::open(&archive_path).unwrap();
-                let tar = flate2::read::GzDecoder::new(tar_gz_file);
-                let mut archive = tar::Archive::new(tar);
-                archive.unpack(install_dir).unwrap();
-            }
-        } else {
-            panic!("Failed to download GraalVM JDK from {}", base_url);
+            create_dir(dest.parent().unwrap());
+            copy_file(entry.path(), &dest);
         }
     }
+}
 
-    install_dir.join(main_dir)
+fn create_dir(dir: &Path) {
+    fs::create_dir_all(dir).unwrap_or_else(|e| panic!("Failed to create {}: {e}", dir.display()));
+}
+
+fn copy_file(from: &Path, to: &Path) {
+    fs::copy(from, to)
+        .unwrap_or_else(|e| panic!("Failed to copy {} to {}: {e}", from.display(), to.display()));
+}
+
+fn remove_dir_if_exists(dir: &Path) {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => panic!("Failed to remove {}: {e}", dir.display()),
+    }
 }
