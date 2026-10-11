@@ -24,6 +24,9 @@ pub enum Error {
 
     #[error("Java exception: {0}")]
     JavaException(String),
+
+    #[error("Native library error: {0}")]
+    NativeLibrary(String),
 }
 
 impl From<Error> for io::Error {

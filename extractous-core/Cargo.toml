@@ -18,7 +18,9 @@ required-features = []
 
 [dependencies]
 libc = { version = "0.2.178" }
-jni = { version = "0.21.1",features = ["invocation"] }
+jni = { version = "0.21.1" }
+libloading = "0.8.9"
+flate2 = "1.1.5"
 thiserror = { version = "2.0.17" }
 bytemuck =  { version = "1.24.0"}
 # String enums
@@ -35,6 +37,8 @@ quick-xml = { version = "0.38.4", features = ["encoding"] }
 
 [build-dependencies]
 walkdir = "2.5.0"
+flate2 = "1.1.5"
+object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }
 
 [features]
 stream-attachguard = []
@@ -42,6 +46,5 @@ stream-attachguard = []
 [profile.release]
 opt-level = 3
 lto = "thin"
-rpath = true
 # Enable CPU-specific optimizations
 codegen-units = 1

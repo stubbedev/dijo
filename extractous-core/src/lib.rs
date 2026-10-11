@@ -22,6 +22,7 @@ pub use extractor::*;
 // tika module, not exposed outside this crate
 mod tika {
     mod jni_utils;
+    mod native;
     mod parse;
     mod wrappers;
     pub(crate) use parse::*;

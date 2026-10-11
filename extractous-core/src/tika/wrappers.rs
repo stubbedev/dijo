@@ -49,7 +49,7 @@ impl JReaderInputStream {
     }
 
     pub(crate) fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut env = vm().attach_current_thread().map_err(Error::JniError)?;
+        let mut env = vm()?.attach_current_thread().map_err(Error::JniError)?;
 
         let length = buf.len() as jsize;
 
@@ -127,7 +127,7 @@ impl JReaderInputStream {
 
 impl Drop for JReaderInputStream {
     fn drop(&mut self) {
-        if let Ok(mut env) = vm().attach_current_thread() {
+        if let Ok(mut env) = vm().and_then(|vm| Ok(vm.attach_current_thread()?)) {
             // Call the Java Reader's `close` method
             jni_call_method(&mut env, &self.internal, "close", "()V", &[]).ok();
         }

@@ -2,8 +2,9 @@ use std::sync::OnceLock;
 
 use crate::config::ParserConfigs;
 use crate::embedded::EmbeddedExtractResult;
-use crate::errors::ExtractResult;
+use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::*;
+use crate::tika::native;
 use crate::tika::wrappers::*;
 use crate::{CharSet, Metadata, StreamReader};
 use jni::objects::{JObject, JValue};
@@ -14,16 +15,17 @@ const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
                                  Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
                                  Lorg/apache/tika/parser/ocr/TesseractOCRConfig;";
 
-/// Returns a reference to the shared VM isolate
-/// Instead of creating a new VM for every tika call, we create a single VM that is shared
-/// throughout the application.
-pub(crate) fn vm() -> &'static JavaVM {
-    static GRAAL_VM: OnceLock<JavaVM> = OnceLock::new();
-    GRAAL_VM.get_or_init(create_vm_isolate)
+/// Returns the VM isolate shared by every extraction in the process, starting it on first use.
+pub(crate) fn vm() -> ExtractResult<&'static JavaVM> {
+    static RUNTIME: OnceLock<Result<native::Runtime, String>> = OnceLock::new();
+    match RUNTIME.get_or_init(native::start) {
+        Ok(runtime) => Ok(&runtime.vm),
+        Err(message) => Err(Error::NativeLibrary(message.clone())),
+    }
 }
 
 fn attach_current_thread() -> ExtractResult<AttachGuard<'static>> {
-    Ok(vm().attach_current_thread()?)
+    Ok(vm()?.attach_current_thread()?)
 }
 
 /// Where a document is read from.

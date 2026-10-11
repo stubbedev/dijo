@@ -20,8 +20,10 @@ Building the crate compiles Tika, so the build machine needs a GraalVM JDK with 
 `GRAALVM_HOME`, matching the version `extractous-core/tika-native/build.gradle` requires. The first build takes a few
 minutes; later builds reuse the compiled library until the Tika sources or the GraalVM release change.
 
-At runtime `libtika_native` and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...)
-must be loadable. `cargo run` and `cargo test` arrange that; standalone binaries do not find them yet.
+The compiled library and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...) are
+embedded in the crate, compressed (about 36 MB). On first use they are unpacked into
+`$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
+Windows) and loaded from there, so a binary using the crate runs wherever it is copied, without setting a library path.
 
 OCR runs the `tesseract` executable, which must be on `PATH` together with the language data you request.
 

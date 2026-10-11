@@ -1,10 +1,7 @@
-use std::os::raw::c_void;
-
 use crate::errors::{Error, ExtractResult};
 use crate::Metadata;
-use jni::errors::jni_error_code_to_result;
 use jni::objects::{JByteBuffer, JObject, JObjectArray, JString, JValue, JValueOwned};
-use jni::{sys, JNIEnv, JavaVM};
+use jni::JNIEnv;
 use std::collections::HashMap;
 
 /// Wraps memory owned by Rust in a Java direct byte buffer without copying it
@@ -152,47 +149,5 @@ pub fn take_java_exception(env: &mut JNIEnv) -> Error {
     match describe(env) {
         Ok(description) => Error::JavaException(description),
         Err(error) => error,
-    }
-}
-
-/// Creates a new graalvm isolate using the invocation api. A [GraalVM isolate](https://medium.com/graalvm/isolates-and-compressed-references-more-flexible-and-efficient-memory-management-for-graalvm-a044cc50b67e) is a disjoint heap
-/// that allows multiple tasks in the same VM instance to run independently.
-///
-/// This function uses the standard JVM invocation API and relies on the jni-sys crate.
-/// No need to specify any libraries because the graalvm native image is already
-/// linked in by the build script.
-pub fn create_vm_isolate() -> JavaVM {
-    let mut vm_options = [
-        sys::JavaVMOption {
-            optionString: c"-Djava.library.path=.".as_ptr().cast_mut(),
-            extraInfo: std::ptr::null_mut(),
-        },
-        sys::JavaVMOption {
-            optionString: c"-Djava.awt.headless=true".as_ptr().cast_mut(),
-            extraInfo: std::ptr::null_mut(),
-        },
-    ];
-    let mut args = sys::JavaVMInitArgs {
-        version: sys::JNI_VERSION_1_8,
-        nOptions: vm_options.len() as sys::jint,
-        options: vm_options.as_mut_ptr(),
-        ignoreUnrecognized: sys::JNI_FALSE,
-    };
-    let mut ptr: *mut sys::JavaVM = std::ptr::null_mut();
-    let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
-
-    unsafe {
-        let jni_res = sys::JNI_CreateJavaVM(
-            &mut ptr,
-            &mut env as *mut *mut sys::JNIEnv as *mut *mut c_void,
-            &mut args as *mut sys::JavaVMInitArgs as *mut c_void,
-        );
-        jni_error_code_to_result(jni_res).unwrap_or_else(|e| {
-            panic!("Failed creating the graal native vm: {:?}", e);
-        });
-
-        JavaVM::from_raw(ptr).unwrap_or_else(|e| {
-            panic!("Failed creating the graal native from pointer: {:?}", e);
-        })
     }
 }

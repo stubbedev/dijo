@@ -2,19 +2,21 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{DefaultHasher, Hasher};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
 const TIKA_NATIVE_INPUTS: [&str; 5] = ["build.gradle", "gradle", "gradlew", "gradlew.bat", "src"];
 const FINGERPRINT_FILE: &str = ".fingerprint";
+const COMPRESSED_EXTENSION: &str = "gz";
+const LIBS_LAYOUT: &[u8] = b"gzip-per-library, graalvm runpath entries as $ORIGIN";
+const DT_RPATH: i64 = 15;
+const DT_RUNPATH: i64 = 29;
+const ELF64_DYN_SIZE: usize = 16;
+const TIKA_LIBRARY_STEM: &str = "libtika_native";
 
 fn main() {
-    if env::var_os("DOCS_RS").is_some() {
-        return;
-    }
-
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
     for input in TIKA_NATIVE_INPUTS {
@@ -40,18 +42,22 @@ fn main() {
     let libs_dir = out_dir.join("libs");
 
     if read_fingerprint(&libs_dir).as_deref() != Some(fingerprint.as_str()) {
-        let built = find_built_libs(&out_dir, &fingerprint)
-            .unwrap_or_else(|| gradle_build(&source_dir, &out_dir, &graalvm_home, windows));
-        install_libs(&built, &out_dir, &libs_dir, &fingerprint);
+        match find_built_libs(&out_dir, &fingerprint) {
+            Some(built_libs) => install_libs(&out_dir, &libs_dir, |staging_dir| {
+                for path in list_dir(&built_libs) {
+                    copy_file(&path, &staging_dir.join(path.file_name().unwrap()));
+                }
+            }),
+            None => {
+                let native_dir = gradle_build(&source_dir, &out_dir, &graalvm_home, windows);
+                install_libs(&out_dir, &libs_dir, |staging_dir| {
+                    compress_native_libraries(&native_dir, staging_dir, &graalvm_home, &fingerprint)
+                });
+            }
+        }
     }
 
-    println!("cargo:rustc-link-search={}", libs_dir.display());
-    let lib_tika_name = if windows {
-        "libtika_native"
-    } else {
-        "tika_native"
-    };
-    println!("cargo:rustc-link-lib=dylib={lib_tika_name}");
+    write_native_module(&out_dir, &libs_dir, &fingerprint);
 }
 
 fn required_env(name: &str) -> String {
@@ -88,6 +94,7 @@ fn read_file(path: &Path) -> Vec<u8> {
 
 fn fingerprint(source_dir: &Path, graalvm_home: &Path) -> String {
     let mut hasher = DefaultHasher::new();
+    hasher.write(LIBS_LAYOUT);
     let release = read_file(&graalvm_home.join("release"));
     hasher.write_usize(release.len());
     hasher.write(&release);
@@ -123,13 +130,8 @@ fn read_fingerprint(libs_dir: &Path) -> Option<String> {
 
 fn find_built_libs(out_dir: &Path, fingerprint: &str) -> Option<PathBuf> {
     let build_dir = out_dir.parent()?.parent()?;
-    fs::read_dir(build_dir)
-        .unwrap_or_else(|e| panic!("Failed to list {}: {e}", build_dir.display()))
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|e| panic!("Failed to list {}: {e}", build_dir.display()))
-                .path()
-        })
+    list_dir(build_dir)
+        .into_iter()
         .filter(|path| {
             path.file_name()
                 .and_then(OsStr::to_str)
@@ -164,26 +166,45 @@ fn gradle_build(source_dir: &Path, out_dir: &Path, graalvm_home: &Path, windows:
     work_dir.join("build").join("native").join("nativeCompile")
 }
 
-fn install_libs(from_dir: &Path, out_dir: &Path, libs_dir: &Path, fingerprint: &str) {
-    let staging_dir = out_dir.join("libs.staging");
-    remove_dir_if_exists(&staging_dir);
-    create_dir(&staging_dir);
+fn list_dir(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("Failed to list {}: {e}", dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("Failed to list {}: {e}", dir.display()))
+                .path()
+        })
+        .collect()
+}
 
-    for entry in fs::read_dir(from_dir)
-        .unwrap_or_else(|e| panic!("Failed to list {}: {e}", from_dir.display()))
-    {
-        let path = entry
-            .unwrap_or_else(|e| panic!("Failed to list {}: {e}", from_dir.display()))
-            .path();
-        let name = path.file_name().unwrap();
-        if path.extension() == Some(OsStr::new("h")) || name == FINGERPRINT_FILE {
+fn compress_native_libraries(
+    native_dir: &Path,
+    staging_dir: &Path,
+    graalvm_home: &Path,
+    fingerprint: &str,
+) {
+    for path in list_dir(native_dir) {
+        if path.extension() == Some(OsStr::new("h")) {
             continue;
         }
-        copy_file(&path, &staging_dir.join(name));
+        let mut content = read_file(&path);
+        relocate_graalvm_runpaths(&mut content, graalvm_home)
+            .unwrap_or_else(|e| panic!("Failed to rewrite the runpath of {}: {e}", path.display()));
+        let compressed = staging_dir
+            .join(path.file_name().unwrap())
+            .with_added_extension(COMPRESSED_EXTENSION);
+        compress_bytes(&content, &compressed);
     }
     let fingerprint_path = staging_dir.join(FINGERPRINT_FILE);
     fs::write(&fingerprint_path, fingerprint)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", fingerprint_path.display()));
+}
+
+fn install_libs(out_dir: &Path, libs_dir: &Path, fill: impl FnOnce(&Path)) {
+    let staging_dir = out_dir.join("libs.staging");
+    remove_dir_if_exists(&staging_dir);
+    create_dir(&staging_dir);
+    fill(&staging_dir);
 
     remove_dir_if_exists(libs_dir);
     fs::rename(&staging_dir, libs_dir).unwrap_or_else(|e| {
@@ -227,5 +248,125 @@ fn remove_dir_if_exists(dir: &Path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => panic!("Failed to remove {}: {e}", dir.display()),
+    }
+}
+
+fn compress_bytes(content: &[u8], to: &Path) {
+    let file =
+        fs::File::create(to).unwrap_or_else(|e| panic!("Failed to create {}: {e}", to.display()));
+    let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    encoder
+        .write_all(content)
+        .and_then(|()| encoder.finish())
+        .unwrap_or_else(|e| panic!("Failed to compress into {}: {e}", to.display()));
+}
+
+fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<(), String> {
+    use object::{Object, ObjectSection};
+
+    let file = match object::File::parse(&*content) {
+        Ok(file) if file.format() == object::BinaryFormat::Elf => file,
+        _ => return Ok(()),
+    };
+    if !file.is_64() || !file.is_little_endian() {
+        return Err("only 64-bit little-endian ELF is supported".to_string());
+    }
+    let section_range = |name: &str| {
+        file.section_by_name(name)
+            .and_then(|section| section.file_range())
+            .map(|(offset, size)| (offset as usize, size as usize))
+    };
+    let (Some((dynstr_offset, _)), Some((dynamic_offset, dynamic_size))) =
+        (section_range(".dynstr"), section_range(".dynamic"))
+    else {
+        return Ok(());
+    };
+    let (dynamic_entries, _) =
+        content[dynamic_offset..dynamic_offset + dynamic_size].as_chunks::<ELF64_DYN_SIZE>();
+    let runpath_offsets: Vec<usize> = dynamic_entries
+        .iter()
+        .map(|entry| {
+            let tag = i64::from_le_bytes(entry[..8].try_into().unwrap());
+            let value = u64::from_le_bytes(entry[8..].try_into().unwrap());
+            (tag, value as usize)
+        })
+        .take_while(|&(tag, _)| tag != 0)
+        .filter(|&(tag, _)| tag == DT_RUNPATH || tag == DT_RPATH)
+        .map(|(_, value)| dynstr_offset + value)
+        .collect();
+
+    let graalvm_home = graalvm_home
+        .to_str()
+        .ok_or_else(|| format!("GRAALVM_HOME {} is not UTF-8", graalvm_home.display()))?;
+    for start in runpath_offsets {
+        let length = content[start..]
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or("unterminated runpath string")?;
+        let old = std::str::from_utf8(&content[start..start + length])
+            .map_err(|e| format!("runpath is not UTF-8: {e}"))?;
+        let mut entries: Vec<&str> = Vec::new();
+        for entry in old.split(':') {
+            let entry = if entry.starts_with(graalvm_home) {
+                "$ORIGIN"
+            } else {
+                entry
+            };
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+        let new = entries.join(":");
+        content[start..start + new.len()].copy_from_slice(new.as_bytes());
+        content[start + new.len()..start + length].fill(0);
+    }
+    Ok(())
+}
+
+fn write_native_module(out_dir: &Path, libs_dir: &Path, fingerprint: &str) {
+    let mut libraries: Vec<(String, PathBuf)> = list_dir(libs_dir)
+        .into_iter()
+        .filter(|path| path.extension() == Some(OsStr::new(COMPRESSED_EXTENSION)))
+        .map(|path| {
+            let name =
+                path.file_stem().unwrap().to_str().unwrap_or_else(|| {
+                    panic!("Native library name {} is not UTF-8", path.display())
+                });
+            (name.to_owned(), path.clone())
+        })
+        .collect();
+    libraries.sort();
+
+    let tika_libraries: Vec<&str> = libraries
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| Path::new(name).file_stem() == Some(OsStr::new(TIKA_LIBRARY_STEM)))
+        .collect();
+    let [tika_library] = tika_libraries.as_slice() else {
+        panic!(
+            "Expected exactly one {TIKA_LIBRARY_STEM} library in {}, found {tika_libraries:?}",
+            libs_dir.display()
+        );
+    };
+
+    let entries: String = libraries
+        .iter()
+        .map(|(name, path)| {
+            let path = path
+                .to_str()
+                .unwrap_or_else(|| panic!("Native library path {} is not UTF-8", path.display()));
+            format!("    ({name:?}, include_bytes!({path:?})),\n")
+        })
+        .collect();
+    let module = format!(
+        "pub(crate) const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n\
+         pub(crate) const TIKA_LIBRARY: &str = {tika_library:?};\n\
+         pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n",
+        libraries.len()
+    );
+    let module_path = out_dir.join("native.rs");
+    if fs::read_to_string(&module_path).ok().as_deref() != Some(module.as_str()) {
+        fs::write(&module_path, module)
+            .unwrap_or_else(|e| panic!("Failed to write {}: {e}", module_path.display()));
     }
 }
