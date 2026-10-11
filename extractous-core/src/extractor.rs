@@ -272,8 +272,6 @@ impl Extractor {
         Ok(self.post_process_text(text, metadata))
     }
 
-
-
     /// Extracts text from a byte buffer. Returns a tuple with string that is of maximum length
     /// of the extractor's `extract_string_max_length` and metadata.
     pub fn extract_bytes_to_string(&self, buffer: &[u8]) -> ExtractResult<(String, Metadata)> {
@@ -309,8 +307,8 @@ impl Extractor {
     fn extract_file_with_mmap(&self, file_path: &str) -> ExtractResult<(StreamReader, Metadata)> {
         use std::fs::File;
 
-        let file = File::open(file_path)
-            .map_err(|e| crate::errors::Error::IoError(e.to_string()))?;
+        let file =
+            File::open(file_path).map_err(|e| crate::errors::Error::IoError(e.to_string()))?;
 
         let mmap = unsafe { MmapOptions::new().map(&file) }
             .map_err(|e| crate::errors::Error::IoError(e.to_string()))?;
@@ -354,7 +352,7 @@ impl Extractor {
     #[cfg(feature = "pure-rust")]
     fn try_pure_rust_extraction(&self, file_path: &str) -> ExtractResult<(String, Metadata)> {
         let pure_extractor = crate::pure_rust_parsers::PureRustExtractor::with_max_length(
-            self.extract_string_max_length as usize
+            self.extract_string_max_length as usize,
         );
         pure_extractor.extract_file(file_path)
     }
@@ -381,15 +379,22 @@ impl Extractor {
     fn post_process_text(&self, mut text: String, mut metadata: Metadata) -> (String, Metadata) {
         if self.enable_text_cleaning {
             // Only apply expensive operations if text is large enough to benefit
-            if text.len() > 5000 { // Increased threshold to reduce overhead
+            if text.len() > 5000 {
+                // Increased threshold to reduce overhead
                 // Apply lightweight text cleaning only
                 text = crate::simd_text::normalize_whitespace(&text);
-                metadata.insert("Text-Processing".to_string(), vec!["lightweight".to_string()]);
+                metadata.insert(
+                    "Text-Processing".to_string(),
+                    vec!["lightweight".to_string()],
+                );
             }
 
             // Smart truncation only if needed
             if text.len() > self.extract_string_max_length as usize {
-                text = crate::simd_text::truncate_text_smart(&text, self.extract_string_max_length as usize);
+                text = crate::simd_text::truncate_text_smart(
+                    &text,
+                    self.extract_string_max_length as usize,
+                );
             }
         }
 

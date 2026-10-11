@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use extractous::Extractor;
 use std::io::{BufReader, Read};
 use std::time::Duration;
@@ -48,7 +48,9 @@ fn extract_to_string_optimizations(c: &mut Criterion) {
 
     group.bench_function("baseline", |b| {
         b.iter(|| {
-            baseline_extractor.extract_file_to_string(file_path).unwrap()
+            baseline_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -59,7 +61,9 @@ fn extract_to_string_optimizations(c: &mut Criterion) {
 
     group.bench_function("buffer_optimized", |b| {
         b.iter(|| {
-            buffer_optimized_extractor.extract_file_to_string(file_path).unwrap()
+            buffer_optimized_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -72,9 +76,7 @@ fn extract_to_string_optimizations(c: &mut Criterion) {
             .set_enable_text_cleaning(false);
 
         group.bench_function("mmap_enabled", |b| {
-            b.iter(|| {
-                mmap_extractor.extract_file_to_string(file_path).unwrap()
-            })
+            b.iter(|| mmap_extractor.extract_file_to_string(file_path).unwrap())
         });
     }
 
@@ -85,7 +87,9 @@ fn extract_to_string_optimizations(c: &mut Criterion) {
 
     group.bench_function("text_cleaning_enabled", |b| {
         b.iter(|| {
-            text_cleaning_extractor.extract_file_to_string(file_path).unwrap()
+            text_cleaning_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -96,7 +100,9 @@ fn extract_to_string_optimizations(c: &mut Criterion) {
 
     group.bench_function("all_optimizations", |b| {
         b.iter(|| {
-            fully_optimized_extractor.extract_file_to_string(file_path).unwrap()
+            fully_optimized_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -129,9 +135,7 @@ fn extract_different_file_sizes(c: &mut Criterion) {
             BenchmarkId::new("baseline", size_name),
             &file_path,
             |b, path| {
-                b.iter(|| {
-                    baseline_extractor.extract_file_to_string(path).unwrap()
-                });
+                b.iter(|| baseline_extractor.extract_file_to_string(path).unwrap());
             },
         );
 
@@ -139,9 +143,7 @@ fn extract_different_file_sizes(c: &mut Criterion) {
             BenchmarkId::new("optimized", size_name),
             &file_path,
             |b, path| {
-                b.iter(|| {
-                    optimized_extractor.extract_file_to_string(path).unwrap()
-                });
+                b.iter(|| optimized_extractor.extract_file_to_string(path).unwrap());
             },
         );
     }
@@ -157,27 +159,19 @@ fn text_processing_benchmarks(c: &mut Criterion) {
     let sample_text = "This is a sample text with\t\tmultiple\n\n\nwhitespace\r\ncharacters and some control\x00characters that need cleaning.".repeat(1000);
 
     group.bench_function("clean_text_fast", |b| {
-        b.iter(|| {
-            extractous::clean_text_fast(&sample_text)
-        })
+        b.iter(|| extractous::clean_text_fast(&sample_text))
     });
 
     group.bench_function("normalize_whitespace", |b| {
-        b.iter(|| {
-            extractous::normalize_whitespace(&sample_text)
-        })
+        b.iter(|| extractous::normalize_whitespace(&sample_text))
     });
 
     group.bench_function("truncate_text_smart", |b| {
-        b.iter(|| {
-            extractous::truncate_text_smart(&sample_text, 500)
-        })
+        b.iter(|| extractous::truncate_text_smart(&sample_text, 500))
     });
 
     group.bench_function("text_stats_analysis", |b| {
-        b.iter(|| {
-            extractous::TextStats::analyze(&sample_text)
-        })
+        b.iter(|| extractous::TextStats::analyze(&sample_text))
     });
 
     group.finish();
@@ -196,7 +190,9 @@ fn buffer_size_impact(c: &mut Criterion) {
 
     group.bench_function("32kb_buffer_equivalent", |b| {
         b.iter(|| {
-            small_buffer_extractor.extract_file_to_string(file_path).unwrap()
+            small_buffer_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -207,7 +203,9 @@ fn buffer_size_impact(c: &mut Criterion) {
 
     group.bench_function("256kb_buffer_optimized", |b| {
         b.iter(|| {
-            large_buffer_extractor.extract_file_to_string(file_path).unwrap()
+            large_buffer_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -227,9 +225,7 @@ fn mmap_threshold_optimization(c: &mut Criterion) {
         .set_enable_text_cleaning(false);
 
     group.bench_function("mmap_disabled", |b| {
-        b.iter(|| {
-            no_mmap_extractor.extract_file_to_string(file_path).unwrap()
-        })
+        b.iter(|| no_mmap_extractor.extract_file_to_string(file_path).unwrap())
     });
 
     // Test with optimized threshold (512KB)
@@ -240,7 +236,9 @@ fn mmap_threshold_optimization(c: &mut Criterion) {
 
     group.bench_function("mmap_512kb_threshold", |b| {
         b.iter(|| {
-            optimized_mmap_extractor.extract_file_to_string(file_path).unwrap()
+            optimized_mmap_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 
@@ -252,7 +250,9 @@ fn mmap_threshold_optimization(c: &mut Criterion) {
 
     group.bench_function("mmap_256kb_threshold", |b| {
         b.iter(|| {
-            aggressive_mmap_extractor.extract_file_to_string(file_path).unwrap()
+            aggressive_mmap_extractor
+                .extract_file_to_string(file_path)
+                .unwrap()
         })
     });
 

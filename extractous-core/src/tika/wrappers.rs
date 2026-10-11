@@ -4,7 +4,7 @@ use crate::tika::jni_utils::{
     jni_tika_metadata_to_rust_metadata,
 };
 use crate::tika::vm;
-use crate::{DEFAULT_BUF_SIZE, Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
+use crate::{Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig, DEFAULT_BUF_SIZE};
 use bytemuck::cast_slice_mut;
 use jni::objects::{GlobalRef, JByteArray, JObject, JValue};
 use jni::sys::jsize;

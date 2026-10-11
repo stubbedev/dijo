@@ -2,10 +2,12 @@ use crate::embedded::{EmbeddedDocument, EmbeddedExtractResult};
 use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::{jni_call_static_method, jni_new_string_as_jvalue};
 use crate::tika::vm;
-use crate::tika::wrappers::{JEmbeddedExtractResult, JOfficeParserConfig, JPDFParserConfig, JTesseractOcrConfig};
+use crate::tika::wrappers::{
+    JEmbeddedExtractResult, JOfficeParserConfig, JPDFParserConfig, JTesseractOcrConfig,
+};
 use crate::{OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
-use jni::objects::{JValue};
-use jni::{AttachGuard};
+use jni::objects::JValue;
+use jni::AttachGuard;
 
 fn get_vm_attach_current_thread<'local>() -> ExtractResult<AttachGuard<'local>> {
     let env = vm().attach_current_thread()?;
@@ -20,15 +22,15 @@ pub fn extract_embedded_from_file(
     ocr_conf: &TesseractOcrConfig,
 ) -> ExtractResult<EmbeddedExtractResult> {
     let mut env = get_vm_attach_current_thread()?;
-    
+
     // Create Java string for file path
     let file_path_val = jni_new_string_as_jvalue(&mut env, file_path)?;
-    
+
     // Create Java config objects
     let j_pdf_conf = JPDFParserConfig::new(&mut env, pdf_conf)?;
     let j_office_conf = JOfficeParserConfig::new(&mut env, office_conf)?;
     let j_ocr_conf = JTesseractOcrConfig::new(&mut env, ocr_conf)?;
-    
+
     // Call the Java method
     let result = jni_call_static_method(
         &mut env,
@@ -46,20 +48,23 @@ pub fn extract_embedded_from_file(
             (&j_ocr_conf.internal).into(),
         ],
     )?;
-    
+
     let result_obj = result.l()?;
-    
+
     // Convert Java result to Rust
     let j_result = JEmbeddedExtractResult::new(&mut env, result_obj)?;
-    
+
     // Check for errors
     if j_result.error_code != 0 {
         let error_msg = j_result.error_message.unwrap_or_else(|| {
-            format!("Embedded extraction failed with code {}", j_result.error_code)
+            format!(
+                "Embedded extraction failed with code {}",
+                j_result.error_code
+            )
         });
         return Err(Error::ParseError(error_msg));
     }
-    
+
     // Convert Java documents to Rust documents
     let mut documents = Vec::with_capacity(j_result.documents.len());
     for j_doc in j_result.documents {
@@ -70,10 +75,10 @@ pub fn extract_embedded_from_file(
             embedded_relationship_id: j_doc.embedded_relationship_id,
         });
     }
-    
+
     // Use the metadata from j_result
     let metadata = j_result.metadata;
-    
+
     Ok(EmbeddedExtractResult {
         documents,
         metadata,
@@ -88,19 +93,18 @@ pub fn extract_embedded_from_bytes(
     ocr_conf: &TesseractOcrConfig,
 ) -> ExtractResult<EmbeddedExtractResult> {
     let mut env = get_vm_attach_current_thread()?;
-    
+
     // Create ByteBuffer from the byte array
     // Note: new_direct_byte_buffer requires a mutable pointer, so we need to copy the data
     let mut buffer_copy = buffer.to_vec();
-    let byte_buffer = unsafe {
-        env.new_direct_byte_buffer(buffer_copy.as_mut_ptr(), buffer_copy.len())?
-    };
-    
+    let byte_buffer =
+        unsafe { env.new_direct_byte_buffer(buffer_copy.as_mut_ptr(), buffer_copy.len())? };
+
     // Create Java config objects
     let j_pdf_conf = JPDFParserConfig::new(&mut env, pdf_conf)?;
     let j_office_conf = JOfficeParserConfig::new(&mut env, office_conf)?;
     let j_ocr_conf = JTesseractOcrConfig::new(&mut env, ocr_conf)?;
-    
+
     // Call the Java method
     let result = jni_call_static_method(
         &mut env,
@@ -118,20 +122,23 @@ pub fn extract_embedded_from_bytes(
             (&j_ocr_conf.internal).into(),
         ],
     )?;
-    
+
     let result_obj = result.l()?;
-    
+
     // Convert Java result to Rust
     let j_result = JEmbeddedExtractResult::new(&mut env, result_obj)?;
-    
+
     // Check for errors
     if j_result.error_code != 0 {
         let error_msg = j_result.error_message.unwrap_or_else(|| {
-            format!("Embedded extraction from bytes failed with code {}", j_result.error_code)
+            format!(
+                "Embedded extraction from bytes failed with code {}",
+                j_result.error_code
+            )
         });
         return Err(Error::ParseError(error_msg));
     }
-    
+
     // Convert Java documents to Rust documents
     let mut documents = Vec::with_capacity(j_result.documents.len());
     for j_doc in j_result.documents {
@@ -142,10 +149,10 @@ pub fn extract_embedded_from_bytes(
             embedded_relationship_id: j_doc.embedded_relationship_id,
         });
     }
-    
+
     // Use the metadata from j_result
     let metadata = j_result.metadata;
-    
+
     Ok(EmbeddedExtractResult {
         documents,
         metadata,
