@@ -8,7 +8,7 @@ use extractous_core::{Extractor, Metadata, StreamReader};
 use crate::cli::Format;
 use serde::Serialize;
 
-use crate::schema::{self, ExtractionError, Source, Status, SCHEMA_VERSION};
+use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
 use crate::structure::{self, ElementKind, Unit};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
@@ -31,7 +31,7 @@ pub struct Outcome {
 /// Text read from a stream until it ended or failed.
 struct Copied {
     bytes: u64,
-    error: Option<String>,
+    error: Option<ExtractionError>,
 }
 
 /// Writes the extraction of `path` to `sink`. Extraction failures are reported in the returned
@@ -45,8 +45,14 @@ pub fn render(
 ) -> io::Result<Outcome> {
     let opened = path
         .to_str()
-        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
-        .and_then(|path| extractor.extract_file(path).map_err(|e| e.to_string()));
+        .ok_or_else(|| {
+            ExtractionError::from_message(format!("{} is not valid UTF-8", path.display()))
+        })
+        .and_then(|path| {
+            extractor
+                .extract_file(path)
+                .map_err(|e| ExtractionError::from_error(&e))
+        });
     match options.format {
         Format::Text | Format::Xhtml => render_text(opened, options, sink),
         Format::Json => render_json(opened, path, display, options, sink),
@@ -57,13 +63,12 @@ pub fn render(
 
 fn outcome(
     copied: Option<&Copied>,
-    open_error: Option<String>,
+    open_error: Option<ExtractionError>,
     final_metadata: Option<&Metadata>,
 ) -> Outcome {
     let error = open_error.or_else(|| copied.and_then(|copied| copied.error.clone()));
     let errors: Vec<ExtractionError> = error
         .into_iter()
-        .map(ExtractionError::from_message)
         .chain(
             final_metadata
                 .map(schema::recorded_failures)
@@ -71,10 +76,14 @@ fn outcome(
         )
         .collect();
     let produced_text = copied.is_some_and(|copied| copied.bytes > 0);
-    let status = match (errors.is_empty(), produced_text) {
-        (true, _) => Status::Complete,
-        (false, true) => Status::Partial,
-        (false, false) => Status::Failed,
+    let encrypted = errors
+        .iter()
+        .any(|error| error.category == ErrorCategory::Encrypted);
+    let status = match (errors.is_empty(), produced_text, encrypted) {
+        (true, _, _) => Status::Complete,
+        (false, true, _) => Status::Partial,
+        (false, false, true) => Status::Encrypted,
+        (false, false, false) => Status::Failed,
     };
     Outcome {
         status,
@@ -91,14 +100,14 @@ fn final_metadata(stream: &StreamReader, copied: &mut Copied) -> Option<Metadata
     match stream.metadata() {
         Ok(metadata) => Some(metadata),
         Err(error) => {
-            copied.error = Some(error.to_string());
+            copied.error = Some(ExtractionError::from_error(&error));
             None
         }
     }
 }
 
 fn render_text(
-    opened: Result<(StreamReader, Metadata), String>,
+    opened: Result<(StreamReader, Metadata), ExtractionError>,
     options: RenderOptions,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
@@ -150,7 +159,7 @@ fn write_document_end(
 }
 
 fn render_json(
-    opened: Result<(StreamReader, Metadata), String>,
+    opened: Result<(StreamReader, Metadata), ExtractionError>,
     path: &Path,
     display: &str,
     options: RenderOptions,
@@ -191,7 +200,7 @@ struct PartSource<'a> {
 }
 
 fn render_parts(
-    opened: Result<(StreamReader, Metadata), String>,
+    opened: Result<(StreamReader, Metadata), ExtractionError>,
     path: &Path,
     display: &str,
     options: RenderOptions,
@@ -222,7 +231,7 @@ fn render_parts(
             })?;
             let mut copied = Copied {
                 bytes,
-                error: split.err(),
+                error: split.err().map(ExtractionError::from_message),
             };
             let metadata = final_metadata(&stream, &mut copied);
             (outcome(Some(&copied), None, metadata.as_ref()), metadata)
@@ -274,7 +283,7 @@ fn copy(
             Err(error) => {
                 return Ok(Copied {
                     bytes,
-                    error: Some(error.to_string()),
+                    error: Some(ExtractionError::from_io(&error)),
                 })
             }
         }

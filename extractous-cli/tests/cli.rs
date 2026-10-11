@@ -453,3 +453,57 @@ fn a_closed_stdout_stops_quietly() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stderr(&output), "");
 }
+
+#[test]
+fn encrypted_inputs_are_reported_as_encrypted() {
+    let objects = json_objects(&[&format!("{DOCUMENTS}/encrypted/password.docx")]);
+    assert_eq!(objects[0]["status"], "encrypted");
+    assert_eq!(objects[0]["errors"][0]["category"], "encrypted");
+    assert_matches_schema(&objects[0]);
+}
+
+#[test]
+fn password_file_decrypts_without_leaking_the_password() {
+    let scratch = Scratch::new("passwords");
+    let password_file = scratch.0.join("passwords");
+    fs::write(&password_file, "not-it\nextractous\n").unwrap();
+    let output = extractous(&[
+        "--format",
+        "json",
+        "--password-file",
+        password_file.to_str().unwrap(),
+        &format!("{DOCUMENTS}/encrypted/user-password.pdf"),
+        &format!("{DOCUMENTS}/encrypted/password.docx"),
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stdout = stdout(&output);
+    assert!(!stdout.contains("extractous\""));
+    let objects: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(objects.iter().all(|object| object["status"] == "complete"));
+    let decrypted = json_objects(&[
+        "--password-file",
+        password_file.to_str().unwrap(),
+        &format!("{DOCUMENTS}/encrypted/password.docx"),
+    ]);
+    assert_eq!(decrypted[0]["metadata"]["encrypted"], true);
+    assert_eq!(decrypted[0]["metadata"]["decrypted"], true);
+    assert_matches_schema(&decrypted[0]);
+    assert!(objects[1]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Call me Ishmael"));
+}
+
+#[test]
+fn a_wrong_password_fails_with_status_one() {
+    let output = extractous(&[
+        "--password",
+        "not-it",
+        &format!("{DOCUMENTS}/encrypted/password.7z"),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!stderr(&output).contains("not-it"));
+}

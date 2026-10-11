@@ -15,6 +15,7 @@ struct TikaKeys {
     language: &'static [&'static str],
     page_count: &'static [&'static str],
     encrypted: &'static [&'static str],
+    password_used: &'static [&'static str],
     content_type: &'static [&'static str],
 }
 
@@ -36,6 +37,7 @@ const TIKA_KEYS: TikaKeys = TikaKeys {
     language: &["dc:language"],
     page_count: &["xmpTPg:NPages", "meta:page-count", "Page-Count"],
     encrypted: &["pdf:encrypted"],
+    password_used: &["extractous:password-used"],
     content_type: &["Content-Type"],
 };
 
@@ -44,6 +46,7 @@ const TIKA_KEYS: TikaKeys = TikaKeys {
 pub enum Status {
     Complete,
     Partial,
+    Encrypted,
     Failed,
 }
 
@@ -104,11 +107,37 @@ fn summarize_stack_trace(trace: &str) -> String {
 }
 
 impl ExtractionError {
+    /// Classifies an error from the extraction library, by its kind where the library knows it
+    /// and by its cause chain otherwise.
+    pub fn from_error(error: &extractous_core::Error) -> Self {
+        let message = error.to_string();
+        let category = match error {
+            extractous_core::Error::IoError(_) => ErrorCategory::Unreadable,
+            extractous_core::Error::Encrypted(_) => ErrorCategory::Encrypted,
+            _ => return Self::from_message(message),
+        };
+        Self {
+            category,
+            message,
+            location: None,
+        }
+    }
+
+    /// Classifies a failure to read the extracted text, which wraps the library's error.
+    pub fn from_io(error: &std::io::Error) -> Self {
+        match error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<extractous_core::Error>())
+        {
+            Some(inner) => Self::from_error(inner),
+            None => Self::from_message(error.to_string()),
+        }
+    }
+
     /// Classifies an error by the Java exception classes in its cause chain.
     pub fn from_message(message: String) -> Self {
         let category = if message.contains("NoSuchFileException")
             || message.contains("AccessDeniedException")
-            || message.contains("Could not open file")
         {
             ErrorCategory::Unreadable
         } else if message.contains("EncryptedDocumentException") {
@@ -189,6 +218,8 @@ pub struct NormalizedMetadata {
     pub page_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decrypted: Option<bool>,
 }
 
 fn values<'a>(metadata: &'a Metadata, keys: &[&str]) -> &'a [String] {
@@ -213,6 +244,7 @@ fn distinct(values: &[String]) -> Vec<String> {
 }
 
 pub fn normalize(metadata: &Metadata) -> NormalizedMetadata {
+    let password_used = first(metadata, TIKA_KEYS.password_used) == Some("true");
     NormalizedMetadata {
         title: first(metadata, TIKA_KEYS.title)
             .map(str::trim)
@@ -227,7 +259,10 @@ pub fn normalize(metadata: &Metadata) -> NormalizedMetadata {
             .collect(),
         page_count: first(metadata, TIKA_KEYS.page_count)
             .and_then(|count| count.trim().parse().ok()),
-        encrypted: first(metadata, TIKA_KEYS.encrypted).and_then(|flag| flag.trim().parse().ok()),
+        encrypted: password_used.then_some(true).or_else(|| {
+            first(metadata, TIKA_KEYS.encrypted).and_then(|flag| flag.trim().parse().ok())
+        }),
+        decrypted: password_used.then_some(true),
     }
 }
 
@@ -356,7 +391,7 @@ mod tests {
             ErrorCategory::Timeout
         );
         assert_eq!(
-            classify("Could not open file: java.nio.file.NoSuchFileException: a.pdf"),
+            classify("Could not open the input: java.nio.file.NoSuchFileException: a.pdf"),
             ErrorCategory::Unreadable
         );
         assert_eq!(classify("something else"), ErrorCategory::Internal);

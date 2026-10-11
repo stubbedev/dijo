@@ -67,6 +67,7 @@
           "enum": [
             "complete",
             "partial",
+            "encrypted",
             "failed"
           ]
         },
@@ -145,6 +146,10 @@
             },
             "encrypted": {
               "type": "boolean"
+            },
+            "decrypted": {
+              "const": true,
+              "description": "Present when the document needed a password and one of the given passwords opened it."
             }
           }
         },

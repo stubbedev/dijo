@@ -207,6 +207,26 @@ tika_config! {
     }
 }
 
+/// A password for encrypted documents. It never appears in `Debug` output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Password(String);
+
+impl Password {
+    pub fn new(password: impl Into<String>) -> Self {
+        Self(password.into())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ParserConfigs {
     pub(crate) pdf: PdfParserConfig,
@@ -244,6 +264,14 @@ mod tests {
                 ("setExtractUniqueInlineImagesOnly", JavaValue::Bool(false)),
             ] if strategy == "OCR_ONLY"
         ));
+    }
+
+    #[test]
+    fn passwords_are_redacted_from_debug_output() {
+        assert_eq!(
+            format!("{:?}", Password::new("hunter2")),
+            "Password(<redacted>)"
+        );
     }
 
     #[test]

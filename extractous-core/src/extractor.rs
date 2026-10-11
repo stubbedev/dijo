@@ -1,4 +1,5 @@
-use crate::config::ParserConfigs;
+use crate::config::{ParserConfigs, Password};
+use crate::errors::Error;
 use crate::errors::ExtractResult;
 use crate::tika;
 use crate::tika::JInputStream;
@@ -93,6 +94,7 @@ pub struct Extractor {
     encoding: CharSet,
     configs: ParserConfigs,
     xml_output: bool,
+    passwords: Vec<Password>,
 }
 
 impl Default for Extractor {
@@ -102,6 +104,7 @@ impl Default for Extractor {
             encoding: CharSet::UTF_8,
             configs: ParserConfigs::default(),
             xml_output: false,
+            passwords: Vec::new(),
         }
     }
 }
@@ -141,6 +144,13 @@ impl Extractor {
     /// Set the configuration for the Tesseract OCR
     pub fn set_ocr_config(mut self, config: TesseractOcrConfig) -> Self {
         self.configs.ocr = config;
+        self
+    }
+
+    /// Set the passwords tried, in order, on documents Tika reports as encrypted. Documents that
+    /// are not encrypted never use them.
+    pub fn set_passwords(mut self, passwords: impl IntoIterator<Item = Password>) -> Self {
+        self.passwords = passwords.into_iter().collect();
         self
     }
 
@@ -192,7 +202,7 @@ impl Extractor {
         &self,
         file_path: &str,
     ) -> ExtractResult<EmbeddedExtractResult> {
-        tika::extract_embedded(Source::File(file_path), &self.configs)
+        self.extract_embedded(Source::File(file_path))
     }
 
     /// Extracts all embedded documents/resources from a byte buffer.
@@ -200,12 +210,12 @@ impl Extractor {
         &self,
         buffer: &[u8],
     ) -> ExtractResult<EmbeddedExtractResult> {
-        tika::extract_embedded(Source::Bytes(buffer), &self.configs)
+        self.extract_embedded(Source::Bytes(buffer))
     }
 
     /// Extracts all embedded documents/resources from the document at a URL.
     pub fn extract_embedded_from_url(&self, url: &str) -> ExtractResult<EmbeddedExtractResult> {
-        tika::extract_embedded(Source::Url(url), &self.configs)
+        self.extract_embedded(Source::Url(url))
     }
 
     /// Detects the media type of a file, such as `application/pdf`, from its content, its
@@ -225,17 +235,50 @@ impl Extractor {
         tika::detect(Source::Url(url)).map(MediaType)
     }
 
+    /// Runs `attempt` without a password and, if Tika reports the document as encrypted, with
+    /// each configured password in turn. A wrong password does not always surface as an
+    /// encryption error (a 7z archive fails its checksum), so any failure with a password moves
+    /// on to the next one; when none opens the document, the encryption error is returned.
+    fn with_passwords<T>(
+        &self,
+        attempt: impl Fn(Option<&Password>) -> ExtractResult<T>,
+    ) -> ExtractResult<T> {
+        let encrypted = match attempt(None) {
+            Err(error @ Error::Encrypted(_)) => error,
+            result => return result,
+        };
+        self.passwords
+            .iter()
+            .find_map(|password| attempt(Some(password)).ok())
+            .ok_or(encrypted)
+    }
+
     fn extract_to_stream(&self, source: Source) -> ExtractResult<(StreamReader, Metadata)> {
-        tika::parse_to_stream(source, &self.encoding, &self.configs, self.xml_output)
+        self.with_passwords(|password| {
+            tika::parse_to_stream(
+                source,
+                &self.encoding,
+                &self.configs,
+                password,
+                self.xml_output,
+            )
+        })
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
-        tika::parse_to_string(
-            source,
-            self.extract_string_max_length,
-            &self.configs,
-            self.xml_output,
-        )
+        self.with_passwords(|password| {
+            tika::parse_to_string(
+                source,
+                self.extract_string_max_length,
+                &self.configs,
+                password,
+                self.xml_output,
+            )
+        })
+    }
+
+    fn extract_embedded(&self, source: Source) -> ExtractResult<EmbeddedExtractResult> {
+        self.with_passwords(|password| tika::extract_embedded(source, &self.configs, password))
     }
 }
 

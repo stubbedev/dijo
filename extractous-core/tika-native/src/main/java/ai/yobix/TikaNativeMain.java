@@ -3,26 +3,28 @@ package ai.yobix;
 import org.apache.commons.io.IOUtils;
 import org.apache.tika.Tika;
 import org.apache.tika.config.TikaConfig;
+import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.PasswordProvider;
+import org.apache.tika.parser.RecursiveParserWrapper;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.pdf.PDFParserConfig;
-import org.apache.tika.parser.RecursiveParserWrapper;
+import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.RecursiveParserWrapperHandler;
 import org.apache.tika.sax.ToXMLContentHandler;
 import org.apache.tika.sax.WriteOutContentHandler;
-import org.apache.tika.sax.BasicContentHandlerFactory;
-import org.apache.tika.sax.RecursiveParserWrapperHandler;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.type.CCharPointer;
@@ -31,36 +33,58 @@ import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
-import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.List;
 import java.util.ArrayList;
-import java.io.ByteArrayOutputStream;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Set;
 
+/**
+ * The entry points the Rust crate calls through JNI. Every operation exists for a file path, a
+ * byte buffer and a URL; failures are returned as a status and a message rather than thrown.
+ */
 public class TikaNativeMain {
 
-    private static final Tika tika = new Tika();
+    private static final byte COULD_NOT_OPEN = 1;
+    private static final byte PARSE_FAILED = 2;
+    private static final byte ENCRYPTED = 3;
+
+    /** Set on the metadata of a document Tika asked a password for. */
+    public static final String PASSWORD_USED = "extractous:password-used";
+
+    private static final Tika TIKA = new Tika();
     private static final Parser PARSER = new AutoDetectParser(TikaConfig.getDefaultConfig());
 
-    private static ParseContext parseContext(
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig
-    ) {
-        final ParseContext parseContext = new ParseContext();
-        parseContext.set(Parser.class, PARSER);
-        parseContext.set(PDFParserConfig.class, pdfConfig);
-        parseContext.set(OfficeParserConfig.class, officeConfig);
-        parseContext.set(TesseractOCRConfig.class, tesseractConfig);
-        return parseContext;
+    @FunctionalInterface
+    private interface Source {
+        TikaInputStream open(Metadata metadata) throws IOException, URISyntaxException;
+    }
+
+    private static Source file(String path) {
+        return metadata -> TikaInputStream.get(Paths.get(path), metadata);
+    }
+
+    private static Source bytes(ByteBuffer data) {
+        return metadata -> TikaInputStream.get(
+                new ByteBufferInputStream(data), new TemporaryResources(), metadata);
+    }
+
+    private static Source copiedBytes(ByteBuffer data) {
+        final byte[] copy = new byte[data.remaining()];
+        data.get(copy);
+        return metadata -> TikaInputStream.get(copy, metadata);
+    }
+
+    private static Source url(String url) {
+        return metadata -> TikaInputStream.get(new URI(url).toURL(), metadata);
     }
 
     /**
@@ -69,8 +93,7 @@ public class TikaNativeMain {
      */
     public static String describe(Throwable throwable) {
         final StringBuilder description = new StringBuilder();
-        final java.util.Set<Throwable> seen =
-                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Throwable t = throwable; t != null && seen.add(t); t = t.getCause()) {
             if (description.length() > 0) {
                 description.append(" <- caused by ");
@@ -83,156 +106,106 @@ public class TikaNativeMain {
         return description.toString();
     }
 
-    /**
-     * Detects the media type of a file with Tika's default detector (MIME magic, container
-     * inspection and the file name).
-     */
+    private static byte parseFailureStatus(Throwable throwable) {
+        final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable t = throwable; t != null && seen.add(t); t = t.getCause()) {
+            if (t instanceof EncryptedDocumentException) {
+                return ENCRYPTED;
+            }
+        }
+        return PARSE_FAILED;
+    }
+
+    private static String couldNotOpen(Throwable throwable) {
+        return "Could not open the input: " + describe(throwable);
+    }
+
+    private static String parseFailed(Throwable throwable) {
+        return "Parse error occurred : " + describe(throwable);
+    }
+
+    private static ParseContext parseContext(
+            PDFParserConfig pdfConfig,
+            OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig,
+            String password
+    ) {
+        final ParseContext parseContext = new ParseContext();
+        parseContext.set(Parser.class, PARSER);
+        parseContext.set(PDFParserConfig.class, pdfConfig);
+        parseContext.set(OfficeParserConfig.class, officeConfig);
+        parseContext.set(TesseractOCRConfig.class, tesseractConfig);
+        if (password != null) {
+            parseContext.set(PasswordProvider.class, metadata -> {
+                metadata.set(PASSWORD_USED, "true");
+                return password;
+            });
+        }
+        return parseContext;
+    }
+
     public static StringResult detectFile(String filePath) {
-        final Metadata metadata = new Metadata();
-        try (final TikaInputStream stream = TikaInputStream.get(Paths.get(filePath), metadata)) {
-            return new StringResult(tika.detect(stream, metadata), metadata);
-        } catch (IOException e) {
-            return new StringResult((byte) 1, "Could not open file: " + describe(e));
-        }
+        return detect(file(filePath));
     }
 
-    /**
-     * Detects the media type of a document held in a byte buffer.
-     */
     public static StringResult detectBytes(ByteBuffer data) {
-        final Metadata metadata = new Metadata();
-        try (final TikaInputStream stream = TikaInputStream.get(
-                new ByteBufferInputStream(data), new TemporaryResources(), metadata)) {
-            return new StringResult(tika.detect(stream, metadata), metadata);
-        } catch (IOException e) {
-            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
-        }
+        return detect(bytes(data));
+    }
+
+    public static StringResult detectUrl(String url) {
+        return detect(url(url));
     }
 
     /**
-     * Detects the media type of the document at a URL.
+     * Detects the media type with Tika's default detector: MIME magic, container inspection and
+     * the resource name.
      */
-    public static StringResult detectUrl(String urlString) {
+    private static StringResult detect(Source source) {
         final Metadata metadata = new Metadata();
-        try (final TikaInputStream stream = TikaInputStream.get(new URI(urlString).toURL(), metadata)) {
-            return new StringResult(tika.detect(stream, metadata), metadata);
-        } catch (URISyntaxException | MalformedURLException e) {
-            return new StringResult((byte) 2, "Malformed URL error occurred: " + describe(e));
-        } catch (IOException e) {
-            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
+        try (TikaInputStream stream = source.open(metadata)) {
+            return new StringResult(TIKA.detect(stream, metadata), metadata);
+        } catch (IOException | URISyntaxException e) {
+            return new StringResult(COULD_NOT_OPEN, couldNotOpen(e));
         }
     }
 
-    /**
-     * Parses the given file and returns its content as String.
-     * To avoid unpredictable excess memory use, the returned string contains only up to maxLength
-     * first characters extracted from the input document.
-     *
-     * @param filePath:  the path of the file to be parsed
-     * @param maxLength: maximum length of the returned string
-     * @return StringResult
-     */
     public static StringResult parseFileToString(
-            String filePath,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            int maxLength,
-            boolean asXML
-            // maybe replace with a single config class
-    ) {
-        try {
-            final Path path = Paths.get(filePath);
-            final Metadata metadata = new Metadata();
-            final InputStream stream = TikaInputStream.get(path, metadata);
-
-            String result = parseToStringWithConfig(
-                    stream, metadata, maxLength, pdfConfig, officeConfig, tesseractConfig, asXML);
-            // No need to close the stream because parseToString does so
-            return new StringResult(result, metadata);
-        } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, "Could not open file: " + describe(e));
-        } catch (TikaException e) {
-            return new StringResult((byte) 2, "Parse error occurred : " + describe(e));
-        }
+            String filePath, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, int maxLength, boolean asXML) {
+        return parseToString(file(filePath), pdfConfig, officeConfig, tesseractConfig, password,
+                maxLength, asXML);
     }
 
-    /**
-     * Parses the given Url and returns its content as String
-     *
-     * @param urlString the url to be parsed
-     * @return StringResult
-     */
-    public static StringResult parseUrlToString(
-            String urlString,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            int maxLength,
-            boolean asXML
-    ) {
-        try {
-            final URL url = new URI(urlString).toURL();
-            final Metadata metadata = new Metadata();
-            final TikaInputStream stream = TikaInputStream.get(url, metadata);
-
-            String result = parseToStringWithConfig(
-                    stream, metadata, maxLength, pdfConfig, officeConfig, tesseractConfig, asXML);
-            // No need to close the stream because parseToString does so
-            return new StringResult(result, metadata);
-
-        } catch (MalformedURLException e) {
-            return new StringResult((byte) 2, "Malformed URL error occurred " + describe(e));
-        } catch (URISyntaxException e) {
-            return new StringResult((byte) 2, "Malformed URI error occurred: " + describe(e));
-        } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
-        } catch (TikaException e) {
-            return new StringResult((byte) 2, "Parse error occurred : " + describe(e));
-        }
-    }
-
-    /**
-     * Parses the given array of bytes and return its content as String.
-     *
-     * @param data an array of bytes
-     * @return StringResult
-     */
     public static StringResult parseBytesToString(
-            ByteBuffer data,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            int maxLength,
-            boolean asXML
-    ) {
-        final Metadata metadata = new Metadata();
-        final ByteBufferInputStream inStream = new ByteBufferInputStream(data);
-        final TikaInputStream stream = TikaInputStream.get(inStream, new TemporaryResources(), metadata);
-
-        try {
-            String result = parseToStringWithConfig(
-                    stream, metadata, maxLength, pdfConfig, officeConfig, tesseractConfig, asXML);
-            // No need to close the stream because parseToString does so
-            return new StringResult(result, metadata);
-        } catch (java.io.IOException e) {
-            return new StringResult((byte) 1, "IO error occurred: " + describe(e));
-        } catch (TikaException e) {
-            return new StringResult((byte) 2, "Parse error occurred : " + describe(e));
-        }
+            ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, int maxLength, boolean asXML) {
+        return parseToString(bytes(data), pdfConfig, officeConfig, tesseractConfig, password,
+                maxLength, asXML);
     }
 
-    private static String parseToStringWithConfig(
-            InputStream stream,
-            Metadata metadata,
-            int maxLength,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            boolean asXML
-    ) throws IOException, TikaException {
-        ContentHandler handler;
-        ContentHandler handlerForParser;
+    public static StringResult parseUrlToString(
+            String url, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, int maxLength, boolean asXML) {
+        return parseToString(url(url), pdfConfig, officeConfig, tesseractConfig, password,
+                maxLength, asXML);
+    }
+
+    /**
+     * Parses a document into a string of at most maxLength characters.
+     */
+    private static StringResult parseToString(
+            Source source, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, int maxLength, boolean asXML) {
+        final Metadata metadata = new Metadata();
+        final TikaInputStream stream;
+        try {
+            stream = source.open(metadata);
+        } catch (IOException | URISyntaxException e) {
+            return new StringResult(COULD_NOT_OPEN, couldNotOpen(e));
+        }
+
+        final ContentHandler handler;
+        final ContentHandler handlerForParser;
         if (asXML) {
             handler = new WriteOutContentHandler(new ToXMLContentHandler(), maxLength);
             handlerForParser = handler;
@@ -240,288 +213,145 @@ public class TikaNativeMain {
             handler = new WriteOutContentHandler(maxLength);
             handlerForParser = new BodyContentHandler(handler);
         }
-
-        try {
+        try (stream) {
             PARSER.parse(stream, handlerForParser, metadata,
-                    parseContext(pdfConfig, officeConfig, tesseractConfig));
+                    parseContext(pdfConfig, officeConfig, tesseractConfig, password));
         } catch (SAXException e) {
             if (!WriteLimitReachedException.isWriteLimitReached(e)) {
-                // This should never happen with BodyContentHandler...
-                throw new TikaException("Unexpected SAX processing failure", e);
+                return new StringResult(PARSE_FAILED, parseFailed(e));
             }
-        } finally {
-            stream.close();
+        } catch (IOException | TikaException e) {
+            return new StringResult(parseFailureStatus(e), parseFailed(e));
         }
-        return handler.toString();
+        return new StringResult(handler.toString(), metadata);
     }
 
-
-    /**
-     * Parses the given file and returns its text as an encoded byte stream. The stream can be used
-     * to read chunks and must be closed when reading is finished
-     *
-     * @param filePath the path of the file
-     * @return ReaderResult
-     */
     public static ReaderResult parseFile(
-            String filePath,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            String charsetName,
-            boolean asXML
-    ) {
-        try {
-//            System.out.println("pdfConfig.isExtractInlineImages = " + pdfConfig.isExtractInlineImages());
-//            System.out.println("pdfConfig.isExtractMarkedContent = " + pdfConfig.isExtractMarkedContent());
-//            System.out.println("pdfConfig.getOcrStrategy = " + pdfConfig.getOcrStrategy());
-//            System.out.println("officeConfig.isIncludeHeadersAndFooters = " + officeConfig.isIncludeHeadersAndFooters());
-//            System.out.println("officeConfig.isIncludeShapeBasedContent = " + officeConfig.isIncludeShapeBasedContent());
-//            System.out.println("ocrConfig.getTimeoutSeconds = " + tesseractConfig.getTimeoutSeconds());
-//            System.out.println("ocrConfig.language = " + tesseractConfig.getLanguage());
-
-            final Path path = Paths.get(filePath);
-            final Metadata metadata = new Metadata();
-            final TikaInputStream stream = TikaInputStream.get(path, metadata);
-
-            return parse(stream, metadata, charsetName, pdfConfig, officeConfig, tesseractConfig, asXML);
-
-        } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 1, "Could not open file: " + describe(e));
-        }
+            String filePath, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+        return parse(file(filePath), pdfConfig, officeConfig, tesseractConfig, password,
+                charsetName, asXML);
     }
 
-    /**
-     * Parses the given Url and returns its text as an encoded byte stream. The stream can be used
-     * to read chunks and must be closed when reading is finished
-     *
-     * @param urlString the url to be parsed
-     * @return ReaderResult
-     */
-    public static ReaderResult parseUrl(
-            String urlString,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            String charsetName,
-            boolean asXML
-    ) {
-        try {
-            final URL url = new URI(urlString).toURL();
-            final Metadata metadata = new Metadata();
-            final TikaInputStream stream = TikaInputStream.get(url, metadata);
-
-            return parse(stream, metadata, charsetName, pdfConfig, officeConfig, tesseractConfig, asXML);
-
-        } catch (MalformedURLException e) {
-            return new ReaderResult((byte) 2, "Malformed URL error occurred " + describe(e));
-        } catch (URISyntaxException e) {
-            return new ReaderResult((byte) 2, "Malformed URI error occurred: " + describe(e));
-        } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 1, "IO error occurred: " + describe(e));
-        }
-    }
-
-    /**
-     * Parses the given array of bytes and return its text as an encoded byte stream. The stream can be used
-     * to read chunks and must be closed when reading is finished
-     *
-     * @param data an array of bytes
-     * @return ReaderResult
-     */
     public static ReaderResult parseBytes(
-            ByteBuffer data,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            String charsetName,
-            boolean asXML
-    ) {
-        final byte[] bytes = new byte[data.remaining()];
-        data.get(bytes);
-        final Metadata metadata = new Metadata();
-        final TikaInputStream stream = TikaInputStream.get(bytes, metadata);
-
-        return parse(stream, metadata, charsetName, pdfConfig, officeConfig, tesseractConfig, asXML);
+            ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+        return parse(copiedBytes(data), pdfConfig, officeConfig, tesseractConfig, password,
+                charsetName, asXML);
     }
 
+    public static ReaderResult parseUrl(
+            String url, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+        return parse(url(url), pdfConfig, officeConfig, tesseractConfig, password,
+                charsetName, asXML);
+    }
+
+    /**
+     * Parses a document on a worker thread into a stream of its text encoded with charsetName.
+     * Byte input is copied first because the parse outlives this call.
+     */
     private static ReaderResult parse(
-            TikaInputStream inputStream,
-            Metadata metadata,
-            String charsetName,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig,
-            boolean asXML
-    ) {
+            Source source, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, String charsetName, boolean asXML) {
+        final Metadata metadata = new Metadata();
+        final TikaInputStream stream;
         try {
-            final ParseContext parseContext = parseContext(pdfConfig, officeConfig, tesseractConfig);
+            stream = source.open(metadata);
+        } catch (IOException | URISyntaxException e) {
+            return new ReaderResult(COULD_NOT_OPEN, couldNotOpen(e));
+        }
+        try {
             final InputStream text = new ParsingInputStream(
-                    PARSER, inputStream, metadata, parseContext, asXML, Charset.forName(charsetName));
+                    PARSER, stream, metadata,
+                    parseContext(pdfConfig, officeConfig, tesseractConfig, password),
+                    asXML, Charset.forName(charsetName));
             return new ReaderResult(text, metadata);
-        } catch (java.io.IOException e) {
-            return new ReaderResult((byte) 2, "Parse error occurred : " + describe(e));
+        } catch (IOException e) {
+            return new ReaderResult(parseFailureStatus(e), parseFailed(e));
+        }
+    }
+
+    public static EmbeddedExtractResult extractEmbeddedFile(
+            String filePath, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password) {
+        return extractEmbedded(file(filePath), pdfConfig, officeConfig, tesseractConfig, password);
+    }
+
+    public static EmbeddedExtractResult extractEmbeddedBytes(
+            ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password) {
+        return extractEmbedded(bytes(data), pdfConfig, officeConfig, tesseractConfig, password);
+    }
+
+    public static EmbeddedExtractResult extractEmbeddedUrl(
+            String url, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password) {
+        return extractEmbedded(url(url), pdfConfig, officeConfig, tesseractConfig, password);
+    }
+
+    /**
+     * Collects every document embedded in the input, recursively, like Tika Server's /unpack/all.
+     */
+    private static EmbeddedExtractResult extractEmbedded(
+            Source source, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password) {
+        final Metadata metadata = new Metadata();
+        final TikaInputStream stream;
+        try {
+            stream = source.open(metadata);
+        } catch (IOException | URISyntaxException e) {
+            return new EmbeddedExtractResult(COULD_NOT_OPEN, couldNotOpen(e));
+        }
+
+        final List<EmbeddedExtractResult.EmbeddedDocument> documents = new ArrayList<>();
+        final ParseContext parseContext =
+                parseContext(pdfConfig, officeConfig, tesseractConfig, password);
+        parseContext.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
+            @Override
+            public boolean shouldParseEmbedded(Metadata embeddedMetadata) {
+                return true;
+            }
+
+            @Override
+            public void parseEmbedded(InputStream embedded, ContentHandler handler,
+                                      Metadata embeddedMetadata, boolean outputHtml)
+                    throws IOException {
+                final String name = embeddedMetadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
+                final String contentType = embeddedMetadata.get(HttpHeaders.CONTENT_TYPE);
+                final ByteArrayOutputStream content = new ByteArrayOutputStream();
+                IOUtils.copy(embedded, content);
+                documents.add(new EmbeddedExtractResult.EmbeddedDocument(
+                        name == null ? "embedded_" + documents.size() : name,
+                        contentType == null ? "application/octet-stream" : contentType,
+                        content.toByteArray(),
+                        embeddedMetadata.get(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID)));
+            }
+        });
+
+        try (stream) {
+            new RecursiveParserWrapper(PARSER).parse(stream,
+                    new RecursiveParserWrapperHandler(new BasicContentHandlerFactory(
+                            BasicContentHandlerFactory.HANDLER_TYPE.TEXT, -1)),
+                    metadata, parseContext);
+            return new EmbeddedExtractResult(documents, metadata);
+        } catch (IOException | SAXException | TikaException e) {
+            return new EmbeddedExtractResult(parseFailureStatus(e), parseFailed(e));
         }
     }
 
     /**
-     * This is the main entry point of the native image build. @CEntryPoint is used
-     * because we do not want to build an executable with a main method. The gradle nativeImagePlugin
-     * expects either a main method or @CEntryPoint
-     * This uses the C Api isolate, which is can only work with primitive return types unlike the JNI invocation
-     * interface.
+     * The C entry point native-image needs to build a shared library rather than an executable.
      */
     @CEntryPoint(name = "c_parse_to_string")
     private static CCharPointer cParseToString(IsolateThread thread, @CConst CCharPointer cFilePath) {
-        final String filePath = CTypeConversion.toJavaString(cFilePath);
-
-        final Path path = Paths.get(filePath);
         try {
-            final String content = tika.parseToString(path);
+            final String content = TIKA.parseToString(Paths.get(CTypeConversion.toJavaString(cFilePath)));
             try (CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCString(content)) {
                 return holder.get();
             }
-
-        } catch (java.io.IOException | TikaException e) {
+        } catch (IOException | TikaException e) {
             throw new RuntimeException(e);
         }
     }
-
-    /**
-     * Extracts all embedded documents/resources (images, attachments, etc.) from a file.
-     * This is similar to Tika Server's /unpack/all endpoint
-     */
-    public static EmbeddedExtractResult extractEmbeddedFile(
-            String filePath,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig
-    ) {
-        try {
-            final Metadata metadata = new Metadata();
-            final TikaInputStream stream = TikaInputStream.get(Paths.get(filePath), metadata);
-            return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
-        } catch (IOException e) {
-            return new EmbeddedExtractResult((byte) 1, "Could not open file: " + describe(e));
-        }
-    }
-
-    /**
-     * Extracts all embedded documents/resources from a byte buffer
-     */
-    public static EmbeddedExtractResult extractEmbeddedBytes(
-            ByteBuffer data,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig
-    ) {
-        final Metadata metadata = new Metadata();
-        final ByteBufferInputStream inStream = new ByteBufferInputStream(data);
-        final TikaInputStream stream = TikaInputStream.get(inStream, new TemporaryResources(), metadata);
-        return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
-    }
-
-    /**
-     * Extracts all embedded documents/resources from the document at a URL
-     */
-    public static EmbeddedExtractResult extractEmbeddedUrl(
-            String urlString,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig
-    ) {
-        try {
-            final Metadata metadata = new Metadata();
-            final TikaInputStream stream = TikaInputStream.get(new URI(urlString).toURL(), metadata);
-            return extractEmbeddedFromStream(stream, metadata, pdfConfig, officeConfig, tesseractConfig);
-        } catch (URISyntaxException | MalformedURLException e) {
-            return new EmbeddedExtractResult((byte) 2, "Malformed URL error occurred: " + describe(e));
-        } catch (IOException e) {
-            return new EmbeddedExtractResult((byte) 1, "IO error occurred: " + describe(e));
-        }
-    }
-
-    /**
-     * Shared helper method to extract embedded documents from a stream
-     */
-    private static EmbeddedExtractResult extractEmbeddedFromStream(
-            TikaInputStream stream,
-            Metadata metadata,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig
-    ) {
-        final List<EmbeddedExtractResult.EmbeddedDocument> embeddedDocuments = new ArrayList<>();
-        
-        try {
-            final ParseContext parseContext = parseContext(pdfConfig, officeConfig, tesseractConfig);
-            
-            // Custom embedded document extractor
-            EmbeddedDocumentExtractor embeddedExtractor = new EmbeddedDocumentExtractor() {
-                @Override
-                public boolean shouldParseEmbedded(Metadata metadata) {
-                    return true; // Extract all embedded documents
-                }
-                
-                @Override
-                public void parseEmbedded(
-                        InputStream inputStream,
-                        ContentHandler contentHandler,
-                        Metadata embeddedMetadata,
-                        boolean outputHtml) throws SAXException, IOException {
-                    
-                    // Get metadata
-                    String resourceName = embeddedMetadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
-                    String contentType = embeddedMetadata.get(HttpHeaders.CONTENT_TYPE);
-                    String embeddedRelationshipId = embeddedMetadata.get(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID);
-                    
-                    // Default values if metadata is missing
-                    if (resourceName == null) {
-                        resourceName = "embedded_" + embeddedDocuments.size();
-                    }
-                    if (contentType == null) {
-                        contentType = "application/octet-stream";
-                    }
-                    
-                    // Read content into byte array
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    IOUtils.copy(inputStream, baos);
-                    byte[] content = baos.toByteArray();
-                    
-                    // Create embedded document
-                    embeddedDocuments.add(new EmbeddedExtractResult.EmbeddedDocument(
-                        resourceName,
-                        contentType,
-                        content,
-                        embeddedRelationshipId
-                    ));
-                }
-            };
-            
-            parseContext.set(EmbeddedDocumentExtractor.class, embeddedExtractor);
-            
-            // Use RecursiveParserWrapper to extract all embedded content
-            RecursiveParserWrapper wrapper = new RecursiveParserWrapper(PARSER);
-            BasicContentHandlerFactory factory = new BasicContentHandlerFactory(
-                BasicContentHandlerFactory.HANDLER_TYPE.TEXT, -1);
-            RecursiveParserWrapperHandler handler = new RecursiveParserWrapperHandler(factory);
-            
-            wrapper.parse(stream, handler, metadata, parseContext);
-            
-            return new EmbeddedExtractResult(embeddedDocuments, metadata);
-            
-        } catch (IOException e) {
-            return new EmbeddedExtractResult((byte) 1, "IO error occurred: " + describe(e));
-        } catch (SAXException | TikaException e) {
-            return new EmbeddedExtractResult((byte) 2, "Parse error occurred : " + describe(e));
-        } catch (Exception e) {
-            return new EmbeddedExtractResult((byte) 99, "Unexpected error: " + describe(e));
-        } finally {
-            try {
-                stream.close();
-            } catch (IOException ignored) {
-            }
-        }
-    }
-
 }

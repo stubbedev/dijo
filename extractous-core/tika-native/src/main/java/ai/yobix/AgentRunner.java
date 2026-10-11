@@ -23,6 +23,7 @@ public class AgentRunner {
                 new PDFParserConfig(),
                 new OfficeParserConfig(),
                 new TesseractOCRConfig(),
+                null,                                // no password
                 100_000,                             // char limit
                 false);                              // plain text, not XML
 

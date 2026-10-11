@@ -65,6 +65,21 @@ pub struct ExtractArgs {
     #[arg(long, env = "EXTRACTOUS_STRICT")]
     pub strict: bool,
 
+    /// A password to try on encrypted documents; repeat for more. Command-line arguments are
+    /// visible to other users in process listings, so prefer --password-file or the
+    /// EXTRACTOUS_PASSWORD environment variable.
+    #[arg(
+        long = "password",
+        value_name = "PASSWORD",
+        env = "EXTRACTOUS_PASSWORD",
+        hide_env_values = true
+    )]
+    pub passwords: Vec<String>,
+
+    /// A file of passwords to try on encrypted documents, one per line, after any --password.
+    #[arg(long, value_name = "FILE", env = "EXTRACTOUS_PASSWORD_FILE")]
+    pub password_file: Option<PathBuf>,
+
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]
     pub output: Option<PathBuf>,

@@ -40,6 +40,7 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
+| `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
@@ -77,8 +78,9 @@ without pages is one record), and `--format elements` one per heading, paragraph
 
 `metadata` (with `-m`) holds normalised fields filled from whichever Tika key a format uses: dates are RFC 3339 in UTC,
 or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are
-available with `--raw-metadata`. `status` is `complete`, `partial` (some text before an error) or `failed`, and every
-error carries a category and its full cause chain.
+available with `--raw-metadata`. `status` is `complete`, `partial` (some text before an error), `encrypted` (no password opened it) or `failed`, and
+every error carries a category and its full cause chain. Decrypted documents report `"encrypted":true,"decrypted":true`
+in `metadata`; passwords never appear in output or errors.
 
 ## Supported formats
 

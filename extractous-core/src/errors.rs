@@ -14,6 +14,9 @@ pub enum Error {
     ParseError(String),
 
     #[error("{0}")]
+    Encrypted(String),
+
+    #[error("{0}")]
     Utf8Error(#[from] Utf8Error),
 
     #[error("{0}")]

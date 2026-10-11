@@ -15,7 +15,9 @@ use std::sync::mpsc;
 use std::thread;
 
 use clap::Parser;
-use extractous_core::{Extractor, Metadata, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+use extractous_core::{
+    Extractor, Metadata, Password, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig,
+};
 
 use cli::{Cli, Command, ExtractArgs, Format, InputArgs, Ocr};
 use inputs::{Input, InputError, Source};
@@ -136,7 +138,7 @@ fn stdout_failed(error: &io::Error) -> bool {
     false
 }
 
-fn configure(args: &ExtractArgs) -> Extractor {
+fn configure(args: &ExtractArgs, passwords: Vec<Password>) -> Extractor {
     let (strategy, skip_ocr) = match args.ocr {
         Ocr::Auto => (PdfOcrStrategy::AUTO, false),
         Ocr::Never => (PdfOcrStrategy::NO_OCR, true),
@@ -147,12 +149,29 @@ fn configure(args: &ExtractArgs) -> Extractor {
         ocr = ocr.set_language(languages.as_str());
     }
     Extractor::new()
+        .set_passwords(passwords)
         .set_xml_output(matches!(
             args.format,
             Format::Xhtml | Format::Pages | Format::Elements
         ))
         .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(strategy))
         .set_ocr_config(ocr)
+}
+
+/// The `--password` values in order, then the lines of `--password-file`.
+fn read_passwords(args: &ExtractArgs) -> Result<Vec<Password>, String> {
+    let mut passwords: Vec<Password> = args.passwords.iter().map(Password::new).collect();
+    if let Some(path) = &args.password_file {
+        let contents = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        passwords.extend(
+            contents
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(Password::new),
+        );
+    }
+    Ok(passwords)
 }
 
 /// Where one input's output goes.
@@ -186,7 +205,14 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let extractor = configure(args);
+    let passwords = match read_passwords(args) {
+        Ok(passwords) => passwords,
+        Err(error) => {
+            report("--password-file", &error);
+            return false;
+        }
+    };
+    let extractor = configure(args, passwords);
     let workers = args.jobs.get().min(inputs.len().max(1));
     let next = AtomicUsize::new(0);
     let (sender, receiver) = mpsc::channel::<(usize, Finished)>();
@@ -345,7 +371,11 @@ fn write_file_atomically(
     let partial = path.with_added_extension(format!("partial-{}", std::process::id()));
     let written = write_file(&partial, render);
     match written {
-        Ok(outcome) if outcome.status != Status::Failed || keep_failed => {
+        Ok(outcome)
+            if outcome.status == Status::Complete
+                || outcome.status == Status::Partial
+                || keep_failed =>
+        {
             fs::rename(&partial, path)?;
             Ok(outcome)
         }
@@ -378,7 +408,7 @@ fn emit(finished: Finished, format: Format, strict: bool) -> bool {
     let mut succeeded = match finished.status {
         Status::Complete => true,
         Status::Partial => !strict,
-        Status::Failed => false,
+        Status::Encrypted | Status::Failed => false,
     };
     match finished.output {
         Ok(Some(spooled)) => {

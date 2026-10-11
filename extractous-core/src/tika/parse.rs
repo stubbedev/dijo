@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::config::ParserConfigs;
+use crate::config::{ParserConfigs, Password};
 use crate::embedded::EmbeddedExtractResult;
 use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::*;
@@ -14,7 +14,8 @@ const TIKA_NATIVE_MAIN: &str = "ai/yobix/TikaNativeMain";
 const LOCAL_FRAME_CAPACITY: i32 = 32;
 const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
                                  Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
-                                 Lorg/apache/tika/parser/ocr/TesseractOCRConfig;";
+                                 Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
+                                 Ljava/lang/String;";
 
 /// Returns the VM isolate shared by every extraction in the process, starting it on first use.
 pub(crate) fn vm() -> ExtractResult<&'static JavaVM> {
@@ -68,18 +69,24 @@ fn call_tika<'local>(
     source: Source,
     method: &str,
     configs: &ParserConfigs,
+    password: Option<&Password>,
     tail_signature: &str,
     tail_args: &[JValue],
 ) -> ExtractResult<JObject<'local>> {
     let source_obj = source.into_java(env)?;
     let [pdf, office, ocr] = java_parser_configs(env, configs)?;
+    let password_obj: JObject = match password {
+        Some(password) => jni_new_string(env, password.as_str())?.into(),
+        None => JObject::null(),
+    };
     let signature = format!("({}{CONFIGS_SIGNATURE}{tail_signature}", source.java_type());
-    let mut args = Vec::with_capacity(4 + tail_args.len());
+    let mut args = Vec::with_capacity(5 + tail_args.len());
     args.extend([
         JValue::Object(&source_obj),
         JValue::Object(&pdf),
         JValue::Object(&office),
         JValue::Object(&ocr),
+        JValue::Object(&password_obj),
     ]);
     args.extend_from_slice(tail_args);
     Ok(jni_call_static_method(env, TIKA_NATIVE_MAIN, method, &signature, &args)?.l()?)
@@ -94,6 +101,7 @@ pub(crate) fn parse_to_stream(
     source: Source,
     char_set: &CharSet,
     configs: &ParserConfigs,
+    password: Option<&Password>,
     as_xml: bool,
 ) -> ExtractResult<(StreamReader, Metadata)> {
     let mut env = attach_current_thread()?;
@@ -104,6 +112,7 @@ pub(crate) fn parse_to_stream(
             source,
             &format!("parse{}", source.method_suffix()),
             configs,
+            password,
             "Ljava/lang/String;Z)Lai/yobix/ReaderResult;",
             &[JValue::Object(&char_set_obj), JValue::Bool(as_xml.into())],
         )?;
@@ -119,6 +128,7 @@ pub(crate) fn parse_to_string(
     source: Source,
     max_length: i32,
     configs: &ParserConfigs,
+    password: Option<&Password>,
     as_xml: bool,
 ) -> ExtractResult<(String, Metadata)> {
     in_local_frame(|env| {
@@ -127,6 +137,7 @@ pub(crate) fn parse_to_string(
             source,
             &format!("parse{}ToString", source.method_suffix()),
             configs,
+            password,
             "IZ)Lai/yobix/StringResult;",
             &[JValue::Int(max_length), JValue::Bool(as_xml.into())],
         )?;
@@ -138,6 +149,7 @@ pub(crate) fn parse_to_string(
 pub(crate) fn extract_embedded(
     source: Source,
     configs: &ParserConfigs,
+    password: Option<&Password>,
 ) -> ExtractResult<EmbeddedExtractResult> {
     in_local_frame(|env| {
         let result = call_tika(
@@ -145,6 +157,7 @@ pub(crate) fn extract_embedded(
             source,
             &format!("extractEmbedded{}", source.method_suffix()),
             configs,
+            password,
             ")Lai/yobix/EmbeddedExtractResult;",
             &[],
         )?;

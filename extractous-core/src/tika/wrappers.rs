@@ -101,6 +101,7 @@ fn java_result_error<'local>(
     Ok(Some(match status {
         1 => Error::IoError(message),
         2 => Error::ParseError(message),
+        3 => Error::Encrypted(message),
         _ => Error::Unknown(message),
     }))
 }
