@@ -175,6 +175,14 @@ tika_config! {
         /// the first non-null value and includes only that. If you'd like to extract all
         /// non-null body content, which is likely duplicative, set this value to true.
         set_extract_all_alternatives_from_msg(extract_all_alternatives_from_msg: bool) => "setExtractAllAlternativesFromMSG",
+
+        /// Use the streaming SAX extractor for DOCX instead of loading the whole document into
+        /// memory, at the cost of a few features the full document model provides.
+        set_use_sax_docx_extractor(use_sax_docx_extractor: bool) => "setUseSAXDocxExtractor",
+
+        /// Use the streaming SAX extractor for PPTX instead of loading the whole presentation
+        /// into memory.
+        set_use_sax_pptx_extractor(use_sax_pptx_extractor: bool) => "setUseSAXPptxExtractor",
     }
 }
 
