@@ -313,11 +313,10 @@ public class TikaNativeMain {
             TesseractOCRConfig tesseractConfig,
             boolean asXML
     ) {
-
-
+        final byte[] bytes = new byte[data.remaining()];
+        data.get(bytes);
         final Metadata metadata = new Metadata();
-        final ByteBufferInputStream inStream = new ByteBufferInputStream(data);
-        final TikaInputStream stream = TikaInputStream.get(inStream, new TemporaryResources(), metadata);
+        final TikaInputStream stream = TikaInputStream.get(bytes, metadata);
 
         return parse(stream, metadata, charsetName, pdfConfig, officeConfig, tesseractConfig, asXML);
     }

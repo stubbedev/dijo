@@ -86,3 +86,17 @@ fn test_extract_bytes_to_stream_ara_ocr_png() {
     );
     println!("{}: {}", "ara-ocr.png", dist);
 }
+
+#[test]
+fn test_extract_bytes_to_stream_does_not_read_the_caller_buffer_after_returning() {
+    let text = "the quick brown fox jumps over the lazy dog\n".repeat(200_000);
+    let mut bytes = text.clone().into_bytes();
+
+    let (mut stream, _) = Extractor::new().extract_bytes(&bytes).unwrap();
+    bytes.fill(0);
+    drop(bytes);
+    let mut extracted = String::new();
+    stream.read_to_string(&mut extracted).unwrap();
+
+    assert_eq!(extracted.trim(), text.trim());
+}
