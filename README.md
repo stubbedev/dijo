@@ -8,19 +8,16 @@
 
 <div align="center">
 
-<a href="https://github.com/yobix-ai/extractous/blob/main/LICENSE">![https://pypi.python.org/pypi/unstructured/](https://img.shields.io/pypi/l/unstructured.svg)</a>
+<a href="https://github.com/yobix-ai/extractous/blob/main/LICENSE">![License](https://img.shields.io/crates/l/extractous)</a>
 [![](https://img.shields.io/crates/v/extractous)](https://crates.io/crates/extractous)
-[![](https://img.shields.io/pypi/v/extractous)](https://pypi.org/project/extractous/)
 <img src="https://img.shields.io/github/commit-activity/m/yobix-ai/extractous" alt="Commits per month">
-[![Downloads](https://static.pepy.tech/badge/extractous/month)](https://pepy.tech/project/extractous)
 
 </div>
 
 <div align="center">
 
 _Extractous offers a fast and efficient solution for extracting content and metadata from various documents types such as PDF, Word, HTML, and [many other formats](#supported-file-formats).
-Our goal is to deliver a fast and efficient comprehensive solution in Rust with bindings for many programming
-languages._
+Our goal is to deliver a fast and efficient comprehensive solution in Rust._
 
 </div>
 
@@ -47,7 +44,6 @@ In contrast, **Extractous** maintains a dedicated focus on text and metadata ext
 
 * **Built with Rust:** The core is developed in Rust, leveraging its high performance, memory safety, multi-threading capabilities, and zero-cost abstractions.
 * **Extended format support with Apache Tika:** For file formats not natively supported by the Rust core, we compile the well-known [Apache Tika](https://tika.apache.org/) into native shared libraries using [GraalVM](https://www.graalvm.org/) ahead-of-time compilation technology. These shared libraries are then linked to and called from our Rust core. No local servers, no virtual machines, or any garbage collection, just pure native execution.
-* **Bindings for many languages:**  we plan to introduce bindings for many languages. At the moment we offer only Python binding, which is essentially is a wrapper around the Rust core with the potential to circumventing the Python GIL limitation and make efficient use of multi-cores.
 
 With Extractous, the need for external services or APIs is eliminated, making data processing pipelines faster and more efficient.
 
@@ -57,70 +53,12 @@ With Extractous, the need for external services or APIs is eliminated, making da
 * Automatically identifies document types and extracts content accordingly
 * Supports [many file formats](#supported-file-formats) (most formats supported by Apache Tika).
 * Extracts text from images and scanned documents with OCR through [tesseract-ocr](https://github.com/tesseract-ocr/tesseract).
-* Core engine written in Rust with bindings for [Python](https://pypi.org/project/extractous/) and upcoming support for JavaScript/TypeScript.
+* Core engine written in Rust.
 * Detailed documentation and examples to help you get started quickly and efficiently.
 * Free for Commercial Use: Apache 2.0 License.
 
 ## 🚀 Quickstart
 Extractous provides a simple and easy-to-use API for extracting content from various file formats. Below are quick examples:
-
-#### Python
-* Extract a file content to a string:
-```python
-from extractous import Extractor
-
-# Create a new extractor
-extractor = Extractor()
-extractor = extractor.set_extract_string_max_length(1000)
-# if you need an xml
-# extractor = extractor.set_xml_output(True)
-
-# Extract text from a file
-result, metadata = extractor.extract_file_to_string("README.md")
-print(result)
-print(metadata)
-```
-* Extracting a file(URL / bytearray) to a buffered stream:
-
-```python
-from extractous import Extractor
-
-extractor = Extractor()
-# if you need an xml
-# extractor = extractor.set_xml_output(True)
-
-# for file
-reader, metadata = extractor.extract_file("tests/quarkus.pdf")
-# for url
-# reader, metadata = extractor.extract_url("https://www.google.com")
-# for bytearray
-# with open("tests/quarkus.pdf", "rb") as file:
-#     buffer = bytearray(file.read())
-# reader, metadata = extractor.extract_bytes(buffer)
-
-result = ""
-buffer = reader.read(4096)
-while len(buffer) > 0:
-    result += buffer.decode("utf-8")
-    buffer = reader.read(4096)
-
-print(result)
-print(metadata)
-```
-
-* Extracting a file with OCR:
-
-You need to have Tesseract installed with the language pack. For example on debian `sudo apt install tesseract-ocr tesseract-ocr-deu`
-
-```python
-from extractous import Extractor, TesseractOcrConfig
-
-extractor = Extractor().set_ocr_config(TesseractOcrConfig().set_language("deu"))
-result, metadata = extractor.extract_file_to_string("../../test_files/documents/eng-ocr.pdf")
-
-print(result)
-print(metadata)
-```
 
 #### Rust
 * Extract a file content to a string:

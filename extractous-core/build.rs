@@ -12,12 +12,9 @@ fn main() {
         return;
     }
 
-    // Set tika_native source directory and python bindings directory
+    // Set tika_native source directory
     let root_dir = env::var("CARGO_MANIFEST_DIR").map(PathBuf::from).unwrap();
     let tika_native_source_dir = root_dir.join("tika-native");
-    // canonicalize does not work on Windows because it returns UNC paths
-    //let python_bind_dir = fs::canonicalize("../bindings/extractous-python/python/extractous").unwrap();
-    let python_bind_dir = root_dir.join("../bindings/extractous-python/python/extractous");
 
     // Main build output directory
     let out_dir = env::var("OUT_DIR").map(PathBuf::from).unwrap();
@@ -49,7 +46,7 @@ fn main() {
             // ignore if libs_dir/.. is the same as out_dir
             if out_dir.join("libs") != libs_dir {
                 // If the libs are already built, copy them to the output directory
-                copy_build_artifacts(&libs_dir, &[&libs_out_dir]);
+                copy_build_artifacts(&libs_dir, &libs_out_dir);
             }
         }
         None => {
@@ -59,12 +56,7 @@ fn main() {
 
     // Launch the gradle build
     if need_build {
-        gradle_build(
-            &tika_native_source_dir,
-            &out_dir,
-            &libs_out_dir,
-            &python_bind_dir,
-        );
+        gradle_build(&tika_native_source_dir, &out_dir, &libs_out_dir);
     }
 
     // Tell cargo to look for shared libraries in the specified directory
@@ -142,12 +134,7 @@ fn is_dir_updated(src: &Path, dest: &Path) -> bool {
 }
 
 // Run the gradle build command to build tika-native
-fn gradle_build(
-    tika_native_source_dir: &Path,
-    out_dir: &Path,
-    libs_out_dir: &Path,
-    python_bind_dir: &Path,
-) {
+fn gradle_build(tika_native_source_dir: &Path, out_dir: &Path, libs_out_dir: &Path) {
     let jdk_install_dir = out_dir.join("graalvm-jdk"); // out_dir subdir where jdk is downloaded
     let tika_native_dir = out_dir.join("tika-native"); // out_dir subdir where the gradle build is run
 
@@ -187,23 +174,13 @@ fn gradle_build(
         .status()
         .expect("Failed to build tika-native");
 
-    // Decide where to copy the graalvm build artifacts
-    let mut copy_to_dirs = vec![libs_out_dir];
-    if python_bind_dir.is_dir() {
-        // If python binding directory exists, copy the build artifacts to it
-        // When running cargo publish the CARGO_MANIFEST_DIR points to a different directory
-        // than the root dir.
-        copy_to_dirs.push(python_bind_dir);
-    };
-
-    // Copy the build artifacts to the specified directories
     let build_path = tika_native_dir.join("build/native/nativeCompile");
-    copy_build_artifacts(&build_path, &copy_to_dirs);
+    copy_build_artifacts(&build_path, libs_out_dir);
 
     println!("Successfully built libs 🚀");
 }
 
-pub fn copy_build_artifacts(from_path: &Path, copy_to_dirs: &[&Path]) {
+pub fn copy_build_artifacts(from_path: &Path, to_dir: &Path) {
     let artifacts: Vec<PathBuf> = fs::read_dir(from_path)
         .unwrap_or_else(|e| {
             panic!(
@@ -222,25 +199,23 @@ pub fn copy_build_artifacts(from_path: &Path, copy_to_dirs: &[&Path]) {
         .filter(|path| path.extension() != Some(OsStr::new("h")))
         .collect();
 
-    for dir in copy_to_dirs {
-        fs::create_dir_all(dir)
-            .unwrap_or_else(|e| panic!("Failed to create {}: {}", dir.display(), e));
-        for artifact in &artifacts {
-            let dest = dir.join(artifact.file_name().unwrap());
-            match fs::remove_file(&dest) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => panic!("Failed to remove stale {}: {}", dest.display(), e),
-            }
-            fs::copy(artifact, &dest).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to copy {} to {}: {}",
-                    artifact.display(),
-                    dest.display(),
-                    e
-                )
-            });
+    fs::create_dir_all(to_dir)
+        .unwrap_or_else(|e| panic!("Failed to create {}: {}", to_dir.display(), e));
+    for artifact in &artifacts {
+        let dest = to_dir.join(artifact.file_name().unwrap());
+        match fs::remove_file(&dest) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => panic!("Failed to remove stale {}: {}", dest.display(), e),
         }
+        fs::copy(artifact, &dest).unwrap_or_else(|e| {
+            panic!(
+                "Failed to copy {} to {}: {}",
+                artifact.display(),
+                dest.display(),
+                e
+            )
+        });
     }
 }
 
