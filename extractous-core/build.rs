@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -48,10 +49,12 @@ fn main() {
             // ignore if libs_dir/.. is the same as out_dir
             if out_dir.join("libs") != libs_dir {
                 // If the libs are already built, copy them to the output directory
-                copy_build_artifacts(&libs_dir, vec![&libs_out_dir], false);
+                copy_build_artifacts(&libs_dir, &[&libs_out_dir]);
             }
         }
-        None => { need_build = true; }
+        None => {
+            need_build = true;
+        }
     }
 
     // Launch the gradle build
@@ -140,10 +143,10 @@ fn is_dir_updated(src: &Path, dest: &Path) -> bool {
 
 // Run the gradle build command to build tika-native
 fn gradle_build(
-    tika_native_source_dir: &PathBuf,
-    out_dir: &PathBuf,
-    libs_out_dir: &PathBuf,
-    python_bind_dir: &PathBuf,
+    tika_native_source_dir: &Path,
+    out_dir: &Path,
+    libs_out_dir: &Path,
+    python_bind_dir: &Path,
 ) {
     let jdk_install_dir = out_dir.join("graalvm-jdk"); // out_dir subdir where jdk is downloaded
     let tika_native_dir = out_dir.join("tika-native"); // out_dir subdir where the gradle build is run
@@ -154,7 +157,7 @@ fn gradle_build(
     println!("Using GraalVM JDK found at {}", graalvm_home.display());
     println!("Building tika_native libs this might take a while ... Please be patient!!");
 
-    if is_dir_updated(&tika_native_source_dir, &tika_native_dir) {
+    if is_dir_updated(tika_native_source_dir, &tika_native_dir) {
         println!("Lib tika_native files were updated");
         fs_extra::dir::remove(&tika_native_dir).ok();
     }
@@ -195,26 +198,48 @@ fn gradle_build(
 
     // Copy the build artifacts to the specified directories
     let build_path = tika_native_dir.join("build/native/nativeCompile");
-    copy_build_artifacts(&build_path, copy_to_dirs, true);
+    copy_build_artifacts(&build_path, &copy_to_dirs);
 
     println!("Successfully built libs 🚀");
 }
 
-pub fn copy_build_artifacts(from_path: &PathBuf, copy_to_dirs: Vec<&PathBuf>, clean: bool) {
-    // Copy the build artifacts to the specified directories
-    let mut options = fs_extra::dir::CopyOptions::new();
-    options.overwrite = true;
-    options.content_only = true;
+pub fn copy_build_artifacts(from_path: &Path, copy_to_dirs: &[&Path]) {
+    let artifacts: Vec<PathBuf> = fs::read_dir(from_path)
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to list build artifacts in {}: {}",
+                from_path.display(),
+                e
+            )
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!("Failed to read entry of {}: {}", from_path.display(), e)
+                })
+                .path()
+        })
+        .filter(|path| path.extension() != Some(OsStr::new("h")))
+        .collect();
 
-    for dir in copy_to_dirs.iter() {
-        fs_extra::dir::copy(from_path, dir, &options)
-            .expect("Failed to copy build artifacts to OUTPUT_DIR");
-
-        if clean {
-            fs::remove_file(dir.join("graal_isolate_dynamic.h")).unwrap();
-            fs::remove_file(dir.join("graal_isolate.h")).unwrap();
-            fs::remove_file(dir.join("libtika_native_dynamic.h")).unwrap();
-            fs::remove_file(dir.join("libtika_native.h")).unwrap();
+    for dir in copy_to_dirs {
+        fs::create_dir_all(dir)
+            .unwrap_or_else(|e| panic!("Failed to create {}: {}", dir.display(), e));
+        for artifact in &artifacts {
+            let dest = dir.join(artifact.file_name().unwrap());
+            match fs::remove_file(&dest) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => panic!("Failed to remove stale {}: {}", dest.display(), e),
+            }
+            fs::copy(artifact, &dest).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to copy {} to {}: {}",
+                    artifact.display(),
+                    dest.display(),
+                    e
+                )
+            });
         }
     }
 }
