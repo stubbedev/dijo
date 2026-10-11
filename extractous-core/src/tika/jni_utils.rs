@@ -1,4 +1,4 @@
-use std::os::raw::{c_char, c_void};
+use std::os::raw::c_void;
 
 use crate::errors::{Error, ExtractResult};
 use crate::Metadata;
@@ -161,32 +161,28 @@ pub fn jni_check_exception(env: &mut JNIEnv) -> ExtractResult<bool> {
 /// No need to specify any libraries because the graalvm native image is already
 /// linked in by the build script.
 pub fn create_vm_isolate() -> JavaVM {
+    let mut vm_options = [
+        sys::JavaVMOption {
+            optionString: c"-Djava.library.path=.".as_ptr().cast_mut(),
+            extraInfo: std::ptr::null_mut(),
+        },
+        sys::JavaVMOption {
+            optionString: c"-Djava.awt.headless=true".as_ptr().cast_mut(),
+            extraInfo: std::ptr::null_mut(),
+        },
+    ];
+    let mut args = sys::JavaVMInitArgs {
+        version: sys::JNI_VERSION_1_8,
+        nOptions: vm_options.len() as sys::jint,
+        options: vm_options.as_mut_ptr(),
+        ignoreUnrecognized: sys::JNI_FALSE,
+    };
+    let mut ptr: *mut sys::JavaVM = std::ptr::null_mut();
+    let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
+
     unsafe {
-        let vm_options: Vec<sys::JavaVMOption> = vec![
-            // Set java.library.path to be able to load libawt.so, which must be in the same dir as libtika_native.so
-            sys::JavaVMOption {
-                optionString: "-Djava.library.path=.".as_ptr() as *mut c_char,
-                extraInfo: std::ptr::null_mut(),
-            },
-            // enable awt headless mode
-            sys::JavaVMOption {
-                optionString: "Djava.awt.headless=true".as_ptr() as *mut c_char,
-                extraInfo: std::ptr::null_mut(),
-            },
-        ];
-
-        let mut args = sys::JavaVMInitArgs {
-            version: sys::JNI_VERSION_1_8,
-            nOptions: vm_options.len() as sys::jint,
-            options: vm_options.as_ptr() as *mut sys::JavaVMOption,
-            ignoreUnrecognized: sys::JNI_TRUE,
-        };
-        let mut ptr: *mut sys::JavaVM = std::ptr::null_mut();
-        let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
-
-        // The current thread becomes the main thread
         let jni_res = sys::JNI_CreateJavaVM(
-            &mut ptr as *mut _,
+            &mut ptr,
             &mut env as *mut *mut sys::JNIEnv as *mut *mut c_void,
             &mut args as *mut sys::JavaVMInitArgs as *mut c_void,
         );
@@ -194,70 +190,8 @@ pub fn create_vm_isolate() -> JavaVM {
             panic!("Failed creating the graal native vm: {:?}", e);
         });
 
-        // This sys call already attaches the current thread to the vm
         JavaVM::from_raw(ptr).unwrap_or_else(|e| {
             panic!("Failed creating the graal native from pointer: {:?}", e);
         })
     }
 }
-
-// fn cleanup_vm_isolate(jvm: JavaVM) -> ExtractResult<()>  {
-//     println!("cleanup_vm_isolate");
-//     // let mut env = jvm.attach_current_thread_as_daemon()?;
-//     //
-//     // let x = JValue::from(1);
-//     // let system_class = env.find_class("java/lang/System")?;
-//     // let exit_mid = env.get_static_method_id(&system_class, "exit", "(I)V")?;
-//     // let _val = unsafe {
-//     //     env.call_static_method_unchecked(
-//     //         &system_class,
-//     //         exit_mid,
-//     //         ReturnType::Primitive(Primitive::Void),
-//     //         &[x.as_jni()],
-//     //     )
-//     // };
-//
-//     // Destroy jvm. jvm must be dropped as well
-//     unsafe {  jvm.destroy()?; }
-//     drop(jvm);
-//
-//     Ok(())
-// }
-
-// pub fn tika_parse_file_new_vm(file_name: &str) -> ExtractResult<String> {
-//
-//     let mut output = String::new();
-//
-//     let mut start_time = Instant::now();
-//     let jvm = create_vm_isolate();
-//     let jvm_create_duration = start_time.elapsed();
-//
-//     start_time = Instant::now();
-//     // Need to create a new scope to be able to drop intermediate objects before destroying the jvm
-//     {
-//         //let mut env = jvm.get_env()?;
-//         let mut env = jvm.attach_current_thread()?;
-//
-//         let jstr_file = env.new_string(file_name)?;
-//         let val = env.call_static_method("ai/yobix/TikaNativeMain", "parseToString",
-//                                          "(Ljava/lang/String;)Ljava/lang/String;", &[JValue::from(&jstr_file)])?;
-//
-//         let jobject = val.l()?;
-//         let jstr_output = JString::from(jobject);
-//         let javastr_output = env.get_string(&jstr_output)?;
-//         let output_str = javastr_output.to_str().map_err(|e| Error::Utf8Error(e))?;
-//         // Creates the string before cleaning the vm
-//         output.push_str(output_str);
-//     }
-//     let parse_duration = start_time.elapsed();
-//
-//     start_time = Instant::now();
-//     cleanup_vm_isolate(jvm)?;
-//     let jvm_destroy_duration = start_time.elapsed();
-//
-//     println!("Time taken to jvm_create_duration: {:.4?}", jvm_create_duration);
-//     println!("Time taken to parse_duration: {:.4?}", parse_duration);
-//     println!("Time taken to jvm_destroy_duration: {:.4?}", jvm_destroy_duration);
-//
-//     Ok(output)
-// }
