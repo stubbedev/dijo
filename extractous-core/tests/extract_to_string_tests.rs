@@ -28,7 +28,7 @@ fn test_extract_file_to_string(file_name: &str, target_dist: f64) {
     let expected =
         fs::read_to_string(format!("../test_files/expected_result/{}.txt", file_name)).unwrap();
 
-    let dist = cosine(&expected.trim(), &extracted.trim());
+    let dist = cosine(expected.trim(), extracted.trim());
     assert!(
         dist > target_dist,
         "Cosine similarity is less than {} for file: {}, dist: {}",
@@ -57,14 +57,13 @@ fn test_extract_file_to_string_ara_ocr_png() {
         .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR));
     // extract file with extractor
     let (extracted, _metadata) = extractor
-        .extract_file_to_string(&"../test_files/documents/ara-ocr.png".to_string())
+        .extract_file_to_string("../test_files/documents/ara-ocr.png")
         .unwrap();
 
     println!("{}", extracted);
 
     // read expected string
-    let expected =
-        fs::read_to_string("../test_files/expected_result/ara-ocr.png.txt".to_string()).unwrap();
+    let expected = fs::read_to_string("../test_files/expected_result/ara-ocr.png.txt").unwrap();
 
     let dist = cosine(&expected, &extracted);
     assert!(
@@ -87,12 +86,11 @@ fn test_extract_file_to_string_ocr_only_strategy_deu_ocr_pdf() {
         );
     // extract file with extractor
     let (extracted, _metadata) = extractor
-        .extract_file_to_string(&"../test_files/documents/deu-ocr.pdf".to_string())
+        .extract_file_to_string("../test_files/documents/deu-ocr.pdf")
         .unwrap();
 
     // read expected string
-    let expected =
-        fs::read_to_string("../test_files/expected_result/deu-ocr.pdf.txt".to_string()).unwrap();
+    let expected = fs::read_to_string("../test_files/expected_result/deu-ocr.pdf.txt").unwrap();
 
     let dist = cosine(&expected, &extracted);
     assert!(
@@ -110,7 +108,7 @@ fn test_test_extract_file_to_string_no_ocr_strategy_deu_ocr_pdf() {
         .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR));
     // extract file with extractor
     let (extracted, _metadata) = extractor
-        .extract_file_to_string(&"../test_files/documents/deu-ocr.pdf".to_string())
+        .extract_file_to_string("../test_files/documents/deu-ocr.pdf")
         .unwrap();
 
     assert_eq!("", extracted.trim())
