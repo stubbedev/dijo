@@ -27,4 +27,5 @@ in
   };
 
   env.GRAALVM_HOME = graalvm;
+  env.OMP_THREAD_LIMIT = "1";
 }

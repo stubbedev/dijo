@@ -27,6 +27,9 @@ bytemuck =  { version = "1.24.0"}
 strum = { version = "0.27.2" }
 strum_macros = { version = "0.27.2" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }
+
 [dev-dependencies]
 textdistance = "1.1.1"
 test-case = "3.3.1"

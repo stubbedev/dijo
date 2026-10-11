@@ -24,6 +24,8 @@ pub(crate) struct Runtime {
 /// Unpacks the embedded native libraries, loads Tika from them and creates the VM isolate.
 pub(crate) fn start() -> Result<Runtime, String> {
     let dir = install_dir()?;
+    #[cfg(windows)]
+    search_dependencies_in(&dir)?;
     let library_path = dir.join(TIKA_LIBRARY);
     let library = unsafe { Library::new(&library_path) }
         .map_err(|e| format!("Failed to load {}: {e}", library_path.display()))?;
@@ -34,6 +36,30 @@ pub(crate) fn start() -> Result<Runtime, String> {
         vm,
         _library: library,
     })
+}
+
+/// Windows resolves a DLL's dependencies from the application directory, the system directories
+/// and PATH, not from the DLL's own directory, so awt.dll would not find the jvm.dll and
+/// java.dll shims unpacked next to it.
+#[cfg(windows)]
+fn search_dependencies_in(dir: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let succeeded =
+        unsafe { windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr()) };
+    if succeeded == 0 {
+        return Err(format!(
+            "Failed to add {} to the DLL search path: {}",
+            dir.display(),
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 fn cache_dir() -> Result<PathBuf, String> {
