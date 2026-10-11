@@ -1,4 +1,4 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
 
 fn main() {
     // Get the command-line arguments

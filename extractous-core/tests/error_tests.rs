@@ -1,4 +1,4 @@
-use extractous::{Error, Extractor};
+use extractous_core::{Error, Extractor};
 use std::io::Read;
 
 fn truncated_docx() -> Vec<u8> {

@@ -35,8 +35,8 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.cargo/registry
-            extractous-core/target
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('devenv.lock', 'extractous-core/Cargo.lock', 'extractous-core/tika-native/**') }}
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('devenv.lock', 'Cargo.lock', 'extractous-core/tika-native/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
         run: devenv shell -- just check
@@ -77,8 +77,8 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.cargo/registry
-            extractous-core/target
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('extractous-core/Cargo.lock', 'extractous-core/tika-native/**') }}
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'extractous-core/tika-native/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
         shell: pwsh

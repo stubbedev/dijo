@@ -1,4 +1,4 @@
-use extractous::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+use extractous_core::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
 use std::fs;
 use test_case::test_case;
 use textdistance::nstr::cosine;

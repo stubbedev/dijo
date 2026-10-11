@@ -43,7 +43,7 @@ impl std::fmt::Display for MediaType {
 ///
 /// Can be used to perform buffered reading. For example:
 /// ```rust
-/// use extractous::{CharSet, Extractor};
+/// use extractous_core::{CharSet, Extractor};
 /// use std::io::BufReader;
 /// use std::io::prelude::*;
 ///
@@ -71,7 +71,7 @@ impl std::io::Read for StreamReader {
 /// The Extractor uses the builder pattern to set configurations. This allows configuring and
 /// extracting text in one line. For example
 /// ```rust
-/// use extractous::{CharSet, Extractor};
+/// use extractous_core::{CharSet, Extractor};
 /// let (text, metadata) = Extractor::new()
 ///             .set_extract_string_max_length(1000)
 ///             .extract_file_to_string("../README.md")

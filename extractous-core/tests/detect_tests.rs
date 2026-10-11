@@ -1,4 +1,4 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
 use test_case::test_case;
 
 #[test_case("2022_Q3_AAPL.pdf", "application/pdf")]
@@ -47,5 +47,8 @@ fn test_detect_missing_file_is_an_io_error() {
     let error = Extractor::new()
         .detect_file("../test_files/documents/does-not-exist.pdf")
         .unwrap_err();
-    assert!(matches!(error, extractous::Error::IoError(_)), "{error:?}");
+    assert!(
+        matches!(error, extractous_core::Error::IoError(_)),
+        "{error:?}"
+    );
 }

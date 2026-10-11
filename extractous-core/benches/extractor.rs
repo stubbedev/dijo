@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use extractous::Extractor;
+use extractous_core::Extractor;
 use std::io::Read;
 
 const DOCUMENTS: [&str; 5] = [

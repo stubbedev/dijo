@@ -1,5 +1,6 @@
 [package]
-name = "extractous"
+name = "extractous-core"
+publish = false
 version = "0.2.1"
 edition = "2021"
 
@@ -42,9 +43,3 @@ object = { version = "0.40.0", default-features = false, features = ["read_core"
 
 [features]
 stream-attachguard = []
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-# Enable CPU-specific optimizations
-codegen-units = 1

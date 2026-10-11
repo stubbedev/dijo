@@ -1,4 +1,4 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
 use test_case::test_case;
 
 #[test_case("zh-math-answers.docx"; "docx yobix-ai/extractous#52 chinese math")]

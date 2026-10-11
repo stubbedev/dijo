@@ -1,4 +1,4 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
 
 const DOCUMENTS: [&str; 4] = [
     "../test_files/documents/simple.odt",

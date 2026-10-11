@@ -13,7 +13,7 @@ The fork is not published to crates.io. Depend on it from git:
 
 ```toml
 [dependencies]
-extractous = { git = "https://github.com/stubbedev/extractous" }
+extractous-core = { git = "https://github.com/stubbedev/extractous" }
 ```
 
 Building the crate compiles Tika, so the build machine needs a GraalVM JDK with `native-image`, pointed to by
@@ -34,7 +34,7 @@ The entry point is `Extractor`, configured with a consuming builder.
 Extract a file to a string:
 
 ```rust,no_run
-use extractous::Extractor;
+use extractous_core::Extractor;
 
 let extractor = Extractor::new().set_extract_string_max_length(1000);
 let (text, metadata) = extractor.extract_file_to_string("document.pdf").unwrap();
@@ -46,7 +46,7 @@ Stream the content of a file, URL or byte slice through `std::io::Read`:
 
 ```rust,no_run
 use std::io::Read;
-use extractous::Extractor;
+use extractous_core::Extractor;
 
 let extractor = Extractor::new();
 let (mut stream, metadata) = extractor.extract_file("document.docx").unwrap();
@@ -61,7 +61,7 @@ Set `set_xml_output(true)` to receive Tika's XHTML instead of plain text.
 OCR a scanned PDF in German:
 
 ```rust,no_run
-use extractous::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+use extractous_core::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
 
 let extractor = Extractor::new()
     .set_ocr_config(TesseractOcrConfig::new().set_language("deu"))
@@ -74,7 +74,7 @@ let (text, _) = extractor.extract_file_to_string("scan.pdf").unwrap();
 Unpack embedded documents (images, attachments) from a container:
 
 ```rust,no_run
-use extractous::Extractor;
+use extractous_core::Extractor;
 
 let result = Extractor::new().extract_embedded_from_file("workbook.xlsx").unwrap();
 for document in &result.documents {

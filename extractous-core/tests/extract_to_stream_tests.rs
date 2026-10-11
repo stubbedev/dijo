@@ -1,4 +1,4 @@
-use extractous::{CharSet, Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+use extractous_core::{CharSet, Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
 use std::fs;
 use std::io::Read;
 use test_case::test_case;

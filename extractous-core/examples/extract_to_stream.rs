@@ -1,4 +1,4 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
 // use std::fs::File; use for bytes
 use std::io::{BufReader, Read};
 

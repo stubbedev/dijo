@@ -1,4 +1,4 @@
-use extractous::{EmbeddedExtractResult, Extractor};
+use extractous_core::{EmbeddedExtractResult, Extractor};
 use std::fs;
 
 mod test_utils;

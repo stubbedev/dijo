@@ -1,4 +1,4 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::fs;

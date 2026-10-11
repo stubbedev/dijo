@@ -243,7 +243,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "extractous"
+name = "extractous-core"
 version = "0.2.1"
 dependencies = [
  "bytemuck",
