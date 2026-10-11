@@ -81,4 +81,5 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('extractous-core/Cargo.lock', 'extractous-core/tika-native/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
+        shell: pwsh
         run: just check

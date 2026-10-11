@@ -1,5 +1,7 @@
 # extractous dev tasks.
 
+set windows-shell := ["pwsh.exe", "-NoLogo", "-NoProfile", "-Command"]
+
 core := "extractous-core"
 
 # List all recipes with their descriptions.
