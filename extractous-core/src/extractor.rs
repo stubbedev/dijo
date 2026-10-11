@@ -34,7 +34,7 @@ pub enum CharSet {
 /// use std::io::prelude::*;
 ///
 /// let extractor = Extractor::new();
-/// let (reader, metadata) = extractor.extract_file("README.md").unwrap();
+/// let (reader, metadata) = extractor.extract_file("../README.md").unwrap();
 ///
 /// let mut buf_reader = BufReader::new(reader);
 /// let mut content = String::new();
@@ -60,7 +60,7 @@ impl std::io::Read for StreamReader {
 /// use extractous::{CharSet, Extractor};
 /// let (text, metadata) = Extractor::new()
 ///             .set_extract_string_max_length(1000)
-///             .extract_file_to_string("README.md")
+///             .extract_file_to_string("../README.md")
 ///             .unwrap();
 /// println!("{}", text);
 /// ```
@@ -424,55 +424,6 @@ impl Extractor {
             &self.ocr_config,
         )
     }
-
-    /// OPTIMIZED: Extracts embedded documents using a single JNI call for better performance.
-    /// Use this for files with many embedded documents (e.g., PDFs with thousands of images).
-    pub fn extract_embedded_optimized(
-        &self,
-        file_path: &str,
-    ) -> ExtractResult<crate::EmbeddedExtractResult> {
-        tika::extract_embedded_optimized(
-            file_path,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-        )
-    }
-
-    /// BATCH OPTIMIZED: Extracts embedded documents using batched JNI operations.
-    /// This reduces JNI overhead by processing documents in batches.
-    pub fn extract_embedded_batch(
-        &self,
-        file_path: &str,
-    ) -> ExtractResult<crate::EmbeddedExtractResult> {
-        tika::extract_embedded_batch(
-            file_path,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-        )
-    }
-
-    /// Extracts embedded documents in batches using a callback for streaming processing.
-    /// This is useful for very large files to avoid memory issues.
-    pub fn extract_embedded_streaming<F>(
-        &self,
-        file_path: &str,
-        batch_size: usize,
-        callback: F,
-    ) -> ExtractResult<()>
-    where
-        F: FnMut(Vec<crate::EmbeddedDocument>) -> ExtractResult<bool>,
-    {
-        tika::extract_embedded_streaming(
-            file_path,
-            &self.pdf_config,
-            &self.office_config,
-            &self.ocr_config,
-            batch_size,
-            callback,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -484,7 +435,7 @@ mod tests {
     use std::io::{self, Read};
     use std::str;
 
-    const TEST_FILE: &str = "README.md";
+    const TEST_FILE: &str = "../README.md";
 
     const TEST_URL: &str = "https://www.google.com/";
 

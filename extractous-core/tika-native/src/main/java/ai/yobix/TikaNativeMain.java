@@ -407,25 +407,6 @@ public class TikaNativeMain {
     }
 
     /**
-     * Optimized extraction method that packs all data into a single ByteBuffer
-     */
-    public static OptimizedEmbeddedExtractor.OptimizedResult extractEmbeddedOptimized(
-            String filePath,
-            PDFParserConfig pdfConfig,
-            OfficeParserConfig officeConfig,
-            TesseractOCRConfig tesseractConfig
-    ) {
-        // Use the OptimizedEmbeddedExtractor with a reasonable document limit
-        return OptimizedEmbeddedExtractor.extractEmbeddedOptimized(
-            filePath, 
-            pdfConfig, 
-            officeConfig, 
-            tesseractConfig,
-            1000 // Maximum 1000 embedded documents
-        );
-    }
-    
-    /**
      * Shared helper method to extract embedded documents from a stream
      */
     private static EmbeddedExtractResult extractEmbeddedFromStream(

@@ -1,177 +1,113 @@
+# Extractous
 
-<div align="center" style="margin-top: 20px">
-    <a href="https://yobix.ai">
-    <img height="28px" alt="yobix ai logo" src="https://framerusercontent.com/images/zaqayjWBWNoQmV9MIwSEKf0HBo.png?scale-down-to=512">
-    </a>
-<h1 style="margin-top: 0; padding-top: 0">Extractous</h1>
-</div>
+Text and metadata extraction for documents, from Rust, without a JVM.
 
-<div align="center">
+This is a fork of [yobix-ai/extractous](https://github.com/yobix-ai/extractous). Every format is parsed by
+[Apache Tika](https://tika.apache.org/), compiled ahead of time with [GraalVM](https://www.graalvm.org/) native-image
+into a shared library (`libtika_native`) that the Rust crate calls through JNI. No Java runtime is installed or
+started; Tika runs as native code inside your process.
 
-<a href="https://github.com/yobix-ai/extractous/blob/main/LICENSE">![License](https://img.shields.io/crates/l/extractous)</a>
-[![](https://img.shields.io/crates/v/extractous)](https://crates.io/crates/extractous)
-<img src="https://img.shields.io/github/commit-activity/m/yobix-ai/extractous" alt="Commits per month">
+## Install
 
-</div>
+The fork is not published to crates.io. Depend on it from git:
 
-<div align="center">
+```toml
+[dependencies]
+extractous = { git = "https://github.com/stubbedev/extractous" }
+```
 
-_Extractous offers a fast and efficient solution for extracting content and metadata from various documents types such as PDF, Word, HTML, and [many other formats](#supported-file-formats).
-Our goal is to deliver a fast and efficient comprehensive solution in Rust._
+Building the crate compiles Tika, so the build machine needs a GraalVM JDK with `native-image`, pointed to by
+`GRAALVM_HOME`, matching the version `extractous-core/tika-native/build.gradle` requires. The first build takes a few
+minutes; later builds reuse the compiled library until the Tika sources or the GraalVM release change.
 
-</div>
+At runtime `libtika_native` and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...)
+must be loadable. `cargo run` and `cargo test` arrange that; standalone binaries do not find them yet.
 
----
+OCR runs the `tesseract` executable, which must be on `PATH` together with the language data you request.
 
-**Demo**: showing that [Extractous 🚀](https://github.com/yobix-ai/extractous) is **25x faster** than the popular
-[unstructured-io](https://github.com/Unstructured-IO/unstructured) library ($65m in funding and 8.5k GitHub stars).
-For complete benchmarking details please consult our [benchmarking repository](https://github.com/yobix-ai/extractous-benchmarks)
+## Usage
 
-![unstructured_vs_extractous](https://github.com/yobix-ai/extractous-benchmarks/raw/main/docs/extractous_vs_unstructured.gif)
-<sup>* demo running at 5x recoding speed</sup>
+The entry point is `Extractor`, configured with a consuming builder.
 
-## Why Extractous?
+Extract a file to a string:
 
-**Extractous** was born out of frustration with the need to rely on external services or APIs for content extraction from unstructured data. Do we really need to call external APIs or run special servers just for content extraction? Couldn't extraction be performed locally and efficiently?
-
-In our search for solutions, **unstructured-io** stood out as the popular and widely-used library for parsing unstructured content with in-process parsing. However, we identified several significant limitations:
-
-- Architecturally, unstructured-io wraps around numerous heavyweight Python libraries, resulting in slow performance and high memory consumption (see our [benchmarks](https://github.com/yobix-ai/extractous-benchmarks) for more details).
-- Inefficient in utilizing multiple CPU cores for data processing tasks, which are predominantly CPU-bound. This inefficiency is due to limitations in its dependencies and constraints like the Global Interpreter Lock (GIL), which prevents multiple threads from executing Python bytecode simultaneously.
-- As unstructured-io evolves, it is becoming increasingly complicated, transitioning into more of a complex framework and focusing more offering an external API service for text and metadata extraction.
-
-In contrast, **Extractous** maintains a dedicated focus on text and metadata extraction. It achieves significantly faster processing speeds and lower memory utilization through native code execution.
-
-* **Built with Rust:** The core is developed in Rust, leveraging its high performance, memory safety, multi-threading capabilities, and zero-cost abstractions.
-* **Extended format support with Apache Tika:** For file formats not natively supported by the Rust core, we compile the well-known [Apache Tika](https://tika.apache.org/) into native shared libraries using [GraalVM](https://www.graalvm.org/) ahead-of-time compilation technology. These shared libraries are then linked to and called from our Rust core. No local servers, no virtual machines, or any garbage collection, just pure native execution.
-
-With Extractous, the need for external services or APIs is eliminated, making data processing pipelines faster and more efficient.
-
-## 🌳 Key Features
-* High-performance unstructured data extraction optimized for speed and low memory usage.
-* Clear and simple API for extracting text and metadata content.
-* Automatically identifies document types and extracts content accordingly
-* Supports [many file formats](#supported-file-formats) (most formats supported by Apache Tika).
-* Extracts text from images and scanned documents with OCR through [tesseract-ocr](https://github.com/tesseract-ocr/tesseract).
-* Core engine written in Rust.
-* Detailed documentation and examples to help you get started quickly and efficiently.
-* Free for Commercial Use: Apache 2.0 License.
-
-## 🚀 Quickstart
-Extractous provides a simple and easy-to-use API for extracting content from various file formats. Below are quick examples:
-
-#### Rust
-* Extract a file content to a string:
-```rust
+```rust,no_run
 use extractous::Extractor;
 
-fn main() {
-    // Create a new extractor. Note it uses a consuming builder pattern
-    let mut extractor = Extractor::new().set_extract_string_max_length(1000);
-    // if you need an xml
-    // extractor = extractor.set_xml_output(true);
+let extractor = Extractor::new().set_extract_string_max_length(1000);
+let (text, metadata) = extractor.extract_file_to_string("document.pdf").unwrap();
+println!("{text}");
+println!("{metadata:?}");
+```
 
-    // Extract text from a file
-    let (text, metadata) = extractor.extract_file_to_string("README.md").unwrap();
-    println!("{}", text);
-    println!("{:?}", metadata);
+Stream the content of a file, URL or byte slice through `std::io::Read`:
+
+```rust,no_run
+use std::io::Read;
+use extractous::Extractor;
+
+let extractor = Extractor::new();
+let (mut stream, metadata) = extractor.extract_file("document.docx").unwrap();
+// or: extractor.extract_url("https://example.com/")
+// or: extractor.extract_bytes(&bytes)
+let mut text = String::new();
+stream.read_to_string(&mut text).unwrap();
+```
+
+Set `set_xml_output(true)` to receive Tika's XHTML instead of plain text.
+
+OCR a scanned PDF in German:
+
+```rust,no_run
+use extractous::{Extractor, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+
+let extractor = Extractor::new()
+    .set_ocr_config(TesseractOcrConfig::new().set_language("deu"))
+    .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY));
+let (text, _) = extractor.extract_file_to_string("scan.pdf").unwrap();
+```
+
+`Unable to extract PDF content` from an OCR run usually means the requested tesseract language data is missing.
+
+Unpack embedded documents (images, attachments) from a container:
+
+```rust,no_run
+use extractous::Extractor;
+
+let result = Extractor::new().extract_embedded_from_file("workbook.xlsx").unwrap();
+for document in &result.documents {
+    println!("{} {} {} bytes", document.resource_name, document.content_type, document.size());
 }
 ```
 
-* Extract a content of a file(URL/ bytes) to a `StreamReader` and perform buffered reading
-```rust
-use std::io::{BufReader, Read};
-// use std::fs::File; use for bytes
-use extractous::Extractor;
+## Supported formats
 
-fn main() {
-    // Get the command-line arguments
-    let args: Vec<String> = std::env::args().collect();
-    let file_path = &args[1];
+The native library contains Tika's standard parser package and these parser modules: Microsoft Office (DOC, DOCX, XLS,
+XLSX, PPT, PPTX, MSG), PDF, HTML, Apple iWork, audio/video metadata, CAD, encrypted documents, fonts, mail (EML, MBOX,
+PST), legacy office formats (WordPerfect, Lotus, dBase), RSS/Atom, OCR via tesseract, archives (ZIP, TAR, 7Z, RAR),
+text, XML, web archives (WARC), source code and advanced media.
 
-    // Extract the provided file content to a string
-    let extractor = Extractor::new();
-    // if you need an xml
-    // extractor = extractor.set_xml_output(true);
+Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches. The test
+suite covers PDF, DOC, DOCX, PPTX, XLSX, ODT, CSV, EPUB, and PNG and PDF through OCR.
 
-    let (stream, metadata) = extractor.extract_file(file_path).unwrap();
-    // Extract url
-    // let (stream, metadata) = extractor.extract_url("https://www.google.com/").unwrap();
-    // Extract bytes
-    // let mut file = File::open(file_path)?;
-    // let mut buffer = Vec::new();
-    // file.read_to_end(&mut buffer)?;
-    // let (stream, metadata) = extractor.extract_bytes(&file_bytes);
+## Development
 
-    // Because stream implements std::io::Read trait we can perform buffered reading
-    // For example we can use it to create a BufReader
-    let mut reader = BufReader::new(stream);
-    let mut buffer = Vec::new();
-    reader.read_to_end(&mut buffer).unwrap();
+Every development dependency (Rust toolchain, cargo-nextest, GraalVM CE, tesseract with the English, German and Arabic
+language data the OCR tests use, and just) comes from [devenv](https://devenv.sh). Enter it with `devenv shell`, or run
+`direnv allow` once to load it on entry.
 
-    println!("{}", String::from_utf8(buffer).unwrap());
-    println!("{:?}", metadata);
-}
-```
+All commands are recipes in the `justfile`; run `just` to list them.
 
-* Extract content of PDF with OCR.
+| Recipe | What it does |
+| --- | --- |
+| `just check` | Every gate in order: format check, lint, tests |
+| `just build` | Build the crate, compiling Tika on first run |
+| `just test` | Run the tests with cargo-nextest, then the doc tests |
+| `just lint` | Clippy over every target, warnings fail |
+| `just fmt` | Format every Rust source |
+| `just bench` | Run the criterion benchmarks |
+| `just tika-agent` | Run Tika under the GraalVM tracing agent to regenerate native-image metadata |
 
-You need to have Tesseract installed with the language pack. For example on debian `sudo apt install tesseract-ocr tesseract-ocr-deu`
+## License
 
-```rust
-use extractous::Extractor;
-
-fn main() {
-  let file_path = "../test_files/documents/deu-ocr.pdf";
-
-    let extractor = Extractor::new()
-          .set_ocr_config(TesseractOcrConfig::new().set_language("deu"))
-          .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY));
-    // extract file with extractor
-  let (content, metadata) = extractor.extract_file_to_string(file_path).unwrap();
-  println!("{}", content);
-  println!("{:?}", metadata);
-}
-```
-
-
-## 🔥 Performance
-* **Extractous** is fast, please don't take our word for it, you can run the [benchmarks](https://github.com/yobix-ai/extractous-benchmarks) yourself. For example extracting content out of [sec10 filings pdf forms](https://github.com/yobix-ai/extractous-benchmarks/raw/main/dataset/sec10-filings), Extractous is on average **~18x faster** than unstructured-io:
-
-![extractous_speedup_relative_to_unstructured](https://github.com/yobix-ai/extractous-benchmarks/raw/main/docs/extractous_speedup_relative_to_unstructured.png)
-
-* Not just speed it is also memory efficient, Extractous allocates **~11x less memory** than unstructured-io:
-
-![extractous_memory_efficiency_relative_to_unstructured](https://github.com/yobix-ai/extractous-benchmarks/raw/main/docs/extractous_memory_efficiency_relative_to_unstructured.png)
-
-* You might be questioning the quality of the extracted content, gues what we even do better in that regard:
-
-![extractous_memory_efficiency_relative_to_unstructured](https://github.com/yobix-ai/extractous-benchmarks/raw/main/docs/extractous_unstructured_quality_scores.png)
-
-## 📄 Supported file formats
-
-| **Category**        | **Supported Formats**                                   | **Notes**                                      |
-|---------------------|---------------------------------------------------------|------------------------------------------------|
-| **Microsoft Office**| DOC, DOCX, PPT, PPTX, XLS, XLSX, RTF                    | Includes legacy and modern Office file formats |
-| **OpenOffice**      | ODT, ODS, ODP                                           | OpenDocument formats                           |
-| **PDF**             | PDF                                                     | Can extracts embedded content and supports OCR |
-| **Spreadsheets**    | CSV, TSV                                                | Plain text spreadsheet formats                 |
-| **Web Documents**   | HTML, XML                                               | Parses and extracts content from web documents |
-| **E-Books**         | EPUB                                                    | EPUB format for electronic books               |
-| **Text Files**      | TXT, Markdown                                           | Plain text formats                             |
-| **Images**          | PNG, JPEG, TIFF, BMP, GIF, ICO, PSD, SVG                | Extracts embedded text with OCR                |
-| **E-Mail**          | EML, MSG, MBOX, PST                                     | Extracts content, headers, and attachments     |
-
-[//]: # (| **Archives**        | ZIP, TAR, GZIP, RAR, 7Z                                 | Extracts content from compressed archives      |)
-[//]: # (| **Audio**           | MP3, WAV, OGG, FLAC, AU, MIDI, AIFF, APE                | Extracts metadata such as ID3 tags             |)
-[//]: # (| **Video**           | MP4, AVI, MOV, WMV, FLV, MKV, WebM                      | Extracts metadata and basic information        |)
-[//]: # (| **CAD Files**       | DXF, DWG                                                | Supports CAD formats for engineering drawings  |)
-[//]: # (| **Other**           | ICS &#40;Calendar&#41;, VCF &#40;vCard&#41;                             | Supports calendar and contact file formats     |)
-[//]: # (| **Geospatial**      | KML, KMZ, GeoJSON                                       | Extracts geospatial data and metadata          |)
-[//]: # (| **Font Files**      | TTF, OTF                                                | Extracts metadata from font files              |)
-
-## 🤝 Contributing
-Contributions are welcome! Please open an issue or submit a pull request if you have any improvements or new features to propose.
-
-## 🕮 License
-This project is licensed under the Apache License 2.0. See the LICENSE file for details.
+Apache License 2.0, see [LICENSE](LICENSE). Originally developed by [Yobix AI](https://yobix.ai).

@@ -9,10 +9,9 @@ CSV, Email etc... Internally it uses a natively compiled Apache Tika for formats
 core
 """
 license = "Apache-2.0"
-homepage = "https://extractous.yobix.ai"
-repository = "https://github.com/yobix-ai/extractous"
-authors = ["Yobix AI <dev@yobix.ai>"]
-readme = "README.md"
+repository = "https://github.com/stubbedev/extractous"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+readme = "../README.md"
 keywords = ["unstructured", "tika", "text", "pdf", "parser"]
 categories = ["parsing", "text-processing"]
 
