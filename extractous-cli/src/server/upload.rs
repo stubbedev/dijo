@@ -10,6 +10,7 @@ use crate::server::metrics::Metrics;
 
 const DEFAULT_NAME: &str = "upload";
 const MAX_NAME_BYTES: usize = 255;
+const MAX_DISCARDED_BYTES: u64 = 16 << 20;
 
 /// A request body spooled to its own directory, which is removed when this is dropped.
 pub struct Upload {
@@ -87,6 +88,7 @@ pub async fn receive(
         if let Some(data) = frame.data_ref() {
             received += data.len() as u64;
             if max_bytes.is_some_and(|max| received > max) {
+                discard(&mut body, MAX_DISCARDED_BYTES).await;
                 return Err(UploadError::TooLarge);
             }
             file.write_all(data).await?;
@@ -95,6 +97,22 @@ pub async fn receive(
     file.flush().await?;
     metrics.bytes_in(received);
     Ok(upload)
+}
+
+/// Reads and drops what is left of a rejected upload, up to `limit` bytes. Closing a connection
+/// with unread input makes the kernel reset it, and the client may then lose the 413 response
+/// before reading it; draining first lets the response arrive. Errors only end the draining,
+/// since the request has already failed.
+async fn discard(body: &mut Incoming, limit: u64) {
+    let mut discarded: u64 = 0;
+    while discarded < limit {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                discarded += frame.data_ref().map_or(0, |data| data.len() as u64);
+            }
+            Some(Err(_)) | None => return,
+        }
+    }
 }
 
 #[cfg(test)]
