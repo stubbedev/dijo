@@ -29,6 +29,11 @@ test-large:
 test-fuzz:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test fuzz
 
+# Measure the CLI's extraction throughput per format, peak memory and cold start with a release
+# build; BENCH_OUTPUT writes the Markdown table to a file, BENCH_ROUNDS sets the repetitions.
+throughput:
+    cargo nextest run --package extractous --cargo-profile release --run-ignored only --test bench --no-capture
+
 # Score extraction against the quality corpus and write quality/SCOREBOARD.md.
 [unix]
 quality:
