@@ -5,6 +5,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.ToTextContentHandler;
 import org.apache.tika.sax.ToXMLContentHandler;
 import org.xml.sax.ContentHandler;
 
@@ -83,8 +84,8 @@ public class ParsingInputStream extends InputStream {
         try (stream) {
             final ContentHandler handler = outputXml
                     ? new ToXMLContentHandler(output, charset.name())
-                    : new BodyContentHandler(
-                            new FlushingWriter(new OutputStreamWriter(output, charset)));
+                    : new BodyContentHandler(new BlockBreakHandler(new ToTextContentHandler(
+                            new FlushingWriter(new OutputStreamWriter(output, charset)))));
             parser.parse(stream, handler, metadata, context);
             output.sendRemainder();
         } catch (Throwable t) {

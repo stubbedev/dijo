@@ -235,7 +235,7 @@ public class TikaNativeMain {
             handlerForParser = handler;
         } else {
             handler = new WriteOutContentHandler(maxLength);
-            handlerForParser = new BodyContentHandler(handler);
+            handlerForParser = new BodyContentHandler(new BlockBreakHandler(handler));
         }
         try (stream) {
             parser(password).parse(stream, handlerForParser, metadata,
