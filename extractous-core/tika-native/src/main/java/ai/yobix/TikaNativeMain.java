@@ -145,6 +145,8 @@ public class TikaNativeMain {
     ) {
         final ParseContext parseContext = new ParseContext();
         parseContext.set(Parser.class, PARSER);
+        parseContext.set(EmbeddedDocumentExtractor.class,
+                new ContentEmbeddedDocumentExtractor(parseContext));
         parseContext.set(EncodingDetector.class, ENCODING_DETECTOR);
         parseContext.set(PDFParserConfig.class, pdfConfig);
         parseContext.set(OfficeParserConfig.class, officeConfig);

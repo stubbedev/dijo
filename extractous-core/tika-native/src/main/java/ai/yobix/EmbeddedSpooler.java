@@ -38,7 +38,7 @@ final class EmbeddedSpooler implements EmbeddedDocumentExtractor {
 
     @Override
     public boolean shouldParseEmbedded(Metadata metadata) {
-        return true;
+        return !ContentEmbeddedDocumentExtractor.isThumbnail(metadata);
     }
 
     @Override
