@@ -9,6 +9,13 @@ runs as native code inside the process.
 
 ## Install
 
+Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64), macOS
+(aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
+SBOMs of the Rust crates and Java libraries, and build provenance you can check with
+`gh attestation verify <archive> --repo stubbedev/extractous`.
+
+To build from source instead:
+
 ```sh
 cargo install --locked --git https://github.com/stubbedev/extractous extractous
 ```
@@ -148,6 +155,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just bench` | Run the criterion benchmarks |
 | `just tika-agent` | Run Tika under the GraalVM tracing agent to regenerate native-image metadata |
 | `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries |
+| `just sbom` | Write CycloneDX SBOMs of the Rust crates and Java libraries to target/sbom |
 | `just deps` | cargo-deny's advisory, licence and ban checks, and a check that THIRD-PARTY-LICENSES.md is current |
 
 ## License

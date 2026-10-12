@@ -1,6 +1,7 @@
 plugins {
     id 'java-library'
     id 'com.github.jk1.dependency-license-report' version '3.1.4'
+    id 'org.cyclonedx.bom' version '3.5.1'
     id 'org.graalvm.buildtools.native' version '0.10.4' // Updated for GraalVM 25 and Gradle 9 compatibility
 }
 
@@ -118,6 +119,12 @@ licenseReport {
     configurations = ['runtimeClasspath']
     filters = [new ExcludeDependenciesWithoutArtifactsFilter(), new SpdxLicenseBundleNormalizer()]
     renderers = [new ThirdPartyLicensesRenderer(layout.buildDirectory.file('licenses/java.md').get().asFile)]
+}
+
+tasks.cyclonedxDirectBom {
+    includeConfigs = ['runtimeClasspath']
+    jsonOutput = layout.buildDirectory.file('sbom/java.cdx.json')
+    xmlOutput.convention((RegularFile) null)
 }
 
 tasks.register('runAgent', JavaExec) {

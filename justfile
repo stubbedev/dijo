@@ -48,6 +48,15 @@ licenses:
     cat target/rust-licenses.md {{core}}/tika-native/build/licenses/java.md > target/THIRD-PARTY-LICENSES.md
     mv target/THIRD-PARTY-LICENSES.md THIRD-PARTY-LICENSES.md
 
+# Write CycloneDX SBOMs of the Rust crates and Java libraries in the binary to target/sbom.
+[unix]
+sbom:
+    cd {{core}}/tika-native && ./gradlew --quiet cyclonedxDirectBom
+    cargo cyclonedx --format json --spec-version 1.5 --no-build-deps --describe binaries --target all
+    mkdir -p target/sbom
+    mv extractous-cli/extractous_bin.cdx.json target/sbom/extractous-rust.cdx.json
+    cp {{core}}/tika-native/build/sbom/java.cdx.json target/sbom/extractous-java.cdx.json
+
 # Check dependencies for advisories, licences and bans, and that THIRD-PARTY-LICENSES.md is current.
 [unix]
 deps: licenses
