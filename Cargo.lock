@@ -492,6 +492,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "jsonschema",
+ "libc",
  "quick-xml",
  "serde",
  "serde_json",

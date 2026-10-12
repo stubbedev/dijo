@@ -20,6 +20,10 @@ test *args:
     cargo nextest run --workspace {{args}}
     cargo test --workspace --doc
 
+# Extract generated gigabyte inputs with a release build and check memory stays bounded.
+test-large:
+    cargo nextest run --package extractous --cargo-profile release --run-ignored only --test large
+
 # Lint every target; every warning fails.
 lint:
     cargo clippy --workspace --all-targets -- -D warnings

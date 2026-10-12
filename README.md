@@ -170,6 +170,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace, compiling Tika on first run |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
+| `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
 | `just lint` | Clippy over every target, warnings fail |
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
