@@ -52,8 +52,13 @@ final class PreparingOcrParser implements Parser {
     @Override
     public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        final OcrConfig auto = context.get(TesseractOCRConfig.class) instanceof OcrConfig config
-                && config.isAutoLanguage() ? config : null;
+        final TesseractOCRConfig configured = context.get(TesseractOCRConfig.class);
+        if (configured != null && configured.isSkipOcr()) {
+            ocr.parse(stream, handler, metadata, context);
+            return;
+        }
+        final OcrConfig auto = configured instanceof OcrConfig config && config.isAutoLanguage()
+                ? config : null;
         try (TemporaryResources temporary = new TemporaryResources()) {
             final TikaInputStream input = TikaInputStream.get(stream, temporary, metadata);
             final Prepared prepared = prepare(input.getPath(), metadata, auto, temporary);
