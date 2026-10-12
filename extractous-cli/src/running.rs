@@ -3,6 +3,9 @@ use std::io;
 
 /// How many pages are held back to learn a document's running headers and footers.
 const WINDOW_PAGES: usize = 8;
+/// The most text held back meanwhile; with more, the pages held so far are learned from, so a
+/// document with long text between or before its pages still streams.
+const WINDOW_BYTES: usize = 16 << 20;
 
 /// A page's text with its running header and footer taken out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +21,7 @@ pub struct Page {
 pub struct RunningLines<'a, T> {
     emit: &'a mut dyn FnMut(T, Page) -> io::Result<()>,
     held: Vec<(T, String, Placement)>,
+    held_bytes: usize,
     learned: Option<Patterns>,
 }
 
@@ -42,6 +46,7 @@ impl<'a, T> RunningLines<'a, T> {
         Self {
             emit,
             held: Vec::new(),
+            held_bytes: 0,
             learned: (!enabled).then(Patterns::default),
         }
     }
@@ -50,13 +55,14 @@ impl<'a, T> RunningLines<'a, T> {
         if let Some(patterns) = &self.learned {
             return (self.emit)(with, split(text, placement, patterns));
         }
+        self.held_bytes += text.len();
         self.held.push((with, text, placement));
         let pages = self
             .held
             .iter()
             .filter(|(_, _, placement)| *placement == Placement::Page)
             .count();
-        if pages == WINDOW_PAGES {
+        if pages == WINDOW_PAGES || self.held_bytes >= WINDOW_BYTES {
             self.learn()?;
         }
         Ok(())
@@ -236,6 +242,24 @@ mod tests {
         assert_eq!(out[0].text, "Title\nFirst page.");
         assert_eq!(out[0].header, None);
         assert_eq!(out[1].text, "Title");
+    }
+
+    #[test]
+    fn long_text_is_passed_on_before_the_document_ends() {
+        let mut emitted = 0;
+        let mut emit = |_: (), _: Page| {
+            emitted += 1;
+            Ok(())
+        };
+        let mut running = RunningLines::new(&mut emit, true);
+        running
+            .push((), "x".repeat(WINDOW_BYTES), Placement::Loose)
+            .unwrap();
+        running
+            .push((), "more".to_string(), Placement::Loose)
+            .unwrap();
+        drop(running);
+        assert_eq!(emitted, 2);
     }
 
     #[test]

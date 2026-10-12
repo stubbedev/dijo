@@ -7,6 +7,9 @@ use serde::Serialize;
 
 const PAGE_CLASSES: [&str; 2] = ["page", "slide-content"];
 const ARTIFACT_CLASS: &str = "artifact";
+/// The most text outside every page that is collected before it is passed on, so a document
+/// without pages streams instead of being held whole.
+const LOOSE_PIECE_BYTES: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
@@ -33,6 +36,9 @@ pub struct Part {
     /// The text of a page that the document marks as furniture rather than content, such as a
     /// tagged PDF's running headers, footers and page numbers; empty for elements.
     pub artifacts: String,
+    /// Whether the text goes on in the next part: text outside every page is passed on in pieces
+    /// of up to 64 KiB, the last one not continued.
+    pub continued: bool,
 }
 
 /// An element whose text is being collected, opened at `depth`.
@@ -54,6 +60,7 @@ struct Splitter<'e> {
     element: Option<Open>,
     artifact: Option<usize>,
     artifacts: String,
+    loose_run: bool,
 }
 
 fn element_kind(name: &str) -> Option<(ElementKind, Option<u8>)> {
@@ -102,8 +109,14 @@ impl Splitter<'_> {
     fn flush_loose(&mut self) -> io::Result<()> {
         let text = std::mem::take(&mut self.loose);
         let artifacts = std::mem::take(&mut self.artifacts);
-        let (text, artifacts) = (text.trim(), artifacts.trim());
-        if text.is_empty() && artifacts.is_empty() {
+        let continues_run = std::mem::take(&mut self.loose_run);
+        let text = if continues_run {
+            text.trim_end()
+        } else {
+            text.trim()
+        };
+        let artifacts = artifacts.trim();
+        if text.is_empty() && artifacts.is_empty() && !continues_run {
             return Ok(());
         }
         let page = self.page.map(|(page, _)| page);
@@ -113,6 +126,39 @@ impl Splitter<'_> {
             element,
             text: text.to_string(),
             artifacts: artifacts.to_string(),
+            continued: false,
+        })
+    }
+
+    /// Passes on the text outside every page collected so far once it is long, but for the
+    /// whitespace it ends with, which the end of the text drops.
+    fn pass_on_long_loose_text(&mut self) -> io::Result<()> {
+        if self.unit != Unit::Pages || self.page.is_some() || self.loose.len() < LOOSE_PIECE_BYTES {
+            return Ok(());
+        }
+        let content = self.loose.trim_end().len();
+        let kept = if self.loose.len() - content < LOOSE_PIECE_BYTES {
+            content
+        } else {
+            self.loose.len()
+        };
+        let rest = self.loose.split_off(kept);
+        let piece = std::mem::replace(&mut self.loose, rest);
+        let piece = if self.loose_run {
+            piece
+        } else {
+            piece.trim_start().to_string()
+        };
+        if piece.is_empty() {
+            return Ok(());
+        }
+        self.loose_run = true;
+        (self.emit)(Part {
+            page: None,
+            element: None,
+            text: piece,
+            artifacts: String::new(),
+            continued: true,
         })
     }
 
@@ -127,6 +173,7 @@ impl Splitter<'_> {
                     element: Some((open.kind, open.level)),
                     text: text.to_string(),
                     artifacts: String::new(),
+                    continued: false,
                 })?;
             }
         }
@@ -206,6 +253,7 @@ impl Splitter<'_> {
                     element: Some((open.kind, open.level)),
                     text: text.to_string(),
                     artifacts: String::new(),
+                    continued: false,
                 })?;
             }
         }
@@ -222,15 +270,16 @@ impl Splitter<'_> {
         Ok(())
     }
 
-    fn text(&mut self, text: &str) {
+    fn text(&mut self, text: &str) -> io::Result<()> {
         if !self.in_body {
-            return;
+            return Ok(());
         }
         let current = self.current_text();
         if text.trim().is_empty() && (current.is_empty() || current.ends_with('\n')) {
-            return;
+            return Ok(());
         }
         current.push_str(text);
+        self.pass_on_long_loose_text()
     }
 }
 
@@ -259,6 +308,154 @@ impl<R: Read> Read for KeepReadError<R> {
     }
 }
 
+/// The most text the XML reader is handed in one run: a document without markup, such as a large
+/// text file, would otherwise be read as one text event held whole in memory.
+const MAX_TEXT_RUN_BYTES: usize = 1 << 16;
+const TEXT_BREAK: &[u8] = b"<!---->";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lexed {
+    Text,
+    Markup { quote: Option<u8>, opened: u8 },
+    Comment { dashes: u8 },
+}
+
+/// Ends long runs of text with an empty comment, which the XML reader reports between two text
+/// events, so no single event outgrows [`MAX_TEXT_RUN_BYTES`] by much. The comment goes only
+/// where it cannot change the text: outside markup, comments and entity references, at a
+/// character boundary and after a byte that is not whitespace.
+struct TextBreaker<R> {
+    inner: R,
+    buffer: Box<[u8]>,
+    position: usize,
+    filled: usize,
+    state: Lexed,
+    in_entity: bool,
+    run: usize,
+    previous: u8,
+    pending_break: usize,
+}
+
+impl<R: Read> TextBreaker<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            buffer: vec![0; 1 << 16].into_boxed_slice(),
+            position: 0,
+            filled: 0,
+            state: Lexed::Text,
+            in_entity: false,
+            run: 0,
+            previous: b'>',
+            pending_break: 0,
+        }
+    }
+
+    fn breaks_before(&self, byte: u8) -> bool {
+        self.state == Lexed::Text
+            && self.run >= MAX_TEXT_RUN_BYTES
+            && !self.in_entity
+            && byte & 0xc0 != 0x80
+            && byte != b'<'
+            && !self.previous.is_ascii_whitespace()
+    }
+
+    fn advance(&mut self, byte: u8) {
+        self.state = match self.state {
+            Lexed::Text => match byte {
+                b'<' => {
+                    self.in_entity = false;
+                    self.run = 0;
+                    Lexed::Markup {
+                        quote: None,
+                        opened: 0,
+                    }
+                }
+                _ => {
+                    self.in_entity = match byte {
+                        b'&' => true,
+                        b';' => false,
+                        _ => self.in_entity && !byte.is_ascii_whitespace(),
+                    };
+                    self.run += 1;
+                    Lexed::Text
+                }
+            },
+            Lexed::Markup {
+                quote: Some(open),
+                opened,
+            } => Lexed::Markup {
+                quote: (byte != open).then_some(open),
+                opened,
+            },
+            Lexed::Markup {
+                quote: None,
+                opened,
+            } => match (opened, byte) {
+                (0, b'!') | (1, b'-') => Lexed::Markup {
+                    quote: None,
+                    opened: opened + 1,
+                },
+                (2, b'-') => Lexed::Comment { dashes: 0 },
+                (_, b'>') => Lexed::Text,
+                (_, b'"' | b'\'') => Lexed::Markup {
+                    quote: Some(byte),
+                    opened: 3,
+                },
+                _ => Lexed::Markup {
+                    quote: None,
+                    opened: 3,
+                },
+            },
+            Lexed::Comment { dashes } => match byte {
+                b'-' => Lexed::Comment {
+                    dashes: (dashes + 1).min(2),
+                },
+                b'>' if dashes == 2 => Lexed::Text,
+                _ => Lexed::Comment { dashes: 0 },
+            },
+        };
+        self.previous = byte;
+    }
+}
+
+impl<R: Read> Read for TextBreaker<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let mut written = 0;
+        while written < out.len() {
+            if self.pending_break > 0 {
+                let from = TEXT_BREAK.len() - self.pending_break;
+                let count = self.pending_break.min(out.len() - written);
+                out[written..written + count].copy_from_slice(&TEXT_BREAK[from..from + count]);
+                written += count;
+                self.pending_break -= count;
+                continue;
+            }
+            if self.position == self.filled {
+                if written > 0 {
+                    break;
+                }
+                self.filled = self.inner.read(&mut self.buffer)?;
+                self.position = 0;
+                if self.filled == 0 {
+                    break;
+                }
+            }
+            let byte = self.buffer[self.position];
+            if self.breaks_before(byte) {
+                self.pending_break = TEXT_BREAK.len();
+                self.run = 0;
+                continue;
+            }
+            out[written] = byte;
+            written += 1;
+            self.position += 1;
+            self.advance(byte);
+        }
+        Ok(written)
+    }
+}
+
 /// Streams Tika's XHTML and calls `emit` with each page, or each element, as soon as it is
 /// complete, so memory holds one page or element at a time. Text outside any page or element is
 /// emitted where it occurs rather than dropped, and so is the text collected when the XHTML
@@ -269,10 +466,10 @@ pub fn split(
     unit: Unit,
     emit: &mut dyn FnMut(Part) -> io::Result<()>,
 ) -> io::Result<Result<(), SplitError>> {
-    let mut reader = Reader::from_reader(BufReader::new(KeepReadError {
+    let mut reader = Reader::from_reader(BufReader::new(TextBreaker::new(KeepReadError {
         inner: xhtml,
         error: None,
-    }));
+    })));
     let mut splitter = Splitter {
         unit,
         emit,
@@ -284,6 +481,7 @@ pub fn split(
         element: None,
         artifact: None,
         artifacts: String::new(),
+        loose_run: false,
     };
     let mut buffer = Vec::new();
     loop {
@@ -292,7 +490,7 @@ pub fn split(
             Ok(event) => event,
             Err(error) => {
                 splitter.flush_open()?;
-                let read = reader.get_mut().get_mut().error.take();
+                let read = reader.get_mut().get_mut().inner.error.take();
                 return Ok(Err(read.map_or_else(
                     || SplitError::Malformed(error.to_string()),
                     SplitError::Read,
@@ -315,8 +513,8 @@ pub fn split(
                 splitter.depth -= 1;
                 splitter.end(end.local_name().as_ref())?;
             }
-            Event::Text(text) => splitter.text(&text.xml10_content()),
-            Event::CData(data) => splitter.text(&data.xml10_content()),
+            Event::Text(text) => splitter.text(&text.xml10_content())?,
+            Event::CData(data) => splitter.text(&data.xml10_content())?,
             Event::GeneralRef(reference) => {
                 let resolved = match reference.resolve_char_ref() {
                     Ok(Some(character)) => character.to_string(),
@@ -330,7 +528,7 @@ pub fn split(
                         return Ok(Err(SplitError::Malformed(error.to_string())));
                     }
                 };
-                splitter.text(&resolved);
+                splitter.text(&resolved)?;
             }
             Event::Eof => break,
             Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
@@ -404,12 +602,14 @@ mod tests {
                     element: None,
                     text: "First & one\nSecond".to_string(),
                     artifacts: String::new(),
+                    continued: false,
                 },
                 Part {
                     page: Some(2),
                     element: None,
                     text: "Head\na\tb\nc".to_string(),
                     artifacts: String::new(),
+                    continued: false,
                 },
             ]
         );
@@ -430,12 +630,14 @@ mod tests {
                     element: None,
                     text: "Part One\nBody".to_string(),
                     artifacts: "Running title\nPage 1".to_string(),
+                    continued: false,
                 },
                 Part {
                     page: Some(2),
                     element: None,
                     text: "More".to_string(),
                     artifacts: String::new(),
+                    continued: false,
                 },
             ]
         );
@@ -447,6 +649,59 @@ mod tests {
             texts,
             ["Part One", "Body", "Running title", "Page 1", "More"]
         );
+    }
+
+    #[test]
+    fn long_text_outside_pages_streams_in_pieces() {
+        let line = "A line of a long document without pages.\n";
+        let body = line.repeat(5000);
+        let xhtml = format!("<html><body><p>\n{body}  </p></body></html>");
+        let pieces = parts(&xhtml, Unit::Pages);
+        assert!(pieces.len() > 2, "{} pieces", pieces.len());
+        let (last, rest) = pieces.split_last().unwrap();
+        assert!(rest.iter().all(|piece| piece.continued
+            && piece.page.is_none()
+            && piece.text.len() <= LOOSE_PIECE_BYTES + line.len()));
+        assert!(!last.continued);
+        let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(joined, body.trim());
+    }
+
+    #[test]
+    fn breaking_long_text_for_the_xml_reader_never_changes_it() {
+        let words = [
+            "plain",
+            "caf\u{e9}",
+            "\u{6f22}\u{5b57}",
+            "&amp;",
+            "&#x1F389;",
+            "a&lt;b",
+        ];
+        let unescaped = [
+            "plain",
+            "caf\u{e9}",
+            "\u{6f22}\u{5b57}",
+            "&",
+            "\u{1F389}",
+            "a<b",
+        ];
+        let mut escaped = String::new();
+        let mut expected = String::new();
+        for index in 0..40_000 {
+            let separator = if index % 7 == 6 { "\n" } else { " " };
+            escaped.push_str(words[index % words.len()]);
+            escaped.push_str(separator);
+            expected.push_str(unescaped[index % unescaped.len()]);
+            expected.push_str(separator);
+        }
+        let xhtml = format!(
+            "<html><body><!-- a > b -- c --><div title=\"x > y\"><p>{escaped}</p></div></body></html>"
+        );
+        let joined: String = parts(&xhtml, Unit::Pages)
+            .iter()
+            .map(|part| part.text.as_str())
+            .collect();
+        assert_eq!(joined, expected.trim());
     }
 
     #[test]
@@ -477,6 +732,7 @@ mod tests {
                 element: None,
                 text: "Title\nloose words\nBody".to_string(),
                 artifacts: String::new(),
+                continued: false,
             }]
         );
         let kinds: Vec<_> = parts(xhtml, Unit::Elements)

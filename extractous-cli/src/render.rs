@@ -43,6 +43,8 @@ struct PartPlace {
     /// The text the document marks as furniture of the page, such as a tagged PDF's running
     /// headers and footers, when running headers and footers are moved out.
     artifacts: Option<String>,
+    /// Whether the part's text goes on in the next part.
+    continued: bool,
 }
 
 /// What extracting one document produced besides the output written to the sink.
@@ -312,13 +314,19 @@ fn render_parts(
     let (outcome, metadata) = match opened {
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
+            let mut run = String::new();
             let mut emit = |place: PartPlace, part: running::Page| {
                 let PartPlace {
                     page,
                     element,
                     artifacts,
+                    continued,
                 } = place;
-                let text = part.text;
+                run.push_str(&part.text);
+                if continued {
+                    return Ok(());
+                }
+                let text = std::mem::take(&mut run);
                 sample.push(text.as_bytes());
                 sample.push(b"\n");
                 let record = PartRecord {
@@ -419,9 +427,21 @@ fn split_parts(
     let mut bytes = 0;
     let headers = unit == Unit::Pages && options.normalization.contains(Step::Headers);
     let mut running = RunningLines::new(emit, headers);
+    let mut run: Option<Normalizer> = None;
     let split = structure::split(stream, unit, &mut |part| {
         bytes += (part.text.len() + part.artifacts.len()) as u64;
-        let mut text = normalize::normalize(options.normalization, &part.text);
+        let mut text = if part.continued || run.is_some() {
+            let normalizer = run.get_or_insert_with(|| Normalizer::new(options.normalization));
+            let mut normalized = Vec::with_capacity(part.text.len());
+            normalizer.push(part.text.as_bytes(), &mut normalized);
+            if !part.continued {
+                normalizer.finish(&mut normalized);
+                run = None;
+            }
+            String::from_utf8(normalized).expect("normalisation produces UTF-8")
+        } else {
+            normalize::normalize(options.normalization, &part.text)
+        };
         let mut artifacts = normalize::normalize(options.normalization, &part.artifacts);
         if !headers && !artifacts.is_empty() {
             if !text.is_empty() {
@@ -437,6 +457,7 @@ fn split_parts(
             page: part.page,
             element: part.element,
             artifacts: (!artifacts.is_empty()).then_some(artifacts),
+            continued: part.continued,
         };
         running.push(place, text, placement)
     })?;
@@ -460,12 +481,18 @@ fn copy_pages(
     write: impl Fn(&[u8], &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<Copied> {
     let mut wrote = false;
-    let copied = split_parts(stream, options, Unit::Pages, &mut |_, page| {
-        let text = page.text.trim_end_matches('\n');
+    let mut in_run = false;
+    let copied = split_parts(stream, options, Unit::Pages, &mut |place, page| {
+        let text = if place.continued {
+            page.text.as_str()
+        } else {
+            page.text.trim_end_matches('\n')
+        };
         if text.is_empty() {
+            in_run &= place.continued;
             return Ok(());
         }
-        let separator: &[u8] = if wrote { b"\n\n" } else { b"" };
+        let separator: &[u8] = if wrote && !in_run { b"\n\n" } else { b"" };
         for chunk in [separator, text.as_bytes()] {
             if let Some(sample) = sample.as_deref_mut() {
                 sample.push(chunk);
@@ -473,6 +500,7 @@ fn copy_pages(
             write(chunk, sink)?;
         }
         wrote = true;
+        in_run = place.continued;
         Ok(())
     })?;
     if wrote {
