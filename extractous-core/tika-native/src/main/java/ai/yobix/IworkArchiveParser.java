@@ -64,7 +64,7 @@ final class IworkArchiveParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         final TikaInputStream input = TikaInputStream.get(stream);
         final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
@@ -285,11 +285,11 @@ final class IworkArchiveParser implements Parser {
             final Metadata embedded = new Metadata();
             embedded.set(TikaCoreProperties.RESOURCE_NAME_KEY, fileName(entry.getName()));
             embedded.set(TikaCoreProperties.EMBEDDED_RELATIONSHIP_ID, entry.getName());
-            if (!extractor.shouldParseEmbedded(embedded)) {
+            if (!extractor.shouldParseEmbedded(embedded, context)) {
                 continue;
             }
             try (TikaInputStream file = TikaInputStream.get(zip.getInputStream(entry))) {
-                extractor.parseEmbedded(file, xhtml, embedded, true);
+                extractor.parseEmbedded(file, xhtml, embedded, context, true);
             }
         }
     }

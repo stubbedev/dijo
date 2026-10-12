@@ -1,5 +1,5 @@
 {
-    "resourceName": [
+    "tk:resource-name": [
         "winter-sports.epub"
     ],
     "epub:rendition:layout": [
@@ -8,7 +8,7 @@
     "dc:creator": [
         "E. F. Benson"
     ],
-    "X-TIKA:Parsed-By": [
+    "tk:parsed-by": [
         "org.apache.tika.parser.epub.EpubParser"
     ],
     "dc:contributor": [
@@ -44,9 +44,7 @@
     "epub:version": [
         "2.0"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.epub.EpubParser",
-        "org.apache.tika.parser.image.JpegParser",
-        "ai.yobix.PreparingOcrParser"
+    "tk:parsed-by-full-set": [
+        "org.apache.tika.parser.epub.EpubParser"
     ]
 }

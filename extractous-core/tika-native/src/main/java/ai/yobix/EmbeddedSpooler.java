@@ -1,9 +1,11 @@
 package ai.yobix;
 
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.parser.ParseContext;
 import org.xml.sax.ContentHandler;
 
 import java.io.IOException;
@@ -37,12 +39,13 @@ final class EmbeddedSpooler implements EmbeddedDocumentExtractor {
     }
 
     @Override
-    public boolean shouldParseEmbedded(Metadata metadata) {
+    public boolean shouldParseEmbedded(Metadata metadata, ParseContext context) {
         return !ContentEmbeddedDocumentExtractor.isThumbnail(metadata);
     }
 
     @Override
-    public void parseEmbedded(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parseEmbedded(TikaInputStream stream, ContentHandler handler, Metadata metadata,
+                              ParseContext context,
                               boolean outputHtml) throws IOException {
         final int index = spooled.size();
         final String name = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);

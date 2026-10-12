@@ -4,6 +4,7 @@ import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.UnsupportedFormatException;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
@@ -12,7 +13,6 @@ import org.apache.tika.parser.Parser;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -60,7 +60,7 @@ final class MobiParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         final ByteBuffer book = ByteBuffer.wrap(Files.readAllBytes(TikaInputStream.get(stream).getPath()));
         if (book.limit() < PALM_DATABASE_HEADER) {
@@ -118,8 +118,10 @@ final class MobiParser implements Parser {
         }
 
         final Metadata markup = new Metadata();
-        markup.set(Metadata.CONTENT_TYPE, "text/html; charset=" + charset.name());
-        html.parse(new ByteArrayInputStream(text.toByteArray()), handler, markup, context);
+        markup.set(HttpHeaders.CONTENT_TYPE, "text/html; charset=" + charset.name());
+        try (TikaInputStream markupStream = TikaInputStream.get(text.toByteArray())) {
+            html.parse(markupStream, handler, markup, context);
+        }
         if (mobi) {
             bookMetadata(book, header, mobiLength, charset, metadata);
         }

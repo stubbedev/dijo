@@ -14,7 +14,7 @@
     "cp:revision": [
         "3"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "category-level.docx"
     ],
     "meta:character-count": [
@@ -38,13 +38,14 @@
     "meta:character-count-with-spaces": [
         "1558"
     ],
-    "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
+    "tk:parsed-by": [
+        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
+        "org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFEventBasedWordExtractor"
     ],
     "meta:word-count": [
         "288"
     ],
-    "extended-properties:DocSecurityString": [
+    "extended-properties:doc-security-string": [
         "None"
     ],
     "extended-properties:TotalTime": [
@@ -53,7 +54,7 @@
     "Content-Type": [
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "xmpTPg:NPages": [

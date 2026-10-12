@@ -1,11 +1,12 @@
 {
-    "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
+    "tk:parsed-by": [
+        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
+        "org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFEventBasedWordExtractor"
     ],
     "dcterms:created": [
         "2013-12-23T23:15:00Z"
     ],
-    "extended-properties:DocSecurityString": [
+    "extended-properties:doc-security-string": [
         "None"
     ],
     "Content-Type": [
@@ -26,16 +27,13 @@
     "cp:revision": [
         "12"
     ],
-    "extended-properties:Company": [
-        ""
-    ],
     "Content-Length": [
         "27615"
     ],
     "meta:word-count": [
         "1"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "extended-properties:Template": [
@@ -44,14 +42,11 @@
     "meta:last-author": [
         "NourEldin Osama"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "bug_16.docx"
     ],
     "meta:page-count": [
         "1"
-    ],
-    "dc:publisher": [
-        ""
     ],
     "meta:character-count-with-spaces": [
         "9"

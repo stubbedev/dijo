@@ -1,8 +1,8 @@
 {
-    "protected": [
+    "msoffice:excel:protected-worksheet": [
         "false"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
         "org.apache.tika.parser.image.ImageParser",
         "ai.yobix.PreparingOcrParser"
@@ -10,16 +10,16 @@
     "Content-Length": [
         "12541"
     ],
-    "extended-properties:DocSecurityString": [
+    "extended-properties:doc-security-string": [
         "None"
     ],
-    "X-TIKA:Parsed-By": [
+    "tk:parsed-by": [
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "Content-Type": [
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "vodafone.xlsx"
     ]
 }

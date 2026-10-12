@@ -10,6 +10,11 @@
     "allPublicMethods": true
   },
   {
+    "name": "ai.yobix.PdfConfig",
+    "allPublicConstructors": true,
+    "allPublicMethods": true
+  },
+  {
     "name": "ai.yobix.Throwables",
     "allDeclaredMethods": true
   },

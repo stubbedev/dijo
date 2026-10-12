@@ -95,7 +95,7 @@ macro_rules! tika_config {
 
 tika_config! {
     /// PDF parsing configuration settings
-    PdfParserConfig => "org/apache/tika/parser/pdf/PDFParserConfig" {
+    PdfParserConfig => "ai/yobix/PdfConfig" {
         /// Sets the OCR strategy for PDF parsing.
         set_ocr_strategy(ocr_strategy: PdfOcrStrategy) => "setOcrStrategy",
 
@@ -176,19 +176,6 @@ tika_config! {
         /// This sets whether the parser will concatenate the phonetic runs to the original text.
         /// This is currently only supported by the xls and xlsx parsers (not the xlsb parser).
         set_concatenate_phonetic_runs(concatenate_phonetic_runs: bool) => "setConcatenatePhoneticRuns",
-
-        /// Some .msg files can contain body content in html, rtf and/or text. Tika's default picks
-        /// the first non-null value and includes only that. If you'd like to extract all
-        /// non-null body content, which is likely duplicative, set this value to true.
-        set_extract_all_alternatives_from_msg(extract_all_alternatives_from_msg: bool) => "setExtractAllAlternativesFromMSG",
-
-        /// Use the streaming SAX extractor for DOCX instead of loading the whole document into
-        /// memory, at the cost of a few features the full document model provides.
-        set_use_sax_docx_extractor(use_sax_docx_extractor: bool) => "setUseSAXDocxExtractor",
-
-        /// Use the streaming SAX extractor for PPTX instead of loading the whole presentation
-        /// into memory.
-        set_use_sax_pptx_extractor(use_sax_pptx_extractor: bool) => "setUseSAXPptxExtractor",
     }
 }
 

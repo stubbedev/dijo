@@ -6,13 +6,5 @@
     {
       "glob": "custom-mimetypes.xml"
     }
-  ],
-  "bundles": [
-    {
-      "name": "org.apache.xmlbeans.message"
-    },
-    {
-      "name": "org.apache.xmlbeans.impl.regex.message"
-    }
   ]
 }

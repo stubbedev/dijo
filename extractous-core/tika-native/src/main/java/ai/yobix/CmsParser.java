@@ -3,6 +3,7 @@ package ai.yobix;
 import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -54,7 +55,7 @@ final class CmsParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         final TikaInputStream input = TikaInputStream.get(stream);
         input.mark(HEADER_BYTES);
@@ -66,7 +67,7 @@ final class CmsParser implements Parser {
             throw new EncryptedDocumentException("S/MIME (CMS " + encryption
                     + ") data; decrypting it needs the recipient's private key");
         }
-        final MediaType type = MediaType.parse(metadata.get(Metadata.CONTENT_TYPE));
+        final MediaType type = MediaType.parse(metadata.get(HttpHeaders.CONTENT_TYPE));
         if (type != null && type.getBaseType().equals(PKCS7_SIGNATURE)
                 && !encapsulatesContent(input.getPath())) {
             final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);

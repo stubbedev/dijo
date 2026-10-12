@@ -2865,98 +2865,95 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | Library | Version | Declared licences |
 |---|---|---|
 | `com.adobe.xmp:xmpcore` | 6.1.11 | BSD-3-Clause |
-| `com.drewnoakes:metadata-extractor` | 2.19.0 | Apache-2.0 |
+| `com.drewnoakes:metadata-extractor` | 2.21.0 | Apache-2.0 |
 | `com.epam:parso` | 2.0.14 | Apache-2.0 |
-| `com.fasterxml.jackson.core:jackson-annotations` | 2.20 | Apache-2.0 |
-| `com.fasterxml.jackson.core:jackson-core` | 2.20.0 | Apache-2.0 |
-| `com.fasterxml.jackson.core:jackson-databind` | 2.20.0 | Apache-2.0 |
-| `com.github.albfernandez:juniversalchardet` | 2.5.0 | GENERAL PUBLIC LICENSE, version 3 (GPL-3.0), LGPL-3.0-only, MPL-1.1 |
+| `com.fasterxml.jackson.core:jackson-annotations` | 2.22 | Apache-2.0 |
+| `com.fasterxml.jackson.core:jackson-core` | 2.22.3 | Apache-2.0 |
+| `com.fasterxml.jackson.core:jackson-databind` | 2.22.3 | Apache-2.0 |
 | `com.github.jai-imageio:jai-imageio-core` | 1.4.0 | BSD-3-Clause, LICENSE.txt |
-| `com.github.junrar:junrar` | 7.5.5 | UnRar License |
+| `com.github.junrar:junrar` | 8.1.1 | UnRar License |
 | `com.github.virtuald:curvesapi` | 1.08 | 0BSD, BSD-3-Clause |
-| `com.googlecode.plist:dd-plist` | 1.28 | MIT |
-| `com.healthmarketscience.jackcess:jackcess-encrypt` | 4.0.3 | Apache-2.0 |
-| `com.healthmarketscience.jackcess:jackcess` | 4.0.8 | Apache-2.0 |
+| `com.googlecode.plist:dd-plist` | 1.30 | MIT |
+| `com.healthmarketscience.jackcess:jackcess-encrypt` | 5.0.0 | Apache-2.0 |
+| `com.healthmarketscience.jackcess:jackcess` | 5.0.0 | Apache-2.0 |
 | `com.pff:java-libpst` | 0.9.3 | Apache-2.0 |
 | `com.rometools:rome-utils` | 2.1.0 | Apache-2.0 |
 | `com.rometools:rome` | 2.1.0 | Apache-2.0 |
-| `com.sun.istack:istack-commons-runtime` | 4.1.2 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `com.zaxxer:SparseBitSet` | 1.3 | Apache-2.0 |
-| `commons-codec:commons-codec` | 1.19.0 | Apache-2.0 |
-| `commons-io:commons-io` | 2.20.0 | Apache-2.0 |
-| `commons-logging:commons-logging` | 1.3.5 | Apache-2.0 |
-| `info.picocli:picocli` | 4.7.6 | Apache-2.0 |
+| `commons-codec:commons-codec` | 1.22.1 | Apache-2.0 |
+| `commons-io:commons-io` | 2.22.0 | Apache-2.0 |
+| `commons-logging:commons-logging` | 1.4.0 | Apache-2.0 |
+| `info.picocli:picocli` | 4.7.7 | Apache-2.0 |
 | `jakarta.activation:jakarta.activation-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `jakarta.mail:jakarta.mail-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `jakarta.xml.bind:jakarta.xml.bind-api` | 4.0.2 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `org.apache.commons:commons-collections4` | 4.5.0 | Apache-2.0 |
+| `org.apache.commons:commons-collections4` | 4.6.0 | Apache-2.0 |
 | `org.apache.commons:commons-compress` | 1.28.0 | Apache-2.0 |
 | `org.apache.commons:commons-csv` | 1.14.1 | Apache-2.0 |
-| `org.apache.commons:commons-exec` | 1.5.0 | Apache-2.0 |
-| `org.apache.commons:commons-lang3` | 3.18.0 | Apache-2.0 |
+| `org.apache.commons:commons-exec` | 1.6.0 | Apache-2.0 |
+| `org.apache.commons:commons-lang3` | 3.20.0 | Apache-2.0 |
 | `org.apache.commons:commons-math3` | 3.6.1 | Apache-2.0 |
-| `org.apache.james:apache-mime4j-core` | 0.8.13 | Apache-2.0 |
-| `org.apache.james:apache-mime4j-dom` | 0.8.13 | Apache-2.0 |
+| `org.apache.james:apache-mime4j-core` | 0.8.15 | Apache-2.0 |
+| `org.apache.james:apache-mime4j-dom` | 0.8.15 | Apache-2.0 |
 | `org.apache.logging.log4j:log4j-api` | 2.24.3 | Apache-2.0 |
 | `org.apache.logging.log4j:log4j-to-slf4j` | 2.24.2 | Apache-2.0 |
-| `org.apache.pdfbox:fontbox` | 3.0.5 | Apache-2.0 |
-| `org.apache.pdfbox:jbig2-imageio` | 3.0.4 | Apache-2.0 |
-| `org.apache.pdfbox:jempbox` | 1.8.17 | Apache-2.0 |
-| `org.apache.pdfbox:pdfbox-io` | 3.0.5 | Apache-2.0 |
-| `org.apache.pdfbox:pdfbox-tools` | 3.0.5 | Apache-2.0 |
-| `org.apache.pdfbox:pdfbox` | 3.0.5 | Apache-2.0 |
-| `org.apache.pdfbox:xmpbox` | 3.0.5 | Apache-2.0 |
-| `org.apache.poi:poi-ooxml-lite` | 5.4.1 | Apache-2.0 |
-| `org.apache.poi:poi-ooxml` | 5.4.1 | Apache-2.0 |
-| `org.apache.poi:poi-scratchpad` | 5.4.1 | Apache-2.0 |
-| `org.apache.poi:poi` | 5.4.1 | Apache-2.0 |
-| `org.apache.tika:tika-core` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-apple-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-audiovideo-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-cad-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-code-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-crypto-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-digest-commons` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-font-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-html-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-image-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-mail-commons` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-mail-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-microsoft-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-miscoffice-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-news-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-ocr-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-pdf-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-pkg-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-text-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-webarchive-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-xml-module` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-xmp-commons` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-zip-commons` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parsers-standard-package` | 3.2.3 | Apache-2.0 |
+| `org.apache.pdfbox:fontbox` | 3.0.8 | Apache-2.0 |
+| `org.apache.pdfbox:jbig2-imageio` | 3.0.5 | Apache-2.0 |
+| `org.apache.pdfbox:pdfbox-io` | 3.0.8 | Apache-2.0 |
+| `org.apache.pdfbox:pdfbox-tools` | 3.0.8 | Apache-2.0 |
+| `org.apache.pdfbox:pdfbox` | 3.0.8 | Apache-2.0 |
+| `org.apache.poi:poi-ooxml` | 5.5.1 | Apache-2.0 |
+| `org.apache.poi:poi-scratchpad` | 5.5.1 | Apache-2.0 |
+| `org.apache.poi:poi` | 5.5.1 | Apache-2.0 |
+| `org.apache.tika:tika-core` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-encoding-detector-html` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-encoding-detector-mojibuster` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-ml-core` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-ml-junkdetect` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-apple-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-audiovideo-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-cad-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-code-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-crypto-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-datauri-commons` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-digest-commons` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-font-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-html-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-image-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-mail-commons` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-mail-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-microsoft-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-miscoffice-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-news-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-ocr-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-pdf-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-pkg-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-text-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-webarchive-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-xml-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-xmp-commons` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-zip-commons` | 4.1.0 | Apache-2.0 |
 | `org.apache.xmlbeans:xmlbeans` | 5.3.0 | Apache-2.0 |
-| `org.bouncycastle:bcjmail-jdk18on` | 1.81 | MIT |
-| `org.bouncycastle:bcpkix-jdk18on` | 1.81.1 | MIT |
-| `org.bouncycastle:bcprov-jdk18on` | 1.81.1 | MIT |
-| `org.bouncycastle:bcutil-jdk18on` | 1.81.1 | MIT |
+| `org.bouncycastle:bcjmail-jdk18on` | 1.86 | MIT |
+| `org.bouncycastle:bcpkix-jdk18on` | 1.86 | MIT |
+| `org.bouncycastle:bcprov-jdk18on` | 1.86 | MIT |
+| `org.bouncycastle:bcutil-jdk18on` | 1.86 | MIT |
 | `org.brotli:dec` | 0.1.2 | MIT |
-| `org.codelibs:jhighlight` | 1.1.0 | CDDL-1.0, LGPL, v2.1 or later |
+| `org.codelibs:jhighlight` | 2.0.0 | CDDL-1.0, LGPL, v2.1 or later |
+| `org.commonmark:commonmark-ext-gfm-strikethrough` | 0.30.0 | BSD-2-Clause |
+| `org.commonmark:commonmark-ext-gfm-tables` | 0.30.0 | BSD-2-Clause |
+| `org.commonmark:commonmark` | 0.30.0 | BSD-2-Clause |
 | `org.eclipse.angus:angus-activation` | 2.0.2 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.eclipse.angus:angus-mail` | 2.0.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.gagravarr:vorbis-java-core` | 0.8 | Apache-2.0 |
-| `org.gagravarr:vorbis-java-tika` | 0.8 | Apache-2.0 |
-| `org.glassfish.jaxb:jaxb-core` | 4.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `org.glassfish.jaxb:jaxb-runtime` | 4.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `org.glassfish.jaxb:txw2` | 4.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.jdom:jdom2` | 2.0.6.1 | Similar to Apache License but with the acknowledgment clause removed |
-| `org.jsoup:jsoup` | 1.21.2 | MIT |
-| `org.netpreserve:jwarc` | 0.32.0 | Apache-2.0 |
-| `org.ow2.asm:asm` | 9.8 | Apache-2.0, BSD-3-Clause |
-| `org.slf4j:jcl-over-slf4j` | 2.0.17 | Apache-2.0, MIT |
-| `org.slf4j:slf4j-api` | 2.0.17 | MIT |
+| `org.jsoup:jsoup` | 1.23.2 | MIT |
+| `org.netpreserve:jwarc` | 0.37.0 | Apache-2.0 |
+| `org.ow2.asm:asm` | 9.10.1 | Apache-2.0, BSD-3-Clause |
+| `org.slf4j:jcl-over-slf4j` | 2.0.20 | Apache-2.0, MIT |
+| `org.slf4j:slf4j-api` | 2.0.20 | MIT |
 | `org.slf4j:slf4j-nop` | 2.0.16 | MIT |
 | `org.tallison:jmatio` | 1.5 | 0BSD |
-| `org.tukaani:xz` | 1.10 | 0BSD |
+| `org.tukaani:xz` | 1.12 | 0BSD |
 
 ### Licence and notice texts shipped with the Java libraries
 
@@ -2986,7 +2983,7 @@ in some artifacts (usually source distributions); but is always available
 from the source code management (SCM) system project uses.
 ````
 
-Shipped with `com.fasterxml.jackson.core:jackson-annotations`, `com.fasterxml.jackson.core:jackson-core`, `com.fasterxml.jackson.core:jackson-databind`, `commons-logging:commons-logging`, `org.apache.commons:commons-collections4`, `org.apache.james:apache-mime4j-core`, `org.apache.james:apache-mime4j-dom`, `org.apache.logging.log4j:log4j-api`, `org.apache.logging.log4j:log4j-to-slf4j`, `org.apache.pdfbox:jbig2-imageio`, `org.apache.pdfbox:pdfbox-io`, `org.apache.pdfbox:pdfbox-tools`, `org.apache.pdfbox:xmpbox`, `org.apache.tika:tika-parser-apple-module`, `org.apache.tika:tika-parser-audiovideo-module`, `org.apache.tika:tika-parser-cad-module`, `org.apache.tika:tika-parser-code-module`, `org.apache.tika:tika-parser-crypto-module`, `org.apache.tika:tika-parser-digest-commons`, `org.apache.tika:tika-parser-font-module`, `org.apache.tika:tika-parser-html-module`, `org.apache.tika:tika-parser-image-module`, `org.apache.tika:tika-parser-mail-commons`, `org.apache.tika:tika-parser-mail-module`, `org.apache.tika:tika-parser-microsoft-module`, `org.apache.tika:tika-parser-miscoffice-module`, `org.apache.tika:tika-parser-news-module`, `org.apache.tika:tika-parser-ocr-module`, `org.apache.tika:tika-parser-pdf-module`, `org.apache.tika:tika-parser-pkg-module`, `org.apache.tika:tika-parser-text-module`, `org.apache.tika:tika-parser-webarchive-module`, `org.apache.tika:tika-parser-xml-module`, `org.apache.tika:tika-parser-xmp-commons`, `org.apache.tika:tika-parser-zip-commons`, `org.apache.tika:tika-parsers-standard-package`, `org.gagravarr:vorbis-java-core`, `org.gagravarr:vorbis-java-tika`:
+Shipped with `com.fasterxml.jackson.core:jackson-annotations`, `com.fasterxml.jackson.core:jackson-core`, `com.fasterxml.jackson.core:jackson-databind`, `org.apache.james:apache-mime4j-core`, `org.apache.james:apache-mime4j-dom`, `org.apache.logging.log4j:log4j-api`, `org.apache.logging.log4j:log4j-to-slf4j`, `org.apache.pdfbox:jbig2-imageio`, `org.apache.pdfbox:pdfbox-io`, `org.apache.pdfbox:pdfbox-tools`, `org.apache.tika:tika-encoding-detector-html`, `org.apache.tika:tika-encoding-detector-mojibuster`, `org.apache.tika:tika-ml-core`, `org.apache.tika:tika-ml-junkdetect`, `org.apache.tika:tika-parser-apple-module`, `org.apache.tika:tika-parser-audiovideo-module`, `org.apache.tika:tika-parser-cad-module`, `org.apache.tika:tika-parser-code-module`, `org.apache.tika:tika-parser-crypto-module`, `org.apache.tika:tika-parser-datauri-commons`, `org.apache.tika:tika-parser-digest-commons`, `org.apache.tika:tika-parser-font-module`, `org.apache.tika:tika-parser-html-module`, `org.apache.tika:tika-parser-image-module`, `org.apache.tika:tika-parser-mail-commons`, `org.apache.tika:tika-parser-mail-module`, `org.apache.tika:tika-parser-microsoft-module`, `org.apache.tika:tika-parser-miscoffice-module`, `org.apache.tika:tika-parser-news-module`, `org.apache.tika:tika-parser-ocr-module`, `org.apache.tika:tika-parser-pdf-module`, `org.apache.tika:tika-parser-pkg-module`, `org.apache.tika:tika-parser-text-module`, `org.apache.tika:tika-parser-webarchive-module`, `org.apache.tika:tika-parser-xml-module`, `org.apache.tika:tika-parser-xmp-commons`, `org.apache.tika:tika-parser-zip-commons`, `org.gagravarr:vorbis-java-core`:
 
 ````text
 Apache License
@@ -3225,8 +3222,18 @@ under the following copyright.
 
 Copyright © 2023 Werner Randelshofer, Switzerland. MIT License.
 
-See FastDoubleParser-NOTICE for details of other source code included in FastDoubleParser
-and the licenses and copyrights that apply to that code.
+See FastDoubleParser-LICENSE and also FastDoubleParser-ThirdParty-LICENSE for details of other source code
+included in FastDoubleParser and the licenses and copyrights that apply to that code.
+
+## Schubfach
+
+jackson-core bundles a copy of the Schubfach number writing code <https://github.com/c4f7fcce9cb06515/Schubfach>.
+That code is available under an MIT license <https://github.com/c4f7fcce9cb06515/Schubfach/blob/master/todec/LICENSE>
+under the following copyright.
+
+Copyright 2018-2020 Raffaello Giulietti
+
+See Schubfach-LICENSE.
 ````
 
 Shipped with `com.github.jai-imageio:jai-imageio-core`:
@@ -3333,13 +3340,13 @@ Shipped with `commons-codec:commons-codec`:
 
 ````text
 Apache Commons Codec
-Copyright 2002-2025 The Apache Software Foundation
+Copyright 2002-2026 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
 ````
 
-Shipped with `commons-codec:commons-codec`, `commons-io:commons-io`, `org.apache.commons:commons-compress`, `org.apache.commons:commons-csv`, `org.apache.commons:commons-exec`, `org.apache.commons:commons-lang3`:
+Shipped with `commons-codec:commons-codec`, `commons-io:commons-io`, `commons-logging:commons-logging`, `org.apache.commons:commons-collections4`, `org.apache.commons:commons-compress`, `org.apache.commons:commons-csv`, `org.apache.commons:commons-exec`, `org.apache.commons:commons-lang3`:
 
 ````text
 Apache License
@@ -3549,7 +3556,7 @@ Shipped with `commons-io:commons-io`:
 
 ````text
 Apache Commons IO
-Copyright 2002-2025 The Apache Software Foundation
+Copyright 2002-2026 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
@@ -3559,7 +3566,7 @@ Shipped with `commons-logging:commons-logging`:
 
 ````text
 Apache Commons Logging
-Copyright 2001-2025 The Apache Software Foundation
+Copyright 2001-2026 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
@@ -4419,96 +4426,11 @@ possession, or use, and re-export of encryption software, to see if this is
 permitted.
 ````
 
-Shipped with `jakarta.xml.bind:jakarta.xml.bind-api`:
-
-````text
-Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
-   
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-   
-      - Redistributions of source code must retain the above copyright
-        notice, this list of conditions and the following disclaimer.
-   
-      - Redistributions in binary form must reproduce the above copyright
-        notice, this list of conditions and the following disclaimer in the
-        documentation and/or other materials provided with the distribution.
-   
-      - Neither the name of the Eclipse Foundation, Inc. nor the names of its
-        contributors may be used to endorse or promote products derived
-        from this software without specific prior written permission.
-   
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-    IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-    THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-    PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-    CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-    EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-    PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-    PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-    LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-    NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-````
-
-Shipped with `jakarta.xml.bind:jakarta.xml.bind-api`:
-
-````text
-[//]: # " Copyright (c) 2018, 2024 Oracle and/or its affiliates. All rights reserved. "
-[//]: # "  "
-[//]: # " This program and the accompanying materials are made available under the "
-[//]: # " terms of the Eclipse Distribution License v. 1.0, which is available at "
-[//]: # " http://www.eclipse.org/org/documents/edl-v10.php. "
-[//]: # "  "
-[//]: # " SPDX-License-Identifier: BSD-3-Clause "
-
-# Notices for Jakarta XML Binding
-
-This content is produced and maintained by the Jakarta XML Binding project.
-
-* Project home: https://projects.eclipse.org/projects/ee4j.jaxb
-
-## Trademarks
-
-Jakarta XML Binding™ is a trademark of the Eclipse Foundation.
-
-## Copyright
-
-All content is the property of the respective authors or their employers. For
-more information regarding authorship of content, please consult the listed
-source code repository logs.
-
-## Declared Project Licenses
-
-This program and the accompanying materials are made available under the terms
-of the Eclipse Distribution License v1.0 which is available at
-https://www.eclipse.org/org/documents/edl-v10.php.
-
-SPDX-License-Identifier: BSD-3-Clause
-
-## Source Code
-
-The project maintains the following source code repositories:
-
-* https://github.com/jakartaee/jaxb-api
-* https://github.com/jakartaee/jaxb-tck
-
-## Cryptography
-
-Content may contain encryption software. The country in which you are currently
-may have restrictions on the import, possession, and use, and/or re-export to
-another country, of encryption software. BEFORE using any encryption software,
-please check the country's laws, regulations and policies concerning the import,
-possession, or use, and re-export of encryption software, to see if this is
-permitted.
-````
-
 Shipped with `org.apache.commons:commons-collections4`:
 
 ````text
 Apache Commons Collections
-Copyright 2001-2025 The Apache Software Foundation
+Copyright 2001-2026 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
@@ -5108,7 +5030,7 @@ Shipped with `org.apache.pdfbox:fontbox`:
 
 ````text
 Apache FontBox
-Copyright 2008-2025 The Apache Software Foundation
+Copyright 2008-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -5357,7 +5279,7 @@ Apache FontBox is based on contributions made to the original FontBox project:
     OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
     SUCH DAMAGE.
 
-Lohit-Bengali, Lohit-Devanagari, Lohit-Gujarati fonts (https://pagure.io/lohit):
+Lohit fonts (https://pagure.io/lohit):
 
     Copyright 2011-15 Lohit Fonts Project contributors
 
@@ -5458,269 +5380,24 @@ FoglihtenNo07 font Copyright 2011-2024 Grzegorz Luk
 https://www.glukfonts.pl/font.php?l=de&font=FoglihtenNo07
 
 SIL Open Font License, see above
+
+Josefin Sans fonts (https://fonts.google.com/specimen/Josefin+Sans)
+
+Copyright 2010 The Josefin Sans Project Authors (https://github.com/ThomasJockin/JosefinSansFont-master),
+with Reserved Font Name "Josefin Sans".
+
+SIL Open Font License, see above
 ````
 
 Shipped with `org.apache.pdfbox:jbig2-imageio`:
 
 ````text
 PDFBox JBIG2 ImageIO plugin
-Copyright 2022 The Apache Software Foundation
+Copyright 2026 The Apache Software Foundation
+
 
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
-````
-
-Shipped with `org.apache.pdfbox:jempbox`:
-
-````text
-Apache JempBox
-Copyright 2008-2022 The Apache Software Foundation
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
-
-
-Based on source code contributed to the original JempBox project.
-Copyright (c) 2006-2007, www.jempbox.org
-````
-
-Shipped with `org.apache.pdfbox:jempbox`:
-
-````text
-Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
-
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
-
-   1. Definitions.
-
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
-
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
-
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
-
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
-
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
-
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
-
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
-
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
-
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
-
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
-
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
-
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
-
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
-
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
-
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
-
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
-
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
-
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
-
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
-
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
-
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
-
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
-
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
-
-   END OF TERMS AND CONDITIONS
-
-   APPENDIX: How to apply the Apache License to your work.
-
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
-
-   Copyright [yyyy] [name of copyright owner]
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-
-CONTRIBUTIONS TO THE ORIGINAL CODEBASE
-
-Apache JempBox is based on contributions made to the original JempBox project:
-
-   Copyright (c) 2006-2007, www.jempbox.org
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions are met:
-
-   1. Redistributions of source code must retain the above copyright notice,
-      this list of conditions and the following disclaimer.
-
-   2. Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-
-   3. Neither the name of fontbox; nor the names of its contributors may be
-      used to endorse or promote products derived from this software without
-      specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-   ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
-   FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-   DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-   SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-   CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
-   OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
-   SUCH DAMAGE.
 ````
 
 Shipped with `org.apache.pdfbox:pdfbox`:
@@ -6786,13 +6463,108 @@ CMYK ICC Profile  (https://github.com/saucecontrol/Compact-ICC-Profiles):
     
     For more information, please see
     http://creativecommons.org/publicdomain/zero/1.0/
+
+
+Noto Sans Devanagari font (https://fonts.google.com/noto/specimen/Noto+Sans+Devanagari):
+
+    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/devanagari)
+
+    This Font Software is licensed under the SIL Open Font License, Version 1.1 .
+    This license is copied below, and is also available with a FAQ at: https://openfontlicense.org
+
+    -----------------------------------------------------------
+    SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+    -----------------------------------------------------------
+
+    PREAMBLE
+    The goals of the Open Font License (OFL) are to stimulate worldwide
+    development of collaborative font projects, to support the font creation
+    efforts of academic and linguistic communities, and to provide a free and
+    open framework in which fonts may be shared and improved in partnership
+    with others.
+
+    The OFL allows the licensed fonts to be used, studied, modified and
+    redistributed freely as long as they are not sold by themselves. The
+    fonts, including any derivative works, can be bundled, embedded, 
+    redistributed and/or sold with any software provided that any reserved
+    names are not used by derivative works. The fonts and derivatives,
+    however, cannot be released under any other type of license. The
+    requirement for fonts to remain under this license does not apply
+    to any document created using the fonts or their derivatives.
+
+    DEFINITIONS
+    "Font Software" refers to the set of files released by the Copyright
+    Holder(s) under this license and clearly marked as such. This may
+    include source files, build scripts and documentation.
+
+    "Reserved Font Name" refers to any names specified as such after the
+    copyright statement(s).
+
+    "Original Version" refers to the collection of Font Software components as
+    distributed by the Copyright Holder(s).
+
+    "Modified Version" refers to any derivative made by adding to, deleting,
+    or substituting -- in part or in whole -- any of the components of the
+    Original Version, by changing formats or by porting the Font Software to a
+    new environment.
+
+    "Author" refers to any designer, engineer, programmer, technical
+    writer or other person who contributed to the Font Software.
+
+    PERMISSION & CONDITIONS
+    Permission is hereby granted, free of charge, to any person obtaining
+    a copy of the Font Software, to use, study, copy, merge, embed, modify,
+    redistribute, and sell modified and unmodified copies of the Font
+    Software, subject to the following conditions:
+
+    1) Neither the Font Software nor any of its individual components,
+    in Original or Modified Versions, may be sold by itself.
+
+    2) Original or Modified Versions of the Font Software may be bundled,
+    redistributed and/or sold with any software, provided that each copy
+    contains the above copyright notice and this license. These can be
+    included either as stand-alone text files, human-readable headers or
+    in the appropriate machine-readable metadata fields within text or
+    binary files as long as those fields can be easily viewed by the user.
+
+    3) No Modified Version of the Font Software may use the Reserved Font
+    Name(s) unless explicit written permission is granted by the corresponding
+    Copyright Holder. This restriction only applies to the primary font name as
+    presented to the users.
+
+    4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+    Software shall not be used to promote, endorse or advertise any
+    Modified Version, except to acknowledge the contribution(s) of the
+    Copyright Holder(s) and the Author(s) or with their explicit written
+    permission.
+
+    5) The Font Software, modified or unmodified, in part or in whole,
+    must be distributed entirely under this license, and must not be
+    distributed under any other license. The requirement for fonts to
+    remain under this license does not apply to any document created
+    using the Font Software.
+
+    TERMINATION
+    This license becomes null and void if any of the above conditions are
+    not met.
+
+    DISCLAIMER
+    THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+    OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+    COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+    INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+    DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+    OTHER DEALINGS IN THE FONT SOFTWARE.
 ````
 
 Shipped with `org.apache.pdfbox:pdfbox`:
 
 ````text
 Apache PDFBox
-Copyright 2002-2025 The Apache Software Foundation
+Copyright 2002-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -6821,7 +6593,7 @@ Shipped with `org.apache.pdfbox:pdfbox-io`:
 
 ````text
 Apache PDFBox io
-Copyright 2002-2025 The Apache Software Foundation
+Copyright 2002-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -6832,25 +6604,14 @@ Shipped with `org.apache.pdfbox:pdfbox-tools`:
 
 ````text
 Apache PDFBox tools
-Copyright 2002-2025 The Apache Software Foundation
+Copyright 2002-2026 The Apache Software Foundation
 
 
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
 ````
 
-Shipped with `org.apache.pdfbox:xmpbox`:
-
-````text
-Apache XmpBox
-Copyright 2002-2025 The Apache Software Foundation
-
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
-````
-
-Shipped with `org.apache.poi:poi`, `org.apache.poi:poi-ooxml`, `org.apache.poi:poi-ooxml-lite`, `org.apache.poi:poi-scratchpad`:
+Shipped with `org.apache.poi:poi`, `org.apache.poi:poi-ooxml`, `org.apache.poi:poi-scratchpad`:
 
 ````text
 Apache License
@@ -7122,7 +6883,7 @@ Copyright © 2015-2021 the original authors.
 The wrapper.gradle file was developed by the Apache Kafka project and is released under the Apache License, v2.0.
 ````
 
-Shipped with `org.apache.poi:poi`, `org.apache.poi:poi-ooxml`, `org.apache.poi:poi-ooxml-lite`, `org.apache.poi:poi-scratchpad`:
+Shipped with `org.apache.poi:poi`, `org.apache.poi:poi-ooxml`, `org.apache.poi:poi-scratchpad`:
 
 ````text
 Apache POI
@@ -7431,7 +7192,51 @@ Shipped with `org.apache.tika:tika-core`:
 
 ````text
 Apache Tika core
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+Shipped with `org.apache.tika:tika-encoding-detector-html`:
+
+````text
+Apache Tika HTML encoding detector
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+Shipped with `org.apache.tika:tika-encoding-detector-mojibuster`:
+
+````text
+Apache Tika ML charset encoding detector
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+Shipped with `org.apache.tika:tika-ml-core`:
+
+````text
+Apache Tika ML core (no Tika dependencies)
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+Shipped with `org.apache.tika:tika-ml-junkdetect`:
+
+````text
+Apache Tika ML junk detector — runtime and training tools
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7442,7 +7247,7 @@ Shipped with `org.apache.tika:tika-parser-apple-module`:
 
 ````text
 Apache Tika Apple parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7453,7 +7258,7 @@ Shipped with `org.apache.tika:tika-parser-audiovideo-module`:
 
 ````text
 Apache Tika audiovideo parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7464,7 +7269,7 @@ Shipped with `org.apache.tika:tika-parser-cad-module`:
 
 ````text
 Apache Tika cad parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7475,7 +7280,7 @@ Shipped with `org.apache.tika:tika-parser-code-module`:
 
 ````text
 Apache Tika code parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7486,7 +7291,18 @@ Shipped with `org.apache.tika:tika-parser-crypto-module`:
 
 ````text
 Apache Tika crypto parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+Shipped with `org.apache.tika:tika-parser-datauri-commons`:
+
+````text
+Apache Tika data URI commons
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7497,7 +7313,7 @@ Shipped with `org.apache.tika:tika-parser-digest-commons`:
 
 ````text
 Apache Tika digest commons
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7508,7 +7324,7 @@ Shipped with `org.apache.tika:tika-parser-font-module`:
 
 ````text
 Apache Tika font parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7519,7 +7335,7 @@ Shipped with `org.apache.tika:tika-parser-html-module`:
 
 ````text
 Apache Tika html parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7530,7 +7346,7 @@ Shipped with `org.apache.tika:tika-parser-image-module`:
 
 ````text
 Apache Tika image parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7550,7 +7366,7 @@ Shipped with `org.apache.tika:tika-parser-mail-commons`:
 
 ````text
 Apache Tika mail commons
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7561,7 +7377,7 @@ Shipped with `org.apache.tika:tika-parser-mail-module`:
 
 ````text
 Apache Tika mail parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7572,7 +7388,7 @@ Shipped with `org.apache.tika:tika-parser-microsoft-module`:
 
 ````text
 Apache Tika Microsoft parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7583,7 +7399,7 @@ Shipped with `org.apache.tika:tika-parser-miscoffice-module`:
 
 ````text
 Apache Tika miscellaneous office format parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7594,7 +7410,7 @@ Shipped with `org.apache.tika:tika-parser-news-module`:
 
 ````text
 Apache Tika news parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7605,7 +7421,7 @@ Shipped with `org.apache.tika:tika-parser-ocr-module`:
 
 ````text
 Apache Tika OCR parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7616,7 +7432,7 @@ Shipped with `org.apache.tika:tika-parser-pdf-module`:
 
 ````text
 Apache Tika PDF parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7627,7 +7443,7 @@ Shipped with `org.apache.tika:tika-parser-pkg-module`:
 
 ````text
 Apache Tika package parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7638,7 +7454,7 @@ Shipped with `org.apache.tika:tika-parser-text-module`:
 
 ````text
 Apache Tika text parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7649,7 +7465,7 @@ Shipped with `org.apache.tika:tika-parser-webarchive-module`:
 
 ````text
 Apache Tika WARC parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7660,7 +7476,7 @@ Shipped with `org.apache.tika:tika-parser-xml-module`:
 
 ````text
 Apache Tika XML parser module
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7671,7 +7487,7 @@ Shipped with `org.apache.tika:tika-parser-xmp-commons`:
 
 ````text
 Apache Tika XMP commons
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -7682,18 +7498,7 @@ Shipped with `org.apache.tika:tika-parser-zip-commons`:
 
 ````text
 Apache Tika ZIP commons
-Copyright 2007-2025 The Apache Software Foundation
-
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
-````
-
-Shipped with `org.apache.tika:tika-parsers-standard-package`:
-
-````text
-Apache Tika standard parser package
-Copyright 2007-2025 The Apache Software Foundation
+Copyright 2007-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -8005,6 +7810,54 @@ than GPL and consequently W3C software may be distributed in GPL packages. See t
 for the policy prior to this date. Please see our Copyright FAQ for common questions about using
 materials from our site, including specific terms and conditions for packages like libwww, Amaya, and
 Jigsaw. Other questions about this notice can be directed to site-policy@w3.org.
+````
+
+Shipped with `org.bouncycastle:bcjmail-jdk18on`, `org.bouncycastle:bcpkix-jdk18on`, `org.bouncycastle:bcprov-jdk18on`, `org.bouncycastle:bcutil-jdk18on`:
+
+````text
+MIT License (https://opensource.org/licenses/MIT)
+
+Copyright (c) 2000-2026 The Legion of the Bouncy Castle Inc. (https://www.bouncycastle.org).
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sub license, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions: The above copyright notice and this
+permission notice shall be included in all copies or substantial portions of the Software.
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
+````
+
+Shipped with `org.commonmark:commonmark`, `org.commonmark:commonmark-ext-gfm-strikethrough`, `org.commonmark:commonmark-ext-gfm-tables`:
+
+````text
+Copyright (c) 2015, Atlassian Pty Ltd
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
 Shipped with `org.eclipse.angus:angus-activation`:
@@ -8752,234 +8605,6 @@ possession, or use, and re-export of encryption software, to see if this is
 permitted.
 ````
 
-Shipped with `org.glassfish.jaxb:jaxb-core`, `org.glassfish.jaxb:jaxb-runtime`, `org.glassfish.jaxb:txw2`:
-
-````text
-# Notices for Eclipse Implementation of JAXB
-
-This content is produced and maintained by the Eclipse Implementation of JAXB
-project.
-
-* Project home: https://projects.eclipse.org/projects/ee4j.jaxb-impl
-
-## Trademarks
-
-Eclipse Implementation of JAXB is a trademark of the Eclipse Foundation.
-
-## Copyright
-
-All content is the property of the respective authors or their employers. For
-more information regarding authorship of content, please consult the listed
-source code repository logs.
-
-## Declared Project Licenses
-
-This program and the accompanying materials are made available under the terms
-of the Eclipse Distribution License v. 1.0 which is available at
-http://www.eclipse.org/org/documents/edl-v10.php.
-
-SPDX-License-Identifier: BSD-3-Clause
-
-## Source Code
-
-The project maintains the following source code repositories:
-
-* https://github.com/eclipse-ee4j/jaxb-ri
-* https://github.com/eclipse-ee4j/jaxb-istack-commons
-* https://github.com/eclipse-ee4j/jaxb-dtd-parser
-* https://github.com/eclipse-ee4j/jaxb-fi
-* https://github.com/eclipse-ee4j/jaxb-stax-ex
-* https://github.com/eclipse-ee4j/jax-rpc-ri
-
-## Third-party Content
-
-This project leverages the following third party content.
-
-Apache Ant (1.10.2)
-
-* License: Apache-2.0 AND W3C AND LicenseRef-Public-Domain
-
-Apache Ant (1.10.2)
-
-* License: Apache-2.0 AND W3C AND LicenseRef-Public-Domain
-
-Apache Felix (1.2.0)
-
-* License: Apache License, 2.0
-
-args4j (2.33)
-
-* License: MIT License
-
-dom4j (1.6.1)
-
-* License: Custom license based on Apache 1.1
-
-file-management (3.0.0)
-
-* License: Apache-2.0
-* Project: https://maven.apache.org/shared/file-management/
-* Source:
-   https://svn.apache.org/viewvc/maven/shared/tags/file-management-3.0.0/
-
-JUnit (4.12)
-
-* License: Eclipse Public License
-
-JUnit (4.12)
-
-* License: Eclipse Public License
-
-maven-compat (3.5.2)
-
-* License: Apache-2.0
-* Project: https://maven.apache.org/ref/3.5.2/maven-compat/
-* Source:
-   https://mvnrepository.com/artifact/org.apache.maven/maven-compat/3.5.2
-
-maven-core (3.5.2)
-
-* License: Apache-2.0
-* Project: https://maven.apache.org/ref/3.5.2/maven-core/index.html
-* Source: https://mvnrepository.com/artifact/org.apache.maven/maven-core/3.5.2
-
-maven-plugin-annotations (3.5)
-
-* License: Apache-2.0
-* Project: https://maven.apache.org/plugin-tools/maven-plugin-annotations/
-* Source:
-   https://github.com/apache/maven-plugin-tools/tree/master/maven-plugin-annotations
-
-maven-plugin-api (3.5.2)
-
-* License: Apache-2.0
-
-maven-resolver-api (1.1.1)
-
-* License: Apache-2.0
-
-maven-resolver-api (1.1.1)
-
-* License: Apache-2.0
-
-maven-resolver-connector-basic (1.1.1)
-
-* License: Apache-2.0
-
-maven-resolver-impl (1.1.1)
-
-* License: Apache-2.0
-
-maven-resolver-spi (1.1.1)
-
-* License: Apache-2.0
-
-maven-resolver-transport-file (1.1.1)
-
-* License: Apache-2.0
-* Project: https://maven.apache.org/resolver/maven-resolver-transport-file/
-* Source:
-   https://github.com/apache/maven-resolver/tree/master/maven-resolver-transport-file
-
-maven-resolver-util (1.1.1)
-
-* License: Apache-2.0
-
-maven-settings (3.5.2)
-
-* License: Apache-2.0
-* Source:
-   https://mvnrepository.com/artifact/org.apache.maven/maven-settings/3.5.2
-
-OSGi Service Platform Core Companion Code (6.0)
-
-* License: Apache License, 2.0
-
-plexus-archiver (3.5)
-
-* License: Apache-2.0
-* Project: https://codehaus-plexus.github.io/plexus-archiver/
-* Source: https://github.com/codehaus-plexus/plexus-archiver
-
-plexus-io (3.0.0)
-
-* License: Apache-2.0
-
-plexus-utils (3.1.0)
-
-* License: Apache- 2.0 or Apache- 1.1 or BSD or Public Domain or Indiana
-   University Extreme! Lab Software License V1.1.1 (Apache 1.1 style)
-
-relaxng-datatype (1.0)
-
-* License: New BSD license
-
-Sax (0.2)
-
-* License: SAX-PD
-* Project: http://www.megginson.com/downloads/SAX/
-* Source: http://sourceforge.net/project/showfiles.php?group_id=29449
-
-testng (6.14.2)
-
-* License: Apache-2.0 AND (MIT OR GPL-1.0+)
-* Project: https://testng.org/doc/index.html
-* Source: https://github.com/cbeust/testng
-
-wagon-http-lightweight (3.0.0)
-
-* License: Pending
-* Project: https://maven.apache.org/wagon/
-* Source:
-   https://mvnrepository.com/artifact/org.apache.maven.wagon/wagon-http-lightweight/3.0.0
-
-xz for java (1.8)
-
-* License: LicenseRef-Public-Domain
-
-## Cryptography
-
-Content may contain encryption software. The country in which you are currently
-may have restrictions on the import, possession, and use, and/or re-export to
-another country, of encryption software. BEFORE using any encryption software,
-please check the country's laws, regulations and policies concerning the import,
-possession, or use, and re-export of encryption software, to see if this is
-permitted.
-````
-
-Shipped with `org.glassfish.jaxb:jaxb-core`, `org.glassfish.jaxb:jaxb-runtime`, `org.glassfish.jaxb:txw2`:
-
-````text
-Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-
-  - Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-
-  - Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
-  - Neither the name of the Eclipse Foundation, Inc. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-````
-
 Shipped with `org.jdom:jdom2`:
 
 ````text
@@ -9043,7 +8668,7 @@ Shipped with `org.jsoup:jsoup`:
 ````text
 The MIT License
 
-Copyright (c) 2009-2025 Jonathan Hedley <https://jsoup.org/>
+Copyright (c) 2009-2026 Jonathan Hedley <https://jsoup.org/>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -9064,7 +8689,214 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-Shipped with `org.slf4j:jcl-over-slf4j`, `org.slf4j:slf4j-api`, `org.slf4j:slf4j-nop`:
+Shipped with `org.slf4j:jcl-over-slf4j`:
+
+````text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+````
+
+Shipped with `org.slf4j:slf4j-api`:
+
+````text
+Copyright (c) 2004-2023 QOS.ch
+All rights reserved.
+
+Permission is hereby granted, free  of charge, to any person obtaining
+a  copy  of this  software  and  associated  documentation files  (the
+"Software"), to  deal in  the Software without  restriction, including
+without limitation  the rights to  use, copy, modify,  merge, publish,
+distribute,  sublicense, and/or sell  copies of  the Software,  and to
+permit persons to whom the Software  is furnished to do so, subject to
+the following conditions:
+
+The  above  copyright  notice  and  this permission  notice  shall  be
+included in all copies or substantial portions of the Software.
+
+THE  SOFTWARE IS  PROVIDED  "AS  IS", WITHOUT  WARRANTY  OF ANY  KIND,
+EXPRESS OR  IMPLIED, INCLUDING  BUT NOT LIMITED  TO THE  WARRANTIES OF
+MERCHANTABILITY,    FITNESS    FOR    A   PARTICULAR    PURPOSE    AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE,  ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+````
+
+Shipped with `org.slf4j:slf4j-nop`:
 
 ````text
 Copyright (c) 2004-2022 QOS.ch Sarl (Switzerland)

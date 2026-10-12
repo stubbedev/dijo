@@ -6,6 +6,7 @@ use quick_xml::Reader;
 use serde::Serialize;
 
 const PAGE_CLASSES: [&str; 2] = ["page", "slide-content"];
+const ARTIFACT_CLASS: &str = "artifact";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
@@ -29,6 +30,9 @@ pub struct Part {
     pub page: Option<u32>,
     pub element: Option<(ElementKind, Option<u8>)>,
     pub text: String,
+    /// The text of a page that the document marks as furniture rather than content, such as a
+    /// tagged PDF's running headers, footers and page numbers; empty for elements.
+    pub artifacts: String,
 }
 
 /// An element whose text is being collected, opened at `depth`.
@@ -48,6 +52,8 @@ struct Splitter<'e> {
     page: Option<(u32, usize)>,
     loose: String,
     element: Option<Open>,
+    artifact: Option<usize>,
+    artifacts: String,
 }
 
 fn element_kind(name: &str) -> Option<(ElementKind, Option<u8>)> {
@@ -67,17 +73,13 @@ fn is_block(name: &str) -> bool {
     )
 }
 
-fn is_page(start: &BytesStart) -> bool {
+fn is_div_of_class(start: &BytesStart, classes: &[&str]) -> bool {
     start.local_name().as_ref() == "div"
         && start
             .try_get_attribute("class")
             .ok()
             .flatten()
-            .is_some_and(|class| {
-                PAGE_CLASSES
-                    .iter()
-                    .any(|page| class.value.as_ref() == *page)
-            })
+            .is_some_and(|class| classes.iter().any(|name| class.value.as_ref() == *name))
 }
 
 fn end_line(text: &mut String) {
@@ -88,6 +90,9 @@ fn end_line(text: &mut String) {
 
 impl Splitter<'_> {
     fn current_text(&mut self) -> &mut String {
+        if self.artifact.is_some() {
+            return &mut self.artifacts;
+        }
         match &mut self.element {
             Some(open) => &mut open.text,
             None => &mut self.loose,
@@ -96,8 +101,9 @@ impl Splitter<'_> {
 
     fn flush_loose(&mut self) -> io::Result<()> {
         let text = std::mem::take(&mut self.loose);
-        let text = text.trim();
-        if text.is_empty() {
+        let artifacts = std::mem::take(&mut self.artifacts);
+        let (text, artifacts) = (text.trim(), artifacts.trim());
+        if text.is_empty() && artifacts.is_empty() {
             return Ok(());
         }
         let page = self.page.map(|(page, _)| page);
@@ -106,6 +112,7 @@ impl Splitter<'_> {
             page,
             element,
             text: text.to_string(),
+            artifacts: artifacts.to_string(),
         })
     }
 
@@ -119,6 +126,7 @@ impl Splitter<'_> {
                     page: self.page.map(|(page, _)| page),
                     element: Some((open.kind, open.level)),
                     text: text.to_string(),
+                    artifacts: String::new(),
                 })?;
             }
         }
@@ -135,7 +143,7 @@ impl Splitter<'_> {
         if !self.in_body {
             return Ok(());
         }
-        if self.page.is_none() && is_page(start) {
+        if self.page.is_none() && is_div_of_class(start, &PAGE_CLASSES) {
             self.flush_loose()?;
             self.pages_seen += 1;
             if empty {
@@ -146,6 +154,15 @@ impl Splitter<'_> {
         }
         if self.element.is_none() && is_block(name) {
             end_line(self.current_text());
+        }
+        if self.unit == Unit::Pages
+            && self.page.is_some()
+            && self.artifact.is_none()
+            && !empty
+            && is_div_of_class(start, &[ARTIFACT_CLASS])
+        {
+            self.artifact = Some(self.depth);
+            return Ok(());
         }
         if self.unit == Unit::Elements && self.element.is_none() && !empty {
             if let Some((kind, level)) = element_kind(name) {
@@ -188,8 +205,12 @@ impl Splitter<'_> {
                     page: self.page.map(|(page, _)| page),
                     element: Some((open.kind, open.level)),
                     text: text.to_string(),
+                    artifacts: String::new(),
                 })?;
             }
+        }
+        if self.artifact == Some(self.depth) {
+            self.artifact = None;
         }
         if self.page.is_some_and(|(_, depth)| depth == self.depth) {
             self.flush_loose()?;
@@ -261,6 +282,8 @@ pub fn split(
         page: None,
         loose: String::new(),
         element: None,
+        artifact: None,
+        artifacts: String::new(),
     };
     let mut buffer = Vec::new();
     loop {
@@ -379,14 +402,50 @@ mod tests {
                 Part {
                     page: Some(1),
                     element: None,
-                    text: "First & one\nSecond".to_string()
+                    text: "First & one\nSecond".to_string(),
+                    artifacts: String::new(),
                 },
                 Part {
                     page: Some(2),
                     element: None,
-                    text: "Head\na\tb\nc".to_string()
+                    text: "Head\na\tb\nc".to_string(),
+                    artifacts: String::new(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn artifacts_of_a_page_are_kept_apart_from_its_text() {
+        let xhtml = r#"<html><body>
+<div class="page"><h1>Part One</h1><p>Body</p>
+<div class="artifact"><p>Running title</p><p>Page 1</p></div></div>
+<div class="page"><p>More</p></div>
+</body></html>"#;
+        assert_eq!(
+            parts(xhtml, Unit::Pages),
+            [
+                Part {
+                    page: Some(1),
+                    element: None,
+                    text: "Part One\nBody".to_string(),
+                    artifacts: "Running title\nPage 1".to_string(),
+                },
+                Part {
+                    page: Some(2),
+                    element: None,
+                    text: "More".to_string(),
+                    artifacts: String::new(),
+                },
+            ]
+        );
+        let texts: Vec<_> = parts(xhtml, Unit::Elements)
+            .into_iter()
+            .map(|part| part.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["Part One", "Body", "Running title", "Page 1", "More"]
         );
     }
 
@@ -416,7 +475,8 @@ mod tests {
             [Part {
                 page: None,
                 element: None,
-                text: "Title\nloose words\nBody".to_string()
+                text: "Title\nloose words\nBody".to_string(),
+                artifacts: String::new(),
             }]
         );
         let kinds: Vec<_> = parts(xhtml, Unit::Elements)
@@ -440,6 +500,7 @@ mod tests {
         "</body>",
         "<div class=\"page\">",
         "<div class=\"slide-content\">",
+        "<div class=\"artifact\">",
         "</div>",
         "<p>",
         "</p>",

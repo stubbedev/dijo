@@ -1,15 +1,15 @@
 {
-    "csv:num_rows": [
+    "csv:num-rows": [
         "6"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.csv.TextAndCSVParser"
     ],
-    "csv:num_columns": [
+    "csv:num-columns": [
         "6"
     ],
     "Content-Encoding": [
-        "ISO-8859-1"
+        "windows-1252"
     ],
     "Content-Length": [
         "326"
@@ -18,12 +18,12 @@
         "comma"
     ],
     "Content-Type": [
-        "text/csv; charset=ISO-8859-1; delimiter=comma"
+        "text/csv; charset=windows-1252; delimiter=comma"
     ],
-    "X-TIKA:Parsed-By": [
+    "tk:parsed-by": [
         "org.apache.tika.parser.csv.TextAndCSVParser"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "table-multi-row-column-cells-actual.csv"
     ]
 }

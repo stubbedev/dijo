@@ -19,7 +19,9 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.PasswordProvider;
 import org.apache.tika.parser.pdf.PDFParserConfig;
-import org.apache.tika.parser.pdf.PDFParserConfig.OCR_STRATEGY;
+import org.apache.tika.parser.pages.PagesConfig;
+import org.apache.tika.parser.pages.TextPolicy;
+import org.apache.tika.renderer.RenderSettings;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.ContentHandlerDecorator;
 import org.apache.tika.sax.EmbeddedContentHandler;
@@ -54,7 +56,7 @@ final class TextLayerCheckingPdfParser implements Parser {
 
     private static final long MAX_PIXELS = 60_000_000L;
     private static final double POINTS_PER_INCH = 72;
-    private static final String OCR_IMAGE_TYPE = MediaType.image("ocr-png").toString();
+    private static final String OCR_IMAGE_TYPE = MediaType.image("png").toString();
 
     private final Parser pdf;
     private final Parser ocr;
@@ -74,22 +76,31 @@ final class TextLayerCheckingPdfParser implements Parser {
     }
 
     /** How pages are OCRed, fixed by the outermost PDF and kept for the PDFs inside it. */
-    private record PageOcr(PDFParserConfig.OCRStrategyAuto thresholds, int dpi, ImageType imageType) {
+    private record PageOcr(PagesConfig.Auto thresholds, int dpi, ImageType imageType) {
+
+        static PageOcr of(PagesConfig pages) {
+            final RenderSettings render = pages.getRender();
+            final ImageType imageType = switch (render.getImageType()) {
+                case GRAY -> ImageType.GRAY;
+                case RGB -> ImageType.RGB;
+            };
+            return new PageOcr(pages.getOcr().getAuto(), render.getDpi(), imageType);
+        }
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         final PDFParserConfig config = context.get(PDFParserConfig.class);
         final PageOcr enclosing = context.get(PageOcr.class);
-        final boolean auto = config != null && config.getOcrStrategy() == OCR_STRATEGY.AUTO;
+        final PagesConfig pages =
+                config == null ? null : PagesConfig.resolve(context, config.getPages());
+        final boolean auto = pages != null && pages.getText() == TextPolicy.AUTO;
         if (enclosing == null && !auto) {
             pdf.parse(stream, handler, metadata, context);
             return;
         }
-        final PageOcr pageOcr = enclosing != null ? enclosing : new PageOcr(
-                config.getOcrStrategyAuto(), config.getOcrDPI(),
-                config.getOcrImageType().getImageType());
+        final PageOcr pageOcr = enclosing != null ? enclosing : PageOcr.of(pages);
         try (TemporaryResources temporary = new TemporaryResources()) {
             final TikaInputStream input = TikaInputStream.get(stream, temporary, metadata);
             try (PageRenderer renderer =
@@ -97,14 +108,14 @@ final class TextLayerCheckingPdfParser implements Parser {
                 final PageChecker checker =
                         new PageChecker(handler, metadata, context, pageOcr, renderer, temporary);
                 if (enclosing == null) {
-                    config.setOcrStrategy(OCR_STRATEGY.NO_OCR);
+                    config.pages().setText(TextPolicy.EXTRACT);
                     context.set(PageOcr.class, pageOcr);
                 }
                 try {
                     pdf.parse(input, checker, metadata, context);
                 } finally {
                     if (enclosing == null) {
-                        config.setOcrStrategy(OCR_STRATEGY.AUTO);
+                        config.pages().setText(TextPolicy.AUTO);
                         context.set(PageOcr.class, null);
                     }
                 }
@@ -267,7 +278,7 @@ final class TextLayerCheckingPdfParser implements Parser {
             final int index = pageIndex++;
             final int glyphs = lastInt(PDF.CHARACTERS_PER_PAGE, index);
             final int unmapped = lastInt(PDF.UNMAPPED_UNICODE_CHARS_PER_PAGE, index);
-            final PDFParserConfig.OCRStrategyAuto thresholds = pageOcr.thresholds();
+            final PagesConfig.Auto thresholds = pageOcr.thresholds();
             if (glyphs <= thresholds.getTotalCharsPerPage()) {
                 text.replay(downstream);
                 final Recording ocrText = ocr(index);

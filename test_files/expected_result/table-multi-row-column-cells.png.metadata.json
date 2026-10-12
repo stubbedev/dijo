@@ -2,78 +2,75 @@
     "Content-Length": [
         "79808"
     ],
-    "Data BitsPerSample": [
+    "img:Data BitsPerSample": [
         "8 8 8"
     ],
-    "IHDR": [
+    "img:IHDR": [
         "width=1377, height=648, bitDepth=8, colorType=RGB, compressionMethod=deflate, filterMethod=adaptive, interlaceMethod=none"
     ],
     "tiff:ImageWidth": [
         "1377"
     ],
-    "imagereader:NumImages": [
+    "tk:num-images": [
         "1"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "table-multi-row-column-cells.png"
     ],
-    "Content-Type-Parser-Override": [
-        "image/ocr-png"
-    ],
-    "height": [
+    "img:height": [
         "648"
     ],
-    "Dimension PixelAspectRatio": [
+    "img:Dimension PixelAspectRatio": [
         "1.0"
     ],
     "Content-Type": [
         "image/png"
     ],
-    "Compression NumProgressiveScans": [
+    "img:Compression NumProgressiveScans": [
         "1"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.image.ImageParser",
         "ai.yobix.PreparingOcrParser"
     ],
-    "Data PlanarConfiguration": [
+    "img:Data PlanarConfiguration": [
         "PixelInterleaved"
     ],
-    "X-TIKA:Parsed-By": [
+    "tk:parsed-by": [
         "org.apache.tika.parser.image.ImageParser",
         "ai.yobix.PreparingOcrParser"
     ],
-    "Chroma BlackIsZero": [
+    "img:Chroma BlackIsZero": [
         "true"
     ],
     "tiff:BitsPerSample": [
         "8 8 8"
     ],
-    "Compression Lossless": [
+    "img:Compression Lossless": [
         "true"
     ],
-    "width": [
+    "img:width": [
         "1377"
     ],
-    "Dimension ImageOrientation": [
+    "img:Dimension ImageOrientation": [
         "Normal"
     ],
-    "Chroma NumChannels": [
+    "img:Chroma NumChannels": [
         "3"
     ],
-    "Data SampleFormat": [
+    "img:Data SampleFormat": [
         "UnsignedIntegral"
     ],
-    "Transparency Alpha": [
+    "img:Transparency Alpha": [
         "none"
     ],
     "tiff:ImageLength": [
         "648"
     ],
-    "Compression CompressionTypeName": [
+    "img:Compression CompressionTypeName": [
         "deflate"
     ],
-    "Chroma ColorSpaceType": [
+    "img:Chroma ColorSpaceType": [
         "RGB"
     ]
 }

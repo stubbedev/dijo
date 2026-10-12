@@ -2,6 +2,7 @@ package ai.yobix;
 
 import org.apache.commons.io.input.BoundedInputStream;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -40,11 +41,13 @@ final class EmlxParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         final long length = messageLength(stream);
-        message.parse(BoundedInputStream.builder().setInputStream(stream).setMaxCount(length)
-                .setPropagateClose(false).get(), handler, metadata, context);
+        try (TikaInputStream body = TikaInputStream.get(BoundedInputStream.builder()
+                .setInputStream(stream).setMaxCount(length).setPropagateClose(false).get())) {
+            message.parse(body, handler, metadata, context);
+        }
     }
 
     /** Reads the first line, the decimal length of the message that follows it. */

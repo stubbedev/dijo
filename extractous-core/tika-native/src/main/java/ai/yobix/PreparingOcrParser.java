@@ -10,6 +10,7 @@ import org.apache.tika.metadata.TikaPagedText;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.enricher.TextRecognizer;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.sax.BodyContentHandler;
@@ -32,29 +33,29 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Runs OCR on images made readable first: turned upright by their EXIF orientation and by the
- * skew of their text lines, and enlarged when their text is too small. Images that need none of
- * this go to tesseract untouched, as do images too large to decode safely and images Java cannot
- * decode (tesseract reads more formats than ImageIO). Each page of a multi-page TIFF is prepared
- * and read on its own, and becomes a page of the output.
+ * The text recognizer Tika's parsers hand images and rendered pages to: runs OCR on images made
+ * readable first, turned upright by their EXIF orientation and by the skew of their text lines,
+ * and enlarged when their text is too small. Images that need none of this go to tesseract
+ * untouched, as do images too large to decode safely and images Java cannot decode (tesseract
+ * reads more formats than ImageIO). Each page of a multi-page TIFF is prepared and read on its
+ * own, and becomes a page of the output.
  * <p>
  * With the automatic OCR language ({@link OcrConfig}), tesseract's orientation and script
  * detection runs first: the image is also turned by the quarter turns it finds, and read with a
  * model for the script it finds.
  */
-final class PreparingOcrParser implements Parser {
+final class PreparingOcrParser implements Parser, TextRecognizer {
 
     private static final long MAX_PIXELS = 60_000_000L;
     private static final Set<String> PAGED_FORMATS = Set.of("tif", "tiff");
 
-    private final Parser ocr;
+    private final TesseractOCRParser ocr;
     private final String tesseract;
 
-    PreparingOcrParser(Parser ocr) {
+    PreparingOcrParser(TesseractOCRParser ocr) {
         this.ocr = ocr;
-        this.tesseract = ocr instanceof TesseractOCRParser parser
-                ? parser.getTesseractPath() + "tesseract"
-                : "tesseract";
+        this.tesseract = ocr.getDefaultConfig().getTesseractPath()
+                + TesseractOCRParser.getTesseractProg();
     }
 
     @Override
@@ -63,7 +64,12 @@ final class PreparingOcrParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public boolean recognizesText(ParseContext context) {
+        return ocr.recognizesText(context);
+    }
+
+    @Override
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         final TesseractOCRConfig configured = context.get(TesseractOCRConfig.class);
         if (configured != null && configured.isSkipOcr()) {
@@ -154,7 +160,7 @@ final class PreparingOcrParser implements Parser {
             final Path analysed = upright == null || upright == image
                     ? original : write(upright, temporary);
             final ScriptDetection.Result detected =
-                    ScriptDetection.detect(tesseract, analysed, auto.getTimeoutSeconds());
+                    ScriptDetection.detect(tesseract, analysed, auto.getTimeoutMillis());
             language = ScriptDetection.language(tesseract, detected.script());
             if (upright != null && detected.clockwiseQuarterTurns() != 0) {
                 upright = OcrImages.turnClockwise(upright, detected.clockwiseQuarterTurns());

@@ -245,6 +245,10 @@
         "footer": {
           "type": "string",
           "description": "The running footer taken out of this page's text, such as a page number: a last line that recurs on most pages."
+        },
+        "artifacts": {
+          "type": "string",
+          "description": "The text the document marks as furniture of this page rather than content, such as a tagged PDF's running headers, footers and page numbers, taken out of this page's text."
         }
       }
     },

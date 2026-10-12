@@ -90,25 +90,34 @@ pub struct ExtractionError {
     pub location: Option<String>,
 }
 
-const RECORDED_EXCEPTION_PREFIX: &str = "X-TIKA:EXCEPTION:";
-const EMBEDDED_EXCEPTION_KEYS: [&str; 2] = ["embedded_exception", "embedded_stream_exception"];
+const EMBEDDED_DOCUMENT: &str = "embedded document";
+
+/// The keys under which Tika records a failure it recovered from instead of failing the parse,
+/// each with where the failure lay when that was not the document itself.
+const RECORDED_FAILURES: [(&str, Option<&str>); 6] = [
+    ("tk:exception:container-exception", None),
+    (
+        "tk:exception:embedded-bytes-exception",
+        Some(EMBEDDED_DOCUMENT),
+    ),
+    ("tk:exception:embedded-exception", Some(EMBEDDED_DOCUMENT)),
+    (
+        "tk:exception:embedded-stream-exception",
+        Some(EMBEDDED_DOCUMENT),
+    ),
+    ("tk:exception:embedded-warning", Some(EMBEDDED_DOCUMENT)),
+    ("tk:exception:warn", None),
+];
 
 /// Failures Tika recovered from and recorded in the metadata instead of failing the parse, such
 /// as an embedded document that could not be read or a damaged PDF page.
 pub fn recorded_failures(metadata: &Metadata) -> Vec<ExtractionError> {
-    let mut keys: Vec<&String> = metadata
-        .keys()
-        .filter(|key| key.starts_with(RECORDED_EXCEPTION_PREFIX))
-        .collect();
-    keys.sort();
-    keys.into_iter()
-        .flat_map(|key| {
-            let kind = &key[RECORDED_EXCEPTION_PREFIX.len()..];
-            let location = EMBEDDED_EXCEPTION_KEYS
-                .contains(&kind)
-                .then(|| "embedded document".to_string());
-            metadata[key].iter().map(move |trace| ExtractionError {
-                location: location.clone(),
+    RECORDED_FAILURES
+        .iter()
+        .filter_map(|(key, location)| metadata.get(*key).map(|traces| (traces, location)))
+        .flat_map(|(traces, location)| {
+            traces.iter().map(move |trace| ExtractionError {
+                location: location.map(str::to_string),
                 ..ExtractionError::from_message(summarize_stack_trace(trace))
             })
         })
@@ -428,11 +437,12 @@ mod tests {
                      Caused by: java.io.IOException: Truncated ZIP file\n\
                      \t... 12 more\n";
         let failures = recorded_failures(&metadata(&[
-            ("X-TIKA:EXCEPTION:embedded_exception", &[trace]),
+            ("tk:exception:embedded-exception", &[trace]),
             (
-                "X-TIKA:Parsed-By",
-                &["org.apache.tika.parser.DefaultParser"],
+                "tk:exception:embedded-parser",
+                &["org.apache.tika.parser.pkg.ZipParser"],
             ),
+            ("tk:parsed-by", &["org.apache.tika.parser.DefaultParser"]),
         ]));
         assert_eq!(
             failures,

@@ -8,13 +8,13 @@
     "Content-Type": [
         "application/vnd.oasis.opendocument.text"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "simple.odt"
     ],
-    "X-TIKA:Parsed-By": [
+    "tk:parsed-by": [
         "org.apache.tika.parser.odf.OpenDocumentParser"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.odf.OpenDocumentParser"
     ],
     "dcterms:modified": [

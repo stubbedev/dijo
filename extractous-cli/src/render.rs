@@ -36,8 +36,14 @@ impl RenderOptions {
     }
 }
 
-/// Where a part sits in its document: its page, and its element in elements output.
-type PartPlace = (Option<u32>, Option<(ElementKind, Option<u8>)>);
+/// Where a part sits in its document, and the page furniture taken out of its text.
+struct PartPlace {
+    page: Option<u32>,
+    element: Option<(ElementKind, Option<u8>)>,
+    /// The text the document marks as furniture of the page, such as a tagged PDF's running
+    /// headers and footers, when running headers and footers are moved out.
+    artifacts: Option<String>,
+}
 
 /// What extracting one document produced besides the output written to the sink.
 #[derive(Debug)]
@@ -283,6 +289,8 @@ struct PartRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     footer: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    artifacts: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     detected_language: Option<DetectedLanguage>,
 }
 
@@ -304,8 +312,14 @@ fn render_parts(
     let (outcome, metadata) = match opened {
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
-            let mut emit = |(page, element): PartPlace, part: running::Page| {
-                sample.push(part.text.as_bytes());
+            let mut emit = |place: PartPlace, part: running::Page| {
+                let PartPlace {
+                    page,
+                    element,
+                    artifacts,
+                } = place;
+                let text = part.text;
+                sample.push(text.as_bytes());
                 sample.push(b"\n");
                 let record = PartRecord {
                     schema_version: SCHEMA_VERSION,
@@ -318,12 +332,13 @@ fn render_parts(
                     element: element.map(|(kind, _)| kind),
                     level: element.and_then(|(_, level)| level),
                     detected_language: match unit {
-                        Unit::Pages => language::detect(&part.text),
+                        Unit::Pages => language::detect(&text),
                         Unit::Elements => None,
                     },
-                    text: &part.text,
+                    text: &text,
                     header: part.header.as_deref(),
                     footer: part.footer.as_deref(),
+                    artifacts: artifacts.as_deref(),
                 };
                 serde_json::to_writer(&mut *sink, &record)?;
                 sink.write_all(b"\n")
@@ -402,18 +417,28 @@ fn split_parts(
     emit: &mut dyn FnMut(PartPlace, running::Page) -> io::Result<()>,
 ) -> io::Result<Copied> {
     let mut bytes = 0;
-    let mut running = RunningLines::new(
-        emit,
-        unit == Unit::Pages && options.normalization.contains(Step::Headers),
-    );
+    let headers = unit == Unit::Pages && options.normalization.contains(Step::Headers);
+    let mut running = RunningLines::new(emit, headers);
     let split = structure::split(stream, unit, &mut |part| {
-        bytes += part.text.len() as u64;
-        let text = normalize::normalize(options.normalization, &part.text);
+        bytes += (part.text.len() + part.artifacts.len()) as u64;
+        let mut text = normalize::normalize(options.normalization, &part.text);
+        let mut artifacts = normalize::normalize(options.normalization, &part.artifacts);
+        if !headers && !artifacts.is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&std::mem::take(&mut artifacts));
+        }
         let placement = match part.page {
             Some(_) => Placement::Page,
             None => Placement::Loose,
         };
-        running.push((part.page, part.element), text, placement)
+        let place = PartPlace {
+            page: part.page,
+            element: part.element,
+            artifacts: (!artifacts.is_empty()).then_some(artifacts),
+        };
+        running.push(place, text, placement)
     })?;
     running.finish()?;
     Ok(Copied {

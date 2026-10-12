@@ -29,8 +29,9 @@
     "dc:title": [
         "Slide 1"
     ],
-    "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
+    "tk:parsed-by": [
+        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
+        "org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor"
     ],
     "custom:Slides": [
         "41"
@@ -41,7 +42,7 @@
     "meta:paragraph-count": [
         "690"
     ],
-    "X-TIKA:Parsed-By-Full-Set": [
+    "tk:parsed-by-full-set": [
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
         "org.apache.tika.parser.image.ImageParser",
         "ai.yobix.PreparingOcrParser"
@@ -67,13 +68,10 @@
     "custom:PresentationFormat": [
         "On-screen Show (4:3)"
     ],
-    "resourceName": [
+    "tk:resource-name": [
         "science-exploration-1p.pptx"
     ],
-    "extended-properties:Template": [
-        ""
-    ],
-    "extended-properties:DocSecurityString": [
+    "extended-properties:doc-security-string": [
         "None"
     ]
 }

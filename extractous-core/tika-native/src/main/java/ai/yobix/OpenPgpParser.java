@@ -1,6 +1,7 @@
 package ai.yobix;
 
 import org.apache.tika.exception.EncryptedDocumentException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -24,7 +25,7 @@ final class OpenPgpParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws EncryptedDocumentException {
         throw new EncryptedDocumentException(
                 "OpenPGP-encrypted data; decrypting it needs the recipient's private key");

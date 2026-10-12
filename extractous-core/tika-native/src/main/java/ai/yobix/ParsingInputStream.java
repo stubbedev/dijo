@@ -1,6 +1,7 @@
 package ai.yobix;
 
 import org.apache.tika.exception.ZeroByteFileException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
@@ -57,7 +58,7 @@ public class ParsingInputStream extends InputStream {
     /**
      * @param timeoutMillis how long, from now, reads may wait for text; 0 for no limit
      */
-    public ParsingInputStream(Parser parser, InputStream stream, Metadata metadata,
+    public ParsingInputStream(Parser parser, TikaInputStream stream, Metadata metadata,
                               ParseContext context, boolean outputXml, Charset charset,
                               long timeoutMillis, EmbeddedSpooler spooler)
             throws IOException {
@@ -74,7 +75,7 @@ public class ParsingInputStream extends InputStream {
         }
     }
 
-    private void parse(Parser parser, InputStream stream, Metadata metadata, ParseContext context,
+    private void parse(Parser parser, TikaInputStream stream, Metadata metadata, ParseContext context,
                        boolean outputXml, Charset charset) {
         synchronized (parseLock) {
             if (closed) {

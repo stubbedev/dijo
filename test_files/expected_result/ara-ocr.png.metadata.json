@@ -1,93 +1,90 @@
 {
-  "Dimension PixelAspectRatio": [
-    "1.0"
-  ],
-  "Data PlanarConfiguration": [
-    "PixelInterleaved"
-  ],
-  "height": [
-    "779"
-  ],
-  "Data BitsPerSample": [
-    "8 8 8 8"
-  ],
-  "resourceName": [
-    "ara-ocr.png"
-  ],
-  "tEXt tEXtEntry": [
-    "keyword=Software, value=gnome-screenshot",
-    "keyword=Creation Time, value=Mon 04 Nov 2024 10:16:25 AM CET"
-  ],
-  "Data SignificantBitsPerSample": [
-    "8 8 8 8"
-  ],
-  "Dimension ImageOrientation": [
-    "Normal"
-  ],
-  "IHDR": [
-    "width=842, height=779, bitDepth=8, colorType=RGBAlpha, compressionMethod=deflate, filterMethod=adaptive, interlaceMethod=none"
-  ],
-  "X-TIKA:Parsed-By-Full-Set": [
-    "org.apache.tika.parser.image.ImageParser",
-    "ai.yobix.PreparingOcrParser"
-  ],
-  "Compression Lossless": [
-    "true"
-  ],
-  "tiff:ImageWidth": [
-    "842"
-  ],
-  "tiff:ImageLength": [
-    "779"
-  ],
-  "sBIT sBIT_RGBAlpha": [
-    "red=8, green=8, blue=8, alpha=8"
-  ],
-  "Content-Type": [
-    "image/png"
-  ],
-  "imagereader:NumImages": [
-    "1"
-  ],
-  "Content-Length": [
-    "209350"
-  ],
-  "Text TextEntry": [
-    "keyword=Software, value=gnome-screenshot, encoding=ISO-8859-1, compression=none",
-    "keyword=Creation Time, value=Mon 04 Nov 2024 10:16:25 AM CET, encoding=ISO-8859-1, compression=none"
-  ],
-  "Chroma ColorSpaceType": [
-    "RGB"
-  ],
-  "tiff:BitsPerSample": [
-    "8 8 8 8"
-  ],
-  "Compression CompressionTypeName": [
-    "deflate"
-  ],
-  "Chroma NumChannels": [
-    "4"
-  ],
-  "Chroma BlackIsZero": [
-    "true"
-  ],
-  "width": [
-    "842"
-  ],
-  "Compression NumProgressiveScans": [
-    "1"
-  ],
-  "Data SampleFormat": [
-    "UnsignedIntegral"
-  ],
-  "Transparency Alpha": [
-    "nonpremultipled"
-  ],
-  "Content-Type-Parser-Override": [
-    "image/ocr-png"
-  ],
-  "X-TIKA:Parsed-By": [
-    "org.apache.tika.parser.image.ImageParser",
-    "ai.yobix.PreparingOcrParser"
-  ]
+    "img:Dimension PixelAspectRatio": [
+        "1.0"
+    ],
+    "img:Data PlanarConfiguration": [
+        "PixelInterleaved"
+    ],
+    "img:height": [
+        "779"
+    ],
+    "img:Data BitsPerSample": [
+        "8 8 8 8"
+    ],
+    "tk:resource-name": [
+        "ara-ocr.png"
+    ],
+    "img:tEXt tEXtEntry": [
+        "keyword=Software, value=gnome-screenshot",
+        "keyword=Creation Time, value=Mon 04 Nov 2024 10:16:25 AM CET"
+    ],
+    "img:Data SignificantBitsPerSample": [
+        "8 8 8 8"
+    ],
+    "img:Dimension ImageOrientation": [
+        "Normal"
+    ],
+    "img:IHDR": [
+        "width=842, height=779, bitDepth=8, colorType=RGBAlpha, compressionMethod=deflate, filterMethod=adaptive, interlaceMethod=none"
+    ],
+    "tk:parsed-by-full-set": [
+        "org.apache.tika.parser.image.ImageParser",
+        "ai.yobix.PreparingOcrParser"
+    ],
+    "img:Compression Lossless": [
+        "true"
+    ],
+    "tiff:ImageWidth": [
+        "842"
+    ],
+    "tiff:ImageLength": [
+        "779"
+    ],
+    "img:sBIT sBIT_RGBAlpha": [
+        "red=8, green=8, blue=8, alpha=8"
+    ],
+    "Content-Type": [
+        "image/png"
+    ],
+    "tk:num-images": [
+        "1"
+    ],
+    "Content-Length": [
+        "209350"
+    ],
+    "img:Text TextEntry": [
+        "keyword=Software, value=gnome-screenshot, encoding=ISO-8859-1, compression=none",
+        "keyword=Creation Time, value=Mon 04 Nov 2024 10:16:25 AM CET, encoding=ISO-8859-1, compression=none"
+    ],
+    "img:Chroma ColorSpaceType": [
+        "RGB"
+    ],
+    "tiff:BitsPerSample": [
+        "8 8 8 8"
+    ],
+    "img:Compression CompressionTypeName": [
+        "deflate"
+    ],
+    "img:Chroma NumChannels": [
+        "4"
+    ],
+    "img:Chroma BlackIsZero": [
+        "true"
+    ],
+    "img:width": [
+        "842"
+    ],
+    "img:Compression NumProgressiveScans": [
+        "1"
+    ],
+    "img:Data SampleFormat": [
+        "UnsignedIntegral"
+    ],
+    "img:Transparency Alpha": [
+        "nonpremultipled"
+    ],
+    "tk:parsed-by": [
+        "org.apache.tika.parser.image.ImageParser",
+        "ai.yobix.PreparingOcrParser"
+    ]
 }

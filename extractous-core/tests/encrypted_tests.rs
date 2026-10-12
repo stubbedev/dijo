@@ -58,7 +58,7 @@ fn test_owner_password_only_pdf_extracts_without_a_password() {
         .unwrap();
     assert!(content.contains("UNITED STATES"));
     assert_eq!(
-        metadata.get("access_permission:can_print"),
+        metadata.get("access-permission:can-print"),
         Some(&vec!["false".to_string()])
     );
 }

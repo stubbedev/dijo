@@ -2,6 +2,8 @@ package ai.yobix;
 
 import org.apache.tika.detect.AutoDetectReader;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -43,11 +45,11 @@ final class SubtitleParser implements Parser {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
-        final MediaType type = MediaType.parse(metadata.get(Metadata.CONTENT_TYPE));
+        final MediaType type = MediaType.parse(metadata.get(HttpHeaders.CONTENT_TYPE));
         try (AutoDetectReader reader = new AutoDetectReader(stream, metadata)) {
-            metadata.set(Metadata.CONTENT_ENCODING, CharsetUtils.clean(reader.getCharset().name()));
+            metadata.set(HttpHeaders.CONTENT_ENCODING, CharsetUtils.clean(reader.getCharset().name()));
             final List<String> cues = type != null && type.getBaseType().equals(SUBSTATION)
                     ? substationCues(reader) : timedCues(reader);
             final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);

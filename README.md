@@ -90,8 +90,9 @@ ligatures such as `ﬁ` become `fi`, soft hyphens are dropped, characters are co
 become plain ones, runs of spaces collapse, lines end with `\n` without trailing spaces, and at most one blank line
 appears in a row. Tabs are kept, since they separate table cells. In `--format pages`, lines that recur at the top or
 bottom of most pages (running headers and footers, page numbers) move out of the page text into the page record's
-`header` and `footer`; they are learned from the first 8 pages, which are held back meanwhile. Text and json output
-drop them. A word hyphenated
+`header` and `footer`; they are learned from the first 8 pages, which are held back meanwhile. Text a tagged PDF marks
+as page furniture rather than content (its running headers, footers and page numbers) moves into the record's
+`artifacts` instead. Text and json output drop both. A word hyphenated
 across a line break (`extrac-` / `tion`) is joined. The hyphen stays only when the text before shows a hyphenated
 compound: the word already holds a hyphen (`state-of-the-` / `art`), or `wellknown` did not occur but `well-known` or
 both `well` and `known` did. With no evidence either way the word is joined, so a compound that breaks at its hyphen
@@ -244,7 +245,7 @@ allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREB
 `just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM alongside: over the documents extracted with default options, extractous recalls 0.989 of the truth's words
-against Tika's 0.865, at a token error rate of 0.042 against 0.224.
+against Tika's 0.852, at a token error rate of 0.042 against 0.190.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
 upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end; right-to-left Arabic
@@ -268,11 +269,12 @@ slides and table cells, and Kindle books (MOBI, AZW, AZW3 without DRM), which Ti
 text, title and authors.
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
-`just conformance` therefore extracts Apache Tika's own 966 test documents both natively and with the same Tika
+`just conformance` therefore extracts Apache Tika's own 1094 test documents both natively and with the same Tika
 version on the JVM, and compares the text. [`conformance/MATRIX.md`](conformance/MATRIX.md) lists every media type
-with how many of its files work, differ or fail: 943 work or are empty on both sides. Most of the rest are DOCX files,
-where the streaming extractor used for bounded memory leaves out comment bylines and footnote markers. A nightly job
-fails when a file that worked stops working.
+with how many of its files work, differ or fail: 1068 work or are empty on both sides. Nearly all of the rest differ
+only by the file name of a preview image Tika lists (the previews of camera raw photos, iWork and Office documents),
+which extractous does not parse, since a preview repeats its document's own front page. A nightly job fails when a file
+that worked stops working.
 
 ## Development
 
@@ -295,7 +297,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
 | `just gradle-verification` | Record the SHA-256 of every Gradle dependency after changing build.gradle |
-| `just tika-agent` | Run Tika under the GraalVM tracing agent to regenerate native-image metadata |
+| `just tika-agent [paths]` | Parse every file under the paths (default `test_files`) on the JVM under GraalVM's tracing agent and merge what it records into each OS's native-image metadata |
 | `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries |
 | `just sbom` | Write CycloneDX SBOMs of the Rust crates and Java libraries to target/sbom |
 | `just deps` | cargo-deny's advisory, licence and ban checks, the Java licence allow-list, and a check that THIRD-PARTY-LICENSES.md is current |

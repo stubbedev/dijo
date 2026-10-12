@@ -1,10 +1,8 @@
 package ai.yobix;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.tika.Tika;
-import org.apache.tika.config.TikaConfig;
-import org.apache.tika.detect.CompositeEncodingDetector;
-import org.apache.tika.detect.EncodingDetector;
+import org.apache.tika.detect.DefaultDetector;
+import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
@@ -15,16 +13,21 @@ import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
+import org.apache.tika.mime.MediaTypeRegistry;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.CompositeParser;
+import org.apache.tika.parser.DefaultParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
+import org.apache.tika.parser.ParserDecorator;
 import org.apache.tika.parser.PasswordProvider;
 import org.apache.tika.parser.RecursiveParserWrapper;
+import org.apache.tika.parser.enricher.CompositeContentEnricher;
+import org.apache.tika.parser.enricher.EnrichingParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
+import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.parser.pdf.PDFParserConfig;
-import org.apache.tika.parser.txt.UniversalEncodingDetector;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.RecursiveParserWrapperHandler;
@@ -32,9 +35,6 @@ import org.apache.tika.sax.ToXMLContentHandler;
 import org.apache.tika.sax.WriteOutContentHandler;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
-import org.graalvm.nativeimage.c.type.CCharPointer;
-import org.graalvm.nativeimage.c.type.CConst;
-import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -53,7 +53,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.IntStream;
 
 /**
  * The entry points the Rust crate calls through JNI. Every operation exists for a file path, a
@@ -68,9 +67,8 @@ public class TikaNativeMain {
     /** Set on the metadata of a document Tika asked a password for. */
     public static final String PASSWORD_USED = "extractous:password-used";
 
-    private static final Tika TIKA = new Tika();
+    private static final Detector DETECTOR = new DefaultDetector();
     private static final Parser PARSER = createParser();
-    private static final EncodingDetector ENCODING_DETECTOR = createEncodingDetector();
 
     static {
         java.awt.GraphicsEnvironment.isHeadless();
@@ -80,30 +78,30 @@ public class TikaNativeMain {
     /**
      * Tika's parser, mapping each type straight to the parser for it (Tika's default composite
      * rebuilds its map of every parser for each document it is asked to parse), with the formats
-     * it handles badly replaced: encrypted CMS and OpenPGP data
-     * are reported as encrypted, detached signatures as content-free, subtitles, notebooks,
-     * FictionBook books, Apple Mail messages, iWork 2013+ documents and Kindle books are read
-     * for their text,
-     * and when tesseract is installed, images are turned upright before OCR and PDF pages are
-     * OCRed when their text layer is missing or garbage.
+     * it handles badly replaced: encrypted CMS and OpenPGP data are reported as encrypted,
+     * detached signatures as content-free; subtitles, notebooks, FictionBook books, Apple Mail
+     * messages, iWork 2013+ documents and Kindle books are read for their text; and when
+     * tesseract is installed, images are turned upright before OCR and PDF pages are OCRed when
+     * their text layer is missing or garbage.
      */
     private static Parser createParser() {
-        final TikaConfig config = TikaConfig.getDefaultConfig();
-        final AutoDetectParser parser = new AutoDetectParser(config);
-        final Map<MediaType, Parser> parsers =
-                new HashMap<>(((CompositeParser) config.getParser()).getParsers());
+        final DefaultParser defaults = new DefaultParser();
+        final AutoDetectParser parser = new AutoDetectParser(DETECTOR, defaults);
+        final Map<MediaType, Parser> parsers = new HashMap<>(defaults.getParsers());
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
                 new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
                 new IworkArchiveParser(), new MobiParser(parsers.get(MediaType.text("html"))),
                 new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
-        final Parser ocr = parsers.get(MediaType.image("ocr-png"));
-        if (ocr != null) {
-            final Parser preparingOcr = new PreparingOcrParser(ocr);
-            replacements.add(preparingOcr);
-            final Parser pdf = new CompositeParser(config.getMediaTypeRegistry(),
+        final TesseractOCRParser tesseract = tesseract(defaults);
+        final List<Parser> recognizers = new ArrayList<>();
+        if (tesseract != null) {
+            final Parser preparingOcr = new PreparingOcrParser(tesseract);
+            recognizers.add(preparingOcr);
+            final Parser pdf = new CompositeParser(MediaTypeRegistry.getDefaultRegistry(),
                     parsers.get(MediaType.application("pdf")));
             replacements.add(new TextLayerCheckingPdfParser(pdf, preparingOcr));
         }
+        injectTextRecognizers(defaults, new CompositeContentEnricher(recognizers));
         for (final Parser replacement : replacements) {
             for (final MediaType type : replacement.getSupportedTypes(new ParseContext())) {
                 parsers.put(type, replacement);
@@ -113,22 +111,29 @@ public class TikaNativeMain {
         return parser;
     }
 
-    /**
-     * Tika's encoding detectors, preceded by validating UTF-8, and with ICU's judgement of the
-     * encodings juniversalchardet has no model for asked right before juniversalchardet, after
-     * the detectors that read a charset the document declares.
-     */
-    private static EncodingDetector createEncodingDetector() {
-        final List<EncodingDetector> detectors = new ArrayList<>(List.of(new Utf8EncodingDetector()));
-        detectors.addAll(((CompositeEncodingDetector) TikaConfig.getDefaultConfig()
-                .getEncodingDetector()).getDetectors());
-        final int universal = IntStream.range(0, detectors.size())
-                .filter(index -> detectors.get(index) instanceof UniversalEncodingDetector)
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
-                        "Tika's encoding detectors no longer include juniversalchardet"));
-        detectors.add(universal, new UnmodelledEncodingDetector());
-        return new CompositeEncodingDetector(detectors);
+    /** Tika's tesseract parser, when tesseract is installed. */
+    private static TesseractOCRParser tesseract(DefaultParser defaults) {
+        for (final Parser candidate : defaults.getAllComponentParsers()) {
+            if (candidate instanceof TesseractOCRParser ocr
+                    && !ocr.getSupportedTypes(new ParseContext()).isEmpty()) {
+                return ocr;
+            }
+        }
+        return null;
+    }
+
+    /** Hands every parser that OCRs its images or rendered pages the given text recognizers. */
+    private static void injectTextRecognizers(Parser parser, CompositeContentEnricher recognizers) {
+        if (parser instanceof EnrichingParser enriching) {
+            enriching.setContentEnrichers(recognizers);
+        }
+        if (parser instanceof CompositeParser composite) {
+            for (final Parser child : composite.getAllComponentParsers()) {
+                injectTextRecognizers(child, recognizers);
+            }
+        } else if (parser instanceof ParserDecorator decorator) {
+            injectTextRecognizers(decorator.getWrappedParser(), recognizers);
+        }
     }
 
     @FunctionalInterface
@@ -185,9 +190,7 @@ public class TikaNativeMain {
     ) {
         final ParseContext parseContext = new ParseContext();
         parseContext.set(Parser.class, PARSER);
-        parseContext.set(EmbeddedDocumentExtractor.class,
-                new ContentEmbeddedDocumentExtractor(parseContext));
-        parseContext.set(EncodingDetector.class, ENCODING_DETECTOR);
+        parseContext.set(EmbeddedDocumentExtractor.class, new ContentEmbeddedDocumentExtractor());
         parseContext.set(PDFParserConfig.class, pdfConfig);
         parseContext.set(OfficeParserConfig.class, officeConfig);
         parseContext.set(TesseractOCRConfig.class, tesseractConfig);
@@ -227,7 +230,7 @@ public class TikaNativeMain {
     private static StringResult detect(Source source) {
         final Metadata metadata = new Metadata();
         try (TikaInputStream stream = source.open(metadata)) {
-            return new StringResult(TIKA.detect(stream, metadata), metadata);
+            return new StringResult(DETECTOR.detect(stream, metadata, new ParseContext()).toString(), metadata);
         } catch (IOException | URISyntaxException e) {
             return new StringResult(COULD_NOT_OPEN, couldNotOpen(e));
         }
@@ -387,13 +390,14 @@ public class TikaNativeMain {
                 parseContext(pdfConfig, officeConfig, tesseractConfig, password);
         parseContext.set(EmbeddedDocumentExtractor.class, new EmbeddedDocumentExtractor() {
             @Override
-            public boolean shouldParseEmbedded(Metadata embeddedMetadata) {
+            public boolean shouldParseEmbedded(Metadata embeddedMetadata, ParseContext context) {
                 return true;
             }
 
             @Override
-            public void parseEmbedded(InputStream embedded, ContentHandler handler,
-                                      Metadata embeddedMetadata, boolean outputHtml)
+            public void parseEmbedded(TikaInputStream embedded, ContentHandler handler,
+                                      Metadata embeddedMetadata, ParseContext context,
+                                      boolean outputHtml)
                     throws IOException {
                 final String name = embeddedMetadata.get(TikaCoreProperties.RESOURCE_NAME_KEY);
                 final String contentType = embeddedMetadata.get(HttpHeaders.CONTENT_TYPE);
@@ -420,16 +424,10 @@ public class TikaNativeMain {
 
     /**
      * The C entry point native-image needs to build a shared library rather than an executable.
+     * extractous calls the library through JNI instead.
      */
-    @CEntryPoint(name = "c_parse_to_string")
-    private static CCharPointer cParseToString(IsolateThread thread, @CConst CCharPointer cFilePath) {
-        try {
-            final String content = TIKA.parseToString(Paths.get(CTypeConversion.toJavaString(cFilePath)));
-            try (CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCString(content)) {
-                return holder.get();
-            }
-        } catch (IOException | TikaException e) {
-            throw new RuntimeException(e);
-        }
+    @CEntryPoint(name = "extractous_isolate_ready")
+    private static boolean isolateReady(IsolateThread thread) {
+        return true;
     }
 }

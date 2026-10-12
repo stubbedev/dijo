@@ -2,6 +2,7 @@ package ai.yobix;
 
 import org.apache.poi.hssf.record.crypto.Biff8EncryptionKey;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
@@ -30,7 +31,7 @@ final class LegacyOfficePasswordParser extends ParserDecorator {
     }
 
     @Override
-    public void parse(InputStream stream, ContentHandler handler, Metadata metadata,
+    public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
         Biff8EncryptionKey.setCurrentUserPassword(password);
         try {

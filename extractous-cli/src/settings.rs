@@ -1,6 +1,4 @@
-use extractous_core::{
-    Extractor, OfficeParserConfig, Password, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig,
-};
+use extractous_core::{Extractor, Password, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
 
 use std::time::Duration;
 
@@ -39,11 +37,6 @@ pub fn extractor(
             PdfParserConfig::new()
                 .set_ocr_strategy(strategy)
                 .set_ocr_strategy_auto(AUTO_OCR_PAGES),
-        )
-        .set_office_config(
-            OfficeParserConfig::new()
-                .set_use_sax_docx_extractor(true)
-                .set_use_sax_pptx_extractor(true),
         )
         .set_ocr_config(ocr_config);
     match timeout {

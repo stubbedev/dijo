@@ -92,7 +92,7 @@ fn compare(record: &serde_json::Value, tika: &str) -> Comparison {
     } else {
         2.0 * matched(&tika, &native) as f64 / total as f64
     };
-    let replaced = record["raw_metadata"]["X-TIKA:Parsed-By"]
+    let replaced = record["raw_metadata"]["tk:parsed-by"]
         .as_array()
         .is_some_and(|parsers| {
             parsers

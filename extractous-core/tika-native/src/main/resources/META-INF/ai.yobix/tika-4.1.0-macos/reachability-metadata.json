@@ -1,0 +1,6410 @@
+{
+  "reflection": [
+    {
+      "type": "apple.security.AppleProvider",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.apple.eawt._AppEventHandler",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "handleNativeNotification",
+          "parameterTypes": [
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.apple.eawt._AppMenuBarHandler",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "initMenuStates",
+          "parameterTypes": [
+            "boolean",
+            "boolean",
+            "boolean",
+            "boolean"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.drew.metadata.exif.ExifIFD0Directory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.drew.metadata.exif.ExifImageDirectory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.drew.metadata.exif.ExifSubIFDDirectory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.drew.metadata.exif.GpsDirectory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.drew.metadata.exif.makernotes.AppleMakernoteDirectory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.fasterxml.jackson.databind.ext.Java7SupportImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.github.jaiimageio.impl.common.PackageUtil"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.bmp.BMPImageReaderSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.bmp.BMPImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.bmp.I18N"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.gif.GIFImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.pcx.PCXImageReaderSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.pcx.PCXImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.pnm.PNMImageReaderSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.pnm.PNMImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.raw.RawImageReaderSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.raw.RawImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.tiff.TIFFImageReaderSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.tiff.TIFFImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.wbmp.WBMPImageReaderSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.plugins.wbmp.WBMPImageWriterSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.stream.ChannelImageInputStreamSpi"
+    },
+    {
+      "type": "com.github.jaiimageio.impl.stream.ChannelImageOutputStreamSpi"
+    },
+    {
+      "type": "com.github.luben.zstd.ZstdInputStream"
+    },
+    {
+      "type": "com.healthmarketscience.jackcess.impl.CompoundOleUtil",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.healthmarketscience.jackcess.impl.SqlHelperImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.ibm.icu.charset.CharsetICU"
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForAtom03",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForAtom10",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS090",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS091Netscape",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS091Userland",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS092",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS093",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS094",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS10",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.feed.synd.impl.ConverterForRSS20",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.Atom03Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.Atom10Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.DCModuleParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS090Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS091NetscapeParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS091UserlandParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS092Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS093Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS094Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS10Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS20Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.RSS20wNSParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.rometools.rome.io.impl.SyModuleParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.AESCipher$General",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.ARCFOURCipher",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.ChaCha20Cipher$ChaCha20Poly1305",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.DESCipher",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.DESedeCipher",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.DHParameters",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.GaloisCounterMode$AESGCM",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.HmacCore$HmacSHA256",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.HmacCore$HmacSHA384",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.crypto.provider.TlsMasterSecretGenerator",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.imageio.plugins.jpeg.JPEGImageReader",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "acceptPixels",
+          "parameterTypes": [
+            "int",
+            "boolean"
+          ]
+        },
+        {
+          "name": "passComplete",
+          "parameterTypes": []
+        },
+        {
+          "name": "passStarted",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "pushBack",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "readInputData",
+          "parameterTypes": [
+            "byte[]",
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "setImageData",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int",
+            "int",
+            "byte[]"
+          ]
+        },
+        {
+          "name": "skipInputBytes",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "skipPastImage",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "warningOccurred",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "warningWithMessage",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.sun.imageio.plugins.jpeg.JPEGImageWriter",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "grabPixels",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "warningOccurred",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "warningWithMessage",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        },
+        {
+          "name": "writeMetadata",
+          "parameterTypes": []
+        },
+        {
+          "name": "writeOutputData",
+          "parameterTypes": [
+            "byte[]",
+            "int",
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "com.sun.org.apache.xerces.internal.jaxp.DocumentBuilderFactoryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.xml.internal.stream.XMLInputFactoryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "jakarta.servlet.Servlet"
+    },
+    {
+      "type": "java.awt.AlphaComposite",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "extraAlpha"
+        },
+        {
+          "name": "rule"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.Color",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "value"
+        }
+      ],
+      "methods": [
+        {
+          "name": "getRGB",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.awt.Dimension",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "height"
+        },
+        {
+          "name": "width"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.DisplayMode",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.GraphicsEnvironment",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "isHeadless",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.awt.Insets",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "bottom"
+        },
+        {
+          "name": "left"
+        },
+        {
+          "name": "right"
+        },
+        {
+          "name": "top"
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.Rectangle",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.Toolkit",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getDefaultToolkit",
+          "parameterTypes": []
+        },
+        {
+          "name": "getFontMetrics",
+          "parameterTypes": [
+            "java.awt.Font"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.event.InputEvent",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getButtonDownMasks",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.awt.geom.AffineTransform",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "m00"
+        },
+        {
+          "name": "m01"
+        },
+        {
+          "name": "m02"
+        },
+        {
+          "name": "m10"
+        },
+        {
+          "name": "m11"
+        },
+        {
+          "name": "m12"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.geom.Path2D",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "numTypes"
+        },
+        {
+          "name": "pointTypes"
+        },
+        {
+          "name": "windingRule"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.geom.Path2D$Float",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "floatCoords"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.geom.Rectangle2D$Double",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "double",
+            "double",
+            "double",
+            "double"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.image.BufferedImage",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "colorModel"
+        },
+        {
+          "name": "imageType"
+        },
+        {
+          "name": "raster"
+        }
+      ],
+      "methods": [
+        {
+          "name": "getRGB",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int",
+            "int[]",
+            "int",
+            "int"
+          ]
+        },
+        {
+          "name": "setRGB",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int",
+            "int[]",
+            "int",
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.image.ColorModel",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "colorSpace"
+        },
+        {
+          "name": "colorSpaceType"
+        },
+        {
+          "name": "isAlphaPremultiplied"
+        },
+        {
+          "name": "is_sRGB"
+        },
+        {
+          "name": "nBits"
+        },
+        {
+          "name": "numComponents"
+        },
+        {
+          "name": "supportsAlpha"
+        },
+        {
+          "name": "transparency"
+        }
+      ],
+      "methods": [
+        {
+          "name": "getRGBdefault",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.awt.image.IndexColorModel",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "allgrayopaque"
+        },
+        {
+          "name": "colorData"
+        },
+        {
+          "name": "map_size"
+        },
+        {
+          "name": "rgb"
+        },
+        {
+          "name": "transparent_index"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.image.Raster",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "dataBuffer"
+        },
+        {
+          "name": "height"
+        },
+        {
+          "name": "minX"
+        },
+        {
+          "name": "minY"
+        },
+        {
+          "name": "numBands"
+        },
+        {
+          "name": "numDataElements"
+        },
+        {
+          "name": "sampleModel"
+        },
+        {
+          "name": "sampleModelTranslateX"
+        },
+        {
+          "name": "sampleModelTranslateY"
+        },
+        {
+          "name": "width"
+        }
+      ]
+    },
+    {
+      "type": "java.awt.image.SampleModel",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "height"
+        },
+        {
+          "name": "width"
+        }
+      ],
+      "methods": [
+        {
+          "name": "getPixels",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int",
+            "int[]",
+            "java.awt.image.DataBuffer"
+          ]
+        },
+        {
+          "name": "setPixels",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int",
+            "int[]",
+            "java.awt.image.DataBuffer"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.awt.image.SinglePixelPackedSampleModel",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "bitMasks"
+        },
+        {
+          "name": "bitOffsets"
+        },
+        {
+          "name": "bitSizes"
+        },
+        {
+          "name": "maxBitSize"
+        }
+      ]
+    },
+    {
+      "type": "java.lang.Boolean",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getBoolean",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.Class"
+    },
+    {
+      "type": "java.lang.Enum"
+    },
+    {
+      "type": "java.lang.Object[]"
+    },
+    {
+      "type": "java.lang.System",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getProperty",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        },
+        {
+          "name": "load",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.Thread",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "threadLocalRandomProbe"
+        }
+      ],
+      "methods": [
+        {
+          "name": "yield",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.lang.invoke.MethodHandle"
+    },
+    {
+      "type": "java.security.AlgorithmParametersSpi"
+    },
+    {
+      "type": "java.security.KeyStoreSpi"
+    },
+    {
+      "type": "java.security.MessageDigestSpi"
+    },
+    {
+      "type": "java.security.interfaces.DSAPrivateKey"
+    },
+    {
+      "type": "java.security.interfaces.DSAPublicKey"
+    },
+    {
+      "type": "java.security.interfaces.ECPrivateKey"
+    },
+    {
+      "type": "java.security.interfaces.ECPublicKey"
+    },
+    {
+      "type": "java.security.interfaces.RSAPrivateKey"
+    },
+    {
+      "type": "java.security.interfaces.RSAPublicKey"
+    },
+    {
+      "type": "java.security.spec.DSAParameterSpec"
+    },
+    {
+      "type": "java.sql.Types",
+      "fields": [
+        {
+          "name": "LONGNVARCHAR"
+        },
+        {
+          "name": "NCHAR"
+        },
+        {
+          "name": "NCLOB"
+        },
+        {
+          "name": "NVARCHAR"
+        },
+        {
+          "name": "TIMESTAMP_WITH_TIMEZONE"
+        },
+        {
+          "name": "TIME_WITH_TIMEZONE"
+        }
+      ]
+    },
+    {
+      "type": "java.util.HashSet"
+    },
+    {
+      "type": "java.util.LinkedHashSet"
+    },
+    {
+      "type": "java.util.concurrent.ArrayBlockingQueue"
+    },
+    {
+      "type": "java.util.concurrent.ForkJoinTask",
+      "fields": [
+        {
+          "name": "aux"
+        },
+        {
+          "name": "status"
+        }
+      ]
+    },
+    {
+      "type": "java.util.concurrent.atomic.AtomicBoolean",
+      "fields": [
+        {
+          "name": "value"
+        }
+      ]
+    },
+    {
+      "type": "java.util.concurrent.atomic.Striped64",
+      "fields": [
+        {
+          "name": "base"
+        },
+        {
+          "name": "cellsBusy"
+        }
+      ]
+    },
+    {
+      "type": "java.util.concurrent.locks.AbstractOwnableSynchronizer"
+    },
+    {
+      "type": "java.util.concurrent.locks.AbstractQueuedSynchronizer"
+    },
+    {
+      "type": "java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject"
+    },
+    {
+      "type": "java.util.concurrent.locks.ReentrantLock"
+    },
+    {
+      "type": "java.util.concurrent.locks.ReentrantLock$NonfairSync"
+    },
+    {
+      "type": "java.util.concurrent.locks.ReentrantLock$Sync"
+    },
+    {
+      "type": "javax.imageio.plugins.jpeg.JPEGHuffmanTable",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "lengths"
+        },
+        {
+          "name": "values"
+        }
+      ]
+    },
+    {
+      "type": "javax.imageio.plugins.jpeg.JPEGQTable",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "qTable"
+        }
+      ]
+    },
+    {
+      "type": "javax.imageio.spi.ImageReaderSpi"
+    },
+    {
+      "type": "javax.imageio.spi.ImageReaderWriterSpi",
+      "methods": [
+        {
+          "name": "getFormatNames",
+          "parameterTypes": []
+        },
+        {
+          "name": "getMIMETypes",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "javax.imageio.spi.ImageWriterSpi"
+    },
+    {
+      "type": "javax.servlet.Servlet"
+    },
+    {
+      "type": "jdk.internal.misc.Unsafe"
+    },
+    {
+      "type": "org.apache.commons.compress.harmony.unpack200.Pack200UnpackerAdapter",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.commons.logging.impl.Slf4jLogFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.commons.logging.impl.WeakHashtable",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.jempbox.xmp.XMPSchemaBasic",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.jempbox.xmp.XMPSchemaDublinCore",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.jempbox.xmp.XMPSchemaMediaManagement",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.jempbox.xmp.XMPSchemaPDF",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.jempbox.xmp.XMPSchemaPhotoshop",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.jempbox.xmp.XMPSchemaRightsManagement",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.logging.log4j.Logger"
+    },
+    {
+      "type": "org.apache.logging.log4j.internal.recycler.DummyRecyclerFactoryProvider"
+    },
+    {
+      "type": "org.apache.logging.log4j.internal.recycler.QueueingRecyclerFactoryProvider"
+    },
+    {
+      "type": "org.apache.logging.log4j.internal.recycler.ThreadLocalRecyclerFactoryProvider"
+    },
+    {
+      "type": "org.apache.logging.log4j.util.EnvironmentPropertySource"
+    },
+    {
+      "type": "org.apache.logging.log4j.util.LazyUtil$ReleaseAcquireLazy",
+      "fields": [
+        {
+          "name": "value"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.logging.log4j.util.SystemPropertiesPropertySource"
+    },
+    {
+      "type": "org.apache.logging.slf4j.SLF4JLoggerContextFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.logging.slf4j.SLF4JProvider"
+    },
+    {
+      "type": "org.apache.pdfbox.jbig2.JBIG2ImageReaderSpi"
+    },
+    {
+      "type": "org.apache.pdfbox.jbig2.segments.PageInformation",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.documentinterchange.taggedpdf.StandardStructureTypes",
+      "fields": [
+        {
+          "name": "ANNOT"
+        },
+        {
+          "name": "ART"
+        },
+        {
+          "name": "BIB_ENTRY"
+        },
+        {
+          "name": "BLOCK_QUOTE"
+        },
+        {
+          "name": "CAPTION"
+        },
+        {
+          "name": "CODE"
+        },
+        {
+          "name": "DIV"
+        },
+        {
+          "name": "DOCUMENT"
+        },
+        {
+          "name": "FORM"
+        },
+        {
+          "name": "FORMULA"
+        },
+        {
+          "name": "Figure"
+        },
+        {
+          "name": "H"
+        },
+        {
+          "name": "H1"
+        },
+        {
+          "name": "H2"
+        },
+        {
+          "name": "H3"
+        },
+        {
+          "name": "H4"
+        },
+        {
+          "name": "H5"
+        },
+        {
+          "name": "H6"
+        },
+        {
+          "name": "INDEX"
+        },
+        {
+          "name": "L"
+        },
+        {
+          "name": "LBL"
+        },
+        {
+          "name": "LI"
+        },
+        {
+          "name": "LINK"
+        },
+        {
+          "name": "L_BODY"
+        },
+        {
+          "name": "NON_STRUCT"
+        },
+        {
+          "name": "NOTE"
+        },
+        {
+          "name": "P"
+        },
+        {
+          "name": "PART"
+        },
+        {
+          "name": "PRIVATE"
+        },
+        {
+          "name": "QUOTE"
+        },
+        {
+          "name": "RB"
+        },
+        {
+          "name": "REFERENCE"
+        },
+        {
+          "name": "RP"
+        },
+        {
+          "name": "RT"
+        },
+        {
+          "name": "RUBY"
+        },
+        {
+          "name": "SECT"
+        },
+        {
+          "name": "SPAN"
+        },
+        {
+          "name": "TABLE"
+        },
+        {
+          "name": "TD"
+        },
+        {
+          "name": "TH"
+        },
+        {
+          "name": "TOC"
+        },
+        {
+          "name": "TOCI"
+        },
+        {
+          "name": "TR"
+        },
+        {
+          "name": "T_BODY"
+        },
+        {
+          "name": "T_FOOT"
+        },
+        {
+          "name": "T_HEAD"
+        },
+        {
+          "name": "WARICHU"
+        },
+        {
+          "name": "WP"
+        },
+        {
+          "name": "WT"
+        },
+        {
+          "name": "types"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.encryption.StandardSecurityHandler",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationFileAttachment"
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationFreeText"
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink",
+      "methods": [
+        {
+          "name": "getAction",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationMarkup"
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationPopup"
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationText"
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown"
+    },
+    {
+      "type": "org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget",
+      "methods": [
+        {
+          "name": "getAction",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.BOMDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.MetadataCharsetDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.apple.BPListDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.apple.IWorkDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.gzip.GZipSpecializationDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.html.HtmlEncodingDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.image.RawTiffDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.microsoft.POIFSContainerDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.microsoft.ooxml.OPCPackageDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.mkv.MatroskaDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.ogg.OggDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.ole.MiscOLEDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.DefaultZipContainerDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.tika.config.ServiceLoader"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.FrictionlessPackageDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.GeoGebraDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.IPADetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.JarDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.KMZDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.OpenDocumentDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.detect.zip.StarOfficeDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.extractor.microsoft.MSEmbeddedStreamTranslator",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.extractor.microsoft.PSTEmailStreamTranslator",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.metadata.Metadata",
+      "allPublicFields": true,
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getValues",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        },
+        {
+          "name": "names",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.metadata.TikaCoreProperties",
+      "allPublicFields": true
+    },
+    {
+      "type": "org.apache.tika.ml.chardetect.MojibusterEncodingDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.ml.junkdetect.JunkFilterEncodingDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.apple.AppleSingleFileParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.apple.PListParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.asm.ClassParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.audio.AudioParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.audio.MidiParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.code.SourceCodeParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.crypto.Pkcs7Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.crypto.TSDParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.csv.TextAndCSVParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.dbf.DBFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.dgn.DGN8Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.dif.DIFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.dwg.DWGParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.epub.EpubParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.executable.ExecutableParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.executable.UniversalExecutableParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.feed.FeedParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.font.AdobeFontMetricParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.font.TrueTypeParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.geogebra.GeoGebraParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.html.HtmlEncodingDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.html.HtmlParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.html.JSoupParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.http.HttpParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.hwp.HwpV5Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.BPGParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.HeifParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.ICNSParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.ImageParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.JXLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.JpegParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.PSDParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.RawTiffParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.TiffParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.image.WebPParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.indesign.IDMLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.iptc.IptcAnpaParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.iwork.IWorkPackageParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.iwork.iwana.IWork13PackageParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.iwork.iwana.IWork18PackageParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.mail.RFC822Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.markdown.MarkdownParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.mat.MatParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.mbox.MboxParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.EMFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.JackcessParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.MSOwnerFileParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.OfficeParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.OldExcelParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.TNEFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.WMFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.activemime.ActiveMimeParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.chm.ChmParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.OneNoteParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.AdditionalFlags"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.AllocateExtendedGUIDRangeRequest"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.AllocateExtendedGUIDRangeResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.AlternativePackaging"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellError"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellKnowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellKnowledgeEntry"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellKnowledgeRange"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellManifestCurrentRevision",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellManifestDataElementData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.CellRoundtripOptions"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ContentTagKnowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ContentTagKnowledgeEntry"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DataElement",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DataElementFragment"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DataElementHash"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DataElementPackage",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DataHashObject"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DataSizeObject"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DiagnosticRequestOptionInput"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.DiagnosticRequestOptionOutput"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ErrorStringSupplementalInfo"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.FileHash"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.FragmentDataElementData"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.FragmentKnowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.FragmentKnowledgeEntry"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.FsshttpbResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.FsshttpbSubResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.HRESULTError"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.IntermediateNodeObject"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.Knowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.LeafNodeObject"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.None"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectDataBLOB",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectDataBLOBDataElementData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupDataElementData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupDeclarations",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupMetadata"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupMetadataDeclarations"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupObjectBLOBDataDeclaration",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupObjectData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupObjectDataBLOBReference",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ObjectGroupObjectDeclare",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ProtocolError"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.PutChangesLockId"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.PutChangesRequest"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.PutChangesResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.PutChangesResponseSerialNumberReassign"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.PutChangesResponseSerialNumberReassignAll"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesDataConstraint"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilter"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilterCellID"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilterDataElementIDs"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilterDataElementType"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilterFlags"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilterHierarchy"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesFilterSchemaSpecific"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesRequest"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesRequestArguments"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryChangesVersioning"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.QueryDataElementRequest"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ReadAccessResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.Request"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.RequestHashOptions"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.ResponseError"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.RevisionManifest",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.RevisionManifestDataElementData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.RevisionManifestObjectGroupReferences",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.RevisionManifestRootDeclare",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.SignatureObject"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.SpecializedKnowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageIndexCellMapping",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageIndexDataElementData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageIndexManifestMapping",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageIndexRevisionMapping",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageManifestDataElementData",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageManifestRootDeclare",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StorageManifestSchemaGUID",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.StreamObjectHeaderEnd8bit",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.SubRequest"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.TargetPartitionId"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.UserAgent"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.UserAgentGUID"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.UserAgentversion"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.VersionTokenKnowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.WaterlineKnowledge"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.WaterlineKnowledgeEntry"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.Win32Error"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.WriteAccessResponse"
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.BinaryItem",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.CellID",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.CellIDArray",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.Compact64bitInt",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.ExGUIDArray",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.ExGuid",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.onenote.fsshttpb.streamobj.basic.SerialNumber",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.ooxml.xwpf.ml2006.Word2006MLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.pst.OutlookPSTParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.pst.PSTMailItemParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.rtf.RTFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.xml.SpreadsheetMLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.microsoft.xml.WordMLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.mif.MIFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.mp3.Mp3Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.mp4.MP4Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ocr.TesseractOCRConfig",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "org.apache.tika.parser.ocr.TesseractOCRParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.odf.FlatOpenDocumentParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.odf.OpenDocumentParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ogg.FlacParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ogg.OggParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ogg.OpusParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ogg.SpeexParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ogg.TheoraParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.ogg.VorbisParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pdf.PDFParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pdf.PDFParserConfig",
+      "allDeclaredFields": true
+    },
+    {
+      "type": "org.apache.tika.parser.pdf.xmpschemas.XMPSchemaPDFX",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.w3c.dom.Element",
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pkg.CompressorParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pkg.PackageParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pkg.RarParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pkg.SevenZParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.pkg.ZipParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.prt.PRTParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.sas.SAS7BDATParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.tmx.TMXParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.txt.Icu4jEncodingDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.txt.UniversalEncodingDetector",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.video.FLVParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.wacz.WACZParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.warc.WARCParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.wordperfect.QuattroProParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.wordperfect.WordPerfectParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.xliff.XLIFF12Parser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.xliff.XLZParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.xml.DcXMLParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.parser.xml.FictionBookParser",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.renderer.microsoft.POIMetafileRenderer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.renderer.pdf.pdfbox.PDFBoxRenderer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.tika.serialization.ConfigDeserializer"
+    },
+    {
+      "type": "org.apache.xerces.impl.dv.dtd.DTDDVFactoryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.xerces.jaxp.DocumentBuilderFactoryImpl"
+    },
+    {
+      "type": "org.apache.xerces.jaxp.SAXParserFactoryImpl"
+    },
+    {
+      "type": "org.apache.xerces.parsers.XIncludeAwareParserConfiguration",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.apache.xerces.util.SecurityManager",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        },
+        {
+          "name": "setEntityExpansionLimit",
+          "parameterTypes": [
+            "int"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.apache.xmlbeans.metadata.system.sXMLCONFIG.TypeSystemHolder",
+      "fields": [
+        {
+          "name": "typeSystem"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.xmlbeans.metadata.system.sXMLLANG.TypeSystemHolder",
+      "fields": [
+        {
+          "name": "typeSystem"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.xmlbeans.metadata.system.sXMLSCHEMA.TypeSystemHolder",
+      "fields": [
+        {
+          "name": "typeSystem"
+        }
+      ]
+    },
+    {
+      "type": "org.apache.xmlbeans.metadata.system.sXMLTOOLS.TypeSystemHolder",
+      "fields": [
+        {
+          "name": "typeSystem"
+        }
+      ]
+    },
+    {
+      "type": "org.bouncycastle.crypto.digests.SHA512Digest",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.bouncycastle.crypto.engines.AESEngine",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.brotli.dec.BrotliInputStream"
+    },
+    {
+      "type": "org.codelibs.jhighlight.renderer.GroovyXhtmlRenderer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.codelibs.jhighlight.renderer.JavaXhtmlRenderer",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.jdom2.Content[]"
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.CTNonVisualDrawingProps"
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.CTNonVisualDrawingProps[]"
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.CTTextCharacterProperties[]"
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTBlipFillPropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTBlipImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTGraphicalObjectDataImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTGraphicalObjectImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTGroupShapePropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTHyperlinkImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTNonVisualDrawingPropsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTNonVisualDrawingShapePropsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTOfficeStyleSheetImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTOuterShadowEffectImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTRegularTextRunImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTShapePropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTableCellImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTableImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTableRowImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTableStyleImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTableStyleListImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTextBodyImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTextCharacterPropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTextFieldImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTextLineBreakImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTextParagraphImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.CTTextParagraphPropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.STDrawingElementIdImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.TblStyleLstDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.main.impl.ThemeDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.picture.CTPicture"
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.picture.CTPicture[]"
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.picture.impl.CTPictureImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.picture.impl.CTPictureNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTAnchorClientDataImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTDrawingImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTMarkerImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTPictureImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTShapeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTShapeNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.impl.CTTwoCellAnchorImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.impl.CTInlineImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.customProperties.impl.CTPropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.customProperties.impl.CTPropertyImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.customProperties.impl.PropertiesDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.extendedProperties.impl.CTPropertiesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.extendedProperties.impl.PropertiesDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.relationships.impl.STRelationshipIdImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.sharedTypes.impl.STOnOffImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.sharedTypes.impl.STStringImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.officeDocument.x2006.sharedTypes.impl.STXstringImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.CTGroupShape"
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.CTGroupShape[]"
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.STPlaceholderType$Enum",
+      "fields": [
+        {
+          "name": "table"
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTApplicationNonVisualDrawingPropsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTCommentAuthorListImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTCommonSlideDataImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTConnectorImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTConnectorNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTGraphicalObjectFrameImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTGraphicalObjectFrameNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTGroupShapeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTGroupShapeNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTNotesMasterImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTNotesSlideImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTPictureImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTPictureNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTPlaceholderImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTPresentationImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTShapeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTShapeNonVisualImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideIdListEntryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideIdListImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideLayoutImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideMasterIdListEntryImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideMasterIdListImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CTSlideMasterImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.CmAuthorLstDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.NotesDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.NotesMasterDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.PresentationDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.STPlaceholderTypeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.SldDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.SldLayoutDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.presentationml.x2006.main.impl.SldMasterDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTBorderImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTBordersImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTCellStyleXfsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTCellXfsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTColorsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTDxfsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTFillImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTFillsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTFontImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTFontsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTIndexedColorsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTNumFmtImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTNumFmtsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTRgbColorImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTRstImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTStylesheetImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTTableStylesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTXfImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.STCellStyleXfIdImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.STNumFmtIdImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.STUnsignedIntHexImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.StyleSheetDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.CTNumLvl"
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.STFldCharType$Enum",
+      "fields": [
+        {
+          "name": "table"
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.STHdrFtr$Enum",
+      "fields": [
+        {
+          "name": "table"
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.STNumberFormat$Enum",
+      "fields": [
+        {
+          "name": "table"
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.STUnderline$Enum",
+      "fields": [
+        {
+          "name": "table"
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTAbstractNumImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTBodyImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTBookmarkImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTBrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTDecimalNumberImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTDocDefaultsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTDocument1Impl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTDrawingImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTEmptyImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTEndnotesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTFldCharImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTFootnotesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTFtnEdnImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTFtnEdnRefImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTHdrFtrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTHdrFtrRefImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTHyperlinkImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTLatentStylesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTLevelTextImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTLvlImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTMarkupRangeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTNumFmtImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTNumImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTNumPrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTNumberingImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTOnOffImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTPImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTPPrDefaultImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTPPrGeneralImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTPPrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTPictureImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTProofErrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTRImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTRPrDefaultImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTRPrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTRowImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTSectPrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTSettingsImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTStringImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTStyleImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTStylesImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTTblImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTTcImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTTcPrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTTextImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTTrPrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.CTUnderlineImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.DocumentDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.EndnotesDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.FootnotesDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.FtrDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.HdrDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.NumberingDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.STDecimalNumberImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.STFldCharTypeImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.STHdrFtrImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.STNumberFormatImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.STUnderlineImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.SettingsDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.openxmlformats.schemas.wordprocessingml.x2006.main.impl.StylesDocumentImpl",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "org.apache.xmlbeans.SchemaType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "org.osgi.framework.FrameworkUtil"
+    },
+    {
+      "type": "org.slf4j.helpers.Log4jLoggerFactory"
+    },
+    {
+      "type": "org.slf4j.nop.NOPServiceProvider"
+    },
+    {
+      "type": "schemaorg_apache_xmlbeans.system.sXMLCONFIG.TypeSystemHolder"
+    },
+    {
+      "type": "schemaorg_apache_xmlbeans.system.sXMLLANG.TypeSystemHolder"
+    },
+    {
+      "type": "schemaorg_apache_xmlbeans.system.sXMLSCHEMA.TypeSystemHolder"
+    },
+    {
+      "type": "schemaorg_apache_xmlbeans.system.sXMLTOOLS.TypeSystemHolder"
+    },
+    {
+      "type": "sun.awt.AWTAutoShutdown",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "notifyToolkitThreadBusy",
+          "parameterTypes": []
+        },
+        {
+          "name": "notifyToolkitThreadFree",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.SunHints",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "INTVAL_STROKE_PURE"
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.SunToolkit",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "awtLock",
+          "parameterTypes": []
+        },
+        {
+          "name": "awtLockNotify",
+          "parameterTypes": []
+        },
+        {
+          "name": "awtLockNotifyAll",
+          "parameterTypes": []
+        },
+        {
+          "name": "awtLockWait",
+          "parameterTypes": [
+            "long"
+          ]
+        },
+        {
+          "name": "awtUnlock",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.X11.XErrorHandlerUtil",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "init",
+          "parameterTypes": [
+            "long"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.X11.XToolkit",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "modLockIsShiftLock"
+        },
+        {
+          "name": "numLockMask"
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.image.BufImgSurfaceData$ICMColorData",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "pData"
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.image.ByteComponentRaster",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "data"
+        },
+        {
+          "name": "dataOffsets"
+        },
+        {
+          "name": "pixelStride"
+        },
+        {
+          "name": "scanlineStride"
+        },
+        {
+          "name": "type"
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.image.BytePackedRaster",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "data"
+        },
+        {
+          "name": "dataBitOffset"
+        },
+        {
+          "name": "pixelBitStride"
+        },
+        {
+          "name": "scanlineStride"
+        },
+        {
+          "name": "type"
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.image.ImageRepresentation",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "numSrcLUT"
+        },
+        {
+          "name": "srcLUTtransIndex"
+        }
+      ]
+    },
+    {
+      "type": "sun.awt.image.IntegerComponentRaster",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "data"
+        },
+        {
+          "name": "dataOffsets"
+        },
+        {
+          "name": "pixelStride"
+        },
+        {
+          "name": "scanlineStride"
+        },
+        {
+          "name": "type"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.Disposer",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "addRecord",
+          "parameterTypes": [
+            "java.lang.Object",
+            "long",
+            "long"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.InvalidPipeException",
+      "jniAccessible": true
+    },
+    {
+      "type": "sun.java2d.NullSurfaceData",
+      "jniAccessible": true
+    },
+    {
+      "type": "sun.java2d.SunGraphics2D",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "clipRegion"
+        },
+        {
+          "name": "composite"
+        },
+        {
+          "name": "eargb"
+        },
+        {
+          "name": "lcdTextContrast"
+        },
+        {
+          "name": "pixel"
+        },
+        {
+          "name": "strokeHint"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.SurfaceData",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "pData"
+        },
+        {
+          "name": "valid"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.cmm.kcms.KcmsServiceProvider"
+    },
+    {
+      "type": "sun.java2d.loops.Blit",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.BlitBg",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.CompositeType",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "AnyAlpha"
+        },
+        {
+          "name": "Src"
+        },
+        {
+          "name": "SrcNoEa"
+        },
+        {
+          "name": "SrcOver"
+        },
+        {
+          "name": "SrcOverNoEa"
+        },
+        {
+          "name": "Xor"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawGlyphList",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawGlyphListAA",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawGlyphListLCD",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawLine",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawParallelogram",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawPath",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawPolygons",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.DrawRect",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.FillParallelogram",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.FillPath",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.FillRect",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.FillSpans",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.GraphicsPrimitive",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "pNativePrim"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.GraphicsPrimitiveMgr",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "register",
+          "parameterTypes": [
+            "sun.java2d.loops.GraphicsPrimitive[]"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.GraphicsPrimitive[]",
+      "jniAccessible": true
+    },
+    {
+      "type": "sun.java2d.loops.MaskBlit",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.MaskFill",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.OpaqueCopyAnyToArgb",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.OpaqueCopyArgbToAny",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.ScaledBlit",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetDrawLineANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetDrawPathANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetDrawPolygonsANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetDrawRectANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetFillPathANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetFillRectANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SetFillSpansANY",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.SurfaceType",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "Any3Byte"
+        },
+        {
+          "name": "Any4Byte"
+        },
+        {
+          "name": "AnyByte"
+        },
+        {
+          "name": "AnyColor"
+        },
+        {
+          "name": "AnyInt"
+        },
+        {
+          "name": "AnyShort"
+        },
+        {
+          "name": "ByteBinary1Bit"
+        },
+        {
+          "name": "ByteBinary2Bit"
+        },
+        {
+          "name": "ByteBinary4Bit"
+        },
+        {
+          "name": "ByteGray"
+        },
+        {
+          "name": "ByteIndexed"
+        },
+        {
+          "name": "ByteIndexedBm"
+        },
+        {
+          "name": "FourByteAbgr"
+        },
+        {
+          "name": "FourByteAbgrPre"
+        },
+        {
+          "name": "Index12Gray"
+        },
+        {
+          "name": "Index8Gray"
+        },
+        {
+          "name": "IntArgb"
+        },
+        {
+          "name": "IntArgbBm"
+        },
+        {
+          "name": "IntArgbPre"
+        },
+        {
+          "name": "IntBgr"
+        },
+        {
+          "name": "IntRgb"
+        },
+        {
+          "name": "IntRgbx"
+        },
+        {
+          "name": "OpaqueColor"
+        },
+        {
+          "name": "ThreeByteBgr"
+        },
+        {
+          "name": "Ushort4444Argb"
+        },
+        {
+          "name": "Ushort555Rgb"
+        },
+        {
+          "name": "Ushort555Rgbx"
+        },
+        {
+          "name": "Ushort565Rgb"
+        },
+        {
+          "name": "UshortGray"
+        },
+        {
+          "name": "UshortIndexed"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.TransformHelper",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "long",
+            "sun.java2d.loops.SurfaceType",
+            "sun.java2d.loops.CompositeType",
+            "sun.java2d.loops.SurfaceType"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.loops.XORComposite",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "alphaMask"
+        },
+        {
+          "name": "xorColor"
+        },
+        {
+          "name": "xorPixel"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.marlin.DMarlinRenderingEngine",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.pipe.Region",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "bands"
+        },
+        {
+          "name": "endIndex"
+        },
+        {
+          "name": "hix"
+        },
+        {
+          "name": "hiy"
+        },
+        {
+          "name": "lox"
+        },
+        {
+          "name": "loy"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.pipe.RegionIterator",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "curIndex"
+        },
+        {
+          "name": "numXbands"
+        },
+        {
+          "name": "region"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.pipe.ShapeSpanIterator",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "pData"
+        }
+      ]
+    },
+    {
+      "type": "sun.java2d.xr.XRSurfaceData",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "picture"
+        },
+        {
+          "name": "xid"
+        }
+      ]
+    },
+    {
+      "type": "sun.lwawt.macosx.LWCToolkit",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "installToolkitThreadInJava",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.misc.Unsafe",
+      "fields": [
+        {
+          "name": "theUnsafe"
+        }
+      ],
+      "methods": [
+        {
+          "name": "invokeCleaner",
+          "parameterTypes": [
+            "java.nio.ByteBuffer"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.net.www.protocol.clsid.Handler"
+    },
+    {
+      "type": "sun.net.www.protocol.fw.Handler"
+    },
+    {
+      "type": "sun.net.www.protocol.http.Handler",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.net.www.protocol.urn.Handler"
+    },
+    {
+      "type": "sun.security.pkcs12.PKCS12KeyStore",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.pkcs12.PKCS12KeyStore$DualFormatPKCS12",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.DSA$SHA224withDSA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.DSA$SHA256withDSA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.DSAKeyFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.DSAParameters",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.JavaKeyStore$DualFormatJKS",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.JavaKeyStore$JKS",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.MD5",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.NativePRNG",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.security.SecureRandomParameters"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA2$SHA224",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA2$SHA256",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA5$SHA384",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA5$SHA512",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.X509Factory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.certpath.PKIXCertPathValidator",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.rsa.PSSParameters",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.rsa.RSAKeyFactory$Legacy",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.rsa.RSAPSSSignature",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.rsa.RSASignature$SHA224withRSA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.rsa.RSASignature$SHA256withRSA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.rsa.RSASignature$SHA384withRSA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.ssl.KeyManagerFactoryImpl$SunX509",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.ssl.SSLContextImpl$DefaultSSLContext",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.ssl.TrustManagerFactoryImpl$PKIXFactory",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.AuthorityInfoAccessExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.AuthorityKeyIdentifierExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.BasicConstraintsExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.CRLDistributionPointsExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.CertificatePoliciesExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.ExtendedKeyUsageExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.IssuerAlternativeNameExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.KeyUsageExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.NetscapeCertTypeExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.PrivateKeyUsageExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.SubjectAlternativeNameExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.x509.SubjectKeyIdentifierExtension",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.lang.Boolean",
+            "java.lang.Object"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.text.resources.FormatData"
+    },
+    {
+      "type": "sun.text.resources.FormatData_en"
+    },
+    {
+      "type": "sun.text.resources.FormatData_en_US"
+    },
+    {
+      "type": "sun.text.resources.JavaTimeSupplementary"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData_en"
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData_en_US"
+    },
+    {
+      "type": "sun.util.calendar.JulianCalendar",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.util.resources.cldr.CalendarData"
+    },
+    {
+      "type": "sun.util.resources.cldr.TimeZoneNames"
+    },
+    {
+      "type": "sun.util.resources.cldr.TimeZoneNames_en"
+    },
+    {
+      "type": "sun.util.resources.cldr.TimeZoneNames_en_US"
+    }
+  ],
+  "serialization": [
+    {
+      "type": "java.lang.Enum"
+    },
+    {
+      "type": "java.lang.Object[]"
+    },
+    {
+      "type": "java.util.HashSet"
+    },
+    {
+      "type": "java.util.LinkedHashSet"
+    },
+    {
+      "type": "java.util.concurrent.ArrayBlockingQueue"
+    },
+    {
+      "type": "java.util.concurrent.locks.AbstractOwnableSynchronizer"
+    },
+    {
+      "type": "java.util.concurrent.locks.AbstractQueuedSynchronizer"
+    },
+    {
+      "type": "java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject"
+    },
+    {
+      "type": "java.util.concurrent.locks.ReentrantLock"
+    },
+    {
+      "type": "java.util.concurrent.locks.ReentrantLock$NonfairSync"
+    },
+    {
+      "type": "java.util.concurrent.locks.ReentrantLock$Sync"
+    }
+  ]
+}

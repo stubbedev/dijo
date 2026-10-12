@@ -30,6 +30,11 @@ public final class OcrConfig extends TesseractOCRConfig {
         return autoLanguage;
     }
 
+    /** Sets how long a tesseract run may take, in whole seconds. */
+    public void setTimeoutSeconds(int seconds) {
+        setTimeoutMillis(seconds * 1000L);
+    }
+
     void useDetectedLanguage(String language) {
         super.setLanguage(language);
     }

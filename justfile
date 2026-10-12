@@ -50,9 +50,9 @@ quality-compare:
     #!/usr/bin/env bash
     set -euo pipefail
     dir={{justfile_directory()}}/target/quality-compare
-    jar=$(conformance/tika-app.sh "$dir")
     rm -rf "$dir/jvm"
-    java -jar "$jar" -t -numConsumers 4 -i quality/corpus -o "$dir/jvm" > "$dir/jvm.log" 2>&1
+    mkdir -p "$dir"
+    conformance/tika-app.sh "$dir" quality/corpus "$dir/jvm" > "$dir/jvm.log" 2>&1
     QUALITY_COMPARE_JVM="$dir/jvm" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
         cargo nextest run --package extractous --test quality
 
@@ -111,9 +111,29 @@ gradle-verification:
     GRADLE_USER_HOME="$gradle_home" ./gradlew --no-daemon --quiet --write-verification-metadata sha256 \
         nativeCompile generateLicenseReport cyclonedxDirectBom checkLicense
 
-# Run Tika under the GraalVM tracing agent to regenerate native-image metadata.
-tika-agent:
-    cd {{core}}/tika-native && ./gradlew --no-daemon runAgent
+# Parse every file under the given paths on the JVM under GraalVM's tracing agent, and merge
+# what it records into the native-image metadata of every OS for the pinned Tika version.
+[unix]
+tika-agent +inputs="test_files":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inputs=()
+    for input in {{inputs}}; do
+        inputs+=("$(realpath "$input")")
+    done
+    cd {{core}}/tika-native
+    version="$(sed -n 's/^def tikaVersion = "\(.*\)"$/\1/p' build.gradle)"
+    rm -rf graal-agent
+    ./gradlew --no-daemon runAgent --args="${inputs[*]}"
+    for os in linux macos windows; do
+        metadata="src/main/resources/META-INF/ai.yobix/tika-$version-$os"
+        merged="$(mktemp -d)"
+        native-image-utils generate --input-dir="$metadata" --input-dir=graal-agent \
+            --output-dir="$merged"
+        rm -rf "$metadata"
+        mv "$merged" "$metadata"
+    done
+    rm -rf graal-agent
 
 # Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries in the binary.
 [unix]

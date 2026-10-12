@@ -84,7 +84,7 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
 }
 
 
-def tikaVersion = "3.2.3"
+def tikaVersion = "4.1.0"
 def numThreads = Runtime.getRuntime().availableProcessors()
 def currentOs = org.gradle.internal.os.OperatingSystem.current()
 
@@ -163,10 +163,7 @@ tasks.register('runAgent', JavaExec) {
     mainClass = 'ai.yobix.AgentRunner'
     classpath = sourceSets.main.runtimeClasspath
 
-    // --- file you want to analyse -----
-    // If a file fails to parse, we should pass it here to generate metadata for it,
-    // then merge that metadata into existing.
-    args '../../test_files/documents/vodafone.xlsx'
+    args '../../test_files'
 
     // --- GraalVM agent  ---------------
     jvmArgs "-agentlib:native-image-agent=config-output-dir=graal-agent"
@@ -211,7 +208,7 @@ graalvmNative {
             buildArgs.addAll(
                     "-H:+AddAllCharsets", // Very important to get UTF8 working
                     "--enable-url-protocols=http,https",
-                    "--features=ai.yobix.XmlBeansFeature",
+                    "--initialize-at-build-time=ai.yobix.EncodingModels,org.apache.tika.ml.junkdetect.JunkDetector,org.apache.tika.ml.junkdetect.BigramTables,org.apache.tika.ml.chardetect.NaiveBayesBigramEncodingDetector,org.apache.tika.ml.chardetect.NaiveBayesBigramEncodingDetector\$Cohort",
                     "-O3",
                     "--parallelism=$numThreads",
                     "-march=compatibility", // VERY IMPORTANT to use compatibility flag. If not the libs will use the cpu arch of the build machine and will notwork on other CPUs if distributed
@@ -219,6 +216,7 @@ graalvmNative {
                     // GraalVM 25 optimizations
                     // Note: --strict-image-heap is now default in GraalVM 25
                     "-H:+UnlockExperimentalVMOptions",
+                    "-H:ServiceLoaderFeatureExcludeServiceProviders=org.apache.poi.xslf.draw.SVGImageRenderer",
                     "-H:+RemoveUnusedSymbols",            // Smaller binary
                     "-H:+ReportExceptionStackTraces"      // Better error messages
             )

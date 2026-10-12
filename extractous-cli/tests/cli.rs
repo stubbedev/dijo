@@ -333,7 +333,7 @@ fn damaged_parts_make_a_partial_result() {
 fn partial_results_succeed_unless_strict() {
     let lenient = extractous(&[&document("partially-damaged.zip")]);
     assert!(lenient.status.success(), "{}", stderr(&lenient));
-    assert!(stderr(&lenient).contains("Error creating OOXML extractor"));
+    assert!(stderr(&lenient).contains("Truncated ZIP file"));
 
     let strict = extractous(&["--strict", &document("partially-damaged.zip")]);
     assert_eq!(strict.status.code(), Some(1));
@@ -959,33 +959,59 @@ fn the_language_is_detected_per_document_and_page() {
     }));
 }
 
+fn page_records(args: &[&str], input: &str) -> Vec<serde_json::Value> {
+    let mut all = vec!["--format", "pages"];
+    all.extend_from_slice(args);
+    all.push(input);
+    stdout(&extractous(&all))
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["page"].is_number())
+        .collect()
+}
+
 #[test]
-fn running_headers_and_footers_leave_the_page_text() {
-    let page_records = |args: &[&str]| -> Vec<serde_json::Value> {
-        let mut all = vec!["--format", "pages"];
-        all.extend_from_slice(args);
-        all.push("../quality/corpus/report.pdf");
-        stdout(&extractous(&all))
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .filter(|record| record["page"].is_number())
-            .collect()
-    };
-    let pages = page_records(&[]);
+fn page_furniture_a_pdf_marks_leaves_the_page_text() {
+    let report = "../quality/corpus/report.pdf";
+    let pages = page_records(&[], report);
     assert_eq!(pages.len(), 2);
     for (number, page) in (1..).zip(&pages) {
         assert_matches_schema(page);
-        assert_eq!(page["header"], "Lighthouse Ledger Study");
-        assert_eq!(page["footer"], format!("Page {number}"));
+        assert_eq!(
+            page["artifacts"],
+            format!("Lighthouse Ledger Study\nPage {number}")
+        );
         let text = page["text"].as_str().unwrap();
         assert!(!text.contains("Lighthouse Ledger Study") && !text.contains("Page "));
     }
-    let kept = page_records(&["--no-normalize", "headers"]);
-    assert!(kept[0].get("header").is_none());
+    let kept = page_records(&["--no-normalize", "headers"], report);
+    assert!(kept[0].get("artifacts").is_none());
     assert!(kept[0]["text"]
         .as_str()
         .unwrap()
-        .contains("Lighthouse Ledger Study"));
+        .ends_with("Lighthouse Ledger Study\nPage 1"));
+}
+
+#[test]
+fn running_headers_and_footers_leave_the_page_text() {
+    let scratch = Scratch::new("running-lines");
+    let pdf = scratch.0.join("generated.pdf");
+    fs::write(&pdf, text_pdf(3)).unwrap();
+    let pdf = pdf.to_str().unwrap();
+    let first = "Line 0 of a long generated document, written to keep the parser busy.";
+    let last = "Line 59 of a long generated document, written to keep the parser busy.";
+    let pages = page_records(&[], pdf);
+    assert_eq!(pages.len(), 3);
+    for page in &pages {
+        assert_matches_schema(page);
+        assert_eq!(page["header"], first);
+        assert_eq!(page["footer"], last);
+        let text = page["text"].as_str().unwrap();
+        assert!(!text.contains(first) && !text.contains(last));
+    }
+    let kept = page_records(&["--no-normalize", "headers"], pdf);
+    assert!(kept[0].get("header").is_none());
+    assert!(kept[0]["text"].as_str().unwrap().starts_with(first));
 }
 
 #[cfg(unix)]
@@ -1214,7 +1240,7 @@ fn a_cancelled_pdf_stops_without_parsing_the_rest() {
 fn a_signature_that_encapsulates_its_content_is_extracted() {
     let objects = json_objects(&[&document("signed-content.xml.p7m")]);
     assert_eq!(objects[0]["status"], "complete");
-    assert_eq!(objects[0]["mime_type"], "application/pkcs7-signature");
+    assert_eq!(objects[0]["mime_type"], "application/pkcs7-mime");
     assert!(
         objects[0]["text"].as_str().unwrap().contains("link.pdf"),
         "{}",

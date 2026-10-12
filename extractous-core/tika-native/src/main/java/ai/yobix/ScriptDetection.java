@@ -15,6 +15,8 @@ import java.util.stream.Collectors;
  */
 final class ScriptDetection {
 
+    private static final long LIST_LANGUAGES_TIMEOUT_MILLIS = 60_000;
+
     /** The script OSD found, or null when it found none, and the turns that make it upright. */
     record Result(String script, int clockwiseQuarterTurns) {
     }
@@ -59,8 +61,8 @@ final class ScriptDetection {
      * Runs OSD on an image. An image OSD cannot judge, such as one with too little text, gives
      * an unknown script and no turns.
      */
-    static Result detect(String tesseract, Path image, int timeoutSeconds) throws IOException {
-        final String output = run(timeoutSeconds, tesseract, image.toString(), "stdout",
+    static Result detect(String tesseract, Path image, long timeoutMillis) throws IOException {
+        final String output = run(timeoutMillis, tesseract, image.toString(), "stdout",
                 "--psm", "0");
         if (output == null) {
             return UNKNOWN;
@@ -101,7 +103,7 @@ final class ScriptDetection {
 
     private static synchronized Set<String> installed(String tesseract) throws IOException {
         if (installed == null) {
-            final String output = run(60, tesseract, "--list-langs");
+            final String output = run(LIST_LANGUAGES_TIMEOUT_MILLIS, tesseract, "--list-langs");
             if (output == null) {
                 throw new IOException("tesseract --list-langs failed");
             }
@@ -115,13 +117,13 @@ final class ScriptDetection {
     }
 
     /** The standard output of a command that succeeded in time, or null. */
-    private static String run(int timeoutSeconds, String... command) throws IOException {
+    private static String run(long timeoutMillis, String... command) throws IOException {
         final Process process = new ProcessBuilder(command)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start();
         try {
             process.getOutputStream().close();
-            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS) || process.exitValue() != 0) {
+            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS) || process.exitValue() != 0) {
                 return null;
             }
             return new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

@@ -32,13 +32,11 @@ if [ "$(git -C "$repository" rev-parse HEAD)" != "$commit" ]; then
     exit 1
 fi
 
-jar=$("$here/tika-app.sh" "$dir")
-
 jvm="$dir/jvm-$version"
 if [ ! -d "$jvm" ]; then
     rm -rf "$jvm.partial"
-    java -jar "$jar" --config="$here/tika-config.xml" -t -numConsumers 8 \
-        -i "$repository/tika-parsers" -o "$jvm.partial" > "$dir/jvm-$version.log" 2>&1
+    "$here/tika-app.sh" "$dir" "$repository/tika-parsers" "$jvm.partial" \
+        --config="$here/tika-config.json" > "$dir/jvm-$version.log" 2>&1
     mv "$jvm.partial" "$jvm"
 fi
 

@@ -333,7 +333,7 @@ mod tests {
     use std::io::{self, Read};
     use std::str;
 
-    const TEST_FILE: &str = "../README.md";
+    const TEST_FILE: &str = "../test_files/documents/mostly-ascii-utf8.txt";
 
     const TEST_URL: &str = "https://www.google.com/";
 
