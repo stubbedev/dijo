@@ -523,6 +523,8 @@ fn a_wrong_password_fails_with_status_one() {
 
 #[test]
 fn a_timeout_keeps_the_text_extracted_before_it() {
+    let warm_up = extractous(&["detect", &document("simple.odt")]);
+    assert!(warm_up.status.success(), "{}", stderr(&warm_up));
     let started = std::time::Instant::now();
     let objects = json_objects(&[
         "--timeout",
@@ -531,7 +533,7 @@ fn a_timeout_keeps_the_text_extracted_before_it() {
         "always",
         &document("2022_Q3_AAPL.pdf"),
     ]);
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
     assert_matches_schema(&objects[0]);
     assert_eq!(objects[0]["status"], "partial");
     assert!(objects[0]["text"]

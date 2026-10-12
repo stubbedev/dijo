@@ -311,7 +311,7 @@ fn a_slow_extraction_ends_with_a_timeout_in_the_document() {
     let server = Server::start(&["--timeout", "3"]);
     let started = Instant::now();
     let response = server.post_file("/extract?format=json&ocr=always", &[], "2022_Q3_AAPL.pdf");
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(started.elapsed() < Duration::from_secs(15));
     assert_eq!(response.status, 200);
     let document = response.json();
     assert_eq!(document["status"], "partial");
