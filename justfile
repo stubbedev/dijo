@@ -36,6 +36,10 @@ fmt-check:
 bench *args:
     cargo bench --package extractous-core --bench extractor {{args}}
 
+# Record the SHA-256 of every Gradle dependency; run after changing build.gradle.
+gradle-verification:
+    cd {{core}}/tika-native && ./gradlew --no-daemon --write-verification-metadata sha256 nativeCompile generateLicenseReport cyclonedxDirectBom
+
 # Run Tika under the GraalVM tracing agent to regenerate native-image metadata.
 tika-agent:
     cd {{core}}/tika-native && ./gradlew --no-daemon runAgent

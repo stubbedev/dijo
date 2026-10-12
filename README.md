@@ -153,6 +153,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just lint` | Clippy over every target, warnings fail |
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
+| `just gradle-verification` | Record the SHA-256 of every Gradle dependency after changing build.gradle |
 | `just tika-agent` | Run Tika under the GraalVM tracing agent to regenerate native-image metadata |
 | `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries |
 | `just sbom` | Write CycloneDX SBOMs of the Rust crates and Java libraries to target/sbom |
