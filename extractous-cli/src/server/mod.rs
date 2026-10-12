@@ -27,6 +27,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Sleep;
 
+use crate::cache::Cache;
 use crate::cli::{Embedded, Format, Ocr, ServeArgs};
 use crate::normalize::{Step, Steps};
 use crate::render::RenderOptions;
@@ -86,7 +87,13 @@ pub fn serve(args: &ServeArgs) -> bool {
 fn start(args: &ServeArgs) -> Result<bool, String> {
     let metrics = Arc::new(Metrics::default());
     let workers = args.workers.get();
-    let pool = Pool::start(workers, args.queue, Arc::clone(&metrics))?;
+    let cache = args
+        .cache
+        .cache_dir
+        .as_deref()
+        .map(|dir| Cache::open(dir, args.cache.cache_max_size).map(Arc::new))
+        .transpose()?;
+    let pool = Pool::start(workers, args.queue, Arc::clone(&metrics), cache)?;
     let spool = Spool::create(args.runtime.spool_dir.as_deref())
         .map_err(|e| format!("Failed to create the spool directory: {e}"))?;
     let state = Arc::new(State {

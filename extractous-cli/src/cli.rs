@@ -66,6 +66,9 @@ pub struct ServeArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 
+    #[command(flatten)]
+    pub cache: CacheArgs,
+
     /// Seconds in-flight requests get to finish after a shutdown signal.
     #[arg(
         long,
@@ -74,6 +77,26 @@ pub struct ServeArgs {
         default_value_t = 30
     )]
     pub shutdown_grace: u64,
+}
+
+/// Where the output of complete extractions is kept for reuse.
+#[derive(Debug, Args)]
+pub struct CacheArgs {
+    /// Keep the output of complete extractions in DIR and reuse it while the input, the options
+    /// and the extractous build are unchanged. Extractions with passwords are never cached, so
+    /// decrypted text never lands on disk, and neither are separate embedded documents.
+    #[arg(long, value_name = "DIR", env = "EXTRACTOUS_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Evict the least recently used cache entries whenever the cache grows past this many
+    /// bytes.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        env = "EXTRACTOUS_CACHE_MAX_SIZE",
+        requires = "cache_dir"
+    )]
+    pub cache_max_size: Option<u64>,
 }
 
 /// Where extraction keeps temporary files and how much memory it may use.
@@ -192,26 +215,8 @@ pub struct ExtractArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 
-    /// Keep the output of complete extractions in DIR and reuse it while the input, the options
-    /// and the extractous build are unchanged. Not available with passwords, so decrypted text
-    /// never lands on disk, or with --embedded separate.
-    #[arg(
-        long,
-        value_name = "DIR",
-        env = "EXTRACTOUS_CACHE_DIR",
-        conflicts_with_all = ["passwords", "password_file"]
-    )]
-    pub cache_dir: Option<PathBuf>,
-
-    /// Evict the least recently used cache entries after a run until the cache holds at most
-    /// this many bytes.
-    #[arg(
-        long,
-        value_name = "BYTES",
-        env = "EXTRACTOUS_CACHE_MAX_SIZE",
-        requires = "cache_dir"
-    )]
-    pub cache_max_size: Option<u64>,
+    #[command(flatten)]
+    pub cache: CacheArgs,
 
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]

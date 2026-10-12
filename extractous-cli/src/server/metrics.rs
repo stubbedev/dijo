@@ -16,6 +16,8 @@ pub struct Metrics {
     bytes_out: AtomicU64,
     pub in_flight: AtomicUsize,
     pub workers: AtomicUsize,
+    pub cache_hits: AtomicU64,
+    pub cache_misses: AtomicU64,
 }
 
 #[derive(Default)]
@@ -124,6 +126,16 @@ impl Metrics {
                 "extractous_bytes_out_total",
                 "counter",
                 self.bytes_out.load(Ordering::Relaxed),
+            ),
+            (
+                "extractous_cache_hits_total",
+                "counter",
+                self.cache_hits.load(Ordering::Relaxed),
+            ),
+            (
+                "extractous_cache_misses_total",
+                "counter",
+                self.cache_misses.load(Ordering::Relaxed),
             ),
             (
                 "extractous_in_flight_requests",

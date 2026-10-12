@@ -14,24 +14,53 @@ use crate::schema::Status;
 const TRAILER_LENGTH_BYTES: usize = 8;
 const TEMPORARY_PREFIX: &str = ".partial-";
 
+/// What, besides the input itself, decides the output of an extraction.
+#[derive(Debug, Clone, Copy)]
+pub struct OutputSettings<'a> {
+    pub render: RenderOptions,
+    pub ocr: Ocr,
+    pub ocr_lang: Option<&'a str>,
+}
+
+impl OutputSettings<'_> {
+    /// The settings as part of a cache key. The key also covers the build, so the encoding only
+    /// has to be stable within one build.
+    fn key(&self) -> String {
+        format!("{:?}\0{:?}\0{:?}", self.render, self.ocr, self.ocr_lang)
+    }
+}
+
 /// Rendered output of complete extractions, keyed by everything that determines it: the input's
-/// content, the options that shape the output, this exact build of extractous with Tika inside
-/// it, and the tesseract that runs OCR.
+/// content and name, the settings that shape the output, this exact build of extractous with
+/// Tika inside it, and the tesseract that runs OCR. Safe to share between threads and processes.
 pub struct Cache {
     dir: PathBuf,
     max_bytes: Option<u64>,
-    settings: blake3::Hash,
+    build: blake3::Hash,
+    stored_bytes: AtomicU64,
     next_temporary: AtomicU64,
 }
 
+/// The result of looking an input up.
+pub enum Lookup<'a> {
+    Hit(Hit),
+    Miss(Miss<'a>),
+}
+
+/// A stored entry, ready to be replayed.
+pub struct Hit {
+    file: File,
+    entry: PathBuf,
+}
+
+/// Where the output of an extraction will be stored if it turns out complete.
+pub struct Miss<'a> {
+    cache: &'a Cache,
+    entry: PathBuf,
+}
+
 impl Cache {
-    pub fn open(
-        dir: &Path,
-        max_bytes: Option<u64>,
-        options: RenderOptions,
-        ocr: Ocr,
-        ocr_lang: Option<&str>,
-    ) -> Result<Cache, String> {
+    pub fn open(dir: &Path, max_bytes: Option<u64>) -> Result<Cache, String> {
         fs::create_dir_all(dir).map_err(|e| {
             format!(
                 "Failed to create the cache directory {}: {e}",
@@ -40,20 +69,24 @@ impl Cache {
         })?;
         let executable = std::env::current_exe()
             .map_err(|e| format!("Failed to locate the running executable: {e}"))?;
-        let build = hash_file(&executable)
-            .map_err(|e| format!("Failed to hash {}: {e}", executable.display()))?;
-        let mut settings = blake3::Hasher::new();
-        settings.update(build.as_bytes());
-        settings.update(format!("{options:?}\0{ocr:?}\0{ocr_lang:?}\0").as_bytes());
-        if ocr != Ocr::Never {
-            settings.update(tesseract_version().as_bytes());
-        }
-        Ok(Cache {
+        let mut build = blake3::Hasher::new();
+        build.update(
+            hash_file(&executable)
+                .map_err(|e| format!("Failed to hash {}: {e}", executable.display()))?
+                .as_bytes(),
+        );
+        build.update(tesseract_version().as_bytes());
+        let cache = Cache {
             dir: dir.to_path_buf(),
             max_bytes,
-            settings: settings.finalize(),
+            build: build.finalize(),
+            stored_bytes: AtomicU64::new(0),
             next_temporary: AtomicU64::new(0),
-        })
+        };
+        cache
+            .evict()
+            .map_err(|e| format!("Failed to bound the cache {}: {e}", dir.display()))?;
+        Ok(cache)
     }
 
     /// Writes the cached output for the input at `path` into `sink`, or renders it with `render`
@@ -62,39 +95,40 @@ impl Cache {
         &self,
         path: &Path,
         display: &str,
+        settings: OutputSettings,
         sink: &mut dyn Write,
         render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
     ) -> io::Result<Outcome> {
-        let entry = self.entry(path, display)?;
+        match self.lookup(path, display, settings)? {
+            Lookup::Hit(hit) => hit.replay(sink),
+            Lookup::Miss(miss) => miss.store(sink, render),
+        }
+    }
+
+    pub fn lookup(
+        &self,
+        path: &Path,
+        display: &str,
+        settings: OutputSettings,
+    ) -> io::Result<Lookup<'_>> {
+        let entry = self.entry(path, display, settings)?;
         match OpenOptions::new().read(true).write(true).open(&entry) {
-            Ok(file) => return replay(file, &entry, sink),
-            Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "Failed to open the cache entry {}: {error}",
-                        entry.display()
-                    ),
-                ))
+            Ok(file) => Ok(Lookup::Hit(Hit { file, entry })),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(Lookup::Miss(Miss { cache: self, entry }))
             }
-            Err(_) => {}
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "Failed to open the cache entry {}: {error}",
+                    entry.display()
+                ),
+            )),
         }
-        let shard = entry.parent().expect("entries live in a shard directory");
-        fs::create_dir_all(shard)?;
-        let temporary = shard.join(format!(
-            "{TEMPORARY_PREFIX}{}-{}",
-            std::process::id(),
-            self.next_temporary.fetch_add(1, Ordering::Relaxed)
-        ));
-        let stored = store(&temporary, &entry, sink, render);
-        if stored.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        stored
     }
 
     /// Removes the least recently used entries until the cache fits in its size limit.
-    pub fn evict(&self) -> io::Result<()> {
+    fn evict(&self) -> io::Result<()> {
         let Some(max_bytes) = self.max_bytes else {
             return Ok(());
         };
@@ -134,17 +168,64 @@ impl Cache {
                 }
             }
         }
+        self.stored_bytes.store(total, Ordering::Relaxed);
         Ok(())
     }
 
-    fn entry(&self, path: &Path, display: &str) -> io::Result<PathBuf> {
+    /// Counts a newly stored entry, and evicts once the cache has grown past its limit.
+    fn stored(&self, bytes: u64) -> io::Result<()> {
+        let total = self.stored_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if self.max_bytes.is_some_and(|max| total > max) {
+            self.evict()?;
+        }
+        Ok(())
+    }
+
+    fn entry(&self, path: &Path, display: &str, settings: OutputSettings) -> io::Result<PathBuf> {
         let mut key = blake3::Hasher::new();
-        key.update(self.settings.as_bytes());
-        key.update(display.as_bytes());
-        key.update(b"\0");
+        key.update(self.build.as_bytes());
+        key.update(format!("{}\0{display}\0", settings.key()).as_bytes());
         key.update(hash_file(path)?.as_bytes());
         let key = key.finalize().to_hex();
         Ok(self.dir.join(&key[..2]).join(key.as_str()))
+    }
+}
+
+impl Hit {
+    pub fn replay(self, sink: &mut dyn Write) -> io::Result<Outcome> {
+        replay(self.file, &self.entry, sink)
+    }
+}
+
+impl Miss<'_> {
+    /// Renders into `sink`, keeping a copy that becomes the entry if the extraction was complete.
+    pub fn store(
+        self,
+        sink: &mut dyn Write,
+        render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
+    ) -> io::Result<Outcome> {
+        let shard = self
+            .entry
+            .parent()
+            .expect("entries live in a shard directory");
+        fs::create_dir_all(shard)?;
+        let temporary = shard.join(format!(
+            "{TEMPORARY_PREFIX}{}-{}",
+            std::process::id(),
+            self.cache.next_temporary.fetch_add(1, Ordering::Relaxed)
+        ));
+        let stored = store(&temporary, &self.entry, sink, render);
+        match stored {
+            Ok((outcome, Some(bytes))) => {
+                self.cache.stored(bytes)?;
+                Ok(outcome)
+            }
+            Ok((outcome, None)) => Ok(outcome),
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -155,7 +236,7 @@ fn store(
     entry: &Path,
     sink: &mut dyn Write,
     render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
-) -> io::Result<Outcome> {
+) -> io::Result<(Outcome, Option<u64>)> {
     let mut copy = BufWriter::new(File::create_new(temporary)?);
     let outcome = render(&mut Tee {
         sink,
@@ -164,14 +245,16 @@ fn store(
     if outcome.status != Status::Complete {
         drop(copy);
         fs::remove_file(temporary)?;
-        return Ok(outcome);
+        return Ok((outcome, None));
     }
     let trailer = serde_json::to_vec(&outcome.metadata)?;
     copy.write_all(&trailer)?;
     copy.write_all(&(trailer.len() as u64).to_le_bytes())?;
-    copy.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    let file = copy.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    let bytes = file.metadata()?.len();
     fs::rename(temporary, entry)?;
-    Ok(outcome)
+    Ok((outcome, Some(bytes)))
 }
 
 fn replay(mut file: File, entry: &Path, sink: &mut dyn Write) -> io::Result<Outcome> {

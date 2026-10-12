@@ -380,3 +380,38 @@ fn a_heap_cap_fails_one_request_and_not_the_next() {
         .text()
         .contains("These are a few of my favorite things"));
 }
+
+#[test]
+fn the_cache_answers_repeated_uploads() {
+    let cache =
+        std::env::temp_dir().join(format!("extractous-server-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let server = Server::start(&["--cache-dir", cache.to_str().unwrap()]);
+    let first = server.post_file("/extract", &[], "simple.odt");
+    let second = server.post_file("/extract", &[], "simple.odt");
+    assert_eq!(first.status, 200);
+    assert_eq!(second.status, 200);
+    assert_eq!(first.text(), second.text());
+    assert!(first
+        .text()
+        .contains("These are a few of my favorite things"));
+
+    let with_password = server.post_file(
+        "/extract",
+        &[("X-Extractous-Password", "extractous")],
+        "encrypted/password.docx",
+    );
+    assert_eq!(with_password.status, 200);
+
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(
+        metrics.contains("extractous_cache_hits_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("extractous_cache_misses_total 1"),
+        "{metrics}"
+    );
+    drop(server);
+    std::fs::remove_dir_all(&cache).unwrap();
+}

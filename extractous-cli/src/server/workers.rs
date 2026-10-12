@@ -1,4 +1,5 @@
 use std::io::{self, BufWriter, Write};
+use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -7,6 +8,7 @@ use bytes::Bytes;
 use extractous_core::{keep_current_thread_attached, Password};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
+use crate::cache::{Cache, Hit, Lookup, OutputSettings};
 use crate::cli::{Embedded, Format, Ocr};
 use crate::normalize::Steps;
 use crate::render::{self, RenderOptions};
@@ -59,13 +61,19 @@ impl Pool {
     /// Starts `workers` threads. Admission already limits requests in flight to the workers plus
     /// `queue` slots, so the channel holds that many and never refuses an admitted job, even
     /// while a worker is between jobs.
-    pub fn start(workers: usize, queue: usize, metrics: Arc<Metrics>) -> Result<Self, String> {
+    pub fn start(
+        workers: usize,
+        queue: usize,
+        metrics: Arc<Metrics>,
+        cache: Option<Arc<Cache>>,
+    ) -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel::<Job>(workers + queue);
         let receiver = Arc::new(Mutex::new(receiver));
         let (ready_sender, ready) = mpsc::channel::<Result<(), String>>();
         for index in 0..workers {
             let receiver = Arc::clone(&receiver);
             let metrics = Arc::clone(&metrics);
+            let cache = cache.clone();
             let ready_sender = ready_sender.clone();
             thread::Builder::new()
                 .name(format!("extractous worker {index}"))
@@ -79,7 +87,7 @@ impl Pool {
                     metrics
                         .workers
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    work(&receiver, &metrics);
+                    work(&receiver, &metrics, cache.as_deref());
                 })
                 .map_err(|e| format!("Failed to start worker {index}: {e}"))?;
         }
@@ -98,7 +106,7 @@ impl Pool {
     }
 }
 
-fn work(receiver: &Mutex<mpsc::Receiver<Job>>, metrics: &Metrics) {
+fn work(receiver: &Mutex<mpsc::Receiver<Job>>, metrics: &Metrics, cache: Option<&Cache>) {
     loop {
         let job = receiver.lock().expect("job queue lock").recv();
         let Ok(Job {
@@ -111,7 +119,7 @@ fn work(receiver: &Mutex<mpsc::Receiver<Job>>, metrics: &Metrics) {
             return;
         };
         match task {
-            Task::Extract(request) => extract(&request, &upload, head, body, metrics),
+            Task::Extract(request) => extract(&request, &upload, head, body, metrics, cache),
             Task::Detect => detect(&upload, head),
         }
     }
@@ -142,6 +150,7 @@ fn extract(
     head: oneshot::Sender<Head>,
     body: async_mpsc::Sender<Bytes>,
     metrics: &Metrics,
+    cache: Option<&Cache>,
 ) {
     let started = Instant::now();
     let extractor = settings::extractor(
@@ -159,6 +168,36 @@ fn extract(
         extract_tree(request, &extractor, upload, head, body, metrics);
         return;
     }
+    let settings = OutputSettings {
+        render: request.render,
+        ocr: request.ocr,
+        ocr_lang: request.ocr_lang.as_deref(),
+    };
+    let lookup = cache
+        .filter(|_| request.passwords.is_empty())
+        .map(|cache| cache.lookup(path, display, settings));
+    let miss = match lookup {
+        None => None,
+        Some(Ok(Lookup::Hit(hit))) => {
+            metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+            replay(request, hit, head, body, metrics);
+            return;
+        }
+        Some(Ok(Lookup::Miss(miss))) => {
+            metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+            Some(miss)
+        }
+        Some(Err(error)) => {
+            let _ = head.send(Head {
+                status: 500,
+                content_type: "application/json",
+                body: Some(Bytes::from(error_body(&format!(
+                    "Failed to read the cache: {error}"
+                )))),
+            });
+            return;
+        }
+    };
     let opened = render::open(&extractor, path);
     let mime_type = opened
         .as_ref()
@@ -202,13 +241,48 @@ fn extract(
         },
     );
     let source = render::source(path, display, None);
-    let rendered = render::render_opened(opened, &source, request.render, &mut writer)
-        .and_then(|outcome| writer.flush().map(|()| outcome));
+    let render =
+        |writer: &mut dyn Write| render::render_opened(opened, &source, request.render, writer);
+    let rendered = match miss {
+        Some(miss) => miss.store(&mut writer, render),
+        None => render(&mut writer),
+    }
+    .and_then(|outcome| writer.flush().map(|()| outcome));
     if let Ok(outcome) = rendered {
         for error in &outcome.errors {
             metrics.failure(error.category.name());
         }
         metrics.extraction(&mime_type, started.elapsed());
+    }
+}
+
+/// Answers with the stored output of an earlier, complete extraction.
+fn replay(
+    request: &ExtractRequest,
+    hit: Hit,
+    head: oneshot::Sender<Head>,
+    body: async_mpsc::Sender<Bytes>,
+    metrics: &Metrics,
+) {
+    let started_response = head.send(Head {
+        status: 200,
+        content_type: content_type(request.render.format),
+        body: None,
+    });
+    if started_response.is_err() {
+        return;
+    }
+    let mut writer = BufWriter::with_capacity(
+        BODY_CHUNK_SIZE,
+        ChannelWriter {
+            sender: body,
+            metrics,
+        },
+    );
+    if let Err(error) = hit.replay(&mut writer).and_then(|_| writer.flush()) {
+        if error.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("extractous: failed to replay a cached response: {error}");
+        }
     }
 }
 

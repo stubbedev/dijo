@@ -24,7 +24,7 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use extractous_core::{Extractor, IsolateSettings, Metadata, Password};
 
-use cache::Cache;
+use cache::{Cache, OutputSettings};
 use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs};
 use inputs::{Input, InputError, Source};
 use normalize::Steps;
@@ -40,12 +40,9 @@ const LICENSES: &str = concat!(
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if cli.extract.cache_dir.is_some() && cli.extract.embedded == Embedded::Separate {
+    if let Some(conflict) = cache_conflict(&cli.extract) {
         Cli::command()
-            .error(
-                ErrorKind::ArgumentConflict,
-                "--cache-dir cannot be combined with --embedded separate",
-            )
+            .error(ErrorKind::ArgumentConflict, conflict)
             .exit();
     }
     let succeeded = if cli.licenses {
@@ -64,6 +61,19 @@ fn main() -> ExitCode {
 /// How long to wait at exit for cancelled extractions to stop, so the tesseract processes they
 /// started do not outlive this one.
 const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// Why the extraction arguments cannot use the cache, if they ask for it: decrypted text must not
+/// land on disk, and separate embedded documents are not cached.
+fn cache_conflict(args: &ExtractArgs) -> Option<&'static str> {
+    args.cache.cache_dir.as_ref()?;
+    if !args.passwords.is_empty() || args.password_file.is_some() {
+        Some("--cache-dir cannot be combined with --password or --password-file")
+    } else if args.embedded == Embedded::Separate {
+        Some("--cache-dir cannot be combined with --embedded separate")
+    } else {
+        None
+    }
+}
 
 fn wait_for_stopping_extractions() {
     match extractous_core::wait_for_extractions(STOP_GRACE) {
@@ -276,14 +286,8 @@ fn extract(args: &ExtractArgs) -> bool {
         raw_metadata: args.raw_metadata,
         normalization: Steps::selected(args.raw, &args.no_normalize),
     };
-    let cache = match &args.cache_dir {
-        Some(dir) => match Cache::open(
-            dir,
-            args.cache_max_size,
-            options,
-            args.ocr,
-            args.ocr_lang.as_deref(),
-        ) {
+    let cache = match &args.cache.cache_dir {
+        Some(dir) => match Cache::open(dir, args.cache.cache_max_size) {
             Ok(cache) => Some(cache),
             Err(error) => {
                 report("--cache-dir", &error);
@@ -325,10 +329,6 @@ fn extract(args: &ExtractArgs) -> bool {
         drop(sender);
         emit_in_order(receiver, args.format, args.strict)
     });
-    if let Some(Err(error)) = cache.as_ref().map(Cache::evict) {
-        report("--cache-dir", &error.to_string());
-        return false;
-    }
     succeeded
 }
 
@@ -378,7 +378,14 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
                 render::render(extractor, path, &input.display, options, writer)
             };
             match cache {
-                Some(cache) => cache.render(path, &input.display, writer, render),
+                Some(cache) => {
+                    let settings = OutputSettings {
+                        render: options,
+                        ocr: args.ocr,
+                        ocr_lang: args.ocr_lang.as_deref(),
+                    };
+                    cache.render(path, &input.display, settings, writer, render)
+                }
                 None => render(writer),
             }
         }
