@@ -63,6 +63,11 @@ public class TikaNativeMain {
     private static final Tika TIKA = new Tika();
     private static final Parser PARSER = new AutoDetectParser(TikaConfig.getDefaultConfig());
 
+    static {
+        java.awt.GraphicsEnvironment.isHeadless();
+        javax.imageio.ImageIO.getReaderFormatNames();
+    }
+
     @FunctionalInterface
     private interface Source {
         TikaInputStream open(Metadata metadata) throws IOException, URISyntaxException;
