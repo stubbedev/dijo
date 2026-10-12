@@ -2,7 +2,7 @@ plugins {
     id 'java-library'
     id 'com.github.jk1.dependency-license-report' version '3.1.4'
     id 'org.cyclonedx.bom' version '3.5.1'
-    id 'org.graalvm.buildtools.native' version '0.10.4' // Updated for GraalVM 25 and Gradle 9 compatibility
+    id 'org.graalvm.buildtools.native' version '1.1.14' // Updated for GraalVM 25 and Gradle 9 compatibility
 }
 
 import com.github.jk1.license.ProjectData
@@ -84,7 +84,7 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
 }
 
 
-def tikaVersion = "3.2.3"
+def tikaVersion = "4.1.0"
 def numThreads = Runtime.getRuntime().availableProcessors()
 def currentOs = org.gradle.internal.os.OperatingSystem.current()
 
@@ -108,14 +108,14 @@ repositories {
 
 dependencies {
     // Tika uses slf4j, just use a nop logger to ignore all logging
-    implementation("org.slf4j:slf4j-nop:2.0.16")
+    implementation("org.slf4j:slf4j-nop:2.0.20")
     // Some dependencies use log4j such as poi, route log4j back to slf4j
     // Using latest 2.x version (3.x doesn't exist yet as of Oct 2025)
-    implementation 'org.apache.logging.log4j:log4j-to-slf4j:2.24.2'
+    implementation 'org.apache.logging.log4j:log4j-to-slf4j:2.26.1'
 
     // Jakarta Mail API - required for email parsing and GraalVM native-image
-    implementation 'jakarta.mail:jakarta.mail-api:2.1.3'
-    implementation 'org.eclipse.angus:angus-mail:2.0.3'  // Jakarta Mail implementation
+    implementation 'jakarta.mail:jakarta.mail-api:2.1.5'
+    implementation 'org.eclipse.angus:angus-mail:2.0.5'  // Jakarta Mail implementation
 
     implementation("org.apache.tika:tika-core:$tikaVersion")
     implementation "org.apache.tika:tika-parsers-standard-package:$tikaVersion" // Apache Tika parsers
