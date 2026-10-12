@@ -48,6 +48,11 @@ impl Outcome {
     fn passes(self) -> bool {
         self >= Outcome::Works
     }
+
+    /// Whether both sides yielded text that was compared, so its similarity means something.
+    fn compared(self) -> bool {
+        matches!(self, Outcome::Works | Outcome::Differs)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,7 +256,8 @@ fn native_extraction_matches_tika_on_the_jvm() {
             };
             let worse = (before.outcome.passes() && !now.outcome.passes())
                 || now.outcome < before.outcome
-                || (now.outcome != Outcome::Replaced
+                || (now.outcome.compared()
+                    && before.outcome.compared()
                     && now.similarity < before.similarity - TOLERANCE);
             worse.then(|| {
                 format!(
