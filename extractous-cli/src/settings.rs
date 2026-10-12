@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use crate::cli::{Format, Ocr};
 
-/// Under `--ocr auto`, a PDF page is OCRed when more than half of its glyphs map to no text, or
-/// when it has at most 10 characters (a scan). Tika's default counts unmapped glyphs absolutely,
+/// Under `--ocr auto`, a PDF page is OCRed when it has at most 10 characters (a scan), and its text
+/// replaced by OCR text when more than half of its glyphs map to no text or the text it yields is
+/// otherwise garbage. Tika's default counts unmapped glyphs absolutely,
 /// more than 10 per page, which OCRs every page of an Arabic, Devanagari or Thai PDF: their
 /// fonts map a whole cluster to its first glyph, so about a quarter of the glyphs map to nothing
 /// even when the text is intact.

@@ -78,18 +78,23 @@ public class TikaNativeMain {
 
     /**
      * Tika's parser, with the formats it handles badly replaced: encrypted CMS and OpenPGP data
-     * are reported as encrypted, detached signatures as content-free, and images are turned
-     * upright before OCR when tesseract is installed.
+     * are reported as encrypted, detached signatures as content-free, and when tesseract is
+     * installed, images are turned upright before OCR and PDF pages are OCRed when their text
+     * layer is missing or garbage.
      */
     private static Parser createParser() {
         final TikaConfig config = TikaConfig.getDefaultConfig();
         final AutoDetectParser parser = new AutoDetectParser(config);
         final Map<MediaType, Parser> parsers = new HashMap<>(parser.getParsers());
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser()));
-        final Parser ocr = ((CompositeParser) config.getParser()).getParsers()
-                .get(MediaType.image("ocr-png"));
+        final Map<MediaType, Parser> leaves = ((CompositeParser) config.getParser()).getParsers();
+        final Parser ocr = leaves.get(MediaType.image("ocr-png"));
         if (ocr != null) {
-            replacements.add(new PreparingOcrParser(ocr));
+            final Parser preparingOcr = new PreparingOcrParser(ocr);
+            replacements.add(preparingOcr);
+            final MediaType pdf = MediaType.application("pdf");
+            replacements.add(new TextLayerCheckingPdfParser(parsers.get(pdf),
+                    leaves.get(pdf).getSupportedTypes(new ParseContext()), preparingOcr));
         }
         for (final Parser replacement : replacements) {
             for (final MediaType type : replacement.getSupportedTypes(new ParseContext())) {

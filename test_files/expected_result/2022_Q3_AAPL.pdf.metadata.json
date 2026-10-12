@@ -48,7 +48,7 @@
         "266240"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
+        "ai.yobix.TextLayerCheckingPdfParser",
         "org.apache.tika.parser.pdf.PDFParser"
     ],
     "Content-Type": [
@@ -152,7 +152,7 @@
         "true"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
+        "ai.yobix.TextLayerCheckingPdfParser",
         "org.apache.tika.parser.pdf.PDFParser"
     ],
     "pdf:annotationSubtypes": [

@@ -947,3 +947,36 @@ fn a_worker_memory_limit_needs_process_isolation() {
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("--worker-max-rss-bytes requires --isolation process"));
 }
+
+#[test]
+fn a_garbage_pdf_text_layer_is_replaced_by_ocr() {
+    let broken = "../quality/corpus/prose-broken-offset.pdf";
+    let objects = json_objects(&[broken]);
+    let document = &objects[0];
+    assert_matches_schema(document);
+    assert!(
+        document["text"]
+            .as_str()
+            .unwrap()
+            .contains("Every evening at dusk the keeper climbed"),
+        "{document}"
+    );
+    assert_eq!(
+        document["metadata"]["rejected_text_layers"],
+        serde_json::json!([{ "page": 1, "fault": "too-few-vowels" }])
+    );
+
+    let kept = stdout(&extractous(&["--ocr", "never", broken]));
+    assert!(kept.contains("7KH /LJKWKRXVH"), "{kept}");
+}
+
+#[test]
+fn a_clean_pdf_text_layer_is_kept() {
+    let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
+    for document in &objects {
+        assert!(
+            document["metadata"].get("rejected_text_layers").is_none(),
+            "{document}"
+        );
+    }
+}

@@ -13,10 +13,13 @@ const QUALITY: &str = "../quality";
 const JOBS: usize = 4;
 const ANCHOR_TOKENS: usize = 4;
 
+/// The categories whose text comes from OCR: scans, and PDFs whose text layer is garbage.
+const OCR_CATEGORIES: [&str; 2] = ["ocr", "broken-text-layer"];
+
 /// How much worse than the baseline a score may get before the check fails. OCR depends on the
 /// tesseract version of each platform, so it gets more room.
 fn tolerance(category: &str) -> f64 {
-    if category == "ocr" {
+    if OCR_CATEGORIES.contains(&category) {
         0.05
     } else {
         0.005

@@ -154,6 +154,24 @@
             "decrypted": {
               "const": true,
               "description": "Present when the document needed a password and one of the given passwords opened it."
+            },
+            "rejected_text_layers": {
+              "type": "array",
+              "description": "PDF pages whose text layer was garbage, or read worse than OCR, and was replaced by OCR text under --ocr auto, with the signal that rejected it.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["page", "fault"],
+                "properties": {
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "fault": {
+                    "enum": ["no-text", "invalid-characters", "unmapped-glyphs", "symbols", "mixed-scripts", "too-few-vowels"]
+                  }
+                }
+              }
             }
           }
         },

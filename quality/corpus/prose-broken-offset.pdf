@@ -1,0 +1,304 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3060 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def /CMapType 2 def
+1 begincodespacerange <00> <FF> endcodespacerange
+100 beginbfchar
+<20> <0020>
+<21> <0004>
+<22> <0005>
+<23> <0006>
+<24> <0007>
+<25> <0008>
+<26> <0009>
+<27> <000A>
+<28> <000B>
+<29> <000C>
+<2A> <000D>
+<2B> <000E>
+<2C> <000F>
+<2D> <0010>
+<2E> <0011>
+<2F> <0012>
+<30> <0013>
+<31> <0014>
+<32> <0015>
+<33> <0016>
+<34> <0017>
+<35> <0018>
+<36> <0019>
+<37> <001A>
+<38> <001B>
+<39> <001C>
+<3A> <001D>
+<3B> <001E>
+<3C> <001F>
+<3D> <0020>
+<3E> <0021>
+<3F> <0022>
+<40> <0023>
+<41> <0024>
+<42> <0025>
+<43> <0026>
+<44> <0027>
+<45> <0028>
+<46> <0029>
+<47> <002A>
+<48> <002B>
+<49> <002C>
+<4A> <002D>
+<4B> <002E>
+<4C> <002F>
+<4D> <0030>
+<4E> <0031>
+<4F> <0032>
+<50> <0033>
+<51> <0034>
+<52> <0035>
+<53> <0036>
+<54> <0037>
+<55> <0038>
+<56> <0039>
+<57> <003A>
+<58> <003B>
+<59> <003C>
+<5A> <003D>
+<5B> <003E>
+<5C> <003F>
+<5D> <0040>
+<5E> <0041>
+<5F> <0042>
+<60> <0043>
+<61> <0044>
+<62> <0045>
+<63> <0046>
+<64> <0047>
+<65> <0048>
+<66> <0049>
+<67> <004A>
+<68> <004B>
+<69> <004C>
+<6A> <004D>
+<6B> <004E>
+<6C> <004F>
+<6D> <0050>
+<6E> <0051>
+<6F> <0052>
+<70> <0053>
+<71> <0054>
+<72> <0055>
+<73> <0056>
+<74> <0057>
+<75> <0058>
+<76> <0059>
+<77> <005A>
+<78> <005B>
+<79> <005C>
+<7A> <005D>
+<7B> <005E>
+<7C> <005F>
+<7D> <0060>
+<7E> <0061>
+<7F> <0062>
+<80> <0063>
+<81> <0064>
+<82> <0065>
+<83> <0066>
+endbfchar
+100 beginbfchar
+<84> <0067>
+<85> <0068>
+<86> <0069>
+<87> <006A>
+<88> <006B>
+<89> <006C>
+<8A> <006D>
+<8B> <006E>
+<8C> <006F>
+<8D> <0070>
+<8E> <0071>
+<8F> <0072>
+<90> <0073>
+<91> <0074>
+<92> <0075>
+<93> <0076>
+<94> <0077>
+<95> <0078>
+<96> <0079>
+<97> <007A>
+<98> <007B>
+<99> <007C>
+<9A> <007D>
+<9B> <007E>
+<9C> <007F>
+<9D> <0080>
+<9E> <0081>
+<9F> <0082>
+<A0> <0083>
+<A1> <0084>
+<A2> <0085>
+<A3> <0086>
+<A4> <0087>
+<A5> <0088>
+<A6> <0089>
+<A7> <008A>
+<A8> <008B>
+<A9> <008C>
+<AA> <008D>
+<AB> <008E>
+<AC> <008F>
+<AD> <0090>
+<AE> <0091>
+<AF> <0092>
+<B0> <0093>
+<B1> <0094>
+<B2> <0095>
+<B3> <0096>
+<B4> <0097>
+<B5> <0098>
+<B6> <0099>
+<B7> <009A>
+<B8> <009B>
+<B9> <009C>
+<BA> <009D>
+<BB> <009E>
+<BC> <009F>
+<BD> <00A0>
+<BE> <00A1>
+<BF> <00A2>
+<C0> <00A3>
+<C1> <00A4>
+<C2> <00A5>
+<C3> <00A6>
+<C4> <00A7>
+<C5> <00A8>
+<C6> <00A9>
+<C7> <00AA>
+<C8> <00AB>
+<C9> <00AC>
+<CA> <00AD>
+<CB> <00AE>
+<CC> <00AF>
+<CD> <00B0>
+<CE> <00B1>
+<CF> <00B2>
+<D0> <00B3>
+<D1> <00B4>
+<D2> <00B5>
+<D3> <00B6>
+<D4> <00B7>
+<D5> <00B8>
+<D6> <00B9>
+<D7> <00BA>
+<D8> <00BB>
+<D9> <00BC>
+<DA> <00BD>
+<DB> <00BE>
+<DC> <00BF>
+<DD> <00C0>
+<DE> <00C1>
+<DF> <00C2>
+<E0> <00C3>
+<E1> <00C4>
+<E2> <00C5>
+<E3> <00C6>
+<E4> <00C7>
+<E5> <00C8>
+<E6> <00C9>
+<E7> <00CA>
+endbfchar
+24 beginbfchar
+<E8> <00CB>
+<E9> <00CC>
+<EA> <00CD>
+<EB> <00CE>
+<EC> <00CF>
+<ED> <00D0>
+<EE> <00D1>
+<EF> <00D2>
+<F0> <00D3>
+<F1> <00D4>
+<F2> <00D5>
+<F3> <00D6>
+<F4> <00D7>
+<F5> <00D8>
+<F6> <00D9>
+<F7> <00DA>
+<F8> <00DB>
+<F9> <00DC>
+<FA> <00DD>
+<FB> <00DE>
+<FC> <00DF>
+<FD> <00E0>
+<FE> <00E1>
+<FF> <00E2>
+endbfchar
+endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2042 >>
+stream
+BT /F1 11 Tf 14 TL 50 790 Td
+(The Lighthouse Keeper's Ledger) Tj T*
+() Tj T*
+(Every evening at dusk the keeper climbed the one hundred and twelve steps of the tower,) Tj T*
+(wound the clockwork that turned the great lens, and wrote a single line in the ledger.) Tj T*
+(Over forty years the ledger filled eleven volumes, and nearly every line recorded the same) Tj T*
+(three facts: the time the lamp was lit, the direction of the wind, and the number of ships) Tj T*
+(that passed before midnight.) Tj T*
+() Tj T*
+(Historians who later studied the ledgers found that the plain entries told a richer story) Tj T*
+(than anyone expected. Long gaps between ships marked the winters when the northern harbour) Tj T*
+(froze. A sudden rise in traffic matched the year a canal opened two hundred miles inland.) Tj T*
+(Even the handwriting changed, growing smaller and more careful after the storm that) Tj T*
+(destroyed the old pier.) Tj T*
+() Tj T*
+(The keeper never described the storm itself. The entry for that night reads only that the) Tj T*
+(lamp was lit at seven minutes past five, that the wind blew from the south-west, and that) Tj T*
+(no ships passed. The next morning, according to the harbour records, fishermen found the) Tj T*
+(lantern room glass cracked in four places, yet the light had not gone out once during the) Tj T*
+(night.) Tj T*
+() Tj T*
+(Today the tower is automated, and the ledgers rest in a climate-controlled archive beside) Tj T*
+(navigation charts from the same decades. Researchers compare the two sources to estimate) Tj T*
+(how shipping routes shifted as engines replaced sails. Their work depends on a simple) Tj T*
+(practice repeated without fail: a person who wrote down what they saw, every single day,) Tj T*
+(whether or not anything seemed to happen.) Tj T*
+() Tj T*
+(Visitors who reach the top of the tower can still read a copy of the first entry, framed) Tj T*
+(beside the lens. It notes a calm sea, a light westerly breeze, and three fishing boats) Tj T*
+(returning late with full nets.) Tj T*
+() Tj T*
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000229 00000 n 
+0000003341 00000 n 
+0000003467 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+5561
+%%EOF

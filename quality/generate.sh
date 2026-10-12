@@ -122,6 +122,10 @@ pandoc "$work/table.md" -o "$corpus/table.docx"
 pandoc "$work/table.md" --standalone --metadata title=Table -o "$corpus/table.html"
 convert "$corpus/table.docx" table pdf pdf
 
+for mapping in private-use offset; do
+    python3 "$here/broken_text_layer.py" "$truth/prose.txt" "$corpus/prose-broken-$mapping.pdf" "$mapping"
+done
+
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-300"
 pdftoppm -r 150 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-150"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 "$corpus/prose-scan-300dpi.png"

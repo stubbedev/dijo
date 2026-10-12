@@ -90,6 +90,20 @@
     "spurious": 0.046875,
     "reading_order": 1.0
   },
+  "prose-broken-offset.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-broken-private-use.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-columns.pdf": {
     "character_error_rate": 0.018140589569160998,
     "token_error_rate": 0.01639344262295082,

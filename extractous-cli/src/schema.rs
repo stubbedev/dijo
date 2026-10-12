@@ -17,6 +17,7 @@ struct TikaKeys {
     encrypted: &'static [&'static str],
     password_used: &'static [&'static str],
     content_type: &'static [&'static str],
+    rejected_text_layers: &'static [&'static str],
 }
 
 const TIKA_KEYS: TikaKeys = TikaKeys {
@@ -39,6 +40,7 @@ const TIKA_KEYS: TikaKeys = TikaKeys {
     encrypted: &["pdf:encrypted"],
     password_used: &["extractous:password-used"],
     content_type: &["Content-Type"],
+    rejected_text_layers: &["extractous:rejected-text-layer"],
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +223,35 @@ pub struct Language {
     pub code: String,
 }
 
+/// Why a PDF page's text layer was replaced by OCR text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextLayerFault {
+    NoText,
+    InvalidCharacters,
+    UnmappedGlyphs,
+    Symbols,
+    MixedScripts,
+    TooFewVowels,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RejectedTextLayer {
+    pub page: u32,
+    pub fault: TextLayerFault,
+}
+
+impl RejectedTextLayer {
+    /// Parses Tika's `page:fault` form.
+    fn parse(value: &str) -> Option<Self> {
+        let (page, fault) = value.split_once(':')?;
+        Some(Self {
+            page: page.parse().ok()?,
+            fault: serde_json::from_value(serde_json::Value::String(fault.to_string())).ok()?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct NormalizedMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,6 +270,8 @@ pub struct NormalizedMetadata {
     pub encrypted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decrypted: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_text_layers: Vec<RejectedTextLayer>,
 }
 
 fn values<'a>(metadata: &'a Metadata, keys: &[&str]) -> &'a [String] {
@@ -282,6 +315,10 @@ pub fn normalize(metadata: &Metadata) -> NormalizedMetadata {
             first(metadata, TIKA_KEYS.encrypted).and_then(|flag| flag.trim().parse().ok())
         }),
         decrypted: password_used.then_some(true),
+        rejected_text_layers: values(metadata, TIKA_KEYS.rejected_text_layers)
+            .iter()
+            .filter_map(|value| RejectedTextLayer::parse(value))
+            .collect(),
     }
 }
 
@@ -308,6 +345,27 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn rejected_text_layers_list_their_page_and_fault() {
+        let normalized = normalize(&metadata(&[(
+            "extractous:rejected-text-layer",
+            &["2:too-few-vowels", "5:invalid-characters"],
+        )]));
+        assert_eq!(
+            normalized.rejected_text_layers,
+            [
+                RejectedTextLayer {
+                    page: 2,
+                    fault: TextLayerFault::TooFewVowels
+                },
+                RejectedTextLayer {
+                    page: 5,
+                    fault: TextLayerFault::InvalidCharacters
+                }
+            ]
+        );
     }
 
     #[test]

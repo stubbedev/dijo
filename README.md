@@ -35,6 +35,13 @@ each image is first run through tesseract's orientation and script detection (th
 packages install with tesseract): it is turned upright and read with the installed model for its script, such as
 `script/Arabic`, then `ara`, falling back to `eng`.
 
+Under `--ocr auto`, each PDF page's text layer is checked before it is used. A page with next to no text is OCRed
+as a scan. A page whose text layer is garbage is OCRed and its text replaced. Garbage here means private-use or
+control characters, symbols where letters should be, words mixing alphabets, too few vowels for a language written
+in Latin script, or mostly unmapped glyphs (broken `ToUnicode` maps, custom font encodings). A page that is only
+doubtful is OCRed as well and keeps whichever text reads better. The JSON metadata lists each replaced page and the
+reason under `rejected_text_layers`. Clean pages are never OCRed.
+
 ## Usage
 
 ```sh
@@ -67,7 +74,7 @@ extractous detect mystery.bin                 # application/pdf
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
 | `-r, --recursive` | Descend into directories, in sorted order |
 | `-j, --jobs <N>` | Inputs extracted in parallel (default: number of cores); output stays in input order |
-| `--ocr auto\|never\|always` | OCR pages and images without text (default), never, or every PDF page as well |
+| `--ocr auto\|never\|always` | OCR images, and PDF pages without text or with a garbage text layer (default); never; or every PDF page as well |
 | `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image from its script by default |
 
 Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRACTOUS_JOBS`, ...); `extractous --help`
