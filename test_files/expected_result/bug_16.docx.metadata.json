@@ -1,6 +1,5 @@
 {
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "dcterms:created": [
@@ -37,7 +36,6 @@
         "1"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "extended-properties:Template": [

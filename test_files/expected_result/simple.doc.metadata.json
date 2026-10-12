@@ -9,7 +9,6 @@
         "4"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.OfficeParser"
     ],
     "dcterms:modified": [
@@ -19,7 +18,6 @@
         "Normal.dotm"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.OfficeParser"
     ],
     "extended-properties:TotalTime": [

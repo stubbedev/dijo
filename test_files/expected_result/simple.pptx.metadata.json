@@ -9,7 +9,6 @@
         ""
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "extended-properties:PresentationFormat": [
@@ -46,7 +45,6 @@
         "2024-07-22T23:31:59Z"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "extended-properties:AppVersion": [

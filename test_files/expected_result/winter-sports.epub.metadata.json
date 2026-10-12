@@ -9,7 +9,6 @@
         "E. F. Benson"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.epub.EpubParser"
     ],
     "dc:contributor": [
@@ -46,7 +45,6 @@
         "2.0"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.epub.EpubParser",
         "org.apache.tika.parser.image.JpegParser",
         "ai.yobix.PreparingOcrParser"

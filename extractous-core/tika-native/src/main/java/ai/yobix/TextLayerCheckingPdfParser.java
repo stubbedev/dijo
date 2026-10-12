@@ -57,27 +57,24 @@ final class TextLayerCheckingPdfParser implements Parser {
     private static final String OCR_IMAGE_TYPE = MediaType.image("ocr-png").toString();
 
     private final Parser pdf;
-    private final Set<MediaType> types;
     private final Parser ocr;
 
     /**
-     * @param pdf   parses PDFs, recording the parser it picks
-     * @param types the PDF media types
-     * @param ocr   reads the text in an image
+     * @param pdf parses PDFs, recording which parser it is
+     * @param ocr reads the text in an image
      */
-    TextLayerCheckingPdfParser(Parser pdf, Set<MediaType> types, Parser ocr) {
+    TextLayerCheckingPdfParser(Parser pdf, Parser ocr) {
         this.pdf = pdf;
-        this.types = Set.copyOf(types);
         this.ocr = ocr;
-    }
-
-    /** How pages are OCRed, fixed by the outermost PDF and kept for the PDFs inside it. */
-    private record PageOcr(PDFParserConfig.OCRStrategyAuto thresholds, int dpi, ImageType imageType) {
     }
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
-        return types;
+        return pdf.getSupportedTypes(context);
+    }
+
+    /** How pages are OCRed, fixed by the outermost PDF and kept for the PDFs inside it. */
+    private record PageOcr(PDFParserConfig.OCRStrategyAuto thresholds, int dpi, ImageType imageType) {
     }
 
     @Override

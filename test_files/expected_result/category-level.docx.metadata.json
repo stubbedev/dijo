@@ -39,7 +39,6 @@
         "1558"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "meta:word-count": [
@@ -55,7 +54,6 @@
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "xmpTPg:NPages": [

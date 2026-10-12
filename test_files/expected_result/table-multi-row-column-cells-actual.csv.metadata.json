@@ -3,7 +3,6 @@
         "6"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.csv.TextAndCSVParser"
     ],
     "csv:num_columns": [
@@ -22,7 +21,6 @@
         "text/csv; charset=ISO-8859-1; delimiter=comma"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.csv.TextAndCSVParser"
     ],
     "resourceName": [

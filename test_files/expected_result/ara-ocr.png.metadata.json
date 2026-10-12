@@ -28,7 +28,6 @@
     "width=842, height=779, bitDepth=8, colorType=RGBAlpha, compressionMethod=deflate, filterMethod=adaptive, interlaceMethod=none"
   ],
   "X-TIKA:Parsed-By-Full-Set": [
-    "org.apache.tika.parser.DefaultParser",
     "org.apache.tika.parser.image.ImageParser",
     "ai.yobix.PreparingOcrParser"
   ],
@@ -88,7 +87,6 @@
     "image/ocr-png"
   ],
   "X-TIKA:Parsed-By": [
-    "org.apache.tika.parser.DefaultParser",
     "org.apache.tika.parser.image.ImageParser",
     "ai.yobix.PreparingOcrParser"
   ]

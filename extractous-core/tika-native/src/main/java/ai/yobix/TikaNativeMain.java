@@ -78,7 +78,9 @@ public class TikaNativeMain {
     }
 
     /**
-     * Tika's parser, with the formats it handles badly replaced: encrypted CMS and OpenPGP data
+     * Tika's parser, mapping each type straight to the parser for it (Tika's default composite
+     * rebuilds its map of every parser for each document it is asked to parse), with the formats
+     * it handles badly replaced: encrypted CMS and OpenPGP data
      * are reported as encrypted, detached signatures as content-free, and when tesseract is
      * installed, images are turned upright before OCR and PDF pages are OCRed when their text
      * layer is missing or garbage.
@@ -86,16 +88,16 @@ public class TikaNativeMain {
     private static Parser createParser() {
         final TikaConfig config = TikaConfig.getDefaultConfig();
         final AutoDetectParser parser = new AutoDetectParser(config);
-        final Map<MediaType, Parser> parsers = new HashMap<>(parser.getParsers());
+        final Map<MediaType, Parser> parsers =
+                new HashMap<>(((CompositeParser) config.getParser()).getParsers());
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser()));
-        final Map<MediaType, Parser> leaves = ((CompositeParser) config.getParser()).getParsers();
-        final Parser ocr = leaves.get(MediaType.image("ocr-png"));
+        final Parser ocr = parsers.get(MediaType.image("ocr-png"));
         if (ocr != null) {
             final Parser preparingOcr = new PreparingOcrParser(ocr);
             replacements.add(preparingOcr);
-            final MediaType pdf = MediaType.application("pdf");
-            replacements.add(new TextLayerCheckingPdfParser(parsers.get(pdf),
-                    leaves.get(pdf).getSupportedTypes(new ParseContext()), preparingOcr));
+            final Parser pdf = new CompositeParser(config.getMediaTypeRegistry(),
+                    parsers.get(MediaType.application("pdf")));
+            replacements.add(new TextLayerCheckingPdfParser(pdf, preparingOcr));
         }
         for (final Parser replacement : replacements) {
             for (final MediaType type : replacement.getSupportedTypes(new ParseContext())) {

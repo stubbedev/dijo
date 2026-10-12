@@ -30,7 +30,6 @@
         "Slide 1"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     ],
     "custom:Slides": [
@@ -43,7 +42,6 @@
         "690"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
         "org.apache.tika.parser.image.ImageParser",
         "ai.yobix.PreparingOcrParser"

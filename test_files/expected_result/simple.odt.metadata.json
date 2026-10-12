@@ -12,11 +12,9 @@
         "simple.odt"
     ],
     "X-TIKA:Parsed-By": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.odf.OpenDocumentParser"
     ],
     "X-TIKA:Parsed-By-Full-Set": [
-        "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.odf.OpenDocumentParser"
     ],
     "dcterms:modified": [
