@@ -790,3 +790,27 @@ fn the_cache_refuses_passwords_and_separate_embedded_documents() {
     assert!(stderr(&separate).contains("--embedded separate"));
     assert!(!Path::new("unused").exists());
 }
+
+#[test]
+fn a_heap_cap_fails_one_extraction_and_not_the_next() {
+    let hungry = document("many-shared-strings.xlsx");
+    let uncapped = json_objects(&[&hungry]);
+    assert_eq!(uncapped[0]["status"], "complete");
+
+    let capped = json_objects(&[
+        "--max-heap-bytes",
+        "8388608",
+        "--jobs",
+        "1",
+        &hungry,
+        &document("simple.odt"),
+    ]);
+    assert_matches_schema(&capped[0]);
+    assert_eq!(capped[0]["status"], "failed");
+    assert_eq!(capped[0]["errors"][0]["category"], "limit-exceeded");
+    assert!(capped[0]["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("OutOfMemoryError"));
+    assert_eq!(capped[1]["status"], "complete");
+}

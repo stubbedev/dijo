@@ -54,6 +54,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
 | `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate`: nesting depth, number of embedded documents, and bytes they may expand to |
 | `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size |
+| `--max-heap-bytes <BYTES>` | Cap Tika's Java heap; an extraction that needs more fails with `limit-exceeded` and the next one runs normally |
 | `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
@@ -104,7 +105,7 @@ Extraction runs on a fixed pool of worker threads (`--workers`). Uploads are spo
 it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
-come back as 200 with their status in the JSON. `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
+come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java heap all workers share (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
 request (408 while uploading, 504 before extraction starts, a cut connection after). SIGTERM stops accepting and waits
 `--shutdown-grace` seconds for running requests.
 

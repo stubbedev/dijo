@@ -87,7 +87,7 @@ fn start(args: &ServeArgs) -> Result<bool, String> {
     let metrics = Arc::new(Metrics::default());
     let workers = args.workers.get();
     let pool = Pool::start(workers, args.queue, Arc::clone(&metrics))?;
-    let spool = Spool::create(args.spool_dir.as_deref())
+    let spool = Spool::create(args.runtime.spool_dir.as_deref())
         .map_err(|e| format!("Failed to create the spool directory: {e}"))?;
     let state = Arc::new(State {
         pool,

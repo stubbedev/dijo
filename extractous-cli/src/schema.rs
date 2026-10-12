@@ -159,7 +159,9 @@ impl ExtractionError {
             ErrorCategory::Encrypted
         } else if message.contains("UnsupportedFormatException") || message.contains("No parser") {
             ErrorCategory::Unsupported
-        } else if message.contains("WriteLimitReachedException") {
+        } else if message.contains("WriteLimitReachedException")
+            || message.contains("java.lang.OutOfMemoryError")
+        {
             ErrorCategory::LimitExceeded
         } else if message.contains("TimeoutException") || message.contains("timeout") {
             ErrorCategory::Timeout
@@ -429,6 +431,10 @@ mod tests {
         assert_eq!(
             classify("Could not open the input: java.nio.file.NoSuchFileException: a.pdf"),
             ErrorCategory::Unreadable
+        );
+        assert_eq!(
+            classify("java.io.IOException: Parsing failed <- caused by java.lang.OutOfMemoryError: Garbage-collected heap size exceeded."),
+            ErrorCategory::LimitExceeded
         );
         assert_eq!(classify("something else"), ErrorCategory::Internal);
     }

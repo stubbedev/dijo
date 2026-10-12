@@ -367,3 +367,16 @@ fn text_is_normalised_unless_raw() {
     let unknown = server.post_file("/extract?no_normalize=bogus", &[], "unnormalized.txt");
     assert_eq!(unknown.status, 400);
 }
+
+#[test]
+fn a_heap_cap_fails_one_request_and_not_the_next() {
+    let server = Server::start(&["--max-heap-bytes", "8388608", "--workers", "1"]);
+    let hungry = server.post_file("/extract", &[], "many-shared-strings.xlsx");
+    assert_eq!(hungry.status, 413);
+    assert_eq!(hungry.json()["errors"][0]["category"], "limit-exceeded");
+    let next = server.post_file("/extract", &[], "simple.odt");
+    assert_eq!(next.status, 200);
+    assert!(next
+        .text()
+        .contains("These are a few of my favorite things"));
+}

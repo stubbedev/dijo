@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -63,10 +63,8 @@ pub struct ServeArgs {
     #[arg(long, value_name = "SECONDS", env = "EXTRACTOUS_TIMEOUT")]
     pub timeout: Option<u64>,
 
-    /// Directory for temporary files: spooled input and output, embedded documents, and Tika's
-    /// scratch files for large PDFs. The system temporary directory by default.
-    #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
-    pub spool_dir: Option<PathBuf>,
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
 
     /// Seconds in-flight requests get to finish after a shutdown signal.
     #[arg(
@@ -76,6 +74,21 @@ pub struct ServeArgs {
         default_value_t = 30
     )]
     pub shutdown_grace: u64,
+}
+
+/// Where extraction keeps temporary files and how much memory it may use.
+#[derive(Debug, Args)]
+pub struct RuntimeArgs {
+    /// Directory for temporary files: spooled input and output, embedded documents, and Tika's
+    /// scratch files for large PDFs. The system temporary directory by default.
+    #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
+    pub spool_dir: Option<PathBuf>,
+
+    /// The most memory Tika's Java heap may take. An extraction that needs more fails with a
+    /// limit-exceeded error, and the next one runs normally. By default the heap may grow to a
+    /// large share of physical memory.
+    #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_HEAP_BYTES")]
+    pub max_heap_bytes: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Args)]
@@ -176,10 +189,8 @@ pub struct ExtractArgs {
     #[arg(long, value_name = "BYTES", default_value_t = Limits::DEFAULT.max_expanded_bytes, env = "EXTRACTOUS_MAX_EXPANDED_BYTES")]
     pub max_expanded_bytes: u64,
 
-    /// Directory for temporary files: spooled input and output, embedded documents, and Tika's
-    /// scratch files for large PDFs. The system temporary directory by default.
-    #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
-    pub spool_dir: Option<PathBuf>,
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
 
     /// Keep the output of complete extractions in DIR and reuse it while the input, the options
     /// and the extractous build are unchanged. Not available with passwords, so decrypted text

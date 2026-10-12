@@ -1,4 +1,5 @@
 use std::fmt;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -26,31 +27,42 @@ impl fmt::Debug for Isolate {
     }
 }
 
+/// How the process-wide isolate is set up. The isolate reads these once, when it starts.
+#[derive(Debug, Clone, Default)]
+pub struct IsolateSettings {
+    /// Where Tika puts its temporary files (PDF scratch files, spooled streams) instead of the
+    /// system temporary directory.
+    pub temp_dir: Option<PathBuf>,
+    /// The most memory the Java heap may take. Beyond it an extraction fails with an
+    /// OutOfMemoryError, and the isolate stays usable for the next one. By default the heap may
+    /// grow to a large share of physical memory.
+    pub max_heap_bytes: Option<NonZeroU64>,
+}
+
 static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
-static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+static SETTINGS: OnceLock<IsolateSettings> = OnceLock::new();
 
 /// The process-wide isolate, created on first use.
 pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
     ISOLATE
         .get_or_init(|| {
-            native::create_isolate(TEMP_DIR.get().map(PathBuf::as_path)).map(|vm| Isolate { vm })
+            native::create_isolate(SETTINGS.get_or_init(IsolateSettings::default))
+                .map(|vm| Isolate { vm })
         })
         .as_ref()
         .map_err(|message| Error::NativeLibrary(message.clone()))
 }
 
-/// Puts Tika's temporary files (PDF scratch files, spooled streams) in `dir` instead of the
-/// system temporary directory. Java reads this once, when the isolate starts, so it must be set
-/// before the first extraction and only once.
-pub fn set_temp_dir(dir: PathBuf) -> ExtractResult<()> {
+/// Sets up the isolate; only once, and before the first extraction starts it.
+pub fn configure_isolate(settings: IsolateSettings) -> ExtractResult<()> {
     if ISOLATE.get().is_some() {
         return Err(Error::Unknown(
-            "The temporary directory must be set before the first extraction".to_string(),
+            "The isolate must be configured before the first extraction".to_string(),
         ));
     }
-    TEMP_DIR
-        .set(dir)
-        .map_err(|_| Error::Unknown("The temporary directory was already set".to_string()))
+    SETTINGS
+        .set(settings)
+        .map_err(|_| Error::Unknown("The isolate was already configured".to_string()))
 }
 
 /// Attaches the current thread to the isolate until the thread exits, so extractions on it skip

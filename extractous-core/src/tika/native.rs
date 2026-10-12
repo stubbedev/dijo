@@ -10,6 +10,8 @@ use flate2::read::GzDecoder;
 use jni::{sys, JavaVM};
 use libloading::Library;
 
+use crate::IsolateSettings;
+
 include!(concat!(env!("OUT_DIR"), "/native.rs"));
 
 type CreateJavaVm =
@@ -130,7 +132,7 @@ fn unpack(staging: &Path) -> io::Result<()> {
 
 /// Creates a new GraalVM isolate: a disjoint heap, so work in one isolate cannot exhaust or
 /// corrupt another. Each call to JNI_CreateJavaVM in a native image creates one.
-pub(crate) fn create_isolate(temp_dir: Option<&Path>) -> Result<JavaVM, String> {
+pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, String> {
     let loaded = loaded()?;
     let library_dir = loaded.dir.as_path();
     let library_path = library_dir.to_str().ok_or_else(|| {
@@ -141,7 +143,9 @@ pub(crate) fn create_isolate(temp_dir: Option<&Path>) -> Result<JavaVM, String> 
     })?;
     let library_path_option = CString::new(format!("-Djava.library.path={library_path}"))
         .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))?;
-    let temp_dir_option = temp_dir
+    let temp_dir_option = settings
+        .temp_dir
+        .as_deref()
         .map(|dir| {
             let dir = dir
                 .to_str()
@@ -150,10 +154,14 @@ pub(crate) fn create_isolate(temp_dir: Option<&Path>) -> Result<JavaVM, String> 
                 .map_err(|e| format!("Invalid temporary directory {dir}: {e}"))
         })
         .transpose()?;
+    let max_heap_option = settings.max_heap_bytes.map(|bytes| {
+        CString::new(format!("-XX:MaxHeapSize={bytes}")).expect("a number has no NUL")
+    });
     let mut vm_options: Vec<sys::JavaVMOption> = [
         Some(library_path_option.as_c_str()),
         Some(c"-Djava.awt.headless=true"),
         temp_dir_option.as_deref(),
+        max_heap_option.as_deref(),
     ]
     .into_iter()
     .flatten()
