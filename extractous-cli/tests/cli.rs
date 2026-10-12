@@ -463,6 +463,19 @@ fn encrypted_inputs_are_reported_as_encrypted() {
 }
 
 #[test]
+fn an_encrypted_archive_entry_leaves_the_rest_extracted() {
+    let objects = json_objects(&[&format!("{DOCUMENTS}/encrypted/encrypted-entry.zip")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["status"], "partial");
+    assert!(objects[0]["text"].as_str().unwrap().contains("hello world"));
+    assert_eq!(objects[0]["errors"][0]["category"], "encrypted");
+    assert!(objects[0]["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("encrypted.txt"));
+}
+
+#[test]
 fn password_file_decrypts_without_leaking_the_password() {
     let scratch = Scratch::new("passwords");
     let password_file = scratch.0.join("passwords");

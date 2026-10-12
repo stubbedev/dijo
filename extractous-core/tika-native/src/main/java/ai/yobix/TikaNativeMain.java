@@ -133,6 +133,10 @@ public class TikaNativeMain {
         return "Parse error occurred : " + describe(throwable);
     }
 
+    private static Parser parser(String password) {
+        return password == null ? PARSER : new LegacyOfficePasswordParser(PARSER, password);
+    }
+
     private static ParseContext parseContext(
             PDFParserConfig pdfConfig,
             OfficeParserConfig officeConfig,
@@ -224,7 +228,7 @@ public class TikaNativeMain {
             handlerForParser = new BodyContentHandler(handler);
         }
         try (stream) {
-            PARSER.parse(stream, handlerForParser, metadata,
+            parser(password).parse(stream, handlerForParser, metadata,
                     parseContext(pdfConfig, officeConfig, tesseractConfig, password));
         } catch (SAXException e) {
             if (!WriteLimitReachedException.isWriteLimitReached(e)) {
@@ -288,7 +292,7 @@ public class TikaNativeMain {
         }
         try {
             final InputStream text = new ParsingInputStream(
-                    PARSER, stream, metadata, parseContext, asXML, Charset.forName(charsetName),
+                    parser(password), stream, metadata, parseContext, asXML, Charset.forName(charsetName),
                     timeoutMillis, spooler);
             return new ReaderResult(text, metadata);
         } catch (IOException e) {
@@ -354,7 +358,7 @@ public class TikaNativeMain {
         });
 
         try (stream) {
-            new RecursiveParserWrapper(PARSER).parse(stream,
+            new RecursiveParserWrapper(parser(password)).parse(stream,
                     new RecursiveParserWrapperHandler(new BasicContentHandlerFactory(
                             BasicContentHandlerFactory.HANDLER_TYPE.TEXT, -1)),
                     metadata, parseContext);

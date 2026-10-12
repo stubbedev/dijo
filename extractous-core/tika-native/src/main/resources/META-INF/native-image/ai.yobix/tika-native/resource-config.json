@@ -1,0 +1,7 @@
+{
+  "globs": [
+    {
+      "glob": "com/healthmarketscience/jackcess/index_*.txt"
+    }
+  ]
+}

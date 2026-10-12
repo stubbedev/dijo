@@ -124,7 +124,10 @@ without pages is one record), and `--format elements` one per heading, paragraph
 or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are
 available with `--raw-metadata`. `status` is `complete`, `partial` (some text before an error), `encrypted` (no password opened it) or `failed`, and
 every error carries a category and its full cause chain. Decrypted documents report `"encrypted":true,"decrypted":true`
-in `metadata`; passwords never appear in output or errors.
+in `metadata`; passwords never appear in output or errors. Passwords decrypt PDF (a PDF with only an owner password
+needs none), DOCX/XLSX/PPTX, Word, Excel and PowerPoint 97-2003, Access and 7z. Tika cannot decrypt ODF documents or
+encrypted ZIP entries; those are reported as `encrypted`, and an encrypted entry leaves the rest of its archive
+extracted with status `partial`.
 
 ### Embedded documents
 
