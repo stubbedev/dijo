@@ -315,6 +315,7 @@ fn render_parts(
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
             let mut run = String::new();
+            let mut run_header = None;
             let mut emit = |place: PartPlace, part: running::Page| {
                 let PartPlace {
                     page,
@@ -323,10 +324,12 @@ fn render_parts(
                     continued,
                 } = place;
                 run.push_str(&part.text);
+                run_header = run_header.take().or(part.header);
                 if continued {
                     return Ok(());
                 }
                 let text = std::mem::take(&mut run);
+                let header = run_header.take();
                 sample.push(text.as_bytes());
                 sample.push(b"\n");
                 let record = PartRecord {
@@ -344,7 +347,7 @@ fn render_parts(
                         Unit::Elements => None,
                     },
                     text: &text,
-                    header: part.header.as_deref(),
+                    header: header.as_deref(),
                     footer: part.footer.as_deref(),
                     artifacts: artifacts.as_deref(),
                 };
@@ -428,6 +431,7 @@ fn split_parts(
     let headers = unit == Unit::Pages && options.normalization.contains(Step::Headers);
     let mut running = RunningLines::new(emit, headers);
     let mut run: Option<Normalizer> = None;
+    let mut page_begun = false;
     let split = structure::split(stream, unit, &mut |part| {
         bytes += (part.text.len() + part.artifacts.len()) as u64;
         let mut text = if part.continued || run.is_some() {
@@ -450,7 +454,14 @@ fn split_parts(
             text.push_str(&std::mem::take(&mut artifacts));
         }
         let placement = match part.page {
-            Some(_) => Placement::Page,
+            Some(_) => {
+                let first_line = !page_begun;
+                page_begun = part.continued && (page_begun || !text.trim().is_empty());
+                Placement::Page {
+                    first_line,
+                    last_line: !part.continued,
+                }
+            }
             None => Placement::Loose,
         };
         let place = PartPlace {

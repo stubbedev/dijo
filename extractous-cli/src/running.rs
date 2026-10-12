@@ -26,10 +26,11 @@ pub struct RunningLines<'a, T> {
 }
 
 /// Whether text is a page's, or lies outside every page, such as the bookmarks Tika appends to
-/// a PDF. Only pages have running lines.
+/// a PDF. Only pages have running lines. A long page comes in pieces, and only the piece with a
+/// page's first line can hold its header, only the one with its last line its footer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
-    Page,
+    Page { first_line: bool, last_line: bool },
     Loose,
 }
 
@@ -60,7 +61,15 @@ impl<'a, T> RunningLines<'a, T> {
         let pages = self
             .held
             .iter()
-            .filter(|(_, _, placement)| *placement == Placement::Page)
+            .filter(|(_, _, placement)| {
+                matches!(
+                    placement,
+                    Placement::Page {
+                        last_line: true,
+                        ..
+                    }
+                )
+            })
             .count();
         if pages == WINDOW_PAGES || self.held_bytes >= WINDOW_BYTES {
             self.learn()?;
@@ -79,8 +88,7 @@ impl<'a, T> RunningLines<'a, T> {
         let patterns = learn(
             self.held
                 .iter()
-                .filter(|(_, _, placement)| *placement == Placement::Page)
-                .map(|(_, text, _)| text.as_str()),
+                .map(|(_, text, placement)| (text.as_str(), *placement)),
         );
         for (with, text, placement) in std::mem::take(&mut self.held) {
             (self.emit)(with, split(text, placement, &patterns))?;
@@ -115,11 +123,11 @@ fn pattern(line: &str) -> String {
     pattern
 }
 
-fn first_line(text: &str) -> Option<&str> {
+fn first_line_of(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
-fn last_line(text: &str) -> Option<&str> {
+fn last_line_of(text: &str) -> Option<&str> {
     text.lines()
         .rev()
         .map(str::trim)
@@ -127,17 +135,28 @@ fn last_line(text: &str) -> Option<&str> {
 }
 
 /// The first and last lines that recur on at least half of the pages, and on two at least.
-fn learn<'t>(pages: impl Iterator<Item = &'t str>) -> Patterns {
+fn learn<'t>(texts: impl Iterator<Item = (&'t str, Placement)>) -> Patterns {
     let mut headers: HashMap<String, usize> = HashMap::new();
     let mut footers: HashMap<String, usize> = HashMap::new();
     let mut count: usize = 0;
-    for page in pages {
-        count += 1;
-        if let Some(line) = first_line(page) {
-            *headers.entry(pattern(line)).or_default() += 1;
+    for (text, placement) in texts {
+        let Placement::Page {
+            first_line,
+            last_line,
+        } = placement
+        else {
+            continue;
+        };
+        if first_line {
+            if let Some(line) = first_line_of(text) {
+                *headers.entry(pattern(line)).or_default() += 1;
+            }
         }
-        if let Some(line) = last_line(page) {
-            *footers.entry(pattern(line)).or_default() += 1;
+        if last_line {
+            count += 1;
+            if let Some(line) = last_line_of(text) {
+                *footers.entry(pattern(line)).or_default() += 1;
+            }
         }
     }
     let threshold = count.div_ceil(2).max(2);
@@ -155,39 +174,81 @@ fn learn<'t>(pages: impl Iterator<Item = &'t str>) -> Patterns {
 }
 
 fn split(text: String, placement: Placement, patterns: &Patterns) -> Page {
-    if placement == Placement::Loose {
+    let Placement::Page {
+        first_line,
+        last_line,
+    } = placement
+    else {
         return Page {
             text,
             header: None,
             footer: None,
         };
-    }
-    let mut lines: Vec<&str> = text.lines().collect();
-    let start = lines.iter().position(|line| !line.trim().is_empty());
-    let header = start
-        .filter(|&index| patterns.headers.contains(&pattern(lines[index])))
-        .map(|index| lines.remove(index).trim().to_string());
-    let end = lines.iter().rposition(|line| !line.trim().is_empty());
-    let footer = end
-        .filter(|&index| patterns.footers.contains(&pattern(lines[index])))
-        .map(|index| lines.remove(index).trim().to_string());
-    if header.is_none() && footer.is_none() {
-        return Page {
-            text,
-            header,
-            footer,
-        };
-    }
+    };
+    let mut body = text.as_str();
+    let header = first_line
+        .then(|| take_first_line(body, &patterns.headers))
+        .flatten()
+        .map(|(line, rest)| {
+            body = rest;
+            line
+        });
+    let footer = last_line
+        .then(|| take_last_line(body, &patterns.footers))
+        .flatten()
+        .map(|(line, rest)| {
+            body = rest;
+            line
+        });
     Page {
-        text: lines.join("\n").trim_matches('\n').to_string(),
+        text: if header.is_none() && footer.is_none() {
+            text
+        } else {
+            body.to_string()
+        },
         header,
         footer,
     }
 }
 
+/// The first non-blank line of `text` when it matches one of `patterns`, and the text after it.
+fn take_first_line<'t>(text: &'t str, patterns: &HashSet<String>) -> Option<(String, &'t str)> {
+    let line = first_line_of(text)?;
+    if !patterns.contains(&pattern(line)) {
+        return None;
+    }
+    let end = line.as_ptr() as usize - text.as_ptr() as usize + line.len();
+    let after = text[end..]
+        .find('\n')
+        .map_or(text.len(), |newline| end + newline);
+    Some((
+        line.to_string(),
+        text[after..].trim_start_matches(['\r', '\n']),
+    ))
+}
+
+/// The last non-blank line of `text` when it matches one of `patterns`, and the text before it.
+fn take_last_line<'t>(text: &'t str, patterns: &HashSet<String>) -> Option<(String, &'t str)> {
+    let line = last_line_of(text)?;
+    if !patterns.contains(&pattern(line)) {
+        return None;
+    }
+    let start = line.as_ptr() as usize - text.as_ptr() as usize;
+    let before = text[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    Some((
+        line.to_string(),
+        text[..before].trim_end_matches(['\r', '\n']),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WHOLE_PAGE: Placement = Placement::Page {
+        first_line: true,
+        last_line: true,
+    };
 
     fn run(pages: &[&str]) -> Vec<Page> {
         let mut out = Vec::new();
@@ -198,9 +259,7 @@ mod tests {
         };
         let mut running = RunningLines::new(&mut emit, true);
         for (index, page) in pages.iter().enumerate() {
-            running
-                .push(index, page.to_string(), Placement::Page)
-                .unwrap();
+            running.push(index, page.to_string(), WHOLE_PAGE).unwrap();
         }
         running.finish().unwrap();
         out
@@ -233,7 +292,7 @@ mod tests {
         };
         let mut running = RunningLines::new(&mut emit, true);
         running
-            .push(0, "Title\nFirst page.".to_string(), Placement::Page)
+            .push(0, "Title\nFirst page.".to_string(), WHOLE_PAGE)
             .unwrap();
         running
             .push(1, "Title".to_string(), Placement::Loose)
@@ -242,6 +301,51 @@ mod tests {
         assert_eq!(out[0].text, "Title\nFirst page.");
         assert_eq!(out[0].header, None);
         assert_eq!(out[1].text, "Title");
+    }
+
+    #[test]
+    fn a_page_in_pieces_loses_its_header_and_footer_once() {
+        let mut out = Vec::new();
+        let mut emit = |_: (), page: Page| {
+            out.push(page);
+            Ok(())
+        };
+        let mut running = RunningLines::new(&mut emit, true);
+        for number in 1..=3 {
+            let pieces = [
+                (
+                    format!("Annual Report\nFirst half of page {number}.\n"),
+                    true,
+                    false,
+                ),
+                ("Middle of the page.\n".to_string(), false, false),
+                (format!("Second half.\nPage {number}"), false, true),
+            ];
+            for (text, first_line, last_line) in pieces {
+                running
+                    .push(
+                        (),
+                        text,
+                        Placement::Page {
+                            first_line,
+                            last_line,
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+        running.finish().unwrap();
+        let pages: Vec<String> = out
+            .chunks(3)
+            .map(|pieces| pieces.iter().map(|piece| piece.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            pages[1],
+            "First half of page 2.\nMiddle of the page.\nSecond half."
+        );
+        assert_eq!(out[3].header.as_deref(), Some("Annual Report"));
+        assert_eq!(out[5].footer.as_deref(), Some("Page 2"));
+        assert!(out[4].header.is_none() && out[4].footer.is_none());
     }
 
     #[test]

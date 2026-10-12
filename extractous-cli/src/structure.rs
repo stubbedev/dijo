@@ -7,9 +7,9 @@ use serde::Serialize;
 
 const PAGE_CLASSES: [&str; 2] = ["page", "slide-content"];
 const ARTIFACT_CLASS: &str = "artifact";
-/// The most text outside every page that is collected before it is passed on, so a document
-/// without pages streams instead of being held whole.
-const LOOSE_PIECE_BYTES: usize = 1 << 16;
+/// The most text of a page, or outside every page, that is collected before it is passed on, so
+/// a long page or a document without pages streams instead of being held whole.
+const PIECE_BYTES: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
@@ -36,8 +36,8 @@ pub struct Part {
     /// The text of a page that the document marks as furniture rather than content, such as a
     /// tagged PDF's running headers, footers and page numbers; empty for elements.
     pub artifacts: String,
-    /// Whether the text goes on in the next part: text outside every page is passed on in pieces
-    /// of up to 64 KiB, the last one not continued.
+    /// Whether the text goes on in the next part: a long page, and long text outside every page,
+    /// is passed on in pieces of whole lines, the last one not continued.
     pub continued: bool,
 }
 
@@ -60,7 +60,7 @@ struct Splitter<'e> {
     element: Option<Open>,
     artifact: Option<usize>,
     artifacts: String,
-    loose_run: bool,
+    in_pieces: bool,
 }
 
 fn element_kind(name: &str) -> Option<(ElementKind, Option<u8>)> {
@@ -109,7 +109,7 @@ impl Splitter<'_> {
     fn flush_loose(&mut self) -> io::Result<()> {
         let text = std::mem::take(&mut self.loose);
         let artifacts = std::mem::take(&mut self.artifacts);
-        let continues_run = std::mem::take(&mut self.loose_run);
+        let continues_run = std::mem::take(&mut self.in_pieces);
         let text = if continues_run {
             text.trim_end()
         } else {
@@ -130,21 +130,23 @@ impl Splitter<'_> {
         })
     }
 
-    /// Passes on the text outside every page collected so far once it is long, but for the
-    /// whitespace it ends with, which the end of the text drops.
-    fn pass_on_long_loose_text(&mut self) -> io::Result<()> {
-        if self.unit != Unit::Pages || self.page.is_some() || self.loose.len() < LOOSE_PIECE_BYTES {
+    /// Passes on the text collected so far once it is long, up to its last line: the line still
+    /// being written, and with it the last line of a page, comes in a later piece. Text without
+    /// line breaks is passed on whole but for the whitespace it ends with, which the end of the
+    /// text drops.
+    fn pass_on_long_text(&mut self) -> io::Result<()> {
+        if self.unit != Unit::Pages || self.loose.len() < PIECE_BYTES {
             return Ok(());
         }
-        let content = self.loose.trim_end().len();
-        let kept = if self.loose.len() - content < LOOSE_PIECE_BYTES {
-            content
-        } else {
-            self.loose.len()
+        let content = self.loose.trim_end();
+        let kept = match content.rfind('\n') {
+            Some(newline) => newline + 1,
+            None if self.loose.len() - content.len() < PIECE_BYTES => content.len(),
+            None => self.loose.len(),
         };
         let rest = self.loose.split_off(kept);
         let piece = std::mem::replace(&mut self.loose, rest);
-        let piece = if self.loose_run {
+        let piece = if self.in_pieces {
             piece
         } else {
             piece.trim_start().to_string()
@@ -152,9 +154,9 @@ impl Splitter<'_> {
         if piece.is_empty() {
             return Ok(());
         }
-        self.loose_run = true;
+        self.in_pieces = true;
         (self.emit)(Part {
-            page: None,
+            page: self.page.map(|(page, _)| page),
             element: None,
             text: piece,
             artifacts: String::new(),
@@ -279,7 +281,7 @@ impl Splitter<'_> {
             return Ok(());
         }
         current.push_str(text);
-        self.pass_on_long_loose_text()
+        self.pass_on_long_text()
     }
 }
 
@@ -481,7 +483,7 @@ pub fn split(
         element: None,
         artifact: None,
         artifacts: String::new(),
-        loose_run: false,
+        in_pieces: false,
     };
     let mut buffer = Vec::new();
     loop {
@@ -661,10 +663,33 @@ mod tests {
         let (last, rest) = pieces.split_last().unwrap();
         assert!(rest.iter().all(|piece| piece.continued
             && piece.page.is_none()
-            && piece.text.len() <= LOOSE_PIECE_BYTES + line.len()));
+            && piece.text.len() <= PIECE_BYTES + line.len()));
         assert!(!last.continued);
         let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
         assert_eq!(joined, body.trim());
+    }
+
+    #[test]
+    fn a_long_page_streams_in_pieces_of_whole_lines() {
+        let line = "A row of a sheet that runs to many rows.\n";
+        let body = line.repeat(5000);
+        let xhtml = format!(
+            "<html><body><div class=\"page\"><p>Header line\n{body}Footer line</p>\
+             <div class=\"artifact\"><p>Page 1</p></div></div></body></html>"
+        );
+        let pieces = parts(&xhtml, Unit::Pages);
+        assert!(pieces.len() > 2, "{} pieces", pieces.len());
+        let (last, rest) = pieces.split_last().unwrap();
+        assert!(rest.iter().all(|piece| piece.continued
+            && piece.page == Some(1)
+            && piece.text.ends_with('\n')
+            && piece.artifacts.is_empty()));
+        assert!(rest[0].text.starts_with("Header line\n"));
+        assert!(!last.continued);
+        assert!(last.text.ends_with("Footer line"));
+        assert_eq!(last.artifacts, "Page 1");
+        let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(joined, format!("Header line\n{body}Footer line"));
     }
 
     #[test]
