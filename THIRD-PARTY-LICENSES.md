@@ -2873,9 +2873,7 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `com.github.albfernandez:juniversalchardet` | 2.5.0 | GENERAL PUBLIC LICENSE, version 3 (GPL-3.0), LGPL-3.0-only, MPL-1.1 |
 | `com.github.jai-imageio:jai-imageio-core` | 1.4.0 | BSD-3-Clause, LICENSE.txt |
 | `com.github.junrar:junrar` | 7.5.5 | UnRar License |
-| `com.github.openjson:openjson` | 1.0.13 | Apache-2.0 |
 | `com.github.virtuald:curvesapi` | 1.08 | 0BSD, BSD-3-Clause |
-| `com.googlecode.json-simple:json-simple` | 1.1.1 | Apache-2.0 |
 | `com.googlecode.plist:dd-plist` | 1.28 | MIT |
 | `com.healthmarketscience.jackcess:jackcess-encrypt` | 4.0.3 | Apache-2.0 |
 | `com.healthmarketscience.jackcess:jackcess` | 4.0.8 | Apache-2.0 |
@@ -2890,7 +2888,6 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `info.picocli:picocli` | 4.7.6 | Apache-2.0 |
 | `jakarta.activation:jakarta.activation-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `jakarta.mail:jakarta.mail-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `jakarta.ws.rs:jakarta.ws.rs-api` | 3.1.0 | EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `jakarta.xml.bind:jakarta.xml.bind-api` | 4.0.2 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.apache.commons:commons-collections4` | 4.5.0 | Apache-2.0 |
 | `org.apache.commons:commons-compress` | 1.28.0 | Apache-2.0 |
@@ -2898,9 +2895,6 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.apache.commons:commons-exec` | 1.5.0 | Apache-2.0 |
 | `org.apache.commons:commons-lang3` | 3.18.0 | Apache-2.0 |
 | `org.apache.commons:commons-math3` | 3.6.1 | Apache-2.0 |
-| `org.apache.httpcomponents:httpclient` | 4.5.14 | Apache-2.0 |
-| `org.apache.httpcomponents:httpcore` | 4.4.16 | Apache-2.0 |
-| `org.apache.httpcomponents:httpmime` | 4.5.14 | Apache-2.0 |
 | `org.apache.james:apache-mime4j-core` | 0.8.13 | Apache-2.0 |
 | `org.apache.james:apache-mime4j-dom` | 0.8.13 | Apache-2.0 |
 | `org.apache.logging.log4j:log4j-api` | 2.24.3 | Apache-2.0 |
@@ -2917,7 +2911,6 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.apache.poi:poi-scratchpad` | 5.4.1 | Apache-2.0 |
 | `org.apache.poi:poi` | 5.4.1 | Apache-2.0 |
 | `org.apache.tika:tika-core` | 3.2.3 | Apache-2.0 |
-| `org.apache.tika:tika-parser-advancedmedia-module` | 3.2.3 | Apache-2.0 |
 | `org.apache.tika:tika-parser-apple-module` | 3.2.3 | Apache-2.0 |
 | `org.apache.tika:tika-parser-audiovideo-module` | 3.2.3 | Apache-2.0 |
 | `org.apache.tika:tika-parser-cad-module` | 3.2.3 | Apache-2.0 |
@@ -2993,7 +2986,7 @@ in some artifacts (usually source distributions); but is always available
 from the source code management (SCM) system project uses.
 ````
 
-Shipped with `com.fasterxml.jackson.core:jackson-annotations`, `com.fasterxml.jackson.core:jackson-core`, `com.fasterxml.jackson.core:jackson-databind`, `commons-logging:commons-logging`, `org.apache.commons:commons-collections4`, `org.apache.httpcomponents:httpclient`, `org.apache.httpcomponents:httpcore`, `org.apache.httpcomponents:httpmime`, `org.apache.james:apache-mime4j-core`, `org.apache.james:apache-mime4j-dom`, `org.apache.logging.log4j:log4j-api`, `org.apache.logging.log4j:log4j-to-slf4j`, `org.apache.pdfbox:jbig2-imageio`, `org.apache.pdfbox:pdfbox-io`, `org.apache.pdfbox:pdfbox-tools`, `org.apache.pdfbox:xmpbox`, `org.apache.tika:tika-parser-advancedmedia-module`, `org.apache.tika:tika-parser-apple-module`, `org.apache.tika:tika-parser-audiovideo-module`, `org.apache.tika:tika-parser-cad-module`, `org.apache.tika:tika-parser-code-module`, `org.apache.tika:tika-parser-crypto-module`, `org.apache.tika:tika-parser-digest-commons`, `org.apache.tika:tika-parser-font-module`, `org.apache.tika:tika-parser-html-module`, `org.apache.tika:tika-parser-image-module`, `org.apache.tika:tika-parser-mail-commons`, `org.apache.tika:tika-parser-mail-module`, `org.apache.tika:tika-parser-microsoft-module`, `org.apache.tika:tika-parser-miscoffice-module`, `org.apache.tika:tika-parser-news-module`, `org.apache.tika:tika-parser-ocr-module`, `org.apache.tika:tika-parser-pdf-module`, `org.apache.tika:tika-parser-pkg-module`, `org.apache.tika:tika-parser-text-module`, `org.apache.tika:tika-parser-webarchive-module`, `org.apache.tika:tika-parser-xml-module`, `org.apache.tika:tika-parser-xmp-commons`, `org.apache.tika:tika-parser-zip-commons`, `org.apache.tika:tika-parsers-standard-package`, `org.gagravarr:vorbis-java-core`, `org.gagravarr:vorbis-java-tika`:
+Shipped with `com.fasterxml.jackson.core:jackson-annotations`, `com.fasterxml.jackson.core:jackson-core`, `com.fasterxml.jackson.core:jackson-databind`, `commons-logging:commons-logging`, `org.apache.commons:commons-collections4`, `org.apache.james:apache-mime4j-core`, `org.apache.james:apache-mime4j-dom`, `org.apache.logging.log4j:log4j-api`, `org.apache.logging.log4j:log4j-to-slf4j`, `org.apache.pdfbox:jbig2-imageio`, `org.apache.pdfbox:pdfbox-io`, `org.apache.pdfbox:pdfbox-tools`, `org.apache.pdfbox:xmpbox`, `org.apache.tika:tika-parser-apple-module`, `org.apache.tika:tika-parser-audiovideo-module`, `org.apache.tika:tika-parser-cad-module`, `org.apache.tika:tika-parser-code-module`, `org.apache.tika:tika-parser-crypto-module`, `org.apache.tika:tika-parser-digest-commons`, `org.apache.tika:tika-parser-font-module`, `org.apache.tika:tika-parser-html-module`, `org.apache.tika:tika-parser-image-module`, `org.apache.tika:tika-parser-mail-commons`, `org.apache.tika:tika-parser-mail-module`, `org.apache.tika:tika-parser-microsoft-module`, `org.apache.tika:tika-parser-miscoffice-module`, `org.apache.tika:tika-parser-news-module`, `org.apache.tika:tika-parser-ocr-module`, `org.apache.tika:tika-parser-pdf-module`, `org.apache.tika:tika-parser-pkg-module`, `org.apache.tika:tika-parser-text-module`, `org.apache.tika:tika-parser-webarchive-module`, `org.apache.tika:tika-parser-xml-module`, `org.apache.tika:tika-parser-xmp-commons`, `org.apache.tika:tika-parser-zip-commons`, `org.apache.tika:tika-parsers-standard-package`, `org.gagravarr:vorbis-java-core`, `org.gagravarr:vorbis-java-tika`:
 
 ````text
 Apache License
@@ -3701,7 +3694,7 @@ Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-Shipped with `jakarta.mail:jakarta.mail-api`, `jakarta.ws.rs:jakarta.ws.rs-api`:
+Shipped with `jakarta.mail:jakarta.mail-api`:
 
 ````text
 # Eclipse Public License - v 2.0
@@ -4426,71 +4419,6 @@ possession, or use, and re-export of encryption software, to see if this is
 permitted.
 ````
 
-Shipped with `jakarta.ws.rs:jakarta.ws.rs-api`:
-
-````text
-# Notices for Jakarta RESTful Web Services
-
-This content is produced and maintained by the **Jakarta RESTful Web Services**
-project.
-
-* Project home: https://projects.eclipse.org/projects/ee4j.jaxrs
-
-## Trademarks
-
-**Jakarta RESTful Web Services** is a trademark of the Eclipse Foundation.
-
-## Copyright
-
-All content is the property of the respective authors or their employers. For
-more information regarding authorship of content, please consult the listed
-source code repository logs.
-
-## Declared Project Licenses
-
-This program and the accompanying materials are made available under the terms
-of the Eclipse Public License v. 2.0 which is available at
-http://www.eclipse.org/legal/epl-2.0. This Source Code may also be made
-available under the following Secondary Licenses when the conditions for such
-availability set forth in the Eclipse Public License v. 2.0 are satisfied: GNU
-General Public License, version 2 with the GNU Classpath Exception which is
-available at https://www.gnu.org/software/classpath/license.html.
-
-SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
-
-## Source Code
-
-The project maintains the following source code repositories:
-
-* https://github.com/eclipse-ee4j/jaxrs-api
-
-## Third-party Content
-
-This project leverages the following third party content.
-
-javaee-api (7.0)
-
-* License: Apache-2.0 AND W3C
-
-JUnit (4.11)
-
-* License: Common Public License 1.0
-
-Mockito (2.16.0)
-
-* Project: http://site.mockito.org
-* Source: https://github.com/mockito/mockito/releases/tag/v2.16.0
-
-## Cryptography
-
-Content may contain encryption software. The country in which you are currently
-may have restrictions on the import, possession, and use, and/or re-export to
-another country, of encryption software. BEFORE using any encryption software,
-please check the country's laws, regulations and policies concerning the import,
-possession, or use, and re-export of encryption software, to see if this is
-permitted.
-````
-
 Shipped with `jakarta.xml.bind:jakarta.xml.bind-api`:
 
 ````text
@@ -5099,36 +5027,6 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ===============================================================================
-````
-
-Shipped with `org.apache.httpcomponents:httpclient`:
-
-````text
-Apache HttpClient
-Copyright 1999-2022 The Apache Software Foundation
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
-````
-
-Shipped with `org.apache.httpcomponents:httpcore`:
-
-````text
-Apache HttpCore
-Copyright 2005-2022 The Apache Software Foundation
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
-````
-
-Shipped with `org.apache.httpcomponents:httpmime`:
-
-````text
-Apache HttpClient Mime
-Copyright 1999-2022 The Apache Software Foundation
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
 ````
 
 Shipped with `org.apache.james:apache-mime4j-core`:
@@ -7533,17 +7431,6 @@ Shipped with `org.apache.tika:tika-core`:
 
 ````text
 Apache Tika core
-Copyright 2007-2025 The Apache Software Foundation
-
-
-This product includes software developed at
-The Apache Software Foundation (http://www.apache.org/).
-````
-
-Shipped with `org.apache.tika:tika-parser-advancedmedia-module`:
-
-````text
-Apache Tika advanced media module
 Copyright 2007-2025 The Apache Software Foundation
 
 

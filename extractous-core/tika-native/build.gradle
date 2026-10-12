@@ -140,7 +140,6 @@ dependencies {
 
     // Additional modules for comprehensive coverage
     implementation("org.apache.tika:tika-parser-code-module:$tikaVersion")            // Source code files
-    implementation("org.apache.tika:tika-parser-advancedmedia-module:$tikaVersion")   // Advanced media formats
 }
 
 licenseReport {

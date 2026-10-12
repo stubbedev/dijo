@@ -256,7 +256,7 @@ little as 2.5°.
 The native library contains Tika's standard parser package and these parser modules: Microsoft Office (DOC, DOCX, XLS,
 XLSX, PPT, PPTX, MSG), PDF, HTML, Apple iWork, audio/video metadata, CAD, encrypted documents, fonts, mail (EML, MBOX,
 PST), legacy office formats (WordPerfect, Lotus, dBase), RSS/Atom, OCR via tesseract, archives (ZIP, TAR, 7Z, RAR),
-text, XML, web archives (WARC), source code and advanced media.
+text, XML, web archives (WARC) and source code. Audio and video files yield their tags (titles, artists, lyrics).
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 966 test documents both natively and with the same Tika
