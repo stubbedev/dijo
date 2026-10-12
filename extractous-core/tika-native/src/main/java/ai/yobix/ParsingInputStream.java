@@ -89,9 +89,17 @@ public class ParsingInputStream extends InputStream {
                     : new BodyContentHandler(new BlockBreakHandler(new ToTextContentHandler(
                             new FlushingWriter(new OutputStreamWriter(output, charset)))));
             parser.parse(stream, handler, metadata, context);
-            output.sendRemainder();
         } catch (Throwable t) {
             failure = t;
+        }
+        try {
+            output.sendRemainder();
+        } catch (Throwable t) {
+            if (failure == null) {
+                failure = t;
+            } else {
+                failure.addSuppressed(t);
+            }
         } finally {
             synchronized (parseLock) {
                 parseThread = null;

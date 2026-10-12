@@ -5091,8 +5091,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/test-documents-spanned.z01": {
     "mime_type": "undetected",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 0.9629629629629629
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/test-documents-spanned.zip": {
     "mime_type": "application/zip",

@@ -330,6 +330,17 @@ fn damaged_parts_make_a_partial_result() {
 }
 
 #[test]
+fn text_extracted_before_a_parse_fails_is_kept() {
+    let objects = json_objects(&[&document("spanned.z01")]);
+    assert_eq!(objects[0]["status"], "partial", "{}", objects[0]);
+    assert!(objects[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("This is a sample Open Office document"));
+    assert_eq!(objects[0]["errors"][0]["category"], "corrupt");
+}
+
+#[test]
 fn partial_results_succeed_unless_strict() {
     let lenient = extractous(&[&document("partially-damaged.zip")]);
     assert!(lenient.status.success(), "{}", stderr(&lenient));
@@ -1182,7 +1193,7 @@ fn xml_parsers_resolve_no_external_entities() {
 }
 
 #[test]
-fn an_entity_expansion_bomb_fails_as_a_limit() {
+fn an_entity_expansion_bomb_stops_at_a_limit() {
     let scratch = Scratch::new("bomb");
     let mut bomb = String::from("<?xml version=\"1.0\"?><!DOCTYPE lolz [<!ENTITY lol0 \"lol\">");
     for level in 1..10 {
@@ -1197,7 +1208,8 @@ fn an_entity_expansion_bomb_fails_as_a_limit() {
     let started = std::time::Instant::now();
     let objects = json_objects(&[path.to_str().unwrap()]);
     assert!(started.elapsed() < std::time::Duration::from_secs(30));
-    assert_eq!(objects[0]["status"], "failed");
+    assert_eq!(objects[0]["status"], "partial");
+    assert!(objects[0]["text"].as_str().unwrap().len() < 1000);
     assert_eq!(objects[0]["errors"][0]["category"], "limit-exceeded");
 }
 

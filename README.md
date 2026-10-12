@@ -271,7 +271,7 @@ text, title and authors.
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 1094 test documents both natively and with the same Tika
 version on the JVM, and compares the text. [`conformance/MATRIX.md`](conformance/MATRIX.md) lists every media type
-with how many of its files work, differ or fail: 1068 work or are empty on both sides. Nearly all of the rest differ
+with how many of its files work, differ or fail: 1069 work or are empty on both sides. Nearly all of the rest differ
 only by the file name of a preview image Tika lists (the previews of camera raw photos, iWork and Office documents),
 which extractous does not parse, since a preview repeats its document's own front page. A nightly job fails when a file
 that worked stops working.
