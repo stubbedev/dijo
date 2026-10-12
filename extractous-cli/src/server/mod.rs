@@ -521,4 +521,28 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn arbitrary_queries_decode_without_panicking() {
+        const PIECES: &[&str] = &[
+            "%", "%2", "%2B", "%zz", "%E6", "%BC", "%A2", "%FF", "+", "&", "=", "==", "a",
+            "format", "é", "\u{0}", "%00",
+        ];
+        let mut state: u64 = 0x5851_f42d_4c95_7f2d;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..5000 {
+            let length = (next() % 30) as usize;
+            let query: String = (0..length)
+                .map(|_| PIECES[(next() % PIECES.len() as u64) as usize])
+                .collect();
+            for (key, value) in query_pairs(Some(&query)) {
+                assert!(key.len() + value.len() <= query.len() * 3, "{query:?}");
+            }
+        }
+    }
 }

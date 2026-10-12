@@ -346,4 +346,76 @@ mod tests {
             ]
         );
     }
+
+    const FRAGMENTS: &[&str] = &[
+        "<html>",
+        "</html>",
+        "<body>",
+        "</body>",
+        "<div class=\"page\">",
+        "<div class=\"slide-content\">",
+        "</div>",
+        "<p>",
+        "</p>",
+        "<p/>",
+        "<h1>",
+        "</h1>",
+        "<h7>",
+        "<li>",
+        "</li>",
+        "<table>",
+        "</table>",
+        "<td>",
+        "</td>",
+        "text",
+        " ",
+        "\n",
+        "\t",
+        "&amp;",
+        "&bogus;",
+        "&#x1F389;",
+        "&#0;",
+        "<",
+        ">",
+        "</",
+        "<!--",
+        "-->",
+        "<![CDATA[",
+        "]]>",
+        "<?xml version=\"1.0\"?>",
+        "<!DOCTYPE html>",
+        "\u{0}",
+        "\u{fffd}",
+        "é",
+        "\"",
+        "=",
+        "<a href='x'>",
+        "</a>",
+    ];
+
+    #[test]
+    fn arbitrary_markup_never_panics() {
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2000 {
+            let length = (next() % 60) as usize;
+            let xhtml: String = (0..length)
+                .map(|_| FRAGMENTS[(next() % FRAGMENTS.len() as u64) as usize])
+                .collect();
+            for unit in [Unit::Pages, Unit::Elements] {
+                let mut parts = 0;
+                let result = split(xhtml.as_bytes(), unit, &mut |_| {
+                    parts += 1;
+                    Ok(())
+                });
+                assert!(result.is_ok(), "{xhtml:?}");
+                assert!(parts <= xhtml.len() + 1, "{xhtml:?}");
+            }
+        }
+    }
 }
