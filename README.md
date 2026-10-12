@@ -261,7 +261,8 @@ Some formats Tika reads as raw text are read for their content instead: subtitle
 as the spoken lines, without timings or markup; Jupyter notebooks cell by cell, code and outputs included;
 FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `.emlx` files as the email they hold.
 Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
-slides and table cells.
+slides and table cells, and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika detects but cannot read, for their
+text, title and authors.
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 966 test documents both natively and with the same Tika

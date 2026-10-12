@@ -1318,3 +1318,23 @@ fn iwork_documents_from_2013_on_are_read_for_their_text() {
     ]));
     assert!(keynote.contains("Open in Libreoffice 6.2"), "{keynote}");
 }
+
+#[test]
+fn kindle_books_are_read_with_their_metadata() {
+    let objects = json_objects(&[&document("yellow-wallpaper.mobi")]);
+    assert_eq!(objects[0]["status"], "complete");
+    assert_eq!(objects[0]["mime_type"], "application/x-mobipocket-ebook");
+    assert!(
+        objects[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("John is a physician"),
+        "{}",
+        objects[0]
+    );
+    assert_eq!(objects[0]["metadata"]["title"], "The Yellow Wallpaper");
+    assert_eq!(
+        objects[0]["metadata"]["authors"],
+        serde_json::json!(["Charlotte Perkins Gilman"])
+    );
+}
