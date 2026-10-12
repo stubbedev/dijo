@@ -20,38 +20,66 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
 
     void render(ProjectData data) {
         def reportDir = new File(data.project.licenseReport.absoluteOutputDir as String)
-        def texts = new TreeMap<String, SortedSet<String>>()
+        def libraryTexts = new TreeMap<String, SortedSet<String>>()
         def table = new StringBuilder()
         data.allDependencies.sort { "${it.group}:${it.name}:${it.version}" }.each { module ->
             def coordinate = "${module.group}:${module.name}"
-            def files = module.licenseFiles*.fileDetails.flatten()
             def licenses = (module.poms*.licenses.flatten()*.name + module.manifests*.license)
                     .findAll().unique().sort()
             if (licenses.empty) {
                 throw new GradleException("No licence is declared for ${coordinate}:${module.version}")
             }
             table << "| `${coordinate}` | ${module.version} | ${licenses.join(', ')} |\n"
-            files.each { details ->
-                def text = new File(reportDir, details.file).getText('UTF-8').replace('\r\n', '\n').trim()
-                texts.computeIfAbsent(text) { new TreeSet<String>() } << coordinate
+            module.licenseFiles*.fileDetails.flatten().each { details ->
+                collect(libraryTexts, new File(reportDir, details.file), coordinate)
             }
         }
+        def graalvmTexts = new TreeMap<String, SortedSet<String>>()
+        graalvmLegalFiles().each { file -> collect(graalvmTexts, file, file.name) }
+
         def document = new StringBuilder()
         document << '## Java libraries compiled into libtika_native\n\n'
         document << 'libtika_native is a GraalVM native image. Besides the libraries below, it contains '
-        document << 'the GraalVM Community Edition runtime and parts of the OpenJDK class library, '
-        document << 'licensed under GPL-2.0-only WITH Classpath-exception-2.0, which permits '
-        document << 'distributing the image under the terms of its own licence. Tesseract is not part '
-        document << 'of the binary; extractous runs an installed tesseract executable for OCR.\n\n'
-        document << '| Library | Version | Licences |\n|---|---|---|\n'
+        document << 'the GraalVM Community Edition runtime and parts of the OpenJDK class library and '
+        document << 'its native libraries, licensed under GPL-2.0-only WITH Classpath-exception-2.0, '
+        document << 'which permits distributing the image under the terms of its own licence. Their '
+        document << 'licence and the notices of the third-party code they contain follow the '
+        document << 'libraries\' texts. Tesseract is not part of the binary; extractous runs an '
+        document << 'installed tesseract executable for OCR.\n\n'
+        document << '| Library | Version | Declared licences |\n|---|---|---|\n'
         document << table
         document << '\n### Licence and notice texts shipped with the Java libraries\n'
+        appendTexts(document, libraryTexts)
+        document << '\n### Licence and notices of the GraalVM runtime and OpenJDK\n'
+        appendTexts(document, graalvmTexts)
+        output.parentFile.mkdirs()
+        output.write(document.toString(), 'UTF-8')
+    }
+
+    private static List<File> graalvmLegalFiles() {
+        def home = System.getenv('GRAALVM_HOME')
+        if (!home) {
+            throw new GradleException('GRAALVM_HOME must point to the GraalVM that builds the image')
+        }
+        def legal = new File(home, 'legal')
+        def files = []
+        legal.eachFileRecurse(groovy.io.FileType.FILES) { files << it }
+        if (files.empty) {
+            throw new GradleException("${legal} holds no licence files")
+        }
+        return files.sort { it.path }
+    }
+
+    private static void collect(Map<String, SortedSet<String>> texts, File file, String source) {
+        def text = file.getText('UTF-8').replace('\r\n', '\n').trim()
+        texts.computeIfAbsent(text) { new TreeSet<String>() } << source
+    }
+
+    private static void appendTexts(StringBuilder document, Map<String, SortedSet<String>> texts) {
         texts.entrySet().sort { it.value.first() }.each { entry ->
             document << "\nShipped with ${entry.value.collect { "`${it}`" }.join(', ')}:\n\n"
             document << "````text\n${entry.key}\n````\n"
         }
-        output.parentFile.mkdirs()
-        output.write(document.toString(), 'UTF-8')
     }
 }
 
