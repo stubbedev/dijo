@@ -20,8 +20,9 @@ To build from source instead:
 cargo install --locked --git https://github.com/stubbedev/extractous extractous
 ```
 
-Building compiles Tika, so the build machine needs a GraalVM JDK with `native-image`, pointed to by `GRAALVM_HOME`,
-matching the version `extractous-core/tika-native/build.gradle` requires. The first build takes a few minutes; later
+Building compiles Tika, so the build machine needs the GraalVM release pinned in `ci/graalvm.env`, pointed to by
+`GRAALVM_HOME`; `ci/install-graalvm.sh <platform> <dir>` downloads it, checks its SHA-256 and prints its home. Older
+GraalVM releases do not emit the AWT libraries on macOS. The first build takes a few minutes; later
 builds reuse the compiled library until the Tika sources or the GraalVM release change.
 
 The compiled library and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...) are
