@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths: [.github/workflows/release.yml]
   workflow_dispatch:
 
 permissions:
@@ -64,7 +66,7 @@ jobs:
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
       - name: Package
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi
           name="extractous-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           suffix=""
