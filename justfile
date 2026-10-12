@@ -43,6 +43,19 @@ conformance:
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test conformance
 
+# Score Tika on the JVM against the quality corpus too, with its default OCR, and write
+# quality/COMPARISON.md with both sets of scores side by side.
+[unix]
+quality-compare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir={{justfile_directory()}}/target/quality-compare
+    jar=$(conformance/tika-app.sh "$dir")
+    rm -rf "$dir/jvm"
+    java -jar "$jar" -t -numConsumers 4 -i quality/corpus -o "$dir/jvm" > "$dir/jvm.log" 2>&1
+    QUALITY_COMPARE_JVM="$dir/jvm" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
+        cargo nextest run --package extractous --test quality
+
 # Accept the current conformance results as conformance/baseline.json.
 [unix]
 conformance-bless:

@@ -14,7 +14,7 @@ if [ -z "$pins" ]; then
     echo "conformance/pins.tsv pins no corpus commit and tika-app checksum for Tika $version" >&2
     exit 1
 fi
-read -r commit sha256 <<< "$pins"
+read -r commit _ <<< "$pins"
 mkdir -p "$dir"
 
 repository="$dir/tika-$version"
@@ -32,13 +32,7 @@ if [ "$(git -C "$repository" rev-parse HEAD)" != "$commit" ]; then
     exit 1
 fi
 
-jar="$dir/tika-app-$version.jar"
-if [ ! -f "$jar" ]; then
-    curl --fail --silent --show-error --location --max-time 600 --output "$jar.partial" \
-        "https://repo1.maven.org/maven2/org/apache/tika/tika-app/$version/tika-app-$version.jar"
-    mv "$jar.partial" "$jar"
-fi
-echo "$sha256  $jar" | sha256sum --check --quiet
+jar=$("$here/tika-app.sh" "$dir")
 
 jvm="$dir/jvm-$version"
 if [ ! -d "$jvm" ]; then

@@ -242,6 +242,9 @@ against its truth: character and token error rate, recall (the share of the trut
 all), spurious text and paragraph order. The test suite fails when a score gets worse than `quality/baseline.json`
 allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
 `just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
+[`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
+the JVM alongside: over the documents extracted with default options, extractous recalls 0.989 of the truth's words
+against Tika's 0.865, at a token error rate of 0.042 against 0.224.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
 upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end; right-to-left Arabic
