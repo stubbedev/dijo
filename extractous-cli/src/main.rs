@@ -39,8 +39,6 @@ const LICENSES: &str = concat!(
 );
 
 fn main() -> ExitCode {
-    #[cfg(windows)]
-    keep_standard_handles_from_children();
     let cli = Cli::parse();
     if cli.extract.cache_dir.is_some() && cli.extract.embedded == Embedded::Separate {
         Cli::command()
@@ -59,20 +57,6 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    }
-}
-
-/// Windows hands every inheritable handle to child processes, so the tesseract processes Tika
-/// starts would hold this process's standard output open after it exits, and whoever reads it
-/// would wait for them. Unix children only get the descriptors Java sets up for them.
-#[cfg(windows)]
-fn keep_standard_handles_from_children() {
-    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
-    use windows_sys::Win32::System::Console::{
-        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-    };
-    for standard in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        unsafe { SetHandleInformation(GetStdHandle(standard), HANDLE_FLAG_INHERIT, 0) };
     }
 }
 
