@@ -157,7 +157,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just tika-agent` | Run Tika under the GraalVM tracing agent to regenerate native-image metadata |
 | `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries |
 | `just sbom` | Write CycloneDX SBOMs of the Rust crates and Java libraries to target/sbom |
-| `just deps` | cargo-deny's advisory, licence and ban checks, and a check that THIRD-PARTY-LICENSES.md is current |
+| `just deps` | cargo-deny's advisory, licence and ban checks, the Java licence allow-list, and a check that THIRD-PARTY-LICENSES.md is current |
 
 ## License
 

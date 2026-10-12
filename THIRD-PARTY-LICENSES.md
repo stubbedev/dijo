@@ -2625,8 +2625,8 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `commons-io:commons-io` | 2.20.0 | Apache-2.0 |
 | `commons-logging:commons-logging` | 1.3.5 | Apache-2.0 |
 | `info.picocli:picocli` | 4.7.6 | Apache-2.0 |
-| `jakarta.activation:jakarta.activation-api` | 2.1.3 | Apache-2.0, BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `jakarta.mail:jakarta.mail-api` | 2.1.3 | Apache-2.0, BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `jakarta.activation:jakarta.activation-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `jakarta.mail:jakarta.mail-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `jakarta.ws.rs:jakarta.ws.rs-api` | 3.1.0 | EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `jakarta.xml.bind:jakarta.xml.bind-api` | 4.0.2 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.apache.commons:commons-collections4` | 4.5.0 | Apache-2.0 |
@@ -2689,9 +2689,9 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.eclipse.angus:angus-mail` | 2.0.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.gagravarr:vorbis-java-core` | 0.8 | Apache-2.0 |
 | `org.gagravarr:vorbis-java-tika` | 0.8 | Apache-2.0 |
-| `org.glassfish.jaxb:jaxb-core` | 4.0.5 | Apache-2.0, BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `org.glassfish.jaxb:jaxb-runtime` | 4.0.5 | Apache-2.0, BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `org.glassfish.jaxb:txw2` | 4.0.5 | Apache-2.0, BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `org.glassfish.jaxb:jaxb-core` | 4.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `org.glassfish.jaxb:jaxb-runtime` | 4.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `org.glassfish.jaxb:txw2` | 4.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.jdom:jdom2` | 2.0.6.1 | Similar to Apache License but with the acknowledgment clause removed |
 | `org.jsoup:jsoup` | 1.21.2 | MIT |
 | `org.netpreserve:jwarc` | 0.32.0 | Apache-2.0 |

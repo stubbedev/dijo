@@ -117,6 +117,7 @@ dependencies {
 
 licenseReport {
     configurations = ['runtimeClasspath']
+    allowedLicensesFile = file('allowed-licenses.json')
     filters = [new ExcludeDependenciesWithoutArtifactsFilter(), new SpdxLicenseBundleNormalizer()]
     renderers = [new ThirdPartyLicensesRenderer(layout.buildDirectory.file('licenses/java.md').get().asFile)]
 }

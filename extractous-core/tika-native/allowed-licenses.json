@@ -1,0 +1,14 @@
+{
+  "allowedLicenses": [
+    { "moduleLicense": "0BSD" },
+    { "moduleLicense": "Apache-2.0" },
+    { "moduleLicense": "BSD-3-Clause" },
+    { "moduleLicense": "CDDL-1.0" },
+    { "moduleLicense": "EPL-2.0" },
+    { "moduleLicense": "GPL-2.0-only WITH Classpath-exception-2.0" },
+    { "moduleLicense": "MIT" },
+    { "moduleLicense": "MPL-1.1" },
+    { "moduleName": "com.github.junrar:junrar", "moduleLicense": "UnRar License" },
+    { "moduleName": "org.jdom:jdom2", "moduleLicense": "Similar to Apache License but with the acknowledgment clause removed" }
+  ]
+}

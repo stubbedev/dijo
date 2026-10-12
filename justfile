@@ -65,4 +65,5 @@ sbom:
 [unix]
 deps: licenses
     cargo deny check
+    cd {{core}}/tika-native && ./gradlew --quiet checkLicense
     git diff --exit-code THIRD-PARTY-LICENSES.md
