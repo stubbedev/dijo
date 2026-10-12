@@ -88,13 +88,18 @@ impl Normalizer {
             out.extend_from_slice(bytes);
             return;
         }
-        self.undecoded.extend_from_slice(bytes);
-        let mut decoded = String::new();
-        let consumed = decode_utf8_prefix(&self.undecoded, &mut decoded);
-        self.undecoded.drain(..consumed);
-        self.hold(&decoded);
-        let stable = self.stable_prefix_len();
-        let ready: String = self.held.drain(..stable).collect();
+        if self.undecoded.is_empty() {
+            let consumed = self.decode(bytes);
+            self.undecoded.extend_from_slice(&bytes[consumed..]);
+        } else {
+            let mut undecoded = std::mem::take(&mut self.undecoded);
+            undecoded.extend_from_slice(bytes);
+            let consumed = self.decode(&undecoded);
+            undecoded.drain(..consumed);
+            self.undecoded = undecoded;
+        }
+        let rest = self.held.split_off(self.stable_prefix_len());
+        let ready = std::mem::replace(&mut self.held, rest);
         self.release(&ready, out);
     }
 
@@ -103,27 +108,60 @@ impl Normalizer {
         if self.steps == Steps::NONE {
             return;
         }
-        let rest = String::from_utf8_lossy(&self.undecoded).into_owned();
-        self.undecoded.clear();
-        self.hold(&rest);
+        let rest = std::mem::take(&mut self.undecoded);
+        self.hold(&String::from_utf8_lossy(&rest));
         let ready = std::mem::take(&mut self.held);
         self.release(&ready, out);
         self.pending_space = false;
     }
 
-    fn hold(&mut self, text: &str) {
-        for character in text.chars() {
-            if self.steps.contains(Step::Invisible) && is_invisible(character) {
-                continue;
-            }
-            if self.steps.contains(Step::SoftHyphens) && character == '\u{ad}' {
-                continue;
-            }
-            match ligature(character).filter(|_| self.steps.contains(Step::Ligatures)) {
-                Some(letters) => self.held.push_str(letters),
-                None => self.held.push(character),
+    /// Holds every complete character at the start of `bytes`, with U+FFFD for each invalid
+    /// sequence, and returns how many bytes that consumed; the rest is an incomplete character.
+    fn decode(&mut self, bytes: &[u8]) -> usize {
+        let mut consumed = 0;
+        loop {
+            match std::str::from_utf8(&bytes[consumed..]) {
+                Ok(valid) => {
+                    self.hold(valid);
+                    return bytes.len();
+                }
+                Err(error) => {
+                    let valid_end = consumed + error.valid_up_to();
+                    self.hold(
+                        std::str::from_utf8(&bytes[consumed..valid_end]).expect("validated prefix"),
+                    );
+                    match error.error_len() {
+                        Some(invalid) => {
+                            self.hold(char::REPLACEMENT_CHARACTER.encode_utf8(&mut [0; 4]));
+                            consumed = valid_end + invalid;
+                        }
+                        None => return valid_end,
+                    }
+                }
             }
         }
+    }
+
+    /// Holds `text` with the characters the per-character steps drop or replace handled, copying
+    /// the runs between them whole.
+    fn hold(&mut self, mut text: &str) {
+        while let Some((index, character)) = text
+            .char_indices()
+            .find(|&(_, character)| self.alters(character))
+        {
+            self.held.push_str(&text[..index]);
+            if let Some(letters) = ligature(character) {
+                self.held.push_str(letters);
+            }
+            text = &text[index + character.len_utf8()..];
+        }
+        self.held.push_str(text);
+    }
+
+    fn alters(&self, character: char) -> bool {
+        (self.steps.contains(Step::Invisible) && is_invisible(character))
+            || (self.steps.contains(Step::SoftHyphens) && character == '\u{ad}')
+            || (self.steps.contains(Step::Ligatures) && ligature(character).is_some())
     }
 
     /// How much of the held text no later character can compose with.
@@ -139,7 +177,7 @@ impl Normalizer {
     }
 
     fn release(&mut self, text: &str, out: &mut Vec<u8>) {
-        if self.steps.contains(Step::Unicode) {
+        if self.steps.contains(Step::Unicode) && is_nfc_quick(text.chars()) != IsNormalized::Yes {
             text.nfc().for_each(|character| self.emit(character, out));
         } else {
             text.chars().for_each(|character| self.emit(character, out));
@@ -190,33 +228,6 @@ pub fn normalize(steps: Steps, text: &str) -> String {
     normalizer.push(text.as_bytes(), &mut out);
     normalizer.finish(&mut out);
     String::from_utf8(out).expect("normalisation produces UTF-8")
-}
-
-/// Decodes the longest prefix of `bytes` that does not end inside a character, replacing invalid
-/// sequences with U+FFFD, and returns how many bytes it consumed.
-fn decode_utf8_prefix(bytes: &[u8], decoded: &mut String) -> usize {
-    let mut consumed = 0;
-    loop {
-        match std::str::from_utf8(&bytes[consumed..]) {
-            Ok(valid) => {
-                decoded.push_str(valid);
-                return bytes.len();
-            }
-            Err(error) => {
-                let valid_end = consumed + error.valid_up_to();
-                decoded.push_str(
-                    std::str::from_utf8(&bytes[consumed..valid_end]).expect("validated prefix"),
-                );
-                match error.error_len() {
-                    Some(invalid) => {
-                        decoded.push(char::REPLACEMENT_CHARACTER);
-                        consumed = valid_end + invalid;
-                    }
-                    None => return valid_end,
-                }
-            }
-        }
-    }
 }
 
 fn is_stable_starter(character: char) -> bool {
