@@ -408,6 +408,15 @@ fn the_cache_answers_repeated_uploads() {
     );
     assert_eq!(with_password.status, 200);
 
+    let separate = "/extract?format=json&embedded=separate";
+    let first_tree = server.post_file(separate, &[], "nested.zip");
+    let second_tree = server.post_file(separate, &[], "nested.zip");
+    assert_eq!(first_tree.status, 200);
+    assert_eq!(first_tree.text(), second_tree.text());
+    assert!(first_tree
+        .text()
+        .contains("Notes inside the inner archive."));
+
     let metrics = server.request("GET", "/metrics", &[], b"").text();
     assert!(
         metrics.contains("extractous_cache_hits_total 1"),

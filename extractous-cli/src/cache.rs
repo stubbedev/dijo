@@ -7,9 +7,9 @@ use std::time::SystemTime;
 
 use extractous_core::Metadata;
 
-use crate::cli::{CacheArgs, Ocr};
-use crate::render::{Outcome, RenderOptions};
-use crate::schema::{ErrorCategory, ExtractionError, Status};
+use crate::cli::{CacheArgs, Embedded, Ocr};
+use crate::render::{self, Outcome, RenderOptions};
+use crate::schema::{ErrorCategory, ExtractionError, Source, Status};
 use serde::{Deserialize, Serialize};
 
 const TRAILER_LENGTH_BYTES: usize = 8;
@@ -22,19 +22,27 @@ pub struct OutputSettings<'a> {
     pub render: RenderOptions,
     pub ocr: Ocr,
     pub ocr_lang: Option<&'a str>,
+    /// Whether the output holds the text of embedded documents, or each embedded document is
+    /// an entry of its own.
+    pub embedded: Embedded,
 }
 
 impl OutputSettings<'_> {
     /// The settings as part of a cache key. The key also covers the build, so the encoding only
     /// has to be stable within one build.
     fn key(&self) -> String {
-        format!("{:?}\0{:?}\0{:?}", self.render, self.ocr, self.ocr_lang)
+        format!(
+            "{:?}\0{:?}\0{:?}\0{:?}",
+            self.render, self.ocr, self.ocr_lang, self.embedded
+        )
     }
 }
 
 /// Rendered output of complete extractions, keyed by everything that determines it: the input's
 /// content and name, the settings that shape the output, this exact build of extractous with
-/// Tika inside it, and the tesseract that runs OCR. Safe to share between threads and processes.
+/// Tika inside it, and the tesseract that runs OCR. Where the input came from is not part of the
+/// key: a replayed entry reports the provenance it is replayed for, so the same attachment in
+/// many emails is extracted once. Safe to share between threads and processes.
 pub struct Cache {
     dir: PathBuf,
     policy: CachePolicy,
@@ -61,6 +69,8 @@ struct Trailer {
     status: Status,
     errors: Vec<ExtractionError>,
     metadata: Option<Metadata>,
+    /// The provenance the output reports, to be replaced by the one it is replayed for.
+    source: Source,
 }
 
 /// The result of looking an input up.
@@ -126,19 +136,21 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Writes the cached output for the input at `path` into `sink`, or renders it with `render`
-    /// and stores the result when it is complete.
+    /// Writes the cached output for the input at `path`, known as `name`, into `sink`, reporting
+    /// `source` as its provenance, or renders it with `render` and stores the result when it is
+    /// complete.
     pub fn render(
         &self,
         path: &Path,
-        display: &str,
+        name: &str,
+        source: &Source,
         settings: OutputSettings,
         sink: &mut dyn Write,
         render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
     ) -> io::Result<Outcome> {
-        match self.lookup(path, display, settings)? {
-            Lookup::Hit(hit) => hit.replay(sink),
-            Lookup::Miss(miss) => miss.store(sink, render),
+        match self.lookup(path, name, settings)? {
+            Lookup::Hit(hit) => hit.replay(sink, source),
+            Lookup::Miss(miss) => miss.store(sink, source, render),
         }
     }
 
@@ -269,7 +281,13 @@ impl Cache {
         Ok(hash)
     }
 
+    /// Whether an outcome is worth keeping: complete, or partial when the policy says so, and
+    /// with no embedded documents left to extract separately, since an entry holds only its own
+    /// document's output.
     fn keeps(&self, outcome: &Outcome) -> bool {
+        if !outcome.embedded.is_empty() {
+            return false;
+        }
         match outcome.status {
             Status::Complete => true,
             Status::Partial => {
@@ -285,8 +303,9 @@ impl Cache {
 }
 
 impl Hit {
-    pub fn replay(self, sink: &mut dyn Write) -> io::Result<Outcome> {
-        replay(self.file, &self.entry, sink)
+    /// Writes the stored output into `sink`, reporting `source` as its provenance.
+    pub fn replay(self, sink: &mut dyn Write, source: &Source) -> io::Result<Outcome> {
+        replay(self.file, &self.entry, sink, source)
     }
 }
 
@@ -295,6 +314,7 @@ impl Miss<'_> {
     pub fn store(
         self,
         sink: &mut dyn Write,
+        source: &Source,
         render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
     ) -> io::Result<Outcome> {
         let shard = self
@@ -307,7 +327,7 @@ impl Miss<'_> {
             std::process::id(),
             self.cache.next_temporary.fetch_add(1, Ordering::Relaxed)
         ));
-        let stored = store(&temporary, &self.entry, sink, render, |outcome| {
+        let stored = store(&temporary, &self.entry, sink, source, render, |outcome| {
             self.cache.keeps(outcome)
         });
         match stored {
@@ -330,6 +350,7 @@ fn store(
     temporary: &Path,
     entry: &Path,
     sink: &mut dyn Write,
+    source: &Source,
     render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
     keep: impl FnOnce(&Outcome) -> bool,
 ) -> io::Result<(Outcome, Option<u64>)> {
@@ -347,6 +368,7 @@ fn store(
         status: outcome.status,
         errors: outcome.errors.clone(),
         metadata: outcome.metadata.clone(),
+        source: source.clone(),
     })?;
     copy.write_all(&trailer)?;
     copy.write_all(&(trailer.len() as u64).to_le_bytes())?;
@@ -357,7 +379,12 @@ fn store(
     Ok((outcome, Some(bytes)))
 }
 
-fn replay(mut file: File, entry: &Path, sink: &mut dyn Write) -> io::Result<Outcome> {
+fn replay(
+    mut file: File,
+    entry: &Path,
+    sink: &mut dyn Write,
+    source: &Source,
+) -> io::Result<Outcome> {
     let corrupt = |reason: &str| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -380,7 +407,18 @@ fn replay(mut file: File, entry: &Path, sink: &mut dyn Write) -> io::Result<Outc
     file.read_exact(&mut trailer)?;
     let trailer: Trailer = serde_json::from_slice(&trailer).map_err(|e| corrupt(&e.to_string()))?;
     file.seek(SeekFrom::Start(0))?;
-    io::copy(&mut BufReader::new(&mut file).take(output_length), sink)?;
+    let mut output = BufReader::new(&mut file).take(output_length);
+    if trailer.source == *source {
+        io::copy(&mut output, sink)?;
+    } else {
+        let mut rewrite = SourceRewrite::new(
+            sink,
+            render::serialized_sources(&trailer.source),
+            render::serialized_sources(source),
+        );
+        io::copy(&mut output, &mut rewrite)?;
+        rewrite.finish()?;
+    }
     file.set_modified(SystemTime::now())?;
     Ok(Outcome {
         status: trailer.status,
@@ -388,6 +426,75 @@ fn replay(mut file: File, entry: &Path, sink: &mut dyn Write) -> io::Result<Outc
         metadata: trailer.metadata,
         embedded: Vec::new(),
     })
+}
+
+/// Copies output into a sink with each occurrence of one serialized provenance replaced by
+/// another. Records serialize their provenance as `"source":{...}`, which cannot occur inside a
+/// JSON string, where quotes are escaped, so only the records' own provenance is replaced.
+struct SourceRewrite<'a> {
+    sink: &'a mut dyn Write,
+    from: [Vec<u8>; 2],
+    to: [Vec<u8>; 2],
+    held: Vec<u8>,
+}
+
+impl<'a> SourceRewrite<'a> {
+    fn new(sink: &'a mut dyn Write, from: [Vec<u8>; 2], to: [Vec<u8>; 2]) -> Self {
+        Self {
+            sink,
+            from,
+            to,
+            held: Vec::new(),
+        }
+    }
+
+    /// Rewrites and passes on the held bytes that no later byte can complete a match for, or all
+    /// of them at the end.
+    fn pass(&mut self, end: bool) -> io::Result<()> {
+        let longest = self.from.iter().map(Vec::len).max().unwrap_or(0);
+        let decided = if end {
+            self.held.len()
+        } else {
+            self.held.len().saturating_sub(longest.saturating_sub(1))
+        };
+        let mut written = 0;
+        let mut index = 0;
+        while index < decided {
+            let matched = self
+                .from
+                .iter()
+                .position(|from| self.held[index..].starts_with(from));
+            match matched {
+                Some(which) => {
+                    self.sink.write_all(&self.held[written..index])?;
+                    self.sink.write_all(&self.to[which])?;
+                    index += self.from[which].len();
+                    written = index;
+                }
+                None => index += 1,
+            }
+        }
+        let passed = index.max(written);
+        self.sink.write_all(&self.held[written..passed])?;
+        self.held.drain(..passed);
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<()> {
+        self.pass(true)
+    }
+}
+
+impl Write for SourceRewrite<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.held.extend_from_slice(bytes);
+        self.pass(false)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.sink.flush()
+    }
 }
 
 struct Tee<'a> {
@@ -422,5 +529,47 @@ fn tesseract_version() -> String {
             String::from_utf8_lossy(&output.stderr)
         ),
         Err(error) => format!("tesseract unavailable: {}", error.kind()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rewritten(output: &str, chunk: usize) -> String {
+        let source = |path: &str| Source {
+            path: path.to_string(),
+            embedded_path: Some(format!("{path}/a.pdf")),
+            size: Some(3),
+            blake3: Some("ab".to_string()),
+        };
+        let mut sink = Vec::new();
+        let mut rewrite = SourceRewrite::new(
+            &mut sink,
+            render::serialized_sources(&source("one.eml")),
+            render::serialized_sources(&source("two.eml")),
+        );
+        for bytes in output.as_bytes().chunks(chunk) {
+            rewrite.write_all(bytes).unwrap();
+        }
+        rewrite.finish().unwrap();
+        String::from_utf8(sink).unwrap()
+    }
+
+    #[test]
+    fn replayed_records_report_where_they_are_replayed_from() {
+        let output = concat!(
+            r#"{"kind":"document","source":{"path":"one.eml","embedded_path":"one.eml/a.pdf","size":3,"blake3":"ab"},"text":"x"}"#,
+            "\n",
+            r#"{"kind":"page","source":{"path":"one.eml","embedded_path":"one.eml/a.pdf"},"text":"\"source\":{\"path\":\"one.eml\"}"}"#,
+            "\n"
+        );
+        let expected = output.replace(
+            r#""path":"one.eml","embedded_path":"one.eml"#,
+            r#""path":"two.eml","embedded_path":"two.eml"#,
+        );
+        for chunk in [1, 2, 7, 64, output.len()] {
+            assert_eq!(rewritten(output, chunk), expected, "chunks of {chunk}");
+        }
     }
 }

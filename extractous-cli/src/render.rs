@@ -183,10 +183,9 @@ fn render_text(
 pub fn write_document_start(sink: &mut dyn Write, source: &Source) -> io::Result<()> {
     write!(
         sink,
-        "{{\"schema_version\":{SCHEMA_VERSION},\"kind\":\"document\",\"source\":"
+        "{{\"schema_version\":{SCHEMA_VERSION},\"kind\":\"document\","
     )?;
-    serde_json::to_writer(&mut *sink, source)?;
-    Ok(())
+    sink.write_all(&serialized_field("source", source))
 }
 
 pub fn write_document_end(
@@ -347,6 +346,25 @@ fn render_parts(
         options,
     )?;
     Ok(outcome)
+}
+
+/// How records serialize their provenance: whole in document records, path and embedded path
+/// in page and element records.
+pub fn serialized_sources(source: &Source) -> [Vec<u8>; 2] {
+    let part = PartSource {
+        path: &source.path,
+        embedded_path: source.embedded_path.as_deref(),
+    };
+    [
+        serialized_field("source", source),
+        serialized_field("source", &part),
+    ]
+}
+
+fn serialized_field(name: &str, value: &impl serde::Serialize) -> Vec<u8> {
+    let mut field = format!("\"{name}\":").into_bytes();
+    serde_json::to_writer(&mut field, value).expect("serializing to memory cannot fail");
+    field
 }
 
 fn write_field(sink: &mut dyn Write, name: &str, value: &impl serde::Serialize) -> io::Result<()> {

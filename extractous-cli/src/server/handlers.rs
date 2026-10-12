@@ -9,7 +9,7 @@ use crate::cache::{Cache, Hit, Lookup, OutputSettings};
 use crate::cli::{Embedded, Format, Ocr};
 use crate::normalize::Steps;
 use crate::render::{self, RenderOptions};
-use crate::schema::{self, ErrorCategory};
+use crate::schema::{self, ErrorCategory, Source};
 use crate::settings;
 use crate::tree::{self, Limits};
 
@@ -147,23 +147,30 @@ fn extract(
             .deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now())),
     );
-    if request.embedded == Embedded::Separate {
-        extract_tree(request, &extractor, files, respond);
-        return;
-    }
     let settings = OutputSettings {
         render: request.render,
         ocr: request.ocr,
         ocr_lang: request.ocr_lang.as_deref(),
+        embedded: request.embedded,
     };
-    let lookup = cache
-        .filter(|_| request.passwords.is_empty())
-        .map(|cache| cache.lookup(&files.path, &files.display, settings));
+    let cache = cache.filter(|_| request.passwords.is_empty());
+    if request.embedded == Embedded::Separate {
+        extract_tree(
+            request,
+            &extractor,
+            files,
+            cache.map(|cache| (cache, settings)),
+            respond,
+        );
+        return;
+    }
+    let source = render::source(&files.path, &files.display, None);
+    let lookup = cache.map(|cache| cache.lookup(&files.path, &files.display, settings));
     let miss = match lookup {
         None => None,
         Some(Ok(Lookup::Hit(hit))) => {
             respond.report(Report::CacheHit);
-            replay(request, hit, respond);
+            replay(request, hit, &source, respond);
             return;
         }
         Some(Ok(Lookup::Miss(miss))) => {
@@ -193,7 +200,6 @@ fn extract(
             raw_metadata: false,
             normalization: Steps::NONE,
         };
-        let source = render::source(&files.path, &files.display, None);
         if render::render_opened(Err(error.clone()), &source, options, &mut document).is_ok() {
             respond.report(Report::Failure(error.category));
             let _ = respond.head(Head {
@@ -212,11 +218,10 @@ fn extract(
         return;
     }
     let mut writer = BufWriter::with_capacity(BODY_CHUNK_SIZE, BodyWriter { respond });
-    let source = render::source(&files.path, &files.display, None);
     let render =
         |writer: &mut dyn Write| render::render_opened(opened, &source, request.render, writer);
     let rendered = match miss {
-        Some(miss) => miss.store(&mut writer, render),
+        Some(miss) => miss.store(&mut writer, &source, render),
         None => render(&mut writer),
     }
     .and_then(|outcome| writer.flush().map(|()| outcome));
@@ -233,7 +238,7 @@ fn extract(
 }
 
 /// Answers with the stored output of an earlier, complete extraction.
-fn replay(request: &ExtractRequest, hit: Hit, respond: &mut dyn Respond) {
+fn replay(request: &ExtractRequest, hit: Hit, source: &Source, respond: &mut dyn Respond) {
     if respond
         .head(streaming(ContentType::for_format(request.render.format)))
         .is_err()
@@ -241,7 +246,7 @@ fn replay(request: &ExtractRequest, hit: Hit, respond: &mut dyn Respond) {
         return;
     }
     let mut writer = BufWriter::with_capacity(BODY_CHUNK_SIZE, BodyWriter { respond });
-    if let Err(error) = hit.replay(&mut writer).and_then(|_| writer.flush()) {
+    if let Err(error) = hit.replay(&mut writer, source).and_then(|_| writer.flush()) {
         if error.kind() != io::ErrorKind::BrokenPipe {
             eprintln!("extractous: failed to replay a cached response: {error}");
         }
@@ -254,6 +259,7 @@ fn extract_tree(
     request: &ExtractRequest,
     extractor: &extractous_core::Extractor,
     files: &Files,
+    cache: Option<(&Cache, OutputSettings)>,
     respond: &mut dyn Respond,
 ) {
     let content_type = match request.render.format {
@@ -278,6 +284,7 @@ fn extract_tree(
         request.render,
         Limits::DEFAULT,
         &files.scratch,
+        cache,
         &mut writer,
     )
     .and_then(|outcome| writer.flush().map(|()| outcome));

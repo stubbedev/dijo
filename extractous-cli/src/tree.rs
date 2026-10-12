@@ -6,6 +6,7 @@ use std::path::Path;
 use extractous_core::{EmbeddedSpool, Extractor, SpooledEmbedded};
 use serde::Serialize;
 
+use crate::cache::{Cache, OutputSettings};
 use crate::cli::Format;
 use crate::render::{self, Outcome, RenderOptions};
 use crate::schema::{ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
@@ -29,6 +30,9 @@ impl Limits {
 /// Extracts a document and then, one at a time, every document embedded in it, recursively,
 /// each as a document in its own right that records where it came from. A document whose
 /// content was already extracted in this input is reported as a reference to the first one.
+/// With a cache, each document without embedded documents of its own is looked up and stored
+/// by its own content, wherever it is embedded.
+#[allow(clippy::too_many_arguments)]
 pub fn render_tree(
     extractor: &Extractor,
     path: &Path,
@@ -36,6 +40,7 @@ pub fn render_tree(
     options: RenderOptions,
     limits: Limits,
     scratch: &Path,
+    cache: Option<(&Cache, OutputSettings)>,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
     let mut walk = Walk {
@@ -44,6 +49,7 @@ pub fn render_tree(
         options,
         limits,
         scratch,
+        cache,
         seen: HashMap::new(),
         documents: 0,
         expanded_bytes: 0,
@@ -51,7 +57,7 @@ pub fn render_tree(
         child_errors: Vec::new(),
         children_complete: true,
     };
-    let root = walk.document(path, None, 0, sink)?;
+    let root = walk.document(path, display, None, 0, sink)?;
     let status = match (root.status, walk.children_complete) {
         (Status::Complete, false) => Status::Partial,
         (status, _) => status,
@@ -70,6 +76,7 @@ struct Walk<'a> {
     options: RenderOptions,
     limits: Limits,
     scratch: &'a Path,
+    cache: Option<(&'a Cache, OutputSettings<'a>)>,
     seen: HashMap<String, String>,
     documents: usize,
     expanded_bytes: u64,
@@ -98,9 +105,11 @@ struct Skipped<'a> {
 }
 
 impl Walk<'_> {
+    /// Extracts the document at `path`, known by the file name `name`, then its embedded ones.
     fn document(
         &mut self,
         path: &Path,
+        name: &str,
         embedded_path: Option<String>,
         depth: usize,
         sink: &mut dyn Write,
@@ -131,8 +140,16 @@ impl Walk<'_> {
         };
         self.spools += 1;
         fs::create_dir(&spool.dir)?;
-        let opened = render::open_spooling(self.extractor, path, &spool);
-        let mut outcome = render::render_opened(opened, &source, self.options, sink)?;
+        let extractor = self.extractor;
+        let options = self.options;
+        let render = |sink: &mut dyn Write| {
+            let opened = render::open_spooling(extractor, path, &spool);
+            render::render_opened(opened, &source, options, sink)
+        };
+        let mut outcome = match self.cache {
+            Some((cache, settings)) => cache.render(path, name, &source, settings, sink, render)?,
+            None => render(sink)?,
+        };
         for child in std::mem::take(&mut outcome.embedded) {
             let child_path = match &embedded_path {
                 Some(parent) => format!("{parent}/{}", child.name),
@@ -172,7 +189,13 @@ impl Walk<'_> {
             None
         };
         let Some(message) = limit else {
-            let outcome = self.document(&child.path, Some(embedded_path.clone()), depth, sink)?;
+            let outcome = self.document(
+                &child.path,
+                &child.name,
+                Some(embedded_path.clone()),
+                depth,
+                sink,
+            )?;
             self.children_complete &= outcome.status == Status::Complete;
             self.child_errors
                 .extend(outcome.errors.into_iter().map(|error| ExtractionError {

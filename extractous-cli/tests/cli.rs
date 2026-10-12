@@ -757,11 +757,11 @@ fn the_cache_replays_complete_extractions() {
     let stored = fs::read(&entries[0]).unwrap();
     let trailer_length =
         u64::from_le_bytes(stored[stored.len() - 8..].try_into().unwrap()) as usize;
-    let output_length = stored.len() - 8 - trailer_length;
-    assert_eq!(&stored[..output_length], first.stdout.as_slice());
-    let mut replaced = b"served from the cache\n".to_vec();
-    replaced.extend_from_slice(&stored[output_length..]);
-    fs::write(&entries[0], replaced).unwrap();
+    assert_eq!(
+        &stored[..stored.len() - 8 - trailer_length],
+        first.stdout.as_slice()
+    );
+    rewrite_cache_entry(&entries[0], |_| "served from the cache\n".to_string());
 
     let second = extractous(&["--cache-dir", cache_arg, &input]);
     assert!(second.status.success(), "{}", stderr(&second));
@@ -785,14 +785,82 @@ fn the_cache_replays_complete_extractions() {
 }
 
 #[test]
-fn the_cache_refuses_passwords_and_separate_embedded_documents() {
+fn the_cache_refuses_passwords() {
     let input = document("simple.odt");
     let with_password = extractous(&["--cache-dir", "unused", "--password", "x", &input]);
     assert_eq!(with_password.status.code(), Some(2));
-    let separate = extractous(&["--cache-dir", "unused", "--embedded", "separate", &input]);
-    assert_eq!(separate.status.code(), Some(2));
-    assert!(stderr(&separate).contains("--embedded separate"));
+    assert!(stderr(&with_password).contains("--password"));
     assert!(!Path::new("unused").exists());
+}
+
+/// Replaces the output stored in a cache entry, keeping its trailer.
+fn rewrite_cache_entry(entry: &Path, rewrite: impl FnOnce(&str) -> String) {
+    let stored = fs::read(entry).unwrap();
+    let trailer_length =
+        u64::from_le_bytes(stored[stored.len() - 8..].try_into().unwrap()) as usize;
+    let output_length = stored.len() - 8 - trailer_length;
+    let mut replaced = rewrite(std::str::from_utf8(&stored[..output_length]).unwrap()).into_bytes();
+    replaced.extend_from_slice(&stored[output_length..]);
+    fs::write(entry, replaced).unwrap();
+}
+
+#[test]
+fn the_cache_extracts_an_embedded_document_once_wherever_it_is_embedded() {
+    let scratch = Scratch::new("cache-embedded");
+    let cache = scratch.0.join("cache");
+    let first = scratch.0.join("first.zip");
+    let second = scratch.0.join("second.zip");
+    fs::copy(document("nested.zip"), &first).unwrap();
+    fs::copy(document("nested.zip"), &second).unwrap();
+    let run = |input: &Path| {
+        let output = extractous(&[
+            "--cache-dir",
+            cache.to_str().unwrap(),
+            "--embedded",
+            "separate",
+            "--format",
+            "json",
+            input.to_str().unwrap(),
+        ]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        stdout(&output)
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    let first_records = run(&first);
+    let entries = cache_entries(&cache);
+    assert_eq!(
+        entries.len(),
+        3,
+        "one entry per document without embedded ones"
+    );
+    let notes = entries
+        .iter()
+        .find(|entry| String::from_utf8_lossy(&fs::read(entry).unwrap()).contains("Notes inside"))
+        .unwrap();
+    rewrite_cache_entry(notes, |output| {
+        output.replace("Notes inside", "Cached notes inside")
+    });
+
+    let second_records = run(&second);
+    assert_eq!(cache_entries(&cache).len(), 3);
+    assert_eq!(first_records.len(), second_records.len());
+    for (first_record, second_record) in first_records.iter().zip(&second_records) {
+        assert_matches_schema(second_record);
+        assert_eq!(second_record["source"]["path"], second.to_str().unwrap());
+        assert_eq!(
+            second_record["source"]["embedded_path"],
+            first_record["source"]["embedded_path"]
+        );
+        let expected = if second_record["source"]["embedded_path"] == "inner.zip/notes.txt" {
+            serde_json::json!("Cached notes inside the inner archive.\n")
+        } else {
+            first_record["text"].clone()
+        };
+        assert_eq!(second_record["text"], expected);
+    }
 }
 
 #[test]

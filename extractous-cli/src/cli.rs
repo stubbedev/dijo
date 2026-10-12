@@ -118,8 +118,9 @@ pub struct ServeArgs {
 #[derive(Debug, Args)]
 pub struct CacheArgs {
     /// Keep the output of complete extractions in DIR and reuse it while the input, the options
-    /// and the extractous build are unchanged. Extractions with passwords are never cached, so
-    /// decrypted text never lands on disk, and neither are separate embedded documents.
+    /// and the extractous build are unchanged; with --embedded separate, for each embedded
+    /// document on its own. Extractions with passwords are never cached, so decrypted text never
+    /// lands on disk.
     #[arg(long, value_name = "DIR", env = "EXTRACTOUS_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
 

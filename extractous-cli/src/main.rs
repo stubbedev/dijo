@@ -87,15 +87,29 @@ fn isolation_conflict(args: &ServeArgs) -> Option<&'static str> {
 }
 
 /// Why the extraction arguments cannot use the cache, if they ask for it: decrypted text must not
-/// land on disk, and separate embedded documents are not cached.
+/// land on disk.
 fn cache_conflict(args: &ExtractArgs) -> Option<&'static str> {
     args.cache.cache_dir.as_ref()?;
-    if !args.passwords.is_empty() || args.password_file.is_some() {
-        Some("--cache-dir cannot be combined with --password or --password-file")
-    } else if args.embedded == Embedded::Separate {
-        Some("--cache-dir cannot be combined with --embedded separate")
-    } else {
-        None
+    (!args.passwords.is_empty() || args.password_file.is_some())
+        .then_some("--cache-dir cannot be combined with --password or --password-file")
+}
+
+fn render_options(args: &ExtractArgs) -> RenderOptions {
+    RenderOptions {
+        format: args.format,
+        metadata: args.metadata,
+        raw_metadata: args.raw_metadata,
+        normalization: Steps::selected(args.raw, &args.no_normalize),
+    }
+}
+
+/// What, besides each input, decides the output of these extraction arguments.
+fn output_settings(args: &ExtractArgs) -> OutputSettings<'_> {
+    OutputSettings {
+        render: render_options(args),
+        ocr: args.ocr,
+        ocr_lang: args.ocr_lang.as_deref(),
+        embedded: args.embedded,
     }
 }
 
@@ -299,12 +313,7 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let options = RenderOptions {
-        format: args.format,
-        metadata: args.metadata,
-        raw_metadata: args.raw_metadata,
-        normalization: Steps::selected(args.raw, &args.no_normalize),
-    };
+    let options = render_options(args);
     let extractor = settings::extractor(
         options,
         args.ocr,
@@ -402,12 +411,15 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
             };
             match cache {
                 Some(cache) => {
-                    let settings = OutputSettings {
-                        render: options,
-                        ocr: args.ocr,
-                        ocr_lang: args.ocr_lang.as_deref(),
-                    };
-                    cache.render(path, &input.display, settings, writer, render)
+                    let source = render::source(path, &input.display, None);
+                    cache.render(
+                        path,
+                        &input.display,
+                        &source,
+                        output_settings(args),
+                        writer,
+                        render,
+                    )
                 }
                 None => render(writer),
             }
@@ -427,6 +439,7 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
                 options,
                 limits,
                 &scratch,
+                cache.map(|cache| (cache, output_settings(args))),
                 writer,
             );
             fs::remove_dir_all(&scratch)?;

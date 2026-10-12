@@ -186,7 +186,7 @@ impl ExtractionError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]

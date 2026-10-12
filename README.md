@@ -100,13 +100,16 @@ stays where it is. Normalisation streams, so it holds
 back at most a few characters, or a word after a hyphen that ends a line. XHTML output is never normalised.
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is
-keyed by the BLAKE3 hash of the input's content and its path, the options that shape the output, the extractous
+keyed by the BLAKE3 hash of the input's content and its name, the options that shape the output, the extractous
 executable itself (so a new build, Tika version or embedded library invalidates everything) and the tesseract version.
 Only complete extractions are stored, each written to a temporary file and renamed into place, so concurrent runs and
 crashes never leave a broken entry; once the cache grows past `--cache-max-size`, the least recently used entries are
-evicted. The cache is not available with passwords, so decrypted text never lands on disk, or with
-`--embedded separate`. `extractous serve` takes the same options: a repeated upload is answered from the cache without
-starting Tika, requests with passwords or `embedded=separate` bypass it, and `/metrics` counts hits and misses.
+evicted. With `--embedded separate`, every embedded document without embedded documents of its own is an entry of its
+own, keyed by its own content and file name and replayed with the provenance of wherever it turns up, so the same
+attachment in many emails is extracted once; the emails and archives around it are read again, which is cheap. The
+cache is not available with passwords, so decrypted text never lands on disk. `extractous serve` takes the same
+options: a repeated upload is answered from the cache without starting Tika, requests with passwords bypass it, and
+`/metrics` counts hits and misses.
 
 ## Server
 
