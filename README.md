@@ -92,8 +92,10 @@ appears in a row. Tabs are kept, since they separate table cells. In `--format p
 bottom of most pages (running headers and footers, page numbers) move out of the page text into the page record's
 `header` and `footer`; they are learned from the first 8 pages, which are held back meanwhile. A word hyphenated
 across a line break (`extrac-` / `tion`) is joined. The hyphen stays only when the text before shows a hyphenated
-compound: the word already holds a hyphen (`state-of-the-` / `art`), or `well-known` occurred and `wellknown` did not.
-A hyphen before a capital or a digit, or before a blank line, stays where it is. Normalisation streams, so it holds
+compound: the word already holds a hyphen (`state-of-the-` / `art`), or `wellknown` did not occur but `well-known` or
+both `well` and `known` did. With no evidence either way the word is joined, so a compound that breaks at its hyphen
+before either half has occurred loses the hyphen. A hyphen before a capital or a digit, or before a blank line,
+stays where it is. Normalisation streams, so it holds
 back at most a few characters, or a word after a hyphen that ends a line. XHTML output is never normalised.
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is

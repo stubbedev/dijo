@@ -247,7 +247,8 @@ impl Normalizer {
 /// Joins words hyphenated across a line break. It holds back a hyphen that ends a line, and the
 /// word that starts the next, until that word ends. Whether the hyphen stays is decided from the
 /// text before: it stays when the word already holds a hyphen (`state-of-the-` / `art`), or when
-/// the hyphenated compound occurred and the joined word did not.
+/// the joined word did not occur but the hyphenated compound did, or both halves did as words of
+/// their own (`south` and `west`, where hyphenation leaves fragments such as `extrac`).
 #[derive(Default)]
 struct Dehyphenator {
     token: String,
@@ -342,10 +343,11 @@ impl Dehyphenator {
         let before = last_word(&self.token).to_lowercase();
         let next_lowercase = next.to_lowercase();
         let compound = self.token.contains(is_hyphen)
-            || (self
-                .compounds
-                .contains(&format!("{before}-{next_lowercase}"))
-                && !self.words.contains(&format!("{before}{next_lowercase}")));
+            || (!self.words.contains(&format!("{before}{next_lowercase}"))
+                && (self
+                    .compounds
+                    .contains(&format!("{before}-{next_lowercase}"))
+                    || (self.words.contains(&before) && self.words.contains(&next_lowercase))));
         if compound {
             self.pass(hyphen, out);
         }
@@ -530,6 +532,14 @@ mod tests {
         assert_eq!(
             join("re-entry and reentry, then re-\nentry"),
             "re-entry and reentry, then reentry"
+        );
+        assert_eq!(
+            join("south and west: the south-\nwest"),
+            "south and west: the south-west"
+        );
+        assert_eq!(
+            join("some thing or something, some-\nthing"),
+            "some thing or something, something"
         );
     }
 
