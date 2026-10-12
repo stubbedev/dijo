@@ -29,6 +29,17 @@ use spool::Spool;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let spool_dir = match &cli.command {
+        Some(Command::Serve(args)) => args.spool_dir.clone(),
+        Some(Command::Detect(_)) => None,
+        None => cli.extract.spool_dir.clone(),
+    };
+    if let Some(dir) = spool_dir {
+        if let Err(error) = extractous_core::set_temp_dir(dir) {
+            report("--spool-dir", &error.to_string());
+            return ExitCode::FAILURE;
+        }
+    }
     let succeeded = match cli.command {
         Some(Command::Detect(args)) => detect(&args),
         Some(Command::Serve(args)) => server::serve(&args),
@@ -85,7 +96,7 @@ fn resolve_inputs(
 }
 
 fn detect(args: &InputArgs) -> bool {
-    let spool = match Spool::create() {
+    let spool = match Spool::create(None) {
         Ok(spool) => spool,
         Err(error) => {
             report("spool", &error.to_string());
@@ -174,7 +185,7 @@ struct Finished {
 }
 
 fn extract(args: &ExtractArgs) -> bool {
-    let spool = match Spool::create() {
+    let spool = match Spool::create(args.spool_dir.as_deref()) {
         Ok(spool) => spool,
         Err(error) => {
             report("spool", &error.to_string());

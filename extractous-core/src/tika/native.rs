@@ -130,7 +130,7 @@ fn unpack(staging: &Path) -> io::Result<()> {
 
 /// Creates a new GraalVM isolate: a disjoint heap, so work in one isolate cannot exhaust or
 /// corrupt another. Each call to JNI_CreateJavaVM in a native image creates one.
-pub(crate) fn create_isolate() -> Result<JavaVM, String> {
+pub(crate) fn create_isolate(temp_dir: Option<&Path>) -> Result<JavaVM, String> {
     let loaded = loaded()?;
     let library_dir = loaded.dir.as_path();
     let library_path = library_dir.to_str().ok_or_else(|| {
@@ -141,13 +141,27 @@ pub(crate) fn create_isolate() -> Result<JavaVM, String> {
     })?;
     let library_path_option = CString::new(format!("-Djava.library.path={library_path}"))
         .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))?;
-    let mut vm_options =
-        [library_path_option.as_c_str(), c"-Djava.awt.headless=true"].map(|option| {
-            sys::JavaVMOption {
-                optionString: option.as_ptr().cast_mut(),
-                extraInfo: std::ptr::null_mut(),
-            }
-        });
+    let temp_dir_option = temp_dir
+        .map(|dir| {
+            let dir = dir
+                .to_str()
+                .ok_or_else(|| format!("The temporary directory {} is not UTF-8", dir.display()))?;
+            CString::new(format!("-Djava.io.tmpdir={dir}"))
+                .map_err(|e| format!("Invalid temporary directory {dir}: {e}"))
+        })
+        .transpose()?;
+    let mut vm_options: Vec<sys::JavaVMOption> = [
+        Some(library_path_option.as_c_str()),
+        Some(c"-Djava.awt.headless=true"),
+        temp_dir_option.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|option| sys::JavaVMOption {
+        optionString: option.as_ptr().cast_mut(),
+        extraInfo: std::ptr::null_mut(),
+    })
+    .collect();
     let mut args = sys::JavaVMInitArgs {
         version: sys::JNI_VERSION_1_8,
         nOptions: vm_options.len() as sys::jint,

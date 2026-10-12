@@ -644,3 +644,26 @@ fn embedded_limits_skip_subtrees_as_limit_exceeded() {
         assert_matches_schema(object);
     }
 }
+
+#[test]
+fn spool_dir_holds_the_temporary_files() {
+    let scratch = Scratch::new("spool-dir");
+    let bytes = fs::read(document("simple.odt")).unwrap();
+    let output = extractous_with_stdin(
+        &[
+            "--spool-dir",
+            scratch.0.to_str().unwrap(),
+            "--jobs",
+            "2",
+            "-",
+            &document("simple.doc"),
+        ],
+        Some(&bytes),
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("These are a few of my favorite things"));
+    assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+
+    let missing = extractous(&["--spool-dir", "/nonexistent/spool", &document("simple.odt")]);
+    assert_eq!(missing.status.code(), Some(1));
+}

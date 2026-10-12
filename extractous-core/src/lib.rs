@@ -18,7 +18,7 @@ mod extractor;
 pub use extractor::*;
 
 mod isolate;
-pub use isolate::keep_current_thread_attached;
+pub use isolate::{keep_current_thread_attached, set_temp_dir};
 
 // tika module, not exposed outside this crate
 mod tika {

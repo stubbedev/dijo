@@ -44,6 +44,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
 | `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate`: nesting depth, number of embedded documents, and bytes they may expand to |
+| `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |

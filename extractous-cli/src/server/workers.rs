@@ -57,8 +57,11 @@ pub struct Pool {
 }
 
 impl Pool {
+    /// Starts `workers` threads. Admission already limits requests in flight to the workers plus
+    /// `queue` slots, so the channel holds that many and never refuses an admitted job, even
+    /// while a worker is between jobs.
     pub fn start(workers: usize, queue: usize, metrics: Arc<Metrics>) -> Result<Self, String> {
-        let (sender, receiver) = mpsc::sync_channel::<Job>(queue);
+        let (sender, receiver) = mpsc::sync_channel::<Job>(workers + queue);
         let receiver = Arc::new(Mutex::new(receiver));
         let (ready_sender, ready) = mpsc::channel::<Result<(), String>>();
         for index in 0..workers {

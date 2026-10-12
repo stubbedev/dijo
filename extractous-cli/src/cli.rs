@@ -58,6 +58,11 @@ pub struct ServeArgs {
     #[arg(long, value_name = "SECONDS", env = "EXTRACTOUS_TIMEOUT")]
     pub timeout: Option<u64>,
 
+    /// Directory for temporary files: spooled input and output, embedded documents, and Tika's
+    /// scratch files for large PDFs. The system temporary directory by default.
+    #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
+    pub spool_dir: Option<PathBuf>,
+
     /// Seconds in-flight requests get to finish after a shutdown signal.
     #[arg(
         long,
@@ -150,6 +155,11 @@ pub struct ExtractArgs {
     /// to in all, which stops decompression bombs.
     #[arg(long, value_name = "BYTES", default_value_t = Limits::DEFAULT.max_expanded_bytes, env = "EXTRACTOUS_MAX_EXPANDED_BYTES")]
     pub max_expanded_bytes: u64,
+
+    /// Directory for temporary files: spooled input and output, embedded documents, and Tika's
+    /// scratch files for large PDFs. The system temporary directory by default.
+    #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
+    pub spool_dir: Option<PathBuf>,
 
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]

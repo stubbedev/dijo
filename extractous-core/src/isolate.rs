@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use jni::{AttachGuard, JavaVM};
@@ -25,13 +26,31 @@ impl fmt::Debug for Isolate {
     }
 }
 
+static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
+static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+
 /// The process-wide isolate, created on first use.
 pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
-    static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
     ISOLATE
-        .get_or_init(|| native::create_isolate().map(|vm| Isolate { vm }))
+        .get_or_init(|| {
+            native::create_isolate(TEMP_DIR.get().map(PathBuf::as_path)).map(|vm| Isolate { vm })
+        })
         .as_ref()
         .map_err(|message| Error::NativeLibrary(message.clone()))
+}
+
+/// Puts Tika's temporary files (PDF scratch files, spooled streams) in `dir` instead of the
+/// system temporary directory. Java reads this once, when the isolate starts, so it must be set
+/// before the first extraction and only once.
+pub fn set_temp_dir(dir: PathBuf) -> ExtractResult<()> {
+    if ISOLATE.get().is_some() {
+        return Err(Error::Unknown(
+            "The temporary directory must be set before the first extraction".to_string(),
+        ));
+    }
+    TEMP_DIR
+        .set(dir)
+        .map_err(|_| Error::Unknown("The temporary directory was already set".to_string()))
 }
 
 /// Attaches the current thread to the isolate until the thread exits, so extractions on it skip

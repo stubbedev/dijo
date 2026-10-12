@@ -11,11 +11,13 @@ pub struct Spool {
 }
 
 impl Spool {
-    pub fn create() -> io::Result<Self> {
+    /// Creates the spool inside `parent`, or the system temporary directory.
+    pub fn create(parent: Option<&Path>) -> io::Result<Self> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.subsec_nanos());
-        let dir = std::env::temp_dir().join(format!("extractous-{}-{nanos}", process::id()));
+        let parent = parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
+        let dir = parent.join(format!("extractous-{}-{nanos}", process::id()));
         fs::create_dir(&dir)?;
         Ok(Self { dir })
     }
