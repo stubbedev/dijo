@@ -1,0 +1,1 @@
+Plain English text with a single non-ASCII character: the ﬁ ligature, and nothing else of note.

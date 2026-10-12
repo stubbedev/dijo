@@ -3,6 +3,8 @@ package ai.yobix;
 import org.apache.commons.io.IOUtils;
 import org.apache.tika.Tika;
 import org.apache.tika.config.TikaConfig;
+import org.apache.tika.detect.CompositeEncodingDetector;
+import org.apache.tika.detect.EncodingDetector;
 import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
@@ -62,6 +64,8 @@ public class TikaNativeMain {
 
     private static final Tika TIKA = new Tika();
     private static final Parser PARSER = new AutoDetectParser(TikaConfig.getDefaultConfig());
+    private static final EncodingDetector ENCODING_DETECTOR = new CompositeEncodingDetector(List.of(
+            new Utf8EncodingDetector(), TikaConfig.getDefaultConfig().getEncodingDetector()));
 
     static {
         java.awt.GraphicsEnvironment.isHeadless();
@@ -137,6 +141,7 @@ public class TikaNativeMain {
     ) {
         final ParseContext parseContext = new ParseContext();
         parseContext.set(Parser.class, PARSER);
+        parseContext.set(EncodingDetector.class, ENCODING_DETECTOR);
         parseContext.set(PDFParserConfig.class, pdfConfig);
         parseContext.set(OfficeParserConfig.class, officeConfig);
         parseContext.set(TesseractOCRConfig.class, tesseractConfig);
