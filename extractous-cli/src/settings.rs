@@ -27,10 +27,9 @@ pub fn extractor(
         Ocr::Never => (PdfOcrStrategy::NO_OCR, true),
         Ocr::Always => (PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION, false),
     };
-    let mut ocr_config = TesseractOcrConfig::new().set_skip_ocr(skip_ocr);
-    if let Some(languages) = ocr_lang {
-        ocr_config = ocr_config.set_language(languages);
-    }
+    let ocr_config = TesseractOcrConfig::new()
+        .set_skip_ocr(skip_ocr)
+        .set_language(ocr_lang.unwrap_or(TesseractOcrConfig::AUTO_LANGUAGE));
     let extractor = Extractor::new()
         .set_passwords(passwords)
         .set_xml_output(matches!(

@@ -17,6 +17,7 @@ in
         "eng"
         "deu"
         "ara"
+        "osd"
       ];
     })
     pkgs.git

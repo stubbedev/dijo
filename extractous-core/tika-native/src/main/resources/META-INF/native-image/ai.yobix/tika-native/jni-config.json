@@ -5,6 +5,11 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "ai.yobix.OcrConfig",
+    "allDeclaredConstructors": true,
+    "allPublicMethods": true
+  },
+  {
     "name": "ai.yobix.Throwables",
     "allDeclaredMethods": true
   },

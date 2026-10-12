@@ -194,7 +194,7 @@ tika_config! {
 
 tika_config! {
     /// Tesseract OCR configuration settings
-    TesseractOcrConfig => "org/apache/tika/parser/ocr/TesseractOCRConfig" {
+    TesseractOcrConfig => "ai/yobix/OcrConfig" {
         /// Sets the DPI (dots per inch) of the image to be processed.
         set_density(density: i32) => "setDensity",
 
@@ -216,9 +216,16 @@ tika_config! {
         /// Sets the tesseract language dictionary to be used for OCR.
         /// Languages are nominally an [ISO-639-2 codes](https://en.wikipedia.org/wiki/List_of_ISO_639-2_codes).
         /// Multiple languages may be specified, separated by plus characters. e.g.
-        /// "chi_tra+chi_sim+script/Arabic"
+        /// "chi_tra+chi_sim+script/Arabic". [`TesseractOcrConfig::AUTO_LANGUAGE`] detects the
+        /// script of each image with tesseract's orientation and script detection, which needs
+        /// the `osd` model, and reads it with an installed model for that script.
         set_language(language: String) => "setLanguage",
     }
+}
+
+impl TesseractOcrConfig {
+    /// The language that makes OCR detect each image's script and pick a model for it.
+    pub const AUTO_LANGUAGE: &'static str = "auto";
 }
 
 /// A password for encrypted documents. It never appears in `Debug` output.

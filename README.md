@@ -30,7 +30,10 @@ embedded in the binary, compressed (about 36 MB). On first use they are unpacked
 `$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
 Windows) and loaded from there, so the binary runs wherever it is copied.
 
-OCR runs the `tesseract` executable, which must be on `PATH` together with the language data you request.
+OCR runs the `tesseract` executable, which must be on `PATH` together with its language data. Without `--ocr-lang`,
+each image is first run through tesseract's orientation and script detection (the `osd` data, which distribution
+packages install with tesseract): it is turned upright and read with the installed model for its script, such as
+`script/Arabic`, then `ara`, falling back to `eng`.
 
 ## Usage
 
@@ -65,7 +68,7 @@ extractous detect mystery.bin                 # application/pdf
 | `-r, --recursive` | Descend into directories, in sorted order |
 | `-j, --jobs <N>` | Inputs extracted in parallel (default: number of cores); output stays in input order |
 | `--ocr auto\|never\|always` | OCR pages and images without text (default), never, or every PDF page as well |
-| `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara` |
+| `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image from its script by default |
 
 Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRACTOUS_JOBS`, ...); `extractous --help`
 lists them. Errors go to standard error with the input path and the full Java cause chain, and one failed input does

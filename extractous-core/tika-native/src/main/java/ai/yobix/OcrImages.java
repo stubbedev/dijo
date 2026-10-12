@@ -88,6 +88,16 @@ final class OcrImages {
         return turned;
     }
 
+    /** The image turned clockwise by a number of quarter turns. */
+    static BufferedImage turnClockwise(BufferedImage image, int quarterTurns) {
+        return switch (Math.floorMod(quarterTurns, 4)) {
+            case 1 -> applyOrientation(image, "6");
+            case 2 -> applyOrientation(image, "3");
+            case 3 -> applyOrientation(image, "8");
+            default -> image;
+        };
+    }
+
     /**
      * The angle, in degrees, by which the lines of text in the image are rotated, or 0 when no
      * rotation clearly lines them up better. Found by projecting the dark pixels of a reduced copy

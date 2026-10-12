@@ -241,7 +241,8 @@ pub struct ExtractArgs {
     #[arg(long, value_enum, default_value_t = Ocr::Auto, env = "EXTRACTOUS_OCR")]
     pub ocr: Ocr,
 
-    /// Tesseract languages for OCR, such as `deu` or `eng+ara`.
+    /// Tesseract languages for OCR, such as `deu` or `eng+ara`. By default each image's script is
+    /// detected (with tesseract's `osd` data) and read with an installed model for it.
     #[arg(long, value_name = "LANGS", env = "EXTRACTOUS_OCR_LANG")]
     pub ocr_lang: Option<String>,
 }
