@@ -982,6 +982,28 @@ fn a_clean_pdf_text_layer_is_kept() {
 }
 
 #[test]
+fn every_page_of_a_skewed_multi_page_tiff_is_ocred_as_a_page() {
+    let output = extractous(&[
+        "--format",
+        "pages",
+        "../quality/corpus/report-scan-skewed.tif",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let pages: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|record: &serde_json::Value| record["kind"] == "page")
+        .collect();
+    assert_eq!(pages.len(), 2, "{pages:?}");
+    assert_eq!(pages[1]["page"], 2);
+    assert!(
+        pages[1]["text"].as_str().unwrap().contains("Part Three"),
+        "{pages:?}"
+    );
+    assert_eq!(pages[1]["footer"], "Page 2");
+}
+
+#[test]
 fn tiff_images_with_exif_directories_are_ocred() {
     let output = extractous(&["../quality/corpus/report-scan.tif"]);
     assert!(output.status.success(), "{}", stderr(&output));

@@ -40,3 +40,8 @@ prose-broken-private-use.pdf	prose	broken-text-layer
 prose-broken-offset.pdf	prose	broken-text-layer	
 hyphenated.pdf	hyphenated	hyphenation	
 hyphenated.pdf	hyphenated	hyphenation	--no-normalize hyphenation
+prose-scan-inverted.png	prose	ocr	
+prose-scan-72dpi.png	prose	ocr	
+prose-scan-shadow.png	prose	ocr	
+report-scan.tif	report	ocr	
+report-scan-skewed.tif	report	ocr	

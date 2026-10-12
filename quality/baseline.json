@@ -153,7 +153,28 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-scan-72dpi.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-scan-inverted.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-scan-rotated.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-scan-shadow.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
@@ -217,6 +238,20 @@
     "reading_order": 1.0
   },
   "prose.rtf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "report-scan-skewed.tif": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "report-scan.tif": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,

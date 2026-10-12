@@ -41,3 +41,8 @@
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hyphenated.pdf | hyphenation | 0.001 | 0.006 | 1.000 | 0.006 | 1.000 |
 | hyphenated.pdf --no-normalize hyphenation | hyphenation | 0.029 | 0.290 | 0.858 | 0.253 | 1.000 |
+| prose-scan-inverted.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-scan-72dpi.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-scan-shadow.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| report-scan.tif | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| report-scan-skewed.tif | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

@@ -5,26 +5,38 @@ import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TIFF;
+import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.metadata.TikaPagedText;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.ocr.TesseractOCRParser;
+import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.EmbeddedContentHandler;
+import org.apache.tika.sax.XHTMLContentHandler;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import javax.imageio.IIOException;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
 import java.awt.image.BufferedImage;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
+import java.util.Iterator;
+import java.util.Locale;
 import java.util.Set;
 
 /**
- * Runs OCR on images turned upright first: by their EXIF orientation, and by the skew of their
- * text lines. Images that need neither go to tesseract untouched, as do images too large to
- * decode safely and images Java cannot decode (tesseract reads more formats than ImageIO).
+ * Runs OCR on images made readable first: turned upright by their EXIF orientation and by the
+ * skew of their text lines, and enlarged when their text is too small. Images that need none of
+ * this go to tesseract untouched, as do images too large to decode safely and images Java cannot
+ * decode (tesseract reads more formats than ImageIO). Each page of a multi-page TIFF is prepared
+ * and read on its own, and becomes a page of the output.
  * <p>
  * With the automatic OCR language ({@link OcrConfig}), tesseract's orientation and script
  * detection runs first: the image is also turned by the quarter turns it finds, and read with a
@@ -33,6 +45,7 @@ import java.util.Set;
 final class PreparingOcrParser implements Parser {
 
     private static final long MAX_PIXELS = 60_000_000L;
+    private static final Set<String> PAGED_FORMATS = Set.of("tif", "tiff");
 
     private final Parser ocr;
     private final String tesseract;
@@ -61,31 +74,79 @@ final class PreparingOcrParser implements Parser {
                 ? config : null;
         try (TemporaryResources temporary = new TemporaryResources()) {
             final TikaInputStream input = TikaInputStream.get(stream, temporary, metadata);
-            final Prepared prepared = prepare(input.getPath(), metadata, auto, temporary);
-            if (auto != null) {
-                auto.useDetectedLanguage(prepared.language);
+            final Path original = input.getPath();
+            try (Pages pages = Pages.open(original)) {
+                if (pages != null && pages.count() > 1) {
+                    parsePages(pages, handler, metadata, context, auto, temporary);
+                    return;
+                }
+                final BufferedImage image = pages == null ? null : pages.read(0);
+                final Prepared prepared = prepare(original, image, metadata, auto, temporary);
+                prepared.configure(configured);
+                try (TikaInputStream preparedInput = prepared.path == null
+                        ? null : TikaInputStream.get(prepared.path)) {
+                    ocr.parse(preparedInput == null ? input : preparedInput, handler, metadata,
+                            context);
+                }
             }
-            try (TikaInputStream image = prepared.path == null
-                    ? null : TikaInputStream.get(prepared.path)) {
-                ocr.parse(image == null ? input : image, handler, metadata, context);
+        }
+    }
+
+    /** Reads every page of a multi-page image as a page of the output. */
+    private void parsePages(Pages pages, ContentHandler handler, Metadata metadata,
+                            ParseContext context, OcrConfig auto, TemporaryResources temporary)
+            throws IOException, SAXException, TikaException {
+        final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+        xhtml.startDocument();
+        for (int index = 0; index < pages.count(); index++) {
+            final BufferedImage image = pages.read(index);
+            xhtml.startElement("div", "class", "page");
+            if (image == null) {
+                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, "Page " + (index + 1)
+                        + " of the image is too large or damaged to OCR");
+            } else {
+                final Path page = write(image, temporary);
+                final Prepared prepared = prepare(page, image, metadata, auto, temporary);
+                prepared.configure(context.get(TesseractOCRConfig.class));
+                final Metadata pageMetadata = new Metadata();
+                pageMetadata.set(TikaPagedText.PAGE_NUMBER, index + 1);
+                try (TikaInputStream input = TikaInputStream.get(
+                        prepared.path == null ? page : prepared.path)) {
+                    ocr.parse(input, new EmbeddedContentHandler(new BodyContentHandler(xhtml)),
+                            pageMetadata, context);
+                }
+            }
+            xhtml.endElement("div");
+        }
+        xhtml.endDocument();
+    }
+
+    /**
+     * @param path           the prepared image, or null when the original reads as it is
+     * @param language       the language to read the image in, when it was detected
+     * @param unevenLighting whether the image is lit unevenly
+     */
+    private record Prepared(Path path, String language, boolean unevenLighting) {
+
+        void configure(TesseractOCRConfig config) {
+            if (config instanceof OcrConfig ocrConfig) {
+                if (ocrConfig.isAutoLanguage()) {
+                    ocrConfig.useDetectedLanguage(language);
+                }
+                ocrConfig.useThresholdingFor(unevenLighting);
             }
         }
     }
 
     /**
-     * @param path     the upright image, or null when the original is already upright
-     * @param language the language to read the image in, when it was detected
-     */
-    private record Prepared(Path path, String language) {
-    }
-
-    /**
-     * Turns the image upright and, given the configuration of an automatic language, detects the
+     * Makes an image readable and, given the configuration of an automatic language, detects the
      * language to read it in.
+     *
+     * @param original the image file
+     * @param image    its decoded pixels, or null when they could not be decoded within limits
      */
-    private Prepared prepare(Path original, Metadata metadata, OcrConfig auto,
+    private Prepared prepare(Path original, BufferedImage image, Metadata metadata, OcrConfig auto,
                              TemporaryResources temporary) throws IOException, TikaException {
-        final BufferedImage image = readWithinLimit(original);
         BufferedImage upright = image == null
                 ? null : OcrImages.applyOrientation(image, metadata.get(TIFF.ORIENTATION));
         String language = null;
@@ -100,13 +161,18 @@ final class PreparingOcrParser implements Parser {
             }
         }
         if (upright == null) {
-            return new Prepared(null, language);
+            return new Prepared(null, language, false);
         }
         final double skew = OcrImages.skewDegrees(upright);
         if (skew != 0) {
             upright = OcrImages.rotate(upright, skew);
         }
-        return new Prepared(upright == image ? null : write(upright, temporary), language);
+        final double upscale = OcrImages.upscaleFactor(upright, MAX_PIXELS);
+        if (upscale > 1) {
+            upright = OcrImages.scale(upright, upscale);
+        }
+        return new Prepared(upright == image ? null : write(upright, temporary), language,
+                OcrImages.unevenLighting(upright));
     }
 
     private static Path write(BufferedImage image, TemporaryResources temporary)
@@ -118,27 +184,65 @@ final class PreparingOcrParser implements Parser {
         return path;
     }
 
-    private static BufferedImage readWithinLimit(Path path) throws IOException {
-        try (var input = ImageIO.createImageInputStream(path.toFile())) {
+    /**
+     * The decodable pages of an image file: all pages of a TIFF, the first image of anything
+     * else, since the further frames of a GIF or an icon are not pages.
+     */
+    private static final class Pages implements Closeable {
+        private final ImageInputStream input;
+        private final ImageReader reader;
+        private final int count;
+
+        private Pages(ImageInputStream input, ImageReader reader, int count) {
+            this.input = input;
+            this.reader = reader;
+            this.count = count;
+        }
+
+        /** The pages of the file, or null when Java cannot decode it. */
+        static Pages open(Path path) throws IOException {
+            final ImageInputStream input = ImageIO.createImageInputStream(path.toFile());
             if (input == null) {
                 return null;
             }
-            final var readers = ImageIO.getImageReaders(input);
+            final Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
             if (!readers.hasNext()) {
+                input.close();
                 return null;
             }
-            final var reader = readers.next();
+            final ImageReader reader = readers.next();
             try {
-                reader.setInput(input, true, true);
-                if ((long) reader.getWidth(0) * reader.getHeight(0) > MAX_PIXELS) {
+                reader.setInput(input, false, true);
+                final boolean paged = PAGED_FORMATS.contains(
+                        reader.getFormatName().toLowerCase(Locale.ROOT));
+                return new Pages(input, reader, paged ? reader.getNumImages(true) : 1);
+            } catch (IIOException e) {
+                reader.dispose();
+                input.close();
+                return null;
+            }
+        }
+
+        int count() {
+            return count;
+        }
+
+        /** The page's pixels, or null when the page is too large or cannot be decoded. */
+        BufferedImage read(int index) throws IOException {
+            try {
+                if ((long) reader.getWidth(index) * reader.getHeight(index) > MAX_PIXELS) {
                     return null;
                 }
-                return reader.read(0);
+                return reader.read(index);
             } catch (IIOException e) {
                 return null;
-            } finally {
-                reader.dispose();
             }
+        }
+
+        @Override
+        public void close() throws IOException {
+            reader.dispose();
+            input.close();
         }
     }
 }

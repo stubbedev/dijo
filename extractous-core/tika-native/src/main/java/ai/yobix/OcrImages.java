@@ -5,11 +5,15 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
- * Corrections that make an image readable for OCR: the orientation recorded in its EXIF data, and
- * the small rotation of a page scanned or photographed slightly askew, which breaks tesseract's
- * layout analysis already at a few degrees.
+ * Corrections that make an image readable for OCR: the orientation recorded in its EXIF data, the
+ * small rotation of a page scanned or photographed slightly askew, which breaks tesseract's
+ * layout analysis already at a few degrees, text too small for tesseract, as in screenshots and
+ * low-resolution scans, and lighting too uneven for a single binarisation threshold.
  */
 final class OcrImages {
 
@@ -19,6 +23,13 @@ final class OcrImages {
     private static final double FINE_STEP_DEGREES = 0.05;
     private static final double MIN_CORRECTION_DEGREES = 0.3;
     private static final double MIN_SHARPNESS_GAIN = 1.05;
+    private static final int MIN_LINE_PIXELS = 20;
+    private static final int TARGET_LINE_PIXELS = 32;
+    private static final double MAX_UPSCALE = 4;
+    private static final int MIN_INK_RUN_PIXELS = 3;
+    private static final int LIGHTING_TILES = 8;
+    private static final double BACKGROUND_PERCENTILE = 0.9;
+    private static final int UNEVEN_BACKGROUND_LEVELS = 48;
 
     private OcrImages() {
     }
@@ -108,16 +119,8 @@ final class OcrImages {
                 (double) ANALYSIS_SIZE / Math.max(image.getWidth(), image.getHeight()));
         final int width = Math.max(1, (int) Math.round(image.getWidth() * scale));
         final int height = Math.max(1, (int) Math.round(image.getHeight() * scale));
-        final BufferedImage reduced = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
-        final Graphics2D graphics = reduced.createGraphics();
-        try {
-            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            graphics.drawImage(image, 0, 0, width, height, null);
-        } finally {
-            graphics.dispose();
-        }
-        final int[] gray = reduced.getRaster().getPixels(0, 0, width, height, (int[]) null);
+        final int[] gray = gray(image, width, height).getRaster()
+                .getPixels(0, 0, width, height, (int[]) null);
         final int threshold = otsuThreshold(gray);
         int count = 0;
         for (final int value : gray) {
@@ -163,6 +166,131 @@ final class OcrImages {
             return 0;
         }
         return best;
+    }
+
+    /**
+     * How much to enlarge the image so its text lines are tall enough for tesseract, which reads
+     * small text poorly: 1 when the lines are at least {@value #MIN_LINE_PIXELS} pixels high, the
+     * image has no lines of text, or enlarging it would take it past maxPixels.
+     */
+    static double upscaleFactor(BufferedImage image, long maxPixels) {
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        final int[] gray = gray(image, width, height).getRaster()
+                .getPixels(0, 0, width, height, (int[]) null);
+        final int threshold = otsuThreshold(gray);
+        final List<Integer> runs = new ArrayList<>();
+        int run = 0;
+        for (int y = 0; y <= height; y++) {
+            if (y < height && rowHasInk(gray, y, width, threshold)) {
+                run++;
+                continue;
+            }
+            if (run >= MIN_INK_RUN_PIXELS) {
+                runs.add(run);
+            }
+            run = 0;
+        }
+        if (runs.isEmpty()) {
+            return 1;
+        }
+        Collections.sort(runs);
+        final int lineHeight = runs.get(runs.size() / 2);
+        if (lineHeight >= MIN_LINE_PIXELS) {
+            return 1;
+        }
+        final double wanted = Math.min(MAX_UPSCALE, (double) TARGET_LINE_PIXELS / lineHeight);
+        final double allowed = Math.sqrt((double) maxPixels / ((long) width * height));
+        return Math.max(1, Math.min(wanted, allowed));
+    }
+
+    private static boolean rowHasInk(int[] gray, int y, int width, int threshold) {
+        for (int x = 0; x < width; x++) {
+            if (gray[y * width + x] < threshold) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the image is lit unevenly, as a photographed page in shadow is: whether the
+     * background brightness of its regions differs by {@value #UNEVEN_BACKGROUND_LEVELS} gray
+     * levels or more. The background of a region is the brightness its lightest tenth of pixels
+     * reaches.
+     */
+    static boolean unevenLighting(BufferedImage image) {
+        final double scale = Math.min(1.0,
+                (double) ANALYSIS_SIZE / Math.max(image.getWidth(), image.getHeight()));
+        final int width = Math.max(LIGHTING_TILES, (int) Math.round(image.getWidth() * scale));
+        final int height = Math.max(LIGHTING_TILES, (int) Math.round(image.getHeight() * scale));
+        final int[] gray = gray(image, width, height).getRaster()
+                .getPixels(0, 0, width, height, (int[]) null);
+        int lightest = 0;
+        int darkest = 255;
+        for (int tileY = 0; tileY < LIGHTING_TILES; tileY++) {
+            for (int tileX = 0; tileX < LIGHTING_TILES; tileX++) {
+                final int[] histogram = new int[256];
+                int count = 0;
+                for (int y = tileY * height / LIGHTING_TILES;
+                     y < (tileY + 1) * height / LIGHTING_TILES; y++) {
+                    for (int x = tileX * width / LIGHTING_TILES;
+                         x < (tileX + 1) * width / LIGHTING_TILES; x++) {
+                        histogram[gray[y * width + x]]++;
+                        count++;
+                    }
+                }
+                final int background = percentile(histogram, count, BACKGROUND_PERCENTILE);
+                lightest = Math.max(lightest, background);
+                darkest = Math.min(darkest, background);
+            }
+        }
+        return lightest - darkest >= UNEVEN_BACKGROUND_LEVELS;
+    }
+
+    private static int percentile(int[] histogram, int count, double percentile) {
+        final long wanted = (long) Math.ceil(count * percentile);
+        long seen = 0;
+        for (int value = 0; value < histogram.length; value++) {
+            seen += histogram[value];
+            if (seen >= wanted) {
+                return value;
+            }
+        }
+        return histogram.length - 1;
+    }
+
+    /** The image enlarged by a factor, smoothly, so the letters keep their shapes. */
+    static BufferedImage scale(BufferedImage image, double factor) {
+        final int width = (int) Math.round(image.getWidth() * factor);
+        final int height = (int) Math.round(image.getHeight() * factor);
+        final BufferedImage scaled = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
+        final Graphics2D graphics = scaled.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.drawImage(image, 0, 0, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return scaled;
+    }
+
+    private static BufferedImage gray(BufferedImage image, int width, int height) {
+        if (image.getType() == BufferedImage.TYPE_BYTE_GRAY && image.getWidth() == width
+                && image.getHeight() == height) {
+            return image;
+        }
+        final BufferedImage gray = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
+        final Graphics2D graphics = gray.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.drawImage(image, 0, 0, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return gray;
     }
 
     /** The image rotated by -degrees about its centre, on a white canvas that holds all of it. */
