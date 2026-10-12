@@ -1,3 +1,4 @@
+mod cache;
 mod cli;
 mod inputs;
 mod normalize;
@@ -19,9 +20,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser};
 use extractous_core::{Extractor, Metadata, Password};
 
+use cache::Cache;
 use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs};
 use inputs::{Input, InputError, Source};
 use normalize::Steps;
@@ -37,6 +40,14 @@ const LICENSES: &str = concat!(
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.extract.cache_dir.is_some() && cli.extract.embedded == Embedded::Separate {
+        Cli::command()
+            .error(
+                ErrorKind::ArgumentConflict,
+                "--cache-dir cannot be combined with --embedded separate",
+            )
+            .exit();
+    }
     let succeeded = if cli.licenses {
         print_licenses()
     } else {
@@ -236,14 +247,44 @@ fn extract(args: &ExtractArgs) -> bool {
         passwords,
         args.timeout.map(Duration::from_secs),
     );
+    let options = RenderOptions {
+        format: args.format,
+        metadata: args.metadata,
+        raw_metadata: args.raw_metadata,
+        normalization: Steps::selected(args.raw, &args.no_normalize),
+    };
+    let cache = match &args.cache_dir {
+        Some(dir) => match Cache::open(
+            dir,
+            args.cache_max_size,
+            options,
+            args.ocr,
+            args.ocr_lang.as_deref(),
+        ) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                report("--cache-dir", &error);
+                return false;
+            }
+        },
+        None => None,
+    };
     let workers = args.jobs.get().min(inputs.len().max(1));
+    let context = Context {
+        extractor: &extractor,
+        args,
+        options,
+        cache: cache.as_ref(),
+        spool: &spool,
+        workers,
+    };
     let next = AtomicUsize::new(0);
     let (sender, receiver) = mpsc::channel::<(usize, Finished)>();
 
-    thread::scope(|scope| {
+    let succeeded = thread::scope(|scope| {
         for _ in 0..workers {
             let sender = sender.clone();
-            let (inputs, next, extractor, spool) = (&inputs, &next, &extractor, &spool);
+            let (inputs, next, context) = (&inputs, &next, &context);
             scope.spawn(move || loop {
                 if STDOUT_CLOSED.load(Ordering::Relaxed) {
                     break;
@@ -252,7 +293,7 @@ fn extract(args: &ExtractArgs) -> bool {
                 let Some(input) = inputs.get(index) else {
                     break;
                 };
-                let finished = run(extractor, args, spool, workers, index, input);
+                let finished = run(context, index, input);
                 if sender.send((index, finished)).is_err() {
                     break;
                 }
@@ -260,17 +301,33 @@ fn extract(args: &ExtractArgs) -> bool {
         }
         drop(sender);
         emit_in_order(receiver, args.format, args.strict)
-    })
+    });
+    if let Some(Err(error)) = cache.as_ref().map(Cache::evict) {
+        report("--cache-dir", &error.to_string());
+        return false;
+    }
+    succeeded
 }
 
-fn run(
-    extractor: &Extractor,
-    args: &ExtractArgs,
-    spool: &Spool,
+/// What every input of one run is extracted with.
+struct Context<'a> {
+    extractor: &'a Extractor,
+    args: &'a ExtractArgs,
+    options: RenderOptions,
+    cache: Option<&'a Cache>,
+    spool: &'a Spool,
     workers: usize,
-    index: usize,
-    input: &Result<Resolved, InputError>,
-) -> Finished {
+}
+
+fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) -> Finished {
+    let Context {
+        extractor,
+        args,
+        options,
+        cache,
+        spool,
+        workers,
+    } = *context;
     let Resolved { input, path } = match input {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -292,14 +349,16 @@ fn run(
         None => Sink::Spooled(spool.path(&format!("{index}.out"))),
     };
     let keep_failed = matches!(args.format, Format::Json | Format::Pages | Format::Elements);
-    let options = RenderOptions {
-        format: args.format,
-        metadata: args.metadata,
-        raw_metadata: args.raw_metadata,
-        normalization: Steps::selected(args.raw, &args.no_normalize),
-    };
     let rendered = write_sink(&sink, keep_failed, |writer| match args.embedded {
-        Embedded::Inline => render::render(extractor, path, &input.display, options, writer),
+        Embedded::Inline => {
+            let render = |writer: &mut dyn Write| {
+                render::render(extractor, path, &input.display, options, writer)
+            };
+            match cache {
+                Some(cache) => cache.render(path, &input.display, writer, render),
+                None => render(writer),
+            }
+        }
         Embedded::Separate => {
             let scratch = spool.path(&format!("{index}.embedded"));
             fs::create_dir(&scratch)?;

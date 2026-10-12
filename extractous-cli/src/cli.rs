@@ -181,6 +181,27 @@ pub struct ExtractArgs {
     #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
     pub spool_dir: Option<PathBuf>,
 
+    /// Keep the output of complete extractions in DIR and reuse it while the input, the options
+    /// and the extractous build are unchanged. Not available with passwords, so decrypted text
+    /// never lands on disk, or with --embedded separate.
+    #[arg(
+        long,
+        value_name = "DIR",
+        env = "EXTRACTOUS_CACHE_DIR",
+        conflicts_with_all = ["passwords", "password_file"]
+    )]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Evict the least recently used cache entries after a run until the cache holds at most
+    /// this many bytes.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        env = "EXTRACTOUS_CACHE_MAX_SIZE",
+        requires = "cache_dir"
+    )]
+    pub cache_max_size: Option<u64>,
+
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]
     pub output: Option<PathBuf>,

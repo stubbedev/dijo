@@ -53,6 +53,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
 | `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate`: nesting depth, number of embedded documents, and bytes they may expand to |
+| `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size |
 | `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
@@ -75,6 +76,13 @@ ligatures such as `ﬁ` become `fi`, soft hyphens are dropped, characters are co
 become plain ones, runs of spaces collapse, lines end with `\n` without trailing spaces, and at most one blank line
 appears in a row. Tabs are kept, since they separate table cells. Normalisation streams, so it holds back at most a few
 characters. XHTML output is never normalised.
+
+With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is
+keyed by the BLAKE3 hash of the input's content and its path, the options that shape the output, the extractous
+executable itself (so a new build, Tika version or embedded library invalidates everything) and, unless OCR is off,
+the tesseract version. Only complete extractions are stored, each written to a temporary file and renamed into place,
+so concurrent runs and crashes never leave a broken entry. The cache is not available with passwords, so decrypted text
+never lands on disk, or with `--embedded separate`.
 
 ## Server
 

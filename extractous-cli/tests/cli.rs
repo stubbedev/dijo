@@ -725,3 +725,68 @@ fn text_is_normalised_unless_raw() {
     let conflicting = extractous(&["--raw", "--no-normalize", "unicode", &input]);
     assert_eq!(conflicting.status.code(), Some(2));
 }
+
+fn cache_entries(dir: &Path) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    for shard in fs::read_dir(dir).unwrap() {
+        let shard = shard.unwrap().path();
+        for entry in fs::read_dir(&shard).unwrap() {
+            entries.push(entry.unwrap().path());
+        }
+    }
+    entries.sort();
+    entries
+}
+
+#[test]
+fn the_cache_replays_complete_extractions() {
+    let scratch = Scratch::new("cache");
+    let cache = scratch.0.join("cache");
+    let cache_arg = cache.to_str().unwrap();
+    let input = document("simple.odt");
+
+    let first = extractous(&["--cache-dir", cache_arg, &input]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let entries = cache_entries(&cache);
+    assert_eq!(entries.len(), 1);
+
+    let stored = fs::read(&entries[0]).unwrap();
+    let trailer_length =
+        u64::from_le_bytes(stored[stored.len() - 8..].try_into().unwrap()) as usize;
+    let output_length = stored.len() - 8 - trailer_length;
+    assert_eq!(&stored[..output_length], first.stdout.as_slice());
+    let mut replaced = b"served from the cache\n".to_vec();
+    replaced.extend_from_slice(&stored[output_length..]);
+    fs::write(&entries[0], replaced).unwrap();
+
+    let second = extractous(&["--cache-dir", cache_arg, &input]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert_eq!(stdout(&second), "served from the cache\n");
+
+    let raw = extractous(&["--cache-dir", cache_arg, "--raw", &input]);
+    assert!(stdout(&raw).contains("These are a few of my favorite things"));
+    assert_eq!(cache_entries(&cache).len(), 2);
+
+    let failed = extractous(&[
+        "--cache-dir",
+        cache_arg,
+        &format!("{DOCUMENTS}/encrypted/password.docx"),
+    ]);
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(cache_entries(&cache).len(), 2);
+
+    let evicted = extractous(&["--cache-dir", cache_arg, "--cache-max-size", "0", &input]);
+    assert!(evicted.status.success(), "{}", stderr(&evicted));
+    assert!(cache_entries(&cache).is_empty());
+}
+
+#[test]
+fn the_cache_refuses_passwords_and_separate_embedded_documents() {
+    let input = document("simple.odt");
+    let with_password = extractous(&["--cache-dir", "unused", "--password", "x", &input]);
+    assert_eq!(with_password.status.code(), Some(2));
+    let separate = extractous(&["--cache-dir", "unused", "--embedded", "separate", &input]);
+    assert_eq!(separate.status.code(), Some(2));
+    assert!(stderr(&separate).contains("--embedded separate"));
+    assert!(!Path::new("unused").exists());
+}
