@@ -257,6 +257,9 @@ The native library contains Tika's standard parser package and these parser modu
 XLSX, PPT, PPTX, MSG), PDF, HTML, Apple iWork, audio/video metadata, CAD, encrypted documents, fonts, mail (EML, MBOX,
 PST), legacy office formats (WordPerfect, Lotus, dBase), RSS/Atom, OCR via tesseract, archives (ZIP, TAR, 7Z, RAR),
 text, XML, web archives (WARC) and source code. Audio and video files yield their tags (titles, artists, lyrics).
+Some formats Tika reads as raw text are read for their content instead: subtitles (SubRip, WebVTT, SubStation Alpha)
+as the spoken lines, without timings or markup; Jupyter notebooks cell by cell, code and outputs included;
+FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `.emlx` files as the email they hold.
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 966 test documents both natively and with the same Tika

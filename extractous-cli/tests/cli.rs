@@ -1239,3 +1239,59 @@ fn source_code_is_extracted() {
         stdout(&output)
     );
 }
+
+#[test]
+fn subtitles_are_read_for_their_spoken_text() {
+    for name in ["subtitles.srt", "subtitles.vtt", "subtitles.ass"] {
+        let text = stdout(&extractous(&[&document(name)]));
+        assert!(text.contains("Every evening at dusk"), "{name}: {text}");
+        assert!(text.contains("the keeper climbed"), "{name}: {text}");
+        for noise in [
+            "-->", "00:00", "<i>", "<v ", "{\\i1}", "WEBVTT", "Dialogue", "Default",
+        ] {
+            assert!(!text.contains(noise), "{name} kept {noise:?}: {text}");
+        }
+    }
+}
+
+#[test]
+fn notebooks_are_read_cell_by_cell() {
+    let objects = json_objects(&[&document("notebook.ipynb")]);
+    assert_eq!(objects[0]["mime_type"], "application/x-ipynb+json");
+    let text = objects[0]["text"].as_str().unwrap();
+    for expected in [
+        "Lighthouse analysis",
+        "The keeper recorded ships every evening.",
+        "print('eleven volumes')",
+        "eleven volumes",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+    assert!(!text.contains("cell_type"), "{text}");
+}
+
+#[test]
+fn fiction_books_keep_paragraphs_apart_and_their_metadata() {
+    let objects = json_objects(&[&document("book.fb2")]);
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Chapter One\nEvery evening at dusk the keeper climbed the tower.\nHe wrote"),
+        "{text}"
+    );
+    assert!(!text.contains("cover.jpg"), "{text}");
+    assert_eq!(objects[0]["metadata"]["title"], "The Lighthouse Ledger");
+    assert_eq!(
+        objects[0]["metadata"]["authors"],
+        serde_json::json!(["Ada Keeper"])
+    );
+}
+
+#[test]
+fn apple_mail_messages_are_read_as_email() {
+    let objects = json_objects(&[&document("mail.emlx")]);
+    assert_eq!(objects[0]["mime_type"], "message/x-emlx");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(text.contains("The lamp was lit at dusk."), "{text}");
+    assert!(!text.contains("plist"), "{text}");
+    assert_eq!(objects[0]["metadata"]["title"], "Ledger entry");
+}

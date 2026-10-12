@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><author><first-name>Ada</first-name><last-name>Keeper</last-name></author><book-title>The Lighthouse Ledger</book-title><lang>en</lang></title-info></description>
+<body><section><title><p>Chapter One</p></title><p>Every evening at dusk the keeper climbed the tower.</p><p>He wrote a single line in the ledger.</p></section></body>
+<binary id="cover.jpg" content-type="image/jpeg">/9j/4AAQSkZJRgABAQ==</binary>
+</FictionBook>

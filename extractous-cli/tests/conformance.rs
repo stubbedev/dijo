@@ -16,6 +16,16 @@ const TOLERANCE: f64 = 0.05;
 const JOBS: &str = "8";
 const TIMEOUT_SECONDS: &str = "60";
 
+/// The parsers of ours that read a format differently from Tika on purpose (dropping subtitle
+/// timings, notebook JSON, FB2 styles, email headers), so their text is not compared with
+/// Tika's: tests of their own check it.
+const OWN_PARSERS: [&str; 4] = [
+    "ai.yobix.SubtitleParser",
+    "ai.yobix.NotebookParser",
+    "ai.yobix.FictionBookParser",
+    "ai.yobix.EmlxParser",
+];
+
 /// How the native extraction of a file compares with Tika on the JVM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -26,6 +36,8 @@ enum Outcome {
     Differs,
     /// Both yield the same text, give or take a few tokens.
     Works,
+    /// One of our own parsers reads the format, on purpose differently from Tika.
+    Replaced,
     /// Neither yields any text.
     BothEmpty,
     /// Only the native extraction yields text.
@@ -74,10 +86,18 @@ fn compare(record: &serde_json::Value, tika: &str) -> Comparison {
     } else {
         2.0 * matched(&tika, &native) as f64 / total as f64
     };
+    let replaced = record["raw_metadata"]["X-TIKA:Parsed-By"]
+        .as_array()
+        .is_some_and(|parsers| {
+            parsers
+                .iter()
+                .any(|parser| OWN_PARSERS.contains(&parser.as_str().unwrap_or_default()))
+        });
     let outcome = match (native.is_empty(), tika.is_empty()) {
         (true, true) => Outcome::BothEmpty,
         (false, true) => Outcome::NativeMore,
         (true, false) => Outcome::Fails,
+        (false, false) if replaced => Outcome::Replaced,
         (false, false) if similarity >= WORKS => Outcome::Works,
         (false, false) => Outcome::Differs,
     };
@@ -107,8 +127,10 @@ fn matrix(comparisons: &BTreeMap<String, Comparison>) -> String {
         "# Conformance with Apache Tika\n\n\
          Every test document of Apache Tika's parser modules, extracted natively and with the \
          same Tika version on the JVM, OCR off on both sides. A file works when the native text \
-         and title match Tika's text with an F1 score of at least {WORKS} over their tokens. \
-         {passing} of {} files work or are empty on both sides.\n\n\
+         and title match Tika's text with an F1 score of at least {WORKS} over their tokens, or \
+         when one of our own parsers reads its format on purpose differently (subtitles, \
+         notebooks, FictionBook, Apple Mail). {passing} of {} files work or are empty on both \
+         sides.\n\n\
          | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |\n\
          |---|---|---|---|---|---|\n",
         comparisons.len()
@@ -160,7 +182,14 @@ fn native_extraction_matches_tika_on_the_jvm() {
     ));
     let scratch = Scratch::new("conformance");
     let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
-        .args(["--recursive", "--format", "json", "--metadata", "--raw"])
+        .args([
+            "--recursive",
+            "--format",
+            "json",
+            "--metadata",
+            "--raw-metadata",
+            "--raw",
+        ])
         .args([
             "--ocr",
             "never",
@@ -222,7 +251,8 @@ fn native_extraction_matches_tika_on_the_jvm() {
             };
             let worse = (before.outcome.passes() && !now.outcome.passes())
                 || now.outcome < before.outcome
-                || now.similarity < before.similarity - TOLERANCE;
+                || (now.outcome != Outcome::Replaced
+                    && now.similarity < before.similarity - TOLERANCE);
             worse.then(|| {
                 format!(
                     "{file}: {:?} ({:.2}) was {:?} ({:.2})",

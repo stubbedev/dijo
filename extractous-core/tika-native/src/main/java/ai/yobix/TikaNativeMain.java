@@ -81,7 +81,8 @@ public class TikaNativeMain {
      * Tika's parser, mapping each type straight to the parser for it (Tika's default composite
      * rebuilds its map of every parser for each document it is asked to parse), with the formats
      * it handles badly replaced: encrypted CMS and OpenPGP data
-     * are reported as encrypted, detached signatures as content-free, and when tesseract is
+     * are reported as encrypted, detached signatures as content-free, subtitles, notebooks,
+     * FictionBook books and Apple Mail messages are read for their text, and when tesseract is
      * installed, images are turned upright before OCR and PDF pages are OCRed when their text
      * layer is missing or garbage.
      */
@@ -90,7 +91,9 @@ public class TikaNativeMain {
         final AutoDetectParser parser = new AutoDetectParser(config);
         final Map<MediaType, Parser> parsers =
                 new HashMap<>(((CompositeParser) config.getParser()).getParsers());
-        final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser()));
+        final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
+                new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
+                new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
         final Parser ocr = parsers.get(MediaType.image("ocr-png"));
         if (ocr != null) {
             final Parser preparingOcr = new PreparingOcrParser(ocr);

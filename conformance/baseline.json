@@ -1501,8 +1501,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testEMLX.emlx": {
     "mime_type": "message/x-emlx",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.7109375
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testEML_embedded_xhtml_and_img.eml": {
     "mime_type": "message/rfc822",
@@ -3786,8 +3786,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/test/resources/test-documents/test.fb2": {
     "mime_type": "application/x-fictionbook+xml",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.8417910447761194
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-xml-module/src/test/resources/test-documents/testTMX.tmx": {
     "mime_type": "application/x-tmx",
@@ -4781,23 +4781,23 @@
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/testWebVTT.vtt": {
     "mime_type": "text/vtt",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.5395348837209303
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/testWebVTT_header.vtt": {
     "mime_type": "text/vtt",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.4166666666666667
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/testWebVTT_simple.vtt": {
     "mime_type": "text/vtt",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.5217391304347826
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/testWebVTT_utf8.vtt": {
     "mime_type": "text/vtt",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.5844748858447488
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/testWindowsMediaMeta.asx": {
     "mime_type": "application/x-ms-asx",
@@ -4821,8 +4821,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/test_subrip.srt": {
     "mime_type": "application/x-subrip",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "replaced",
+    "similarity": 0.5631067961165048
   },
   "tika-parsers-standard/tika-parsers-standard-package/src/test/resources/test-documents/test_ttml.ttml": {
     "mime_type": "application/ttml+xml",

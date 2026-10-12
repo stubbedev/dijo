@@ -1,0 +1,8 @@
+98
+From: keeper@example.com
+To: archive@example.com
+Subject: Ledger entry
+
+The lamp was lit at dusk.
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>flags</key><integer>8590195713</integer></dict></plist>
