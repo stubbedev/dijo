@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::server::handlers::Report;
+
 const DURATION_BUCKETS: [f64; 11] = [0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0];
 
 /// Request and extraction counters, rendered in the Prometheus text format.
@@ -35,6 +37,21 @@ fn escape_label(value: &str) -> String {
 }
 
 impl Metrics {
+    pub fn record(&self, report: Report) {
+        match report {
+            Report::Failure(category) => self.failure(category.name()),
+            Report::Extraction { mime_type, seconds } => {
+                self.extraction(&mime_type, Duration::from_secs_f64(seconds))
+            }
+            Report::CacheHit => {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            }
+            Report::CacheMiss => {
+                self.cache_misses.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     pub fn request(&self, endpoint: &'static str, status: u16) {
         *self
             .requests

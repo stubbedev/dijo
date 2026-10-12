@@ -1,3 +1,4 @@
+mod handlers;
 mod metrics;
 mod upload;
 mod workers;
@@ -32,9 +33,10 @@ use crate::cli::{Embedded, Format, Ocr, ServeArgs};
 use crate::normalize::{Step, Steps};
 use crate::render::RenderOptions;
 use crate::spool::Spool;
+use handlers::{error_body, ExtractRequest, Head, Task};
 use metrics::Metrics;
 use upload::UploadError;
-use workers::{error_body, ExtractRequest, Head, Job, Pool, Task};
+use workers::{Chunk, Job, Pool};
 
 const PASSWORD_HEADER: &str = "x-extractous-password";
 const FILENAME_HEADER: &str = "x-extractous-filename";
@@ -464,8 +466,9 @@ async fn run(
     let Ok(head) = head else {
         return error(500, "The worker stopped before answering");
     };
+    let content_type = head.content_type.header();
     match head.body {
-        Some(body) => full(head.status, head.content_type, body),
+        Some(body) => full(head.status, content_type, body),
         None => {
             let mut response = Response::new(
                 StreamedBody {
@@ -480,7 +483,7 @@ async fn run(
             *response.status_mut() = StatusCode::from_u16(head.status).expect("valid status code");
             response
                 .headers_mut()
-                .insert(CONTENT_TYPE, HeaderValue::from_static(head.content_type));
+                .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
             response
         }
     }
@@ -490,7 +493,7 @@ async fn run(
 /// output with a timeout error; if it has not finished a little after that, the body ends with an
 /// error, which closes the connection and makes the worker stop at its next write.
 struct StreamedBody {
-    receiver: mpsc::Receiver<Bytes>,
+    receiver: mpsc::Receiver<Chunk>,
     deadline: Option<Pin<Box<Sleep>>>,
     _admission: Admission,
 }
@@ -513,7 +516,7 @@ impl Body for StreamedBody {
         }
         self.receiver
             .poll_recv(context)
-            .map(|chunk| chunk.map(|bytes| Ok(Frame::data(bytes))))
+            .map(|chunk| chunk.map(|chunk| chunk.map(Frame::data)))
     }
 }
 

@@ -6,6 +6,7 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use tokio::io::AsyncWriteExt;
 
+use crate::server::handlers::Files;
 use crate::server::metrics::Metrics;
 
 const DEFAULT_NAME: &str = "upload";
@@ -20,18 +21,17 @@ pub struct Upload {
 }
 
 impl Upload {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// A directory, inside this upload's own, for documents embedded in it.
     pub fn scratch(&self) -> PathBuf {
         self.dir.join("embedded")
     }
 
-    /// The name the document is reported under: the client's file name hint, or `upload`.
-    pub fn display(&self) -> &str {
-        &self.display
+    pub fn files(&self) -> Files {
+        Files {
+            path: self.path.clone(),
+            display: self.display.clone(),
+            scratch: self.scratch(),
+        }
     }
 }
 
