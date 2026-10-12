@@ -45,3 +45,17 @@ prose-scan-72dpi.png	prose	ocr
 prose-scan-shadow.png	prose	ocr	
 report-scan.tif	report	ocr	
 report-scan-skewed.tif	report	ocr	
+arabic-cp1256.txt	arabic	legacy-encoding	
+hebrew-cp1255.txt	hebrew	legacy-encoding	
+thai-cp874.txt	thai	legacy-encoding	
+japanese-shift_jis.txt	japanese	legacy-encoding	
+japanese-euc-jp.txt	japanese	legacy-encoding	
+chinese-gb18030.txt	chinese	legacy-encoding	
+chinese-traditional-big5.txt	chinese-traditional	legacy-encoding	
+russian-koi8-r.txt	russian	legacy-encoding	
+russian-cp1251.txt	russian	legacy-encoding	
+greek-cp1253.txt	greek	legacy-encoding	
+polish-cp1250.txt	polish	legacy-encoding	
+polish-iso-8859-2.txt	polish	legacy-encoding	
+czech-cp1250.txt	czech	legacy-encoding	
+turkish-cp1254.txt	turkish	legacy-encoding	

@@ -1,4 +1,11 @@
 {
+  "arabic-cp1256.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "arabic-scan-300dpi.png": {
     "character_error_rate": 0.12461059190031153,
     "token_error_rate": 0.10714285714285714,
@@ -20,6 +27,20 @@
     "spurious": 0.7425742574257426,
     "reading_order": 0.5
   },
+  "chinese-gb18030.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "chinese-traditional-big5.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "chinese.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -34,6 +55,13 @@
     "spurious": 0.05925925925925926,
     "reading_order": 1.0
   },
+  "czech-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "german.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -46,6 +74,20 @@
     "token_error_rate": 0.05194805194805195,
     "recall": 1.0,
     "spurious": 0.04938271604938271,
+    "reading_order": 1.0
+  },
+  "greek-cp1253.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "hebrew-cp1255.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "hebrew.docx": {
@@ -90,6 +132,20 @@
     "spurious": 0.25268817204301075,
     "reading_order": 1.0
   },
+  "japanese-euc-jp.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "japanese-shift_jis.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "japanese.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -102,6 +158,20 @@
     "token_error_rate": 0.04918032786885246,
     "recall": 1.0,
     "spurious": 0.046875,
+    "reading_order": 1.0
+  },
+  "polish-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "polish-iso-8859-2.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "prose-broken-offset.pdf": {
@@ -279,6 +349,20 @@
     "spurious": 0.006578947368421052,
     "reading_order": 1.0
   },
+  "russian-cp1251.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "russian-koi8-r.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "table.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -307,6 +391,13 @@
     "spurious": 0.13513513513513514,
     "reading_order": 1.0
   },
+  "thai-cp874.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "thai.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -319,6 +410,13 @@
     "token_error_rate": 0.08540925266903915,
     "recall": 1.0,
     "spurious": 0.07868852459016394,
+    "reading_order": 1.0
+  },
+  "turkish-cp1254.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   }
 }

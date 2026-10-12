@@ -46,3 +46,17 @@
 | prose-scan-shadow.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | report-scan.tif | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | report-scan-skewed.tif | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| arabic-cp1256.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| hebrew-cp1255.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| thai-cp874.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| japanese-shift_jis.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| japanese-euc-jp.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| chinese-gb18030.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| chinese-traditional-big5.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| russian-koi8-r.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| russian-cp1251.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| greek-cp1253.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| polish-cp1250.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| polish-iso-8859-2.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| czech-cp1250.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| turkish-cp1254.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

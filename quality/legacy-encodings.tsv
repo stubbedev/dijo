@@ -1,0 +1,14 @@
+arabic	CP1256
+hebrew	CP1255
+thai	CP874
+japanese	SHIFT_JIS
+japanese	EUC-JP
+chinese	GB18030
+chinese-traditional	BIG5
+russian	KOI8-R
+russian	CP1251
+greek	CP1253
+polish	CP1250
+polish	ISO-8859-2
+czech	CP1250
+turkish	CP1254

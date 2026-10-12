@@ -24,6 +24,7 @@ import org.apache.tika.parser.RecursiveParserWrapper;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.pdf.PDFParserConfig;
+import org.apache.tika.parser.txt.UniversalEncodingDetector;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.RecursiveParserWrapperHandler;
@@ -52,6 +53,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 /**
  * The entry points the Rust crate calls through JNI. Every operation exists for a file path, a
@@ -68,8 +70,7 @@ public class TikaNativeMain {
 
     private static final Tika TIKA = new Tika();
     private static final Parser PARSER = createParser();
-    private static final EncodingDetector ENCODING_DETECTOR = new CompositeEncodingDetector(List.of(
-            new Utf8EncodingDetector(), TikaConfig.getDefaultConfig().getEncodingDetector()));
+    private static final EncodingDetector ENCODING_DETECTOR = createEncodingDetector();
 
     static {
         java.awt.GraphicsEnvironment.isHeadless();
@@ -103,6 +104,24 @@ public class TikaNativeMain {
         }
         parser.setParsers(parsers);
         return parser;
+    }
+
+    /**
+     * Tika's encoding detectors, preceded by validating UTF-8, and with ICU's judgement of the
+     * encodings juniversalchardet has no model for asked right before juniversalchardet, after
+     * the detectors that read a charset the document declares.
+     */
+    private static EncodingDetector createEncodingDetector() {
+        final List<EncodingDetector> detectors = new ArrayList<>(List.of(new Utf8EncodingDetector()));
+        detectors.addAll(((CompositeEncodingDetector) TikaConfig.getDefaultConfig()
+                .getEncodingDetector()).getDetectors());
+        final int universal = IntStream.range(0, detectors.size())
+                .filter(index -> detectors.get(index) instanceof UniversalEncodingDetector)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "Tika's encoding detectors no longer include juniversalchardet"));
+        detectors.add(universal, new UnmodelledEncodingDetector());
+        return new CompositeEncodingDetector(detectors);
     }
 
     @FunctionalInterface

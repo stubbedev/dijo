@@ -122,6 +122,10 @@ pandoc "$work/table.md" -o "$corpus/table.docx"
 pandoc "$work/table.md" --standalone --metadata title=Table -o "$corpus/table.html"
 convert "$corpus/table.docx" table pdf pdf
 
+while read -r name encoding; do
+    iconv -f UTF-8 -t "$encoding" "$truth/$name.txt" > "$corpus/$name-${encoding,,}.txt"
+done < "$here/legacy-encodings.tsv"
+
 awk 'NF' "$truth/hyphenated.txt" | sed 's/^/\n/' > "$work/hyphenated.md"
 pandoc "$work/hyphenated.md" -o "$corpus/hyphenated.pdf" --pdf-engine=pdflatex -V lang=en-US \
     -V classoption=twocolumn -V geometry:paperwidth=12cm,paperheight=29.7cm,margin=1cm

@@ -20,21 +20,26 @@ import java.nio.charset.StandardCharsets;
  */
 final class Utf8EncodingDetector implements EncodingDetector {
 
-    private static final int READ_LIMIT = 64 * 1024;
+    /** How much of the text the detectors look at. */
+    static final int READ_LIMIT = 64 * 1024;
 
     @Override
     public Charset detect(InputStream input, Metadata metadata) throws IOException {
         if (input == null) {
             return null;
         }
+        final byte[] prefix = prefix(input);
+        return isUtf8WithNonAscii(prefix, prefix.length < READ_LIMIT) ? StandardCharsets.UTF_8 : null;
+    }
+
+    /** The first {@link #READ_LIMIT} bytes of the text, leaving the stream where it was. */
+    static byte[] prefix(InputStream input) throws IOException {
         input.mark(READ_LIMIT);
-        final byte[] prefix;
         try {
-            prefix = input.readNBytes(READ_LIMIT);
+            return input.readNBytes(READ_LIMIT);
         } finally {
             input.reset();
         }
-        return isUtf8WithNonAscii(prefix, prefix.length < READ_LIMIT) ? StandardCharsets.UTF_8 : null;
     }
 
     /**
