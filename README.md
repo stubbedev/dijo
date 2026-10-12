@@ -143,6 +143,37 @@ worker process holds its own Java heap, so memory use grows with `--workers`. Wi
 corpus, process isolation took 565 MiB at peak against 163 MiB for threads. It served 243 requests/s against 202 at
 4 concurrent requests, and 37 against 52 one at a time.
 
+### Security
+
+Documents and requests are untrusted input. What the server defends against, and how:
+
+- **XML attacks.** No parser resolves external entities or loads external DTDs (XXE), and entity expansion is
+  capped, so a billion-laughs document fails as `limit-exceeded`. Tests cover XML, SVG and DOCX.
+- **Resource exhaustion.** `--max-input-bytes` caps uploads, `--timeout` caps a request's time, `--max-heap-bytes`
+  caps the Java heap, and `--worker-max-rss-bytes` caps a worker process's memory. Embedded documents have depth,
+  count and expanded-size limits with `embedded=separate`; inline, Tika's zip-bomb guard applies.
+- **Slow and idle clients.** `--client-timeout` closes a connection whose headers arrive too slowly, and answers an
+  upload that goes silent with 408.
+- **Busy servers.** Requests beyond the workers and `--queue` are refused with 503, never queued without bound.
+- **Crashing parsers.** With `--isolation process`, a parser that crashes or hangs takes down one request. Its
+  worker is restarted.
+- **Paths from documents.** A client's file name hint is reduced to a bare file name inside the request's own spool
+  directory, and embedded document names never become paths outside it.
+- **Server-side requests.** The server fetches nothing on a client's behalf: it extracts only the uploaded bytes, so
+  there is no SSRF surface. Passwords are never cached or logged.
+- **Damaged files.** A nightly job extracts randomly damaged copies of the test documents (`just test-fuzz`) and
+  fails on any crash, hang or missing answer.
+
+What it leaves to the deployment:
+
+- **Access control and transport.** There is no authentication and no TLS: put the server behind a reverse proxy or
+  inside a private network.
+- **Abuse limits.** There are no per-client rate limits, and no cap on idle connections beyond `--client-timeout`.
+- **In-process parsing.** With the default `--isolation thread`, a crash in native code inside a parser ends the
+  whole server.
+- **Error detail.** Error responses carry the cause chain of the failure, Java exception messages included, but no
+  stack traces.
+
 ### Container
 
 Each release publishes a multi-platform image (linux/amd64, linux/arm64) with tesseract and English OCR data, running
