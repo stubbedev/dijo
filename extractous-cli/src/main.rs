@@ -27,8 +27,34 @@ use render::RenderOptions;
 use schema::Status;
 use spool::Spool;
 
+const LICENSES: &str = concat!(
+    include_str!("../../LICENSE"),
+    "\n",
+    include_str!("../../THIRD-PARTY-LICENSES.md")
+);
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let succeeded = if cli.licenses {
+        print_licenses()
+    } else {
+        run_command(cli)
+    };
+    if succeeded {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn print_licenses() -> bool {
+    io::stdout()
+        .lock()
+        .write_all(LICENSES.as_bytes())
+        .map_or_else(|error| stdout_failed(&error), |()| true)
+}
+
+fn run_command(cli: Cli) -> bool {
     let spool_dir = match &cli.command {
         Some(Command::Serve(args)) => args.spool_dir.clone(),
         Some(Command::Detect(_)) => None,
@@ -37,18 +63,13 @@ fn main() -> ExitCode {
     if let Some(dir) = spool_dir {
         if let Err(error) = extractous_core::set_temp_dir(dir) {
             report("--spool-dir", &error.to_string());
-            return ExitCode::FAILURE;
+            return false;
         }
     }
-    let succeeded = match cli.command {
+    match cli.command {
         Some(Command::Detect(args)) => detect(&args),
         Some(Command::Serve(args)) => server::serve(&args),
         None => extract(&cli.extract),
-    };
-    if succeeded {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
     }
 }
 

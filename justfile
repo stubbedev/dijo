@@ -39,3 +39,17 @@ bench *args:
 # Run Tika under the GraalVM tracing agent to regenerate native-image metadata.
 tika-agent:
     cd {{core}}/tika-native && ./gradlew --no-daemon runAgent
+
+# Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries in the binary.
+[unix]
+licenses:
+    cd {{core}}/tika-native && ./gradlew --quiet generateLicenseReport
+    cargo about generate --workspace --fail --output-file target/rust-licenses.md about.hbs
+    cat target/rust-licenses.md {{core}}/tika-native/build/licenses/java.md > target/THIRD-PARTY-LICENSES.md
+    mv target/THIRD-PARTY-LICENSES.md THIRD-PARTY-LICENSES.md
+
+# Check dependencies for advisories, licences and bans, and that THIRD-PARTY-LICENSES.md is current.
+[unix]
+deps: licenses
+    cargo deny check
+    git diff --exit-code THIRD-PARTY-LICENSES.md

@@ -667,3 +667,16 @@ fn spool_dir_holds_the_temporary_files() {
     let missing = extractous(&["--spool-dir", "/nonexistent/spool", &document("simple.odt")]);
     assert_eq!(missing.status.code(), Some(1));
 }
+
+#[test]
+fn licenses_prints_the_licence_and_third_party_notices() {
+    let output = extractous(&["--licenses"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Apache License"));
+    assert!(text.contains("| `clap` |"));
+    assert!(text.contains("| `org.apache.tika:tika-core` |"));
+
+    let with_input = extractous(&["--licenses", &document("simple.odt")]);
+    assert_eq!(with_input.status.code(), Some(2));
+}

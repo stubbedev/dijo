@@ -22,6 +22,10 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
+    /// Print the licence of extractous and of the third-party software compiled into it.
+    #[arg(long, exclusive = true)]
+    pub licenses: bool,
+
     #[command(flatten)]
     pub extract: ExtractArgs,
 }

@@ -147,7 +147,12 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
 | `just tika-agent` | Run Tika under the GraalVM tracing agent to regenerate native-image metadata |
+| `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries |
+| `just deps` | cargo-deny's advisory, licence and ban checks, and a check that THIRD-PARTY-LICENSES.md is current |
 
 ## License
 
 Apache License 2.0, see [LICENSE](LICENSE). Originally developed by [Yobix AI](https://yobix.ai).
+
+The binary contains third-party Rust crates and Java libraries; their licences and notices are in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and printed by `extractous --licenses`.

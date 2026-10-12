@@ -1,6 +1,57 @@
 plugins {
     id 'java-library'
+    id 'com.github.jk1.dependency-license-report' version '3.1.4'
     id 'org.graalvm.buildtools.native' version '0.10.4' // Updated for GraalVM 25 and Gradle 9 compatibility
+}
+
+import com.github.jk1.license.ProjectData
+import com.github.jk1.license.filter.ExcludeDependenciesWithoutArtifactsFilter
+import com.github.jk1.license.filter.SpdxLicenseBundleNormalizer
+import com.github.jk1.license.render.ReportRenderer
+
+class ThirdPartyLicensesRenderer implements ReportRenderer {
+
+    private final File output
+
+    ThirdPartyLicensesRenderer(File output) {
+        this.output = output
+    }
+
+    void render(ProjectData data) {
+        def reportDir = new File(data.project.licenseReport.absoluteOutputDir as String)
+        def texts = new TreeMap<String, SortedSet<String>>()
+        def table = new StringBuilder()
+        data.allDependencies.sort { "${it.group}:${it.name}:${it.version}" }.each { module ->
+            def coordinate = "${module.group}:${module.name}"
+            def files = module.licenseFiles*.fileDetails.flatten()
+            def licenses = (module.poms*.licenses.flatten()*.name + module.manifests*.license)
+                    .findAll().unique().sort()
+            if (licenses.empty) {
+                throw new GradleException("No licence is declared for ${coordinate}:${module.version}")
+            }
+            table << "| `${coordinate}` | ${module.version} | ${licenses.join(', ')} |\n"
+            files.each { details ->
+                def text = new File(reportDir, details.file).getText('UTF-8').replace('\r\n', '\n').trim()
+                texts.computeIfAbsent(text) { new TreeSet<String>() } << coordinate
+            }
+        }
+        def document = new StringBuilder()
+        document << '## Java libraries compiled into libtika_native\n\n'
+        document << 'libtika_native is a GraalVM native image. Besides the libraries below, it contains '
+        document << 'the GraalVM Community Edition runtime and parts of the OpenJDK class library, '
+        document << 'licensed under GPL-2.0-only WITH Classpath-exception-2.0, which permits '
+        document << 'distributing the image under the terms of its own licence. Tesseract is not part '
+        document << 'of the binary; extractous runs an installed tesseract executable for OCR.\n\n'
+        document << '| Library | Version | Licences |\n|---|---|---|\n'
+        document << table
+        document << '\n### Licence and notice texts shipped with the Java libraries\n'
+        texts.entrySet().sort { it.value.first() }.each { entry ->
+            document << "\nShipped with ${entry.value.collect { "`${it}`" }.join(', ')}:\n\n"
+            document << "````text\n${entry.key}\n````\n"
+        }
+        output.parentFile.mkdirs()
+        output.write(document.toString(), 'UTF-8')
+    }
 }
 
 
@@ -61,6 +112,12 @@ dependencies {
     // Additional modules for comprehensive coverage
     implementation("org.apache.tika:tika-parser-code-module:$tikaVersion")            // Source code files
     implementation("org.apache.tika:tika-parser-advancedmedia-module:$tikaVersion")   // Advanced media formats
+}
+
+licenseReport {
+    configurations = ['runtimeClasspath']
+    filters = [new ExcludeDependenciesWithoutArtifactsFilter(), new SpdxLicenseBundleNormalizer()]
+    renderers = [new ThirdPartyLicensesRenderer(layout.buildDirectory.file('licenses/java.md').get().asFile)]
 }
 
 tasks.register('runAgent', JavaExec) {
