@@ -258,8 +258,12 @@ XLSX, PPT, PPTX, MSG), PDF, HTML, Apple iWork, audio/video metadata, CAD, encryp
 PST), legacy office formats (WordPerfect, Lotus, dBase), RSS/Atom, OCR via tesseract, archives (ZIP, TAR, 7Z, RAR),
 text, XML, web archives (WARC), source code and advanced media.
 
-Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches. The test
-suite covers PDF, DOC, DOCX, PPTX, XLSX, ODT, CSV, EPUB, and PNG and PDF through OCR.
+Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
+`just conformance` therefore extracts Apache Tika's own 966 test documents both natively and with the same Tika
+version on the JVM, and compares the text. [`conformance/MATRIX.md`](conformance/MATRIX.md) lists every media type
+with how many of its files work, differ or fail: 943 work or are empty on both sides. Most of the rest are DOCX files,
+where the streaming extractor used for bounded memory leaves out comment bylines and footnote markers. A nightly job
+fails when a file that worked stops working.
 
 ## Development
 
