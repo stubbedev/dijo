@@ -1209,3 +1209,21 @@ fn a_cancelled_pdf_stops_without_parsing_the_rest() {
     );
     assert_eq!(stderr(&output), "");
 }
+
+#[test]
+fn source_code_is_extracted() {
+    let scratch = Scratch::new("source-code");
+    let source = scratch.0.join("Hello.java");
+    fs::write(
+        &source,
+        "public class Hello { String greeting = \"lighthouse keeper\"; }\n",
+    )
+    .unwrap();
+    let output = extractous(&[source.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("lighthouse keeper"),
+        "{}",
+        stdout(&output)
+    );
+}

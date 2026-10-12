@@ -928,5 +928,182 @@
         "parameterTypes": []
       }
     ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.EndOfStripe",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.GenericRefinementRegion",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.GenericRegion",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.HalftoneRegion",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.PageInformation",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.PatternDictionary",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.Profiles",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.RegionSegmentInformation",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.SymbolDictionary",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.Table",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.pdfbox.jbig2.segments.TextRegion",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.codelibs.jhighlight.renderer.CppXhtmlRenderer",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.codelibs.jhighlight.renderer.GroovyXhtmlRenderer",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.codelibs.jhighlight.renderer.JavaScriptXhtmlRenderer",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.codelibs.jhighlight.renderer.JavaXhtmlRenderer",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.codelibs.jhighlight.renderer.XmlXhtmlRenderer",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "com.github.jaiimageio.impl.common.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.bmp.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.clib.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.jpeg.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.png.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.pnm.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.raw.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.tiff.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.impl.plugins.wbmp.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.plugins.bmp.I18N"
+  },
+  {
+    "name": "com.github.jaiimageio.stream.I18N"
   }
 ]
