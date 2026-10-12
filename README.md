@@ -260,6 +260,8 @@ text, XML, web archives (WARC) and source code. Audio and video files yield thei
 Some formats Tika reads as raw text are read for their content instead: subtitles (SubRip, WebVTT, SubStation Alpha)
 as the spoken lines, without timings or markup; Jupyter notebooks cell by cell, code and outputs included;
 FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `.emlx` files as the email they hold.
+Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
+slides and table cells.
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 966 test documents both natively and with the same Tika
