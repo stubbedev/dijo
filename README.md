@@ -47,6 +47,8 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
+| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace` |
+| `--raw` | No normalisation at all: the text exactly as Tika extracted it |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
@@ -67,6 +69,13 @@ everything that extracted is written and the failures are reported. The exit sta
 every input, 1 when nothing could be extracted from at least one (with `--strict`, when any part of one failed) and 2
 on a usage error.
 
+Text, json, pages and elements output is normalised for indexing, so the same word produces the same token however the
+document encoded it: control characters and zero-width spaces are dropped (joiners that scripts need are kept),
+ligatures such as `ﬁ` become `fi`, soft hyphens are dropped, characters are composed to Unicode NFC, exotic spaces
+become plain ones, runs of spaces collapse, lines end with `\n` without trailing spaces, and at most one blank line
+appears in a row. Tabs are kept, since they separate table cells. Normalisation streams, so it holds back at most a few
+characters. XHTML output is never normalised.
+
 ## Server
 
 ```sh
@@ -78,7 +87,7 @@ curl --data-binary @mystery.bin localhost:9998/detect
 
 | Endpoint | |
 | --- | --- |
-| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Extractous-Password` headers, an optional file name hint in `X-Extractous-Filename`. |
+| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `raw`, `no_normalize` (comma-separated steps), `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Extractous-Password` headers, an optional file name hint in `X-Extractous-Filename`. |
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics: requests by endpoint and status, failures by category, extraction time per media type, bytes in and out, workers and requests in flight. |

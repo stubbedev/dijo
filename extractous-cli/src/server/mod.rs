@@ -28,6 +28,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Sleep;
 
 use crate::cli::{Embedded, Format, Ocr, ServeArgs};
+use crate::normalize::{Step, Steps};
+use crate::render::RenderOptions;
 use crate::spool::Spool;
 use metrics::Metrics;
 use upload::UploadError;
@@ -306,9 +308,12 @@ fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, 
     let mut extract = ExtractRequest {
         deadline: None,
         embedded: Embedded::Inline,
-        format: Format::Text,
-        metadata: false,
-        raw_metadata: false,
+        render: RenderOptions {
+            format: Format::Text,
+            metadata: false,
+            raw_metadata: false,
+            normalization: Steps::ALL,
+        },
         ocr: Ocr::Auto,
         ocr_lang: None,
         passwords: request
@@ -323,14 +328,25 @@ fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, 
             })
             .collect::<Result<_, _>>()?,
     };
+    let mut raw = false;
+    let mut skipped = Vec::new();
     for (key, value) in query_pairs(request.uri().query()) {
         match key.as_str() {
             "format" => {
-                extract.format = Format::from_str(&value, false)
+                extract.render.format = Format::from_str(&value, false)
                     .map_err(|_| format!("Unknown format {value:?}"))?
             }
-            "metadata" => extract.metadata = parse_flag("metadata", &value)?,
-            "raw_metadata" => extract.raw_metadata = parse_flag("raw_metadata", &value)?,
+            "metadata" => extract.render.metadata = parse_flag("metadata", &value)?,
+            "raw_metadata" => extract.render.raw_metadata = parse_flag("raw_metadata", &value)?,
+            "raw" => raw = parse_flag("raw", &value)?,
+            "no_normalize" => {
+                for step in value.split(',') {
+                    skipped.push(
+                        Step::from_str(step, false)
+                            .map_err(|_| format!("Unknown normalisation step {step:?}"))?,
+                    );
+                }
+            }
             "ocr" => {
                 extract.ocr =
                     Ocr::from_str(&value, false).map_err(|_| format!("Unknown ocr {value:?}"))?
@@ -343,6 +359,10 @@ fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, 
             other => return Err(format!("Unknown query parameter {other:?}")),
         }
     }
+    if raw && !skipped.is_empty() {
+        return Err("raw and no_normalize cannot be combined".to_string());
+    }
+    extract.render.normalization = Steps::selected(raw, &skipped);
     Ok(extract)
 }
 

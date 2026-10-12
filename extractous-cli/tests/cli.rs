@@ -680,3 +680,35 @@ fn licenses_prints_the_licence_and_third_party_notices() {
     let with_input = extractous(&["--licenses", &document("simple.odt")]);
     assert_eq!(with_input.status.code(), Some(2));
 }
+
+#[test]
+fn text_is_normalised_unless_raw() {
+    let input = document("unnormalized.txt");
+    let normalised = stdout(&extractous(&[&input]));
+    assert!(normalised
+        .starts_with("The final office report on caf\u{e9} extraction.\n\nEnd of file.\n"));
+
+    let raw = stdout(&extractous(&["--raw", &input]));
+    assert!(raw.contains(
+        "The \u{fb01}nal o\u{fb03}ce\u{a0}\u{a0}report on cafe\u{301} extrac\u{ad}tion."
+    ));
+    assert!(raw.contains("End\u{200b} of  file."));
+
+    let keep_ligatures = stdout(&extractous(&[
+        "--no-normalize",
+        "ligatures,whitespace",
+        &input,
+    ]));
+    assert!(keep_ligatures
+        .contains("The \u{fb01}nal o\u{fb03}ce\u{a0}\u{a0}report on caf\u{e9} extraction."));
+
+    let json = stdout(&extractous(&["--format", "json", &input]));
+    let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(document["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("The final office report"));
+
+    let conflicting = extractous(&["--raw", "--no-normalize", "unicode", &input]);
+    assert_eq!(conflicting.status.code(), Some(2));
+}

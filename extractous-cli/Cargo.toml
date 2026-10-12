@@ -26,6 +26,7 @@ hyper-util = { version = "0.1.21", features = ["tokio", "server-graceful", "http
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "time", "signal", "fs", "sync", "macros", "io-util"] }
 walkdir = "2.5.0"
 quick-xml = "0.42.0"
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 jsonschema = { version = "0.58.6", default-features = false }

@@ -8,6 +8,7 @@ use extractous_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, Strea
 use crate::cli::Format;
 use serde::Serialize;
 
+use crate::normalize::{self, Normalizer, Steps};
 use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
 use crate::structure::{self, ElementKind, Unit};
 
@@ -18,6 +19,7 @@ pub struct RenderOptions {
     pub format: Format,
     pub metadata: bool,
     pub raw_metadata: bool,
+    pub normalization: Steps,
 }
 
 /// What extracting one document produced besides the output written to the sink.
@@ -147,7 +149,13 @@ fn render_text(
         Ok((stream, _)) => stream,
         Err(error) => return Ok(outcome(None, Some(error), None)),
     };
-    let mut copied = copy(&mut stream, sink, |chunk, sink| sink.write_all(chunk))?;
+    let steps = match options.format {
+        Format::Xhtml => Steps::NONE,
+        _ => options.normalization,
+    };
+    let mut copied = copy(&mut stream, sink, steps, |chunk, sink| {
+        sink.write_all(chunk)
+    })?;
     let (metadata, embedded) = finish(&stream, &mut copied);
     Ok(Outcome {
         metadata: metadata.clone().filter(|_| options.metadata),
@@ -202,7 +210,12 @@ fn render_json(
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
             sink.write_all(b",\"text\":\"")?;
-            let mut copied = copy(&mut stream, sink, write_json_string_content)?;
+            let mut copied = copy(
+                &mut stream,
+                sink,
+                options.normalization,
+                write_json_string_content,
+            )?;
             sink.write_all(b"\"")?;
             let (metadata, embedded) = finish(&stream, &mut copied);
             let outcome = Outcome {
@@ -250,6 +263,7 @@ fn render_parts(
             let mut bytes = 0;
             let split = structure::split(BufReader::new(&mut stream), unit, &mut |part| {
                 bytes += part.text.len() as u64;
+                let text = normalize::normalize(options.normalization, &part.text);
                 let record = PartRecord {
                     schema_version: SCHEMA_VERSION,
                     kind: if part.element.is_some() {
@@ -264,7 +278,7 @@ fn render_parts(
                     page: part.page,
                     element: part.element.map(|(kind, _)| kind),
                     level: part.element.and_then(|(_, level)| level),
-                    text: &part.text,
+                    text: &text,
                 };
                 serde_json::to_writer(&mut *sink, &record)?;
                 sink.write_all(b"\n")
@@ -312,29 +326,32 @@ pub fn source(path: &Path, display: &str, embedded_path: Option<String>) -> Sour
     }
 }
 
-/// Copies the extracted text into the sink; fails only when the sink does.
+/// Copies the extracted text into the sink, normalised; fails only when the sink does.
 fn copy(
     stream: &mut StreamReader,
     sink: &mut dyn Write,
+    steps: Steps,
     write: impl Fn(&[u8], &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<Copied> {
     let mut buffer = vec![0; READ_BUFFER_SIZE];
+    let mut normalizer = Normalizer::new(steps);
+    let mut normalized = Vec::with_capacity(READ_BUFFER_SIZE);
     let mut bytes = 0;
-    loop {
+    let error = loop {
         match stream.read(&mut buffer) {
-            Ok(0) => return Ok(Copied { bytes, error: None }),
+            Ok(0) => break None,
             Ok(read) => {
-                write(&buffer[..read], sink)?;
+                normalizer.push(&buffer[..read], &mut normalized);
+                write(&normalized, sink)?;
+                normalized.clear();
                 bytes += read as u64;
             }
-            Err(error) => {
-                return Ok(Copied {
-                    bytes,
-                    error: Some(ExtractionError::from_io(&error)),
-                })
-            }
+            Err(error) => break Some(ExtractionError::from_io(&error)),
         }
-    }
+    };
+    normalizer.finish(&mut normalized);
+    write(&normalized, sink)?;
+    Ok(Copied { bytes, error })
 }
 
 /// Writes UTF-8 bytes as the inside of a JSON string. Only ASCII needs escaping, so this works on

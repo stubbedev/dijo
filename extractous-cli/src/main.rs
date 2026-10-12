@@ -1,5 +1,6 @@
 mod cli;
 mod inputs;
+mod normalize;
 mod render;
 mod schema;
 mod server;
@@ -23,6 +24,7 @@ use extractous_core::{Extractor, Metadata, Password};
 
 use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs};
 use inputs::{Input, InputError, Source};
+use normalize::Steps;
 use render::RenderOptions;
 use schema::Status;
 use spool::Spool;
@@ -294,6 +296,7 @@ fn run(
         format: args.format,
         metadata: args.metadata,
         raw_metadata: args.raw_metadata,
+        normalization: Steps::selected(args.raw, &args.no_normalize),
     };
     let rendered = write_sink(&sink, keep_failed, |writer| match args.embedded {
         Embedded::Inline => render::render(extractor, path, &input.display, options, writer),

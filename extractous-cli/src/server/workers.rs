@@ -8,6 +8,7 @@ use extractous_core::{keep_current_thread_attached, Password};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
 use crate::cli::{Embedded, Format, Ocr};
+use crate::normalize::Steps;
 use crate::render::{self, RenderOptions};
 use crate::schema::{self, ErrorCategory};
 use crate::server::metrics::Metrics;
@@ -20,9 +21,7 @@ const BODY_CHUNK_SIZE: usize = 64 * 1024;
 pub struct ExtractRequest {
     pub deadline: Option<Instant>,
     pub embedded: Embedded,
-    pub format: Format,
-    pub metadata: bool,
-    pub raw_metadata: bool,
+    pub render: RenderOptions,
     pub ocr: Ocr,
     pub ocr_lang: Option<String>,
     pub passwords: Vec<Password>,
@@ -146,7 +145,7 @@ fn extract(
 ) {
     let started = Instant::now();
     let extractor = settings::extractor(
-        request.format,
+        request.render.format,
         request.ocr,
         request.ocr_lang.as_deref(),
         request.passwords.clone(),
@@ -173,6 +172,7 @@ fn extract(
             format: Format::Json,
             metadata: false,
             raw_metadata: false,
+            normalization: Steps::NONE,
         };
         let source = render::source(path, display, None);
         if render::render_opened(Err(error.clone()), &source, options, &mut document).is_ok() {
@@ -188,17 +188,12 @@ fn extract(
 
     let started_response = head.send(Head {
         status: 200,
-        content_type: content_type(request.format),
+        content_type: content_type(request.render.format),
         body: None,
     });
     if started_response.is_err() {
         return;
     }
-    let options = RenderOptions {
-        format: request.format,
-        metadata: request.metadata,
-        raw_metadata: request.raw_metadata,
-    };
     let mut writer = BufWriter::with_capacity(
         BODY_CHUNK_SIZE,
         ChannelWriter {
@@ -207,7 +202,7 @@ fn extract(
         },
     );
     let source = render::source(path, display, None);
-    let rendered = render::render_opened(opened, &source, options, &mut writer)
+    let rendered = render::render_opened(opened, &source, request.render, &mut writer)
         .and_then(|outcome| writer.flush().map(|()| outcome));
     if let Ok(outcome) = rendered {
         for error in &outcome.errors {
@@ -227,7 +222,7 @@ fn extract_tree(
     body: async_mpsc::Sender<Bytes>,
     metrics: &Metrics,
 ) {
-    let content_type = match request.format {
+    let content_type = match request.render.format {
         Format::Json => content_type(Format::Pages),
         format => content_type(format),
     };
@@ -251,11 +246,6 @@ fn extract_tree(
     if started.is_err() {
         return;
     }
-    let options = RenderOptions {
-        format: request.format,
-        metadata: request.metadata,
-        raw_metadata: request.raw_metadata,
-    };
     let mut writer = BufWriter::with_capacity(
         BODY_CHUNK_SIZE,
         ChannelWriter {
@@ -267,7 +257,7 @@ fn extract_tree(
         extractor,
         upload.path(),
         upload.display(),
-        options,
+        request.render,
         Limits::DEFAULT,
         &scratch,
         &mut writer,

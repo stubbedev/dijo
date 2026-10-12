@@ -341,3 +341,29 @@ fn separate_embedded_documents_stream_as_records() {
     assert_eq!(paths.len(), 8);
     assert!(paths.contains(&"mail.eml/numbers.xlsx/image1.png".to_string()));
 }
+
+#[test]
+fn text_is_normalised_unless_raw() {
+    let server = Server::start(&[]);
+    let normalised = server.post_file("/extract", &[], "unnormalized.txt");
+    assert!(normalised
+        .text()
+        .starts_with("The final office report on caf\u{e9} extraction."));
+
+    let raw = server.post_file("/extract?raw=true", &[], "unnormalized.txt");
+    assert!(raw.text().starts_with("The \u{fb01}nal"));
+
+    let skipped = server.post_file("/extract?no_normalize=ligatures", &[], "unnormalized.txt");
+    assert!(skipped
+        .text()
+        .starts_with("The \u{fb01}nal o\u{fb03}ce report"));
+
+    let conflicting = server.post_file(
+        "/extract?raw&no_normalize=ligatures",
+        &[],
+        "unnormalized.txt",
+    );
+    assert_eq!(conflicting.status, 400);
+    let unknown = server.post_file("/extract?no_normalize=bogus", &[], "unnormalized.txt");
+    assert_eq!(unknown.status, 400);
+}

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::normalize::Step;
 use crate::tree::Limits;
 
 #[derive(Debug, Parser)]
@@ -105,6 +106,21 @@ pub struct ExtractArgs {
     /// Include Tika's raw metadata keys and values in json, pages and elements output.
     #[arg(long, env = "EXTRACTOUS_RAW_METADATA")]
     pub raw_metadata: bool,
+
+    /// Output the text exactly as Tika extracted it, with no normalisation step.
+    #[arg(long, env = "EXTRACTOUS_RAW", conflicts_with = "no_normalize")]
+    pub raw: bool,
+
+    /// A normalisation step to leave out; repeat or separate with commas. Text, json, pages and
+    /// elements output is normalised by every step by default; xhtml never is.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "STEP",
+        value_delimiter = ',',
+        env = "EXTRACTOUS_NO_NORMALIZE"
+    )]
+    pub no_normalize: Vec<Step>,
 
     /// Fail (exit status 1) when any part of an input could not be extracted, not only when
     /// nothing could.
