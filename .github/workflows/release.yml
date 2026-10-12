@@ -60,8 +60,10 @@ jobs:
             Windows)
               choco install tesseract --no-progress -y
               echo "C:\\Program Files\\Tesseract-OCR" >> "$GITHUB_PATH"
+              export PATH="/c/Program Files/Tesseract-OCR:$PATH"
               ;;
           esac
+          tesseract --version
       - name: Build
         if: runner.os != 'Windows'
         run: cargo build --release --locked --package extractous

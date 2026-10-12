@@ -27,7 +27,7 @@ archive="$directory/$asset"
 mkdir -p "$directory"
 curl --fail --silent --show-error --location --output "$archive" \
     "https://github.com/graalvm/graalvm-ce-builds/releases/download/$GRAALVM_TAG/$asset"
-if sha256sum --version > /dev/null 2>&1; then
+if sha256sum --version 2>&1 | grep -q GNU; then
     echo "$checksum  $archive" | sha256sum --check --strict >&2
 else
     echo "$checksum  $archive" | shasum --algorithm 256 --check --strict >&2
