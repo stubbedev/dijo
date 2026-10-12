@@ -35,7 +35,7 @@ fn load() -> Result<Loaded, String> {
     #[cfg(windows)]
     search_dependencies_in(&dir)?;
     let library_path = dir.join(TIKA_LIBRARY);
-    let library = unsafe { Library::new(&library_path) }
+    let library = open_globally(&library_path)
         .map_err(|e| format!("Failed to load {}: {e}", library_path.display()))?;
     let create_java_vm = *unsafe { library.get::<CreateJavaVm>(b"JNI_CreateJavaVM\0") }
         .map_err(|e| format!("{} has no JNI_CreateJavaVM: {e}", library_path.display()))?;
@@ -44,6 +44,21 @@ fn load() -> Result<Loaded, String> {
         create_java_vm,
         _library: library,
     })
+}
+
+/// Loads the library with its symbols visible to every library loaded after it. The JDK shims
+/// GraalVM emits beside it (libjvm, libjava) resolve the JNI invocation functions by name at
+/// run time, and on macOS they cannot see into a library opened with RTLD_LOCAL: AWT's
+/// JNI_OnLoad then spins forever in JNU_GetEnv.
+#[cfg(unix)]
+fn open_globally(path: &Path) -> Result<Library, libloading::Error> {
+    use libloading::os::unix::{Library as UnixLibrary, RTLD_GLOBAL, RTLD_NOW};
+    unsafe { UnixLibrary::open(Some(path), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from)
+}
+
+#[cfg(windows)]
+fn open_globally(path: &Path) -> Result<Library, libloading::Error> {
+    unsafe { Library::new(path) }
 }
 
 /// Windows resolves a DLL's dependencies from the application directory, the system directories
