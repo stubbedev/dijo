@@ -212,3 +212,19 @@ pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String>
         Ok(media_type)
     })
 }
+
+/// Waits for every parse in the isolate to end, cancelled ones included, for at most `timeout`.
+/// Returns whether they all did.
+pub(crate) fn await_idle_parses(isolate: &Isolate, timeout: Duration) -> ExtractResult<bool> {
+    in_local_frame(isolate, |env| {
+        let millis = i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX);
+        Ok(jni_call_static_method(
+            env,
+            TIKA_NATIVE_MAIN,
+            "awaitIdleParses",
+            "(J)Z",
+            &[JValue::Long(millis)],
+        )?
+        .z()?)
+    })
+}

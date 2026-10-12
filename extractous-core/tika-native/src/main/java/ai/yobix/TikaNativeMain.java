@@ -139,6 +139,14 @@ public class TikaNativeMain {
         return parseContext;
     }
 
+    /**
+     * Waits for every parse to end, cancelled ones included, for at most timeoutMillis. Returns
+     * whether they all did.
+     */
+    public static boolean awaitIdleParses(long timeoutMillis) throws InterruptedException {
+        return ParseThreads.awaitIdle(timeoutMillis);
+    }
+
     public static StringResult detectFile(String filePath) {
         return detect(file(filePath));
     }

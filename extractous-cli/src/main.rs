@@ -53,10 +53,29 @@ fn main() -> ExitCode {
     } else {
         run_command(cli)
     };
+    wait_for_stopping_extractions();
     if succeeded {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// How long to wait at exit for cancelled extractions to stop, so the tesseract processes they
+/// started do not outlive this one.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+fn wait_for_stopping_extractions() {
+    match extractous_core::wait_for_extractions(STOP_GRACE) {
+        Ok(true) => {}
+        Ok(false) => report(
+            "extractous",
+            &format!(
+                "an extraction was still stopping after {}s",
+                STOP_GRACE.as_secs()
+            ),
+        ),
+        Err(error) => report("extractous", &error.to_string()),
     }
 }
 

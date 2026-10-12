@@ -18,7 +18,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +35,6 @@ public class ParsingInputStream extends InputStream {
     private static final int CHUNK_SIZE = 64 * 1024;
     private static final int QUEUED_CHUNKS = 4;
     private static final long PARTIAL_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
-    private static final long CLOSE_WAIT_SECONDS = 5;
     private static final byte[] END = new byte[0];
 
     private enum Wait { CHUNK, END, TIMEOUT }
@@ -48,7 +46,6 @@ public class ParsingInputStream extends InputStream {
     private final EmbeddedSpooler spooler;
     private final long deadline;
     private final Object parseLock = new Object();
-    private final CountDownLatch parseEnded = new CountDownLatch(1);
     private Thread parseThread;
     private volatile boolean closed;
     private volatile Throwable failure;
@@ -79,7 +76,6 @@ public class ParsingInputStream extends InputStream {
                        boolean outputXml, Charset charset) {
         synchronized (parseLock) {
             if (closed) {
-                parseEnded.countDown();
                 return;
             }
             parseThread = Thread.currentThread();
@@ -98,7 +94,6 @@ public class ParsingInputStream extends InputStream {
                 parseThread = null;
                 Thread.interrupted();
             }
-            parseEnded.countDown();
         }
     }
 
@@ -237,19 +232,9 @@ public class ParsingInputStream extends InputStream {
         return count;
     }
 
-    /**
-     * Stops the parse and waits a little for it to end, so the processes it started (tesseract)
-     * are gone before the caller moves on or exits.
-     */
     @Override
-    public void close() throws IOException {
+    public void close() {
         cancel();
-        try {
-            parseEnded.await(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new InterruptedIOException("Interrupted while waiting for the parse to stop");
-        }
     }
 
     private void ensureOpen() throws IOException {
