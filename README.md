@@ -150,7 +150,8 @@ every error carries a category and its full cause chain. Decrypted documents rep
 in `metadata`; passwords never appear in output or errors. Passwords decrypt PDF (a PDF with only an owner password
 needs none), DOCX/XLSX/PPTX, Word, Excel and PowerPoint 97-2003, Access and 7z. Tika cannot decrypt ODF documents or
 encrypted ZIP entries; those are reported as `encrypted`, and an encrypted entry leaves the rest of its archive
-extracted with status `partial`.
+extracted with status `partial`. S/MIME-encrypted mail and OpenPGP data, binary or ASCII-armored, are reported as
+`encrypted` too (decrypting them needs a private key); S/MIME-signed mail extracts normally.
 
 ### Embedded documents
 

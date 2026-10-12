@@ -2,6 +2,9 @@
   "globs": [
     {
       "glob": "com/healthmarketscience/jackcess/index_*.txt"
+    },
+    {
+      "glob": "custom-mimetypes.xml"
     }
   ]
 }

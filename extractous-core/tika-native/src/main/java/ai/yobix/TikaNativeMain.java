@@ -14,6 +14,7 @@ import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
@@ -45,8 +46,10 @@ import java.nio.charset.Charset;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -63,13 +66,29 @@ public class TikaNativeMain {
     public static final String PASSWORD_USED = "extractous:password-used";
 
     private static final Tika TIKA = new Tika();
-    private static final Parser PARSER = new AutoDetectParser(TikaConfig.getDefaultConfig());
+    private static final Parser PARSER = createParser();
     private static final EncodingDetector ENCODING_DETECTOR = new CompositeEncodingDetector(List.of(
             new Utf8EncodingDetector(), TikaConfig.getDefaultConfig().getEncodingDetector()));
 
     static {
         java.awt.GraphicsEnvironment.isHeadless();
         javax.imageio.ImageIO.getReaderFormatNames();
+    }
+
+    /**
+     * Tika's parser, with the formats it handles badly replaced: encrypted CMS and OpenPGP data
+     * are reported as encrypted, and detached signatures as content-free.
+     */
+    private static Parser createParser() {
+        final AutoDetectParser parser = new AutoDetectParser(TikaConfig.getDefaultConfig());
+        final Map<MediaType, Parser> parsers = new HashMap<>(parser.getParsers());
+        for (final Parser replacement : List.of(new CmsParser(), new OpenPgpParser())) {
+            for (final MediaType type : replacement.getSupportedTypes(new ParseContext())) {
+                parsers.put(type, replacement);
+            }
+        }
+        parser.setParsers(parsers);
+        return parser;
     }
 
     @FunctionalInterface

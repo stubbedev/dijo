@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info>
+  <mime-type type="application/pgp-encrypted">
+    <magic priority="60">
+      <match value="-----BEGIN PGP MESSAGE-----" type="string" offset="0:64"/>
+    </magic>
+  </mime-type>
+</mime-info>

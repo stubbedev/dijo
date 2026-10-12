@@ -34,6 +34,8 @@ fn test_decrypts_with_the_right_password(name: &str, password: &str, expected: &
 #[test_case("tika-password.xls"; "excel 97")]
 #[test_case("tika-password.accdb"; "access")]
 #[test_case("undecryptable.odt"; "odf, which tika cannot decrypt")]
+#[test_case("pgp-encrypted.gpg"; "openpgp")]
+#[test_case("pgp-encrypted.asc"; "ascii-armored openpgp")]
 fn test_reports_encrypted_without_the_password(name: &str) {
     let error = Extractor::new()
         .extract_file_to_string(&encrypted(name))
@@ -59,4 +61,23 @@ fn test_owner_password_only_pdf_extracts_without_a_password() {
         metadata.get("access_permission:can_print"),
         Some(&vec!["false".to_string()])
     );
+}
+
+#[test]
+fn test_a_signed_message_is_not_an_error() {
+    let (content, _) = Extractor::new()
+        .extract_file_to_string(&encrypted("smime-signed.eml"))
+        .unwrap();
+    assert!(
+        content.contains("This message is signed with S/MIME."),
+        "{content}"
+    );
+}
+
+#[test]
+fn test_armored_openpgp_is_detected() {
+    let media_type = Extractor::new()
+        .detect_file(&encrypted("pgp-encrypted.asc"))
+        .unwrap();
+    assert_eq!(media_type.as_str(), "application/pgp-encrypted");
 }

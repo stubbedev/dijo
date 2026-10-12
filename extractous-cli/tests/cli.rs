@@ -463,6 +463,25 @@ fn encrypted_inputs_are_reported_as_encrypted() {
 }
 
 #[test]
+fn encrypted_mail_and_openpgp_are_reported_as_encrypted() {
+    for name in [
+        "smime-encrypted.eml",
+        "pgp-encrypted.gpg",
+        "pgp-encrypted.asc",
+    ] {
+        let objects = json_objects(&[&format!("{DOCUMENTS}/encrypted/{name}")]);
+        assert_matches_schema(&objects[0]);
+        assert_eq!(objects[0]["status"], "encrypted", "{name}");
+        assert_eq!(objects[0]["errors"][0]["category"], "encrypted", "{name}");
+        assert_eq!(
+            objects[0]["text"].as_str().unwrap_or_default().trim(),
+            "",
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn an_encrypted_archive_entry_leaves_the_rest_extracted() {
     let objects = json_objects(&[&format!("{DOCUMENTS}/encrypted/encrypted-entry.zip")]);
     assert_matches_schema(&objects[0]);
