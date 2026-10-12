@@ -211,18 +211,18 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testKeynote2013.detect": {
     "mime_type": "application/vnd.apple.keynote.13",
-    "outcome": "works",
-    "similarity": 0.9926470588235294
+    "outcome": "replaced",
+    "similarity": 0.9296875
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testKeynote2013.key": {
     "mime_type": "application/vnd.apple.keynote.13",
-    "outcome": "works",
-    "similarity": 0.993421052631579
+    "outcome": "replaced",
+    "similarity": 0.8048780487804879
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testKeynote2018.key": {
     "mime_type": "application/vnd.apple.keynote.18",
-    "outcome": "both-empty",
-    "similarity": 1.0
+    "outcome": "native-more",
+    "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testMasterSlideTable.key": {
     "mime_type": "application/vnd.apple.keynote",
@@ -235,8 +235,8 @@
     "similarity": 0.9962406015037594
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testNumbers2013.numbers": {
-    "mime_type": "application/vnd.apple.numbers.13",
-    "outcome": "fails",
+    "mime_type": "application/vnd.apple.unknown.13",
+    "outcome": "replaced",
     "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testNumbersCharts.numbers": {
@@ -250,8 +250,8 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testPages2013.pages": {
-    "mime_type": "application/vnd.apple.pages.13",
-    "outcome": "fails",
+    "mime_type": "application/vnd.apple.unknown.13",
+    "outcome": "replaced",
     "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testPagesComments.pages": {

@@ -16,10 +16,11 @@ const TOLERANCE: f64 = 0.05;
 const JOBS: &str = "8";
 const TIMEOUT_SECONDS: &str = "60";
 
-/// The parsers of ours that read a format differently from Tika on purpose (dropping subtitle
-/// timings, notebook JSON, FB2 styles, email headers), so their text is not compared with
-/// Tika's: tests of their own check it.
-const OWN_PARSERS: [&str; 4] = [
+/// The parsers of ours that read a format differently from Tika on purpose (iWork text Tika
+/// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers), so their
+/// text is not compared with Tika's: tests of their own check it.
+const OWN_PARSERS: [&str; 5] = [
+    "ai.yobix.IworkArchiveParser",
     "ai.yobix.SubtitleParser",
     "ai.yobix.NotebookParser",
     "ai.yobix.FictionBookParser",
@@ -134,7 +135,7 @@ fn matrix(comparisons: &BTreeMap<String, Comparison>) -> String {
          same Tika version on the JVM, OCR off on both sides. A file works when the native text \
          and title match Tika's text with an F1 score of at least {WORKS} over their tokens, or \
          when one of our own parsers reads its format on purpose differently (subtitles, \
-         notebooks, FictionBook, Apple Mail). {passing} of {} files work or are empty on both \
+         notebooks, FictionBook, Apple Mail, iWork 2013+). {passing} of {} files work or are empty on both \
          sides.\n\n\
          | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |\n\
          |---|---|---|---|---|---|\n",

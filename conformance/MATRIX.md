@@ -1,6 +1,6 @@
 # Conformance with Apache Tika
 
-Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail). 943 of 966 files work or are empty on both sides.
+Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 945 of 966 files work or are empty on both sides.
 
 | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |
 |---|---|---|---|---|---|
@@ -38,9 +38,8 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/vnd.apple.keynote.13 | 2 | 2 | 0 | 0 |  |
 | application/vnd.apple.keynote.18 | 1 | 1 | 0 | 0 |  |
 | application/vnd.apple.numbers | 4 | 4 | 0 | 0 |  |
-| application/vnd.apple.numbers.13 | 1 | 0 | 0 | 1 | testNumbers2013.numbers (0.00) |
 | application/vnd.apple.pages | 9 | 9 | 0 | 0 |  |
-| application/vnd.apple.pages.13 | 1 | 0 | 0 | 1 | testPages2013.pages (0.00) |
+| application/vnd.apple.unknown.13 | 2 | 2 | 0 | 0 |  |
 | application/vnd.digilite.prolights | 1 | 1 | 0 | 0 |  |
 | application/vnd.etsi.asic-e+zip | 1 | 1 | 0 | 0 |  |
 | application/vnd.etsi.asic-s+zip | 1 | 1 | 0 | 0 |  |

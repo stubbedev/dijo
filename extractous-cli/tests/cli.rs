@@ -1295,3 +1295,26 @@ fn apple_mail_messages_are_read_as_email() {
     assert!(!text.contains("plist"), "{text}");
     assert_eq!(objects[0]["metadata"]["title"], "Ledger entry");
 }
+
+#[test]
+fn iwork_documents_from_2013_on_are_read_for_their_text() {
+    let pages = stdout(&extractous(&[
+        "--ocr",
+        "never",
+        &document("pages2013.pages"),
+    ]));
+    for expected in [
+        "Some plain text to parse.",
+        "A text box with text.",
+        "Cell one",
+        "Column three",
+    ] {
+        assert!(pages.contains(expected), "{pages}");
+    }
+    let keynote = stdout(&extractous(&[
+        "--ocr",
+        "never",
+        &document("keynote2018.key"),
+    ]));
+    assert!(keynote.contains("Open in Libreoffice 6.2"), "{keynote}");
+}

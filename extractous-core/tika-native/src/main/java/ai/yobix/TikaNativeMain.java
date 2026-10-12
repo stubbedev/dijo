@@ -82,9 +82,9 @@ public class TikaNativeMain {
      * rebuilds its map of every parser for each document it is asked to parse), with the formats
      * it handles badly replaced: encrypted CMS and OpenPGP data
      * are reported as encrypted, detached signatures as content-free, subtitles, notebooks,
-     * FictionBook books and Apple Mail messages are read for their text, and when tesseract is
-     * installed, images are turned upright before OCR and PDF pages are OCRed when their text
-     * layer is missing or garbage.
+     * FictionBook books, Apple Mail messages and iWork 2013+ documents are read for their text,
+     * and when tesseract is installed, images are turned upright before OCR and PDF pages are
+     * OCRed when their text layer is missing or garbage.
      */
     private static Parser createParser() {
         final TikaConfig config = TikaConfig.getDefaultConfig();
@@ -93,6 +93,7 @@ public class TikaNativeMain {
                 new HashMap<>(((CompositeParser) config.getParser()).getParsers());
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
                 new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
+                new IworkArchiveParser(),
                 new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
         final Parser ocr = parsers.get(MediaType.image("ocr-png"));
         if (ocr != null) {
