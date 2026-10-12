@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use extractous_core::Metadata;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -41,7 +41,7 @@ const TIKA_KEYS: TikaKeys = TikaKeys {
     content_type: &["Content-Type"],
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Complete,
@@ -50,7 +50,7 @@ pub enum Status {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorCategory {
     Unreadable,
@@ -76,11 +76,11 @@ impl ErrorCategory {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtractionError {
     pub category: ErrorCategory,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
 }
 

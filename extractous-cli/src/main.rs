@@ -24,7 +24,7 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use extractous_core::{Extractor, IsolateSettings, Metadata, Password};
 
-use cache::{Cache, OutputSettings};
+use cache::{Cache, CachePolicy, OutputSettings};
 use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs};
 use inputs::{Input, InputError, Source};
 use normalize::Steps;
@@ -287,7 +287,14 @@ fn extract(args: &ExtractArgs) -> bool {
         normalization: Steps::selected(args.raw, &args.no_normalize),
     };
     let cache = match &args.cache.cache_dir {
-        Some(dir) => match Cache::open(dir, args.cache.cache_max_size) {
+        Some(dir) => match Cache::open(
+            dir,
+            CachePolicy {
+                max_bytes: args.cache.cache_max_size,
+                store_partial: args.cache.cache_partial,
+                trust_mtime: args.cache_trust_mtime,
+            },
+        ) {
             Ok(cache) => Some(cache),
             Err(error) => {
                 report("--cache-dir", &error);

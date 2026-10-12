@@ -55,6 +55,8 @@ extractous detect mystery.bin                 # application/pdf
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
 | `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate`: nesting depth, number of embedded documents, and bytes they may expand to |
 | `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size (also for `serve`) |
+| `--cache-partial` | Also cache partial results (never those cut short by a timeout) |
+| `--cache-trust-mtime` | Skip rehashing inputs whose path, size and modification time match the last run |
 | `--max-heap-bytes <BYTES>` | Cap Tika's Java heap; an extraction that needs more fails with `limit-exceeded` and the next one runs normally |
 | `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |

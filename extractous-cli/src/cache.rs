@@ -9,10 +9,12 @@ use extractous_core::Metadata;
 
 use crate::cli::Ocr;
 use crate::render::{Outcome, RenderOptions};
-use crate::schema::Status;
+use crate::schema::{ErrorCategory, ExtractionError, Status};
+use serde::{Deserialize, Serialize};
 
 const TRAILER_LENGTH_BYTES: usize = 8;
 const TEMPORARY_PREFIX: &str = ".partial-";
+const PATHS_DIR: &str = "paths";
 
 /// What, besides the input itself, decides the output of an extraction.
 #[derive(Debug, Clone, Copy)]
@@ -35,10 +37,30 @@ impl OutputSettings<'_> {
 /// Tika inside it, and the tesseract that runs OCR. Safe to share between threads and processes.
 pub struct Cache {
     dir: PathBuf,
-    max_bytes: Option<u64>,
+    policy: CachePolicy,
     build: blake3::Hash,
     stored_bytes: AtomicU64,
     next_temporary: AtomicU64,
+}
+
+/// What the cache keeps, and how it recognises unchanged inputs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CachePolicy {
+    /// Evict least recently used entries once the cache holds more.
+    pub max_bytes: Option<u64>,
+    /// Keep partial results too, except those cut short by a timeout, which depend on the run
+    /// rather than on the input.
+    pub store_partial: bool,
+    /// Take an input as unchanged when its path, size and modification time match the last
+    /// time it was hashed, instead of hashing it again.
+    pub trust_mtime: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Trailer {
+    status: Status,
+    errors: Vec<ExtractionError>,
+    metadata: Option<Metadata>,
 }
 
 /// The result of looking an input up.
@@ -60,7 +82,7 @@ pub struct Miss<'a> {
 }
 
 impl Cache {
-    pub fn open(dir: &Path, max_bytes: Option<u64>) -> Result<Cache, String> {
+    pub fn open(dir: &Path, policy: CachePolicy) -> Result<Cache, String> {
         fs::create_dir_all(dir).map_err(|e| {
             format!(
                 "Failed to create the cache directory {}: {e}",
@@ -78,7 +100,7 @@ impl Cache {
         build.update(tesseract_version().as_bytes());
         let cache = Cache {
             dir: dir.to_path_buf(),
-            max_bytes,
+            policy,
             build: build.finalize(),
             stored_bytes: AtomicU64::new(0),
             next_temporary: AtomicU64::new(0),
@@ -129,13 +151,13 @@ impl Cache {
 
     /// Removes the least recently used entries until the cache fits in its size limit.
     fn evict(&self) -> io::Result<()> {
-        let Some(max_bytes) = self.max_bytes else {
+        let Some(max_bytes) = self.policy.max_bytes else {
             return Ok(());
         };
         let mut entries = Vec::new();
         for shard in fs::read_dir(&self.dir)? {
             let shard = shard?;
-            if !shard.file_type()?.is_dir() {
+            if !shard.file_type()?.is_dir() || shard.file_name() == PATHS_DIR {
                 continue;
             }
             for entry in fs::read_dir(shard.path())? {
@@ -175,7 +197,7 @@ impl Cache {
     /// Counts a newly stored entry, and evicts once the cache has grown past its limit.
     fn stored(&self, bytes: u64) -> io::Result<()> {
         let total = self.stored_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        if self.max_bytes.is_some_and(|max| total > max) {
+        if self.policy.max_bytes.is_some_and(|max| total > max) {
             self.evict()?;
         }
         Ok(())
@@ -185,9 +207,65 @@ impl Cache {
         let mut key = blake3::Hasher::new();
         key.update(self.build.as_bytes());
         key.update(format!("{}\0{display}\0", settings.key()).as_bytes());
-        key.update(hash_file(path)?.as_bytes());
+        key.update(self.content_hash(path)?.as_bytes());
         let key = key.finalize().to_hex();
         Ok(self.dir.join(&key[..2]).join(key.as_str()))
+    }
+}
+
+impl Cache {
+    /// The BLAKE3 hash of the input's content, from the record of its last hashing when the
+    /// policy trusts modification times and the record still matches.
+    fn content_hash(&self, path: &Path) -> io::Result<blake3::Hash> {
+        if !self.policy.trust_mtime {
+            return hash_file(path);
+        }
+        let metadata = fs::metadata(path)?;
+        let modified = metadata
+            .modified()?
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| {
+                io::Error::other(format!("{} was modified before 1970: {e}", path.display()))
+            })?;
+        let stamp = format!("{}:{}", metadata.len(), modified.as_nanos());
+        let name = blake3::hash(fs::canonicalize(path)?.as_os_str().as_encoded_bytes()).to_hex();
+        let records = self.dir.join(PATHS_DIR);
+        let record = records.join(name.as_str());
+        let recorded = match fs::read_to_string(&record) {
+            Ok(contents) => contents
+                .split_once(' ')
+                .filter(|(recorded_stamp, _)| *recorded_stamp == stamp)
+                .and_then(|(_, hash)| blake3::Hash::from_hex(hash.trim()).ok()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(hash) = recorded {
+            return Ok(hash);
+        }
+        let hash = hash_file(path)?;
+        fs::create_dir_all(&records)?;
+        let temporary = records.join(format!(
+            "{TEMPORARY_PREFIX}{}-{}",
+            std::process::id(),
+            self.next_temporary.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&temporary, format!("{stamp} {}", hash.to_hex()))?;
+        fs::rename(&temporary, &record)?;
+        Ok(hash)
+    }
+
+    fn keeps(&self, outcome: &Outcome) -> bool {
+        match outcome.status {
+            Status::Complete => true,
+            Status::Partial => {
+                self.policy.store_partial
+                    && outcome
+                        .errors
+                        .iter()
+                        .all(|error| error.category != ErrorCategory::Timeout)
+            }
+            Status::Encrypted | Status::Failed => false,
+        }
     }
 }
 
@@ -214,7 +292,9 @@ impl Miss<'_> {
             std::process::id(),
             self.cache.next_temporary.fetch_add(1, Ordering::Relaxed)
         ));
-        let stored = store(&temporary, &self.entry, sink, render);
+        let stored = store(&temporary, &self.entry, sink, render, |outcome| {
+            self.cache.keeps(outcome)
+        });
         match stored {
             Ok((outcome, Some(bytes))) => {
                 self.cache.stored(bytes)?;
@@ -236,18 +316,23 @@ fn store(
     entry: &Path,
     sink: &mut dyn Write,
     render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
+    keep: impl FnOnce(&Outcome) -> bool,
 ) -> io::Result<(Outcome, Option<u64>)> {
     let mut copy = BufWriter::new(File::create_new(temporary)?);
     let outcome = render(&mut Tee {
         sink,
         copy: &mut copy,
     })?;
-    if outcome.status != Status::Complete {
+    if !keep(&outcome) {
         drop(copy);
         fs::remove_file(temporary)?;
         return Ok((outcome, None));
     }
-    let trailer = serde_json::to_vec(&outcome.metadata)?;
+    let trailer = serde_json::to_vec(&Trailer {
+        status: outcome.status,
+        errors: outcome.errors.clone(),
+        metadata: outcome.metadata.clone(),
+    })?;
     copy.write_all(&trailer)?;
     copy.write_all(&(trailer.len() as u64).to_le_bytes())?;
     let file = copy.into_inner().map_err(|e| e.into_error())?;
@@ -278,15 +363,14 @@ fn replay(mut file: File, entry: &Path, sink: &mut dyn Write) -> io::Result<Outc
     let mut trailer = vec![0; trailer_length as usize];
     file.seek(SeekFrom::Start(output_length))?;
     file.read_exact(&mut trailer)?;
-    let metadata: Option<Metadata> =
-        serde_json::from_slice(&trailer).map_err(|e| corrupt(&e.to_string()))?;
+    let trailer: Trailer = serde_json::from_slice(&trailer).map_err(|e| corrupt(&e.to_string()))?;
     file.seek(SeekFrom::Start(0))?;
     io::copy(&mut BufReader::new(&mut file).take(output_length), sink)?;
     file.set_modified(SystemTime::now())?;
     Ok(Outcome {
-        status: Status::Complete,
-        errors: Vec::new(),
-        metadata,
+        status: trailer.status,
+        errors: trailer.errors,
+        metadata: trailer.metadata,
         embedded: Vec::new(),
     })
 }

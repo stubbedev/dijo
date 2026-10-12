@@ -97,6 +97,11 @@ pub struct CacheArgs {
         requires = "cache_dir"
     )]
     pub cache_max_size: Option<u64>,
+
+    /// Also keep partial results, such as a damaged archive's readable members. Results cut
+    /// short by a timeout are never kept.
+    #[arg(long, env = "EXTRACTOUS_CACHE_PARTIAL", requires = "cache_dir")]
+    pub cache_partial: bool,
 }
 
 /// Where extraction keeps temporary files and how much memory it may use.
@@ -217,6 +222,11 @@ pub struct ExtractArgs {
 
     #[command(flatten)]
     pub cache: CacheArgs,
+
+    /// With --cache-dir: take an input as unchanged when its path, size and modification time
+    /// match the last run, without hashing it again. Faster, but trusts modification times.
+    #[arg(long, env = "EXTRACTOUS_CACHE_TRUST_MTIME", requires = "cache_dir")]
+    pub cache_trust_mtime: bool,
 
     /// Write one file per input into DIR, mirroring the input paths, instead of standard output.
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]

@@ -751,6 +751,9 @@ fn cache_entries(dir: &Path) -> Vec<PathBuf> {
     let mut entries = Vec::new();
     for shard in fs::read_dir(dir).unwrap() {
         let shard = shard.unwrap().path();
+        if shard.file_name().unwrap() == "paths" {
+            continue;
+        }
         for entry in fs::read_dir(&shard).unwrap() {
             entries.push(entry.unwrap().path());
         }
@@ -834,4 +837,49 @@ fn a_heap_cap_fails_one_extraction_and_not_the_next() {
         .unwrap()
         .contains("OutOfMemoryError"));
     assert_eq!(capped[1]["status"], "complete");
+}
+
+#[test]
+fn the_cache_keeps_partial_results_only_when_asked() {
+    let scratch = Scratch::new("cache-partial");
+    let cache = scratch.0.join("cache");
+    let cache_arg = cache.to_str().unwrap();
+    let damaged = document("partially-damaged.zip");
+
+    let without = json_objects(&["--cache-dir", cache_arg, &damaged]);
+    assert_eq!(without[0]["status"], "partial");
+    assert!(cache_entries(&cache).is_empty());
+
+    let first = json_objects(&["--cache-dir", cache_arg, "--cache-partial", &damaged]);
+    assert_eq!(cache_entries(&cache).len(), 1);
+    let replayed = json_objects(&["--cache-dir", cache_arg, "--cache-partial", &damaged]);
+    assert_eq!(replayed, first);
+    assert_eq!(replayed[0]["status"], "partial");
+    assert!(!replayed[0]["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn trusted_modification_times_skip_rehashing() {
+    let scratch = Scratch::new("cache-mtime");
+    let cache = scratch.0.join("cache");
+    let cache_arg = cache.to_str().unwrap();
+    let input = scratch.0.join("note.txt");
+    fs::write(&input, "first version\n").unwrap();
+    let modified = fs::metadata(&input).unwrap().modified().unwrap();
+    let input_arg = input.to_str().unwrap();
+
+    let first = extractous(&["--cache-dir", cache_arg, "--cache-trust-mtime", input_arg]);
+    assert!(stdout(&first).contains("first version"));
+
+    fs::write(&input, "other version\n").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&input)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let trusted = extractous(&["--cache-dir", cache_arg, "--cache-trust-mtime", input_arg]);
+    assert!(stdout(&trusted).contains("first version"));
+    let hashed = extractous(&["--cache-dir", cache_arg, input_arg]);
+    assert!(stdout(&hashed).contains("other version"));
 }
