@@ -1,4 +1,4 @@
-name: Large inputs
+name: Nightly
 
 on:
   schedule:
@@ -22,3 +22,23 @@ jobs:
         run: nix profile install nixpkgs#devenv
       - name: just test-large
         run: devenv shell -- just test-large
+
+  fuzz:
+    name: just test-fuzz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+      - name: just test-fuzz
+        run: devenv shell -- just test-fuzz
+      - name: Keep failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failures
+          path: target/tmp/fuzz-failures

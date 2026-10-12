@@ -24,6 +24,11 @@ test *args:
 test-large:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test large
 
+# Extract randomly damaged copies of the test documents with a release build and check none
+# crashes or hangs; FUZZ_SEED repeats a run, FUZZ_MUTANTS sets the copies per document.
+test-fuzz:
+    cargo nextest run --package extractous --cargo-profile release --run-ignored only --test fuzz
+
 # Score extraction against the quality corpus and write quality/SCOREBOARD.md.
 [unix]
 quality:
