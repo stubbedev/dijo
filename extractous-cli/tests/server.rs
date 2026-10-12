@@ -246,12 +246,14 @@ fn a_full_server_answers_503() {
     write_head(&mut slow_upload, "POST", "/extract", &[], 10);
     slow_upload.write_all(b"hello").unwrap();
     let started = Instant::now();
-    let rejected = loop {
-        let response = server.request("POST", "/extract", &[], b"x");
-        if response.status == 503 || started.elapsed() > Duration::from_secs(10) {
-            break response;
-        }
-    };
+    while server.request("GET", "/readyz", &[], b"").status != 503 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the slow upload was never admitted"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let rejected = server.request("POST", "/extract", &[], b"x");
     assert_eq!(rejected.status, 503);
     assert_eq!(rejected.header("retry-after"), Some("1"));
 
