@@ -23,12 +23,20 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-linux
+            graalvm: linux-x64_bin.tar.gz
+            graalvm-sha256: 05ccbbe783210b6886ff7b08fcd0b061c5dce4852b05db87284fc0e24abb08e2
           - os: ubuntu-22.04-arm
             target: aarch64-linux
+            graalvm: linux-aarch64_bin.tar.gz
+            graalvm-sha256: e5f5e2f59643cf96765c741dc00b206f86c69c8c1bf843fe26050c871e0e2dbc
           - os: macos-15
             target: aarch64-macos
+            graalvm: macos-aarch64_bin.tar.gz
+            graalvm-sha256: 4ec9932aa4aab1afca0ea31982d32d6f956615c61fe21a227b49756b25adda4f
           - os: windows-2025
             target: x86_64-windows
+            graalvm: windows-x64_bin.zip
+            graalvm-sha256: 2733ea1331f1a98b05dd55a768b07347051dad48f030dbbfa191b11a2ccf4144
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
@@ -38,10 +46,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.7
-        with:
-          java-version: "25"
-          distribution: graalvm-community
+      - name: Install GraalVM
+        env:
+          ASSET: graalvm-community-jdk-25i4-25.0.4.1.1_${{ matrix.graalvm }}
+          SHA256: ${{ matrix.graalvm-sha256 }}
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --output "$ASSET" \
+            "https://github.com/graalvm/graalvm-ce-builds/releases/download/graal-25.4.4.1.1/$ASSET"
+          if command -v sha256sum > /dev/null; then
+            echo "$SHA256  $ASSET" | sha256sum --check --strict
+          else
+            echo "$SHA256  $ASSET" | shasum --algorithm 256 --check --strict
+          fi
+          mkdir graalvm
+          case "$ASSET" in
+            *.zip) unzip -q "$ASSET" -d graalvm ;;
+            *) tar -xzf "$ASSET" -C graalvm ;;
+          esac
+          home=$(dirname "$(dirname "$(find "$RUNNER_TEMP/graalvm" -path '*/bin/native-image*' -type f | head -1)")")
+          if [ "${{ runner.os }}" = Windows ]; then home=$(cygpath --windows "$home"); fi
+          echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Install tesseract for the smoke test
         run: |
