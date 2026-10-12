@@ -30,6 +30,24 @@ struct Document {
     arguments: Vec<String>,
 }
 
+impl Document {
+    /// How the document is named in the baseline and the scoreboard: the file, with its
+    /// arguments when it has any, since a file can be scored with different ones.
+    fn key(&self) -> String {
+        if self.arguments.is_empty() {
+            self.file.clone()
+        } else {
+            format!("{} {}", self.file, self.arguments.join(" "))
+        }
+    }
+
+    fn pages(&self) -> bool {
+        self.arguments
+            .windows(2)
+            .any(|pair| pair[0] == "--format" && pair[1] == "pages")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct Scores {
     character_error_rate: f64,
@@ -69,7 +87,17 @@ fn extract(document: &Document) -> String {
         document.file,
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).unwrap()
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    if !document.pages() {
+        return stdout;
+    }
+    stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["kind"] == "page")
+        .map(|record| record["text"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Characters of scripts written without spaces between words count as tokens of their own.
@@ -243,11 +271,11 @@ fn scoreboard(documents: &[Document], results: &BTreeMap<String, Scores>) -> Str
          |---|---|---|---|---|---|---|\n",
     );
     for document in documents {
-        let scores = &results[&document.file];
+        let scores = &results[&document.key()];
         let _ = writeln!(
             table,
             "| {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
-            document.file,
+            document.key(),
             document.category,
             scores.character_error_rate,
             scores.token_error_rate,
@@ -279,13 +307,10 @@ fn extraction_quality_does_not_regress() {
                 let extracted = extract(document);
                 if let Some(dir) = std::env::var_os("QUALITY_OUTPUT") {
                     fs::create_dir_all(&dir).unwrap();
-                    fs::write(PathBuf::from(dir).join(&document.file), &extracted).unwrap();
+                    fs::write(PathBuf::from(dir).join(document.key()), &extracted).unwrap();
                 }
                 let scores = score(&truth, &extracted);
-                results
-                    .lock()
-                    .unwrap()
-                    .insert(document.file.clone(), scores);
+                results.lock().unwrap().insert(document.key(), scores);
             });
         }
     });
@@ -307,15 +332,15 @@ fn extraction_quality_does_not_regress() {
     let failures: Vec<String> = documents
         .iter()
         .filter_map(|document| {
-            let Some(expected) = baseline.get(&document.file) else {
-                return Some(format!("{}: missing from baseline.json", document.file));
+            let Some(expected) = baseline.get(&document.key()) else {
+                return Some(format!("{}: missing from baseline.json", document.key()));
             };
             let found = regressions(
-                &results[&document.file],
+                &results[&document.key()],
                 expected,
                 tolerance(&document.category),
             );
-            (!found.is_empty()).then(|| format!("{}: {}", document.file, found.join(", ")))
+            (!found.is_empty()).then(|| format!("{}: {}", document.key(), found.join(", ")))
         })
         .collect();
     assert!(

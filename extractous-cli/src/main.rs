@@ -4,6 +4,7 @@ mod inputs;
 mod language;
 mod normalize;
 mod render;
+mod running;
 mod schema;
 mod server;
 mod settings;

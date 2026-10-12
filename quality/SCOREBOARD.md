@@ -11,6 +11,7 @@
 | prose-columns.pdf | multi-column | 0.018 | 0.016 | 1.000 | 0.016 | 1.000 |
 | report.pdf | headers-footers | 0.017 | 0.018 | 1.000 | 0.017 | 1.000 |
 | report.docx | headers-footers | 0.006 | 0.006 | 1.000 | 0.005 | 1.000 |
+| report.pdf --format pages | headers-footers | 0.006 | 0.007 | 1.000 | 0.007 | 1.000 |
 | german.pdf | script | 0.065 | 0.052 | 1.000 | 0.049 | 1.000 |
 | german.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | arabic.pdf | script | 0.791 | 1.661 | 0.464 | 0.743 | 0.500 |

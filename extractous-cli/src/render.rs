@@ -9,7 +9,8 @@ use crate::cli::Format;
 use serde::Serialize;
 
 use crate::language::{self, DetectedLanguage, Sample};
-use crate::normalize::{self, Normalizer, Steps};
+use crate::normalize::{self, Normalizer, Step, Steps};
+use crate::running::{self, RunningLines};
 use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
 use crate::structure::{self, ElementKind, Unit};
 
@@ -255,6 +256,10 @@ struct PartRecord<'a> {
     level: Option<u8>,
     text: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    header: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    footer: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     detected_language: Option<DetectedLanguage>,
 }
 
@@ -277,34 +282,41 @@ fn render_parts(
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
             let mut bytes = 0;
-            let split = structure::split(BufReader::new(&mut stream), unit, &mut |part| {
-                bytes += part.text.len() as u64;
-                let text = normalize::normalize(options.normalization, &part.text);
-                sample.push(text.as_bytes());
+            let mut emit = |(page, element): (Option<u32>, Option<(ElementKind, Option<u8>)>),
+                            part: running::Page| {
+                sample.push(part.text.as_bytes());
                 sample.push(b"\n");
                 let record = PartRecord {
                     schema_version: SCHEMA_VERSION,
-                    kind: if part.element.is_some() {
-                        "element"
-                    } else {
-                        "page"
-                    },
+                    kind: if element.is_some() { "element" } else { "page" },
                     source: PartSource {
                         path: &source.path,
                         embedded_path: source.embedded_path.as_deref(),
                     },
-                    page: part.page,
-                    element: part.element.map(|(kind, _)| kind),
-                    level: part.element.and_then(|(_, level)| level),
-                    text: &text,
+                    page,
+                    element: element.map(|(kind, _)| kind),
+                    level: element.and_then(|(_, level)| level),
                     detected_language: match unit {
-                        Unit::Pages => language::detect(&text),
+                        Unit::Pages => language::detect(&part.text),
                         Unit::Elements => None,
                     },
+                    text: &part.text,
+                    header: part.header.as_deref(),
+                    footer: part.footer.as_deref(),
                 };
                 serde_json::to_writer(&mut *sink, &record)?;
                 sink.write_all(b"\n")
+            };
+            let mut running = RunningLines::new(
+                &mut emit,
+                unit == Unit::Pages && options.normalization.contains(Step::Headers),
+            );
+            let split = structure::split(BufReader::new(&mut stream), unit, &mut |part| {
+                bytes += part.text.len() as u64;
+                let text = normalize::normalize(options.normalization, &part.text);
+                running.push((part.page, part.element), text)
             })?;
+            running.finish()?;
             let mut copied = Copied {
                 bytes,
                 error: split.err().map(ExtractionError::from_message),

@@ -51,7 +51,7 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
-| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace` |
+| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers` |
 | `--raw` | No normalisation at all: the text exactly as Tika extracted it |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
@@ -81,7 +81,9 @@ Text, json, pages and elements output is normalised for indexing, so the same wo
 document encoded it: control characters and zero-width spaces are dropped (joiners that scripts need are kept),
 ligatures such as `ﬁ` become `fi`, soft hyphens are dropped, characters are composed to Unicode NFC, exotic spaces
 become plain ones, runs of spaces collapse, lines end with `\n` without trailing spaces, and at most one blank line
-appears in a row. Tabs are kept, since they separate table cells. Normalisation streams, so it holds back at most a few
+appears in a row. Tabs are kept, since they separate table cells. In `--format pages`, lines that recur at the top or
+bottom of most pages (running headers and footers, page numbers) move out of the page text into the page record's
+`header` and `footer`; they are learned from the first 8 pages, which are held back meanwhile. Normalisation streams, so it holds back at most a few
 characters. XHTML output is never normalised.
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is

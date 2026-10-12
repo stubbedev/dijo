@@ -10,6 +10,7 @@ prose-pandoc.docx	prose	born-digital
 prose-columns.pdf	prose	multi-column	
 report.pdf	report	headers-footers	
 report.docx	report	headers-footers	
+report.pdf	report	headers-footers	--format pages
 german.pdf	german	script	
 german.docx	german	script	
 arabic.pdf	arabic	script	

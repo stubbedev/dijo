@@ -209,6 +209,13 @@
     "spurious": 0.01735357917570499,
     "reading_order": 1.0
   },
+  "report.pdf --format pages": {
+    "character_error_rate": 0.005544933078393882,
+    "token_error_rate": 0.006622516556291391,
+    "recall": 1.0,
+    "spurious": 0.006578947368421052,
+    "reading_order": 1.0
+  },
   "table.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

@@ -219,6 +219,14 @@
         },
         "detected_language": {
           "$ref": "#/$defs/detected_language"
+        },
+        "header": {
+          "type": "string",
+          "description": "The running header taken out of this page's text: a first line that recurs on most pages."
+        },
+        "footer": {
+          "type": "string",
+          "description": "The running footer taken out of this page's text, such as a page number: a last line that recurs on most pages."
         }
       }
     },

@@ -910,3 +910,32 @@ fn the_language_is_detected_per_document_and_page() {
         true
     }));
 }
+
+#[test]
+fn running_headers_and_footers_leave_the_page_text() {
+    let page_records = |args: &[&str]| -> Vec<serde_json::Value> {
+        let mut all = vec!["--format", "pages"];
+        all.extend_from_slice(args);
+        all.push("../quality/corpus/report.pdf");
+        stdout(&extractous(&all))
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|record| record["page"].is_number())
+            .collect()
+    };
+    let pages = page_records(&[]);
+    assert_eq!(pages.len(), 2);
+    for (number, page) in (1..).zip(&pages) {
+        assert_matches_schema(page);
+        assert_eq!(page["header"], "Lighthouse Ledger Study");
+        assert_eq!(page["footer"], format!("Page {number}"));
+        let text = page["text"].as_str().unwrap();
+        assert!(!text.contains("Lighthouse Ledger Study") && !text.contains("Page "));
+    }
+    let kept = page_records(&["--no-normalize", "headers"]);
+    assert!(kept[0].get("header").is_none());
+    assert!(kept[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Lighthouse Ledger Study"));
+}

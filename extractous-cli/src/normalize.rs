@@ -19,6 +19,10 @@ pub enum Step {
     /// Turn exotic spaces into plain ones, collapse runs of spaces, end lines with \n, drop
     /// trailing spaces and keep at most one blank line in a row.
     Whitespace,
+    /// In pages output, move lines that recur at the top or bottom of most pages (running
+    /// headers and footers, page numbers) out of the page text into the page's header and
+    /// footer.
+    Headers,
 }
 
 impl Step {
@@ -37,7 +41,8 @@ impl Steps {
             | Step::Ligatures.bit()
             | Step::SoftHyphens.bit()
             | Step::Unicode.bit()
-            | Step::Whitespace.bit(),
+            | Step::Whitespace.bit()
+            | Step::Headers.bit(),
     );
     pub const NONE: Steps = Steps(0);
 
@@ -53,7 +58,7 @@ impl Steps {
         )
     }
 
-    fn contains(self, step: Step) -> bool {
+    pub fn contains(self, step: Step) -> bool {
         self.0 & step.bit() != 0
     }
 }
