@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use extractous_core::Metadata;
 
-use crate::cli::Ocr;
+use crate::cli::{CacheArgs, Ocr};
 use crate::render::{Outcome, RenderOptions};
 use crate::schema::{ErrorCategory, ExtractionError, Status};
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,21 @@ pub struct Miss<'a> {
 }
 
 impl Cache {
+    /// The cache the command line asks for, if any.
+    pub fn from_args(args: &CacheArgs, trust_mtime: bool) -> Result<Option<Cache>, String> {
+        args.cache_dir
+            .as_deref()
+            .map(|dir| {
+                let policy = CachePolicy {
+                    max_bytes: args.cache_max_size,
+                    store_partial: args.cache_partial,
+                    trust_mtime,
+                };
+                Cache::open(dir, policy)
+            })
+            .transpose()
+    }
+
     pub fn open(dir: &Path, policy: CachePolicy) -> Result<Cache, String> {
         fs::create_dir_all(dir).map_err(|e| {
             format!(

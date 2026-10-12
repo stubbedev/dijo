@@ -6,7 +6,7 @@ use std::path::Path;
 use extractous_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, StreamReader};
 
 use crate::cli::Format;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::language::{self, DetectedLanguage, Sample};
 use crate::normalize::{self, Normalizer, Step, Steps};
@@ -16,7 +16,7 @@ use crate::structure::{self, ElementKind, Unit};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct RenderOptions {
     pub format: Format,
     pub metadata: bool,

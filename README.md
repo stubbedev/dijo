@@ -119,6 +119,14 @@ come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java
 request (408 while uploading, 504 before extraction starts, a cut connection after). SIGTERM stops accepting and waits
 `--shutdown-grace` seconds for running requests.
 
+`--isolation process` runs each worker as a process of its own instead of a thread, so a parser that crashes, hangs
+or runs away with memory takes down one request and not the server. The server restarts the worker for the next
+request. A crashed worker fails its request with 500. A worker still running five seconds past `--timeout` is killed
+(504). On Linux, `--worker-max-rss-bytes` kills a worker whose resident memory grows past the limit (413). Each
+worker process holds its own Java heap, so memory use grows with `--workers`. With 4 workers on a mixed office and PDF
+corpus, process isolation took 565 MiB at peak against 163 MiB for threads. It served 243 requests/s against 202 at
+4 concurrent requests, and 37 against 52 one at a time.
+
 ### Container
 
 Each release publishes a multi-platform image (linux/amd64, linux/arm64) with tesseract and English OCR data, running

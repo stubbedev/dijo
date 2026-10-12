@@ -1,29 +1,15 @@
 #![cfg(target_os = "linux")]
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
+mod common;
+
+use common::Scratch;
+
 const MAX_RSS_BYTES: u64 = 512 << 20;
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("extractous-large-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
-    }
-}
 
 fn generate(path: &Path, size: u64, header: &str, mut record: impl FnMut(u64) -> String) -> u64 {
     let mut file = BufWriter::new(File::create(path).unwrap());

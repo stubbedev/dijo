@@ -63,7 +63,7 @@ fn call_tika<'local>(
     let source_obj = source.into_java(env)?;
     let [pdf, office, ocr] = java_parser_configs(env, configs)?;
     let password_obj: JObject = match password {
-        Some(password) => jni_new_string(env, password.as_str())?.into(),
+        Some(password) => jni_new_string(env, password.expose())?.into(),
         None => JObject::null(),
     };
     let signature = format!("({}{CONFIGS_SIGNATURE}{tail_signature}", source.java_type());

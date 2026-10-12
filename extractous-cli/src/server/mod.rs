@@ -1,5 +1,6 @@
 mod handlers;
 mod metrics;
+mod processes;
 mod upload;
 mod workers;
 
@@ -28,15 +29,16 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Sleep;
 
-use crate::cache::{Cache, CachePolicy};
-use crate::cli::{Embedded, Format, Ocr, ServeArgs};
+use crate::cache::Cache;
+use crate::cli::{Embedded, Format, Isolation, Ocr, ServeArgs, WorkerArgs};
 use crate::normalize::{Step, Steps};
 use crate::render::RenderOptions;
 use crate::spool::Spool;
 use handlers::{error_body, ExtractRequest, Head, Task};
 use metrics::Metrics;
+use processes::ProcessOptions;
 use upload::UploadError;
-use workers::{Chunk, Job, Pool};
+use workers::{Chunk, Job, Pool, Workers};
 
 const PASSWORD_HEADER: &str = "x-extractous-password";
 const FILENAME_HEADER: &str = "x-extractous-filename";
@@ -86,23 +88,32 @@ pub fn serve(args: &ServeArgs) -> bool {
     }
 }
 
+/// Runs a worker process of `serve --isolation process`.
+pub fn work(args: &WorkerArgs) -> bool {
+    let served = Cache::from_args(&args.cache, false).and_then(|cache| {
+        processes::serve_jobs(cache.as_ref()).map_err(|e| format!("worker process: {e}"))
+    });
+    match served {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("extractous: {error}");
+            false
+        }
+    }
+}
+
 fn start(args: &ServeArgs) -> Result<bool, String> {
     let metrics = Arc::new(Metrics::default());
     let workers = args.workers.get();
-    let cache = args
-        .cache
-        .cache_dir
-        .as_deref()
-        .map(|dir| {
-            let policy = CachePolicy {
-                max_bytes: args.cache.cache_max_size,
-                store_partial: args.cache.cache_partial,
-                trust_mtime: false,
-            };
-            Cache::open(dir, policy).map(Arc::new)
-        })
-        .transpose()?;
-    let pool = Pool::start(workers, args.queue, Arc::clone(&metrics), cache)?;
+    let pool_workers = match args.isolation {
+        Isolation::Thread => Workers::Threads(Cache::from_args(&args.cache, false)?.map(Arc::new)),
+        Isolation::Process => Workers::Processes(ProcessOptions {
+            arguments: [args.runtime.arguments(), args.cache.arguments()].concat(),
+            max_rss_bytes: args.worker_max_rss_bytes,
+            grace: RESPONSE_DEADLINE_GRACE,
+        }),
+    };
+    let pool = Pool::start(workers, args.queue, Arc::clone(&metrics), pool_workers)?;
     let spool = Spool::create(args.runtime.spool_dir.as_deref())
         .map_err(|e| format!("Failed to create the spool directory: {e}"))?;
     let state = Arc::new(State {

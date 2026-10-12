@@ -237,7 +237,9 @@ impl Password {
         Self(password.into())
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    /// The password itself, for handing it on, such as to a worker process. It never appears in
+    /// Debug output.
+    pub fn expose(&self) -> &str {
         &self.0
     }
 }

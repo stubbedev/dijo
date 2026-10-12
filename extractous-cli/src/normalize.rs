@@ -1,4 +1,5 @@
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use unicode_normalization::char::canonical_combining_class;
 use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 
@@ -32,7 +33,7 @@ impl Step {
 }
 
 /// The set of normalisation steps applied to extracted text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Steps(u8);
 
 impl Steps {

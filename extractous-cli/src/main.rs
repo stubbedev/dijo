@@ -26,8 +26,8 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use extractous_core::{Extractor, IsolateSettings, Metadata, Password};
 
-use cache::{Cache, CachePolicy, OutputSettings};
-use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs};
+use cache::{Cache, OutputSettings};
+use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs, Isolation, ServeArgs};
 use inputs::{Input, InputError, Source};
 use normalize::Steps;
 use render::RenderOptions;
@@ -42,7 +42,7 @@ const LICENSES: &str = concat!(
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(conflict) = cache_conflict(&cli.extract) {
+    if let Some(conflict) = usage_conflict(&cli) {
         Cli::command()
             .error(ErrorKind::ArgumentConflict, conflict)
             .exit();
@@ -63,6 +63,28 @@ fn main() -> ExitCode {
 /// How long to wait at exit for cancelled extractions to stop, so the tesseract processes they
 /// started do not outlive this one.
 const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// Why the arguments cannot be combined, if they cannot.
+fn usage_conflict(cli: &Cli) -> Option<&'static str> {
+    match &cli.command {
+        None => cache_conflict(&cli.extract),
+        Some(Command::Serve(args)) => isolation_conflict(args),
+        Some(Command::Detect(_) | Command::Worker(_)) => None,
+    }
+}
+
+/// Why the server arguments cannot limit worker memory, if they ask to: only a worker process can
+/// be stopped on its own, and only Linux reports its resident memory cheaply.
+fn isolation_conflict(args: &ServeArgs) -> Option<&'static str> {
+    args.worker_max_rss_bytes?;
+    if args.isolation != Isolation::Process {
+        Some("--worker-max-rss-bytes requires --isolation process")
+    } else if !cfg!(target_os = "linux") {
+        Some("--worker-max-rss-bytes is only supported on Linux")
+    } else {
+        None
+    }
+}
 
 /// Why the extraction arguments cannot use the cache, if they ask for it: decrypted text must not
 /// land on disk, and separate embedded documents are not cached.
@@ -101,6 +123,7 @@ fn print_licenses() -> bool {
 fn run_command(cli: Cli) -> bool {
     let runtime = match &cli.command {
         Some(Command::Serve(args)) => Some(&args.runtime),
+        Some(Command::Worker(args)) => Some(&args.runtime),
         Some(Command::Detect(_)) => None,
         None => Some(&cli.extract.runtime),
     };
@@ -117,6 +140,7 @@ fn run_command(cli: Cli) -> bool {
     match cli.command {
         Some(Command::Detect(args)) => detect(&args),
         Some(Command::Serve(args)) => server::serve(&args),
+        Some(Command::Worker(args)) => server::work(&args),
         None => extract(&cli.extract),
     }
 }
@@ -288,22 +312,12 @@ fn extract(args: &ExtractArgs) -> bool {
         raw_metadata: args.raw_metadata,
         normalization: Steps::selected(args.raw, &args.no_normalize),
     };
-    let cache = match &args.cache.cache_dir {
-        Some(dir) => match Cache::open(
-            dir,
-            CachePolicy {
-                max_bytes: args.cache.cache_max_size,
-                store_partial: args.cache.cache_partial,
-                trust_mtime: args.cache_trust_mtime,
-            },
-        ) {
-            Ok(cache) => Some(cache),
-            Err(error) => {
-                report("--cache-dir", &error);
-                return false;
-            }
-        },
-        None => None,
+    let cache = match Cache::from_args(&args.cache, args.cache_trust_mtime) {
+        Ok(cache) => cache,
+        Err(error) => {
+            report("--cache-dir", &error);
+            return false;
+        }
     };
     let workers = args.jobs.get().min(inputs.len().max(1));
     let context = Context {

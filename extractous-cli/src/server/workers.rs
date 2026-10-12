@@ -9,6 +9,7 @@ use tokio::sync::{mpsc as async_mpsc, oneshot};
 use crate::cache::Cache;
 use crate::server::handlers::{self, Head, Report, Respond, Task};
 use crate::server::metrics::Metrics;
+use crate::server::processes::{supervise, ProcessOptions, WorkerProcess};
 use crate::server::upload::Upload;
 
 /// A part of a response body, or why the body was cut short.
@@ -23,48 +24,59 @@ pub struct Job {
 
 pub struct QueueFull;
 
-/// A fixed set of extraction threads, attached to the isolate for good, fed through a bounded
-/// queue.
+/// Where the pool's workers run extractions.
+#[derive(Clone)]
+pub enum Workers {
+    /// In threads of this process, attached to its isolate for good.
+    Threads(Option<Arc<Cache>>),
+    /// In worker processes, one per worker thread, each with its own isolate.
+    Processes(ProcessOptions),
+}
+
+/// A fixed set of extraction workers fed through a bounded queue.
 pub struct Pool {
     sender: mpsc::SyncSender<Job>,
 }
 
 impl Pool {
-    /// Starts `workers` threads. Admission already limits requests in flight to the workers plus
+    /// Starts `count` workers. Admission already limits requests in flight to the workers plus
     /// `queue` slots, so the channel holds that many and never refuses an admitted job, even
     /// while a worker is between jobs.
     pub fn start(
-        workers: usize,
+        count: usize,
         queue: usize,
         metrics: Arc<Metrics>,
-        cache: Option<Arc<Cache>>,
+        workers: Workers,
     ) -> Result<Self, String> {
-        let (sender, receiver) = mpsc::sync_channel::<Job>(workers + queue);
+        let (sender, receiver) = mpsc::sync_channel::<Job>(count + queue);
         let receiver = Arc::new(Mutex::new(receiver));
         let (ready_sender, ready) = mpsc::channel::<Result<(), String>>();
-        for index in 0..workers {
+        for index in 0..count {
             let receiver = Arc::clone(&receiver);
             let metrics = Arc::clone(&metrics);
-            let cache = cache.clone();
+            let workers = workers.clone();
             let ready_sender = ready_sender.clone();
             thread::Builder::new()
                 .name(format!("extractous worker {index}"))
                 .spawn(move || {
-                    if let Err(error) = keep_current_thread_attached() {
-                        let _ = ready_sender.send(Err(error.to_string()));
-                        return;
-                    }
+                    let worker = match Worker::start(workers) {
+                        Ok(worker) => worker,
+                        Err(error) => {
+                            let _ = ready_sender.send(Err(error));
+                            return;
+                        }
+                    };
                     let _ = ready_sender.send(Ok(()));
                     drop(ready_sender);
                     metrics
                         .workers
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    work(&receiver, &metrics, cache.as_deref());
+                    worker.run(&receiver, &metrics);
                 })
                 .map_err(|e| format!("Failed to start worker {index}: {e}"))?;
         }
         drop(ready_sender);
-        for _ in 0..workers {
+        for _ in 0..count {
             ready
                 .recv()
                 .map_err(|_| "A worker exited during startup".to_string())??;
@@ -75,6 +87,33 @@ impl Pool {
     /// Queues a job; one that finds the queue full is dropped, removing its upload.
     pub fn submit(&self, job: Job) -> Result<(), QueueFull> {
         self.sender.try_send(job).map_err(|_| QueueFull)
+    }
+}
+
+/// A worker ready for jobs.
+enum Worker {
+    Thread(Option<Arc<Cache>>),
+    Process(ProcessOptions, WorkerProcess),
+}
+
+impl Worker {
+    /// Readies the current thread to run jobs.
+    fn start(workers: Workers) -> Result<Self, String> {
+        match workers {
+            Workers::Threads(cache) => keep_current_thread_attached()
+                .map(|()| Worker::Thread(cache))
+                .map_err(|e| e.to_string()),
+            Workers::Processes(options) => WorkerProcess::start(&options)
+                .map(|process| Worker::Process(options, process))
+                .map_err(|e| format!("Failed to start a worker process: {e}")),
+        }
+    }
+
+    fn run(self, receiver: &Mutex<mpsc::Receiver<Job>>, metrics: &Metrics) {
+        match self {
+            Worker::Thread(cache) => work(receiver, metrics, cache.as_deref()),
+            Worker::Process(options, process) => supervise(receiver, metrics, &options, process),
+        }
     }
 }
 

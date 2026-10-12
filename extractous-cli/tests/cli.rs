@@ -3,11 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-const DOCUMENTS: &str = "../test_files/documents";
+mod common;
 
-fn document(name: &str) -> String {
-    format!("{DOCUMENTS}/{name}")
-}
+use common::{document, Scratch, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
     extractous_with_stdin(args, None)
@@ -38,24 +36,6 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
-}
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("extractous-cli-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
-    }
 }
 
 #[test]
@@ -943,34 +923,9 @@ fn running_headers_and_footers_leave_the_page_text() {
 #[cfg(unix)]
 #[test]
 fn no_ocr_means_no_tesseract_run() {
-    use std::os::unix::fs::PermissionsExt;
-    let real = String::from_utf8(
-        Command::new("sh")
-            .args(["-c", "command -v tesseract"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let real = real.trim();
-    assert!(!real.is_empty(), "tesseract is not installed");
     let scratch = Scratch::new("no-ocr");
     let log = scratch.0.join("calls");
-    let fake = scratch.0.join("tesseract");
-    fs::write(
-        &fake,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{real}' \"$@\"\n",
-            log.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}",
-        scratch.0.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = scratch.path_with_tesseract(&format!("echo \"$*\" >> '{}'", log.display()));
     let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
         .args(["--ocr", "never", &document("science-exploration-1p.pptx")])
         .env("PATH", path)
@@ -984,4 +939,11 @@ fn no_ocr_means_no_tesseract_run() {
             && !line.contains("apache-tika")),
         "tesseract ran on an image although OCR is off:\n{calls}"
     );
+}
+
+#[test]
+fn a_worker_memory_limit_needs_process_isolation() {
+    let output = extractous(&["serve", "--worker-max-rss-bytes", "1000000"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--worker-max-rss-bytes requires --isolation process"));
 }

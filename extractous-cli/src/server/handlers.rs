@@ -31,6 +31,7 @@ pub enum Task {
 
 /// The files of one request: the spooled upload, the name it is reported under, and a
 /// directory for the documents embedded in it.
+#[derive(Serialize, Deserialize)]
 pub struct Files {
     pub path: PathBuf,
     pub display: String,

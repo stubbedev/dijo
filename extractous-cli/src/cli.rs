@@ -1,7 +1,9 @@
+use std::ffi::OsString;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 
 use crate::normalize::Step;
 use crate::tree::Limits;
@@ -38,6 +40,29 @@ pub enum Command {
     Detect(InputArgs),
     /// Run an HTTP server: POST a document to /extract or /detect.
     Serve(ServeArgs),
+    /// Serve extraction requests from `serve --isolation process` over standard input and
+    /// output.
+    #[command(hide = true)]
+    Worker(WorkerArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct WorkerArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    #[command(flatten)]
+    pub cache: CacheArgs,
+}
+
+/// Where the server runs extractions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Isolation {
+    /// In worker threads of the server process.
+    Thread,
+    /// In worker processes, restarted when one crashes, overruns --timeout or exceeds
+    /// --worker-max-rss-bytes, without taking the server or other requests down.
+    Process,
 }
 
 #[derive(Debug, Args)]
@@ -46,7 +71,7 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:9998", env = "EXTRACTOUS_LISTEN")]
     pub listen: std::net::SocketAddr,
 
-    /// Extraction worker threads.
+    /// Extraction workers: threads, or processes with --isolation process.
     #[arg(long, env = "EXTRACTOUS_WORKERS", default_value_t = default_jobs())]
     pub workers: NonZeroUsize,
 
@@ -68,6 +93,16 @@ pub struct ServeArgs {
 
     #[command(flatten)]
     pub cache: CacheArgs,
+
+    /// Where extractions run: in threads of the server process, or in worker processes that a
+    /// crash, a runaway allocation or a hung parser cannot take the server down with.
+    #[arg(long, value_enum, default_value_t = Isolation::Thread, env = "EXTRACTOUS_ISOLATION")]
+    pub isolation: Isolation,
+
+    /// With --isolation process, on Linux: restart a worker process whose resident memory grows
+    /// past this many bytes, failing its request with 413.
+    #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_WORKER_MAX_RSS_BYTES")]
+    pub worker_max_rss_bytes: Option<NonZeroU64>,
 
     /// Seconds in-flight requests get to finish after a shutdown signal.
     #[arg(
@@ -104,6 +139,23 @@ pub struct CacheArgs {
     pub cache_partial: bool,
 }
 
+impl CacheArgs {
+    /// These options as they are given on a command line.
+    pub fn arguments(&self) -> Vec<OsString> {
+        let mut arguments = Vec::new();
+        if let Some(dir) = &self.cache_dir {
+            arguments.extend(["--cache-dir".into(), dir.into()]);
+        }
+        if let Some(bytes) = self.cache_max_size {
+            arguments.extend(["--cache-max-size".into(), bytes.to_string().into()]);
+        }
+        if self.cache_partial {
+            arguments.push("--cache-partial".into());
+        }
+        arguments
+    }
+}
+
 /// Where extraction keeps temporary files and how much memory it may use.
 #[derive(Debug, Args)]
 pub struct RuntimeArgs {
@@ -117,6 +169,20 @@ pub struct RuntimeArgs {
     /// large share of physical memory.
     #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_HEAP_BYTES")]
     pub max_heap_bytes: Option<NonZeroU64>,
+}
+
+impl RuntimeArgs {
+    /// These options as they are given on a command line.
+    pub fn arguments(&self) -> Vec<OsString> {
+        let mut arguments = Vec::new();
+        if let Some(dir) = &self.spool_dir {
+            arguments.extend(["--spool-dir".into(), dir.into()]);
+        }
+        if let Some(bytes) = self.max_heap_bytes {
+            arguments.extend(["--max-heap-bytes".into(), bytes.to_string().into()]);
+        }
+        arguments
+    }
 }
 
 #[derive(Debug, Args)]
@@ -247,7 +313,7 @@ pub struct ExtractArgs {
     pub ocr_lang: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Format {
     /// Plain text.
     Text,
@@ -274,13 +340,13 @@ impl Format {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Embedded {
     Inline,
     Separate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Ocr {
     Auto,
     Never,

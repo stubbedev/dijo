@@ -3,7 +3,9 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const DOCUMENTS: &str = "../test_files/documents";
+mod common;
+
+use common::{Scratch, DOCUMENTS};
 
 struct Server {
     child: Child,
@@ -12,9 +14,14 @@ struct Server {
 
 impl Server {
     fn start(args: &[&str]) -> Self {
+        Self::start_with_env(args, &[])
+    }
+
+    fn start_with_env(args: &[&str], env: &[(&str, &str)]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_extractous"))
             .args(["serve", "--listen", "127.0.0.1:0"])
             .args(args)
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -383,10 +390,8 @@ fn a_heap_cap_fails_one_request_and_not_the_next() {
 
 #[test]
 fn the_cache_answers_repeated_uploads() {
-    let cache =
-        std::env::temp_dir().join(format!("extractous-server-cache-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&cache);
-    let server = Server::start(&["--cache-dir", cache.to_str().unwrap()]);
+    let scratch = Scratch::new("server-cache");
+    let server = Server::start(&["--cache-dir", scratch.0.to_str().unwrap()]);
     let first = server.post_file("/extract", &[], "simple.odt");
     let second = server.post_file("/extract", &[], "simple.odt");
     assert_eq!(first.status, 200);
@@ -413,5 +418,110 @@ fn the_cache_answers_repeated_uploads() {
         "{metrics}"
     );
     drop(server);
-    std::fs::remove_dir_all(&cache).unwrap();
+}
+
+#[test]
+fn worker_processes_serve_extractions() {
+    let server = Server::start(&["--isolation", "process", "--workers", "2"]);
+    let text = server.post_file("/extract", &[], "simple.odt");
+    assert_eq!(text.status, 200);
+    assert!(text
+        .text()
+        .contains("These are a few of my favorite things"));
+
+    let json = server.post_file(
+        "/extract?format=json&metadata=true",
+        &[],
+        "2022_Q3_AAPL.pdf",
+    );
+    assert_eq!(json.status, 200);
+    let document = json.json();
+    assert_eq!(document["status"], "complete");
+    assert_eq!(document["metadata"]["page_count"], 28);
+
+    let locked = server.post_file("/extract", &[], "encrypted/password.docx");
+    assert_eq!(locked.status, 422);
+    let unlocked = server.post_file(
+        "/extract",
+        &[("X-Extractous-Password", "extractous")],
+        "encrypted/password.docx",
+    );
+    assert!(unlocked.text().contains("Call me Ishmael"));
+
+    let detected = server.post_file("/detect", &[], "simple.doc");
+    assert_eq!(detected.text(), "application/msword\n");
+
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(metrics.contains("extractous_workers 2"), "{metrics}");
+    assert!(
+        metrics.contains("extractous_failures_total{category=\"encrypted\"} 1"),
+        "{metrics}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_crashed_worker_process_fails_its_request_and_not_the_next() {
+    let scratch = Scratch::new("crashing-worker");
+    let path = scratch.path_with_tesseract("[ $# -lt 2 ] || kill -KILL $PPID");
+    let server = Server::start_with_env(
+        &["--isolation", "process", "--workers", "1"],
+        &[("PATH", &path)],
+    );
+    let crashed = server.post_file("/extract", &[], "ara-ocr.png");
+    assert_eq!(crashed.status, 500);
+    let message = crashed.json()["error"].as_str().unwrap().to_string();
+    assert!(message.contains("The worker process died"), "{message}");
+
+    let next = server.post_file("/extract", &[], "simple.odt");
+    assert_eq!(next.status, 200);
+    assert!(next
+        .text()
+        .contains("These are a few of my favorite things"));
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(metrics.contains("extractous_workers 1"), "{metrics}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hung_worker_process_is_stopped_after_the_deadline() {
+    let scratch = Scratch::new("hung-worker");
+    let path = scratch.path_with_tesseract("[ $# -lt 2 ] || kill -STOP $PPID");
+    let server = Server::start_with_env(
+        &["--isolation", "process", "--workers", "1", "--timeout", "3"],
+        &[("PATH", &path)],
+    );
+    let started = Instant::now();
+    let hung = server.post_file("/extract", &[], "ara-ocr.png");
+    assert_eq!(hung.status, 504);
+    assert!(started.elapsed() < Duration::from_secs(20));
+
+    let next = server.post_file("/extract", &[], "simple.odt");
+    assert_eq!(next.status, 200);
+    assert!(next
+        .text()
+        .contains("These are a few of my favorite things"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_process_over_its_memory_limit_is_stopped() {
+    let server = Server::start(&[
+        "--isolation",
+        "process",
+        "--workers",
+        "1",
+        "--worker-max-rss-bytes",
+        "1048576",
+    ]);
+    let stopped = server.post_file("/extract", &[], "2022_Q3_AAPL.pdf");
+    assert_eq!(stopped.status, 413);
+    let message = stopped.json()["error"].as_str().unwrap().to_string();
+    assert!(message.contains("--worker-max-rss-bytes"), "{message}");
+    assert_eq!(server.request("GET", "/healthz", &[], b"").status, 200);
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(
+        metrics.contains("extractous_failures_total{category=\"limit-exceeded\"} 1"),
+        "{metrics}"
+    );
 }
