@@ -980,3 +980,14 @@ fn a_clean_pdf_text_layer_is_kept() {
         );
     }
 }
+
+#[test]
+fn tiff_images_with_exif_directories_are_ocred() {
+    let output = extractous(&["../quality/corpus/report-scan.tif"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("Part Three"),
+        "{}",
+        stdout(&output)
+    );
+}
