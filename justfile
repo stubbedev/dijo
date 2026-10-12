@@ -34,6 +34,23 @@ test-fuzz:
 throughput:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test bench --no-capture
 
+# Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
+# any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.
+[unix]
+conformance:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    cargo nextest run --package extractous --cargo-profile release --run-ignored only --test conformance
+
+# Accept the current conformance results as conformance/baseline.json.
+[unix]
+conformance-bless:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    CONFORMANCE_BLESS=1 cargo nextest run --package extractous --cargo-profile release --run-ignored only --test conformance
+
 # Score extraction against the quality corpus and write quality/SCOREBOARD.md.
 [unix]
 quality:

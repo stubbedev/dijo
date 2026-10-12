@@ -1,7 +1,11 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+use unicode_normalization::char::is_combining_mark;
+use unicode_normalization::UnicodeNormalization;
 
 pub const DOCUMENTS: &str = "../test_files/documents";
 
@@ -175,4 +179,51 @@ pub fn text_pdf(pages: usize) -> Vec<u8> {
         .as_bytes(),
     );
     pdf
+}
+
+/// Characters of scripts written without spaces between words count as tokens of their own.
+fn unspaced(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0e00}'..='\u{0e7f}'
+            | '\u{3040}'..='\u{30ff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+    )
+}
+
+pub fn tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    for character in text.nfc() {
+        if unspaced(character) {
+            tokens.extend((!word.is_empty()).then(|| std::mem::take(&mut word)));
+            tokens.push(character.to_string());
+        } else if character.is_alphanumeric() || is_combining_mark(character) {
+            word.push(character);
+        } else if !word.is_empty() {
+            tokens.push(std::mem::take(&mut word));
+        }
+    }
+    tokens.extend((!word.is_empty()).then_some(word));
+    tokens
+}
+
+/// How many of `truth` occur in `extracted`, each occurrence matched once.
+pub fn matched(truth: &[String], extracted: &[String]) -> usize {
+    let mut available: HashMap<&str, usize> = HashMap::new();
+    for token in extracted {
+        *available.entry(token).or_default() += 1;
+    }
+    truth
+        .iter()
+        .filter(|token| {
+            available
+                .get_mut(token.as_str())
+                .filter(|count| **count > 0)
+                .map(|count| *count -= 1)
+                .is_some()
+        })
+        .count()
 }

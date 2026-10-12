@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs;
@@ -6,8 +8,9 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
+
+use common::{matched, tokens};
 
 const QUALITY: &str = "../quality";
 const JOBS: usize = 4;
@@ -103,35 +106,6 @@ fn extract(document: &Document) -> String {
         .join("\n\n")
 }
 
-/// Characters of scripts written without spaces between words count as tokens of their own.
-fn unspaced(character: char) -> bool {
-    matches!(
-        character,
-        '\u{0e00}'..='\u{0e7f}'
-            | '\u{3040}'..='\u{30ff}'
-            | '\u{3400}'..='\u{4dbf}'
-            | '\u{4e00}'..='\u{9fff}'
-            | '\u{f900}'..='\u{faff}'
-    )
-}
-
-fn tokens(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut word = String::new();
-    for character in text.nfc() {
-        if unspaced(character) {
-            tokens.extend((!word.is_empty()).then(|| std::mem::take(&mut word)));
-            tokens.push(character.to_string());
-        } else if character.is_alphanumeric() || is_combining_mark(character) {
-            word.push(character);
-        } else if !word.is_empty() {
-            tokens.push(std::mem::take(&mut word));
-        }
-    }
-    tokens.extend((!word.is_empty()).then_some(word));
-    tokens
-}
-
 fn characters(text: &str) -> Vec<char> {
     text.nfc()
         .collect::<String>()
@@ -154,23 +128,6 @@ fn edit_distance<T: PartialEq>(from: &[T], to: &[T]) -> usize {
         std::mem::swap(&mut previous, &mut current);
     }
     previous[to.len()]
-}
-
-fn matched(truth: &[String], extracted: &[String]) -> usize {
-    let mut available: HashMap<&str, usize> = HashMap::new();
-    for token in extracted {
-        *available.entry(token).or_default() += 1;
-    }
-    truth
-        .iter()
-        .filter(|token| {
-            available
-                .get_mut(token.as_str())
-                .filter(|count| **count > 0)
-                .map(|count| *count -= 1)
-                .is_some()
-        })
-        .count()
 }
 
 fn longest_increasing(positions: &[usize]) -> usize {
