@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub const DOCUMENTS: &str = "../test_files/documents";
 
@@ -27,6 +26,7 @@ impl Scratch {
     #[cfg(unix)]
     pub fn path_with_tesseract(&self, before: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
         let real = String::from_utf8(
             Command::new("sh")
                 .args(["-c", "command -v tesseract"])
