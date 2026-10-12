@@ -88,6 +88,17 @@ pub struct ServeArgs {
     #[arg(long, value_name = "SECONDS", env = "EXTRACTOUS_TIMEOUT")]
     pub timeout: Option<u64>,
 
+    /// Seconds a client may take to send its request headers, and may go silent while uploading:
+    /// a connection whose headers are late is closed, an upload that stalls gets 408. Bounds
+    /// what slow or idle clients can hold, with or without --timeout.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        env = "EXTRACTOUS_CLIENT_TIMEOUT",
+        default_value_t = NonZeroU64::new(60).expect("60 is not zero")
+    )]
+    pub client_timeout: NonZeroU64,
+
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 

@@ -23,7 +23,7 @@ use hyper::header::{HeaderValue, CONTENT_TYPE, RETRY_AFTER};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -55,6 +55,7 @@ struct State {
     capacity: usize,
     max_input_bytes: Option<u64>,
     timeout: Option<Duration>,
+    client_timeout: Duration,
     next_id: AtomicU64,
 }
 
@@ -123,6 +124,7 @@ fn start(args: &ServeArgs) -> Result<bool, String> {
         capacity: workers + args.queue,
         max_input_bytes: args.max_input_bytes,
         timeout: args.timeout.map(Duration::from_secs),
+        client_timeout: Duration::from_secs(args.client_timeout.get()),
         next_id: AtomicU64::new(0),
     });
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -164,10 +166,14 @@ async fn listen(
                     }
                 };
                 let state = Arc::clone(&state);
-                let connection = http1::Builder::new().serve_connection(
-                    TokioIo::new(stream),
-                    service_fn(move |request| handle(request, Arc::clone(&state))),
-                );
+                let client_timeout = state.client_timeout;
+                let connection = http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(client_timeout)
+                    .serve_connection(
+                        TokioIo::new(stream),
+                        service_fn(move |request| handle(request, Arc::clone(&state))),
+                    );
                 let connection = graceful.watch(connection);
                 tokio::spawn(async move {
                     if let Err(error) = connection.await {
@@ -434,6 +440,7 @@ async fn run(
         id,
         name,
         state.max_input_bytes,
+        state.client_timeout,
         &state.metrics,
     );
     let upload = match deadline {
@@ -446,6 +453,9 @@ async fn run(
     let upload = match upload {
         Ok(upload) => upload,
         Err(UploadError::TooLarge) => return error(413, "The upload exceeds --max-input-bytes"),
+        Err(UploadError::Stalled) => {
+            return error(408, "The upload stalled for longer than --client-timeout")
+        }
         Err(UploadError::Body(error)) => {
             return self::error(400, &format!("Failed to read the upload: {error}"))
         }

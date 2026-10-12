@@ -534,3 +534,29 @@ fn a_worker_process_over_its_memory_limit_is_stopped() {
         "{metrics}"
     );
 }
+
+#[test]
+fn clients_that_go_silent_are_cut_off() {
+    let server = Server::start(&["--client-timeout", "1"]);
+
+    let mut late_headers = server.connect();
+    late_headers
+        .write_all(b"POST /extract HTTP/1.1\r\nHost: localhost\r\n")
+        .unwrap();
+    let started = Instant::now();
+    let mut answer = Vec::new();
+    let _ = late_headers.read_to_end(&mut answer);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(!String::from_utf8_lossy(&answer).contains(" 200 "));
+
+    let mut stalled_upload = server.connect();
+    write_head(&mut stalled_upload, "POST", "/extract", &[], 10);
+    stalled_upload.write_all(b"hello").unwrap();
+    let started = Instant::now();
+    let response = read_response(stalled_upload);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(response.status, 408);
+    assert!(response.text().contains("--client-timeout"));
+
+    assert_eq!(server.request("GET", "/readyz", &[], b"").status, 200);
+}

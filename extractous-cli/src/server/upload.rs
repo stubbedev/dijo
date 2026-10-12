@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -48,6 +49,8 @@ impl Drop for Upload {
 
 pub enum UploadError {
     TooLarge,
+    /// The client sent nothing for longer than it may.
+    Stalled,
     Body(hyper::Error),
     Io(io::Error),
 }
@@ -71,6 +74,7 @@ pub async fn receive(
     id: u64,
     name: Option<String>,
     max_bytes: Option<u64>,
+    idle_timeout: Duration,
     metrics: &Metrics,
 ) -> Result<Upload, UploadError> {
     let dir = root.join(format!("request-{id}"));
@@ -83,7 +87,13 @@ pub async fn receive(
     };
     let mut file = tokio::fs::File::create_new(&upload.path).await?;
     let mut received: u64 = 0;
-    while let Some(frame) = body.frame().await {
+    loop {
+        let Some(frame) = tokio::time::timeout(idle_timeout, body.frame())
+            .await
+            .map_err(|_| UploadError::Stalled)?
+        else {
+            break;
+        };
         let frame = frame.map_err(UploadError::Body)?;
         if let Some(data) = frame.data_ref() {
             received += data.len() as u64;
