@@ -170,6 +170,9 @@
         "duplicate_of": {
           "type": "string",
           "description": "With --embedded separate: the embedded path of the first document in this input with the same content, which was extracted instead."
+        },
+        "detected_language": {
+          "$ref": "#/$defs/detected_language"
         }
       },
       "description": "One per input: the whole result in `--format json`, or the closing record after the pages or elements of `--format pages` and `--format elements`."
@@ -213,6 +216,9 @@
         },
         "text": {
           "type": "string"
+        },
+        "detected_language": {
+          "$ref": "#/$defs/detected_language"
         }
       }
     },
@@ -303,6 +309,37 @@
           }
         }
       ]
+    },
+    "detected_language": {
+      "type": "object",
+      "description": "The language of the text, detected from the text itself (as opposed to `metadata.language`, which the document declares). Detected from the first 64 KiB of a document's text, and from each page's own text.",
+      "required": [
+        "code",
+        "script",
+        "confidence",
+        "reliable"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z]{3}$",
+          "description": "ISO 639-3 code."
+        },
+        "script": {
+          "type": "string",
+          "description": "The writing system, such as `Latin`, `Arabic` or `Mandarin`."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reliable": {
+          "type": "boolean",
+          "description": "Whether the detection is confident enough to act on, such as to pick a search analyzer."
+        }
+      }
     }
   }
 }

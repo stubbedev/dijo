@@ -147,6 +147,11 @@ without pages is one record), and `--format elements` one per heading, paragraph
 (`{"kind":"element","element":"heading","level":1,"page":3,"text":...}`), each as soon as it is complete, followed by a
 `"kind":"document"` record carrying the status, errors and metadata that are only known at the end.
 
+`detected_language` is the language detected from the text itself (ISO 639-3 code, script, confidence and whether
+it is `reliable` enough to act on, such as to pick a search analyzer), from the first 64 KiB of a document and from
+each page's own text in `--format pages`. It is separate from `metadata.language`, which is what the document
+declares.
+
 `metadata` (with `-m`) holds normalised fields filled from whichever Tika key a format uses: dates are RFC 3339 in UTC,
 or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are
 available with `--raw-metadata`. `status` is `complete`, `partial` (some text before an error), `encrypted` (no password opened it) or `failed`, and

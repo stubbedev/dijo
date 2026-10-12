@@ -1,6 +1,7 @@
 mod cache;
 mod cli;
 mod inputs;
+mod language;
 mod normalize;
 mod render;
 mod schema;

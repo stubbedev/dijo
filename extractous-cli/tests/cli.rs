@@ -883,3 +883,30 @@ fn trusted_modification_times_skip_rehashing() {
     let hashed = extractous(&["--cache-dir", cache_arg, input_arg]);
     assert!(stdout(&hashed).contains("other version"));
 }
+
+#[test]
+fn the_language_is_detected_per_document_and_page() {
+    for (name, code, script) in [
+        ("german.docx", "deu", "Latin"),
+        ("arabic.docx", "ara", "Arabic"),
+        ("hebrew.docx", "heb", "Hebrew"),
+        ("hindi.docx", "hin", "Devanagari"),
+    ] {
+        let objects = json_objects(&[&format!("../quality/corpus/{name}")]);
+        assert_matches_schema(&objects[0]);
+        let detected = &objects[0]["detected_language"];
+        assert_eq!(detected["code"], code, "{name}");
+        assert_eq!(detected["script"], script, "{name}");
+        assert_eq!(detected["reliable"], true, "{name}");
+    }
+    let pages = extractous(&["--format", "pages", "../quality/corpus/report.pdf"]);
+    let records: Vec<serde_json::Value> = stdout(&pages)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records[0]["detected_language"]["code"], "eng");
+    assert!(records.iter().all(|record| {
+        assert_matches_schema(record);
+        true
+    }));
+}

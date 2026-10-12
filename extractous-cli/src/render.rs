@@ -8,6 +8,7 @@ use extractous_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, Strea
 use crate::cli::Format;
 use serde::Serialize;
 
+use crate::language::{self, DetectedLanguage, Sample};
 use crate::normalize::{self, Normalizer, Steps};
 use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
 use crate::structure::{self, ElementKind, Unit};
@@ -153,7 +154,7 @@ fn render_text(
         Format::Xhtml => Steps::NONE,
         _ => options.normalization,
     };
-    let mut copied = copy(&mut stream, sink, steps, |chunk, sink| {
+    let mut copied = copy(&mut stream, sink, steps, None, |chunk, sink| {
         sink.write_all(chunk)
     })?;
     let (metadata, embedded) = finish(&stream, &mut copied);
@@ -177,10 +178,14 @@ pub fn write_document_end(
     sink: &mut dyn Write,
     outcome: &Outcome,
     metadata: Option<&Metadata>,
+    detected_language: Option<&DetectedLanguage>,
     options: RenderOptions,
 ) -> io::Result<()> {
     if let Some(mime_type) = metadata.and_then(schema::mime_type) {
         write_field(sink, "mime_type", &mime_type)?;
+    }
+    if let Some(detected_language) = detected_language {
+        write_field(sink, "detected_language", detected_language)?;
     }
     write_field(sink, "status", &outcome.status)?;
     write_field(sink, "errors", &outcome.errors)?;
@@ -206,6 +211,7 @@ fn render_json(
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
     write_document_start(sink, source)?;
+    let mut sample = Sample::default();
     let (outcome, metadata) = match opened {
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
@@ -214,6 +220,7 @@ fn render_json(
                 &mut stream,
                 sink,
                 options.normalization,
+                Some(&mut sample),
                 write_json_string_content,
             )?;
             sink.write_all(b"\"")?;
@@ -225,7 +232,13 @@ fn render_json(
             (outcome, metadata)
         }
     };
-    write_document_end(sink, &outcome, metadata.as_ref(), options)?;
+    write_document_end(
+        sink,
+        &outcome,
+        metadata.as_ref(),
+        sample.detect().as_ref(),
+        options,
+    )?;
     Ok(outcome)
 }
 
@@ -241,6 +254,8 @@ struct PartRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<u8>,
     text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detected_language: Option<DetectedLanguage>,
 }
 
 #[derive(Serialize)]
@@ -257,6 +272,7 @@ fn render_parts(
     unit: Unit,
     sink: &mut dyn Write,
 ) -> io::Result<Outcome> {
+    let mut sample = Sample::default();
     let (outcome, metadata) = match opened {
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
@@ -264,6 +280,8 @@ fn render_parts(
             let split = structure::split(BufReader::new(&mut stream), unit, &mut |part| {
                 bytes += part.text.len() as u64;
                 let text = normalize::normalize(options.normalization, &part.text);
+                sample.push(text.as_bytes());
+                sample.push(b"\n");
                 let record = PartRecord {
                     schema_version: SCHEMA_VERSION,
                     kind: if part.element.is_some() {
@@ -279,6 +297,10 @@ fn render_parts(
                     element: part.element.map(|(kind, _)| kind),
                     level: part.element.and_then(|(_, level)| level),
                     text: &text,
+                    detected_language: match unit {
+                        Unit::Pages => language::detect(&text),
+                        Unit::Elements => None,
+                    },
                 };
                 serde_json::to_writer(&mut *sink, &record)?;
                 sink.write_all(b"\n")
@@ -296,7 +318,13 @@ fn render_parts(
         }
     };
     write_document_start(sink, source)?;
-    write_document_end(sink, &outcome, metadata.as_ref(), options)?;
+    write_document_end(
+        sink,
+        &outcome,
+        metadata.as_ref(),
+        sample.detect().as_ref(),
+        options,
+    )?;
     Ok(outcome)
 }
 
@@ -331,6 +359,7 @@ fn copy(
     stream: &mut StreamReader,
     sink: &mut dyn Write,
     steps: Steps,
+    mut sample: Option<&mut Sample>,
     write: impl Fn(&[u8], &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<Copied> {
     let mut buffer = vec![0; READ_BUFFER_SIZE];
@@ -342,6 +371,9 @@ fn copy(
             Ok(0) => break None,
             Ok(read) => {
                 normalizer.push(&buffer[..read], &mut normalized);
+                if let Some(sample) = sample.as_deref_mut() {
+                    sample.push(&normalized);
+                }
                 write(&normalized, sink)?;
                 normalized.clear();
                 bytes += read as u64;
@@ -350,6 +382,9 @@ fn copy(
         }
     };
     normalizer.finish(&mut normalized);
+    if let Some(sample) = sample {
+        sample.push(&normalized);
+    }
     write(&normalized, sink)?;
     Ok(Copied { bytes, error })
 }
