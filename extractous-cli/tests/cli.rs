@@ -531,7 +531,7 @@ fn a_timeout_keeps_the_text_extracted_before_it() {
         "always",
         &document("2022_Q3_AAPL.pdf"),
     ]);
-    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert_matches_schema(&objects[0]);
     assert_eq!(objects[0]["status"], "partial");
     assert!(objects[0]["text"]

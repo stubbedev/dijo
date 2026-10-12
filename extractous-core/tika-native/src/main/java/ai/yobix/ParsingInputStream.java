@@ -45,6 +45,8 @@ public class ParsingInputStream extends InputStream {
     private final Metadata metadata;
     private final EmbeddedSpooler spooler;
     private final long deadline;
+    private final Object parseLock = new Object();
+    private Thread parseThread;
     private volatile boolean closed;
     private volatile Throwable failure;
     private byte[] current;
@@ -72,6 +74,12 @@ public class ParsingInputStream extends InputStream {
 
     private void parse(Parser parser, InputStream stream, Metadata metadata, ParseContext context,
                        boolean outputXml, Charset charset) {
+        synchronized (parseLock) {
+            if (closed) {
+                return;
+            }
+            parseThread = Thread.currentThread();
+        }
         try (stream) {
             final ContentHandler handler = outputXml
                     ? new ToXMLContentHandler(output, charset.name())
@@ -81,6 +89,25 @@ public class ParsingInputStream extends InputStream {
             output.sendRemainder();
         } catch (Throwable t) {
             failure = t;
+        } finally {
+            synchronized (parseLock) {
+                parseThread = null;
+                Thread.interrupted();
+            }
+        }
+    }
+
+    /**
+     * Stops the parse: no more text is wanted. The parsing thread is interrupted, which makes
+     * Tika kill a running tesseract, and the interrupt is cleared before the pooled thread takes
+     * its next parse.
+     */
+    private void cancel() {
+        synchronized (parseLock) {
+            closed = true;
+            if (parseThread != null) {
+                parseThread.interrupt();
+            }
         }
     }
 
@@ -169,7 +196,10 @@ public class ParsingInputStream extends InputStream {
                     rethrowFailure();
                     return -1;
                 }
-                case TIMEOUT -> throw new InterruptedIOException("The extraction exceeded its time limit");
+                case TIMEOUT -> {
+                    cancel();
+                    throw new InterruptedIOException("The extraction exceeded its time limit");
+                }
                 case CHUNK -> { }
             }
         }
@@ -190,6 +220,7 @@ public class ParsingInputStream extends InputStream {
                     return -1;
                 }
                 case TIMEOUT -> {
+                    cancel();
                     return TIMED_OUT;
                 }
                 case CHUNK -> { }
@@ -203,16 +234,16 @@ public class ParsingInputStream extends InputStream {
 
     @Override
     public void close() {
-        closed = true;
+        cancel();
     }
 
     private void put(byte[] chunk) throws IOException {
         try {
-            while (!space.tryAcquire(100, TimeUnit.MILLISECONDS)) {
+            do {
                 if (closed) {
                     throw new IOException("The text stream was closed before parsing finished");
                 }
-            }
+            } while (!space.tryAcquire(100, TimeUnit.MILLISECONDS));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new InterruptedIOException("Interrupted while handing over parsed text");
