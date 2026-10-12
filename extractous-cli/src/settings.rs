@@ -6,6 +6,13 @@ use std::time::Duration;
 
 use crate::cli::{Format, Ocr};
 
+/// Under `--ocr auto`, a PDF page is OCRed when more than half of its glyphs map to no text, or
+/// when it has at most 10 characters (a scan). Tika's default counts unmapped glyphs absolutely,
+/// more than 10 per page, which OCRs every page of an Arabic, Devanagari or Thai PDF: their
+/// fonts map a whole cluster to its first glyph, so about a quarter of the glyphs map to nothing
+/// even when the text is intact.
+const AUTO_OCR_PAGES: &str = "50%,10";
+
 /// Builds the extractor for one set of extraction options, shared by the command line and the
 /// server.
 pub fn extractor(
@@ -30,7 +37,11 @@ pub fn extractor(
             format,
             Format::Xhtml | Format::Pages | Format::Elements
         ))
-        .set_pdf_config(PdfParserConfig::new().set_ocr_strategy(strategy))
+        .set_pdf_config(
+            PdfParserConfig::new()
+                .set_ocr_strategy(strategy)
+                .set_ocr_strategy_auto(AUTO_OCR_PAGES),
+        )
         .set_office_config(
             OfficeParserConfig::new()
                 .set_use_sax_docx_extractor(true)

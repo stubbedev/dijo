@@ -99,6 +99,12 @@ tika_config! {
         /// Sets the OCR strategy for PDF parsing.
         set_ocr_strategy(ocr_strategy: PdfOcrStrategy) => "setOcrStrategy",
 
+        /// Which pages the AUTO strategy OCRs: `better` (Tika's default: more than 10 glyphs
+        /// without Unicode text, or at most 10 characters), `faster`, or
+        /// `<unmapped>[%][,<characters>]`: more than `unmapped` such glyphs (a share of the
+        /// page's glyphs with `%`), or at most `characters` characters.
+        set_ocr_strategy_auto(ocr_strategy_auto: String) => "setOcrStrategyAuto",
+
         /// If true, extract the literal inline embedded OBXImages. Beware: some PDF documents of
         /// modest size (~4MB) can contain thousands of embedded images totaling > 2.5 GB.
         /// Also, there can be surprisingly large memory consumption
