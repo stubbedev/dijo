@@ -8,8 +8,8 @@
 | prose.html | born-digital | 0.005 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.epub | born-digital | 0.031 | 0.030 | 1.000 | 0.029 | 1.000 |
 | prose-pandoc.docx | born-digital | 0.001 | 0.000 | 1.000 | 0.000 | 1.000 |
-| prose-columns.pdf | multi-column | 0.018 | 0.016 | 1.000 | 0.016 | 1.000 |
-| report.pdf | headers-footers | 0.017 | 0.018 | 1.000 | 0.017 | 1.000 |
+| prose-columns.pdf | multi-column | 0.018 | 0.023 | 0.993 | 0.019 | 1.000 |
+| report.pdf | headers-footers | 0.006 | 0.007 | 1.000 | 0.007 | 1.000 |
 | report.docx | headers-footers | 0.006 | 0.006 | 1.000 | 0.005 | 1.000 |
 | report.pdf --format pages | headers-footers | 0.006 | 0.007 | 1.000 | 0.007 | 1.000 |
 | german.pdf | script | 0.065 | 0.052 | 1.000 | 0.049 | 1.000 |

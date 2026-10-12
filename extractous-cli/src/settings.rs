@@ -4,7 +4,8 @@ use extractous_core::{
 
 use std::time::Duration;
 
-use crate::cli::{Format, Ocr};
+use crate::cli::Ocr;
+use crate::render::RenderOptions;
 
 /// Under `--ocr auto`, a PDF page is OCRed when it has at most 10 characters (a scan), and its text
 /// replaced by OCR text when more than half of its glyphs map to no text or the text it yields is
@@ -17,7 +18,7 @@ const AUTO_OCR_PAGES: &str = "50%,10";
 /// Builds the extractor for one set of extraction options, shared by the command line and the
 /// server.
 pub fn extractor(
-    format: Format,
+    render: RenderOptions,
     ocr: Ocr,
     ocr_lang: Option<&str>,
     passwords: Vec<Password>,
@@ -33,10 +34,7 @@ pub fn extractor(
         .set_language(ocr_lang.unwrap_or(TesseractOcrConfig::AUTO_LANGUAGE));
     let extractor = Extractor::new()
         .set_passwords(passwords)
-        .set_xml_output(matches!(
-            format,
-            Format::Xhtml | Format::Pages | Format::Elements
-        ))
+        .set_xml_output(render.needs_xhtml())
         .set_pdf_config(
             PdfParserConfig::new()
                 .set_ocr_strategy(strategy)

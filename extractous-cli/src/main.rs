@@ -299,19 +299,19 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let extractor = settings::extractor(
-        args.format,
-        args.ocr,
-        args.ocr_lang.as_deref(),
-        passwords,
-        args.timeout.map(Duration::from_secs),
-    );
     let options = RenderOptions {
         format: args.format,
         metadata: args.metadata,
         raw_metadata: args.raw_metadata,
         normalization: Steps::selected(args.raw, &args.no_normalize),
     };
+    let extractor = settings::extractor(
+        options,
+        args.ocr,
+        args.ocr_lang.as_deref(),
+        passwords,
+        args.timeout.map(Duration::from_secs),
+    );
     let cache = match Cache::from_args(&args.cache, args.cache_trust_mtime) {
         Ok(cache) => cache,
         Err(error) => {

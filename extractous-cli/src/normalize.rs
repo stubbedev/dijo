@@ -24,9 +24,9 @@ pub enum Step {
     /// Turn exotic spaces into plain ones, collapse runs of spaces, end lines with \n, drop
     /// trailing spaces and keep at most one blank line in a row.
     Whitespace,
-    /// In pages output, move lines that recur at the top or bottom of most pages (running
-    /// headers and footers, page numbers) out of the page text into the page's header and
-    /// footer.
+    /// Take lines that recur at the top or bottom of most pages (running headers and footers,
+    /// page numbers) out of the page text: into the page's header and footer in pages output,
+    /// away in text and json output.
     Headers,
     /// Join a word hyphenated across a line break, dropping the hyphen unless the text before
     /// shows the word is a hyphenated compound.

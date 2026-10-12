@@ -17,8 +17,16 @@ pub struct Page {
 /// back meanwhile, so the output still streams.
 pub struct RunningLines<'a, T> {
     emit: &'a mut dyn FnMut(T, Page) -> io::Result<()>,
-    held: Vec<(T, String)>,
+    held: Vec<(T, String, Placement)>,
     learned: Option<Patterns>,
+}
+
+/// Whether text is a page's, or lies outside every page, such as the bookmarks Tika appends to
+/// a PDF. Only pages have running lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    Page,
+    Loose,
 }
 
 #[derive(Debug, Default)]
@@ -38,12 +46,17 @@ impl<'a, T> RunningLines<'a, T> {
         }
     }
 
-    pub fn push(&mut self, with: T, text: String) -> io::Result<()> {
+    pub fn push(&mut self, with: T, text: String, placement: Placement) -> io::Result<()> {
         if let Some(patterns) = &self.learned {
-            return (self.emit)(with, split(text, patterns));
+            return (self.emit)(with, split(text, placement, patterns));
         }
-        self.held.push((with, text));
-        if self.held.len() == WINDOW_PAGES {
+        self.held.push((with, text, placement));
+        let pages = self
+            .held
+            .iter()
+            .filter(|(_, _, placement)| *placement == Placement::Page)
+            .count();
+        if pages == WINDOW_PAGES {
             self.learn()?;
         }
         Ok(())
@@ -57,9 +70,14 @@ impl<'a, T> RunningLines<'a, T> {
     }
 
     fn learn(&mut self) -> io::Result<()> {
-        let patterns = learn(self.held.iter().map(|(_, text)| text.as_str()));
-        for (with, text) in std::mem::take(&mut self.held) {
-            (self.emit)(with, split(text, &patterns))?;
+        let patterns = learn(
+            self.held
+                .iter()
+                .filter(|(_, _, placement)| *placement == Placement::Page)
+                .map(|(_, text, _)| text.as_str()),
+        );
+        for (with, text, placement) in std::mem::take(&mut self.held) {
+            (self.emit)(with, split(text, placement, &patterns))?;
         }
         self.learned = Some(patterns);
         Ok(())
@@ -130,7 +148,14 @@ fn learn<'t>(pages: impl Iterator<Item = &'t str>) -> Patterns {
     }
 }
 
-fn split(text: String, patterns: &Patterns) -> Page {
+fn split(text: String, placement: Placement, patterns: &Patterns) -> Page {
+    if placement == Placement::Loose {
+        return Page {
+            text,
+            header: None,
+            footer: None,
+        };
+    }
     let mut lines: Vec<&str> = text.lines().collect();
     let start = lines.iter().position(|line| !line.trim().is_empty());
     let header = start
@@ -167,7 +192,9 @@ mod tests {
         };
         let mut running = RunningLines::new(&mut emit, true);
         for (index, page) in pages.iter().enumerate() {
-            running.push(index, page.to_string()).unwrap();
+            running
+                .push(index, page.to_string(), Placement::Page)
+                .unwrap();
         }
         running.finish().unwrap();
         out
@@ -188,6 +215,27 @@ mod tests {
             assert_eq!(page.header.as_deref(), Some("Annual Report 2024"));
             assert_eq!(page.footer, Some(format!("Page {number} of 12")));
         }
+    }
+
+    #[test]
+    fn text_outside_pages_neither_teaches_nor_loses_lines() {
+        let mut out = Vec::new();
+        let mut emit = |index: usize, page: Page| {
+            assert_eq!(index, out.len());
+            out.push(page);
+            Ok(())
+        };
+        let mut running = RunningLines::new(&mut emit, true);
+        running
+            .push(0, "Title\nFirst page.".to_string(), Placement::Page)
+            .unwrap();
+        running
+            .push(1, "Title".to_string(), Placement::Loose)
+            .unwrap();
+        running.finish().unwrap();
+        assert_eq!(out[0].text, "Title\nFirst page.");
+        assert_eq!(out[0].header, None);
+        assert_eq!(out[1].text, "Title");
     }
 
     #[test]

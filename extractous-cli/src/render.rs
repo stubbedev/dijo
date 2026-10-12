@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use extractous_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, StreamReader};
@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::language::{self, DetectedLanguage, Sample};
 use crate::normalize::{self, Normalizer, Step, Steps};
-use crate::running::{self, RunningLines};
+use crate::running::{self, Placement, RunningLines};
 use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
-use crate::structure::{self, ElementKind, Unit};
+use crate::structure::{self, ElementKind, SplitError, Unit};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -23,6 +23,21 @@ pub struct RenderOptions {
     pub raw_metadata: bool,
     pub normalization: Steps,
 }
+
+impl RenderOptions {
+    /// Whether the text is rendered from Tika's XHTML: for the formats that are XHTML or split
+    /// it, and for text and json when running headers and footers are moved out, which needs
+    /// the page boundaries.
+    pub fn needs_xhtml(self) -> bool {
+        match self.format {
+            Format::Xhtml | Format::Pages | Format::Elements => true,
+            Format::Text | Format::Json => self.normalization.contains(Step::Headers),
+        }
+    }
+}
+
+/// Where a part sits in its document: its page, and its element in elements output.
+type PartPlace = (Option<u32>, Option<(ElementKind, Option<u8>)>);
 
 /// What extracting one document produced besides the output written to the sink.
 #[derive(Debug)]
@@ -151,13 +166,12 @@ fn render_text(
         Ok((stream, _)) => stream,
         Err(error) => return Ok(outcome(None, Some(error), None)),
     };
-    let steps = match options.format {
-        Format::Xhtml => Steps::NONE,
-        _ => options.normalization,
+    let write = |chunk: &[u8], sink: &mut dyn Write| sink.write_all(chunk);
+    let mut copied = match options.format {
+        Format::Xhtml => copy(&mut stream, sink, Steps::NONE, None, write)?,
+        _ if options.needs_xhtml() => copy_pages(&mut stream, sink, options, None, write)?,
+        _ => copy(&mut stream, sink, options.normalization, None, write)?,
     };
-    let mut copied = copy(&mut stream, sink, steps, None, |chunk, sink| {
-        sink.write_all(chunk)
-    })?;
     let (metadata, embedded) = finish(&stream, &mut copied);
     Ok(Outcome {
         metadata: metadata.clone().filter(|_| options.metadata),
@@ -217,13 +231,23 @@ fn render_json(
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
             sink.write_all(b",\"text\":\"")?;
-            let mut copied = copy(
-                &mut stream,
-                sink,
-                options.normalization,
-                Some(&mut sample),
-                write_json_string_content,
-            )?;
+            let mut copied = if options.needs_xhtml() {
+                copy_pages(
+                    &mut stream,
+                    sink,
+                    options,
+                    Some(&mut sample),
+                    write_json_string_content,
+                )?
+            } else {
+                copy(
+                    &mut stream,
+                    sink,
+                    options.normalization,
+                    Some(&mut sample),
+                    write_json_string_content,
+                )?
+            };
             sink.write_all(b"\"")?;
             let (metadata, embedded) = finish(&stream, &mut copied);
             let outcome = Outcome {
@@ -281,9 +305,7 @@ fn render_parts(
     let (outcome, metadata) = match opened {
         Err(error) => (outcome(None, Some(error), None), None),
         Ok((mut stream, _)) => {
-            let mut bytes = 0;
-            let mut emit = |(page, element): (Option<u32>, Option<(ElementKind, Option<u8>)>),
-                            part: running::Page| {
+            let mut emit = |(page, element): PartPlace, part: running::Page| {
                 sample.push(part.text.as_bytes());
                 sample.push(b"\n");
                 let record = PartRecord {
@@ -307,20 +329,7 @@ fn render_parts(
                 serde_json::to_writer(&mut *sink, &record)?;
                 sink.write_all(b"\n")
             };
-            let mut running = RunningLines::new(
-                &mut emit,
-                unit == Unit::Pages && options.normalization.contains(Step::Headers),
-            );
-            let split = structure::split(BufReader::new(&mut stream), unit, &mut |part| {
-                bytes += part.text.len() as u64;
-                let text = normalize::normalize(options.normalization, &part.text);
-                running.push((part.page, part.element), text)
-            })?;
-            running.finish()?;
-            let mut copied = Copied {
-                bytes,
-                error: split.err().map(ExtractionError::from_message),
-            };
+            let mut copied = split_parts(&mut stream, options, unit, &mut emit)?;
             let (metadata, embedded) = finish(&stream, &mut copied);
             let outcome = Outcome {
                 embedded,
@@ -364,6 +373,69 @@ pub fn source(path: &Path, display: &str, embedded_path: Option<String>) -> Sour
         size,
         blake3,
     }
+}
+
+/// Splits the extracted XHTML into pages or elements, normalises each, moves running headers and
+/// footers out of pages, and passes each part to `emit`; fails only when `emit` does.
+fn split_parts(
+    stream: &mut StreamReader,
+    options: RenderOptions,
+    unit: Unit,
+    emit: &mut dyn FnMut(PartPlace, running::Page) -> io::Result<()>,
+) -> io::Result<Copied> {
+    let mut bytes = 0;
+    let mut running = RunningLines::new(
+        emit,
+        unit == Unit::Pages && options.normalization.contains(Step::Headers),
+    );
+    let split = structure::split(stream, unit, &mut |part| {
+        bytes += part.text.len() as u64;
+        let text = normalize::normalize(options.normalization, &part.text);
+        let placement = match part.page {
+            Some(_) => Placement::Page,
+            None => Placement::Loose,
+        };
+        running.push((part.page, part.element), text, placement)
+    })?;
+    running.finish()?;
+    Ok(Copied {
+        bytes,
+        error: split.err().map(|error| match error {
+            SplitError::Read(error) => ExtractionError::from_io(&error),
+            SplitError::Malformed(message) => ExtractionError::from_message(message),
+        }),
+    })
+}
+
+/// Copies the text of the extracted XHTML's pages into the sink, normalised and without their
+/// running headers and footers, a blank line between pages; fails only when the sink does.
+fn copy_pages(
+    stream: &mut StreamReader,
+    sink: &mut dyn Write,
+    options: RenderOptions,
+    mut sample: Option<&mut Sample>,
+    write: impl Fn(&[u8], &mut dyn Write) -> io::Result<()>,
+) -> io::Result<Copied> {
+    let mut wrote = false;
+    let copied = split_parts(stream, options, Unit::Pages, &mut |_, page| {
+        let text = page.text.trim_end_matches('\n');
+        if text.is_empty() {
+            return Ok(());
+        }
+        let separator: &[u8] = if wrote { b"\n\n" } else { b"" };
+        for chunk in [separator, text.as_bytes()] {
+            if let Some(sample) = sample.as_deref_mut() {
+                sample.push(chunk);
+            }
+            write(chunk, sink)?;
+        }
+        wrote = true;
+        Ok(())
+    })?;
+    if wrote {
+        write(b"\n", sink)?;
+    }
+    Ok(copied)
 }
 
 /// Copies the extracted text into the sink, normalised; fails only when the sink does.

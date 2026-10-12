@@ -1,4 +1,4 @@
-use std::io::{self, BufRead};
+use std::io::{self, BufReader, Read};
 
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
@@ -109,6 +109,22 @@ impl Splitter<'_> {
         })
     }
 
+    /// Emits the text collected so far when the XHTML ends early, so a cut-short extraction
+    /// keeps the part it was in.
+    fn flush_open(&mut self) -> io::Result<()> {
+        if let Some(open) = self.element.take() {
+            let text = open.text.trim();
+            if !text.is_empty() {
+                (self.emit)(Part {
+                    page: self.page.map(|(page, _)| page),
+                    element: Some((open.kind, open.level)),
+                    text: text.to_string(),
+                })?;
+            }
+        }
+        self.flush_loose()
+    }
+
     fn start(&mut self, start: &BytesStart, empty: bool) -> io::Result<()> {
         let name = start.local_name();
         let name = name.as_ref();
@@ -197,16 +213,45 @@ impl Splitter<'_> {
     }
 }
 
+/// Why the XHTML could not be split to its end.
+#[derive(Debug)]
+pub enum SplitError {
+    /// Reading the XHTML failed, as it does when the extraction times out.
+    Read(io::Error),
+    /// The XHTML is malformed.
+    Malformed(String),
+}
+
+/// Keeps the error a read failed with, which the XML reader would only report as text.
+struct KeepReadError<R> {
+    inner: R,
+    error: Option<io::Error>,
+}
+
+impl<R: Read> Read for KeepReadError<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buffer).map_err(|error| {
+            let reported = io::Error::new(error.kind(), error.to_string());
+            self.error = Some(error);
+            reported
+        })
+    }
+}
+
 /// Streams Tika's XHTML and calls `emit` with each page, or each element, as soon as it is
 /// complete, so memory holds one page or element at a time. Text outside any page or element is
-/// emitted where it occurs rather than dropped. The outer result fails when `emit` does; the
-/// inner one when the XHTML cannot be read or parsed.
+/// emitted where it occurs rather than dropped, and so is the text collected when the XHTML
+/// breaks off. The outer result fails when `emit` does; the inner one when the XHTML cannot be
+/// read or parsed.
 pub fn split(
-    xhtml: impl BufRead,
+    xhtml: impl Read,
     unit: Unit,
     emit: &mut dyn FnMut(Part) -> io::Result<()>,
-) -> io::Result<Result<(), String>> {
-    let mut reader = Reader::from_reader(xhtml);
+) -> io::Result<Result<(), SplitError>> {
+    let mut reader = Reader::from_reader(BufReader::new(KeepReadError {
+        inner: xhtml,
+        error: None,
+    }));
     let mut splitter = Splitter {
         unit,
         emit,
@@ -222,7 +267,14 @@ pub fn split(
         buffer.clear();
         let event = match reader.read_event_into(&mut buffer) {
             Ok(event) => event,
-            Err(error) => return Ok(Err(error.to_string())),
+            Err(error) => {
+                splitter.flush_open()?;
+                let read = reader.get_mut().get_mut().error.take();
+                return Ok(Err(read.map_or_else(
+                    || SplitError::Malformed(error.to_string()),
+                    SplitError::Read,
+                )));
+            }
         };
         match event {
             Event::Start(start) => {
@@ -250,7 +302,10 @@ pub fn split(
                         resolve_predefined_entity(&name)
                             .map_or_else(|| format!("&{name};"), str::to_string)
                     }
-                    Err(error) => return Ok(Err(error.to_string())),
+                    Err(error) => {
+                        splitter.flush_open()?;
+                        return Ok(Err(SplitError::Malformed(error.to_string())));
+                    }
                 };
                 splitter.text(&resolved);
             }
@@ -258,7 +313,7 @@ pub fn split(
             Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
         }
     }
-    splitter.flush_loose()?;
+    splitter.flush_open()?;
     Ok(Ok(()))
 }
 
@@ -283,6 +338,37 @@ mod tests {
 <p>Second</p></div>
 <div class="page"><h2>Head</h2><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></div>
 </body></html>"#;
+
+    #[test]
+    fn text_before_the_xhtml_breaks_off_is_kept() {
+        struct Failing<'a>(&'a [u8]);
+        impl io::Read for Failing<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.0.is_empty() {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"));
+                }
+                let read = self.0.len().min(buffer.len());
+                buffer[..read].copy_from_slice(&self.0[..read]);
+                self.0 = &self.0[read..];
+                Ok(read)
+            }
+        }
+        let cut = &PAGED[..PAGED.find("Second</p>").unwrap() + "Second</p>".len()];
+        for unit in [Unit::Pages, Unit::Elements] {
+            let mut parts = Vec::new();
+            let result = split(Failing(cut.as_bytes()), unit, &mut |part| {
+                parts.push(part);
+                Ok(())
+            })
+            .unwrap();
+            assert!(
+                matches!(result, Err(SplitError::Read(error)) if error.kind() == io::ErrorKind::TimedOut)
+            );
+            let text: Vec<&str> = parts.iter().map(|part| part.text.as_str()).collect();
+            assert_eq!(text.join("\n"), "First & one\nSecond", "{unit:?}");
+            assert!(parts.iter().all(|part| part.page == Some(1)));
+        }
+    }
 
     #[test]
     fn pages_are_numbered_in_order() {

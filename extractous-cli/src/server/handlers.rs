@@ -139,7 +139,7 @@ fn extract(
 ) {
     let started = Instant::now();
     let extractor = settings::extractor(
-        request.render.format,
+        request.render,
         request.ocr,
         request.ocr_lang.as_deref(),
         request.passwords.clone(),
