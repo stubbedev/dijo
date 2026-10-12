@@ -37,8 +37,15 @@ bench *args:
     cargo bench --package extractous-core --bench extractor {{args}}
 
 # Record the SHA-256 of every Gradle dependency; run after changing build.gradle.
+[unix]
 gradle-verification:
-    cd {{core}}/tika-native && ./gradlew --no-daemon --write-verification-metadata sha256 nativeCompile generateLicenseReport cyclonedxDirectBom
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gradle_home="$(mktemp -d)"
+    trap 'rm -rf "$gradle_home"' EXIT
+    cd {{core}}/tika-native
+    GRADLE_USER_HOME="$gradle_home" ./gradlew --no-daemon --quiet --write-verification-metadata sha256 \
+        nativeCompile generateLicenseReport cyclonedxDirectBom checkLicense
 
 # Run Tika under the GraalVM tracing agent to regenerate native-image metadata.
 tika-agent:
