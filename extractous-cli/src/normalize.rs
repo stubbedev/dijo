@@ -347,6 +347,57 @@ mod tests {
         }
     }
 
+    const ALPHABET: &[char] = &[
+        'a', 'e', 'Z', '1', ' ', ' ', '\t', '\n', '\r', '\u{a0}', '\u{3000}', '\u{2028}',
+        '\u{301}', '\u{323}', '\u{308}', '\u{1100}', '\u{1161}', '\u{11a8}', '\u{fb01}',
+        '\u{fb03}', '\u{ad}', '\u{200b}', '\u{200d}', '\u{feff}', '\u{0}', '\u{85}', 'é', '漢',
+        '🎉', '\u{0b47}', '\u{0b3e}',
+    ];
+
+    fn random_texts() -> impl Iterator<Item = String> {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        (0..500).map(move |_| {
+            let length = (next() % 40) as usize;
+            (0..length)
+                .map(|_| ALPHABET[(next() % ALPHABET.len() as u64) as usize])
+                .collect()
+        })
+    }
+
+    #[test]
+    fn any_chunking_of_random_text_gives_the_same_result() {
+        for text in random_texts() {
+            let whole = normalize(Steps::ALL, &text);
+            for size in [1, 2, 3, 5] {
+                let mut normalizer = Normalizer::new(Steps::ALL);
+                let mut out = Vec::new();
+                for chunk in text.as_bytes().chunks(size) {
+                    normalizer.push(chunk, &mut out);
+                }
+                normalizer.finish(&mut out);
+                assert_eq!(
+                    String::from_utf8(out).unwrap(),
+                    whole,
+                    "{text:?} in chunks of {size}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalising_twice_changes_nothing() {
+        for text in random_texts() {
+            let once = normalize(Steps::ALL, &text);
+            assert_eq!(normalize(Steps::ALL, &once), once, "{text:?}");
+        }
+    }
+
     #[test]
     fn invalid_utf8_becomes_replacement_characters() {
         let mut normalizer = Normalizer::new(Steps::ALL);
