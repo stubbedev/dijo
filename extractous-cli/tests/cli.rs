@@ -1211,6 +1211,18 @@ fn a_cancelled_pdf_stops_without_parsing_the_rest() {
 }
 
 #[test]
+fn a_signature_that_encapsulates_its_content_is_extracted() {
+    let objects = json_objects(&[&document("signed-content.xml.p7m")]);
+    assert_eq!(objects[0]["status"], "complete");
+    assert_eq!(objects[0]["mime_type"], "application/pkcs7-signature");
+    assert!(
+        objects[0]["text"].as_str().unwrap().contains("link.pdf"),
+        "{}",
+        objects[0]
+    );
+}
+
+#[test]
 fn source_code_is_extracted() {
     let scratch = Scratch::new("source-code");
     let source = scratch.0.join("Hello.java");

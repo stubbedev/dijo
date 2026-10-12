@@ -11,11 +11,18 @@ import org.apache.tika.parser.crypto.Pkcs7Parser;
 import org.apache.tika.sax.XHTMLContentHandler;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.cms.CMSObjectIdentifiers;
+import org.bouncycastle.cms.CMSException;
+import org.bouncycastle.cms.CMSSignedDataParser;
+import org.bouncycastle.operator.DigestCalculatorProvider;
+import org.bouncycastle.operator.OperatorCreationException;
+import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
@@ -23,7 +30,8 @@ import java.util.Set;
 /**
  * Parses S/MIME and other CMS (PKCS #7) data. Tika's own parser only understands signed data:
  * encrypted data made it fail with an internal error, and a detached signature, which has no
- * content of its own, with "no signed data to parse".
+ * content of its own, with "no signed data to parse". A signature that encapsulates the signed
+ * content, as many .p7m files do, is parsed for that content.
  */
 final class CmsParser implements Parser {
 
@@ -59,13 +67,25 @@ final class CmsParser implements Parser {
                     + ") data; decrypting it needs the recipient's private key");
         }
         final MediaType type = MediaType.parse(metadata.get(Metadata.CONTENT_TYPE));
-        if (type != null && type.getBaseType().equals(PKCS7_SIGNATURE)) {
+        if (type != null && type.getBaseType().equals(PKCS7_SIGNATURE)
+                && !encapsulatesContent(input.getPath())) {
             final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
             xhtml.startDocument();
             xhtml.endDocument();
             return;
         }
         signedData.parse(input, handler, metadata, context);
+    }
+
+    /** Whether CMS signed data carries the signed content, rather than signing a detached one. */
+    private static boolean encapsulatesContent(Path path) throws IOException, TikaException {
+        try (InputStream signed = Files.newInputStream(path)) {
+            final DigestCalculatorProvider digests =
+                    new JcaDigestCalculatorProviderBuilder().setProvider("BC").build();
+            return new CMSSignedDataParser(digests, signed).getSignedContent() != null;
+        } catch (CMSException | OperatorCreationException e) {
+            throw new TikaException("Unable to read the CMS signed data", e);
+        }
     }
 
     /**
