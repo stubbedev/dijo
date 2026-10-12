@@ -96,25 +96,6 @@ public class TikaNativeMain {
         return metadata -> TikaInputStream.get(new URI(url).toURL(), metadata);
     }
 
-    /**
-     * Renders a throwable and every cause behind it as "class: message", outermost first,
-     * so callers see why an operation failed and not only its outermost wrapper.
-     */
-    public static String describe(Throwable throwable) {
-        final StringBuilder description = new StringBuilder();
-        final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (Throwable t = throwable; t != null && seen.add(t); t = t.getCause()) {
-            if (description.length() > 0) {
-                description.append(" <- caused by ");
-            }
-            description.append(t.getClass().getName());
-            if (t.getMessage() != null) {
-                description.append(": ").append(t.getMessage());
-            }
-        }
-        return description.toString();
-    }
-
     private static byte parseFailureStatus(Throwable throwable) {
         final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Throwable t = throwable; t != null && seen.add(t); t = t.getCause()) {
@@ -126,11 +107,11 @@ public class TikaNativeMain {
     }
 
     private static String couldNotOpen(Throwable throwable) {
-        return "Could not open the input: " + describe(throwable);
+        return "Could not open the input: " + Throwables.describe(throwable);
     }
 
     private static String parseFailed(Throwable throwable) {
-        return "Parse error occurred : " + describe(throwable);
+        return "Parse error occurred : " + Throwables.describe(throwable);
     }
 
     private static Parser parser(String password) {

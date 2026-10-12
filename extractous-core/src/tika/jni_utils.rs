@@ -138,7 +138,7 @@ pub fn take_java_exception(env: &mut JNIEnv) -> Error {
         env.exception_clear()?;
         let description = env
             .call_static_method(
-                "ai/yobix/TikaNativeMain",
+                "ai/yobix/Throwables",
                 "describe",
                 "(Ljava/lang/Throwable;)Ljava/lang/String;",
                 &[JValue::Object(&throwable)],

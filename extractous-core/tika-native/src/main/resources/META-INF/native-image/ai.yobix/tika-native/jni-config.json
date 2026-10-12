@@ -5,6 +5,10 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "ai.yobix.Throwables",
+    "allDeclaredMethods": true
+  },
+  {
     "name": "ai.yobix.StringResult",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true
