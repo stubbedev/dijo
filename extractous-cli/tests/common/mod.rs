@@ -121,3 +121,58 @@ fn crc32(data: &[u8]) -> u32 {
     }
     !crc
 }
+
+/// A PDF of `pages` pages of plain text, large enough that parsing all of it takes a while.
+pub fn text_pdf(pages: usize) -> Vec<u8> {
+    let content = {
+        let mut lines = String::from("BT /F1 10 Tf 12 TL 40 800 Td");
+        for line in 0..60 {
+            lines.push_str(&format!(
+                " (Line {line} of a long generated document, written to keep the parser busy.) Tj T*"
+            ));
+        }
+        lines.push_str(" ET");
+        lines
+    };
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {pages} >>",
+            (0..pages)
+                .map(|page| format!("{} 0 R", 5 + page))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+    ];
+    objects.extend((0..pages).map(|_| {
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] \
+         /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>"
+            .to_string()
+    }));
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    pdf
+}

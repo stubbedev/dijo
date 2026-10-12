@@ -5,7 +5,7 @@ use std::process::{Command, Output, Stdio};
 
 mod common;
 
-use common::{document, stored_zip, Scratch, DOCUMENTS};
+use common::{document, stored_zip, text_pdf, Scratch, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
     extractous_with_stdin(args, None)
@@ -1173,4 +1173,39 @@ fn an_entity_expansion_bomb_fails_as_a_limit() {
     assert!(started.elapsed() < std::time::Duration::from_secs(30));
     assert_eq!(objects[0]["status"], "failed");
     assert_eq!(objects[0]["errors"][0]["category"], "limit-exceeded");
+}
+
+#[test]
+fn a_cancelled_pdf_stops_without_parsing_the_rest() {
+    use std::io::Read;
+
+    let scratch = Scratch::new("cancelled-pdf");
+    let pdf = scratch.0.join("long.pdf");
+    fs::write(&pdf, text_pdf(3000)).unwrap();
+    let full = std::time::Instant::now();
+    let complete = extractous(&["--ocr", "never", pdf.to_str().unwrap()]);
+    assert!(complete.status.success(), "{}", stderr(&complete));
+    let full = full.elapsed();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(["--ocr", "never", pdf.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first_bytes = [0; 16];
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_exact(&mut first_bytes)
+        .unwrap();
+    let closed = std::time::Instant::now();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        closed.elapsed() < full / 2,
+        "stopping took {:?}, the whole document {full:?}",
+        closed.elapsed()
+    );
+    assert_eq!(stderr(&output), "");
 }

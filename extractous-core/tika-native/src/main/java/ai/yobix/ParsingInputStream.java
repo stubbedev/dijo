@@ -19,6 +19,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -238,20 +239,25 @@ public class ParsingInputStream extends InputStream {
         cancel();
     }
 
-    private void ensureOpen() throws IOException {
+    /**
+     * Ends the parse once nobody reads the text any more. Cancellation is unchecked, not an I/O
+     * error: parsers such as the PDF parser catch I/O errors page by page and go on, which would
+     * run a cancelled parse to the end of its document.
+     */
+    private void ensureOpen() {
         if (closed) {
-            throw new IOException("The text stream was closed before parsing finished");
+            throw new CancellationException("The text stream was closed before parsing finished");
         }
     }
 
-    private void put(byte[] chunk) throws IOException {
+    private void put(byte[] chunk) {
         try {
             do {
                 ensureOpen();
             } while (!space.tryAcquire(100, TimeUnit.MILLISECONDS));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new InterruptedIOException("Interrupted while handing over parsed text");
+            throw new CancellationException("Interrupted while handing over parsed text");
         }
         chunks.add(chunk);
     }
