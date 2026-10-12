@@ -177,9 +177,13 @@ all), spurious text and paragraph order. The test suite fails when a score gets 
 allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
 `just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 
-What it shows today: born-digital Office and OpenDocument files and clean scans extract exactly; PDFs add their
-bookmark text at the end; right-to-left Arabic PDFs come out in the wrong word order; a scan skewed by 2.5° is
-mostly lost to OCR.
+What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
+upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end; right-to-left Arabic
+PDFs come out in the wrong word order.
+
+Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
+lines, estimated from projection profiles. Tesseract's layout analysis loses almost all text from a page skewed by as
+little as 2.5°.
 
 ## Supported formats
 

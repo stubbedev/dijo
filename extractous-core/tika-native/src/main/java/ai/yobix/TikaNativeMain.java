@@ -16,6 +16,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.CompositeParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.PasswordProvider;
@@ -77,12 +78,20 @@ public class TikaNativeMain {
 
     /**
      * Tika's parser, with the formats it handles badly replaced: encrypted CMS and OpenPGP data
-     * are reported as encrypted, and detached signatures as content-free.
+     * are reported as encrypted, detached signatures as content-free, and images are turned
+     * upright before OCR when tesseract is installed.
      */
     private static Parser createParser() {
-        final AutoDetectParser parser = new AutoDetectParser(TikaConfig.getDefaultConfig());
+        final TikaConfig config = TikaConfig.getDefaultConfig();
+        final AutoDetectParser parser = new AutoDetectParser(config);
         final Map<MediaType, Parser> parsers = new HashMap<>(parser.getParsers());
-        for (final Parser replacement : List.of(new CmsParser(), new OpenPgpParser())) {
+        final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser()));
+        final Parser ocr = ((CompositeParser) config.getParser()).getParsers()
+                .get(MediaType.image("ocr-png"));
+        if (ocr != null) {
+            replacements.add(new PreparingOcrParser(ocr));
+        }
+        for (final Parser replacement : replacements) {
             for (final MediaType type : replacement.getSupportedTypes(new ParseContext())) {
                 parsers.put(type, replacement);
             }

@@ -6,7 +6,7 @@
         "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
         "org.apache.tika.parser.image.ImageParser",
-        "org.apache.tika.parser.ocr.TesseractOCRParser"
+        "ai.yobix.PreparingOcrParser"
     ],
     "Content-Length": [
         "12541"

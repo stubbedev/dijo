@@ -129,5 +129,7 @@ magick "$work/scan-150.png" -colorspace Gray -depth 8 "$corpus/prose-scan-150dpi
 magick "$work/scan-300.png" -colorspace Gray -background white -rotate 2.5 -depth 8 "$corpus/prose-scan-skewed.png"
 magick "$work/scan-300.png" -colorspace Gray -rotate 90 -depth 8 "$corpus/prose-scan-rotated.png"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -density 300 -compress jpeg -quality 85 "$corpus/prose-scan.pdf"
+magick "$work/scan-300.png" -colorspace Gray -rotate 180 -quality 90 "$corpus/prose-photo-upside-down.jpg"
+exiftool -quiet -overwrite_original -Orientation=3 -n "$corpus/prose-photo-upside-down.jpg"
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/arabic.pdf" "$work/arabic-300"
 magick "$work/arabic-300.png" -colorspace Gray -depth 8 "$corpus/arabic-scan-300dpi.png"

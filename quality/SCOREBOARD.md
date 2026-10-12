@@ -31,7 +31,8 @@
 | table.pdf | tables | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-300dpi.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-150dpi.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| prose-scan-skewed.png | ocr | 0.950 | 0.951 | 0.049 | 0.000 | 0.167 |
+| prose-scan-skewed.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-rotated.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan.pdf | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |

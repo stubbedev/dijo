@@ -30,7 +30,7 @@
   "X-TIKA:Parsed-By-Full-Set": [
     "org.apache.tika.parser.DefaultParser",
     "org.apache.tika.parser.image.ImageParser",
-    "org.apache.tika.parser.ocr.TesseractOCRParser"
+    "ai.yobix.PreparingOcrParser"
   ],
   "Compression Lossless": [
     "true"
@@ -90,6 +90,6 @@
   "X-TIKA:Parsed-By": [
     "org.apache.tika.parser.DefaultParser",
     "org.apache.tika.parser.image.ImageParser",
-    "org.apache.tika.parser.ocr.TesseractOCRParser"
+    "ai.yobix.PreparingOcrParser"
   ]
 }

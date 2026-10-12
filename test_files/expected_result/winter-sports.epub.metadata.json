@@ -49,6 +49,6 @@
         "org.apache.tika.parser.DefaultParser",
         "org.apache.tika.parser.epub.EpubParser",
         "org.apache.tika.parser.image.JpegParser",
-        "org.apache.tika.parser.ocr.TesseractOCRParser"
+        "ai.yobix.PreparingOcrParser"
     ]
 }

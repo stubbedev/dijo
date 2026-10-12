@@ -104,6 +104,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-photo-upside-down.jpg": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-scan-150dpi.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -126,11 +133,11 @@
     "reading_order": 1.0
   },
   "prose-scan-skewed.png": {
-    "character_error_rate": 0.9501133786848073,
-    "token_error_rate": 0.9508196721311475,
-    "recall": 0.04918032786885246,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
     "spurious": 0.0,
-    "reading_order": 0.16666666666666666
+    "reading_order": 1.0
   },
   "prose-scan.pdf": {
     "character_error_rate": 0.0,
