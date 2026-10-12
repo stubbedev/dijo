@@ -50,8 +50,8 @@ struct Splitter<'e> {
     element: Option<Open>,
 }
 
-fn element_kind(name: &[u8]) -> Option<(ElementKind, Option<u8>)> {
-    match name {
+fn element_kind(name: &str) -> Option<(ElementKind, Option<u8>)> {
+    match name.as_bytes() {
         [b'h', level @ b'1'..=b'6'] => Some((ElementKind::Heading, Some(level - b'0'))),
         b"p" => Some((ElementKind::Paragraph, None)),
         b"li" => Some((ElementKind::ListItem, None)),
@@ -60,15 +60,15 @@ fn element_kind(name: &[u8]) -> Option<(ElementKind, Option<u8>)> {
     }
 }
 
-fn is_block(name: &[u8]) -> bool {
+fn is_block(name: &str) -> bool {
     matches!(
         name,
-        b"p" | b"div" | b"li" | b"tr" | b"table" | b"h1" | b"h2" | b"h3" | b"h4" | b"h5" | b"h6"
+        "p" | "div" | "li" | "tr" | "table" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
     )
 }
 
 fn is_page(start: &BytesStart) -> bool {
-    start.local_name().as_ref() == b"div"
+    start.local_name().as_ref() == "div"
         && start
             .try_get_attribute("class")
             .ok()
@@ -76,7 +76,7 @@ fn is_page(start: &BytesStart) -> bool {
             .is_some_and(|class| {
                 PAGE_CLASSES
                     .iter()
-                    .any(|page| class.value.as_ref() == page.as_bytes())
+                    .any(|page| class.value.as_ref() == *page)
             })
 }
 
@@ -112,7 +112,7 @@ impl Splitter<'_> {
     fn start(&mut self, start: &BytesStart, empty: bool) -> io::Result<()> {
         let name = start.local_name();
         let name = name.as_ref();
-        if name == b"body" {
+        if name == "body" {
             self.in_body = true;
             return Ok(());
         }
@@ -145,13 +145,13 @@ impl Splitter<'_> {
         Ok(())
     }
 
-    fn end(&mut self, name: &[u8]) -> io::Result<()> {
+    fn end(&mut self, name: &str) -> io::Result<()> {
         if !self.in_body {
             return Ok(());
         }
         match name {
-            b"td" | b"th" => self.current_text().push('\t'),
-            b"tr" => {
+            "td" | "th" => self.current_text().push('\t'),
+            "tr" => {
                 let text = self.current_text();
                 let trimmed = text.trim_end_matches('\t').len();
                 text.truncate(trimmed);
@@ -179,7 +179,7 @@ impl Splitter<'_> {
             self.flush_loose()?;
             self.page = None;
         }
-        if name == b"body" {
+        if name == "body" {
             self.in_body = false;
         }
         Ok(())
@@ -240,22 +240,16 @@ pub fn split(
                 splitter.depth -= 1;
                 splitter.end(end.local_name().as_ref())?;
             }
-            Event::Text(text) => match text.decode() {
-                Ok(text) => splitter.text(&text),
-                Err(error) => return Ok(Err(error.to_string())),
-            },
-            Event::CData(data) => match data.decode() {
-                Ok(text) => splitter.text(&text),
-                Err(error) => return Ok(Err(error.to_string())),
-            },
+            Event::Text(text) => splitter.text(&text.xml10_content()),
+            Event::CData(data) => splitter.text(&data.xml10_content()),
             Event::GeneralRef(reference) => {
                 let resolved = match reference.resolve_char_ref() {
                     Ok(Some(character)) => character.to_string(),
-                    Ok(None) => match reference.decode() {
-                        Ok(name) => resolve_predefined_entity(&name)
-                            .map_or_else(|| format!("&{name};"), str::to_string),
-                        Err(error) => return Ok(Err(error.to_string())),
-                    },
+                    Ok(None) => {
+                        let name = reference.xml10_content();
+                        resolve_predefined_entity(&name)
+                            .map_or_else(|| format!("&{name};"), str::to_string)
+                    }
                     Err(error) => return Ok(Err(error.to_string())),
                 };
                 splitter.text(&resolved);

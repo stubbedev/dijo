@@ -17,16 +17,14 @@ fn extract_p_tag_content(xml: &str) -> String {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"body" => {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == "body" => {
                 inside_body = true;
             }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"body" => {
+            Ok(Event::End(ref e)) if e.name().as_ref() == "body" => {
                 inside_body = false;
             }
             Ok(Event::Text(e)) if inside_body => {
-                collected_content.push_str(
-                    &quick_xml::escape::unescape(std::str::from_utf8(&e).unwrap()).unwrap(),
-                );
+                collected_content.push_str(&e.xml10_content());
                 collected_content.push('\n'); // Separate paragraphs with newline
             }
             Ok(Event::Eof) => break,

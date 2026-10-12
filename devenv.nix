@@ -7,6 +7,8 @@ in
   packages = [
     pkgs.just
     pkgs.cargo-nextest
+    pkgs.cargo-about
+    pkgs.cargo-deny
     pkgs.pkg-config
     pkgs.openssl
     (pkgs.tesseract.override {
