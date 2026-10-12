@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::char::canonical_combining_class;
@@ -5,6 +7,8 @@ use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 
 const MAX_HELD_BYTES: usize = 64 * 1024;
 const MAX_CONSECUTIVE_NEWLINES: u8 = 2;
+const MAX_WORD_CHARS: usize = 64;
+const MAX_REMEMBERED_WORDS: usize = 1 << 16;
 
 /// One normalisation step applied to extracted text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -24,6 +28,9 @@ pub enum Step {
     /// headers and footers, page numbers) out of the page text into the page's header and
     /// footer.
     Headers,
+    /// Join a word hyphenated across a line break, dropping the hyphen unless the text before
+    /// shows the word is a hyphenated compound.
+    Hyphenation,
 }
 
 impl Step {
@@ -43,7 +50,8 @@ impl Steps {
             | Step::SoftHyphens.bit()
             | Step::Unicode.bit()
             | Step::Whitespace.bit()
-            | Step::Headers.bit(),
+            | Step::Headers.bit()
+            | Step::Hyphenation.bit(),
     );
     pub const NONE: Steps = Steps(0);
 
@@ -73,6 +81,7 @@ pub struct Normalizer {
     pending_space: bool,
     newlines: u8,
     after_carriage_return: bool,
+    hyphenation: Option<Dehyphenator>,
 }
 
 impl Normalizer {
@@ -84,6 +93,9 @@ impl Normalizer {
             pending_space: false,
             newlines: 0,
             after_carriage_return: false,
+            hyphenation: steps
+                .contains(Step::Hyphenation)
+                .then(Dehyphenator::default),
         }
     }
 
@@ -119,6 +131,9 @@ impl Normalizer {
         let ready = std::mem::take(&mut self.held);
         self.release(&ready, out);
         self.pending_space = false;
+        if let Some(hyphenation) = &mut self.hyphenation {
+            hyphenation.finish(out);
+        }
     }
 
     /// Holds every complete character at the start of `bytes`, with U+FFFD for each invalid
@@ -194,7 +209,14 @@ impl Normalizer {
         if self.steps.contains(Step::Whitespace) {
             self.collapse(character, out);
         } else {
-            push_char(character, out);
+            self.write(character, out);
+        }
+    }
+
+    fn write(&mut self, character: char, out: &mut Vec<u8>) {
+        match &mut self.hyphenation {
+            Some(hyphenation) => hyphenation.push(character, out),
+            None => push_char(character, out),
         }
     }
 
@@ -207,19 +229,175 @@ impl Normalizer {
             self.after_carriage_return = character == '\r';
             self.pending_space = false;
             if self.newlines < MAX_CONSECUTIVE_NEWLINES {
-                out.push(b'\n');
+                self.write('\n', out);
             }
             self.newlines = self.newlines.saturating_add(1);
         } else if is_space(character) {
             self.pending_space = true;
         } else {
             if std::mem::take(&mut self.pending_space) {
-                out.push(b' ');
+                self.write(' ', out);
             }
             self.newlines = 0;
-            push_char(character, out);
+            self.write(character, out);
         }
     }
+}
+
+/// Joins words hyphenated across a line break. It holds back a hyphen that ends a line, and the
+/// word that starts the next, until that word ends. Whether the hyphen stays is decided from the
+/// text before: it stays when the word already holds a hyphen (`state-of-the-` / `art`), or when
+/// the hyphenated compound occurred and the joined word did not.
+#[derive(Default)]
+struct Dehyphenator {
+    token: String,
+    held: Held,
+    words: HashSet<String>,
+    compounds: HashSet<String>,
+}
+
+#[derive(Default)]
+enum Held {
+    #[default]
+    Nothing,
+    /// A hyphen right after a letter.
+    Hyphen(char),
+    /// A hyphen, the line break after it, and the spaces and letters of the next line so far.
+    Break {
+        hyphen: char,
+        text: String,
+        word: String,
+    },
+}
+
+impl Dehyphenator {
+    fn push(&mut self, character: char, out: &mut Vec<u8>) {
+        match std::mem::take(&mut self.held) {
+            Held::Nothing => {}
+            Held::Hyphen(hyphen) if is_line_break(character) => {
+                self.held = Held::Break {
+                    hyphen,
+                    text: character.to_string(),
+                    word: String::new(),
+                };
+                return;
+            }
+            Held::Hyphen(hyphen) => self.pass(hyphen, out),
+            Held::Break {
+                hyphen,
+                mut text,
+                mut word,
+            } => {
+                let starts_lowercase = word.chars().next().is_some_and(char::is_lowercase);
+                if character.is_alphabetic()
+                    && (!word.is_empty() || character.is_lowercase())
+                    && word.chars().count() < MAX_WORD_CHARS
+                {
+                    word.push(character);
+                    self.held = Held::Break { hyphen, text, word };
+                    return;
+                }
+                if word.is_empty() && is_space(character) {
+                    text.push(character);
+                    self.held = Held::Break { hyphen, text, word };
+                    return;
+                }
+                if starts_lowercase && !character.is_alphabetic() {
+                    self.join(hyphen, &word, out);
+                } else {
+                    self.pass(hyphen, out);
+                    text.chars()
+                        .chain(word.chars())
+                        .for_each(|held| self.pass(held, out));
+                }
+            }
+        }
+        if is_hyphen(character) && self.token.chars().last().is_some_and(char::is_alphabetic) {
+            self.held = Held::Hyphen(character);
+            return;
+        }
+        self.pass(character, out);
+    }
+
+    fn finish(&mut self, out: &mut Vec<u8>) {
+        match std::mem::take(&mut self.held) {
+            Held::Nothing => {}
+            Held::Hyphen(hyphen) => self.pass(hyphen, out),
+            Held::Break { hyphen, text, word } => {
+                if word.chars().next().is_some_and(char::is_lowercase) {
+                    self.join(hyphen, &word, out);
+                } else {
+                    self.pass(hyphen, out);
+                    text.chars()
+                        .chain(word.chars())
+                        .for_each(|held| self.pass(held, out));
+                }
+            }
+        }
+        self.end_token();
+    }
+
+    /// Joins the word before the line break with `next`, the word after it.
+    fn join(&mut self, hyphen: char, next: &str, out: &mut Vec<u8>) {
+        let before = last_word(&self.token).to_lowercase();
+        let next_lowercase = next.to_lowercase();
+        let compound = self.token.contains(is_hyphen)
+            || (self
+                .compounds
+                .contains(&format!("{before}-{next_lowercase}"))
+                && !self.words.contains(&format!("{before}{next_lowercase}")));
+        if compound {
+            self.pass(hyphen, out);
+        }
+        next.chars().for_each(|character| self.pass(character, out));
+    }
+
+    fn pass(&mut self, character: char, out: &mut Vec<u8>) {
+        if character.is_whitespace() {
+            self.end_token();
+        } else if self.token.len() < MAX_WORD_CHARS * 4 {
+            self.token.push(character);
+        }
+        push_char(character, out);
+    }
+
+    /// Remembers the words and hyphenated compounds of the token that just ended.
+    fn end_token(&mut self) {
+        let token = std::mem::take(&mut self.token).to_lowercase();
+        let words: Vec<&str> = token
+            .split(|character: char| !character.is_alphabetic() && !is_hyphen(character))
+            .filter(|word| !word.is_empty())
+            .collect();
+        for word in words {
+            let parts: Vec<&str> = word
+                .split(is_hyphen)
+                .filter(|part| !part.is_empty())
+                .collect();
+            if self.words.len() < MAX_REMEMBERED_WORDS {
+                self.words.extend(parts.iter().map(|part| part.to_string()));
+            }
+            if self.compounds.len() < MAX_REMEMBERED_WORDS {
+                self.compounds.extend(
+                    parts
+                        .windows(2)
+                        .map(|pair| format!("{}-{}", pair[0], pair[1])),
+                );
+            }
+        }
+    }
+}
+
+fn last_word(token: &str) -> &str {
+    let start = token
+        .char_indices()
+        .rev()
+        .find(|&(_, character)| !character.is_alphabetic())
+        .map_or(0, |(index, character)| index + character.len_utf8());
+    &token[start..]
+}
+
+fn is_hyphen(character: char) -> bool {
+    matches!(character, '-' | '\u{2010}')
 }
 
 fn push_char(character: char, out: &mut Vec<u8>) {
@@ -333,6 +511,45 @@ mod tests {
     }
 
     #[test]
+    fn words_hyphenated_across_lines_are_joined() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(join("the extrac-\ntion of text"), "the extraction of text");
+        assert_eq!(join("in-\n  dented"), "indented");
+        assert_eq!(join("con-\ntinue-\nd"), "continued");
+        assert_eq!(join("ends with hyphen-\nation"), "ends with hyphenation");
+    }
+
+    #[test]
+    fn hyphenated_compounds_keep_their_hyphen() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(
+            join("a well-known fact, well-\nknown to all"),
+            "a well-known fact, well-known to all"
+        );
+        assert_eq!(join("state-of-the-\nart"), "state-of-the-art");
+        assert_eq!(
+            join("re-entry and reentry, then re-\nentry"),
+            "re-entry and reentry, then reentry"
+        );
+    }
+
+    #[test]
+    fn other_hyphens_at_line_ends_stay() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        for text in [
+            "anti-\nSemitic",
+            "1990-\n1995",
+            "word -\nnext",
+            "end-\n\nnext paragraph",
+            "list:\n- item",
+            "trailing-",
+            "trailing-\n",
+        ] {
+            assert_eq!(join(text), text);
+        }
+    }
+
+    #[test]
     fn nothing_changes_without_steps() {
         let text = "\u{fb01} cafe\u{301}  \u{200b}\r\n";
         assert_eq!(normalize(Steps::NONE, text), text);
@@ -368,7 +585,7 @@ mod tests {
         'a', 'e', 'Z', '1', ' ', ' ', '\t', '\n', '\r', '\u{a0}', '\u{3000}', '\u{2028}',
         '\u{301}', '\u{323}', '\u{308}', '\u{1100}', '\u{1161}', '\u{11a8}', '\u{fb01}',
         '\u{fb03}', '\u{ad}', '\u{200b}', '\u{200d}', '\u{feff}', '\u{0}', '\u{85}', 'é', '漢',
-        '🎉', '\u{0b47}', '\u{0b3e}',
+        '🎉', '\u{0b47}', '\u{0b3e}', '-', '-', 'q', 'Q', '\u{2010}',
     ];
 
     fn random_texts() -> impl Iterator<Item = String> {

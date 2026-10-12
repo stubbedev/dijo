@@ -58,7 +58,7 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
-| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers` |
+| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers`, `hyphenation` |
 | `--raw` | No normalisation at all: the text exactly as Tika extracted it |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
@@ -90,8 +90,11 @@ ligatures such as `ﬁ` become `fi`, soft hyphens are dropped, characters are co
 become plain ones, runs of spaces collapse, lines end with `\n` without trailing spaces, and at most one blank line
 appears in a row. Tabs are kept, since they separate table cells. In `--format pages`, lines that recur at the top or
 bottom of most pages (running headers and footers, page numbers) move out of the page text into the page record's
-`header` and `footer`; they are learned from the first 8 pages, which are held back meanwhile. Normalisation streams, so it holds back at most a few
-characters. XHTML output is never normalised.
+`header` and `footer`; they are learned from the first 8 pages, which are held back meanwhile. A word hyphenated
+across a line break (`extrac-` / `tion`) is joined. The hyphen stays only when the text before shows a hyphenated
+compound: the word already holds a hyphen (`state-of-the-` / `art`), or `well-known` occurred and `wellknown` did not.
+A hyphen before a capital or a digit, or before a blank line, stays where it is. Normalisation streams, so it holds
+back at most a few characters, or a word after a hyphen that ends a line. XHTML output is never normalised.
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is
 keyed by the BLAKE3 hash of the input's content and its path, the options that shape the output, the extractous
@@ -196,7 +199,8 @@ text output each embedded document starts with a `=== path ===` line. Exceeding 
 
 `quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
 HTML and EPUB, a two-column PDF, a report with running headers and footers, Arabic, Hebrew, Chinese, Japanese, Thai,
-Hindi and German documents, tables, and scans at 300 and 150 dpi, skewed and rotated. Every extraction is scored
+Hindi and German documents, tables, a PDF hyphenated by TeX, PDFs with broken text layers, and scans at 300 and 150
+dpi, skewed and rotated. Every extraction is scored
 against its truth: character and token error rate, recall (the share of the truth's words that were extracted at
 all), spurious text and paragraph order. The test suite fails when a score gets worse than `quality/baseline.json`
 allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;

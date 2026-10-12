@@ -76,6 +76,20 @@
     "spurious": 0.056338028169014086,
     "reading_order": 1.0
   },
+  "hyphenated.pdf": {
+    "character_error_rate": 0.001195457262402869,
+    "token_error_rate": 0.006172839506172839,
+    "recall": 1.0,
+    "spurious": 0.006134969325153374,
+    "reading_order": 1.0
+  },
+  "hyphenated.pdf --no-normalize hyphenation": {
+    "character_error_rate": 0.02869097429766886,
+    "token_error_rate": 0.29012345679012347,
+    "recall": 0.8580246913580247,
+    "spurious": 0.25268817204301075,
+    "reading_order": 1.0
+  },
   "japanese.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

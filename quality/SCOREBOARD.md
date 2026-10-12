@@ -39,3 +39,5 @@
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |
 | prose-broken-private-use.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| hyphenated.pdf | hyphenation | 0.001 | 0.006 | 1.000 | 0.006 | 1.000 |
+| hyphenated.pdf --no-normalize hyphenation | hyphenation | 0.029 | 0.290 | 0.858 | 0.253 | 1.000 |
