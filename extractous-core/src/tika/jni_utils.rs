@@ -1,13 +1,10 @@
-use std::os::raw::{c_char, c_void};
-
 use crate::errors::{Error, ExtractResult};
 use crate::Metadata;
-use jni::errors::jni_error_code_to_result;
 use jni::objects::{JByteBuffer, JObject, JObjectArray, JString, JValue, JValueOwned};
-use jni::{sys, JNIEnv, JavaVM};
+use jni::JNIEnv;
 use std::collections::HashMap;
 
-/// Calls a static method and prints any thrown exceptions to stderr
+/// Wraps memory owned by Rust in a Java direct byte buffer without copying it
 pub fn jni_new_direct_buffer<'local>(
     env: &mut JNIEnv<'local>,
     data: *mut u8,
@@ -19,7 +16,7 @@ pub fn jni_new_direct_buffer<'local>(
     Ok(direct_byte_buffer)
 }
 
-/// Calls a static method and prints any thrown exceptions to stderr
+/// Calls a static method, turning a thrown Java exception into [`Error::JavaException`]
 pub fn jni_call_static_method<'local>(
     env: &mut JNIEnv<'local>,
     class: &str,
@@ -30,17 +27,12 @@ pub fn jni_call_static_method<'local>(
     let call_result = env.call_static_method(class, method, signature, args);
     match call_result {
         Ok(result) => Ok(result),
-        Err(error) => match error {
-            jni::errors::Error::JavaException => {
-                jni_check_exception(env)?;
-                Err(Error::JniError(error))
-            }
-            _ => Err(Error::JniError(error)),
-        },
+        Err(jni::errors::Error::JavaException) => Err(take_java_exception(env)),
+        Err(error) => Err(Error::JniError(error)),
     }
 }
 
-/// Calls an object method and prints any thrown exceptions to stderr
+/// Calls an object method, turning a thrown Java exception into [`Error::JavaException`]
 pub fn jni_call_method<'local>(
     env: &mut JNIEnv<'local>,
     obj: &JObject<'local>,
@@ -51,13 +43,8 @@ pub fn jni_call_method<'local>(
     let call_result = env.call_method(obj, method, signature, args);
     match call_result {
         Ok(result) => Ok(result),
-        Err(error) => match error {
-            jni::errors::Error::JavaException => {
-                jni_check_exception(env)?;
-                Err(Error::JniError(error))
-            }
-            _ => Err(Error::JniError(error)),
-        },
+        Err(jni::errors::Error::JavaException) => Err(take_java_exception(env)),
+        Err(error) => Err(Error::JniError(error)),
     }
 }
 
@@ -143,121 +130,24 @@ pub fn jni_tika_metadata_to_rust_metadata<'local>(
     Ok(metadata)
 }
 
-/// Checks if there is an exception in the jni environment, describes it to
-/// the stderr and finally clears it
-pub fn jni_check_exception(env: &mut JNIEnv) -> ExtractResult<bool> {
-    if env.exception_check()? {
-        env.exception_describe()?;
+/// Clears the pending Java exception and turns it into an [`Error::JavaException`] that
+/// carries the class and message of the exception and of every cause behind it.
+pub fn take_java_exception(env: &mut JNIEnv) -> Error {
+    let describe = |env: &mut JNIEnv| -> ExtractResult<String> {
+        let throwable = env.exception_occurred()?;
         env.exception_clear()?;
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-/// Creates a new graalvm isolate using the invocation api. A [GraalVM isolate](https://medium.com/graalvm/isolates-and-compressed-references-more-flexible-and-efficient-memory-management-for-graalvm-a044cc50b67e) is a disjoint heap
-/// that allows multiple tasks in the same VM instance to run independently.
-///
-/// This function uses the standard JVM invocation API and relies on the jni-sys crate.
-/// No need to specify any libraries because the graalvm native image is already
-/// linked in by the build script.
-pub fn create_vm_isolate() -> JavaVM {
-    unsafe {
-        let vm_options: Vec<sys::JavaVMOption> = vec![
-            // Set java.library.path to be able to load libawt.so, which must be in the same dir as libtika_native.so
-            sys::JavaVMOption {
-                optionString: "-Djava.library.path=.".as_ptr() as *mut c_char,
-                extraInfo: std::ptr::null_mut(),
-            },
-            // enable awt headless mode
-            sys::JavaVMOption {
-                optionString: "Djava.awt.headless=true".as_ptr() as *mut c_char,
-                extraInfo: std::ptr::null_mut(),
-            },
-        ];
-
-        let mut args = sys::JavaVMInitArgs {
-            version: sys::JNI_VERSION_1_8,
-            nOptions: vm_options.len() as sys::jint,
-            options: vm_options.as_ptr() as *mut sys::JavaVMOption,
-            ignoreUnrecognized: sys::JNI_TRUE,
-        };
-        let mut ptr: *mut sys::JavaVM = std::ptr::null_mut();
-        let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
-
-        // The current thread becomes the main thread
-        let jni_res = sys::JNI_CreateJavaVM(
-            &mut ptr as *mut _,
-            &mut env as *mut *mut sys::JNIEnv as *mut *mut c_void,
-            &mut args as *mut sys::JavaVMInitArgs as *mut c_void,
-        );
-        jni_error_code_to_result(jni_res).unwrap_or_else(|e| {
-            panic!("Failed creating the graal native vm: {:?}", e);
-        });
-
-        // This sys call already attaches the current thread to the vm
-        JavaVM::from_raw(ptr).unwrap_or_else(|e| {
-            panic!("Failed creating the graal native from pointer: {:?}", e);
-        })
+        let description = env
+            .call_static_method(
+                "ai/yobix/Throwables",
+                "describe",
+                "(Ljava/lang/Throwable;)Ljava/lang/String;",
+                &[JValue::Object(&throwable)],
+            )?
+            .l()?;
+        jni_jobject_to_string(env, description)
+    };
+    match describe(env) {
+        Ok(description) => Error::JavaException(description),
+        Err(error) => error,
     }
 }
-
-// fn cleanup_vm_isolate(jvm: JavaVM) -> ExtractResult<()>  {
-//     println!("cleanup_vm_isolate");
-//     // let mut env = jvm.attach_current_thread_as_daemon()?;
-//     //
-//     // let x = JValue::from(1);
-//     // let system_class = env.find_class("java/lang/System")?;
-//     // let exit_mid = env.get_static_method_id(&system_class, "exit", "(I)V")?;
-//     // let _val = unsafe {
-//     //     env.call_static_method_unchecked(
-//     //         &system_class,
-//     //         exit_mid,
-//     //         ReturnType::Primitive(Primitive::Void),
-//     //         &[x.as_jni()],
-//     //     )
-//     // };
-//
-//     // Destroy jvm. jvm must be dropped as well
-//     unsafe {  jvm.destroy()?; }
-//     drop(jvm);
-//
-//     Ok(())
-// }
-
-// pub fn tika_parse_file_new_vm(file_name: &str) -> ExtractResult<String> {
-//
-//     let mut output = String::new();
-//
-//     let mut start_time = Instant::now();
-//     let jvm = create_vm_isolate();
-//     let jvm_create_duration = start_time.elapsed();
-//
-//     start_time = Instant::now();
-//     // Need to create a new scope to be able to drop intermediate objects before destroying the jvm
-//     {
-//         //let mut env = jvm.get_env()?;
-//         let mut env = jvm.attach_current_thread()?;
-//
-//         let jstr_file = env.new_string(file_name)?;
-//         let val = env.call_static_method("ai/yobix/TikaNativeMain", "parseToString",
-//                                          "(Ljava/lang/String;)Ljava/lang/String;", &[JValue::from(&jstr_file)])?;
-//
-//         let jobject = val.l()?;
-//         let jstr_output = JString::from(jobject);
-//         let javastr_output = env.get_string(&jstr_output)?;
-//         let output_str = javastr_output.to_str().map_err(|e| Error::Utf8Error(e))?;
-//         // Creates the string before cleaning the vm
-//         output.push_str(output_str);
-//     }
-//     let parse_duration = start_time.elapsed();
-//
-//     start_time = Instant::now();
-//     cleanup_vm_isolate(jvm)?;
-//     let jvm_destroy_duration = start_time.elapsed();
-//
-//     println!("Time taken to jvm_create_duration: {:.4?}", jvm_create_duration);
-//     println!("Time taken to parse_duration: {:.4?}", parse_duration);
-//     println!("Time taken to jvm_destroy_duration: {:.4?}", jvm_destroy_duration);
-//
-//     Ok(output)
-// }

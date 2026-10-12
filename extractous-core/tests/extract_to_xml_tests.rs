@@ -1,10 +1,9 @@
-use extractous::Extractor;
+use extractous_core::Extractor;
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
 use std::fs;
 use test_case::test_case;
 use textdistance::nstr::cosine;
-use quick_xml::reader::Reader;
-use quick_xml::events::Event;
-
 
 // Declarers the shared test_utils code as module in this integration test
 mod test_utils;
@@ -18,14 +17,14 @@ fn extract_p_tag_content(xml: &str) -> String {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"body" => {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == "body" => {
                 inside_body = true;
             }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"body" => {
+            Ok(Event::End(ref e)) if e.name().as_ref() == "body" => {
                 inside_body = false;
             }
             Ok(Event::Text(e)) if inside_body => {
-                collected_content.push_str(&quick_xml::escape::unescape(std::str::from_utf8(&e).unwrap()).unwrap());
+                collected_content.push_str(&e.xml10_content());
                 collected_content.push('\n'); // Separate paragraphs with newline
             }
             Ok(Event::Eof) => break,
@@ -54,7 +53,8 @@ fn extract_p_tag_content(xml: &str) -> String {
 #[test_case("bug_16.docx", 0.9; "Test bug16 DOCX file")]
 //#[test_case("eng-ocr.pdf", 0.9; "Test eng-ocr PDF file")]
 fn test_extract_file_to_xml(file_name: &str, target_dist: f64) {
-    let extractor = Extractor::new().set_extract_string_max_length(1000000)
+    let extractor = Extractor::new()
+        .set_extract_string_max_length(1000000)
         .set_xml_output(true);
     // extract file with extractor
     let (extracted_xml, extracted_metadata) = extractor
@@ -67,7 +67,7 @@ fn test_extract_file_to_xml(file_name: &str, target_dist: f64) {
     let expected =
         fs::read_to_string(format!("../test_files/expected_result/{}.txt", file_name)).unwrap();
 
-    let dist = cosine(&expected.trim(), &extracted.trim());
+    let dist = cosine(expected.trim(), extracted.trim());
     assert!(
         dist > target_dist,
         "Cosine similarity is less than {} for file: {}, dist: {}",

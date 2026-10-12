@@ -19,8 +19,13 @@
 flamegraph.svg
 perf.*
 
-# Python cache files
-**/__pycache__/
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
 
-# Python env files
-**/.python-version
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml

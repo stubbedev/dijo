@@ -1,0 +1,14 @@
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "0BSD",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+private = { ignore = true }

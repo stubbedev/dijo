@@ -1,18 +1,13 @@
 [package]
-name = "extractous"
+name = "extractous-core"
+publish = false
 version = "0.2.1"
 edition = "2021"
 
-description = """
-Extractous provides a fast and efficient way to extract content from all kind of file formats including PDF, Word, Excel
-CSV, Email etc... Internally it uses a natively compiled Apache Tika for formats are not supported natively by the Rust
-core
-"""
+description = "Text and metadata extraction for PDF, Office, email and many other formats, using Apache Tika compiled to native code with GraalVM"
 license = "Apache-2.0"
-homepage = "https://extractous.yobix.ai"
-repository = "https://github.com/yobix-ai/extractous"
-authors = ["Yobix AI <dev@yobix.ai>"]
-readme = "README.md"
+repository = "https://github.com/stubbedev/extractous"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 keywords = ["unstructured", "tika", "text", "pdf", "parser"]
 categories = ["parsing", "text-processing"]
 
@@ -23,19 +18,17 @@ required-features = []
 
 [dependencies]
 libc = { version = "0.2.178" }
-jni = { version = "0.21.1",features = ["invocation"] }
+jni = { version = "0.21.1" }
+libloading = "0.8.9"
+flate2 = "1.1.5"
 thiserror = { version = "2.0.17" }
 bytemuck =  { version = "1.24.0"}
 # String enums
 strum = { version = "0.27.2" }
 strum_macros = { version = "0.27.2" }
-# Performance optimizations
-memmap2 = { version = "0.9.9", optional = true }
-rayon = { version = "1.11.0", optional = true }
-# Pure Rust parsers for common formats
-pdf-extract = { version = "0.10.0", optional = true }
-calamine = { version = "0.32", optional = true }
-quick-xml = { version = "0.38.4", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 textdistance = "1.1.1"
@@ -43,31 +36,9 @@ test-case = "3.3.1"
 criterion = "0.8.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-quick-xml = { version = "0.38.4", features = ["encoding"] }
+quick-xml = { version = "0.42.0", features = ["encoding"] }
 
 [build-dependencies]
-fs_extra = { version = "1.3.0" }
-reqwest = { version = "0.12.24", features = ["blocking", "json"] }
-zip = "6.0.0"
-flate2 = "1.1.5"
-tar = "0.4.44"
 walkdir = "2.5.0"
-
-[features]
-default = ["mmap", "parallel"]
-stream-attachguard = []
-# Memory-mapped file I/O for better performance
-mmap = ["memmap2"]
-# Parallel processing support
-parallel = ["rayon"]
-# Pure Rust parsers (experimental)
-pure-rust = ["pdf-extract", "calamine", "quick-xml"]
-# All optimizations enabled
-full-optimizations = ["mmap", "parallel", "pure-rust"]
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-rpath = true
-# Enable CPU-specific optimizations
-codegen-units = 1
+flate2 = "1.1.5"
+object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }

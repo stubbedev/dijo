@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  devenv:
+    name: just check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('devenv.lock', 'Cargo.lock', 'extractous-core/tika-native/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-
+      - name: just check
+        run: devenv shell -- just check
+      - name: just deps
+        if: matrix.os == 'ubuntu-24.04'
+        run: devenv shell -- just deps
+
+  windows:
+    name: just check (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install GraalVM
+        run: |
+          home=$(ci/install-graalvm.sh windows-x64 "$(cygpath --unix "$RUNNER_TEMP")/graalvm")
+          echo "GRAALVM_HOME=$(cygpath --windows "$home")" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$(cygpath --windows "$home")" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: just,cargo-nextest
+      - name: Install tesseract with the languages the tests use
+        run: |
+          choco install tesseract --no-progress -y
+          tessdata="/c/Program Files/Tesseract-OCR/tessdata"
+          for language in deu ara; do
+            curl -sSfL --max-time 120 -o "$tessdata/$language.traineddata" \
+              "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$language.traineddata"
+          done
+          echo "C:\\Program Files\\Tesseract-OCR" >> "$GITHUB_PATH"
+          "/c/Program Files/Tesseract-OCR/tesseract" --list-langs
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'extractous-core/tika-native/**', 'ci/graalvm.env') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-
+      - name: just check
+        shell: pwsh
+        run: just check
