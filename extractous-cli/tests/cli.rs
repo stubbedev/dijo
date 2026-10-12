@@ -5,7 +5,7 @@ use std::process::{Command, Output, Stdio};
 
 mod common;
 
-use common::{document, Scratch, DOCUMENTS};
+use common::{document, stored_zip, Scratch, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
     extractous_with_stdin(args, None)
@@ -1080,4 +1080,97 @@ fn tiff_images_with_exif_directories_are_ocred() {
         "{}",
         stdout(&output)
     );
+}
+
+#[test]
+fn xml_parsers_resolve_no_external_entities() {
+    let scratch = Scratch::new("xxe");
+    let secret = scratch.0.join("secret.txt");
+    fs::write(&secret, "TOP-SECRET-VALUE-42").unwrap();
+    let url = format!(
+        "file:///{}",
+        secret
+            .to_str()
+            .unwrap()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+    let entity = format!("<!ENTITY secret SYSTEM \"{url}\">");
+    let xml =
+        format!("<?xml version=\"1.0\"?><!DOCTYPE doc [{entity}]><doc>before &secret; after</doc>");
+    let svg = format!(
+        "<?xml version=\"1.0\"?><!DOCTYPE svg [{entity}]>\
+         <svg xmlns=\"http://www.w3.org/2000/svg\"><text>before &secret; after</text></svg>"
+    );
+    let dtd =
+        format!("<?xml version=\"1.0\"?><!DOCTYPE doc SYSTEM \"{url}\"><doc>before after</doc>");
+    let word = "http://schemas.openxmlformats.org";
+    let docx = stored_zip(&[
+        (
+            "[Content_Types].xml",
+            format!(
+                "<?xml version=\"1.0\"?><Types xmlns=\"{word}/package/2006/content-types\">\
+                 <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+                 <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"
+            )
+            .as_bytes(),
+        ),
+        (
+            "_rels/.rels",
+            format!(
+                "<?xml version=\"1.0\"?><Relationships xmlns=\"{word}/package/2006/relationships\">\
+                 <Relationship Id=\"rId1\" Type=\"{word}/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"
+            )
+            .as_bytes(),
+        ),
+        (
+            "word/document.xml",
+            format!(
+                "<?xml version=\"1.0\"?><!DOCTYPE w:document [{entity}]>\
+                 <w:document xmlns:w=\"{word}/wordprocessingml/2006/main\"><w:body><w:p><w:r>\
+                 <w:t>before &secret; after</w:t></w:r></w:p></w:body></w:document>"
+            )
+            .as_bytes(),
+        ),
+    ]);
+    for (name, content) in [
+        ("entity.xml", xml.into_bytes()),
+        ("entity.svg", svg.into_bytes()),
+        ("external.xml", dtd.into_bytes()),
+        ("entity.docx", docx),
+    ] {
+        let path = scratch.0.join(name);
+        fs::write(&path, content).unwrap();
+        let output = extractous(&["--format", "json", path.to_str().unwrap()]);
+        let text = stdout(&output);
+        assert!(
+            !text.contains("TOP-SECRET"),
+            "{name} leaked the file: {text}"
+        );
+        assert!(
+            text.contains("before"),
+            "{name}: {text} {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
+fn an_entity_expansion_bomb_fails_as_a_limit() {
+    let scratch = Scratch::new("bomb");
+    let mut bomb = String::from("<?xml version=\"1.0\"?><!DOCTYPE lolz [<!ENTITY lol0 \"lol\">");
+    for level in 1..10 {
+        bomb.push_str(&format!(
+            "<!ENTITY lol{level} \"{}\">",
+            format!("&lol{};", level - 1).repeat(10)
+        ));
+    }
+    bomb.push_str("]><lolz>&lol9;</lolz>");
+    let path = scratch.0.join("bomb.xml");
+    fs::write(&path, bomb).unwrap();
+    let started = std::time::Instant::now();
+    let objects = json_objects(&[path.to_str().unwrap()]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert_eq!(objects[0]["status"], "failed");
+    assert_eq!(objects[0]["errors"][0]["category"], "limit-exceeded");
 }

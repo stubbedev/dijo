@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// The code of every error the JDK's XML parser raises when a document exceeds one of its limits,
+/// such as the entity expansions of a billion-laughs bomb.
+const JAXP_LIMIT: &str = "JAXP00010";
+
 /// Which Tika metadata keys feed each normalised field, in order of preference: the first key
 /// present wins.
 struct TikaKeys {
@@ -163,6 +167,7 @@ impl ExtractionError {
             ErrorCategory::Unsupported
         } else if message.contains("WriteLimitReachedException")
             || message.contains("java.lang.OutOfMemoryError")
+            || message.contains(JAXP_LIMIT)
         {
             ErrorCategory::LimitExceeded
         } else if message.contains("TimeoutException") || message.contains("timeout") {
@@ -492,6 +497,10 @@ mod tests {
         );
         assert_eq!(
             classify("java.io.IOException: Parsing failed <- caused by java.lang.OutOfMemoryError: Garbage-collected heap size exceeded."),
+            ErrorCategory::LimitExceeded
+        );
+        assert_eq!(
+            classify("TikaException: XML parse error <- caused by org.xml.sax.SAXParseException: JAXP00010001: The parser has encountered more than \"20\" entity expansions"),
             ErrorCategory::LimitExceeded
         );
         assert_eq!(classify("something else"), ErrorCategory::Internal);
