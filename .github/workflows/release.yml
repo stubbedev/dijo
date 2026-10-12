@@ -64,7 +64,8 @@ jobs:
         run: |
           binary=target/release/extractous
           "$binary" --version
-          "$binary" --licenses | grep -q "org.apache.tika:tika-core"
+          "$binary" --licenses > "$RUNNER_TEMP/licenses.txt"
+          grep -q "org.apache.tika:tika-core" "$RUNNER_TEMP/licenses.txt"
           "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
