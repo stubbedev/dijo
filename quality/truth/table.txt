@@ -1,0 +1,6 @@
+Year	Ships	Wind	Lamp lit
+1921	412	south-west	17:05
+1922	389	west	17:12
+1923	455	north-west	16:58
+1924	501	south	17:20
+1925	478	east	17:03

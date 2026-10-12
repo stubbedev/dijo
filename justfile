@@ -24,6 +24,26 @@ test *args:
 test-large:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test large
 
+# Score extraction against the quality corpus and write quality/SCOREBOARD.md.
+[unix]
+quality:
+    QUALITY_SCOREBOARD={{justfile_directory()}}/quality/SCOREBOARD.md cargo nextest run --package extractous --test quality
+
+# Accept the current quality scores as the baseline that CI holds later changes to.
+[unix]
+quality-bless:
+    QUALITY_BLESS=1 QUALITY_SCOREBOARD={{justfile_directory()}}/quality/SCOREBOARD.md cargo nextest run --package extractous --test quality
+
+# Regenerate the quality corpus from quality/truth with LibreOffice, pandoc, poppler and ImageMagick.
+[unix]
+quality-corpus:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fonts=$(nix build --no-link --print-out-paths nixpkgs#noto-fonts nixpkgs#noto-fonts-cjk-sans)
+    # shellcheck disable=SC2086
+    nix shell nixpkgs#libreoffice nixpkgs#pandoc nixpkgs#poppler-utils nixpkgs#imagemagick \
+        --command quality/generate.sh $fonts
+
 # Lint every target; every warning fails.
 lint:
     cargo clippy --workspace --all-targets -- -D warnings

@@ -1,0 +1,346 @@
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use unicode_normalization::char::is_combining_mark;
+use unicode_normalization::UnicodeNormalization;
+
+const QUALITY: &str = "../quality";
+const JOBS: usize = 4;
+const ANCHOR_TOKENS: usize = 4;
+
+/// How much worse than the baseline a score may get before the check fails. OCR depends on the
+/// tesseract version of each platform, so it gets more room.
+fn tolerance(category: &str) -> f64 {
+    if category == "ocr" {
+        0.05
+    } else {
+        0.005
+    }
+}
+
+struct Document {
+    file: String,
+    truth: String,
+    category: String,
+    arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct Scores {
+    character_error_rate: f64,
+    token_error_rate: f64,
+    recall: f64,
+    spurious: f64,
+    reading_order: f64,
+}
+
+fn manifest() -> Vec<Document> {
+    fs::read_to_string(Path::new(QUALITY).join("corpus.tsv"))
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4, "corpus.tsv line {line:?}");
+            Document {
+                file: fields[0].to_string(),
+                truth: fields[1].to_string(),
+                category: fields[2].to_string(),
+                arguments: fields[3].split_whitespace().map(str::to_string).collect(),
+            }
+        })
+        .collect()
+}
+
+fn extract(document: &Document) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(&document.arguments)
+        .arg(Path::new(QUALITY).join("corpus").join(&document.file))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        document.file,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Characters of scripts written without spaces between words count as tokens of their own.
+fn unspaced(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0e00}'..='\u{0e7f}'
+            | '\u{3040}'..='\u{30ff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+    )
+}
+
+fn tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    for character in text.nfc() {
+        if unspaced(character) {
+            tokens.extend((!word.is_empty()).then(|| std::mem::take(&mut word)));
+            tokens.push(character.to_string());
+        } else if character.is_alphanumeric() || is_combining_mark(character) {
+            word.push(character);
+        } else if !word.is_empty() {
+            tokens.push(std::mem::take(&mut word));
+        }
+    }
+    tokens.extend((!word.is_empty()).then_some(word));
+    tokens
+}
+
+fn characters(text: &str) -> Vec<char> {
+    text.nfc()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect()
+}
+
+fn edit_distance<T: PartialEq>(from: &[T], to: &[T]) -> usize {
+    let mut previous: Vec<usize> = (0..=to.len()).collect();
+    let mut current = vec![0; to.len() + 1];
+    for (i, a) in from.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, b) in to.iter().enumerate() {
+            let substitution = previous[j] + usize::from(a != b);
+            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[to.len()]
+}
+
+fn matched(truth: &[String], extracted: &[String]) -> usize {
+    let mut available: HashMap<&str, usize> = HashMap::new();
+    for token in extracted {
+        *available.entry(token).or_default() += 1;
+    }
+    truth
+        .iter()
+        .filter(|token| {
+            available
+                .get_mut(token.as_str())
+                .filter(|count| **count > 0)
+                .map(|count| *count -= 1)
+                .is_some()
+        })
+        .count()
+}
+
+fn longest_increasing(positions: &[usize]) -> usize {
+    let mut tails: Vec<usize> = Vec::new();
+    for &position in positions {
+        match tails.binary_search(&position) {
+            Ok(_) => {}
+            Err(index) if index == tails.len() => tails.push(position),
+            Err(index) => tails[index] = position,
+        }
+    }
+    tails.len()
+}
+
+/// The share of the truth's paragraphs that appear in the extracted text in their original
+/// order, each found by its first few tokens; a paragraph that repeats is matched to the next
+/// occurrence of its anchor.
+fn reading_order(truth: &str, extracted: &[String]) -> f64 {
+    let paragraphs: Vec<Vec<String>> = truth
+        .split("\n\n")
+        .map(tokens)
+        .filter(|paragraph| paragraph.len() >= ANCHOR_TOKENS)
+        .collect();
+    if paragraphs.is_empty() {
+        return 1.0;
+    }
+    let mut seen: HashMap<&[String], usize> = HashMap::new();
+    let positions: Vec<usize> = paragraphs
+        .iter()
+        .filter_map(|paragraph| {
+            let anchor = &paragraph[..ANCHOR_TOKENS];
+            let occurrence = seen.entry(anchor).or_default();
+            let position = extracted
+                .windows(ANCHOR_TOKENS)
+                .enumerate()
+                .filter(|(_, window)| *window == anchor)
+                .nth(*occurrence)
+                .map(|(position, _)| position);
+            *occurrence += 1;
+            position
+        })
+        .collect();
+    longest_increasing(&positions) as f64 / paragraphs.len() as f64
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    numerator as f64 / denominator as f64
+}
+
+fn score(truth: &str, extracted: &str) -> Scores {
+    let truth_tokens = tokens(truth);
+    let extracted_tokens = tokens(extracted);
+    let truth_characters = characters(truth);
+    let matched = matched(&truth_tokens, &extracted_tokens);
+    Scores {
+        character_error_rate: ratio(
+            edit_distance(&truth_characters, &characters(extracted)),
+            truth_characters.len(),
+        ),
+        token_error_rate: ratio(
+            edit_distance(&truth_tokens, &extracted_tokens),
+            truth_tokens.len(),
+        ),
+        recall: ratio(matched, truth_tokens.len()),
+        spurious: ratio(extracted_tokens.len() - matched, extracted_tokens.len()),
+        reading_order: reading_order(truth, &extracted_tokens),
+    }
+}
+
+/// The ways `scores` fall short of `baseline` by more than `tolerance`.
+fn regressions(scores: &Scores, baseline: &Scores, tolerance: f64) -> Vec<String> {
+    let checks = [
+        (
+            "character error rate",
+            scores.character_error_rate - baseline.character_error_rate,
+        ),
+        (
+            "token error rate",
+            scores.token_error_rate - baseline.token_error_rate,
+        ),
+        ("recall", baseline.recall - scores.recall),
+        ("spurious text", scores.spurious - baseline.spurious),
+        (
+            "reading order",
+            baseline.reading_order - scores.reading_order,
+        ),
+    ];
+    checks
+        .into_iter()
+        .filter(|(_, worse_by)| *worse_by > tolerance)
+        .map(|(metric, worse_by)| format!("{metric} worse by {worse_by:.3}"))
+        .collect()
+}
+
+fn scoreboard(documents: &[Document], results: &BTreeMap<String, Scores>) -> String {
+    let mut table = String::from(
+        "| Document | Category | CER | Token error rate | Recall | Spurious | Reading order |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for document in documents {
+        let scores = &results[&document.file];
+        let _ = writeln!(
+            table,
+            "| {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
+            document.file,
+            document.category,
+            scores.character_error_rate,
+            scores.token_error_rate,
+            scores.recall,
+            scores.spurious,
+            scores.reading_order
+        );
+    }
+    table
+}
+
+#[test]
+fn extraction_quality_does_not_regress() {
+    let documents = manifest();
+    let results = Mutex::new(BTreeMap::new());
+    let next = Mutex::new(documents.iter());
+    std::thread::scope(|scope| {
+        for _ in 0..JOBS {
+            scope.spawn(|| loop {
+                let Some(document) = next.lock().unwrap().next() else {
+                    return;
+                };
+                let truth = fs::read_to_string(
+                    Path::new(QUALITY)
+                        .join("truth")
+                        .join(format!("{}.txt", document.truth)),
+                )
+                .unwrap();
+                let extracted = extract(document);
+                if let Some(dir) = std::env::var_os("QUALITY_OUTPUT") {
+                    fs::create_dir_all(&dir).unwrap();
+                    fs::write(PathBuf::from(dir).join(&document.file), &extracted).unwrap();
+                }
+                let scores = score(&truth, &extracted);
+                results
+                    .lock()
+                    .unwrap()
+                    .insert(document.file.clone(), scores);
+            });
+        }
+    });
+    let results = results.into_inner().unwrap();
+    let table = scoreboard(&documents, &results);
+    println!("{table}");
+    if let Some(path) = std::env::var_os("QUALITY_SCOREBOARD") {
+        fs::write(PathBuf::from(path), &table).unwrap();
+    }
+
+    let baseline_path = Path::new(QUALITY).join("baseline.json");
+    if std::env::var_os("QUALITY_BLESS").is_some() {
+        let json = serde_json::to_string_pretty(&results).unwrap();
+        fs::write(&baseline_path, json + "\n").unwrap();
+        return;
+    }
+    let baseline: BTreeMap<String, Scores> =
+        serde_json::from_str(&fs::read_to_string(&baseline_path).unwrap()).unwrap();
+    let failures: Vec<String> = documents
+        .iter()
+        .filter_map(|document| {
+            let Some(expected) = baseline.get(&document.file) else {
+                return Some(format!("{}: missing from baseline.json", document.file));
+            };
+            let found = regressions(
+                &results[&document.file],
+                expected,
+                tolerance(&document.category),
+            );
+            (!found.is_empty()).then(|| format!("{}: {}", document.file, found.join(", ")))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "Extraction quality regressed:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn metrics_score_known_differences() {
+    let truth = "One two three four.\n\nFive six seven eight.";
+    let perfect = score(truth, "One two three four.\n\nFive six seven eight.");
+    assert_eq!(perfect.character_error_rate, 0.0);
+    assert_eq!(perfect.recall, 1.0);
+    assert_eq!(perfect.reading_order, 1.0);
+
+    let swapped = score(truth, "Five six seven eight. One two three four.");
+    assert_eq!(swapped.recall, 1.0);
+    assert_eq!(swapped.reading_order, 0.5);
+
+    let noisy = score(truth, "One two three four. Five six seven eight. Page 1");
+    assert_eq!(noisy.spurious, 2.0 / 10.0);
+    let repeated = "One two three four.\n\nFive six seven eight.\n\nOne two three four.";
+    assert_eq!(score(repeated, repeated).reading_order, 1.0);
+    assert_eq!(tokens("灯台 守り lamp"), ["灯", "台", "守", "り", "lamp"]);
+    assert_eq!(tokens("प्रकाशस्तंभ रक्षक"), ["प्रकाशस्तंभ", "रक्षक"]);
+}

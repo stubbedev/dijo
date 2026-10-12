@@ -167,6 +167,20 @@ content already appeared in the same input is reported once more only as `"dupli
 text output each embedded document starts with a `=== path ===` line. Exceeding a limit skips that subtree with a
 `limit-exceeded` error instead of failing the input.
 
+## Quality
+
+`quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
+HTML and EPUB, a two-column PDF, a report with running headers and footers, Arabic, Hebrew, Chinese, Japanese, Thai,
+Hindi and German documents, tables, and scans at 300 and 150 dpi, skewed and rotated. Every extraction is scored
+against its truth: character and token error rate, recall (the share of the truth's words that were extracted at
+all), spurious text and paragraph order. The test suite fails when a score gets worse than `quality/baseline.json`
+allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
+`just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
+
+What it shows today: born-digital Office and OpenDocument files and clean scans extract exactly; PDFs add their
+bookmark text at the end; right-to-left Arabic PDFs come out in the wrong word order; a scan skewed by 2.5° is
+mostly lost to OCR.
+
 ## Supported formats
 
 The native library contains Tika's standard parser package and these parser modules: Microsoft Office (DOC, DOCX, XLS,
@@ -191,6 +205,9 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just build` | Build the workspace, compiling Tika on first run |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
+| `just quality` | Score extraction against the quality corpus and write quality/SCOREBOARD.md |
+| `just quality-bless` | Accept the current quality scores as the new baseline |
+| `just quality-corpus` | Regenerate the quality corpus from its ground truth (uses LibreOffice via nix) |
 | `just lint` | Clippy over every target, warnings fail |
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
