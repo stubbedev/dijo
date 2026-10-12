@@ -1,11 +1,11 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 mod common;
 
-use common::{document, stored_zip, text_pdf, Scratch, DOCUMENTS};
+use common::{document, text_pdf, write_docx, Scratch, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
     extractous_with_stdin(args, None)
@@ -1154,35 +1154,18 @@ fn xml_parsers_resolve_no_external_entities() {
     );
     let dtd =
         format!("<?xml version=\"1.0\"?><!DOCTYPE doc SYSTEM \"{url}\"><doc>before after</doc>");
-    let word = "http://schemas.openxmlformats.org";
-    let docx = stored_zip(&[
-        (
-            "[Content_Types].xml",
-            format!(
-                "<?xml version=\"1.0\"?><Types xmlns=\"{word}/package/2006/content-types\">\
-                 <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
-                 <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"
+    let docx = write_docx(
+        Cursor::new(Vec::new()),
+        &format!("<!DOCTYPE w:document [{entity}]>"),
+        |out| {
+            write!(
+                out,
+                "<w:p><w:r><w:t>before &secret; after</w:t></w:r></w:p>"
             )
-            .as_bytes(),
-        ),
-        (
-            "_rels/.rels",
-            format!(
-                "<?xml version=\"1.0\"?><Relationships xmlns=\"{word}/package/2006/relationships\">\
-                 <Relationship Id=\"rId1\" Type=\"{word}/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"
-            )
-            .as_bytes(),
-        ),
-        (
-            "word/document.xml",
-            format!(
-                "<?xml version=\"1.0\"?><!DOCTYPE w:document [{entity}]>\
-                 <w:document xmlns:w=\"{word}/wordprocessingml/2006/main\"><w:body><w:p><w:r>\
-                 <w:t>before &secret; after</w:t></w:r></w:p></w:body></w:document>"
-            )
-            .as_bytes(),
-        ),
-    ]);
+        },
+    )
+    .unwrap()
+    .into_inner();
     for (name, content) in [
         ("entity.xml", xml.into_bytes()),
         ("entity.svg", svg.into_bytes()),

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use unicode_normalization::char::is_combining_mark;
@@ -62,68 +63,151 @@ impl Drop for Scratch {
     }
 }
 
-/// A ZIP archive of `entries`, stored without compression, which is all a test needs to build an
-/// Office document.
-pub fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-    const VERSION: u16 = 20;
-    let mut archive = Vec::new();
-    let mut directory = Vec::new();
-    for (name, data) in entries {
-        let offset = archive.len() as u32;
-        let size = data.len() as u32;
-        let mut common = Vec::new();
-        for field in [VERSION, 0, 0, 0, 0] {
-            common.extend_from_slice(&field.to_le_bytes());
-        }
-        for field in [crc32(data), size, size] {
-            common.extend_from_slice(&field.to_le_bytes());
-        }
-        for field in [name.len() as u16, 0] {
-            common.extend_from_slice(&field.to_le_bytes());
-        }
-
-        archive.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
-        archive.extend_from_slice(&common);
-        archive.extend_from_slice(name.as_bytes());
-        archive.extend_from_slice(data);
-
-        directory.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-        directory.extend_from_slice(&VERSION.to_le_bytes());
-        directory.extend_from_slice(&common);
-        for field in [0u16, 0, 0] {
-            directory.extend_from_slice(&field.to_le_bytes());
-        }
-        for field in [0u32, offset] {
-            directory.extend_from_slice(&field.to_le_bytes());
-        }
-        directory.extend_from_slice(name.as_bytes());
-    }
-    let directory_offset = archive.len() as u32;
-    archive.extend_from_slice(&directory);
-    archive.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
-    for field in [0u16, 0, entries.len() as u16, entries.len() as u16] {
-        archive.extend_from_slice(&field.to_le_bytes());
-    }
-    for field in [directory.len() as u32, directory_offset] {
-        archive.extend_from_slice(&field.to_le_bytes());
-    }
-    archive.extend_from_slice(&0u16.to_le_bytes());
-    archive
+/// Writes a ZIP archive of entries stored without compression, which is all a test needs to build
+/// an Office document. Each entry's data is streamed and its size and checksum filled in after,
+/// so an archive can be larger than memory, up to the 4 GiB of a ZIP without ZIP64.
+pub struct StoredZip<W: Write + Seek> {
+    out: W,
+    directory: Vec<u8>,
+    entries: u16,
 }
 
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 == 1 {
-                (crc >> 1) ^ 0xEDB8_8320
-            } else {
-                crc >> 1
-            };
+const ZIP_VERSION: u16 = 20;
+
+fn zip_u32(value: u64) -> u32 {
+    u32::try_from(value).expect("the archive outgrows a ZIP without ZIP64")
+}
+
+impl<W: Write + Seek> StoredZip<W> {
+    pub fn new(out: W) -> Self {
+        Self {
+            out,
+            directory: Vec::new(),
+            entries: 0,
         }
     }
-    !crc
+
+    /// Adds the entry `name`, whose data `write` writes.
+    pub fn entry(
+        &mut self,
+        name: &str,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let offset = self.out.stream_position()?;
+        let header = |crc: u32, size: u32| {
+            let mut fields = Vec::new();
+            for field in [ZIP_VERSION, 0, 0, 0, 0] {
+                fields.extend_from_slice(&field.to_le_bytes());
+            }
+            for field in [crc, size, size] {
+                fields.extend_from_slice(&field.to_le_bytes());
+            }
+            for field in [name.len() as u16, 0] {
+                fields.extend_from_slice(&field.to_le_bytes());
+            }
+            fields
+        };
+        self.out.write_all(&0x0403_4b50u32.to_le_bytes())?;
+        self.out.write_all(&header(0, 0))?;
+        self.out.write_all(name.as_bytes())?;
+        let mut data = Checksummed {
+            out: &mut self.out,
+            hasher: crc32fast::Hasher::new(),
+            size: 0,
+        };
+        write(&mut data)?;
+        let (crc, size) = (data.hasher.finalize(), zip_u32(data.size));
+        let end = self.out.stream_position()?;
+        self.out.seek(SeekFrom::Start(offset + 4))?;
+        self.out.write_all(&header(crc, size))?;
+        self.out.seek(SeekFrom::Start(end))?;
+
+        self.directory
+            .extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        self.directory.extend_from_slice(&ZIP_VERSION.to_le_bytes());
+        self.directory.extend_from_slice(&header(crc, size));
+        for field in [0u16, 0, 0] {
+            self.directory.extend_from_slice(&field.to_le_bytes());
+        }
+        for field in [0u32, zip_u32(offset)] {
+            self.directory.extend_from_slice(&field.to_le_bytes());
+        }
+        self.directory.extend_from_slice(name.as_bytes());
+        self.entries += 1;
+        Ok(())
+    }
+
+    /// Writes the central directory and returns the output.
+    pub fn finish(mut self) -> io::Result<W> {
+        let directory_offset = zip_u32(self.out.stream_position()?);
+        self.out.write_all(&self.directory)?;
+        self.out.write_all(&0x0605_4b50u32.to_le_bytes())?;
+        for field in [0u16, 0, self.entries, self.entries] {
+            self.out.write_all(&field.to_le_bytes())?;
+        }
+        for field in [zip_u32(self.directory.len() as u64), directory_offset] {
+            self.out.write_all(&field.to_le_bytes())?;
+        }
+        self.out.write_all(&0u16.to_le_bytes())?;
+        Ok(self.out)
+    }
+}
+
+/// Passes data on while summing its CRC-32 and size.
+struct Checksummed<'w, W> {
+    out: &'w mut W,
+    hasher: crc32fast::Hasher,
+    size: u64,
+}
+
+impl<W: Write> Write for Checksummed<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let written = self.out.write(buffer)?;
+        self.hasher.update(&buffer[..written]);
+        self.size += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+const OOXML: &str = "http://schemas.openxmlformats.org";
+
+/// Writes a DOCX into `out`: `doctype` (empty for none) declares the document part's DTD, and
+/// `body` writes what goes inside its `w:body`.
+pub fn write_docx<W: Write + Seek>(
+    out: W,
+    doctype: &str,
+    body: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> io::Result<W> {
+    let mut zip = StoredZip::new(out);
+    zip.entry("[Content_Types].xml", |out| {
+        write!(
+            out,
+            "<?xml version=\"1.0\"?><Types xmlns=\"{OOXML}/package/2006/content-types\">\
+             <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+             <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"
+        )
+    })?;
+    zip.entry("_rels/.rels", |out| {
+        write!(
+            out,
+            "<?xml version=\"1.0\"?><Relationships xmlns=\"{OOXML}/package/2006/relationships\">\
+             <Relationship Id=\"rId1\" Type=\"{OOXML}/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"
+        )
+    })?;
+    zip.entry("word/document.xml", |out| {
+        write!(
+            out,
+            "<?xml version=\"1.0\"?>{doctype}\
+             <w:document xmlns:w=\"{OOXML}/wordprocessingml/2006/main\"><w:body>"
+        )?;
+        body(out)?;
+        write!(out, "</w:body></w:document>")
+    })?;
+    zip.finish()
 }
 
 /// A PDF of `pages` pages of plain text, large enough that parsing all of it takes a while.
