@@ -2919,6 +2919,7 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.apache.tika:tika-parser-font-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-html-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-image-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-jdbc-commons` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-mail-commons` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-mail-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-microsoft-module` | 4.1.0 | Apache-2.0 |
@@ -2927,6 +2928,7 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.apache.tika:tika-parser-ocr-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-pdf-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-pkg-module` | 4.1.0 | Apache-2.0 |
+| `org.apache.tika:tika-parser-sqlite3-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-text-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-webarchive-module` | 4.1.0 | Apache-2.0 |
 | `org.apache.tika:tika-parser-xml-module` | 4.1.0 | Apache-2.0 |
@@ -2954,6 +2956,7 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.slf4j:slf4j-nop` | 2.0.16 | MIT |
 | `org.tallison:jmatio` | 1.5 | 0BSD |
 | `org.tukaani:xz` | 1.12 | 0BSD |
+| `org.xerial:sqlite-jdbc` | 3.53.4.0 | Apache-2.0 |
 
 ### Licence and notice texts shipped with the Java libraries
 
@@ -2983,7 +2986,7 @@ in some artifacts (usually source distributions); but is always available
 from the source code management (SCM) system project uses.
 ````
 
-Shipped with `com.fasterxml.jackson.core:jackson-annotations`, `com.fasterxml.jackson.core:jackson-core`, `com.fasterxml.jackson.core:jackson-databind`, `org.apache.james:apache-mime4j-core`, `org.apache.james:apache-mime4j-dom`, `org.apache.logging.log4j:log4j-api`, `org.apache.logging.log4j:log4j-to-slf4j`, `org.apache.pdfbox:jbig2-imageio`, `org.apache.pdfbox:pdfbox-io`, `org.apache.pdfbox:pdfbox-tools`, `org.apache.tika:tika-encoding-detector-html`, `org.apache.tika:tika-encoding-detector-mojibuster`, `org.apache.tika:tika-ml-core`, `org.apache.tika:tika-ml-junkdetect`, `org.apache.tika:tika-parser-apple-module`, `org.apache.tika:tika-parser-audiovideo-module`, `org.apache.tika:tika-parser-cad-module`, `org.apache.tika:tika-parser-code-module`, `org.apache.tika:tika-parser-crypto-module`, `org.apache.tika:tika-parser-datauri-commons`, `org.apache.tika:tika-parser-digest-commons`, `org.apache.tika:tika-parser-font-module`, `org.apache.tika:tika-parser-html-module`, `org.apache.tika:tika-parser-image-module`, `org.apache.tika:tika-parser-mail-commons`, `org.apache.tika:tika-parser-mail-module`, `org.apache.tika:tika-parser-microsoft-module`, `org.apache.tika:tika-parser-miscoffice-module`, `org.apache.tika:tika-parser-news-module`, `org.apache.tika:tika-parser-ocr-module`, `org.apache.tika:tika-parser-pdf-module`, `org.apache.tika:tika-parser-pkg-module`, `org.apache.tika:tika-parser-text-module`, `org.apache.tika:tika-parser-webarchive-module`, `org.apache.tika:tika-parser-xml-module`, `org.apache.tika:tika-parser-xmp-commons`, `org.apache.tika:tika-parser-zip-commons`, `org.gagravarr:vorbis-java-core`:
+Shipped with `com.fasterxml.jackson.core:jackson-annotations`, `com.fasterxml.jackson.core:jackson-core`, `com.fasterxml.jackson.core:jackson-databind`, `org.apache.james:apache-mime4j-core`, `org.apache.james:apache-mime4j-dom`, `org.apache.logging.log4j:log4j-api`, `org.apache.logging.log4j:log4j-to-slf4j`, `org.apache.pdfbox:jbig2-imageio`, `org.apache.pdfbox:pdfbox-io`, `org.apache.pdfbox:pdfbox-tools`, `org.apache.tika:tika-encoding-detector-html`, `org.apache.tika:tika-encoding-detector-mojibuster`, `org.apache.tika:tika-ml-core`, `org.apache.tika:tika-ml-junkdetect`, `org.apache.tika:tika-parser-apple-module`, `org.apache.tika:tika-parser-audiovideo-module`, `org.apache.tika:tika-parser-cad-module`, `org.apache.tika:tika-parser-code-module`, `org.apache.tika:tika-parser-crypto-module`, `org.apache.tika:tika-parser-datauri-commons`, `org.apache.tika:tika-parser-digest-commons`, `org.apache.tika:tika-parser-font-module`, `org.apache.tika:tika-parser-html-module`, `org.apache.tika:tika-parser-image-module`, `org.apache.tika:tika-parser-jdbc-commons`, `org.apache.tika:tika-parser-mail-commons`, `org.apache.tika:tika-parser-mail-module`, `org.apache.tika:tika-parser-microsoft-module`, `org.apache.tika:tika-parser-miscoffice-module`, `org.apache.tika:tika-parser-news-module`, `org.apache.tika:tika-parser-ocr-module`, `org.apache.tika:tika-parser-pdf-module`, `org.apache.tika:tika-parser-pkg-module`, `org.apache.tika:tika-parser-sqlite3-module`, `org.apache.tika:tika-parser-text-module`, `org.apache.tika:tika-parser-webarchive-module`, `org.apache.tika:tika-parser-xml-module`, `org.apache.tika:tika-parser-xmp-commons`, `org.apache.tika:tika-parser-zip-commons`, `org.gagravarr:vorbis-java-core`, `org.xerial:sqlite-jdbc`:
 
 ````text
 Apache License
@@ -7362,6 +7365,17 @@ based on:
 https://github.com/DustinPT/jai-imageio-core/commit/b5059e2c88cabf9b57d2a98e4b003a4703099545
 ````
 
+Shipped with `org.apache.tika:tika-parser-jdbc-commons`:
+
+````text
+Apache Tika jdbc parser commons
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
 Shipped with `org.apache.tika:tika-parser-mail-commons`:
 
 ````text
@@ -7443,6 +7457,17 @@ Shipped with `org.apache.tika:tika-parser-pkg-module`:
 
 ````text
 Apache Tika package parser module
+Copyright 2007-2026 The Apache Software Foundation
+
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+Shipped with `org.apache.tika:tika-parser-sqlite3-module`:
+
+````text
+Apache Tika sqlite3 parser module
 Copyright 2007-2026 The Apache Software Foundation
 
 
@@ -8920,6 +8945,34 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE,  ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+````
+
+Shipped with `org.xerial:sqlite-jdbc`:
+
+````text
+Copyright (c) 2006, David Crawshaw.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
 ````
 
 ### Licence and notices of the GraalVM runtime and OpenJDK

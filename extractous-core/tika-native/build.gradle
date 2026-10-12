@@ -140,6 +140,7 @@ dependencies {
 
     // Additional modules for comprehensive coverage
     implementation("org.apache.tika:tika-parser-code-module:$tikaVersion")            // Source code files
+    implementation("org.apache.tika:tika-parser-sqlite3-module:$tikaVersion")         // SQLite databases
 }
 
 licenseReport {
@@ -208,6 +209,9 @@ graalvmNative {
             buildArgs.addAll(
                     "-H:+AddAllCharsets", // Very important to get UTF8 working
                     "--enable-url-protocols=http,https",
+                    "--enable-native-access=ALL-UNNAMED",
+                    "-H:ExcludeResources=org/sqlite/native/.*",
+                    "-Dorg.sqlite.lib.exportPath=${layout.buildDirectory.dir('native/nativeCompile').get().asFile}",
                     "--initialize-at-build-time=ai.yobix.EncodingModels,org.apache.tika.ml.junkdetect.JunkDetector,org.apache.tika.ml.junkdetect.BigramTables,org.apache.tika.ml.chardetect.NaiveBayesBigramEncodingDetector,org.apache.tika.ml.chardetect.NaiveBayesBigramEncodingDetector\$Cohort",
                     "-O3",
                     "--parallelism=$numThreads",

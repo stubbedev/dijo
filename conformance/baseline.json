@@ -101,13 +101,13 @@
   },
   "tika-parsers-extended/tika-parser-sqlite3-module/src/test/resources/test-documents/testSQLITE3.db": {
     "mime_type": "application/x-sqlite3",
-    "outcome": "both-empty",
-    "similarity": 1.0
+    "outcome": "native-more",
+    "similarity": 0.0
   },
   "tika-parsers-extended/tika-parser-sqlite3-module/src/test/resources/test-documents/testSqlite3b.db": {
     "mime_type": "application/x-sqlite3",
-    "outcome": "both-empty",
-    "similarity": 1.0
+    "outcome": "native-more",
+    "similarity": 0.0
   },
   "tika-parsers-extended/tika-parsers-extended-integration-tests/src/test/resources/test-documents/testOCR.jpg": {
     "mime_type": "image/jpeg",

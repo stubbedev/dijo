@@ -260,7 +260,8 @@ little as 2.5°.
 The native library contains Tika's standard parser package and these parser modules: Microsoft Office (DOC, DOCX, XLS,
 XLSX, PPT, PPTX, MSG), PDF, HTML, Apple iWork, audio/video metadata, CAD, encrypted documents, fonts, mail (EML, MBOX,
 PST), legacy office formats (WordPerfect, Lotus, dBase), RSS/Atom, OCR via tesseract, archives (ZIP, TAR, 7Z, RAR),
-text, XML, web archives (WARC) and source code. Audio and video files yield their tags (titles, artists, lyrics).
+text, XML, web archives (WARC), source code and SQLite databases (every table's rows, and the documents stored in their
+columns). Audio and video files yield their tags (titles, artists, lyrics).
 Some formats Tika reads as raw text are read for their content instead: subtitles (SubRip, WebVTT, SubStation Alpha)
 as the spoken lines, without timings or markup; Jupyter notebooks cell by cell, code and outputs included;
 FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `.emlx` files as the email they hold.

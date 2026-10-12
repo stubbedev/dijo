@@ -341,6 +341,19 @@ fn text_extracted_before_a_parse_fails_is_kept() {
 }
 
 #[test]
+fn a_sqlite_database_is_read_for_its_tables() {
+    let objects = json_objects(&[&document("notes.sqlite")]);
+    assert_eq!(objects[0]["status"], "complete", "{}", objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/x-sqlite3");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("The lamp was lit at seven minutes past five."),
+        "{text}"
+    );
+    assert!(text.contains("Harbour"), "{text}");
+}
+
+#[test]
 fn partial_results_succeed_unless_strict() {
     let lenient = extractous(&[&document("partially-damaged.zip")]);
     assert!(lenient.status.success(), "{}", stderr(&lenient));
