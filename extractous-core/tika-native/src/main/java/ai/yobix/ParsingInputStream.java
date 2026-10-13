@@ -85,9 +85,9 @@ public class ParsingInputStream extends InputStream {
         }
         try (stream) {
             final ContentHandler handler = outputXml
-                    ? new AnchoredParagraphHandler(new WellFormedContentHandler(
+                    ? new AnchoredBlockHandler(new WellFormedContentHandler(
                             new ToXMLContentHandler(output, charset.name())))
-                    : new BodyContentHandler(new AnchoredParagraphHandler(new BlockBreakHandler(
+                    : new BodyContentHandler(new AnchoredBlockHandler(new BlockBreakHandler(
                             new ToTextContentHandler(new FlushingWriter(
                                     new OutputStreamWriter(output, charset))))));
             parser.parse(stream, handler, metadata, context);

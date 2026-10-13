@@ -11,12 +11,15 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Writes a paragraph opened inside another after the one it is anchored in. OpenDocument
- * comments and notes come that way, as a paragraph in the middle of the sentence they are
- * anchored to, which cut the sentence in two. A paragraph held back longer than
- * {@link #MAX_HELD_CHARACTERS} is written where it stands, so memory stays bounded.
+ * Writes a block opened in the middle of a paragraph after that paragraph. OpenDocument comments
+ * and notes come that way, as a paragraph inside the paragraph they are anchored in, and so do
+ * the footnote references of Word documents, as an empty block: either cut the sentence around
+ * its anchor in two, as does the line break Tika writes after a block, which goes with it. A
+ * block opened before its paragraph has any text cuts nothing and stays where it is. One held
+ * back longer than {@link #MAX_HELD_CHARACTERS} is written where it stands, so memory stays
+ * bounded.
  */
-final class AnchoredParagraphHandler extends ContentHandlerDecorator {
+final class AnchoredBlockHandler extends ContentHandlerDecorator {
 
     private static final String PARAGRAPH = "p";
     private static final int MAX_HELD_CHARACTERS = 1 << 20;
@@ -27,73 +30,84 @@ final class AnchoredParagraphHandler extends ContentHandlerDecorator {
 
     private final List<Event> held = new ArrayList<>();
     private int heldCharacters;
-    private int paragraphs;
-    private int holding;
+    private int depth;
+    private int paragraphDepth;
+    private boolean paragraphHasText;
+    private int holdingDepth;
+    private boolean afterHeld;
 
-    AnchoredParagraphHandler(ContentHandler handler) {
+    AnchoredBlockHandler(ContentHandler handler) {
         super(handler);
     }
 
     @Override
     public void startElement(String uri, String localName, String name, Attributes atts)
             throws SAXException {
-        if (PARAGRAPH.equals(localName)) {
-            paragraphs++;
-            if (paragraphs > 1 && holding == 0) {
-                holding = paragraphs;
-            }
+        depth++;
+        afterHeld = false;
+        if (holdingDepth == 0 && paragraphDepth != 0 && paragraphHasText
+                && BlockBreakHandler.BLOCKS.contains(localName)) {
+            holdingDepth = depth;
         }
-        if (holding == 0) {
-            super.startElement(uri, localName, name, atts);
+        if (holdingDepth != 0) {
+            final Attributes copy = new AttributesImpl(atts);
+            held.add(() -> AnchoredBlockHandler.super.startElement(uri, localName, name, copy));
             return;
         }
-        final Attributes copy = new AttributesImpl(atts);
-        held.add(() -> AnchoredParagraphHandler.super.startElement(uri, localName, name, copy));
+        super.startElement(uri, localName, name, atts);
+        if (paragraphDepth == 0 && PARAGRAPH.equals(localName)) {
+            paragraphDepth = depth;
+            paragraphHasText = false;
+        }
     }
 
     @Override
     public void endElement(String uri, String localName, String name) throws SAXException {
-        if (holding != 0) {
-            held.add(() -> AnchoredParagraphHandler.super.endElement(uri, localName, name));
+        if (holdingDepth != 0) {
+            held.add(() -> AnchoredBlockHandler.super.endElement(uri, localName, name));
+            if (depth == holdingDepth) {
+                holdingDepth = 0;
+                afterHeld = true;
+            }
         } else {
+            afterHeld = false;
             super.endElement(uri, localName, name);
+            if (depth == paragraphDepth) {
+                paragraphDepth = 0;
+                release();
+            }
         }
-        if (!PARAGRAPH.equals(localName)) {
-            return;
-        }
-        if (paragraphs == holding) {
-            holding = 0;
-        }
-        paragraphs--;
-        if (paragraphs == 0) {
-            release();
-        }
+        depth--;
     }
 
     @Override
     public void characters(char[] characters, int start, int length) throws SAXException {
-        if (holding == 0) {
+        final boolean blank = new String(characters, start, length).isBlank();
+        afterHeld &= blank;
+        if (holdingDepth == 0 && !afterHeld) {
             super.characters(characters, start, length);
+            paragraphHasText |= paragraphDepth != 0 && !blank;
             return;
         }
         final char[] copy = Arrays.copyOfRange(characters, start, start + length);
-        held.add(() -> AnchoredParagraphHandler.super.characters(copy, 0, copy.length));
+        held.add(() -> AnchoredBlockHandler.super.characters(copy, 0, copy.length));
         heldCharacters += length;
         if (heldCharacters > MAX_HELD_CHARACTERS) {
             release();
-            holding = 0;
+            holdingDepth = 0;
+            afterHeld = false;
         }
     }
 
     @Override
     public void ignorableWhitespace(char[] characters, int start, int length)
             throws SAXException {
-        if (holding == 0) {
+        if (holdingDepth == 0 && !afterHeld) {
             super.ignorableWhitespace(characters, start, length);
             return;
         }
         final char[] copy = Arrays.copyOfRange(characters, start, start + length);
-        held.add(() -> AnchoredParagraphHandler.super.ignorableWhitespace(copy, 0, copy.length));
+        held.add(() -> AnchoredBlockHandler.super.ignorableWhitespace(copy, 0, copy.length));
     }
 
     @Override

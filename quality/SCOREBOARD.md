@@ -28,6 +28,10 @@
 | thai.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hindi.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hindi.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| notes.odt | notes | 0.006 | 0.017 | 1.000 | 0.017 | 1.000 |
+| notes.docx | notes | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| notes.doc | notes | 0.278 | 0.271 | 1.000 | 0.000 | 0.857 |
+| notes.pdf | notes | 0.009 | 0.034 | 0.983 | 0.033 | 1.000 |
 | revisions.odt | revisions | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | revisions.docx | revisions | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | revisions.doc | revisions | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

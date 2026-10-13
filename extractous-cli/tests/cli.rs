@@ -1336,6 +1336,18 @@ fn table_cells_holding_paragraphs_share_their_row() {
 }
 
 #[test]
+fn a_footnote_reference_keeps_its_sentence_whole() {
+    for extension in ["odt", "docx", "doc"] {
+        for text in notes_text(extension) {
+            assert!(
+                text.contains("every ship he recorded in the ledger."),
+                "{extension}: {text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn comments_follow_the_sentence_they_are_anchored_in() {
     for extension in ["odt", "docx", "doc"] {
         let path = format!("../quality/corpus/revisions.{extension}");

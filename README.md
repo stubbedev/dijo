@@ -240,16 +240,17 @@ text output each embedded document starts with a `=== path ===` line. Exceeding 
 `quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
 HTML and EPUB, two-column PDFs (one drawn right column first), a report with running headers and footers, Arabic,
 Hebrew, Chinese, Japanese (also written vertically), Thai, Hindi and German documents, tables, Word and OpenDocument
-files with tracked changes, a comment and hidden text, a PDF hyphenated by TeX, PDFs with broken text layers, and scans
-at 300 and 150 dpi, skewed and rotated. Every extraction is scored against its truth: character and token error rate,
-recall (the share of the truth's words that were extracted at all), spurious text and paragraph order. The test suite
-fails when a score gets worse than `quality/baseline.json` allows, so CI holds every change to it.
+files with tracked changes, a comment and hidden text, a document with a footnote, a sidebar and a captioned table, a
+PDF hyphenated by TeX, PDFs with broken text layers, and scans at 300 and 150 dpi, skewed and rotated. Every extraction
+is scored against its truth: character and token error rate, recall (the share of the truth's words that were extracted
+at all), spurious text and paragraph order. The test suite fails when a score gets worse than `quality/baseline.json`
+allows, so CI holds every change to it.
 [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores; `just quality` refreshes it,
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.864, Kreuzberg 0.670 and Docling 0.668, at
-a token error rate of 0.008 against 0.196, 0.482 and 0.409. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.871, Kreuzberg 0.680 and Docling 0.669, at
+a token error rate of 0.012 against 0.198, 0.470 and 0.403. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
