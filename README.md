@@ -352,6 +352,8 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace, compiling Tika on first run |
+| `just ocr-bundle [dir]` | Assemble a statically linked tesseract, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` |
+| `just static` | Build the statically linked Linux executable with tesseract linked in, into `target/static-image/extractous` (uses nix) |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
 | `just quality` | Score extraction against the quality corpus and write quality/SCOREBOARD.md |
