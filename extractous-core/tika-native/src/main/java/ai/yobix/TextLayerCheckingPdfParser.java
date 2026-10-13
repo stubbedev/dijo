@@ -283,7 +283,7 @@ final class TextLayerCheckingPdfParser implements Parser {
                 text.replay(downstream);
                 final Recording ocrText = ocr(index);
                 if (ocrText != null) {
-                    ocrText.replay(downstream);
+                    useOcr(ocrText);
                 }
                 return;
             }
@@ -298,7 +298,15 @@ final class TextLayerCheckingPdfParser implements Parser {
                 return;
             }
             metadata.add(REJECTED_TEXT_LAYER, (index + 1) + ":" + layer.fault());
+            useOcr(ocrText);
+        }
+
+        /** Passes on a page's OCR text, with the report of how its image was read. */
+        private void useOcr(Recording ocrText) throws SAXException {
             ocrText.replay(downstream);
+            for (final String report : ocrText.reports) {
+                metadata.add(OcrReport.KEY, report);
+            }
         }
 
         private boolean readsBetter(Recording ocrText, TextLayerQuality.Assessment layer,
@@ -332,6 +340,7 @@ final class TextLayerCheckingPdfParser implements Parser {
                     ocr.parse(input, new EmbeddedContentHandler(new BodyContentHandler(ocrText)),
                             pageMetadata, context);
                 }
+                ocrText.reports = pageMetadata.getValues(OcrReport.KEY);
                 return ocrText;
             } catch (IOException | TikaException e) {
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
@@ -351,6 +360,7 @@ final class TextLayerCheckingPdfParser implements Parser {
 
         private final List<Event> events = new ArrayList<>();
         private final StringBuilder text = new StringBuilder();
+        private String[] reports = new String[0];
 
         String text() {
             return text.toString();

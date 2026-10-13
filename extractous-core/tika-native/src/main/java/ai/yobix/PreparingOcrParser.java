@@ -106,6 +106,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                 final BufferedImage image = pages == null ? null : pages.read(0);
                 final Prepared prepared = prepare(original, image, metadata, auto, temporary);
                 prepared.configure(configured);
+                metadata.add(OcrReport.KEY, prepared.report(
+                        metadata.getInt(TikaPagedText.PAGE_NUMBER), configured));
                 try (TikaInputStream preparedInput = prepared.path == null
                         ? null : TikaInputStream.get(prepared.path)) {
                     ocr.parse(preparedInput == null ? input : preparedInput, handler, metadata,
@@ -130,7 +132,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             } else {
                 final Path page = write(image, temporary);
                 final Prepared prepared = prepare(page, image, metadata, auto, temporary);
-                prepared.configure(context.get(TesseractOCRConfig.class));
+                final TesseractOCRConfig configured = context.get(TesseractOCRConfig.class);
+                prepared.configure(configured);
+                metadata.add(OcrReport.KEY, prepared.report(index + 1, configured));
                 final Metadata pageMetadata = new Metadata();
                 pageMetadata.set(TikaPagedText.PAGE_NUMBER, index + 1);
                 try (TikaInputStream input = TikaInputStream.get(
@@ -145,11 +149,31 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     }
 
     /**
-     * @param path           the prepared image, or null when the original reads as it is
-     * @param language       the language to read the image in, when it was detected
-     * @param unevenLighting whether the image is lit unevenly
+     * @param path            the prepared image, or null when the original reads as it is
+     * @param language        the language to read the image in, when it was detected
+     * @param unevenLighting  whether the image is lit unevenly
+     * @param script          the script detection found, or null
+     * @param exifOrientation the EXIF orientation applied, or null
+     * @param decoded         whether Java decoded the image to prepare it
+     * @param quarterTurns    the clockwise quarter turns detection found and applied
+     * @param skewDegrees     the skew corrected
+     * @param scale           the enlargement applied
      */
-    private record Prepared(Path path, String language, boolean unevenLighting) {
+    private record Prepared(Path path, String language, boolean unevenLighting, String script,
+                            String exifOrientation, boolean decoded, int quarterTurns,
+                            double skewDegrees, double scale) {
+
+        String report(Integer page, TesseractOCRConfig configured) {
+            final String model = language != null ? language
+                    : configured != null ? configured.getLanguage()
+                    : new TesseractOCRConfig().getLanguage();
+            return OcrReport.of(model)
+                    .page(page)
+                    .script(script)
+                    .exifOrientation(exifOrientation)
+                    .prepared(decoded, quarterTurns, skewDegrees, scale, unevenLighting)
+                    .json();
+        }
 
         void configure(TesseractOCRConfig config) {
             if (config instanceof OcrConfig ocrConfig) {
@@ -170,21 +194,27 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      */
     private Prepared prepare(Path original, BufferedImage image, Metadata metadata, OcrConfig auto,
                              TemporaryResources temporary) throws IOException, TikaException {
+        final String orientation = metadata.get(TIFF.ORIENTATION);
         BufferedImage upright = image == null
-                ? null : OcrImages.applyOrientation(image, metadata.get(TIFF.ORIENTATION));
+                ? null : OcrImages.applyOrientation(image, orientation);
+        final String exifOrientation = upright != image ? orientation : null;
         String language = null;
+        String script = null;
+        int quarterTurns = 0;
         if (auto != null) {
             final Path analysed = upright == null || upright == image
                     ? original : write(upright, temporary);
             final ScriptDetection.Result detected =
                     ScriptDetection.detect(tesseract, analysed, auto.getTimeoutMillis());
             language = ScriptDetection.language(tesseract, detected.script());
+            script = detected.script();
             if (upright != null && detected.clockwiseQuarterTurns() != 0) {
                 upright = OcrImages.turnClockwise(upright, detected.clockwiseQuarterTurns());
+                quarterTurns = detected.clockwiseQuarterTurns();
             }
         }
         if (upright == null) {
-            return new Prepared(null, language, false);
+            return new Prepared(null, language, false, script, null, false, 0, 0, 1);
         }
         final double skew = OcrImages.skewDegrees(upright);
         if (skew != 0) {
@@ -195,7 +225,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             upright = OcrImages.scale(upright, upscale);
         }
         return new Prepared(upright == image ? null : write(upright, temporary), language,
-                OcrImages.unevenLighting(upright));
+                OcrImages.unevenLighting(upright), script, exifOrientation, true, quarterTurns, skew,
+                Math.max(upscale, 1));
     }
 
     private static Path write(BufferedImage image, TemporaryResources temporary)

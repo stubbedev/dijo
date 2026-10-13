@@ -155,6 +155,57 @@
               "const": true,
               "description": "Present when the document needed a password and one of the given passwords opened it."
             },
+            "ocr": {
+              "type": "array",
+              "description": "How each image or page OCR read was read: the model, the script detection found, and what was done to make the image readable first. An embedded image's report is in its own record.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["language", "prepared", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
+                "properties": {
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The page of a PDF or multi-page image, absent for a single image."
+                  },
+                  "language": {
+                    "type": "string",
+                    "description": "The tesseract model read with, such as eng, ara or script/Latin."
+                  },
+                  "script": {
+                    "type": "string",
+                    "description": "The script orientation and script detection found, without --ocr-lang."
+                  },
+                  "exif_orientation": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "description": "The EXIF orientation the image was turned upright by."
+                  },
+                  "prepared": {
+                    "type": "boolean",
+                    "description": "Whether the image could be decoded to prepare it; one that could not went to tesseract as it was."
+                  },
+                  "turned_degrees": {
+                    "enum": [0, 90, 180, 270],
+                    "description": "The clockwise turn orientation detection found and applied."
+                  },
+                  "deskewed_degrees": {
+                    "type": "number",
+                    "description": "The skew of the text lines that was corrected."
+                  },
+                  "scale": {
+                    "type": "number",
+                    "minimum": 1,
+                    "description": "The enlargement applied to text too small to read."
+                  },
+                  "thresholded": {
+                    "type": "boolean",
+                    "description": "Whether the image was thresholded for uneven lighting."
+                  }
+                }
+              }
+            },
             "rejected_text_layers": {
               "type": "array",
               "description": "PDF pages whose text layer was garbage, or read worse than OCR, and was replaced by OCR text under --ocr auto, with the signal that rejected it.",

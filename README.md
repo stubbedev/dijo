@@ -50,7 +50,9 @@ control characters, symbols where letters should be, words mixing alphabets, too
 in Latin script, Arabic words split into one-letter fragments, or mostly unmapped glyphs (broken `ToUnicode` maps,
 custom font encodings). A page that is only
 doubtful is OCRed as well and keeps whichever text reads better. The JSON metadata lists each replaced page and the
-reason under `rejected_text_layers`. Clean pages are never OCRed.
+reason under `rejected_text_layers`. Clean pages are never OCRed. Every image or page OCR reads gets a report under
+`ocr` in the JSON metadata: the model it was read with, the script detected, and the EXIF orientation, turn, deskewing,
+enlargement and thresholding applied to it first.
 
 ## Usage
 

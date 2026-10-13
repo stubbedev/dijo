@@ -1384,6 +1384,39 @@ fn an_image_no_decoder_reads_is_reported_rather_than_passed_off_as_empty() {
 }
 
 #[test]
+fn each_ocred_image_reports_how_it_was_read() {
+    let objects = json_objects(&[
+        "../quality/corpus/prose-scan-rotated.png",
+        "../quality/corpus/arabic-scan-300dpi.png",
+        "../quality/corpus/report-scan.tif",
+    ]);
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    let reports = |index: usize| {
+        objects[index]["metadata"]["ocr"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+
+    let rotated = &reports(0)[0];
+    assert_eq!(rotated["turned_degrees"], 270, "{rotated}");
+    assert_eq!(rotated["script"], "Latin", "{rotated}");
+    assert_eq!(rotated["prepared"], true, "{rotated}");
+
+    let arabic = &reports(1)[0];
+    assert_eq!(arabic["script"], "Arabic", "{arabic}");
+    assert_eq!(arabic["language"], "ara", "{arabic}");
+
+    let pages: Vec<_> = reports(2)
+        .iter()
+        .map(|report| report["page"].clone())
+        .collect();
+    assert_eq!(pages, [1, 2]);
+}
+
+#[test]
 fn a_clean_pdf_text_layer_is_kept() {
     let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
     for document in &objects {

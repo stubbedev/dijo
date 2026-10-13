@@ -23,6 +23,7 @@ struct TikaKeys {
     password_used: &'static [&'static str],
     content_type: &'static [&'static str],
     rejected_text_layers: &'static [&'static str],
+    ocr: &'static [&'static str],
 }
 
 const TIKA_KEYS: TikaKeys = TikaKeys {
@@ -46,6 +47,7 @@ const TIKA_KEYS: TikaKeys = TikaKeys {
     password_used: &["extractous:password-used"],
     content_type: &["Content-Type"],
     rejected_text_layers: &["extractous:rejected-text-layer"],
+    ocr: &["extractous:ocr"],
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,7 +275,26 @@ impl RejectedTextLayer {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+/// How an image or page was read by OCR: the model, what script detection found, and what was
+/// done to make the image readable first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OcrReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    pub language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exif_orientation: Option<u8>,
+    pub prepared: bool,
+    pub turned_degrees: u16,
+    pub deskewed_degrees: f64,
+    pub scale: f64,
+    pub thresholded: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct NormalizedMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -293,6 +314,8 @@ pub struct NormalizedMetadata {
     pub decrypted: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_text_layers: Vec<RejectedTextLayer>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ocr: Vec<OcrReport>,
 }
 
 fn values<'a>(metadata: &'a Metadata, keys: &[&str]) -> &'a [String] {
@@ -339,6 +362,10 @@ pub fn normalize(metadata: &Metadata) -> NormalizedMetadata {
         rejected_text_layers: values(metadata, TIKA_KEYS.rejected_text_layers)
             .iter()
             .filter_map(|value| RejectedTextLayer::parse(value))
+            .collect(),
+        ocr: values(metadata, TIKA_KEYS.ocr)
+            .iter()
+            .filter_map(|value| serde_json::from_str(value).ok())
             .collect(),
     }
 }
