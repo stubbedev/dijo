@@ -1,6 +1,7 @@
 //! The extractous command line: one-shot extraction and the HTTP server. [`fuzz`] exposes the
 //! parsers of untrusted input to the coverage-guided fuzz targets in `fuzz/`.
 
+mod batch;
 mod cache;
 mod cli;
 mod inputs;
@@ -169,7 +170,10 @@ fn run_command(cli: Cli) -> bool {
         Some(Command::Detect(args)) => detect(&args),
         Some(Command::Serve(args)) => server::serve(&args),
         Some(Command::Worker(args)) => server::work(&args),
-        None => extract(&cli.extract),
+        None => match &cli.extract.batch_worker {
+            Some(spool_dir) => batch::serve(&cli.extract, spool_dir),
+            None => extract(&cli.extract),
+        },
     }
 }
 
@@ -274,8 +278,8 @@ fn stdout_failed(error: &io::Error) -> bool {
 }
 
 /// The `--password` values in order, then the lines of `--password-file`.
-fn read_passwords(args: &ExtractArgs) -> Result<Vec<Password>, String> {
-    let mut passwords: Vec<Password> = args.passwords.iter().map(Password::new).collect();
+fn read_passwords(args: &ExtractArgs) -> Result<Vec<String>, String> {
+    let mut passwords = args.passwords.clone();
     if let Some(path) = &args.password_file {
         let contents = fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
@@ -283,10 +287,27 @@ fn read_passwords(args: &ExtractArgs) -> Result<Vec<Password>, String> {
             contents
                 .lines()
                 .filter(|line| !line.is_empty())
-                .map(Password::new),
+                .map(str::to_string),
         );
     }
     Ok(passwords)
+}
+
+/// The extractor and cache every input of a run is extracted with, or what failed and why.
+fn prepare(
+    args: &ExtractArgs,
+    passwords: Vec<String>,
+) -> Result<(Extractor, Option<Cache>), (&'static str, String)> {
+    let extractor = settings::extractor(
+        render_options(args),
+        args.ocr,
+        args.ocr_lang.as_deref(),
+        passwords.iter().map(Password::new).collect(),
+        args.timeout.map(Duration::from_secs),
+    );
+    let cache = Cache::from_args(&args.cache, args.cache_trust_mtime)
+        .map_err(|error| ("--cache-dir", error))?;
+    Ok((extractor, cache))
 }
 
 /// Where one input's output goes.
@@ -327,32 +348,34 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let options = render_options(args);
-    let extractor = settings::extractor(
-        options,
-        args.ocr,
-        args.ocr_lang.as_deref(),
-        passwords,
-        args.timeout.map(Duration::from_secs),
-    );
-    let cache = match Cache::from_args(&args.cache, args.cache_trust_mtime) {
-        Ok(cache) => cache,
-        Err(error) => {
-            report("--cache-dir", &error);
+    let workers = args.jobs.get().min(inputs.len().max(1));
+    let processes = workers.div_ceil(batch::JOBS_PER_PROCESS);
+    let (sender, receiver) = mpsc::channel::<(usize, Finished)>();
+    if processes > 1 {
+        return thread::scope(|scope| {
+            let (inputs, spool) = (&inputs, &spool);
+            scope.spawn(move || {
+                batch::extract(args, inputs, spool.dir(), &passwords, processes, &sender);
+            });
+            emit_in_order(receiver, args.format, args.strict)
+        });
+    }
+    let (extractor, cache) = match prepare(args, passwords) {
+        Ok(prepared) => prepared,
+        Err((what, error)) => {
+            report(what, &error);
             return false;
         }
     };
-    let workers = args.jobs.get().min(inputs.len().max(1));
     let context = Context {
         extractor: &extractor,
         args,
-        options,
+        options: render_options(args),
         cache: cache.as_ref(),
-        spool: &spool,
-        workers,
+        spool_dir: spool.dir(),
+        stream_to_stdout: workers == 1,
     };
     let next = AtomicUsize::new(0);
-    let (sender, receiver) = mpsc::channel::<(usize, Finished)>();
 
     let succeeded = thread::scope(|scope| {
         for _ in 0..workers {
@@ -384,8 +407,10 @@ struct Context<'a> {
     args: &'a ExtractArgs,
     options: RenderOptions,
     cache: Option<&'a Cache>,
-    spool: &'a Spool,
-    workers: usize,
+    spool_dir: &'a Path,
+    /// Whether output goes straight to standard output, as it can when one input is extracted
+    /// at a time, rather than through the spool.
+    stream_to_stdout: bool,
 }
 
 fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) -> Finished {
@@ -394,8 +419,8 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
         args,
         options,
         cache,
-        spool,
-        workers,
+        spool_dir,
+        stream_to_stdout,
     } = *context;
     let Resolved { input, path } = match input {
         Ok(resolved) => resolved,
@@ -409,14 +434,7 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
             }
         }
     };
-    let sink = match &args.output {
-        Some(dir) => Sink::OutputFile(
-            dir.join(&input.output_path)
-                .with_added_extension(args.format.file_extension()),
-        ),
-        None if workers == 1 => Sink::Stdout,
-        None => Sink::Spooled(spool.path(&format!("{index}.out"))),
-    };
+    let sink = sink(args, spool_dir, index, input, stream_to_stdout);
     let keep_failed = matches!(args.format, Format::Json | Format::Pages | Format::Elements);
     let rendered = write_sink(&sink, keep_failed, |writer| match args.embedded {
         Embedded::Inline => {
@@ -439,7 +457,7 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
             }
         }
         Embedded::Separate => {
-            let scratch = spool.path(&format!("{index}.embedded"));
+            let scratch = embedded_scratch(spool_dir, index);
             fs::create_dir(&scratch)?;
             let limits = tree::Limits {
                 max_depth: args.max_depth,
@@ -483,6 +501,33 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
             errors: Vec::new(),
         },
     }
+}
+
+fn sink(
+    args: &ExtractArgs,
+    spool_dir: &Path,
+    index: usize,
+    input: &Input,
+    stream_to_stdout: bool,
+) -> Sink {
+    match &args.output {
+        Some(dir) => Sink::OutputFile(
+            dir.join(&input.output_path)
+                .with_added_extension(args.format.file_extension()),
+        ),
+        None if stream_to_stdout => Sink::Stdout,
+        None => Sink::Spooled(spool_dir.join(format!("{index}.out"))),
+    }
+}
+
+/// Where the embedded documents of input `index` are kept while they are extracted.
+fn embedded_scratch(spool_dir: &Path, index: usize) -> PathBuf {
+    spool_dir.join(format!("{index}.embedded"))
+}
+
+/// The file an output file is written to by process `pid` before it is renamed into place.
+fn partial_output(path: &Path, pid: u32) -> PathBuf {
+    path.with_added_extension(format!("partial-{pid}"))
 }
 
 /// Why an input's output could not be written.
@@ -546,7 +591,7 @@ fn write_file_atomically(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let partial = path.with_added_extension(format!("partial-{}", std::process::id()));
+    let partial = partial_output(path, std::process::id());
     let written = write_file(&partial, render);
     match written {
         Ok(outcome)

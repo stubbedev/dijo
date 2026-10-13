@@ -312,10 +312,16 @@ pub struct ExtractArgs {
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]
     pub output: Option<PathBuf>,
 
-    /// Number of inputs extracted in parallel, by default the cores up to 4, since extractions
-    /// share one isolate. Output stays in input order.
-    #[arg(short, long, env = "EXTRACTOUS_JOBS", default_value_t = shared_isolate_jobs())]
+    /// Number of inputs extracted in parallel, by default one per core. Past two, they run in
+    /// worker processes of two each, since the extractions in a process share one isolate and
+    /// contend in it. Output stays in input order.
+    #[arg(short, long, env = "EXTRACTOUS_JOBS", default_value_t = cores())]
     pub jobs: NonZeroUsize,
+
+    /// Run as a worker process of another extractous, extracting the jobs it sends into its
+    /// spool directory DIR.
+    #[arg(long, hide = true, value_name = "DIR", env = crate::batch::WORKER_VARIABLE)]
+    pub batch_worker: Option<PathBuf>,
 
     /// When to run OCR: on PDF pages and images without a text layer, never, or on every PDF
     /// page in addition to its text layer.

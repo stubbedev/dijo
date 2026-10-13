@@ -187,6 +187,88 @@ fn a_failed_input_does_not_stop_the_batch() {
 }
 
 #[test]
+fn worker_processes_give_the_same_output_in_input_order() {
+    let missing = document("does-not-exist.pdf");
+    let inputs = [
+        document("simple.odt"),
+        "-".to_string(),
+        missing.clone(),
+        document("category-level.docx"),
+        document("2022_Q3_AAPL.pdf"),
+        "../quality/corpus/danish.docx".to_string(),
+        "../quality/corpus/prose.rtf".to_string(),
+    ];
+    let run = |jobs: &str| {
+        let mut args = vec!["--format", "json", "--metadata", "--jobs", jobs];
+        args.extend(inputs.iter().map(String::as_str));
+        extractous_with_stdin(&args, Some(b"plain text from standard input\n"))
+    };
+    let in_process = run("1");
+    let in_workers = run("6");
+    assert_eq!(in_workers.status.code(), Some(1));
+    assert_eq!(in_process.status.code(), in_workers.status.code());
+    assert_eq!(stdout(&in_process), stdout(&in_workers));
+    assert!(stdout(&in_workers).contains("plain text from standard input"));
+    assert_eq!(stdout(&in_workers).lines().count(), inputs.len());
+    assert!(stderr(&in_workers).contains(&format!("extractous: {missing}: ")));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_killed_worker_process_does_not_lose_its_documents() {
+    let scratch = Scratch::new("killed-worker");
+    let inputs: Vec<String> = (0..24)
+        .map(|index| {
+            let path = scratch.0.join(format!("report-{index:02}.pdf"));
+            fs::copy(document("2022_Q3_AAPL.pdf"), &path).unwrap();
+            path.to_str().unwrap().to_string()
+        })
+        .collect();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(["--format", "json", "--jobs", "4"])
+        .args(&inputs)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let parent = child.id().to_string();
+    let worker = loop {
+        let found = fs::read_dir("/proc").unwrap().find_map(|entry| {
+            let pid = entry.ok()?.file_name().into_string().ok()?;
+            let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let after_name = &stat[stat.rfind(')')? + 2..];
+            let ppid = after_name.split(' ').nth(1)?;
+            (ppid == parent).then_some(pid)
+        });
+        if let Some(pid) = found {
+            break pid;
+        }
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "no worker process started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(Command::new("kill")
+        .args(["-KILL", &worker])
+        .status()
+        .unwrap()
+        .success());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let records: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), inputs.len());
+    for (record, input) in records.iter().zip(&inputs) {
+        assert_eq!(record["source"]["path"], input.as_str());
+        assert_eq!(record["status"], "complete", "{record}");
+    }
+}
+
+#[test]
 fn a_directory_needs_recursive() {
     let output = extractous(&[DOCUMENTS]);
     assert_eq!(output.status.code(), Some(1));

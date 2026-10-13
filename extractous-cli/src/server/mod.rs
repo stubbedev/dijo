@@ -1,6 +1,8 @@
 mod handlers;
 mod metrics;
 mod processes;
+
+pub(crate) use processes::answer_channel;
 mod upload;
 mod workers;
 

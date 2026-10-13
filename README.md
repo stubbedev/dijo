@@ -88,7 +88,7 @@ extractous detect mystery.bin                 # application/pdf
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
 | `-r, --recursive` | Descend into directories, in sorted order |
-| `-j, --jobs <N>` | Inputs extracted in parallel (default: the number of cores, at most 4, past which extractions in the one shared isolate slow each other down); output stays in input order |
+| `-j, --jobs <N>` | Inputs extracted in parallel (default: the number of cores). Past two, they run in worker processes of two each, since extractions sharing one isolate slow each other down: 120 copies of a 28-page PDF take 3.2 s on 12 hardware threads, against 6.4 s in one process, at about 130 MiB per worker process. A worker process that crashes costs only the document it was extracting alone. Output stays in input order |
 | `--ocr auto\|never\|always` | OCR images, and PDF pages without text or with a garbage text layer (default); never; or every PDF page as well |
 | `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image from its script by default |
 

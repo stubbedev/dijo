@@ -127,7 +127,7 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 /// The pipe a worker process answers on: its standard output, which from then on goes to
 /// standard error, so nothing a parser prints can corrupt the answers.
 #[cfg(unix)]
-fn answer_channel() -> io::Result<File> {
+pub(crate) fn answer_channel() -> io::Result<File> {
     use std::os::fd::AsFd;
     let channel = io::stdout().as_fd().try_clone_to_owned()?;
     if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO) } < 0 {
@@ -137,7 +137,7 @@ fn answer_channel() -> io::Result<File> {
 }
 
 #[cfg(windows)]
-fn answer_channel() -> io::Result<File> {
+pub(crate) fn answer_channel() -> io::Result<File> {
     use std::os::windows::io::AsHandle;
     Ok(File::from(io::stdout().as_handle().try_clone_to_owned()?))
 }
