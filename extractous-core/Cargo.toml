@@ -16,6 +16,12 @@ name = "extractor"
 harness = false
 required-features = []
 
+[features]
+# Build for the statically linked Linux executable, where this crate is linked into the GraalVM
+# native image of Tika and uses the Java VM that image runs, instead of loading the image as a
+# shared library: ci/static-image.sh builds it.
+static-image = []
+
 [dependencies]
 libc = { version = "0.2.178" }
 jni = { version = "0.22.4" }

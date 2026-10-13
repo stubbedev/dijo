@@ -8,6 +8,11 @@ license = "Apache-2.0"
 repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 
+[features]
+# Link into the statically linked Linux executable instead of loading Tika as a shared library;
+# ci/static-image.sh builds it.
+static-image = ["extractous-core/static-image"]
+
 [[bin]]
 name = "extractous"
 path = "src/main.rs"

@@ -19,12 +19,13 @@ mod tree;
 pub mod fuzz;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -48,7 +49,46 @@ const LICENSES: &str = concat!(
 
 /// Runs the command line on the process's arguments.
 pub fn main() -> ExitCode {
-    let cli = Cli::parse();
+    if run_program(std::env::args_os().collect()) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The entry point of the statically linked executable, which the Java `main` of the native
+/// image calls with its command line: 0 on success, 1 on failure, as `main` exits with.
+#[cfg(feature = "static-image")]
+#[unsafe(no_mangle)]
+pub extern "C" fn extractous_main(
+    argc: std::ffi::c_int,
+    argv: *const *const std::ffi::c_char,
+) -> std::ffi::c_int {
+    use std::os::unix::ffi::OsStrExt;
+    let arguments = (0..usize::try_from(argc).unwrap_or(0))
+        .map(|index| {
+            let argument = unsafe { std::ffi::CStr::from_ptr(*argv.add(index)) };
+            std::ffi::OsStr::from_bytes(argument.to_bytes()).to_os_string()
+        })
+        .collect();
+    std::ffi::c_int::from(!run_program(arguments))
+}
+
+static ARGUMENTS: OnceLock<Vec<OsString>> = OnceLock::new();
+
+/// The arguments the program was run with, without the program name: those a worker process is
+/// started with too.
+fn arguments() -> &'static [OsString] {
+    ARGUMENTS
+        .get()
+        .map_or(&[], |arguments| arguments.get(1..).unwrap_or(&[]))
+}
+
+fn run_program(arguments: Vec<OsString>) -> bool {
+    let cli = Cli::parse_from(&arguments);
+    ARGUMENTS
+        .set(arguments)
+        .expect("the command line runs once per process");
     if let Some(conflict) = usage_conflict(&cli) {
         Cli::command()
             .error(ErrorKind::ArgumentConflict, conflict)
@@ -60,11 +100,7 @@ pub fn main() -> ExitCode {
         run_command(cli)
     };
     wait_for_stopping_extractions();
-    if succeeded {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    succeeded
 }
 
 /// How long to wait at exit for cancelled extractions to stop, so the tesseract processes they

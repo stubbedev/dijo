@@ -1,5 +1,4 @@
 use std::env;
-use std::ffi::{c_void, CString};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -7,82 +6,267 @@ use std::process;
 use std::sync::OnceLock;
 
 use flate2::read::GzDecoder;
-use jni::{sys, JavaVM};
-use libloading::Library;
 
 use crate::IsolateSettings;
 
 include!(concat!(env!("OUT_DIR"), "/native.rs"));
 
-type CreateJavaVm =
-    unsafe extern "system" fn(*mut *mut sys::JavaVM, *mut *mut c_void, *mut c_void) -> sys::jint;
+#[cfg(not(feature = "static-image"))]
+pub(crate) use shared_library::create_isolate;
+#[cfg(feature = "static-image")]
+pub(crate) use static_image::create_isolate;
 
-/// The Tika native library, loaded once and kept loaded for the life of the process.
-struct Loaded {
-    dir: PathBuf,
-    create_java_vm: CreateJavaVm,
-    _library: Library,
+/// The files the build embedded, unpacked once into a cache directory named after them.
+fn unpacked() -> Result<&'static Path, String> {
+    static UNPACKED: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    UNPACKED
+        .get_or_init(install_dir)
+        .as_ref()
+        .map(PathBuf::as_path)
+        .map_err(Clone::clone)
 }
 
-fn loaded() -> Result<&'static Loaded, String> {
-    static LOADED: OnceLock<Result<Loaded, String>> = OnceLock::new();
-    LOADED.get_or_init(load).as_ref().map_err(Clone::clone)
-}
-
-/// Unpacks the embedded native libraries and loads Tika from them.
-fn load() -> Result<Loaded, String> {
-    let dir = install_dir()?;
-    #[cfg(windows)]
-    search_dependencies_in(&dir)?;
-    let library_path = dir.join(TIKA_LIBRARY);
-    let library = open_globally(&library_path)
-        .map_err(|e| format!("Failed to load {}: {e}", library_path.display()))?;
-    let create_java_vm = *unsafe { library.get::<CreateJavaVm>(b"JNI_CreateJavaVM\0") }
-        .map_err(|e| format!("{} has no JNI_CreateJavaVM: {e}", library_path.display()))?;
-    Ok(Loaded {
-        dir,
-        create_java_vm,
-        _library: library,
-    })
-}
-
-/// Loads the library with its symbols visible to every library loaded after it. The JDK shims
-/// GraalVM emits beside it (libjvm, libjava) resolve the JNI invocation functions by name at
-/// run time, and on macOS they cannot see into a library opened with RTLD_LOCAL: AWT's
-/// JNI_OnLoad then spins forever in JNU_GetEnv.
-#[cfg(unix)]
-fn open_globally(path: &Path) -> Result<Library, libloading::Error> {
-    use libloading::os::unix::{Library as UnixLibrary, RTLD_GLOBAL, RTLD_NOW};
-    unsafe { UnixLibrary::open(Some(path), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from)
-}
-
-#[cfg(windows)]
-fn open_globally(path: &Path) -> Result<Library, libloading::Error> {
-    unsafe { Library::new(path) }
-}
-
-/// Windows resolves a DLL's dependencies from the application directory, the system directories
-/// and PATH, not from the DLL's own directory, so awt.dll would not find the jvm.dll and
-/// java.dll shims unpacked next to it.
-#[cfg(windows)]
-fn search_dependencies_in(dir: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let wide: Vec<u16> = dir
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let succeeded =
-        unsafe { windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr()) };
-    if succeeded == 0 {
-        return Err(format!(
-            "Failed to add {} to the DLL search path: {}",
-            dir.display(),
-            io::Error::last_os_error()
+/// The system properties Tika is started with: its temporary directory, headless AWT and the
+/// bundled tesseract.
+fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
+    let mut properties = vec![("java.awt.headless", "true".to_string())];
+    if let Some(dir) = &settings.temp_dir {
+        let dir = dir
+            .to_str()
+            .ok_or_else(|| format!("The temporary directory {} is not UTF-8", dir.display()))?;
+        properties.push(("java.io.tmpdir", dir.to_string()));
+    }
+    if !OCR_FILES.is_empty() {
+        let dir = unpacked()?;
+        properties.push((
+            "extractous.ocr.tesseract",
+            dir.join(OCR_TESSERACT).display().to_string(),
+        ));
+        properties.push((
+            "extractous.ocr.tessdata",
+            dir.join(OCR_MODELS).display().to_string(),
         ));
     }
-    Ok(())
+    Ok(properties)
+}
+
+/// Every embedded file with its path below the unpacked directory.
+fn embedded_files() -> impl Iterator<Item = &'static (&'static str, &'static [u8])> {
+    #[cfg(not(feature = "static-image"))]
+    let files = NATIVE_LIBRARIES.iter().chain(&OCR_FILES);
+    #[cfg(feature = "static-image")]
+    let files = OCR_FILES.iter();
+    files
+}
+
+#[cfg(feature = "static-image")]
+mod static_image {
+    use jni::objects::JValue;
+    use jni::{sys, JavaVM};
+
+    use super::system_properties;
+    use crate::errors::Error;
+    use crate::tika::jni_utils::{jni_call_static_method, jni_new_string};
+    use crate::IsolateSettings;
+
+    const STATIC_IMAGE: &str = "ai/yobix/StaticImage";
+
+    unsafe extern "system" {
+        fn JNI_GetCreatedJavaVMs(
+            vms: *mut *mut sys::JavaVM,
+            size: sys::jsize,
+            count: *mut sys::jsize,
+        ) -> sys::jint;
+    }
+
+    /// The Java VM of the static image this crate is linked into, which started before the
+    /// program did, set up with what `create_isolate` of a shared library build passes as
+    /// options.
+    pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, String> {
+        let mut vm: *mut sys::JavaVM = std::ptr::null_mut();
+        let mut count: sys::jsize = 0;
+        let code = unsafe { JNI_GetCreatedJavaVMs(&mut vm, 1, &mut count) };
+        jni::errors::jni_error_code_to_result(code)
+            .map_err(|e| format!("Failed to find the Java VM of the static image: {e}"))?;
+        if count != 1 || vm.is_null() {
+            return Err(format!(
+                "The static image runs {count} Java VMs, expected one"
+            ));
+        }
+        let vm = unsafe { JavaVM::from_raw(vm) };
+        let properties = system_properties(settings)?;
+        let max_heap_bytes = settings.max_heap_bytes.map_or(0, |bytes| bytes.get());
+        vm.attach_current_thread_for_scope(|env| {
+            for (key, value) in &properties {
+                let key = jni_new_string(env, key)?;
+                let value = jni_new_string(env, value)?;
+                jni_call_static_method(
+                    env,
+                    STATIC_IMAGE,
+                    "setProperty",
+                    "Ljava/lang/String;Ljava/lang/String;",
+                    "V",
+                    &[JValue::Object(&key), JValue::Object(&value)],
+                )?;
+            }
+            if max_heap_bytes > 0 {
+                jni_call_static_method(
+                    env,
+                    STATIC_IMAGE,
+                    "setMaxHeapBytes",
+                    "J",
+                    "V",
+                    &[JValue::Long(max_heap_bytes as i64)],
+                )?;
+            }
+            Ok::<_, Error>(())
+        })
+        .map_err(|e| format!("Failed to configure the Java VM of the static image: {e}"))?;
+        Ok(vm)
+    }
+}
+
+#[cfg(not(feature = "static-image"))]
+mod shared_library {
+    use std::ffi::{c_void, CString};
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    use jni::{sys, JavaVM};
+    use libloading::Library;
+
+    use super::{system_properties, unpacked, TIKA_LIBRARY};
+    use crate::IsolateSettings;
+
+    type CreateJavaVm = unsafe extern "system" fn(
+        *mut *mut sys::JavaVM,
+        *mut *mut c_void,
+        *mut c_void,
+    ) -> sys::jint;
+
+    /// The Tika native library, loaded once and kept loaded for the life of the process.
+    struct Loaded {
+        dir: &'static Path,
+        create_java_vm: CreateJavaVm,
+        _library: Library,
+    }
+
+    fn loaded() -> Result<&'static Loaded, String> {
+        static LOADED: OnceLock<Result<Loaded, String>> = OnceLock::new();
+        LOADED.get_or_init(load).as_ref().map_err(Clone::clone)
+    }
+
+    /// Unpacks the embedded native libraries and loads Tika from them.
+    fn load() -> Result<Loaded, String> {
+        let dir = unpacked()?;
+        #[cfg(windows)]
+        search_dependencies_in(dir)?;
+        let library_path = dir.join(TIKA_LIBRARY);
+        let library = open_globally(&library_path)
+            .map_err(|e| format!("Failed to load {}: {e}", library_path.display()))?;
+        let create_java_vm = *unsafe { library.get::<CreateJavaVm>(b"JNI_CreateJavaVM\0") }
+            .map_err(|e| format!("{} has no JNI_CreateJavaVM: {e}", library_path.display()))?;
+        Ok(Loaded {
+            dir,
+            create_java_vm,
+            _library: library,
+        })
+    }
+
+    /// Loads the library with its symbols visible to every library loaded after it. The JDK shims
+    /// GraalVM emits beside it (libjvm, libjava) resolve the JNI invocation functions by name at
+    /// run time, and on macOS they cannot see into a library opened with RTLD_LOCAL: AWT's
+    /// JNI_OnLoad then spins forever in JNU_GetEnv.
+    #[cfg(unix)]
+    fn open_globally(path: &Path) -> Result<Library, libloading::Error> {
+        use libloading::os::unix::{Library as UnixLibrary, RTLD_GLOBAL, RTLD_NOW};
+        unsafe { UnixLibrary::open(Some(path), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from)
+    }
+
+    #[cfg(windows)]
+    fn open_globally(path: &Path) -> Result<Library, libloading::Error> {
+        unsafe { Library::new(path) }
+    }
+
+    /// Windows resolves a DLL's dependencies from the application directory, the system directories
+    /// and PATH, not from the DLL's own directory, so awt.dll would not find the jvm.dll and
+    /// java.dll shims unpacked next to it.
+    #[cfg(windows)]
+    fn search_dependencies_in(dir: &Path) -> Result<(), String> {
+        use std::os::windows::ffi::OsStrExt;
+
+        let wide: Vec<u16> = dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let succeeded =
+            unsafe { windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW(wide.as_ptr()) };
+        if succeeded == 0 {
+            return Err(format!(
+                "Failed to add {} to the DLL search path: {}",
+                dir.display(),
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Creates a new GraalVM isolate: a disjoint heap, so work in one isolate cannot exhaust or
+    /// corrupt another. Each call to JNI_CreateJavaVM in a native image creates one.
+    pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, String> {
+        let loaded = loaded()?;
+        let library_dir = loaded.dir;
+        let library_path = library_dir.to_str().ok_or_else(|| {
+            format!(
+                "The native library directory {} is not UTF-8",
+                library_dir.display()
+            )
+        })?;
+        let library_path_option = CString::new(format!("-Djava.library.path={library_path}"))
+            .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))?;
+        let max_heap_option = settings.max_heap_bytes.map(|bytes| {
+            CString::new(format!("-XX:MaxHeapSize={bytes}")).expect("a number has no NUL")
+        });
+        let property_options = system_properties(settings)?
+            .into_iter()
+            .map(|(key, value)| {
+                CString::new(format!("-D{key}={value}"))
+                    .map_err(|e| format!("Invalid value {value:?} of {key}: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut vm_options: Vec<sys::JavaVMOption> = [
+            Some(library_path_option.as_c_str()),
+            max_heap_option.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(property_options.iter().map(CString::as_c_str))
+        .map(|option| sys::JavaVMOption {
+            optionString: option.as_ptr().cast_mut(),
+            extraInfo: std::ptr::null_mut(),
+        })
+        .collect();
+        let mut args = sys::JavaVMInitArgs {
+            version: sys::JNI_VERSION_1_8,
+            nOptions: vm_options.len() as sys::jint,
+            options: vm_options.as_mut_ptr(),
+            ignoreUnrecognized: sys::JNI_FALSE,
+        };
+        let mut vm: *mut sys::JavaVM = std::ptr::null_mut();
+        let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
+
+        let code = unsafe {
+            (loaded.create_java_vm)(
+                &mut vm,
+                &mut env as *mut *mut sys::JNIEnv as *mut *mut c_void,
+                &mut args as *mut sys::JavaVMInitArgs as *mut c_void,
+            )
+        };
+        jni::errors::jni_error_code_to_result(code)
+            .map_err(|e| format!("Failed to create the GraalVM isolate: {e}"))?;
+        Ok(unsafe { JavaVM::from_raw(vm) })
+    }
 }
 
 fn cache_dir() -> Result<PathBuf, String> {
@@ -137,7 +321,7 @@ fn unpack(staging: &Path) -> io::Result<()> {
         _ => {}
     }
     fs::create_dir(staging)?;
-    for (name, compressed) in NATIVE_LIBRARIES.iter().chain(&OCR_FILES) {
+    for (name, compressed) in embedded_files() {
         let mut content = Vec::new();
         GzDecoder::new(*compressed).read_to_end(&mut content)?;
         let path = staging.join(name);
@@ -169,92 +353,10 @@ pub(crate) fn bundled_tesseract() -> Result<Option<PathBuf>, String> {
     if OCR_FILES.is_empty() {
         return Ok(None);
     }
-    Ok(Some(loaded()?.dir.join(OCR_TESSERACT)))
+    Ok(Some(unpacked()?.join(OCR_TESSERACT)))
 }
 
 /// The licenses of the tesseract and the language data the build bundled.
 pub(crate) fn bundled_ocr_licenses() -> Option<&'static str> {
     OCR_LICENSES
-}
-
-/// Creates a new GraalVM isolate: a disjoint heap, so work in one isolate cannot exhaust or
-/// corrupt another. Each call to JNI_CreateJavaVM in a native image creates one.
-pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, String> {
-    let loaded = loaded()?;
-    let library_dir = loaded.dir.as_path();
-    let library_path = library_dir.to_str().ok_or_else(|| {
-        format!(
-            "The native library directory {} is not UTF-8",
-            library_dir.display()
-        )
-    })?;
-    let library_path_option = CString::new(format!("-Djava.library.path={library_path}"))
-        .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))?;
-    let temp_dir_option = settings
-        .temp_dir
-        .as_deref()
-        .map(|dir| {
-            let dir = dir
-                .to_str()
-                .ok_or_else(|| format!("The temporary directory {} is not UTF-8", dir.display()))?;
-            CString::new(format!("-Djava.io.tmpdir={dir}"))
-                .map_err(|e| format!("Invalid temporary directory {dir}: {e}"))
-        })
-        .transpose()?;
-    let max_heap_option = settings.max_heap_bytes.map(|bytes| {
-        CString::new(format!("-XX:MaxHeapSize={bytes}")).expect("a number has no NUL")
-    });
-    let ocr_options = if OCR_FILES.is_empty() {
-        Vec::new()
-    } else {
-        [
-            format!(
-                "-Dextractous.ocr.tesseract={}",
-                library_dir.join(OCR_TESSERACT).display()
-            ),
-            format!(
-                "-Dextractous.ocr.tessdata={}",
-                library_dir.join(OCR_MODELS).display()
-            ),
-        ]
-        .into_iter()
-        .map(|option| {
-            CString::new(option)
-                .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?
-    };
-    let mut vm_options: Vec<sys::JavaVMOption> = [
-        Some(library_path_option.as_c_str()),
-        Some(c"-Djava.awt.headless=true"),
-        temp_dir_option.as_deref(),
-        max_heap_option.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(ocr_options.iter().map(CString::as_c_str))
-    .map(|option| sys::JavaVMOption {
-        optionString: option.as_ptr().cast_mut(),
-        extraInfo: std::ptr::null_mut(),
-    })
-    .collect();
-    let mut args = sys::JavaVMInitArgs {
-        version: sys::JNI_VERSION_1_8,
-        nOptions: vm_options.len() as sys::jint,
-        options: vm_options.as_mut_ptr(),
-        ignoreUnrecognized: sys::JNI_FALSE,
-    };
-    let mut vm: *mut sys::JavaVM = std::ptr::null_mut();
-    let mut env: *mut sys::JNIEnv = std::ptr::null_mut();
-
-    let code = unsafe {
-        (loaded.create_java_vm)(
-            &mut vm,
-            &mut env as *mut *mut sys::JNIEnv as *mut *mut c_void,
-            &mut args as *mut sys::JavaVMInitArgs as *mut c_void,
-        )
-    };
-    jni::errors::jni_error_code_to_result(code)
-        .map_err(|e| format!("Failed to create the GraalVM isolate: {e}"))?;
-    Ok(unsafe { JavaVM::from_raw(vm) })
 }

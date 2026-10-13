@@ -96,5 +96,23 @@
         ]
       }
     ]
+  },
+  {
+    "name": "ai.yobix.StaticImage",
+    "methods": [
+      {
+        "name": "setProperty",
+        "parameterTypes": [
+          "java.lang.String",
+          "java.lang.String"
+        ]
+      },
+      {
+        "name": "setMaxHeapBytes",
+        "parameterTypes": [
+          "long"
+        ]
+      }
+    ]
   }
 ]

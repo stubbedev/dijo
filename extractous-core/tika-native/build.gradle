@@ -195,6 +195,20 @@ tasks.cyclonedxDirectBom {
     xmlOutput.convention((RegularFile) null)
 }
 
+tasks.register('nativeImageArguments') {
+    dependsOn 'classes', 'generateResourcesConfigFile'
+    group = 'build'
+    description = 'Prints the native-image arguments of libtika_native, one per line, for ci/static-image.sh'
+    doLast {
+        def binary = graalvmNative.binaries.main
+        println '-cp'
+        println sourceSets.main.runtimeClasspath.asPath
+        println '-H:ConfigurationFileDirectories=' + binary.configurationFileDirectories.files.join(',')
+        binary.buildArgs.get().each { println it }
+        binary.jvmArgs.get().each { println it }
+    }
+}
+
 tasks.register('runAgent', JavaExec) {
     dependsOn classes                      // ensure byte-code is built
     group = 'verification'

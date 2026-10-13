@@ -24,6 +24,11 @@ const OCR_LICENSES: &str = "licenses";
 fn main() {
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
+    if env::var_os("CARGO_FEATURE_STATIC_IMAGE").is_some() {
+        let ocr = ocr_bundle(&out_dir);
+        write_static_native_module(&out_dir, ocr.as_ref());
+        return;
+    }
     for input in TIKA_NATIVE_INPUTS {
         println!(
             "cargo:rerun-if-changed={}",
@@ -460,6 +465,47 @@ fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<
     Ok(())
 }
 
+/// The module of a static image build, which embeds no native libraries since this crate is
+/// linked into the image: only the OCR bundle, unpacked to run tesseract.
+fn write_static_native_module(out_dir: &Path, ocr: Option<&OcrBundle>) {
+    let module = format!(
+        "pub(crate) const NATIVE_FINGERPRINT: &str = {:?};\n{}",
+        format!(
+            "static-ocr-{}",
+            ocr.map_or("none", |ocr| ocr.fingerprint.as_str())
+        ),
+        ocr_items(ocr)
+    );
+    write_if_changed(&out_dir.join("native.rs"), &module);
+}
+
+/// The items of the generated module that describe the OCR bundle.
+fn ocr_items(ocr: Option<&OcrBundle>) -> String {
+    let ocr_files: &[(String, PathBuf)] = ocr.map_or(&[], |ocr| &ocr.files);
+    let ocr_entries: String = ocr_files
+        .iter()
+        .map(|(name, path)| format!("    ({name:?}, include_bytes!({path:?})),\n"))
+        .collect();
+    let ocr_licenses = match ocr {
+        Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
+        None => "None".to_string(),
+    };
+    format!(
+        "pub(crate) const OCR_TESSERACT: &str = {OCR_TESSERACT:?};\n\
+         pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
+         pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
+         pub(crate) const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
+        ocr_files.len()
+    )
+}
+
+fn write_if_changed(path: &Path, content: &str) {
+    if fs::read_to_string(path).ok().as_deref() != Some(content) {
+        fs::write(path, content)
+            .unwrap_or_else(|e| panic!("Failed to write {}: {e}", path.display()));
+    }
+}
+
 fn write_native_module(
     out_dir: &Path,
     libs_dir: &Path,
@@ -500,15 +546,6 @@ fn write_native_module(
             format!("    ({name:?}, include_bytes!({path:?})),\n")
         })
         .collect();
-    let ocr_files: &[(String, PathBuf)] = ocr.map_or(&[], |ocr| &ocr.files);
-    let ocr_entries: String = ocr_files
-        .iter()
-        .map(|(name, path)| format!("    ({name:?}, include_bytes!({path:?})),\n"))
-        .collect();
-    let ocr_licenses = match ocr {
-        Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
-        None => "None".to_string(),
-    };
     let fingerprint = match ocr {
         Some(ocr) => format!("{fingerprint}-ocr-{}", ocr.fingerprint),
         None => fingerprint.to_string(),
@@ -516,17 +553,9 @@ fn write_native_module(
     let module = format!(
         "pub(crate) const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n\
          pub(crate) const TIKA_LIBRARY: &str = {tika_library:?};\n\
-         pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n\
-         pub(crate) const OCR_TESSERACT: &str = {OCR_TESSERACT:?};\n\
-         pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
-         pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
-         pub(crate) const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
+         pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n{}",
         libraries.len(),
-        ocr_files.len()
+        ocr_items(ocr)
     );
-    let module_path = out_dir.join("native.rs");
-    if fs::read_to_string(&module_path).ok().as_deref() != Some(module.as_str()) {
-        fs::write(&module_path, module)
-            .unwrap_or_else(|e| panic!("Failed to write {}: {e}", module_path.display()));
-    }
+    write_if_changed(&out_dir.join("native.rs"), &module);
 }

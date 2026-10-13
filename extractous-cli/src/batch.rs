@@ -292,7 +292,7 @@ impl Worker {
     fn start(spool_dir: &Path, setup: &str) -> io::Result<Self> {
         let executable = std::env::current_exe()?;
         let mut child = Command::new(&executable)
-            .args(std::env::args_os().skip(1))
+            .args(crate::arguments())
             .env(WORKER_VARIABLE, spool_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
