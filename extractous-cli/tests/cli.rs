@@ -1276,7 +1276,7 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
 
 #[test]
 fn comments_follow_the_sentence_they_are_anchored_in() {
-    for extension in ["docx", "doc"] {
+    for extension in ["odt", "docx", "doc"] {
         let path = format!("../quality/corpus/revisions.{extension}");
         for args in [&[path.as_str()][..], &["--no-normalize", "headers", &path]] {
             let text = stdout(&extractous(args));
