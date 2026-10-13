@@ -180,7 +180,8 @@ pub struct RuntimeArgs {
     /// The most memory Tika's Java heap may take. An extraction that needs more fails with a
     /// limit-exceeded error, and the next one runs normally. GraalVM raises a cap below the
     /// least heap the runtime starts with, a few tens of MiB. By default the heap may grow to a
-    /// large share of physical memory.
+    /// large share of physical memory, and is sized to at least 512 MiB (or the cap, when lower)
+    /// so that the collector runs less often.
     #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_HEAP_BYTES")]
     pub max_heap_bytes: Option<NonZeroU64>,
 }

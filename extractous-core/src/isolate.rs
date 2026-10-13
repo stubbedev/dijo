@@ -42,7 +42,8 @@ pub struct IsolateSettings {
     pub temp_dir: Option<PathBuf>,
     /// The most memory the Java heap may take. Beyond it an extraction fails with an
     /// OutOfMemoryError, and the isolate stays usable for the next one. By default the heap may
-    /// grow to a large share of physical memory.
+    /// grow to a large share of physical memory. The heap is sized to at least 512 MiB, or the
+    /// cap when it is lower.
     pub max_heap_bytes: Option<NonZeroU64>,
 }
 
