@@ -210,16 +210,16 @@ What it leaves to the deployment:
 
 ### Container
 
-Each release publishes a multi-platform image (linux/amd64, linux/arm64) with tesseract and English OCR data, running
-the server as an unprivileged user:
+Each release publishes a multi-platform image (linux/amd64, linux/arm64) with tesseract and the language models the
+release binaries bundle (`ci/tessdata.tsv`), running the server as an unprivileged user:
 
 ```sh
 docker run --rm -p 9998:9998 ghcr.io/stubbedev/extractous:latest
 docker run --rm -v "$PWD:/data:ro" ghcr.io/stubbedev/extractous:latest /data/report.pdf
 ```
 
-`docker build .` builds the same image from source. Install more `tesseract-ocr-*` language packages in a derived image
-for OCR in other languages.
+`docker build .` builds the same image from source. For OCR with other models, add them to
+`/usr/share/extractous/tessdata` in a derived image.
 
 ## JSON output
 

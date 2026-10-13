@@ -253,6 +253,8 @@ jobs:
             | grep -q "These are a few of my favorite things"
           docker run --rm --volume "$PWD/test_files/documents:/data:ro" extractous:smoke-test --ocr always /data/eng-ocr.pdf \
             | tr -s '[:space:]' ' ' | grep -qi "the"
+          docker run --rm --volume "$PWD/quality/corpus:/data:ro" extractous:smoke-test /data/danish-scan.png \
+            | grep -q "tusmørket"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: startsWith(github.ref, 'refs/tags/v')
         with:

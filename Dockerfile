@@ -41,6 +41,7 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --package extractous \
     && cp target/release/extractous /usr/local/bin/extractous
+RUN /ci/fetch-tessdata.sh /opt/tessdata
 
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 RUN apt-get update \
@@ -48,10 +49,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin extractous
 COPY --from=build /usr/local/bin/extractous /usr/local/bin/extractous
+COPY --from=build /opt/tessdata /usr/share/extractous/tessdata
 COPY LICENSE THIRD-PARTY-LICENSES.md /usr/share/doc/extractous/
 ENV XDG_CACHE_HOME=/var/cache \
     EXTRACTOUS_LISTEN=0.0.0.0:9998 \
-    OMP_THREAD_LIMIT=1
+    OMP_THREAD_LIMIT=1 \
+    TESSDATA_PREFIX=/usr/share/extractous/tessdata
 RUN printf 'probe\n' > /tmp/probe.txt \
     && extractous detect /tmp/probe.txt \
     && rm /tmp/probe.txt
