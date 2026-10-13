@@ -41,6 +41,12 @@ fetch() {
     echo "$file"
 }
 
+stamp="$version $cc"
+if [ -f "$output/libsqlitejdbc.a" ] && [ "$(cat "$output/built" 2>/dev/null)" = "$stamp" ]; then
+    exit 0
+fi
+rm -f "$output/built"
+
 sqlite_version=${version%.*}
 jdbc=$(fetch "sqlite-jdbc-$version.tar.gz")
 sqlite=$(fetch "sqlite-$sqlite_version-src.zip")
@@ -63,3 +69,4 @@ rm -f "$output/libsqlitejdbc.a"
 "${cc%gcc}ar" rcs "$output/libsqlitejdbc.a" "$source_dir/$objects/NativeDB.o" "$source_dir/$objects/sqlite3.o"
 "${cc%gcc}nm" --defined-only --extern-only --format=just-symbols "$output/libsqlitejdbc.a" \
     | grep -E '^(Java_|JNI_On)' | sort > "$output/libsqlitejdbc.a.symbols"
+echo "$stamp" > "$output/built"

@@ -74,6 +74,12 @@ pub extern "C" fn extractous_main(
     std::ffi::c_int::from(!run_program(arguments))
 }
 
+/// musl's allocator, which the static executable would otherwise use, is slow under
+/// concurrent allocation.
+#[cfg(feature = "static-image")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 static ARGUMENTS: OnceLock<Vec<OsString>> = OnceLock::new();
 
 /// The arguments the program was run with, without the program name: those a worker process is

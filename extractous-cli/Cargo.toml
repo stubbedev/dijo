@@ -11,7 +11,7 @@ authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 [features]
 # Link into the statically linked Linux executable instead of loading Tika as a shared library;
 # ci/static-image.sh builds it.
-static-image = ["extractous-core/static-image"]
+static-image = ["extractous-core/static-image", "dep:mimalloc"]
 
 [[bin]]
 name = "extractous"
@@ -34,6 +34,7 @@ quick-xml = "0.42.0"
 unicode-normalization = "0.1.25"
 unicode-general-category = "1.1.0"
 unicode-script = "0.5.8"
+mimalloc = { version = "0.1.52", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
