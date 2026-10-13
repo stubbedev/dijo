@@ -5,61 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use common::{Scratch, DOCUMENTS};
+use common::{documents, mutate, Scratch, XorShift, DOCUMENTS};
 
 const DEFAULT_MUTANTS_PER_DOCUMENT: usize = 12;
 const JOBS: usize = 4;
 const TIMEOUT_SECONDS: u64 = 20;
 const GRACE: Duration = Duration::from_secs(30);
-
-/// A small, seedable generator, so that a failing run can be repeated with its seed.
-struct XorShift(u64);
-
-impl XorShift {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-
-    fn below(&mut self, bound: usize) -> usize {
-        (self.next() % bound.max(1) as u64) as usize
-    }
-}
-
-/// The document damaged in one of the ways files get damaged: bytes flipped, the end cut off,
-/// a stretch overwritten with noise, or a stretch repeated.
-fn mutate(original: &[u8], random: &mut XorShift) -> Vec<u8> {
-    let mut bytes = original.to_vec();
-    if bytes.is_empty() {
-        return bytes;
-    }
-    match random.below(4) {
-        0 => {
-            for _ in 0..=random.below(16) {
-                let index = random.below(bytes.len());
-                bytes[index] ^= 1 << random.below(8);
-            }
-        }
-        1 => bytes.truncate(random.below(bytes.len())),
-        2 => {
-            let start = random.below(bytes.len());
-            let end = (start + 1 + random.below(512)).min(bytes.len());
-            for byte in &mut bytes[start..end] {
-                *byte = random.next() as u8;
-            }
-        }
-        _ => {
-            let start = random.below(bytes.len());
-            let end = (start + 1 + random.below(4096)).min(bytes.len());
-            let chunk = bytes[start..end].to_vec();
-            let at = random.below(bytes.len());
-            bytes.splice(at..at, chunk);
-        }
-    }
-    bytes
-}
 
 /// Copies the inputs of a failing run where they outlive the test, for reproducing it.
 fn keep(inputs: &[PathBuf], seed: u64) -> PathBuf {
@@ -69,20 +20,6 @@ fn keep(inputs: &[PathBuf], seed: u64) -> PathBuf {
         fs::copy(input, dir.join(input.file_name().unwrap())).unwrap();
     }
     dir
-}
-
-fn documents(dir: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            found.extend(documents(&path));
-        } else {
-            found.push(path);
-        }
-    }
-    found.sort();
-    found
 }
 
 /// Damaged inputs may fail to extract, but extractous must answer for every one of them: exit

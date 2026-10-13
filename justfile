@@ -29,6 +29,12 @@ test-large:
 test-fuzz:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test fuzz
 
+# Run the server under load for SOAK_SECONDS (120 by default) per test with a release build:
+# answers stay alike and memory level over a long run, and damaged documents are answered while
+# worker processes recover; SOAK_SEED repeats a run's damage.
+test-soak:
+    cargo nextest run --package extractous --cargo-profile release --run-ignored only --test soak --no-capture
+
 # Fuzz the parsers of untrusted input (XHTML splitter, normaliser, query decoder, metadata) with
 # coverage guidance for the given seconds each; a failing input is kept under
 # extractous-cli/fuzz/artifacts.

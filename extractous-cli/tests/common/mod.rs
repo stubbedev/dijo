@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
+
+pub mod server;
 
 pub const DOCUMENTS: &str = "../test_files/documents";
 
@@ -310,4 +312,68 @@ pub fn matched(truth: &[String], extracted: &[String]) -> usize {
                 .is_some()
         })
         .count()
+}
+
+/// A small, seedable generator, so that a failing run can be repeated with its seed.
+pub struct XorShift(pub u64);
+
+impl XorShift {
+    pub fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    pub fn below(&mut self, bound: usize) -> usize {
+        (self.next() % bound.max(1) as u64) as usize
+    }
+}
+
+/// The document damaged in one of the ways files get damaged: bytes flipped, the end cut off,
+/// a stretch overwritten with noise, or a stretch repeated.
+pub fn mutate(original: &[u8], random: &mut XorShift) -> Vec<u8> {
+    let mut bytes = original.to_vec();
+    if bytes.is_empty() {
+        return bytes;
+    }
+    match random.below(4) {
+        0 => {
+            for _ in 0..=random.below(16) {
+                let index = random.below(bytes.len());
+                bytes[index] ^= 1 << random.below(8);
+            }
+        }
+        1 => bytes.truncate(random.below(bytes.len())),
+        2 => {
+            let start = random.below(bytes.len());
+            let end = (start + 1 + random.below(512)).min(bytes.len());
+            for byte in &mut bytes[start..end] {
+                *byte = random.next() as u8;
+            }
+        }
+        _ => {
+            let start = random.below(bytes.len());
+            let end = (start + 1 + random.below(4096)).min(bytes.len());
+            let chunk = bytes[start..end].to_vec();
+            let at = random.below(bytes.len());
+            bytes.splice(at..at, chunk);
+        }
+    }
+    bytes
+}
+
+/// Every file under `dir`, in a stable order.
+pub fn documents(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(documents(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
 }
