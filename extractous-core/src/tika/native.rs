@@ -203,5 +203,5 @@ pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, Strin
     };
     jni::errors::jni_error_code_to_result(code)
         .map_err(|e| format!("Failed to create the GraalVM isolate: {e}"))?;
-    unsafe { JavaVM::from_raw(vm) }.map_err(|e| format!("Failed to wrap the GraalVM isolate: {e}"))
+    Ok(unsafe { JavaVM::from_raw(vm) })
 }

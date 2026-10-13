@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use jni::{AttachGuard, JavaVM};
+use jni::{Env, JavaVM};
 
 use crate::errors::{Error, ExtractResult};
 use crate::tika::{self, native};
@@ -17,8 +17,14 @@ pub(crate) struct Isolate {
 }
 
 impl Isolate {
-    pub(crate) fn attach(&self) -> ExtractResult<AttachGuard<'_>> {
-        Ok(self.vm.attach_current_thread()?)
+    /// Runs `f` on the current thread attached to the isolate, in a local frame of its own: the
+    /// local references `f` creates are freed when it returns. A thread attached only for `f` is
+    /// detached again.
+    pub(crate) fn with_env<T>(
+        &self,
+        f: impl FnOnce(&mut Env<'_>) -> ExtractResult<T>,
+    ) -> ExtractResult<T> {
+        self.vm.attach_current_thread_for_scope(f)
     }
 }
 
@@ -80,6 +86,5 @@ pub fn wait_for_extractions(timeout: Duration) -> ExtractResult<bool> {
 /// Attaches the current thread to the isolate until the thread exits, so extractions on it skip
 /// attaching and detaching each time. Worth it for long-lived worker threads.
 pub fn keep_current_thread_attached() -> ExtractResult<()> {
-    isolate()?.vm.attach_current_thread_permanently()?;
-    Ok(())
+    isolate()?.vm.attach_current_thread(|_| Ok::<_, Error>(()))
 }
