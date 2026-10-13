@@ -307,6 +307,20 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-scan.avif": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-scan.heic": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-scan.pdf": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

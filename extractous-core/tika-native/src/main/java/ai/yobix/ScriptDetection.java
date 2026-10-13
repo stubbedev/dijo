@@ -1,12 +1,9 @@
 package ai.yobix;
 
 import java.io.IOException;
-import java.io.InterruptedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -62,8 +59,8 @@ final class ScriptDetection {
      * an unknown script and no turns.
      */
     static Result detect(String tesseract, Path image, long timeoutMillis) throws IOException {
-        final String output = run(timeoutMillis, tesseract, image.toString(), "stdout",
-                "--psm", "0");
+        final String output = Programs.run(timeoutMillis, OcrBundle::environment, tesseract,
+                image.toString(), "stdout", "--psm", "0");
         if (output == null) {
             return UNKNOWN;
         }
@@ -103,7 +100,8 @@ final class ScriptDetection {
 
     private static synchronized Set<String> installed(String tesseract) throws IOException {
         if (installed == null) {
-            final String output = run(LIST_LANGUAGES_TIMEOUT_MILLIS, tesseract, "--list-langs");
+            final String output = Programs.run(LIST_LANGUAGES_TIMEOUT_MILLIS,
+                    OcrBundle::environment, tesseract, "--list-langs");
             if (output == null) {
                 throw new IOException("tesseract --list-langs failed");
             }
@@ -114,25 +112,5 @@ final class ScriptDetection {
                     .collect(Collectors.toUnmodifiableSet());
         }
         return installed;
-    }
-
-    /** The standard output of a command that succeeded in time, or null. */
-    private static String run(long timeoutMillis, String... command) throws IOException {
-        final ProcessBuilder builder = new ProcessBuilder(command)
-                .redirectError(ProcessBuilder.Redirect.DISCARD);
-        OcrBundle.environment(builder.environment());
-        final Process process = builder.start();
-        try {
-            process.getOutputStream().close();
-            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS) || process.exitValue() != 0) {
-                return null;
-            }
-            return new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new InterruptedIOException("Interrupted while detecting the script of an image");
-        } finally {
-            process.destroyForcibly();
-        }
     }
 }

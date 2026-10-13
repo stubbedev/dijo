@@ -266,8 +266,8 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.860, Kreuzberg 0.686 and Docling 0.678, at
-a token error rate of 0.012 against 0.208, 0.461 and 0.396. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.835, Kreuzberg 0.667 and Docling 0.659, at
+a token error rate of 0.012 against 0.230, 0.476 and 0.413. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
@@ -289,8 +289,9 @@ to a rectangle. Tesseract's layout analysis loses almost all text from a page sk
 little as 2.5°.
 
 Images are read in PNG, JPEG, TIFF (every page), GIF, BMP, PNM, JPEG 2000 and WebP. HEIC, HEIF and AVIF images, the
-default of many phone cameras, cannot be decoded yet: they are reported with an `unsupported` error rather than as
-images without text.
+default of many phone cameras, are decoded by libheif's `heif-dec` when it is on `PATH` (packaged as
+`libheif-examples` or with `libheif`); without it they are reported with an `unsupported` error rather than as images
+without text. The release binaries do not carry it, since libheif's HEVC decoding brings LGPL and patent terms.
 
 ## Supported formats
 

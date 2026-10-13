@@ -1363,24 +1363,40 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn an_image_no_decoder_reads_is_reported_rather_than_passed_off_as_empty() {
+fn heic_is_read_with_heif_dec_and_reported_without_it() {
     let photo = document("photo.heic");
-    let objects = json_objects(&[&photo]);
-    let read = &objects[0];
+    let read = &json_objects(&[&photo])[0];
     assert_matches_schema(read);
-    assert_eq!(read["status"], "failed", "{read}");
-    assert_eq!(read["errors"][0]["category"], "unsupported", "{read}");
+    assert_eq!(read["status"], "complete", "{read}");
     assert!(
-        read["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("image/heic"),
+        read["text"].as_str().unwrap().contains("Lighthouse"),
         "{read}"
     );
 
-    let skipped = json_objects(&["--ocr", "never", &photo]);
-    assert_eq!(skipped[0]["status"], "complete", "{}", skipped[0]);
+    let scratch = Scratch::new("no-heif-dec");
+    let path = scratch.path_with_only_tesseract();
+    let unread = |args: &[&str]| -> serde_json::Value {
+        let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+            .args(["--format", "json"])
+            .args(args)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let without = unread(&[&photo]);
+    assert_eq!(without["status"], "failed", "{without}");
+    assert_eq!(without["errors"][0]["category"], "unsupported", "{without}");
+    assert!(
+        without["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("heif-dec"),
+        "{without}"
+    );
+    assert_eq!(unread(&["--ocr", "never", &photo])["status"], "complete");
 }
 
 #[test]

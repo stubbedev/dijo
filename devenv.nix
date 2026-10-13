@@ -21,6 +21,7 @@ in
         "osd"
       ];
     })
+    pkgs.libheif.bin
     pkgs.git
   ];
 

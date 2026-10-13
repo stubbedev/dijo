@@ -32,6 +32,22 @@ impl Scratch {
     /// arguments as `$@`, and then the real tesseract.
     #[cfg(unix)]
     pub fn path_with_tesseract(&self, before: &str) -> String {
+        self.tesseract_wrapper(before);
+        format!(
+            "{}:{}",
+            self.0.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    /// A PATH holding tesseract and nothing else.
+    pub fn path_with_only_tesseract(&self) -> String {
+        self.tesseract_wrapper("");
+        self.0.display().to_string()
+    }
+
+    /// Writes a tesseract into this directory that runs `before`, then the installed one.
+    fn tesseract_wrapper(&self, before: &str) {
         use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
         let real = String::from_utf8(
@@ -51,11 +67,6 @@ impl Scratch {
         )
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        format!(
-            "{}:{}",
-            self.0.display(),
-            std::env::var("PATH").unwrap_or_default()
-        )
     }
 }
 

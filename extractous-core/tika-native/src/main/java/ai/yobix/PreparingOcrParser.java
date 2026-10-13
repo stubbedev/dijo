@@ -41,7 +41,8 @@ import java.util.Set;
  * and enlarged when their text is too small. Images that need none of this go to tesseract
  * untouched, as do images too large to decode safely and images Java cannot decode (tesseract
  * reads more formats than ImageIO, WebP among them). HEIC, HEIF and AVIF images, which neither
- * can decode, are reported as unread rather than passed off as images without text. Each page of a multi-page TIFF is prepared and read on its
+ * can decode, are decoded by libheif's heif-dec when it is installed, and reported as unread
+ * otherwise rather than passed off as images without text. Each page of a multi-page TIFF is prepared and read on its
  * own, and becomes a page of the output.
  * <p>
  * With the automatic OCR language ({@link OcrConfig}), tesseract's orientation and script
@@ -52,6 +53,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
 
     private static final long MAX_PIXELS = 60_000_000L;
     private static final Set<String> PAGED_FORMATS = Set.of("tif", "tiff");
+    private static final TesseractOCRConfig DEFAULTS = new TesseractOCRConfig();
     private static final Set<MediaType> UNDECODABLE = Set.of(
             MediaType.image("heic"), MediaType.image("heic-sequence"), MediaType.image("heif"),
             MediaType.image("heif-sequence"), MediaType.image("avif"));
@@ -87,17 +89,29 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             return;
         }
         final MediaType type = MediaType.parse(metadata.get(HttpHeaders.CONTENT_TYPE));
-        if (type != null && UNDECODABLE.contains(type.getBaseType())) {
-            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
-                    new UnsupportedFormatException("The " + type.getBaseType() + " image was not "
-                            + "read for text: no decoder for it is available to OCR").toString());
-            return;
-        }
         final OcrConfig auto = configured instanceof OcrConfig config && config.isAutoLanguage()
                 ? config : null;
         try (TemporaryResources temporary = new TemporaryResources()) {
-            final TikaInputStream input = TikaInputStream.get(stream, temporary, metadata);
-            final Path original = input.getPath();
+            final TikaInputStream received = TikaInputStream.get(stream, temporary, metadata);
+            Path original = received.getPath();
+            if (type != null && UNDECODABLE.contains(type.getBaseType())) {
+                original = HeifDecoder.decode(original, temporary,
+                        (configured != null ? configured : DEFAULTS).getTimeoutMillis());
+                if (original == null) {
+                    metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                            new UnsupportedFormatException("The " + type.getBaseType()
+                                    + " image was not read for text: decoding it for OCR needs "
+                                    + "libheif's heif-dec on the PATH").toString());
+                    return;
+                }
+            }
+            final TikaInputStream input;
+            if (original.equals(received.getPath())) {
+                input = received;
+            } else {
+                input = TikaInputStream.get(original);
+                temporary.addResource(input);
+            }
             try (Pages pages = Pages.open(original)) {
                 if (pages != null && pages.count() > 1) {
                     parsePages(pages, handler, metadata, context, auto, temporary);
@@ -168,7 +182,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         String report(Integer page, TesseractOCRConfig configured) {
             final String model = language != null ? language
                     : configured != null ? configured.getLanguage()
-                    : new TesseractOCRConfig().getLanguage();
+                    : DEFAULTS.getLanguage();
             return OcrReport.of(model)
                     .page(page)
                     .script(script)
