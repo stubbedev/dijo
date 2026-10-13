@@ -7,6 +7,8 @@ import org.graalvm.nativeimage.hosted.Feature;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -31,6 +33,28 @@ public final class StaticJniLibrariesFeature implements Feature {
     private static final String SQLITE = "sqlitejdbc";
     private static final String SQLITE_NATIVES = "org_sqlite_core_NativeDB";
 
+    /**
+     * Binds the native methods whose JNI symbols start with a prefix to the linked code: GraalVM
+     * 25.2 calls it addBuiltinPkgNativePrefix, 25.4 addBuiltinNativePrefix.
+     */
+    private static void bindNatives(String prefix) {
+        for (final String name : new String[]{"addBuiltinNativePrefix", "addBuiltinPkgNativePrefix"}) {
+            final Method method;
+            try {
+                method = PlatformNativeLibrarySupport.class.getMethod(name, String.class);
+            } catch (NoSuchMethodException e) {
+                continue;
+            }
+            try {
+                method.invoke(PlatformNativeLibrarySupport.singleton(), prefix);
+                return;
+            } catch (IllegalAccessException | InvocationTargetException e) {
+                throw new IllegalStateException("Cannot bind the natives of " + prefix, e);
+            }
+        }
+        throw new IllegalStateException("This GraalVM has no way to bind natives to linked code");
+    }
+
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         final String arch = System.getProperty("os.arch");
@@ -41,7 +65,7 @@ public final class StaticJniLibrariesFeature implements Feature {
         final Path dir = Path.of(System.getProperty("java.home"), "lib", "static", platform, "musl");
         NativeLibraries.singleton().addStaticNonJniLibrary(MEDIALIB);
         NativeLibraries.singleton().addStaticNonJniLibrary(SQLITE);
-        PlatformNativeLibrarySupport.singleton().addBuiltinPkgNativePrefix(SQLITE_NATIVES);
+        bindNatives(SQLITE_NATIVES);
         for (final String library : LIBRARIES) {
             NativeLibrarySupport.singleton().preregisterUninitializedBuiltinLibrary(library);
             if (library.equals(AWT)) {
@@ -53,8 +77,7 @@ public final class StaticJniLibrariesFeature implements Feature {
             try {
                 for (final String symbol : Files.readAllLines(symbols)) {
                     if (symbol.startsWith(JNI_PREFIX)) {
-                        PlatformNativeLibrarySupport.singleton()
-                                .addBuiltinPkgNativePrefix(symbol.substring(JNI_PREFIX.length()));
+                        bindNatives(symbol.substring(JNI_PREFIX.length()));
                     }
                 }
             } catch (IOException e) {

@@ -129,6 +129,8 @@ mod static_image {
 #[cfg(not(feature = "static-image"))]
 mod shared_library {
     use std::ffi::{c_void, CString};
+    #[cfg(windows)]
+    use std::io;
     use std::path::Path;
     use std::sync::OnceLock;
 
