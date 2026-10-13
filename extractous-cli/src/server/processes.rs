@@ -369,7 +369,24 @@ fn relay(
         let max_rss_bytes = options.max_rss_bytes;
         thread::spawn(move || watch(&child, &stopped, deadline, max_rss_bytes, &watching))
     };
-    let answered = relay_answer(&mut process.output, &mut head, &body, metrics);
+    let mut within_limits = || {
+        let mut child = process.child.lock().expect("worker process lock");
+        match exceeded(&child, deadline, options.max_rss_bytes) {
+            None => Ok(()),
+            Some(reason) => {
+                *stopped.lock().expect("watchdog lock") = Some(reason);
+                let _ = child.kill();
+                Err(io::Error::other("it overran its limits before answering"))
+            }
+        }
+    };
+    let answered = relay_answer(
+        &mut process.output,
+        &mut head,
+        &body,
+        metrics,
+        &mut within_limits,
+    );
     drop(finished);
     watchdog.join().expect("the watchdog does not panic");
 
@@ -408,11 +425,14 @@ enum Answered {
     ToNobody,
 }
 
+/// Relays a worker's answer frame by frame. `within_limits` is asked before the head goes out,
+/// since a status once sent cannot become the 413 or 504 of a worker over its limits.
 fn relay_answer(
     output: &mut impl Read,
     head: &mut Option<oneshot::Sender<Head>>,
     body: &async_mpsc::Sender<Chunk>,
     metrics: &Metrics,
+    within_limits: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Answered> {
     loop {
         let Some((tag, payload)) = read_frame(output)? else {
@@ -424,6 +444,7 @@ fn relay_answer(
         match tag {
             HEAD => {
                 let parsed: Head = serde_json::from_slice(&payload).map_err(invalid)?;
+                within_limits()?;
                 let sender = head
                     .take()
                     .ok_or_else(|| invalid("it sent a second head"))?;
@@ -475,20 +496,28 @@ fn watch(
 ) {
     while let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(WATCH_INTERVAL) {
         let mut child = child.lock().expect("worker process lock");
-        let reason = if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            Some(Stopped::Deadline)
-        } else if max_rss_bytes
-            .is_some_and(|max| resident_bytes(child.id()).is_some_and(|rss| rss > max.get()))
-        {
-            Some(Stopped::Memory)
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
+        if let Some(reason) = exceeded(&child, deadline, max_rss_bytes) {
             *stopped.lock().expect("watchdog lock") = Some(reason);
             let _ = child.kill();
             return;
         }
+    }
+}
+
+/// The limit a worker process's job has overrun, if any.
+fn exceeded(
+    child: &Child,
+    deadline: Option<Instant>,
+    max_rss_bytes: Option<NonZeroU64>,
+) -> Option<Stopped> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Some(Stopped::Deadline)
+    } else if max_rss_bytes
+        .is_some_and(|max| resident_bytes(child.id()).is_some_and(|rss| rss > max.get()))
+    {
+        Some(Stopped::Memory)
+    } else {
+        None
     }
 }
 
