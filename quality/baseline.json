@@ -21,9 +21,9 @@
     "reading_order": 1.0
   },
   "arabic.pdf": {
-    "character_error_rate": 0.14953271028037382,
+    "character_error_rate": 0.17757009345794392,
     "token_error_rate": 0.16071428571428573,
-    "recall": 0.8928571428571429,
+    "recall": 0.8392857142857143,
     "spurious": 0.0,
     "reading_order": 1.0
   },
@@ -49,10 +49,10 @@
     "reading_order": 1.0
   },
   "chinese.pdf": {
-    "character_error_rate": 0.07913669064748201,
-    "token_error_rate": 0.06299212598425197,
+    "character_error_rate": 0.014388489208633094,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.05925925925925926,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "czech-cp1250.txt": {
@@ -70,10 +70,10 @@
     "reading_order": 1.0
   },
   "german.pdf": {
-    "character_error_rate": 0.06476190476190476,
-    "token_error_rate": 0.05194805194805195,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.04938271604938271,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "greek-cp1253.txt": {
@@ -98,10 +98,10 @@
     "reading_order": 1.0
   },
   "hebrew.pdf": {
-    "character_error_rate": 0.1003584229390681,
-    "token_error_rate": 0.061224489795918366,
+    "character_error_rate": 0.03942652329749104,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.057692307692307696,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "hindi.docx": {
@@ -112,10 +112,10 @@
     "reading_order": 1.0
   },
   "hindi.pdf": {
-    "character_error_rate": 0.07352941176470588,
-    "token_error_rate": 0.05970149253731343,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.056338028169014086,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "hyphenated.pdf": {
@@ -147,10 +147,10 @@
     "reading_order": 1.0
   },
   "japanese-vertical.pdf": {
-    "character_error_rate": 0.06060606060606061,
-    "token_error_rate": 0.04918032786885246,
+    "character_error_rate": 0.007575757575757576,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.046875,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "japanese.docx": {
@@ -161,10 +161,10 @@
     "reading_order": 1.0
   },
   "japanese.pdf": {
-    "character_error_rate": 0.06818181818181818,
-    "token_error_rate": 0.04918032786885246,
+    "character_error_rate": 0.015151515151515152,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.046875,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "polish-cp1250.txt": {
@@ -203,10 +203,10 @@
     "reading_order": 1.0
   },
   "prose-columns.pdf": {
-    "character_error_rate": 0.018140589569160998,
-    "token_error_rate": 0.022950819672131147,
+    "character_error_rate": 0.0005668934240362812,
+    "token_error_rate": 0.006557377049180328,
     "recall": 0.9934426229508196,
-    "spurious": 0.019417475728155338,
+    "spurious": 0.003289473684210526,
     "reading_order": 1.0
   },
   "prose-pandoc.docx": {
@@ -315,10 +315,10 @@
     "reading_order": 1.0
   },
   "prose.pdf": {
-    "character_error_rate": 0.017573696145124718,
-    "token_error_rate": 0.01639344262295082,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.016129032258064516,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "prose.rtf": {
@@ -350,17 +350,17 @@
     "reading_order": 1.0
   },
   "report.pdf": {
-    "character_error_rate": 0.005544933078393882,
-    "token_error_rate": 0.006622516556291391,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.006578947368421052,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "report.pdf --format pages": {
-    "character_error_rate": 0.005544933078393882,
-    "token_error_rate": 0.006622516556291391,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.006578947368421052,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "revisions.doc": {
@@ -441,10 +441,10 @@
     "reading_order": 1.0
   },
   "thai.pdf": {
-    "character_error_rate": 0.0944055944055944,
-    "token_error_rate": 0.08540925266903915,
+    "character_error_rate": 0.006993006993006993,
+    "token_error_rate": 0.0,
     "recall": 1.0,
-    "spurious": 0.07868852459016394,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "turkish-cp1254.txt": {

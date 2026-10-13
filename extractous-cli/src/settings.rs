@@ -37,7 +37,8 @@ pub fn extractor(
             PdfParserConfig::new()
                 .set_ocr_strategy(strategy)
                 .set_ocr_strategy_auto(AUTO_OCR_PAGES)
-                .set_reading_order(render.reads_in_reading_order()),
+                .set_reading_order(render.reads_in_reading_order())
+                .set_extract_bookmarks_text(render.keeps_bookmarks()),
         )
         .set_ocr_config(ocr_config);
     match timeout {

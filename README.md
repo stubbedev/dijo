@@ -59,7 +59,7 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
-| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers`, `hyphenation`, `reading-order` |
+| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers`, `hyphenation`, `reading-order`, `bookmarks` |
 | `--raw` | No normalisation at all: the text exactly as Tika extracted it |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
@@ -98,7 +98,8 @@ across a line break (`extrac-` / `tion`) is joined. The hyphen stays only when t
 compound: the word already holds a hyphen (`state-of-the-` / `art`), or `wellknown` did not occur but `well-known` or
 both `well` and `known` did. With no evidence either way the word is joined, so a compound that breaks at its hyphen
 before either half has occurred loses the hyphen. A hyphen before a capital or a digit, or before a blank line,
-stays where it is. Normalisation streams, so it holds
+stays where it is. The bookmarks (outline) Tika appends to a PDF's text, which repeat its headings, are left out.
+Normalisation streams, so it holds
 back at most a few characters, or a word after a hyphen that ends a line. XHTML output is never normalised.
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is
@@ -248,11 +249,11 @@ fails when a score gets worse than `quality/baseline.json` allows, so CI holds e
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
 with default options, extractous recalls 0.996 of the truth's words, Tika 0.864, Kreuzberg 0.670 and Docling 0.668, at
-a token error rate of 0.015 against 0.196, 0.482 and 0.409. A document an extractor cannot read, such as a DOC or RTF
+a token error rate of 0.008 against 0.196, 0.482 and 0.409. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
-What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
-upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end. An Arabic PDF whose
+What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
+photographed upside down with an EXIF orientation) extract exactly or within a few characters. An Arabic PDF whose
 text layer splits words where their letters stop joining is read by OCR instead, which still misreads some words.
 
 An untagged PDF page is read in reading order, not in the order its content stream draws the text: columns left to

@@ -135,6 +135,9 @@ tika_config! {
         /// If the PDF contains marked content, try to extract text and its marked structure.
         set_extract_marked_content(extract_marked_content: bool) => "setExtractMarkedContent",
 
+        /// If true, the text of the PDF's bookmarks (its outline) follows the text of its pages.
+        set_extract_bookmarks_text(extract_bookmarks_text: bool) => "setExtractBookmarksText",
+
         /// If the PDF contains annotations, try to extract the text of the annotations.
         set_extract_annotation_text(extract_annotation_text: bool) => "setExtractAnnotationText",
     }

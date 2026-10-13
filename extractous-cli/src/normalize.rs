@@ -34,17 +34,20 @@ pub enum Step {
     /// Read an untagged PDF page in reading order (columns, then by position) rather than in
     /// the order its content stream draws the text.
     ReadingOrder,
+    /// Leave out the bookmarks (outline) Tika appends to a PDF's text, which repeat its
+    /// headings.
+    Bookmarks,
 }
 
 impl Step {
-    const fn bit(self) -> u8 {
-        1 << self as u8
+    const fn bit(self) -> u16 {
+        1 << self as u16
     }
 }
 
 /// The set of normalisation steps applied to extracted text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Steps(u8);
+pub struct Steps(u16);
 
 impl Steps {
     pub const ALL: Steps = Steps(
@@ -55,7 +58,8 @@ impl Steps {
             | Step::Whitespace.bit()
             | Step::Headers.bit()
             | Step::Hyphenation.bit()
-            | Step::ReadingOrder.bit(),
+            | Step::ReadingOrder.bit()
+            | Step::Bookmarks.bit(),
     );
     pub const NONE: Steps = Steps(0);
 

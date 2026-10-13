@@ -1275,6 +1275,21 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
 }
 
 #[test]
+fn pdf_bookmarks_are_left_out_unless_asked_for() {
+    let pdf = "../quality/corpus/prose.pdf";
+    let title = "The Lighthouse Keeper's Ledger";
+    let text = stdout(&extractous(&["--ocr", "never", pdf]));
+    assert_eq!(text.matches(title).count(), 1, "{text}");
+    for args in [
+        &["--ocr", "never", "--no-normalize", "bookmarks", pdf][..],
+        &["--ocr", "never", "--raw", pdf],
+    ] {
+        let kept = stdout(&extractous(args));
+        assert_eq!(kept.matches(title).count(), 2, "{args:?}: {kept}");
+    }
+}
+
+#[test]
 fn a_page_written_vertically_is_read_column_by_column() {
     let pdf = "../quality/corpus/japanese-vertical.pdf";
     let text = stdout(&extractous(&["--ocr", "never", pdf]));
