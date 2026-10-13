@@ -13,6 +13,7 @@ The quality corpus extracted by extractous and by tika-app of the same Tika vers
 | prose.epub | born-digital | 0.031 / 0.035 | 0.030 / 0.033 | 1.000 / 1.000 | 0.029 / 0.032 |
 | prose-pandoc.docx | born-digital | 0.001 / 0.001 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
 | prose-columns.pdf | multi-column | 0.018 / 0.018 | 0.023 / 0.016 | 0.993 / 1.000 | 0.019 / 0.016 |
+| prose-columns-reversed.pdf | multi-column | 0.000 / 0.745 | 0.000 / 0.885 | 1.000 / 1.000 | 0.000 / 0.000 |
 | report.pdf | headers-footers | 0.006 / 0.017 | 0.007 / 0.018 | 1.000 / 1.000 | 0.007 / 0.017 |
 | report.docx | headers-footers | 0.006 / 0.006 | 0.006 / 0.006 | 1.000 / 1.000 | 0.005 / 0.005 |
 | german.pdf | script | 0.065 / 0.065 | 0.052 / 0.052 | 1.000 / 1.000 | 0.049 / 0.049 |
@@ -62,4 +63,4 @@ The quality corpus extracted by extractous and by tika-app of the same Tika vers
 | polish-iso-8859-2.txt | legacy-encoding | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
 | czech-cp1250.txt | legacy-encoding | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
 | turkish-cp1254.txt | legacy-encoding | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
-| **Mean** | | 0.018 / 0.170 | 0.016 / 0.190 | 0.996 / 0.852 | 0.010 / 0.119 |
+| **Mean** | | 0.018 / 0.180 | 0.016 / 0.202 | 0.996 / 0.854 | 0.010 / 0.117 |

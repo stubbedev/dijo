@@ -1,0 +1,326 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3060 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def /CMapType 2 def
+1 begincodespacerange <00> <FF> endcodespacerange
+100 beginbfchar
+<20> <0020>
+<21> <0021>
+<22> <0022>
+<23> <0023>
+<24> <0024>
+<25> <0025>
+<26> <0026>
+<27> <0027>
+<28> <0028>
+<29> <0029>
+<2A> <002A>
+<2B> <002B>
+<2C> <002C>
+<2D> <002D>
+<2E> <002E>
+<2F> <002F>
+<30> <0030>
+<31> <0031>
+<32> <0032>
+<33> <0033>
+<34> <0034>
+<35> <0035>
+<36> <0036>
+<37> <0037>
+<38> <0038>
+<39> <0039>
+<3A> <003A>
+<3B> <003B>
+<3C> <003C>
+<3D> <003D>
+<3E> <003E>
+<3F> <003F>
+<40> <0040>
+<41> <0041>
+<42> <0042>
+<43> <0043>
+<44> <0044>
+<45> <0045>
+<46> <0046>
+<47> <0047>
+<48> <0048>
+<49> <0049>
+<4A> <004A>
+<4B> <004B>
+<4C> <004C>
+<4D> <004D>
+<4E> <004E>
+<4F> <004F>
+<50> <0050>
+<51> <0051>
+<52> <0052>
+<53> <0053>
+<54> <0054>
+<55> <0055>
+<56> <0056>
+<57> <0057>
+<58> <0058>
+<59> <0059>
+<5A> <005A>
+<5B> <005B>
+<5C> <005C>
+<5D> <005D>
+<5E> <005E>
+<5F> <005F>
+<60> <0060>
+<61> <0061>
+<62> <0062>
+<63> <0063>
+<64> <0064>
+<65> <0065>
+<66> <0066>
+<67> <0067>
+<68> <0068>
+<69> <0069>
+<6A> <006A>
+<6B> <006B>
+<6C> <006C>
+<6D> <006D>
+<6E> <006E>
+<6F> <006F>
+<70> <0070>
+<71> <0071>
+<72> <0072>
+<73> <0073>
+<74> <0074>
+<75> <0075>
+<76> <0076>
+<77> <0077>
+<78> <0078>
+<79> <0079>
+<7A> <007A>
+<7B> <007B>
+<7C> <007C>
+<7D> <007D>
+<7E> <007E>
+<7F> <007F>
+<80> <0080>
+<81> <0081>
+<82> <0082>
+<83> <0083>
+endbfchar
+100 beginbfchar
+<84> <0084>
+<85> <0085>
+<86> <0086>
+<87> <0087>
+<88> <0088>
+<89> <0089>
+<8A> <008A>
+<8B> <008B>
+<8C> <008C>
+<8D> <008D>
+<8E> <008E>
+<8F> <008F>
+<90> <0090>
+<91> <0091>
+<92> <0092>
+<93> <0093>
+<94> <0094>
+<95> <0095>
+<96> <0096>
+<97> <0097>
+<98> <0098>
+<99> <0099>
+<9A> <009A>
+<9B> <009B>
+<9C> <009C>
+<9D> <009D>
+<9E> <009E>
+<9F> <009F>
+<A0> <00A0>
+<A1> <00A1>
+<A2> <00A2>
+<A3> <00A3>
+<A4> <00A4>
+<A5> <00A5>
+<A6> <00A6>
+<A7> <00A7>
+<A8> <00A8>
+<A9> <00A9>
+<AA> <00AA>
+<AB> <00AB>
+<AC> <00AC>
+<AD> <00AD>
+<AE> <00AE>
+<AF> <00AF>
+<B0> <00B0>
+<B1> <00B1>
+<B2> <00B2>
+<B3> <00B3>
+<B4> <00B4>
+<B5> <00B5>
+<B6> <00B6>
+<B7> <00B7>
+<B8> <00B8>
+<B9> <00B9>
+<BA> <00BA>
+<BB> <00BB>
+<BC> <00BC>
+<BD> <00BD>
+<BE> <00BE>
+<BF> <00BF>
+<C0> <00C0>
+<C1> <00C1>
+<C2> <00C2>
+<C3> <00C3>
+<C4> <00C4>
+<C5> <00C5>
+<C6> <00C6>
+<C7> <00C7>
+<C8> <00C8>
+<C9> <00C9>
+<CA> <00CA>
+<CB> <00CB>
+<CC> <00CC>
+<CD> <00CD>
+<CE> <00CE>
+<CF> <00CF>
+<D0> <00D0>
+<D1> <00D1>
+<D2> <00D2>
+<D3> <00D3>
+<D4> <00D4>
+<D5> <00D5>
+<D6> <00D6>
+<D7> <00D7>
+<D8> <00D8>
+<D9> <00D9>
+<DA> <00DA>
+<DB> <00DB>
+<DC> <00DC>
+<DD> <00DD>
+<DE> <00DE>
+<DF> <00DF>
+<E0> <00E0>
+<E1> <00E1>
+<E2> <00E2>
+<E3> <00E3>
+<E4> <00E4>
+<E5> <00E5>
+<E6> <00E6>
+<E7> <00E7>
+endbfchar
+24 beginbfchar
+<E8> <00E8>
+<E9> <00E9>
+<EA> <00EA>
+<EB> <00EB>
+<EC> <00EC>
+<ED> <00ED>
+<EE> <00EE>
+<EF> <00EF>
+<F0> <00F0>
+<F1> <00F1>
+<F2> <00F2>
+<F3> <00F3>
+<F4> <00F4>
+<F5> <00F5>
+<F6> <00F6>
+<F7> <00F7>
+<F8> <00F8>
+<F9> <00F9>
+<FA> <00FA>
+<FB> <00FB>
+<FC> <00FC>
+<FD> <00FD>
+<FE> <00FE>
+<FF> <00FF>
+endbfchar
+endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2250 >>
+stream
+BT /F1 11 Tf 14 TL 315 762 Td
+(that no ships passed. The next morning,) Tj T*
+(according to the harbour records, fishermen) Tj T*
+(found the lantern room glass cracked in four) Tj T*
+(places, yet the light had not gone out once) Tj T*
+(during the night.) Tj T*
+() Tj T*
+(Today the tower is automated, and the) Tj T*
+(ledgers rest in a climate-controlled archive) Tj T*
+(beside navigation charts from the same) Tj T*
+(decades. Researchers compare the two sources) Tj T*
+(to estimate how shipping routes shifted as) Tj T*
+(engines replaced sails. Their work depends) Tj T*
+(on a simple practice repeated without fail:) Tj T*
+(a person who wrote down what they saw, every) Tj T*
+(single day, whether or not anything seemed) Tj T*
+(to happen.) Tj T*
+() Tj T*
+(Visitors who reach the top of the tower can) Tj T*
+(still read a copy of the first entry, framed) Tj T*
+(beside the lens. It notes a calm sea, a) Tj T*
+(light westerly breeze, and three fishing) Tj T*
+(boats returning late with full nets.) Tj T*
+() Tj T*
+ET
+BT /F1 11 Tf 14 TL 50 762 Td
+(Every evening at dusk the keeper climbed the) Tj T*
+(one hundred and twelve steps of the tower,) Tj T*
+(wound the clockwork that turned the great) Tj T*
+(lens, and wrote a single line in the ledger.) Tj T*
+(Over forty years the ledger filled eleven) Tj T*
+(volumes, and nearly every line recorded the) Tj T*
+(same three facts: the time the lamp was lit,) Tj T*
+(the direction of the wind, and the number of) Tj T*
+(ships that passed before midnight.) Tj T*
+() Tj T*
+(Historians who later studied the ledgers) Tj T*
+(found that the plain entries told a richer) Tj T*
+(story than anyone expected. Long gaps) Tj T*
+(between ships marked the winters when the) Tj T*
+(northern harbour froze. A sudden rise in) Tj T*
+(traffic matched the year a canal opened two) Tj T*
+(hundred miles inland. Even the handwriting) Tj T*
+(changed, growing smaller and more careful) Tj T*
+(after the storm that destroyed the old pier.) Tj T*
+() Tj T*
+(The keeper never described the storm itself.) Tj T*
+(The entry for that night reads only that the) Tj T*
+(lamp was lit at seven minutes past five,) Tj T*
+(that the wind blew from the south-west, and) Tj T*
+ET
+BT /F1 11 Tf 14 TL 50 790 Td
+(The Lighthouse Keeper's Ledger) Tj T*
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000229 00000 n 
+0000003341 00000 n 
+0000003467 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+5769
+%%EOF

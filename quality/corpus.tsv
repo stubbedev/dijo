@@ -8,6 +8,7 @@ prose.html	prose	born-digital
 prose.epub	prose	born-digital	
 prose-pandoc.docx	prose	born-digital	
 prose-columns.pdf	prose	multi-column	
+prose-columns-reversed.pdf	prose	multi-column	
 report.pdf	report	headers-footers	
 report.docx	report	headers-footers	
 report.pdf	report	headers-footers	--format pages

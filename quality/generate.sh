@@ -131,8 +131,9 @@ pandoc "$work/hyphenated.md" -o "$corpus/hyphenated.pdf" --pdf-engine=pdflatex -
     -V classoption=twocolumn -V geometry:paperwidth=12cm,paperheight=29.7cm,margin=1cm
 
 for mapping in private-use offset; do
-    python3 "$here/broken_text_layer.py" "$truth/prose.txt" "$corpus/prose-broken-$mapping.pdf" "$mapping"
+    python3 "$here/text_pdf.py" "$truth/prose.txt" "$corpus/prose-broken-$mapping.pdf" "$mapping" lines
 done
+python3 "$here/text_pdf.py" "$truth/prose.txt" "$corpus/prose-columns-reversed.pdf" intact reversed-columns
 
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-300"
 pdftoppm -r 150 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-150"

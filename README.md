@@ -237,20 +237,25 @@ text output each embedded document starts with a `=== path ===` line. Exceeding 
 ## Quality
 
 `quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
-HTML and EPUB, a two-column PDF, a report with running headers and footers, Arabic, Hebrew, Chinese, Japanese, Thai,
-Hindi and German documents, tables, a PDF hyphenated by TeX, PDFs with broken text layers, and scans at 300 and 150
-dpi, skewed and rotated. Every extraction is scored
-against its truth: character and token error rate, recall (the share of the truth's words that were extracted at
-all), spurious text and paragraph order. The test suite fails when a score gets worse than `quality/baseline.json`
+HTML and EPUB, two-column PDFs (one drawn right column first), a report with running headers and footers, Arabic,
+Hebrew, Chinese, Japanese, Thai, Hindi and German documents, tables, a PDF hyphenated by TeX, PDFs with broken text
+layers, and scans at 300 and 150 dpi, skewed and rotated. Every extraction is scored against its truth: character
+and token error rate, recall (the share of the truth's words that were extracted at all), spurious text and paragraph
+order. The test suite fails when a score gets worse than `quality/baseline.json`
 allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
 `just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM alongside: over the documents extracted with default options, extractous recalls 0.996 of the truth's words
-against Tika's 0.852, at a token error rate of 0.016 against 0.190.
+against Tika's 0.854, at a token error rate of 0.016 against 0.202.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
 upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end. An Arabic PDF whose
 text layer splits words where their letters stop joining is read by OCR instead, which still misreads some words.
+
+An untagged PDF page is read in reading order, not in the order its content stream draws the text: columns left to
+right (right to left on a page of right-to-left text), a title before the columns it spans, a block above the blocks
+below it. A page drawn in reading order already keeps its order, and so does a page with text in more than one
+direction. Tagged PDFs are read in the order of their structure tree.
 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
 lines, estimated from projection profiles. Tesseract's layout analysis loses almost all text from a page skewed by as
