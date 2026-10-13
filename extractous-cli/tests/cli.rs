@@ -1389,6 +1389,7 @@ fn each_ocred_image_reports_how_it_was_read() {
         "../quality/corpus/prose-scan-rotated.png",
         "../quality/corpus/arabic-scan-300dpi.png",
         "../quality/corpus/report-scan.tif",
+        "../quality/corpus/prose-photo-perspective.jpg",
     ]);
     for object in &objects {
         assert_matches_schema(object);
@@ -1404,6 +1405,7 @@ fn each_ocred_image_reports_how_it_was_read() {
     assert_eq!(rotated["turned_degrees"], 270, "{rotated}");
     assert_eq!(rotated["script"], "Latin", "{rotated}");
     assert_eq!(rotated["prepared"], true, "{rotated}");
+    assert_eq!(rotated["flattened"], false, "{rotated}");
 
     let arabic = &reports(1)[0];
     assert_eq!(arabic["script"], "Arabic", "{arabic}");
@@ -1414,6 +1416,9 @@ fn each_ocred_image_reports_how_it_was_read() {
         .map(|report| report["page"].clone())
         .collect();
     assert_eq!(pages, [1, 2]);
+
+    let photo = &reports(3)[0];
+    assert_eq!(photo["flattened"], true, "{photo}");
 }
 
 #[test]

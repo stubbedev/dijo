@@ -173,5 +173,9 @@ magick "$work"/report-scan-*.png -colorspace Gray -depth 8 -compress lzw "$corpu
 magick "$corpus/report-scan.tif" -background white -rotate 2 -depth 8 -compress lzw "$corpus/report-scan-skewed.tif"
 magick "$work/scan-300.png" -colorspace Gray -rotate 180 -quality 90 "$corpus/prose-photo-upside-down.jpg"
 exiftool -quiet -overwrite_original -Orientation=3 -n "$corpus/prose-photo-upside-down.jpg"
+magick "$work/scan-150.png" -colorspace Gray -resize 1240x \( +clone -fill '#555555' -colorize 100 -resize 140% \) \
+    +swap -gravity center -compose over -composite -virtual-pixel background -background '#555555' \
+    -distort Perspective '0,0 420,260  1736,0 1330,300  1736,2455 1700,2380  0,2455 40,2420' -quality 90 \
+    "$corpus/prose-photo-perspective.jpg"
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/arabic.pdf" "$work/arabic-300"
 magick "$work/arabic-300.png" -colorspace Gray -depth 8 "$corpus/arabic-scan-300dpi.png"

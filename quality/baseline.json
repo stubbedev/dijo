@@ -244,6 +244,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-photo-perspective.jpg": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-photo-upside-down.jpg": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

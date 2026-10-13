@@ -155,12 +155,14 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * @param script          the script detection found, or null
      * @param exifOrientation the EXIF orientation applied, or null
      * @param decoded         whether Java decoded the image to prepare it
+     * @param flattened       whether a page photographed at an angle was made flat
      * @param quarterTurns    the clockwise quarter turns detection found and applied
      * @param skewDegrees     the skew corrected
      * @param scale           the enlargement applied
      */
     private record Prepared(Path path, String language, boolean unevenLighting, String script,
-                            String exifOrientation, boolean decoded, int quarterTurns,
+                            String exifOrientation, boolean decoded, boolean flattened,
+                            int quarterTurns,
                             double skewDegrees, double scale) {
 
         String report(Integer page, TesseractOCRConfig configured) {
@@ -171,7 +173,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                     .page(page)
                     .script(script)
                     .exifOrientation(exifOrientation)
-                    .prepared(decoded, quarterTurns, skewDegrees, scale, unevenLighting)
+                    .prepared(decoded, flattened, quarterTurns, skewDegrees, scale, unevenLighting)
                     .json();
         }
 
@@ -198,6 +200,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         BufferedImage upright = image == null
                 ? null : OcrImages.applyOrientation(image, orientation);
         final String exifOrientation = upright != image ? orientation : null;
+        final BufferedImage flat = upright == null ? null : PageFlattening.flatten(upright);
+        if (flat != null) {
+            upright = flat;
+        }
         String language = null;
         String script = null;
         int quarterTurns = 0;
@@ -214,7 +220,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             }
         }
         if (upright == null) {
-            return new Prepared(null, language, false, script, null, false, 0, 0, 1);
+            return new Prepared(null, language, false, script, null, false, false, 0, 0, 1);
         }
         final double skew = OcrImages.skewDegrees(upright);
         if (skew != 0) {
@@ -225,8 +231,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             upright = OcrImages.scale(upright, upscale);
         }
         return new Prepared(upright == image ? null : write(upright, temporary), language,
-                OcrImages.unevenLighting(upright), script, exifOrientation, true, quarterTurns, skew,
-                Math.max(upscale, 1));
+                OcrImages.unevenLighting(upright), script, exifOrientation, true, flat != null,
+                quarterTurns, skew, Math.max(upscale, 1));
     }
 
     private static Path write(BufferedImage image, TemporaryResources temporary)

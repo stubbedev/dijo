@@ -288,6 +288,7 @@ pub struct OcrReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exif_orientation: Option<u8>,
     pub prepared: bool,
+    pub flattened: bool,
     pub turned_degrees: u16,
     pub deskewed_degrees: f64,
     pub scale: f64,

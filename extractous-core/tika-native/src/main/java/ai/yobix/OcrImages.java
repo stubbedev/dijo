@@ -276,7 +276,7 @@ final class OcrImages {
         return scaled;
     }
 
-    private static BufferedImage gray(BufferedImage image, int width, int height) {
+    static BufferedImage gray(BufferedImage image, int width, int height) {
         if (image.getType() == BufferedImage.TYPE_BYTE_GRAY && image.getWidth() == width
                 && image.getHeight() == height) {
             return image;
@@ -336,7 +336,7 @@ final class OcrImages {
         return sum;
     }
 
-    private static int otsuThreshold(int[] gray) {
+    static int otsuThreshold(int[] gray) {
         final long[] histogram = new long[256];
         for (final int value : gray) {
             histogram[value]++;

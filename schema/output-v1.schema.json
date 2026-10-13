@@ -161,7 +161,7 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["language", "prepared", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
+                "required": ["language", "prepared", "flattened", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
                 "properties": {
                   "page": {
                     "type": "integer",
@@ -185,6 +185,10 @@
                   "prepared": {
                     "type": "boolean",
                     "description": "Whether the image could be decoded to prepare it; one that could not went to tesseract as it was."
+                  },
+                  "flattened": {
+                    "type": "boolean",
+                    "description": "Whether a page photographed at an angle was found and mapped back to a rectangle."
                   },
                   "turned_degrees": {
                     "enum": [0, 90, 180, 270],

@@ -46,6 +46,7 @@
 | prose-scan.pdf | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan.webp | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-photo-perspective.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |
 | prose-broken-private-use.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

@@ -266,8 +266,8 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.858, Kreuzberg 0.685 and Docling 0.673, at
-a token error rate of 0.012 against 0.210, 0.463 and 0.398. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.860, Kreuzberg 0.686 and Docling 0.678, at
+a token error rate of 0.012 against 0.208, 0.461 and 0.396. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
@@ -283,7 +283,9 @@ structure tree, and a tagged page written vertically still comes out a glyph per
 normalisation step, so `--no-normalize reading-order`, `--raw` and XHTML output keep the content stream order.
 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
-lines, estimated from projection profiles. Tesseract's layout analysis loses almost all text from a page skewed by as
+lines, estimated from projection profiles. A page photographed at an angle is made flat first: found as the largest
+bright region with sharp edges against a darker background, and mapped from the quadrilateral its corners span back
+to a rectangle. Tesseract's layout analysis loses almost all text from a page skewed by as
 little as 2.5°.
 
 Images are read in PNG, JPEG, TIFF (every page), GIF, BMP, PNM, JPEG 2000 and WebP. HEIC, HEIF and AVIF images, the
