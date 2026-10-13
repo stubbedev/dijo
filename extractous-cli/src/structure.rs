@@ -61,6 +61,7 @@ struct Splitter<'e> {
     artifact: Option<usize>,
     artifacts: String,
     in_pieces: bool,
+    between_cells: bool,
 }
 
 fn element_kind(name: &str) -> Option<(ElementKind, Option<u8>)> {
@@ -201,6 +202,11 @@ impl Splitter<'_> {
             self.page = Some((self.pages_seen, self.depth));
             return Ok(());
         }
+        match name {
+            "tr" => self.between_cells = true,
+            "td" | "th" => self.between_cells = false,
+            _ => {}
+        }
         if self.element.is_none() && is_block(name) {
             end_line(self.current_text());
         }
@@ -232,8 +238,12 @@ impl Splitter<'_> {
             return Ok(());
         }
         match name {
-            "td" | "th" => self.current_text().push('\t'),
+            "td" | "th" => {
+                self.between_cells = true;
+                self.current_text().push('\t');
+            }
             "tr" => {
+                self.between_cells = false;
                 let text = self.current_text();
                 let trimmed = text.trim_end_matches('\t').len();
                 text.truncate(trimmed);
@@ -274,6 +284,9 @@ impl Splitter<'_> {
 
     fn text(&mut self, text: &str) -> io::Result<()> {
         if !self.in_body {
+            return Ok(());
+        }
+        if text.trim().is_empty() && self.between_cells {
             return Ok(());
         }
         let current = self.current_text();
@@ -484,6 +497,7 @@ pub fn split(
         artifact: None,
         artifacts: String::new(),
         in_pieces: false,
+        between_cells: false,
     };
     let mut buffer = Vec::new();
     loop {
@@ -614,6 +628,17 @@ mod tests {
                     continued: false,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn the_whitespace_tika_writes_between_cells_is_not_text() {
+        let xhtml = "<html><body><table><tr>\t<td>Year</td>\t<td>Ships</td></tr>\n\
+                     <tr>\t<td>1921</td>\t<td>412</td></tr></table></body></html>";
+        assert_eq!(parts(xhtml, Unit::Pages)[0].text, "Year\tShips\n1921\t412");
+        assert_eq!(
+            parts(xhtml, Unit::Elements)[0].text,
+            "Year\tShips\n1921\t412"
         );
     }
 
