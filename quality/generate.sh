@@ -111,6 +111,10 @@ for language in german arabic hebrew chinese japanese thai hindi; do
     convert "$work/$language.fodt" "$language" docx "docx:MS Word 2007 XML"
 done
 
+convert "$here/revisions.fodt" revisions odt odt
+convert "$here/revisions.fodt" revisions docx "docx:MS Word 2007 XML"
+convert "$here/revisions.fodt" revisions doc "doc:MS Word 97"
+
 tr '\t' ',' < "$truth/table.txt" > "$work/table.csv"
 convert "$work/table.csv" table xlsx xlsx
 {
