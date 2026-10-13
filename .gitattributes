@@ -1,2 +1,5 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+THIRD-PARTY-LICENSES.md -text
 test_files/** -text
 quality/** -text
