@@ -2,6 +2,7 @@ package ai.yobix;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
@@ -20,24 +21,29 @@ import java.nio.file.Path;
 import java.util.Set;
 
 /**
- * WebP images: their metadata as Tika reads it, and the text OCR finds in them. Tika reads WebP
- * for its metadata alone and never hands it to OCR, though tesseract reads WebP, so text in a
- * WebP image was lost.
+ * Images Tika reads for their metadata alone, or not at all, though tesseract reads them: their
+ * metadata as Tika reads it, and the text OCR finds in them. Text in a WebP or PNM image was
+ * lost.
  */
-final class WebpParser implements Parser, EnrichingParser {
+final class RecognizedImageParser implements Parser, EnrichingParser {
 
     static final MediaType WEBP = MediaType.image("webp");
+    static final Set<MediaType> PNM = Set.of(MediaType.image("x-portable-bitmap"),
+            MediaType.image("x-portable-graymap"), MediaType.image("x-portable-pixmap"),
+            MediaType.image("x-portable-anymap"));
 
+    private final Set<MediaType> types;
     private final Parser metadataParser;
     private CompositeContentEnricher recognizers;
 
-    WebpParser(Parser metadataParser) {
+    RecognizedImageParser(Set<MediaType> types, Parser metadataParser) {
+        this.types = types;
         this.metadataParser = metadataParser;
     }
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
-        return Set.of(WEBP);
+        return types;
     }
 
     @Override
@@ -54,7 +60,9 @@ final class WebpParser implements Parser, EnrichingParser {
         try (TikaInputStream image = TikaInputStream.get(path)) {
             metadataParser.parse(image, new EmbeddedContentHandler(xhtml), metadata, context);
         }
-        final Parser recognizer = ContentEnrichers.get(recognizers, WEBP, metadata, context);
+        final MediaType type = MediaType.parse(metadata.get(HttpHeaders.CONTENT_TYPE));
+        final Parser recognizer = type == null
+                ? null : ContentEnrichers.get(recognizers, type.getBaseType(), metadata, context);
         if (recognizer != null) {
             try (TikaInputStream image = TikaInputStream.get(path)) {
                 recognizer.parse(image, new EmbeddedContentHandler(new BodyContentHandler(xhtml)),

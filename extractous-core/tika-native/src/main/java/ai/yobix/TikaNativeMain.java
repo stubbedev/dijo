@@ -18,6 +18,7 @@ import org.apache.tika.mime.MediaTypeRegistry;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.CompositeParser;
 import org.apache.tika.parser.DefaultParser;
+import org.apache.tika.parser.EmptyParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.ParserDecorator;
@@ -93,7 +94,9 @@ public class TikaNativeMain {
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
                 new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
                 new IworkArchiveParser(), new HwpxParser(), new DjvuParser(),
-                new WebpParser(parsers.get(WebpParser.WEBP)),
+                new RecognizedImageParser(Set.of(RecognizedImageParser.WEBP),
+                        parsers.get(RecognizedImageParser.WEBP)),
+                new RecognizedImageParser(RecognizedImageParser.PNM, EmptyParser.INSTANCE),
                 new MobiParser(parsers.get(MediaType.text("html"))),
                 new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
         final TesseractOCRParser tesseract = tesseract(defaults);

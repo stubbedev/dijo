@@ -40,7 +40,7 @@ import java.util.Set;
  * readable first, turned upright by their EXIF orientation and by the skew of their text lines,
  * and enlarged when their text is too small. Images that need none of this go to tesseract
  * untouched, as do images too large to decode safely and images Java cannot decode (tesseract
- * reads more formats than ImageIO, WebP among them). HEIC, HEIF and AVIF images, which neither
+ * reads more formats than ImageIO, WebP and PNM among them). HEIC, HEIF and AVIF images, which neither
  * can decode, are decoded by libheif's heif-dec when it is installed, and reported as unread
  * otherwise rather than passed off as images without text. Each page of a multi-page TIFF is prepared and read on its
  * own, and becomes a page of the output.
@@ -70,7 +70,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         final Set<MediaType> types = new HashSet<>(ocr.getSupportedTypes(context));
-        types.add(WebpParser.WEBP);
+        types.add(RecognizedImageParser.WEBP);
+        types.addAll(RecognizedImageParser.PNM);
         types.addAll(UNDECODABLE);
         return types;
     }
