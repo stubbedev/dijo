@@ -933,13 +933,18 @@ fn spool_dir_holds_the_temporary_files() {
     assert!(stdout(&output).contains("These are a few of my favorite things"));
     assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
 
-    let missing = extractous(&["--spool-dir", "/nonexistent/spool", &document("simple.odt")]);
+    let missing_dir = Path::new("/nonexistent/spool");
+    let missing = extractous(&[
+        "--spool-dir",
+        missing_dir.to_str().unwrap(),
+        &document("simple.odt"),
+    ]);
     assert_eq!(missing.status.code(), Some(1));
-    assert!(
-        stderr(&missing).contains("Failed to create the spool directory /nonexistent/spool/"),
-        "{}",
-        stderr(&missing)
+    let expected = format!(
+        "Failed to create the spool directory {}",
+        missing_dir.join("extractous-").display()
     );
+    assert!(stderr(&missing).contains(&expected), "{}", stderr(&missing));
 }
 
 #[test]
