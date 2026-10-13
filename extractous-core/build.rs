@@ -25,8 +25,12 @@ fn main() {
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
     if env::var_os("CARGO_FEATURE_STATIC_IMAGE").is_some() {
-        let ocr = ocr_bundle(&out_dir);
-        write_static_native_module(&out_dir, ocr.as_ref());
+        let ocr = ocr_bundle(&out_dir, OcrEngine::Linked).unwrap_or_else(|| {
+            panic!(
+                "The static build links tesseract and needs {OCR_BUNDLE_VARIABLE} for its language data"
+            )
+        });
+        write_static_native_module(&out_dir, &ocr);
         return;
     }
     for input in TIKA_NATIVE_INPUTS {
@@ -73,7 +77,7 @@ fn main() {
         }
     }
 
-    let ocr = ocr_bundle(&out_dir);
+    let ocr = ocr_bundle(&out_dir, OcrEngine::Executable);
     write_native_module(&out_dir, &libs_dir, &fingerprint, ocr.as_ref());
 }
 
@@ -88,7 +92,16 @@ struct OcrBundle {
     fingerprint: String,
 }
 
-fn ocr_bundle(out_dir: &Path) -> Option<OcrBundle> {
+/// How the built program runs tesseract, which decides what it embeds of the OCR bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrEngine {
+    /// The bundled executable, unpacked and run for every image.
+    Executable,
+    /// tesseract linked into the static executable, which needs only the language data.
+    Linked,
+}
+
+fn ocr_bundle(out_dir: &Path, engine: OcrEngine) -> Option<OcrBundle> {
     println!("cargo:rerun-if-env-changed={OCR_BUNDLE_VARIABLE}");
     let dir = PathBuf::from(env::var_os(OCR_BUNDLE_VARIABLE)?);
     println!("cargo:rerun-if-changed={}", dir.display());
@@ -104,7 +117,9 @@ fn ocr_bundle(out_dir: &Path) -> Option<OcrBundle> {
     create_dir(&compressed_dir.join(OCR_MODELS));
     let mut hasher = DefaultHasher::new();
     let mut files = Vec::with_capacity(models.len() + 1);
-    let named = std::iter::once((OCR_TESSERACT.to_string(), dir.join(OCR_TESSERACT))).chain(models);
+    let executable = (engine == OcrEngine::Executable)
+        .then(|| (OCR_TESSERACT.to_string(), dir.join(OCR_TESSERACT)));
+    let named = executable.into_iter().chain(models);
     for (name, path) in named {
         let content = read_file(&path);
         hasher.write(name.as_bytes());
@@ -467,14 +482,11 @@ fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<
 
 /// The module of a static image build, which embeds no native libraries since this crate is
 /// linked into the image: only the OCR bundle, unpacked to run tesseract.
-fn write_static_native_module(out_dir: &Path, ocr: Option<&OcrBundle>) {
+fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle) {
     let module = format!(
         "pub(crate) const NATIVE_FINGERPRINT: &str = {:?};\n{}",
-        format!(
-            "static-ocr-{}",
-            ocr.map_or("none", |ocr| ocr.fingerprint.as_str())
-        ),
-        ocr_items(ocr)
+        format!("static-ocr-{}", ocr.fingerprint),
+        ocr_items(Some(ocr))
     );
     write_if_changed(&out_dir.join("native.rs"), &module);
 }

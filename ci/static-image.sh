@@ -26,6 +26,11 @@ cc="$toolchain/bin/$triple-gcc"
 work="$root/target/static-image"
 mkdir -p "$work/feature" "$work/clibraries"
 
+if [ -z "${EXTRACTOUS_OCR_BUNDLE:-}" ]; then
+    "$here/ocr-bundle.sh" "$work/ocr-bundle"
+    export EXTRACTOUS_OCR_BUNDLE="$work/ocr-bundle"
+fi
+
 triple_variable=${triple//-/_}
 env "CC_$triple_variable=$cc" "AR_$triple_variable=$toolchain/bin/$triple-ar" \
     PATH="$toolchain/bin:$PATH" \
@@ -43,6 +48,12 @@ for source in "$static_sources"/*.c; do
     "$cc" -c -O2 -fPIC -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" -o "$object" "$source"
     objects+=("$object")
 done
+mapfile -t tesseract_cflags < "$toolchain/extractous/tesseract-cflags"
+mapfile -t tesseract_libs < "$toolchain/extractous/tesseract-libs"
+"$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++17 "${tesseract_cflags[@]}" \
+    -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" \
+    -o "$work/tesseract.o" "$static_sources/tesseract.cc"
+objects+=("$work/tesseract.o")
 
 (cd "$root/extractous-core/tika-native" && ./gradlew -q nativeImageArguments) > "$work/arguments"
 mapfile -t arguments < "$work/arguments"
@@ -79,8 +90,8 @@ if [ -x "$GRAALVM_HOME/bin/.native-image-wrapped" ]; then
 fi
 
 linked=()
-for library in "${objects[@]}" "$program" -lfreetype -lpng16 -lbz2 -lbrotlidec \
-    -lbrotlicommon -lz -lstdc++; do
+for library in "${objects[@]}" "$program" "${tesseract_libs[@]}" -lfreetype -lpng16 -lbz2 \
+    -lbrotlidec -lbrotlicommon -lz -lstdc++; do
     linked+=("-H:NativeLinkerOption=$library")
 done
 

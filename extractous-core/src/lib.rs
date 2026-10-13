@@ -18,7 +18,7 @@ mod extractor;
 pub use extractor::*;
 
 mod ocr;
-pub use ocr::{bundled_ocr_licenses, tesseract_program};
+pub use ocr::{bundled_ocr_licenses, tesseract_version};
 
 mod isolate;
 pub use isolate::{

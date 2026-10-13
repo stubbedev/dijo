@@ -4,7 +4,6 @@ import org.apache.commons.io.IOUtils;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.EncryptedDocumentException;
-import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -28,7 +27,6 @@ import org.apache.tika.parser.enricher.CompositeContentEnricher;
 import org.apache.tika.parser.enricher.EnrichingParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
-import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
@@ -43,6 +41,7 @@ import org.xml.sax.SAXException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
@@ -100,7 +99,7 @@ public class TikaNativeMain {
             replacements.add(new RecognizedImageParser(type,
                     parsers.getOrDefault(type, EmptyParser.INSTANCE)));
         }
-        final TesseractOCRParser tesseract = tesseract(defaults);
+        final Tesseract tesseract = tesseract();
         final List<Parser> recognizers = new ArrayList<>();
         if (tesseract != null) {
             final Parser preparingOcr = new PreparingOcrParser(tesseract);
@@ -121,30 +120,19 @@ public class TikaNativeMain {
         return parser;
     }
 
-    /**
-     * Tika's tesseract parser: running the tesseract the build bundled, or else the one on the
-     * PATH, when it is installed.
-     */
-    private static TesseractOCRParser tesseract(DefaultParser defaults) {
-        if (OcrBundle.present()) {
-            final TesseractOCRParser bundled;
-            try {
-                bundled = OcrBundle.parser();
-            } catch (TikaConfigException e) {
-                throw new IllegalStateException("The bundled tesseract cannot be configured", e);
-            }
-            if (bundled.getSupportedTypes(new ParseContext()).isEmpty()) {
-                throw new IllegalStateException("The bundled tesseract does not run");
-            }
+    /** The tesseract the build bundled, or else the one on the PATH, or null when none runs. */
+    private static Tesseract tesseract() {
+        final Tesseract bundled;
+        try {
+            bundled = OcrBundle.tesseract();
+        } catch (IOException e) {
+            throw new UncheckedIOException("The bundled tesseract cannot be set up", e);
+        }
+        if (bundled != null) {
             return bundled;
         }
-        for (final Parser candidate : defaults.getAllComponentParsers()) {
-            if (candidate instanceof TesseractOCRParser ocr
-                    && !ocr.getSupportedTypes(new ParseContext()).isEmpty()) {
-                return ocr;
-            }
-        }
-        return null;
+        final TesseractProgram onPath = TesseractProgram.onPath();
+        return onPath.runs() ? onPath : null;
     }
 
     /** Hands every parser that OCRs its images or rendered pages the given text recognizers. */

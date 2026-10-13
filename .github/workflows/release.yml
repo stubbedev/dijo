@@ -124,18 +124,8 @@ jobs:
           path: dist/*
 
   static:
-    name: static (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-linux-static
-            graalvm: linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-linux-static
-            graalvm: linux-aarch64
-    runs-on: ${{ matrix.os }}
+    name: static (x86_64-linux-static)
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,7 +133,7 @@ jobs:
           persist-credentials: false
       - name: Install GraalVM
         run: |
-          home=$(ci/install-graalvm.sh ${{ matrix.graalvm }} "$RUNNER_TEMP/graalvm")
+          home=$(ci/install-graalvm.sh linux-x64 "$RUNNER_TEMP/graalvm")
           echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -199,7 +189,7 @@ jobs:
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi
-          name="extractous-${version}-${{ matrix.target }}"
+          name="extractous-${version}-x86_64-linux-static"
           mkdir -p "dist/$name"
           cp target/static-image/extractous LICENSE README.md "dist/$name/"
           target/static-image/extractous --licenses > "dist/$name/LICENSES.md"
@@ -207,7 +197,7 @@ jobs:
           rm -rf "dist/$name"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.target }}
+          name: x86_64-linux-static
           path: dist/*
 
   sbom:

@@ -9,8 +9,8 @@ runs as native code inside the process.
 
 ## Install
 
-Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, each also as
-a static build, `*-linux-static`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
+Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and a
+static build for x86_64, `x86_64-linux-static`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
 SBOMs of the Rust crates and Java libraries, and build provenance you can check with
 `gh attestation verify <archive> --repo stubbedev/extractous`.
 
@@ -33,15 +33,20 @@ Windows) and loaded from there, so the binary runs wherever it is copied.
 These binaries link the system's C library (glibc 2.35 or later for the Linux release binaries), so a container needs
 a base image with it, such as `debian:bookworm-slim`. Nothing else needs installing.
 
-The `*-linux-static` release binaries need nothing at all, not even a C library: they run in a `FROM scratch`
+The `x86_64-linux-static` release binary needs nothing at all, not even a C library: it runs in a `FROM scratch`
 container. GraalVM builds static images only as executables, so this build turns the program around: the Rust code is
 compiled for musl as a static library and linked into Tika's native image, whose `main` hands over to it, and the
-JDK's AWT libraries, FreeType and SQLite's JDBC driver are linked in instead of unpacked. Nothing is unpacked but the
-OCR bundle. Its output is the same as the other Linux build's; Tika runs equally fast, and on many small files, where
-the Rust side dominates, it is about 5% slower (it allocates with mimalloc rather than glibc's allocator). `just static`
-builds it on Linux into `target/static-image/extractous`, with nix providing the musl toolchain.
+JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked. Nothing is
+unpacked but the OCR language data. Its output is the same as the other Linux build's. Tika runs equally fast; on many
+small files, where the Rust side dominates, it is about 5% slower (it allocates with mimalloc rather than glibc's
+allocator); OCR is 10 to 25% faster, since each model is loaded once per process instead of once per image (more for
+documents with many small images), at the cost of keeping the loaded models in memory: about 280 MB for
+`script/Latin` per extraction running at once. GraalVM ships no musl libraries for aarch64, so there is no static
+aarch64 build. `just static` builds it on Linux into `target/static-image/extractous`, with nix providing the musl
+toolchain.
 
-OCR runs the `tesseract` executable. The Linux release binaries carry their own, statically linked, with the language
+OCR runs tesseract: linked in, in the static build, and otherwise the `tesseract` executable. The Linux release
+binaries carry their own, statically linked, with the language
 data the automatic language needs (orientation and script detection, tesseract's `script/Latin` and `script/Greek`
 models, which read every language of those scripts with its diacritics, and a fast model for each other script it
 reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the C library: a binary built with

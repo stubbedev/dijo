@@ -14,7 +14,6 @@ import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.enricher.TextRecognizer;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
-import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.XHTMLContentHandler;
@@ -64,13 +63,12 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             MediaType.image("heic"), MediaType.image("heic-sequence"), MediaType.image("heif"),
             MediaType.image("heif-sequence"), MediaType.image("avif"));
 
-    private final TesseractOCRParser ocr;
-    private final String tesseract;
+    private final Tesseract tesseract;
+    private final TesseractParser ocr;
 
-    PreparingOcrParser(TesseractOCRParser ocr) {
-        this.ocr = ocr;
-        this.tesseract = ocr.getDefaultConfig().getTesseractPath()
-                + TesseractOCRParser.getTesseractProg();
+    PreparingOcrParser(Tesseract tesseract) {
+        this.tesseract = tesseract;
+        this.ocr = new TesseractParser(tesseract);
     }
 
     @Override

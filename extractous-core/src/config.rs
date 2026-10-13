@@ -191,20 +191,8 @@ tika_config! {
 tika_config! {
     /// Tesseract OCR configuration settings
     TesseractOcrConfig => "ai/yobix/OcrConfig" {
-        /// Sets the DPI (dots per inch) of the image to be processed.
-        set_density(density: i32) => "setDensity",
-
-        /// Sets the color depth of the image to be processed.
-        set_depth(depth: i32) => "setDepth",
-
         /// Sets the maximum time in seconds that Tesseract should spend on OCR.
         set_timeout_seconds(timeout_seconds: i32) => "setTimeoutSeconds",
-
-        /// Sets whether Tesseract should enable image preprocessing.
-        set_enable_image_preprocessing(enable_image_preprocessing: bool) => "setEnableImagePreprocessing",
-
-        /// Sets whether Tesseract should apply rotation to the image before OCR.
-        set_apply_rotation(apply_rotation: bool) => "setApplyRotation",
 
         /// If true, no OCR runs at all, not even on images or on PDFs with an OCR strategy.
         set_skip_ocr(skip_ocr: bool) => "setSkipOcr",

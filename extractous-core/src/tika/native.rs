@@ -27,7 +27,7 @@ fn unpacked() -> Result<&'static Path, String> {
 }
 
 /// The system properties Tika is started with: its temporary directory, headless AWT and the
-/// bundled tesseract.
+/// bundled tesseract, which the static build links rather than runs.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -38,6 +38,9 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
     }
     if !OCR_FILES.is_empty() {
         let dir = unpacked()?;
+        #[cfg(feature = "static-image")]
+        properties.push(("extractous.ocr.linked", "true".to_string()));
+        #[cfg(not(feature = "static-image"))]
         properties.push((
             "extractous.ocr.tesseract",
             dir.join(OCR_TESSERACT).display().to_string(),
@@ -349,13 +352,34 @@ fn make_executable(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The tesseract executable the build bundled, unpacked beside the native libraries, or None
-/// when the build bundled none and tesseract is looked up on `PATH`.
-pub(crate) fn bundled_tesseract() -> Result<Option<PathBuf>, String> {
-    if OCR_FILES.is_empty() {
-        return Ok(None);
+/// The version of the tesseract OCR runs, as `tesseract --version` reports it: the bundled
+/// executable, unpacked beside the native libraries, or else `tesseract` on `PATH`.
+#[cfg(not(feature = "static-image"))]
+pub(crate) fn tesseract_version() -> Result<String, String> {
+    let program = if OCR_FILES.is_empty() {
+        PathBuf::from("tesseract")
+    } else {
+        unpacked()?.join(OCR_TESSERACT)
+    };
+    let output = process::Command::new(&program)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("Failed to run {}: {e}", program.display()))?;
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+/// The version of the tesseract linked into the static executable.
+#[cfg(feature = "static-image")]
+pub(crate) fn tesseract_version() -> Result<String, String> {
+    unsafe extern "C" {
+        fn TessVersion() -> *const std::ffi::c_char;
     }
-    Ok(Some(unpacked()?.join(OCR_TESSERACT)))
+    let version = unsafe { std::ffi::CStr::from_ptr(TessVersion()) };
+    Ok(format!("tesseract {} (linked)", version.to_string_lossy()))
 }
 
 /// The licenses of the tesseract and the language data the build bundled.

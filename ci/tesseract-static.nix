@@ -6,21 +6,7 @@ let
   pkgs = nixpkgs.legacyPackages.${system};
   lib = pkgs.lib;
   static = pkgs.pkgsStatic;
-  tesseract =
-    (static.tesseract5.passthru.tesseractBase.override {
-      pango = null;
-      icu = null;
-      curl = null;
-      libarchive = null;
-    }).overrideAttrs
-      (old: {
-        configureFlags = (old.configureFlags or [ ]) ++ [
-          "--disable-openmp"
-          "--without-curl"
-          "--without-archive"
-          "--disable-doc"
-        ];
-      });
+  tesseract = import ./tesseract.nix static;
   inputsOf =
     p:
     lib.filter (input: input != null && input ? src) (

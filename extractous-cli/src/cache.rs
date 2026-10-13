@@ -1,7 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
@@ -522,18 +521,8 @@ fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
 
 /// The version tesseract reports, or why there is none, since OCR output depends on it.
 fn tesseract_version() -> String {
-    let program = match extractous_core::tesseract_program() {
-        Ok(program) => program,
-        Err(error) => return format!("tesseract unavailable: {error}"),
-    };
-    match Command::new(program).arg("--version").output() {
-        Ok(output) => format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-        Err(error) => format!("tesseract unavailable: {}", error.kind()),
-    }
+    extractous_core::tesseract_version()
+        .unwrap_or_else(|error| format!("tesseract unavailable: {error}"))
 }
 
 #[cfg(test)]

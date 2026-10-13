@@ -1,14 +1,11 @@
-use std::path::PathBuf;
-
 use crate::errors::{Error, ExtractResult};
 use crate::tika::native;
 
-/// The tesseract executable OCR runs: the one the build bundled (`EXTRACTOUS_OCR_BUNDLE`),
-/// unpacked on first use, or `tesseract` on `PATH`.
-pub fn tesseract_program() -> ExtractResult<PathBuf> {
-    Ok(native::bundled_tesseract()
-        .map_err(Error::NativeLibrary)?
-        .unwrap_or_else(|| PathBuf::from("tesseract")))
+/// The version of the tesseract OCR runs, as `tesseract --version` reports it, since OCR output
+/// depends on it: the one the build bundled (`EXTRACTOUS_OCR_BUNDLE`), linked into the static
+/// executable or unpacked on first use, or `tesseract` on `PATH`.
+pub fn tesseract_version() -> ExtractResult<String> {
+    native::tesseract_version().map_err(Error::IoError)
 }
 
 /// The licenses of the tesseract and the language data the build bundled, or None when it

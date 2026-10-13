@@ -4,15 +4,12 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Tesseract's orientation and script detection (OSD), and the choice of a language model for
  * the script it finds among the models that are installed.
  */
 final class ScriptDetection {
-
-    private static final long LIST_LANGUAGES_TIMEOUT_MILLIS = 60_000;
 
     /** The script OSD found, or null when it found none, and the turns that make it upright. */
     record Result(String script, int clockwiseQuarterTurns) {
@@ -49,8 +46,6 @@ final class ScriptDetection {
             Map.entry("Sinhala", "sin"),
             Map.entry("Tibetan", "bod"));
 
-    private static Set<String> installed;
-
     private ScriptDetection() {
     }
 
@@ -58,13 +53,11 @@ final class ScriptDetection {
      * Runs OSD on an image. An image OSD cannot judge, such as one with too little text, gives
      * an unknown script and no turns.
      */
-    static Result detect(String tesseract, Path image, long timeoutMillis) throws IOException {
-        final Programs.Outcome detection = Programs.run(timeoutMillis, OcrBundle::environment,
-                tesseract, image.toString(), "stdout", "--psm", "0");
-        if (!detection.succeeded()) {
+    static Result detect(Tesseract tesseract, Path image, long timeoutMillis) throws IOException {
+        final String output = tesseract.detect(image, timeoutMillis);
+        if (output == null) {
             return UNKNOWN;
         }
-        final String output = detection.output();
         String script = null;
         int degrees = 0;
         for (final String line : output.lines().toList()) {
@@ -87,32 +80,15 @@ final class ScriptDetection {
      * The model to read a script with: the script model, then the script's most common
      * language, if installed, and English otherwise.
      */
-    static String language(String tesseract, String script) throws IOException {
+    static String language(Tesseract tesseract, String script) throws IOException {
         if (script == null) {
             return DEFAULT_LANGUAGE;
         }
-        final Set<String> models = installed(tesseract);
+        final Set<String> models = tesseract.languages();
         if (models.contains(SCRIPT_MODEL_PREFIX + script)) {
             return SCRIPT_MODEL_PREFIX + script;
         }
         final String language = LANGUAGE_BY_SCRIPT.get(script);
         return language != null && models.contains(language) ? language : DEFAULT_LANGUAGE;
-    }
-
-    private static synchronized Set<String> installed(String tesseract) throws IOException {
-        if (installed == null) {
-            final Programs.Outcome listing = Programs.run(LIST_LANGUAGES_TIMEOUT_MILLIS,
-                    OcrBundle::environment, tesseract, "--list-langs");
-            if (!listing.succeeded()) {
-                throw new IOException("Listing tesseract's languages failed: "
-                        + listing.failure());
-            }
-            installed = listing.output().lines()
-                    .skip(1)
-                    .map(String::trim)
-                    .filter(line -> !line.isEmpty())
-                    .collect(Collectors.toUnmodifiableSet());
-        }
-        return installed;
     }
 }
