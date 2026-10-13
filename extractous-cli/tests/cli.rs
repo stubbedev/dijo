@@ -1428,6 +1428,32 @@ fn heic_is_read_with_heif_dec_and_reported_without_it() {
 }
 
 #[test]
+fn images_tesseract_cannot_read_are_decoded_for_it() {
+    let scans = ["psd", "pcx", "tga", "jb2"]
+        .map(|extension| format!("../quality/corpus/prose-scan.{extension}"));
+    let objects = json_objects(&scans.each_ref().map(String::as_str));
+    for (scan, read) in scans.iter().zip(&objects) {
+        assert_matches_schema(read);
+        assert_eq!(read["status"], "complete", "{scan}: {read}");
+        assert!(
+            read["text"].as_str().unwrap().contains("Lighthouse Keeper"),
+            "{scan}: {read}"
+        );
+        let reports = read["metadata"]["ocr"].as_array().unwrap();
+        assert_eq!(reports.len(), 1, "{scan}: {read}");
+        assert_eq!(reports[0]["prepared"], true, "{scan}: {read}");
+    }
+
+    let scratch = Scratch::new("damaged-tga");
+    let damaged = scratch.0.join("damaged.tga");
+    let tga = fs::read(&scans[2]).unwrap();
+    fs::write(&damaged, &tga[..4096]).unwrap();
+    let read = &json_objects(&[damaged.to_str().unwrap()])[0];
+    assert_matches_schema(read);
+    assert_eq!(read["status"], "failed", "{read}");
+}
+
+#[test]
 fn each_ocred_image_reports_how_it_was_read() {
     let objects = json_objects(&[
         "../quality/corpus/prose-scan-rotated.png",

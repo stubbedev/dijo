@@ -48,6 +48,10 @@ prose-scan.heic	prose	ocr
 prose-scan.avif	prose	ocr	
 prose-scan.pbm	prose	ocr	
 prose-scan.djvu	prose	ocr	
+prose-scan.jb2	prose	ocr	
+prose-scan.psd	prose	ocr	
+prose-scan.pcx	prose	ocr	
+prose-scan.tga	prose	ocr	
 prose-photo-upside-down.jpg	prose	ocr	
 prose-photo-perspective.jpg	prose	ocr	
 arabic-scan-300dpi.png	arabic	ocr	

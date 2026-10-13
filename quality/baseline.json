@@ -328,6 +328,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-scan.jb2": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-scan.pbm": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -335,7 +342,28 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-scan.pcx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-scan.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-scan.psd": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-scan.tga": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,

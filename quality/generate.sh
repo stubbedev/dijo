@@ -168,6 +168,10 @@ magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.hei
 magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.avif"
 magick "$work/scan-300.png" -colorspace Gray -threshold 50% "$corpus/prose-scan.pbm"
 cjb2 -dpi 300 "$corpus/prose-scan.pbm" "$corpus/prose-scan.djvu"
+jbig2 "$corpus/prose-scan.pbm" > "$corpus/prose-scan.jb2"
+magick "$work/scan-300.png" -colorspace Gray -depth 8 "$corpus/prose-scan.psd"
+magick "$work/scan-300.png" -colorspace Gray -type Palette "$corpus/prose-scan.pcx"
+magick "$work/scan-300.png" -colorspace Gray -depth 8 -compress RLE "$corpus/prose-scan.tga"
 magick "$work/scan-300.png" -colorspace Gray \( -size 2480x3508 radial-gradient:white-gray20 \) -compose multiply \
     -composite -depth 8 "$corpus/prose-scan-shadow.png"
 pdftoppm -r 72 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-72"

@@ -19,31 +19,43 @@ import org.xml.sax.SAXException;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
- * Images Tika reads for their metadata alone, or not at all, though tesseract reads them: their
- * metadata as Tika reads it, and the text OCR finds in them. Text in a WebP or PNM image was
- * lost.
+ * Images Tika reads for their metadata alone, or not at all, though they can be read for text: their
+ * metadata as Tika reads it, and the text OCR finds in them. Text in WebP, PNM, Photoshop, PCX
+ * and TGA images was lost.
  */
 final class RecognizedImageParser implements Parser, EnrichingParser {
 
     static final MediaType WEBP = MediaType.image("webp");
-    static final Set<MediaType> PNM = Set.of(MediaType.image("x-portable-bitmap"),
-            MediaType.image("x-portable-graymap"), MediaType.image("x-portable-pixmap"),
-            MediaType.image("x-portable-anymap"));
 
-    private final Set<MediaType> types;
+    /** The images that tesseract reads as they are. */
+    private static final Set<MediaType> READ_BY_TESSERACT = Set.of(WEBP,
+            MediaType.image("x-portable-bitmap"), MediaType.image("x-portable-graymap"),
+            MediaType.image("x-portable-pixmap"), MediaType.image("x-portable-anymap"));
+
+    /** The images tesseract cannot read, which Java decodes for it. */
+    static final Set<MediaType> DECODED_FOR_TESSERACT = Set.of(
+            MediaType.image("vnd.adobe.photoshop"), MediaType.image("vnd.zbrush.pcx"),
+            MediaType.image("x-tga"));
+
+    static final Set<MediaType> TYPES = Stream.concat(READ_BY_TESSERACT.stream(),
+            DECODED_FOR_TESSERACT.stream()).collect(Collectors.toUnmodifiableSet());
+
+    private final MediaType type;
     private final Parser metadataParser;
     private CompositeContentEnricher recognizers;
 
-    RecognizedImageParser(Set<MediaType> types, Parser metadataParser) {
-        this.types = types;
+    RecognizedImageParser(MediaType type, Parser metadataParser) {
+        this.type = type;
         this.metadataParser = metadataParser;
     }
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
-        return types;
+        return Set.of(type);
     }
 
     @Override

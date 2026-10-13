@@ -49,6 +49,10 @@
 | prose-scan.avif | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan.pbm | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan.djvu | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-scan.jb2 | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-scan.psd | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-scan.pcx | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-scan.tga | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-perspective.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |

@@ -34,16 +34,19 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The text recognizer Tika's parsers hand images and rendered pages to: runs OCR on images made
  * readable first, turned upright by their EXIF orientation and by the skew of their text lines,
  * and enlarged when their text is too small. Images that need none of this go to tesseract
  * untouched, as do images too large to decode safely and images Java cannot decode (tesseract
- * reads more formats than ImageIO, WebP and PNM among them). HEIC, HEIF and AVIF images, which neither
- * can decode, are decoded by libheif's heif-dec when it is installed, and reported as unread
- * otherwise rather than passed off as images without text. Each page of a multi-page TIFF is prepared and read on its
- * own, and becomes a page of the output.
+ * reads more formats than ImageIO, WebP and PNM among them). Photoshop, PCX, TGA and JBIG2
+ * images, which tesseract cannot read, always go to it as Java decoded them. HEIC, HEIF and AVIF
+ * images, which neither can decode, are decoded by libheif's heif-dec when it is installed, and
+ * reported as unread otherwise rather than passed off as images without text. Each page of a
+ * multi-page TIFF is prepared and read on its own, and becomes a page of the output.
  * <p>
  * With the automatic OCR language ({@link OcrConfig}), tesseract's orientation and script
  * detection runs first: the image is also turned by the quarter turns it finds, and read with a
@@ -54,6 +57,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     private static final long MAX_PIXELS = 60_000_000L;
     private static final Set<String> PAGED_FORMATS = Set.of("tif", "tiff");
     private static final TesseractOCRConfig DEFAULTS = new TesseractOCRConfig();
+    private static final Set<MediaType> DECODED_FOR_TESSERACT = Stream.concat(
+            RecognizedImageParser.DECODED_FOR_TESSERACT.stream(),
+            Stream.of(MediaType.image("x-jbig2"))).collect(Collectors.toUnmodifiableSet());
     private static final Set<MediaType> UNDECODABLE = Set.of(
             MediaType.image("heic"), MediaType.image("heic-sequence"), MediaType.image("heif"),
             MediaType.image("heif-sequence"), MediaType.image("avif"));
@@ -70,8 +76,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         final Set<MediaType> types = new HashSet<>(ocr.getSupportedTypes(context));
-        types.add(RecognizedImageParser.WEBP);
-        types.addAll(RecognizedImageParser.PNM);
+        types.addAll(RecognizedImageParser.TYPES);
+        types.addAll(DECODED_FOR_TESSERACT);
         types.addAll(UNDECODABLE);
         return types;
     }
@@ -119,12 +125,14 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                     return;
                 }
                 final BufferedImage image = pages == null ? null : pages.read(0);
-                final Prepared prepared = prepare(original, image, metadata, auto, temporary);
+                final Path readable = readableByTesseract(original, type, image, temporary);
+                final Prepared prepared = prepare(readable, image, metadata, auto, temporary);
                 prepared.configure(configured);
                 metadata.add(OcrReport.KEY, prepared.report(
                         metadata.getInt(TikaPagedText.PAGE_NUMBER), configured));
-                try (TikaInputStream preparedInput = prepared.path == null
-                        ? null : TikaInputStream.get(prepared.path)) {
+                final Path read = prepared.path == null ? readable : prepared.path;
+                try (TikaInputStream preparedInput = read.equals(original)
+                        ? null : TikaInputStream.get(read)) {
                     ocr.parse(preparedInput == null ? input : preparedInput, handler, metadata,
                             context);
                 }
@@ -248,6 +256,25 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         return new Prepared(upright == image ? null : write(upright, temporary), language,
                 OcrImages.unevenLighting(upright), script, exifOrientation, true, flat != null,
                 quarterTurns, skew, Math.max(upscale, 1));
+    }
+
+    /**
+     * The image as a file tesseract reads: the original, or the decoded pixels of an image
+     * tesseract cannot read.
+     *
+     * @throws TikaException when tesseract cannot read the image and Java could not decode it
+     */
+    private static Path readableByTesseract(Path original, MediaType type, BufferedImage image,
+                                            TemporaryResources temporary)
+            throws IOException, TikaException {
+        if (type == null || !DECODED_FOR_TESSERACT.contains(type.getBaseType())) {
+            return original;
+        }
+        if (image == null) {
+            throw new TikaException("The " + type.getBaseType() + " image could not be decoded "
+                    + "for OCR: it is damaged or has more than " + MAX_PIXELS + " pixels");
+        }
+        return write(image, temporary);
     }
 
     private static Path write(BufferedImage image, TemporaryResources temporary)

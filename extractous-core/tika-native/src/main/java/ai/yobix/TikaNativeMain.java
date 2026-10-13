@@ -94,11 +94,12 @@ public class TikaNativeMain {
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
                 new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
                 new IworkArchiveParser(), new HwpxParser(), new DjvuParser(),
-                new RecognizedImageParser(Set.of(RecognizedImageParser.WEBP),
-                        parsers.get(RecognizedImageParser.WEBP)),
-                new RecognizedImageParser(RecognizedImageParser.PNM, EmptyParser.INSTANCE),
                 new MobiParser(parsers.get(MediaType.text("html"))),
                 new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
+        for (final MediaType type : RecognizedImageParser.TYPES) {
+            replacements.add(new RecognizedImageParser(type,
+                    parsers.getOrDefault(type, EmptyParser.INSTANCE)));
+        }
         final TesseractOCRParser tesseract = tesseract(defaults);
         final List<Parser> recognizers = new ArrayList<>();
         if (tesseract != null) {

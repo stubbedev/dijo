@@ -2869,6 +2869,14 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `com.pff:java-libpst` | 0.9.3 | Apache-2.0 |
 | `com.rometools:rome-utils` | 2.1.0 | Apache-2.0 |
 | `com.rometools:rome` | 2.1.0 | Apache-2.0 |
+| `com.twelvemonkeys.common:common-image` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.common:common-io` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.common:common-lang` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.imageio:imageio-core` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.imageio:imageio-metadata` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.imageio:imageio-pcx` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.imageio:imageio-psd` | 3.15.2 | The BSD License |
+| `com.twelvemonkeys.imageio:imageio-tga` | 3.15.2 | The BSD License |
 | `com.zaxxer:SparseBitSet` | 1.3 | Apache-2.0 |
 | `commons-codec:commons-codec` | 1.22.1 | Apache-2.0 |
 | `commons-io:commons-io` | 2.22.0 | Apache-2.0 |

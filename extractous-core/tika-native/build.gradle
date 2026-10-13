@@ -85,6 +85,7 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
 
 
 def tikaVersion = "4.1.0"
+def twelveMonkeysVersion = "3.15.2"
 def numThreads = Runtime.getRuntime().availableProcessors()
 def currentOs = org.gradle.internal.os.OperatingSystem.current()
 
@@ -141,6 +142,11 @@ dependencies {
     // Additional modules for comprehensive coverage
     implementation("org.apache.tika:tika-parser-code-module:$tikaVersion")            // Source code files
     implementation("org.apache.tika:tika-parser-sqlite3-module:$tikaVersion")         // SQLite databases
+
+    // ImageIO decoders for images Tika and tesseract cannot decode, so that they can be OCRed
+    implementation("com.twelvemonkeys.imageio:imageio-psd:$twelveMonkeysVersion")
+    implementation("com.twelvemonkeys.imageio:imageio-pcx:$twelveMonkeysVersion")
+    implementation("com.twelvemonkeys.imageio:imageio-tga:$twelveMonkeysVersion")
 }
 
 licenseReport {
