@@ -146,6 +146,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "japanese-vertical.pdf": {
+    "character_error_rate": 0.06060606060606061,
+    "token_error_rate": 0.04918032786885246,
+    "recall": 1.0,
+    "spurious": 0.046875,
+    "reading_order": 1.0
+  },
   "japanese.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

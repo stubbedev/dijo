@@ -238,16 +238,16 @@ text output each embedded document starts with a `=== path ===` line. Exceeding 
 
 `quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
 HTML and EPUB, two-column PDFs (one drawn right column first), a report with running headers and footers, Arabic,
-Hebrew, Chinese, Japanese, Thai, Hindi and German documents, tables, Word and OpenDocument files with tracked changes,
-a comment and hidden text, a PDF hyphenated by TeX, PDFs with broken text layers, and scans at 300 and 150 dpi, skewed
-and rotated. Every extraction is scored against its truth: character
-and token error rate, recall (the share of the truth's words that were extracted at all), spurious text and paragraph
-order. The test suite fails when a score gets worse than `quality/baseline.json`
-allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
-`just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
+Hebrew, Chinese, Japanese (also written vertically), Thai, Hindi and German documents, tables, Word and OpenDocument
+files with tracked changes, a comment and hidden text, a PDF hyphenated by TeX, PDFs with broken text layers, and scans
+at 300 and 150 dpi, skewed and rotated. Every extraction is scored against its truth: character and token error rate,
+recall (the share of the truth's words that were extracted at all), spurious text and paragraph order. The test suite
+fails when a score gets worse than `quality/baseline.json` allows, so CI holds every change to it.
+[`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores; `just quality` refreshes it,
+`just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM alongside: over the documents extracted with default options, extractous recalls 0.996 of the truth's words
-against Tika's 0.861, at a token error rate of 0.015 against 0.198.
+against Tika's 0.864, at a token error rate of 0.015 against 0.196.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
 upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end. An Arabic PDF whose
@@ -256,8 +256,10 @@ text layer splits words where their letters stop joining is read by OCR instead,
 An untagged PDF page is read in reading order, not in the order its content stream draws the text: columns left to
 right (right to left on a page of right-to-left text), a title before the columns it spans, a block above the blocks
 below it. A page drawn in reading order already keeps its order, and so does a page with text in more than one
-direction. Tagged PDFs are read in the order of their structure tree. This is the `reading-order` normalisation step,
-so `--no-normalize reading-order`, `--raw` and XHTML output keep the content stream order.
+direction. A page written vertically, as Japanese and Chinese often are, is read column by column from the right,
+each column a line, where Tika wrote every glyph on a line of its own. Tagged PDFs are read in the order of their
+structure tree, and a tagged page written vertically still comes out a glyph per line. This is the `reading-order`
+normalisation step, so `--no-normalize reading-order`, `--raw` and XHTML output keep the content stream order.
 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
 lines, estimated from projection profiles. Tesseract's layout analysis loses almost all text from a page skewed by as

@@ -23,6 +23,7 @@
 | chinese.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | japanese.pdf | script | 0.068 | 0.049 | 1.000 | 0.047 | 1.000 |
 | japanese.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| japanese-vertical.pdf | script | 0.061 | 0.049 | 1.000 | 0.047 | 1.000 |
 | thai.pdf | script | 0.094 | 0.085 | 1.000 | 0.079 | 1.000 |
 | thai.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hindi.pdf | script | 0.074 | 0.060 | 1.000 | 0.056 | 1.000 |

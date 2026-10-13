@@ -1275,6 +1275,30 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
 }
 
 #[test]
+fn a_page_written_vertically_is_read_column_by_column() {
+    let pdf = "../quality/corpus/japanese-vertical.pdf";
+    let text = stdout(&extractous(&["--ocr", "never", pdf]));
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("灯台守の記録"), "{text}");
+    assert!(
+        lines
+            .next()
+            .unwrap()
+            .starts_with("毎日夕暮れになると、灯台守は塔の"),
+        "{text}"
+    );
+
+    let drawn = stdout(&extractous(&[
+        "--ocr",
+        "never",
+        "--no-normalize",
+        "reading-order",
+        pdf,
+    ]));
+    assert!(drawn.starts_with("灯\n台\n守\n"), "{drawn}");
+}
+
+#[test]
 fn comments_follow_the_sentence_they_are_anchored_in() {
     for extension in ["odt", "docx", "doc"] {
         let path = format!("../quality/corpus/revisions.{extension}");

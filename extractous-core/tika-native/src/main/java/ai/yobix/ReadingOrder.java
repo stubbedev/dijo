@@ -1,10 +1,12 @@
 package ai.yobix;
 
 import org.apache.pdfbox.text.TextPosition;
+import org.apache.pdfbox.util.Matrix;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.PriorityQueue;
 
 /**
@@ -20,12 +22,23 @@ import java.util.PriorityQueue;
  * rules leave unordered keep their content stream order, so a page drawn in reading order is left
  * as it is, and a table drawn row by row stays one block. A page with text in more than one
  * direction, or more than {@link #MAX_BLOCKS} blocks, keeps its content stream order.
+ * <p>
+ * A page written vertically, as Japanese and Chinese are, has its glyphs drawn upright one below
+ * the other, in columns read from the right; PDFBox, which breaks a line wherever the next glyph
+ * sits lower, wrote each glyph on a line of its own. Where the next glyph is far more often below
+ * the last than beside it, the page is turned a quarter: each column becomes a line, the columns
+ * lines from the top, and the page is read as any other.
  */
 public final class ReadingOrder {
 
     private static final float SAME_LINE = 0.5f;
     private static final float NEXT_LINE = 3f;
     private static final int MAX_BLOCKS = 300;
+    private static final float SAME_COLUMN = 0.3f;
+    private static final float MIN_GLYPH_STEP = 0.6f;
+    private static final float MAX_GLYPH_STEP = 1.6f;
+    private static final int MIN_VERTICAL_STEPS = 8;
+    private static final int VERTICAL_MAJORITY = 2;
     private static final Comparator<Block> STREAM_ORDER =
             Comparator.comparingInt(block -> block.order);
 
@@ -36,6 +49,9 @@ public final class ReadingOrder {
     public static void arrange(List<TextPosition> glyphs) {
         if (glyphs.size() < 2 || hasMixedDirections(glyphs)) {
             return;
+        }
+        if (isWrittenVertically(glyphs)) {
+            turnColumnsIntoLines(glyphs);
         }
         final List<Block> blocks = blocks(glyphs);
         if (blocks.size() < 2 || blocks.size() > MAX_BLOCKS) {
@@ -70,6 +86,59 @@ public final class ReadingOrder {
             each.sort(STREAM_ORDER);
         }
         return bands;
+    }
+
+    /**
+     * Whether the glyphs, in content stream order, step down a column far more often than along
+     * a line.
+     */
+    private static boolean isWrittenVertically(List<TextPosition> glyphs) {
+        int down = 0;
+        int along = 0;
+        TextPosition last = null;
+        for (final TextPosition glyph : glyphs) {
+            if (glyph.getUnicode() == null || glyph.getUnicode().isBlank()) {
+                continue;
+            }
+            if (last != null) {
+                final float em = Math.max(em(last), em(glyph));
+                final float dx = glyph.getXDirAdj() - last.getXDirAdj();
+                final float dy = glyph.getYDirAdj() - last.getYDirAdj();
+                if (Math.abs(dx) <= SAME_COLUMN * em && dy >= MIN_GLYPH_STEP * em
+                        && dy <= MAX_GLYPH_STEP * em) {
+                    down++;
+                } else if (Math.abs(dy) <= SAME_COLUMN * em && dx > 0
+                        && dx <= MAX_GLYPH_STEP * em) {
+                    along++;
+                }
+            }
+            last = glyph;
+        }
+        return down >= MIN_VERTICAL_STEPS && down > VERTICAL_MAJORITY * along;
+    }
+
+    /**
+     * Replaces each glyph by one on a page turned a quarter clockwise: down a column becomes
+     * along a line, and the rightmost column the top line.
+     */
+    private static void turnColumnsIntoLines(List<TextPosition> glyphs) {
+        final ListIterator<TextPosition> each = glyphs.listIterator();
+        while (each.hasNext()) {
+            final TextPosition glyph = each.next();
+            final Matrix matrix = glyph.getTextMatrix();
+            final float x = glyph.getYDirAdj();
+            final float y = glyph.getXDirAdj();
+            final float width = glyph.getWidthDirAdj();
+            each.set(new TextPosition(0, glyph.getPageHeight(), glyph.getPageWidth(),
+                    new Matrix(matrix.getScaleX(), 0, 0, matrix.getScaleY(), x, y), x + width, y,
+                    glyph.getHeightDir(), width, glyph.getWidthOfSpace(), glyph.getUnicode(),
+                    glyph.getCharacterCodes(), glyph.getFont(), glyph.getFontSize(),
+                    (int) glyph.getFontSizeInPt()));
+        }
+    }
+
+    private static float em(TextPosition glyph) {
+        return Math.max(glyph.getFontSizeInPt(), glyph.getHeightDir());
     }
 
     private static boolean hasMixedDirections(List<TextPosition> glyphs) {
@@ -152,10 +221,6 @@ public final class ReadingOrder {
         boolean isBetweenVertically(Block one, Block other) {
             return top >= Math.min(one.bottom, other.bottom)
                     && bottom <= Math.max(one.top, other.top);
-        }
-
-        private static float em(TextPosition glyph) {
-            return Math.max(glyph.getFontSizeInPt(), glyph.getHeightDir());
         }
     }
 

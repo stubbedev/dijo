@@ -30,7 +30,10 @@ xml_escape() {
 
 fodt() {
     local source="$1" output="$2" layout="$3" direction="$4" complex="${5:-Noto Sans}" asian="${6:-Noto Sans CJK SC}"
-    local columns="" header_style="" header=""
+    local columns="" header_style="" header="" page_direction=""
+    if [ "$layout" = vertical ]; then
+        page_direction=' style:writing-mode="tb-rl"'
+    fi
     if [ "$layout" = columns ]; then
         columns='<style:columns fo:column-count="2" fo:column-gap="1cm"/>'
     fi
@@ -47,7 +50,7 @@ fodt() {
 <style:style style:name="Heading" style:family="paragraph" style:parent-style-name="Standard"><style:text-properties fo:font-size="16pt" fo:font-weight="bold"/></style:style>
 </office:styles>
 <office:automatic-styles>
-<style:page-layout style:name="Layout"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" fo:margin="2cm">$columns</style:page-layout-properties>$header_style</style:page-layout>
+<style:page-layout style:name="Layout"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" fo:margin="2cm"$page_direction>$columns</style:page-layout-properties>$header_style</style:page-layout>
 </office:automatic-styles>
 <office:master-styles><style:master-page style:name="Standard" style:page-layout-name="Layout">$header</style:master-page></office:master-styles>
 <office:body><office:text>
@@ -110,6 +113,10 @@ for language in german arabic hebrew chinese japanese thai hindi; do
     convert "$work/$language.fodt" "$language" pdf pdf
     convert "$work/$language.fodt" "$language" docx "docx:MS Word 2007 XML"
 done
+
+fodt "$truth/japanese.txt" "$work/japanese-vertical.fodt" vertical page "Noto Sans" "Noto Sans CJK JP"
+convert "$work/japanese-vertical.fodt" japanese-vertical pdf \
+    'pdf:writer_pdf_Export:{"UseTaggedPDF":{"type":"boolean","value":"false"}}'
 
 convert "$here/revisions.fodt" revisions odt odt
 convert "$here/revisions.fodt" revisions docx "docx:MS Word 2007 XML"
