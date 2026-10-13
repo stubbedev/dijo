@@ -535,6 +535,86 @@ fn a_worker_process_over_its_memory_limit_is_stopped() {
     );
 }
 
+/// Sends `head` as it is, from a thread of its own, and returns the status line the server
+/// answers it with, or None when the server reset the connection before it could be read.
+fn raw_status_line(server: &Server, head: Vec<u8>) -> Option<String> {
+    let mut stream = server.connect();
+    let mut writer = stream.try_clone().unwrap();
+    let writing = std::thread::spawn(move || {
+        let _ = writer.write_all(&head);
+    });
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while !line.ends_with(b"\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => line.push(byte[0]),
+            _ => break,
+        }
+    }
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    writing.join().unwrap();
+    let line = String::from_utf8(line).unwrap();
+    (!line.is_empty()).then(|| line.trim_end().to_string())
+}
+
+#[test]
+fn oversized_heads_are_refused_and_the_server_stays_up() {
+    const REFUSED: &str = "HTTP/1.1 431 Request Header Fields Too Large";
+    let server = Server::start(&[]);
+    let flood: String = (0..2000)
+        .map(|index| format!("X-Flood-{index}: v\r\n"))
+        .collect();
+    assert_eq!(
+        raw_status_line(
+            &server,
+            format!("GET /healthz HTTP/1.1\r\nHost: test\r\n{flood}\r\n").into_bytes()
+        )
+        .as_deref(),
+        Some(REFUSED)
+    );
+    let oversized = [
+        format!(
+            "GET /healthz HTTP/1.1\r\nHost: test\r\nX-Big: {}\r\n\r\n",
+            "a".repeat(1 << 20)
+        ),
+        format!(
+            "GET /healthz?{} HTTP/1.1\r\nHost: test\r\n\r\n",
+            "a=b&".repeat(1 << 18)
+        ),
+    ];
+    for head in oversized {
+        let answer = raw_status_line(&server, head.into_bytes());
+        assert!(
+            answer.is_none() || answer.as_deref() == Some(REFUSED),
+            "{answer:?}"
+        );
+    }
+    assert_eq!(server.request("GET", "/healthz", &[], b"").status, 200);
+}
+
+#[test]
+fn slow_clients_do_not_starve_the_others() {
+    let server = Server::start(&["--client-timeout", "2"]);
+    let mut slow: Vec<TcpStream> = (0..200)
+        .map(|_| {
+            let mut stream = server.connect();
+            stream
+                .write_all(b"POST /extract HTTP/1.1\r\nHost: test\r\n")
+                .unwrap();
+            stream
+        })
+        .collect();
+    let started = Instant::now();
+    assert_eq!(server.request("GET", "/readyz", &[], b"").status, 200);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    for stream in &mut slow {
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+        assert!(!String::from_utf8_lossy(&answer).contains(" 200 "));
+    }
+    assert!(started.elapsed() < Duration::from_secs(15));
+}
+
 #[test]
 fn clients_that_go_silent_are_cut_off() {
     let server = Server::start(&["--client-timeout", "1"]);
