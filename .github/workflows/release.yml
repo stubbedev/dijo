@@ -91,14 +91,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           image=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
-          docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" \
-            --volume "$PWD/test_files/documents:/data:ro" "$image" /extractous --ocr always /data/eng-ocr.pdf \
-            | tr -s '[:space:]' ' ' | grep -qi "the"
-          docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" \
-            --volume "$PWD/quality/corpus:/data:ro" "$image" /extractous /data/arabic-scan-300dpi.png \
-            | grep -q "المنارة"
-          docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" "$image" /extractous --licenses \
-            | grep -q "## tesseract"
+          bare() {
+            docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" \
+              --volume "$PWD/test_files/documents:/documents:ro" --volume "$PWD/quality/corpus:/corpus:ro" \
+              "$image" /extractous "$@"
+          }
+          bare --ocr always /documents/eng-ocr.pdf > "$RUNNER_TEMP/english.txt"
+          tr -s '[:space:]' ' ' < "$RUNNER_TEMP/english.txt" | grep -qi "the"
+          bare /corpus/arabic-scan-300dpi.png > "$RUNNER_TEMP/arabic.txt"
+          grep -q "المنارة" "$RUNNER_TEMP/arabic.txt"
+          bare --licenses > "$RUNNER_TEMP/bundled-licenses.txt"
+          grep -q "## tesseract" "$RUNNER_TEMP/bundled-licenses.txt"
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi

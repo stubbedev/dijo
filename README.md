@@ -30,6 +30,11 @@ embedded in the binary, compressed (about 36 MB). On first use they are unpacked
 `$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
 Windows) and loaded from there, so the binary runs wherever it is copied.
 
+It is not a static binary, and cannot be: GraalVM builds Tika as a shared library, and native-image produces static
+images only as executables. The binary and the library link the system's C library (glibc 2.35 or later for the
+release binaries), so a container needs a base image with it, such as `debian:bookworm-slim`, rather than `scratch`.
+Nothing else needs installing.
+
 OCR runs the `tesseract` executable. The Linux release binaries carry their own, statically linked, with the language
 data the automatic language needs (orientation and script detection, and a fast model for each script it reads), so
 they need nothing installed beyond the C library: a binary built with `EXTRACTOUS_OCR_BUNDLE` pointing at a bundle
