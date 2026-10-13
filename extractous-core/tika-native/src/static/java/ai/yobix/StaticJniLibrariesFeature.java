@@ -12,19 +12,24 @@ import java.nio.file.Path;
 import java.util.Map;
 
 /**
- * Links the JDK's headless AWT libraries into a statically linked image, as GraalVM links libjava
- * and libnio: GraalVM ships them as static archives but on Linux only links them as shared
- * libraries, which a static executable cannot load. Each archive is registered as a built-in JNI
- * library, and exactly the JNI functions it defines are bound to it, so that the natives of the
- * headful X11 toolkit, which no archive here defines, stay unbound.
+ * Links the JNI libraries Tika needs into a statically linked image, as GraalVM links libjava and
+ * libnio, since a static executable cannot load shared libraries: the JDK's headless AWT
+ * libraries, which GraalVM ships as static archives but on Linux only links as shared libraries,
+ * and sqlite-jdbc's, which ci/static-sqlite.sh compiles. Each AWT archive is registered as a
+ * built-in JNI library, and exactly the JNI functions it defines are bound to it, so that the
+ * natives of the headful X11 toolkit, which no archive here defines, stay unbound. GraalVM only
+ * runs the load hooks of JDK libraries, so sqlite-jdbc's is linked as a plain library whose load
+ * hook its loader runs ({@link Target_org_sqlite_SQLiteJDBCLoader}).
  */
-public final class StaticAwtFeature implements Feature {
+public final class StaticJniLibrariesFeature implements Feature {
 
     private static final String AWT = "awt";
     private static final String MEDIALIB = "mlib_image";
     private static final String[] LIBRARIES = {AWT, "awt_headless", "fontmanager", "javajpeg", "lcms"};
     private static final Map<String, String> PLATFORMS = Map.of("amd64", "linux-amd64", "aarch64", "linux-aarch64");
     private static final String JNI_PREFIX = "Java_";
+    private static final String SQLITE = "sqlitejdbc";
+    private static final String SQLITE_NATIVES = "org_sqlite_core_NativeDB";
 
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
@@ -35,6 +40,8 @@ public final class StaticAwtFeature implements Feature {
         }
         final Path dir = Path.of(System.getProperty("java.home"), "lib", "static", platform, "musl");
         NativeLibraries.singleton().addStaticNonJniLibrary(MEDIALIB);
+        NativeLibraries.singleton().addStaticNonJniLibrary(SQLITE);
+        PlatformNativeLibrarySupport.singleton().addBuiltinPkgNativePrefix(SQLITE_NATIVES);
         for (final String library : LIBRARIES) {
             NativeLibrarySupport.singleton().preregisterUninitializedBuiltinLibrary(library);
             if (library.equals(AWT)) {

@@ -1,0 +1,4 @@
+# The C sources ci/static-sqlite.sh compiles sqlite-jdbc's JNI library from, for the sqlite-jdbc
+# version Tika's build resolves: file, URL, SHA-256.
+sqlite-jdbc-3.53.4.0.tar.gz	https://github.com/xerial/sqlite-jdbc/archive/refs/tags/3.53.4.0.tar.gz	9dded7305b4f3bab596d6a40eaab0cf0d3afad60006eb80073492103b06b081c
+sqlite-3.53.4-src.zip	https://www.sqlite.org/2026/sqlite-src-3530400.zip	d18fa15aec74d8c17e1463f861095adc01b5ad190256acb4f91d22f0368d232b

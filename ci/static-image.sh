@@ -33,17 +33,16 @@ env "CC_$triple_variable=$cc" "AR_$triple_variable=$toolchain/bin/$triple-ar" \
     --target "$triple" --features static-image --crate-type staticlib
 program="$root/target/$triple/release/libextractous.a"
 
-builder="$GRAALVM_HOME/lib/svm/builder/svm.jar"
-"$GRAALVM_HOME/bin/javac" --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
-    --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.hosted.c=ALL-UNNAMED \
-    -cp "$builder" -d "$work/feature" \
-    "$root/extractous-core/tika-native/src/static/java/ai/yobix/StaticAwtFeature.java"
-
 cp "$GRAALVM_HOME/lib/svm/clibraries/$platform/musl/libjvm.a" "$work/clibraries/libjvm.a"
 chmod u+w "$work/clibraries/libjvm.a"
 "$toolchain/bin/$triple-objcopy" --weaken-symbol=JVM_IsStaticallyLinked "$work/clibraries/libjvm.a"
-"$cc" -c -O2 -fPIC -o "$work/statically_linked.o" \
-    "$root/extractous-core/tika-native/src/static/statically_linked.c"
+static_sources="$root/extractous-core/tika-native/src/static"
+objects=()
+for source in "$static_sources"/*.c; do
+    object="$work/$(basename "$source" .c).o"
+    "$cc" -c -O2 -fPIC -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" -o "$object" "$source"
+    objects+=("$object")
+done
 
 (cd "$root/extractous-core/tika-native" && ./gradlew -q nativeImageArguments) > "$work/arguments"
 mapfile -t arguments < "$work/arguments"
@@ -57,7 +56,22 @@ if [ "$classpath_index" -lt 0 ]; then
     echo "gradle printed no classpath" >&2
     exit 1
 fi
-arguments[classpath_index]="${arguments[classpath_index]}:$work/feature"
+classpath=${arguments[classpath_index]}
+arguments[classpath_index]="$classpath:$work/feature"
+
+mapfile -t static_java < <(find "$static_sources/java" -name '*.java' | sort)
+"$GRAALVM_HOME/bin/javac" --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
+    --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.hosted.c=ALL-UNNAMED \
+    -cp "$GRAALVM_HOME/lib/svm/builder/svm.jar:$classpath" -d "$work/feature" "${static_java[@]}"
+
+jar_in_classpath() {
+    tr ':' '\n' <<< "$classpath" | grep -E "/$1-[0-9][^/]*\.jar$" | grep -v sources
+}
+sqlite_jar=$(jar_in_classpath sqlite-jdbc)
+sqlite_version=$(basename "$sqlite_jar" .jar)
+sqlite_version=${sqlite_version#sqlite-jdbc-}
+PATH="$toolchain/bin:$PATH" "$here/static-sqlite.sh" "$sqlite_version" "$cc" \
+    "$(jar_in_classpath slf4j-api)" "$work/sqlite"
 
 native_image="$GRAALVM_HOME/bin/native-image"
 if [ -x "$GRAALVM_HOME/bin/.native-image-wrapped" ]; then
@@ -65,7 +79,7 @@ if [ -x "$GRAALVM_HOME/bin/.native-image-wrapped" ]; then
 fi
 
 linked=()
-for library in "$work/statically_linked.o" "$program" -lfreetype -lpng16 -lbz2 -lbrotlidec \
+for library in "${objects[@]}" "$program" -lfreetype -lpng16 -lbz2 -lbrotlidec \
     -lbrotlicommon -lz -lstdc++; do
     linked+=("-H:NativeLinkerOption=$library")
 done
@@ -74,10 +88,10 @@ cd "$root/extractous-core/tika-native"
 env -u LIBRARY_PATH -u NIX_LDFLAGS -u NIX_CFLAGS_COMPILE "$native_image" \
     "${arguments[@]}" \
     --static --libc=musl --native-compiler-path="$cc" \
-    -H:CLibraryPath="$work/clibraries" -H:CLibraryPath="$toolchain/lib" \
+    -H:CLibraryPath="$work/clibraries" -H:CLibraryPath="$work/sqlite" -H:CLibraryPath="$toolchain/lib" \
     --add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
     --add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.hosted.c=ALL-UNNAMED \
-    --features=ai.yobix.StaticAwtFeature \
+    --features=ai.yobix.StaticJniLibrariesFeature \
     -H:-ParseRuntimeOptions \
     "${linked[@]}" \
     -H:Class=ai.yobix.StaticImage \
