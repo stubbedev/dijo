@@ -935,6 +935,11 @@ fn spool_dir_holds_the_temporary_files() {
 
     let missing = extractous(&["--spool-dir", "/nonexistent/spool", &document("simple.odt")]);
     assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        stderr(&missing).contains("Failed to create the spool directory /nonexistent/spool/"),
+        "{}",
+        stderr(&missing)
+    );
 }
 
 #[test]

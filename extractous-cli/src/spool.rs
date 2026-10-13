@@ -18,7 +18,15 @@ impl Spool {
             .map_or(0, |elapsed| elapsed.subsec_nanos());
         let parent = parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
         let dir = parent.join(format!("extractous-{}-{nanos}", process::id()));
-        fs::create_dir(&dir)?;
+        fs::create_dir(&dir).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to create the spool directory {}: {e}",
+                    dir.display()
+                ),
+            )
+        })?;
         Ok(Self { dir })
     }
 

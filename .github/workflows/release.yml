@@ -176,7 +176,7 @@ jobs:
           printf 'FROM scratch\nCOPY extractous /extractous\nENTRYPOINT ["/extractous"]\n' > "$context/Dockerfile"
           docker build --quiet --tag extractous-static "$context"
           bare() {
-            docker run --rm --env HOME=/ --volume "$PWD/test_files/documents:/documents:ro" \
+            docker run --rm --env HOME=/ --tmpfs /tmp --volume "$PWD/test_files/documents:/documents:ro" \
               --volume "$PWD/quality/corpus:/corpus:ro" extractous-static "$@"
           }
           bare --ocr always /documents/eng-ocr.pdf > "$RUNNER_TEMP/english.txt"
