@@ -80,7 +80,7 @@ public class TikaNativeMain {
      * rebuilds its map of every parser for each document it is asked to parse), with the formats
      * it handles badly replaced: encrypted CMS and OpenPGP data are reported as encrypted,
      * detached signatures as content-free; subtitles, notebooks, FictionBook books, Apple Mail
-     * messages, iWork 2013+ documents and Kindle books are read for their text; and when
+     * messages, iWork 2013+ and HWPX documents and Kindle books are read for their text; and when
      * tesseract is installed, images are turned upright before OCR and PDF pages are OCRed when
      * their text layer is missing or garbage.
      */
@@ -90,7 +90,8 @@ public class TikaNativeMain {
         final Map<MediaType, Parser> parsers = new HashMap<>(defaults.getParsers());
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
                 new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
-                new IworkArchiveParser(), new MobiParser(parsers.get(MediaType.text("html"))),
+                new IworkArchiveParser(), new HwpxParser(),
+                new MobiParser(parsers.get(MediaType.text("html"))),
                 new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
         final TesseractOCRParser tesseract = tesseract(defaults);
         final List<Parser> recognizers = new ArrayList<>();

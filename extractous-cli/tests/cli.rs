@@ -354,6 +354,101 @@ fn a_sqlite_database_is_read_for_its_tables() {
 }
 
 #[test]
+fn hwpx_documents_are_read_as_paragraphs_and_tables() {
+    let scratch = Scratch::new("hwpx");
+    let path = scratch.0.join("report.hwpx");
+    let paragraph = "http://www.hancom.co.kr/hwpml/2011/paragraph";
+    let section = "http://www.hancom.co.kr/hwpml/2011/section";
+    let run = |text: &str| format!("<hp:run><hp:t>{text}</hp:t></hp:run>");
+    let in_cell = |text: &str| {
+        format!(
+            "<hp:tc><hp:subList><hp:p>{}</hp:p></hp:subList></hp:tc>",
+            run(text)
+        )
+    };
+    let body = [
+        format!(
+            "<hp:p><hp:run><hp:ctrl><hp:header><hp:subList><hp:p>{}</hp:p></hp:subList>\
+             </hp:header></hp:ctrl><hp:t>Lighthouse<hp:tab/>report<hp:lineBreak/>second line</hp:t>\
+             </hp:run></hp:p>",
+            run("Running header")
+        ),
+        format!(
+            "<hp:p>{}<hp:run><hp:tbl><hp:tr>{}{}</hp:tr></hp:tbl></hp:run>{}</hp:p>",
+            run("Before the table."),
+            in_cell("Cell A"),
+            in_cell("Cell B"),
+            run("After the table.")
+        ),
+        format!(
+            "<hp:p>{}<hp:run><hp:ctrl><hp:footNote><hp:subList><hp:p>{}</hp:p></hp:subList>\
+             </hp:footNote></hp:ctrl></hp:run></hp:p>",
+            run("Noted text."),
+            run("A footnote.")
+        ),
+    ]
+    .concat();
+    let parts = [
+        ("mimetype", "application/hwp+zip".to_string()),
+        (
+            "META-INF/container.xml",
+            "<?xml version=\"1.0\"?><ocf:container xmlns:ocf=\"urn:oasis:names:tc:opendocument:xmlns:container\">\
+             <ocf:rootfiles><ocf:rootfile full-path=\"Contents/content.hpf\" media-type=\"application/hwpml-package+xml\"/>\
+             </ocf:rootfiles></ocf:container>"
+                .to_string(),
+        ),
+        (
+            "Contents/content.hpf",
+            "<?xml version=\"1.0\"?><opf:package xmlns:opf=\"http://www.idpf.org/2007/opf/\"><opf:metadata>\
+             <opf:title>Lighthouse report</opf:title><opf:language>ko</opf:language>\
+             <opf:meta name=\"creator\" content=\"text\">Keeper</opf:meta></opf:metadata><opf:manifest>\
+             <opf:item id=\"header\" href=\"Contents/header.xml\" media-type=\"application/xml\"/>\
+             <opf:item id=\"section0\" href=\"Contents/section0.xml\" media-type=\"application/xml\"/>\
+             </opf:manifest><opf:spine><opf:itemref idref=\"header\"/><opf:itemref idref=\"section0\"/>\
+             </opf:spine></opf:package>"
+                .to_string(),
+        ),
+        (
+            "Contents/header.xml",
+            "<?xml version=\"1.0\"?><hh:head xmlns:hh=\"http://www.hancom.co.kr/hwpml/2011/head\">\
+             <hh:fontface>Style names are not text</hh:fontface></hh:head>"
+                .to_string(),
+        ),
+        (
+            "Contents/section0.xml",
+            format!(
+                "<?xml version=\"1.0\"?><hs:sec xmlns:hs=\"{section}\" xmlns:hp=\"{paragraph}\">{body}</hs:sec>"
+            ),
+        ),
+    ];
+    let mut zip = StoredZip::new(fs::File::create(&path).unwrap());
+    for (name, content) in &parts {
+        zip.entry(name, |out| out.write_all(content.as_bytes()))
+            .unwrap();
+    }
+    zip.finish().unwrap();
+
+    let objects = json_objects(&[path.to_str().unwrap()]);
+    let object = &objects[0];
+    assert_eq!(object["status"], "complete", "{object}");
+    assert_eq!(object["mime_type"], "application/hwp+zip");
+    assert_eq!(object["metadata"]["title"], "Lighthouse report");
+    assert_eq!(object["metadata"]["authors"][0], "Keeper");
+    let text = object["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Lighthouse\treport\nsecond line\nBefore the table.\nCell A\tCell B\n"),
+        "{text}"
+    );
+    assert!(text.contains("Cell A\tCell B"), "{text}");
+    assert!(text.contains("After the table."), "{text}");
+    assert!(text.contains("A footnote."), "{text}");
+    assert!(
+        !text.contains("Running header") && !text.contains("Style names"),
+        "{text}"
+    );
+}
+
+#[test]
 fn archives_nested_past_the_limit_stop_there() {
     let scratch = Scratch::new("nested");
     let mut archive: Option<Vec<u8>> = None;
