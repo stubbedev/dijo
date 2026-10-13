@@ -355,6 +355,11 @@ fn a_sqlite_database_is_read_for_its_tables() {
 
 #[test]
 fn djvu_documents_are_read_for_their_text_layers() {
+    let objects = json_objects(&[&document("ledger.djvu"), &document("storm.djvu")]);
+    assert_eq!(objects[0]["status"], "complete", "{}", objects[0]);
+    assert_eq!(objects[0]["mime_type"], "image/vnd.djvu");
+    assert_eq!(objects[0]["metadata"]["page_count"], 3);
+    assert_eq!(objects[1]["text"], "The second page holds the storm.\n");
     let pages = page_records(&[], &document("ledger.djvu"));
     let texts: Vec<&str> = pages
         .iter()
@@ -368,10 +373,6 @@ fn djvu_documents_are_read_for_their_text_layers() {
             "The second page holds the storm."
         ]
     );
-    let objects = json_objects(&[&document("ledger.djvu"), &document("storm.djvu")]);
-    assert_eq!(objects[0]["mime_type"], "image/vnd.djvu");
-    assert_eq!(objects[0]["metadata"]["page_count"], 3);
-    assert_eq!(objects[1]["text"], "The second page holds the storm.\n");
 }
 
 #[test]
@@ -1388,6 +1389,28 @@ fn a_djvu_page_without_a_text_layer_is_read_by_ocr_when_ddjvu_renders_it() {
             .unwrap()
             .contains("ddjvu"),
         "{unread}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failing_page_renderer_is_reported_with_its_status_and_errors() {
+    let scratch = Scratch::new("failing-ddjvu");
+    let path = scratch.path_with_only_tesseract();
+    scratch.program("ddjvu", "echo 'cannot decode page' >&2\nexit 3");
+    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(["--format", "json", "../quality/corpus/prose-scan.djvu"])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(read["status"], "failed", "{read}");
+    assert!(
+        read["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ddjvu exited with status 3: cannot decode page"),
+        "{read}"
     );
 }
 
