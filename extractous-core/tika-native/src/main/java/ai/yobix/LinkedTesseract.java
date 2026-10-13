@@ -18,7 +18,9 @@ import java.util.stream.Stream;
 /**
  * Tesseract linked into the process, as the static build links it: an engine per model, loaded
  * once and reused by one read at a time, so that reading an image starts no process and loads no
- * model. Each read runs as the tesseract program runs it, rendering into a file.
+ * model. A read runs as the tesseract program runs it, rendering into a file. Detection reports
+ * what the program reports, without the page segmentation the program runs first and then
+ * discards.
  */
 final class LinkedTesseract implements Tesseract {
 
@@ -26,9 +28,7 @@ final class LinkedTesseract implements Tesseract {
     private static final int TIMED_OUT = 2;
     private static final String DEFAULT_LANGUAGE = "eng";
     private static final String OSD_LANGUAGE = "osd";
-    private static final int OSD_PAGE_SEG_MODE = 0;
     private static final String TEXT_EXTENSION = ".txt";
-    private static final String OSD_EXTENSION = ".osd";
     private static final String MODEL_EXTENSION = ".traineddata";
 
     private final Path tessdata;
@@ -54,42 +54,6 @@ final class LinkedTesseract implements Tesseract {
                        Map<String, String> variables, long timeoutMillis)
             throws IOException, TikaException {
         final String model = language == null || language.isBlank() ? DEFAULT_LANGUAGE : language;
-        final Run run = run(model, image, Integer.parseInt(pageSegMode), variables,
-                timeoutMillis, TEXT_EXTENSION);
-        if (run.status() == TIMED_OUT) {
-            throw new TikaTimeoutException("Reading " + image + " failed: tesseract did not "
-                    + "finish within " + timeoutMillis + " ms");
-        }
-        if (run.status() != SUCCEEDED) {
-            throw new TikaException("Reading " + image + " failed: tesseract could not read it "
-                    + "with " + model);
-        }
-        return run.output();
-    }
-
-    @Override
-    public String detect(Path image, long timeoutMillis) throws IOException {
-        final Run run;
-        try {
-            run = run(OSD_LANGUAGE, image, OSD_PAGE_SEG_MODE, Map.of(), timeoutMillis,
-                    OSD_EXTENSION);
-        } catch (TikaException e) {
-            throw new IOException("Detecting the script of " + image + " failed", e);
-        }
-        return run.status() == SUCCEEDED ? run.output() : null;
-    }
-
-    @Override
-    public Set<String> languages() {
-        return languages;
-    }
-
-    /** How a run ended, and what it rendered when it succeeded. */
-    private record Run(int status, String output) {
-    }
-
-    private Run run(String language, Path image, int pageSegMode, Map<String, String> variables,
-                    long timeoutMillis, String extension) throws IOException, TikaException {
         final byte[][] names = new byte[variables.size()][];
         final byte[][] values = new byte[variables.size()][];
         int index = 0;
@@ -98,21 +62,51 @@ final class LinkedTesseract implements Tesseract {
             values[index] = utf8(variable.getValue());
             index++;
         }
-        final long engine = take(language);
+        final long engine = take(model);
         try (TemporaryResources temporary = new TemporaryResources()) {
             final Path outputBase = temporary.createTempFile();
-            final Path output = outputBase.resolveSibling(outputBase.getFileName() + extension);
+            final Path output =
+                    outputBase.resolveSibling(outputBase.getFileName() + TEXT_EXTENSION);
             try {
                 final int status = run(engine, utf8(image.toString()), utf8(outputBase.toString()),
-                        pageSegMode, names, values, (int) Math.min(timeoutMillis, Integer.MAX_VALUE));
-                return new Run(status, status == SUCCEEDED
-                        ? Files.readString(output, StandardCharsets.UTF_8) : null);
+                        Integer.parseInt(pageSegMode), names, values,
+                        (int) Math.min(timeoutMillis, Integer.MAX_VALUE));
+                if (status == TIMED_OUT) {
+                    throw new TikaTimeoutException("Reading " + image + " failed: tesseract did "
+                            + "not finish within " + timeoutMillis + " ms");
+                }
+                if (status != SUCCEEDED) {
+                    throw new TikaException("Reading " + image + " failed: tesseract could not "
+                            + "read it with " + model);
+                }
+                return Files.readString(output, StandardCharsets.UTF_8);
             } finally {
                 Files.deleteIfExists(output);
             }
         } finally {
-            idle.get(language).push(engine);
+            release(model, engine);
         }
+    }
+
+    @Override
+    public String detect(Path image, long timeoutMillis) throws IOException {
+        final long engine;
+        try {
+            engine = take(OSD_LANGUAGE);
+        } catch (TikaException e) {
+            throw new IOException("Detecting the script of " + image + " failed", e);
+        }
+        try {
+            final byte[] report = detect(engine, utf8(image.toString()));
+            return report == null ? null : new String(report, StandardCharsets.UTF_8);
+        } finally {
+            release(OSD_LANGUAGE, engine);
+        }
+    }
+
+    @Override
+    public Set<String> languages() {
+        return languages;
     }
 
     /** An idle engine for a model, loaded when every engine for it is in use. */
@@ -130,6 +124,10 @@ final class LinkedTesseract implements Tesseract {
         return created;
     }
 
+    private void release(String language, long engine) {
+        idle.get(language).push(engine);
+    }
+
     private static byte[] utf8(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }
@@ -137,7 +135,10 @@ final class LinkedTesseract implements Tesseract {
     /** Loads an engine for a model, or returns 0 when it cannot. */
     private static native long create(byte[] tessdata, byte[] language);
 
-    /** Runs an engine on an image and tells whether it succeeded, failed or timed out. */
+    /** Reads an image with an engine and tells whether it succeeded, failed or timed out. */
     private static native int run(long engine, byte[] image, byte[] outputBase, int pageSegMode,
                                   byte[][] names, byte[][] values, int timeoutMillis);
+
+    /** The orientation and script report of an osd engine on an image, or null when it has none. */
+    private static native byte[] detect(long engine, byte[] image);
 }

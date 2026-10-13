@@ -65,6 +65,54 @@ private:
     std::vector<std::pair<std::string, std::string>> previous_;
 };
 
+bool is_tiff(int format) {
+    return format == IFF_TIFF || format == IFF_TIFF_PACKBITS || format == IFF_TIFF_RLE
+           || format == IFF_TIFF_G3 || format == IFF_TIFF_G4 || format == IFF_TIFF_LZW
+           || format == IFF_TIFF_JPEG || format == IFF_TIFF_ZIP;
+}
+
+bool append_osd(tesseract::TessBaseAPI &api, Pix *pix, int page, std::string &report) {
+    api.SetImage(pix);
+    const std::unique_ptr<const char[]> osd(api.GetOsdText(page));
+    if (osd == nullptr) {
+        return false;
+    }
+    report += osd.get();
+    return true;
+}
+
+bool detect_pages(tesseract::TessBaseAPI &api, const std::string &image, std::string &report) {
+    int format = IFF_UNKNOWN;
+    if (findFileFormat(image.c_str(), &format) != 0 || format == IFF_UNKNOWN) {
+        return false;
+    }
+    api.SetInputName(image.c_str());
+    if (!is_tiff(format)) {
+        Pix *pix = pixRead(image.c_str());
+        if (pix == nullptr) {
+            return false;
+        }
+        const bool detected = append_osd(api, pix, 0, report);
+        pixDestroy(&pix);
+        return detected;
+    }
+    size_t offset = 0;
+    for (int page = 0;; page++) {
+        Pix *pix = pixReadFromMultipageTiff(image.c_str(), &offset);
+        if (pix == nullptr) {
+            return true;
+        }
+        const bool detected = append_osd(api, pix, page, report);
+        pixDestroy(&pix);
+        if (!detected) {
+            return false;
+        }
+        if (offset == 0) {
+            return true;
+        }
+    }
+}
+
 }
 
 extern "C" {
@@ -95,21 +143,14 @@ JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_run(JNIEnv *env, jclass, jl
         const std::string input = bytes(env, image);
         const std::string output = bytes(env, outputBase);
         const Variables variables(api, bytes(env, names), bytes(env, values));
-        const auto mode = static_cast<tesseract::PageSegMode>(pageSegMode);
         api.SetOutputName(output.c_str());
-        api.SetPageSegMode(mode);
-        std::unique_ptr<tesseract::TessResultRenderer> renderer;
-        if (mode == tesseract::PSM_OSD_ONLY) {
-            renderer = std::make_unique<tesseract::TessOsdRenderer>(output.c_str());
-        } else {
-            renderer = std::make_unique<tesseract::TessTextRenderer>(output.c_str());
-        }
-        if (!renderer->happy()) {
+        api.SetPageSegMode(static_cast<tesseract::PageSegMode>(pageSegMode));
+        tesseract::TessTextRenderer renderer(output.c_str());
+        if (!renderer.happy()) {
             return FAILED;
         }
         const auto start = std::chrono::steady_clock::now();
-        const bool succeeded = api.ProcessPages(input.c_str(), nullptr, timeoutMillis,
-                                                renderer.get());
+        const bool succeeded = api.ProcessPages(input.c_str(), nullptr, timeoutMillis, &renderer);
         const auto elapsed = std::chrono::steady_clock::now() - start;
         if (succeeded) {
             return SUCCEEDED;
@@ -117,6 +158,28 @@ JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_run(JNIEnv *env, jclass, jl
         return elapsed >= std::chrono::milliseconds(timeoutMillis) ? TIMED_OUT : FAILED;
     } catch (...) {
         return FAILED;
+    }
+}
+
+JNIEXPORT jbyteArray JNICALL Java_ai_yobix_LinkedTesseract_detect(JNIEnv *env, jclass,
+                                                                  jlong engine,
+                                                                  jbyteArray image) {
+    try {
+        auto &api = *reinterpret_cast<tesseract::TessBaseAPI *>(engine);
+        api.SetPageSegMode(tesseract::PSM_OSD_ONLY);
+        std::string report;
+        if (!detect_pages(api, bytes(env, image), report)) {
+            return nullptr;
+        }
+        const auto length = static_cast<jsize>(report.size());
+        jbyteArray result = env->NewByteArray(length);
+        if (result != nullptr) {
+            env->SetByteArrayRegion(result, 0, length,
+                                    reinterpret_cast<const jbyte *>(report.data()));
+        }
+        return result;
+    } catch (...) {
+        return nullptr;
     }
 }
 
