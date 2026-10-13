@@ -11,7 +11,7 @@ dir=$1
 input=$2
 output=$3
 shift 3
-version=$(sed -n 's/^def tikaVersion = "\(.*\)"$/\1/p' "$here/../extractous-core/tika-native/build.gradle")
+version=$("$here/../extractous-core/tika-native/tika-version.sh")
 sha256=$(awk -v version="$version" '$1 == version { print $3 }' "$here/pins.tsv")
 if [ -z "$sha256" ]; then
     echo "conformance/pins.tsv pins no tika-app checksum for Tika $version" >&2

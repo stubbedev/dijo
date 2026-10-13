@@ -122,7 +122,7 @@ tika-agent +inputs="test_files":
         inputs+=("$(realpath "$input")")
     done
     cd {{core}}/tika-native
-    version="$(sed -n 's/^def tikaVersion = "\(.*\)"$/\1/p' build.gradle)"
+    version="$(./tika-version.sh)"
     rm -rf graal-agent
     ./gradlew --no-daemon runAgent --args="${inputs[*]}"
     for os in linux macos windows; do
