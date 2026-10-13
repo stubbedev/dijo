@@ -41,12 +41,14 @@ impl Scratch {
     }
 
     /// A PATH holding tesseract and nothing else.
+    #[cfg(unix)]
     pub fn path_with_only_tesseract(&self) -> String {
         self.tesseract_wrapper("");
         self.0.display().to_string()
     }
 
     /// Writes a tesseract into this directory that runs `before`, then the installed one.
+    #[cfg(unix)]
     fn tesseract_wrapper(&self, before: &str) {
         use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
