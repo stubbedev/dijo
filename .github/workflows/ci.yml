@@ -76,6 +76,13 @@ jobs:
           done
           echo "C:\\Program Files\\Tesseract-OCR" >> "$GITHUB_PATH"
           "/c/Program Files/Tesseract-OCR/tesseract" --list-langs
+      - name: Install heif-dec and ddjvu, which read HEIC, AVIF and scanned DjVu pages
+        run: |
+          /c/msys64/usr/bin/pacman -S --noconfirm --needed \
+            mingw-w64-ucrt-x86_64-libheif mingw-w64-ucrt-x86_64-djvulibre
+          echo "C:\\msys64\\ucrt64\\bin" >> "$GITHUB_PATH"
+          /c/msys64/ucrt64/bin/heif-dec --version
+          test -x /c/msys64/ucrt64/bin/ddjvu.exe
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
