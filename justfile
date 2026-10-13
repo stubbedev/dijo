@@ -43,17 +43,19 @@ conformance:
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test conformance
 
-# Score Tika on the JVM against the quality corpus too, with its default OCR, and write
-# quality/COMPARISON.md with both sets of scores side by side.
+# Score Tika on the JVM, Kreuzberg and Docling (in Docker) against the quality corpus too, each
+# with its defaults, and write quality/COMPARISON.md with all their scores side by side.
 [unix]
 quality-compare:
     #!/usr/bin/env bash
     set -euo pipefail
     dir={{justfile_directory()}}/target/quality-compare
-    rm -rf "$dir/jvm"
-    mkdir -p "$dir"
-    conformance/tika-app.sh "$dir" quality/corpus "$dir/jvm" > "$dir/jvm.log" 2>&1
-    QUALITY_COMPARE_JVM="$dir/jvm" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
+    version=$(extractous-core/tika-native/tika-version.sh)
+    rm -rf "$dir/tools"
+    mkdir -p "$dir/tools"
+    conformance/tika-app.sh "$dir" quality/corpus "$dir/tools/Tika $version" > "$dir/tika.log" 2>&1
+    quality/compare-python.sh "$dir/cache" "$dir/tools" > "$dir/python.log" 2>&1
+    QUALITY_COMPARE="$dir/tools" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
         cargo nextest run --package extractous --test quality
 
 # Accept the current conformance results as conformance/baseline.json.

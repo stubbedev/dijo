@@ -234,68 +234,114 @@ fn truth(document: &Document) -> String {
     .unwrap()
 }
 
-/// The scores of extractous and of Tika on the JVM (its text output, in `jvm`) side by side, for
-/// every document extracted with default options.
-fn comparison(documents: &[Document], results: &BTreeMap<String, Scores>, jvm: &Path) -> String {
-    let mut table = String::from(
-        "# Extractous and Apache Tika\n\n\
-         The quality corpus extracted by extractous and by tika-app of the same Tika version on \
-         the JVM, both with their default options: OCR where there is no text, without a \
-         language hint. Each cell is extractous / Tika.\n\n\
+/// Another extractor's text of the corpus: its name and version, and the directory holding its
+/// text of each document as `<file>.txt`, where a document it could not read has none.
+struct Rival {
+    name: String,
+    texts: PathBuf,
+}
+
+/// The rivals whose texts the subdirectories of `dir` hold, each named after its rival.
+fn rivals(dir: &Path) -> Vec<Rival> {
+    let mut rivals: Vec<Rival> = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", dir.display()))
+        .map(|entry| {
+            let entry = entry.unwrap();
+            Rival {
+                name: entry.file_name().into_string().unwrap(),
+                texts: entry.path(),
+            }
+        })
+        .collect();
+    rivals.sort_by(|one, other| one.name.cmp(&other.name));
+    assert!(
+        !rivals.is_empty(),
+        "{} holds no rival's texts",
+        dir.display()
+    );
+    rivals
+}
+
+/// The scores of extractous and of its rivals side by side, for every document extracted with
+/// default options.
+fn comparison(
+    documents: &[Document],
+    results: &BTreeMap<String, Scores>,
+    rivals: &[Rival],
+) -> String {
+    let names: Vec<&str> = rivals.iter().map(|rival| rival.name.as_str()).collect();
+    let mut table = format!(
+        "# Extractous and other extractors\n\n\
+         The quality corpus extracted by extractous, {}, each with its default options and \
+         without a language hint. A document an extractor could not read counts as empty \
+         text. Each \
+         cell is extractous / {}.\n\n\
          | Document | Category | CER | Token error rate | Recall | Spurious |\n\
          |---|---|---|---|---|---|\n",
+        names.join(", "),
+        names.join(" / "),
     );
-    let mut totals = [[0.0; 4]; 2];
+    let metrics = |scores: &Scores| {
+        [
+            scores.character_error_rate,
+            scores.token_error_rate,
+            scores.recall,
+            scores.spurious,
+        ]
+    };
+    let cell = |values: &[f64]| {
+        values
+            .iter()
+            .map(|value| format!("{value:.3}"))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    let mut totals = vec![[0.0; 4]; rivals.len() + 1];
     let mut count = 0;
     for document in documents
         .iter()
         .filter(|document| document.arguments.is_empty())
     {
-        let ours = &results[&document.key()];
-        let tika_text =
-            fs::read_to_string(jvm.join(format!("{}.txt", document.file))).unwrap_or_default();
-        let tika = score(&truth(document), &tika_text);
-        for (index, scores) in [ours, &tika].into_iter().enumerate() {
-            for (total, value) in totals[index].iter_mut().zip([
-                scores.character_error_rate,
-                scores.token_error_rate,
-                scores.recall,
-                scores.spurious,
-            ]) {
-                *total += value;
+        let truth = truth(document);
+        let mut all = vec![metrics(&results[&document.key()])];
+        for rival in rivals {
+            let path = rival.texts.join(format!("{}.txt", document.file));
+            let text = match fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => panic!("reading {}: {error}", path.display()),
+            };
+            all.push(metrics(&score(&truth, &text)));
+        }
+        for (total, scores) in totals.iter_mut().zip(&all) {
+            for (sum, value) in total.iter_mut().zip(scores) {
+                *sum += value;
             }
         }
         count += 1;
+        let columns: Vec<String> = (0..4)
+            .map(|metric| cell(&all.iter().map(|scores| scores[metric]).collect::<Vec<_>>()))
+            .collect();
         writeln!(
             table,
-            "| {} | {} | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} |",
+            "| {} | {} | {} |",
             document.file,
             document.category,
-            ours.character_error_rate,
-            tika.character_error_rate,
-            ours.token_error_rate,
-            tika.token_error_rate,
-            ours.recall,
-            tika.recall,
-            ours.spurious,
-            tika.spurious
+            columns.join(" | ")
         )
         .unwrap();
     }
-    let mean = |side: usize, metric: usize| totals[side][metric] / f64::from(count);
-    writeln!(
-        table,
-        "| **Mean** | | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} |",
-        mean(0, 0),
-        mean(1, 0),
-        mean(0, 1),
-        mean(1, 1),
-        mean(0, 2),
-        mean(1, 2),
-        mean(0, 3),
-        mean(1, 3)
-    )
-    .unwrap();
+    let means: Vec<String> = (0..4)
+        .map(|metric| {
+            cell(
+                &totals
+                    .iter()
+                    .map(|total| total[metric] / f64::from(count))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    writeln!(table, "| **Mean** | | {} |", means.join(" | ")).unwrap();
     table
 }
 
@@ -349,10 +395,14 @@ fn extraction_quality_does_not_regress() {
     if let Some(path) = std::env::var_os("QUALITY_SCOREBOARD") {
         fs::write(PathBuf::from(path), &table).unwrap();
     }
-    if let Some(jvm) = std::env::var_os("QUALITY_COMPARE_JVM") {
+    if let Some(dir) = std::env::var_os("QUALITY_COMPARE") {
         let path = std::env::var_os("QUALITY_COMPARISON")
             .expect("QUALITY_COMPARISON names the file to write the comparison to");
-        fs::write(path, comparison(&documents, &results, Path::new(&jvm))).unwrap();
+        fs::write(
+            path,
+            comparison(&documents, &results, &rivals(Path::new(&dir))),
+        )
+        .unwrap();
     }
 
     let baseline_path = Path::new(QUALITY).join("baseline.json");

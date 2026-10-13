@@ -246,8 +246,10 @@ fails when a score gets worse than `quality/baseline.json` allows, so CI holds e
 [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores; `just quality` refreshes it,
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
-the JVM alongside: over the documents extracted with default options, extractous recalls 0.996 of the truth's words
-against Tika's 0.864, at a token error rate of 0.015 against 0.196.
+the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.864, Kreuzberg 0.670 and Docling 0.668, at
+a token error rate of 0.015 against 0.196, 0.482 and 0.409. A document an extractor cannot read, such as a DOC or RTF
+file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
 upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end. An Arabic PDF whose
