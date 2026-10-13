@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 mod common;
@@ -134,7 +133,7 @@ fn metrics_count_requests_and_failures() {
 fn sigterm_shuts_down_cleanly() {
     let mut server = Server::start(&[]);
     assert_eq!(server.request("GET", "/healthz", &[], b"").status, 200);
-    let killed = Command::new("kill")
+    let killed = std::process::Command::new("kill")
         .args(["-TERM", &server.child.id().to_string()])
         .status()
         .unwrap();
