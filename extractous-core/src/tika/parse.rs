@@ -8,10 +8,9 @@ use crate::tika::jni_utils::*;
 use crate::tika::wrappers::*;
 use crate::{CharSet, Metadata, StreamReader};
 use jni::objects::{JObject, JValue};
-use jni::JNIEnv;
+use jni::Env;
 
 const TIKA_NATIVE_MAIN: &str = "ai/yobix/TikaNativeMain";
-const LOCAL_FRAME_CAPACITY: i32 = 32;
 const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
                                  Lorg/apache/tika/parser/microsoft/OfficeParserConfig;\
                                  Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
@@ -41,7 +40,7 @@ impl Source<'_> {
         }
     }
 
-    fn into_java<'local>(self, env: &mut JNIEnv<'local>) -> ExtractResult<JObject<'local>> {
+    fn into_java<'local>(self, env: &mut Env<'local>) -> ExtractResult<JObject<'local>> {
         match self {
             Source::File(text) | Source::Url(text) => Ok(jni_new_string(env, text)?.into()),
             Source::Bytes(bytes) => {
@@ -51,13 +50,20 @@ impl Source<'_> {
     }
 }
 
+/// A `TikaNativeMain` method that takes a source, the parser configurations and a password, then
+/// `params`, and returns an instance of `returns`.
+struct TikaMethod<'a> {
+    name: String,
+    params: &'a str,
+    returns: &'a str,
+}
+
 fn call_tika<'local>(
-    env: &mut JNIEnv<'local>,
+    env: &mut Env<'local>,
     source: Source,
-    method: &str,
+    method: TikaMethod,
     configs: &ParserConfigs,
     password: Option<&Password>,
-    tail_signature: &str,
     tail_args: &[JValue],
 ) -> ExtractResult<JObject<'local>> {
     let source_obj = source.into_java(env)?;
@@ -66,7 +72,7 @@ fn call_tika<'local>(
         Some(password) => jni_new_string(env, password.expose())?.into(),
         None => JObject::null(),
     };
-    let signature = format!("({}{CONFIGS_SIGNATURE}{tail_signature}", source.java_type());
+    let params = format!("{}{CONFIGS_SIGNATURE}{}", source.java_type(), method.params);
     let mut args = Vec::with_capacity(5 + tail_args.len());
     args.extend([
         JValue::Object(&source_obj),
@@ -76,7 +82,15 @@ fn call_tika<'local>(
         JValue::Object(&password_obj),
     ]);
     args.extend_from_slice(tail_args);
-    Ok(jni_call_static_method(env, TIKA_NATIVE_MAIN, method, &signature, &args)?.l()?)
+    Ok(jni_call_static_method(
+        env,
+        TIKA_NATIVE_MAIN,
+        &method.name,
+        &params,
+        method.returns,
+        &args,
+    )?
+    .l()?)
 }
 
 /// The timeout in milliseconds as Java takes it: 0 for none, and at least 1 for any limit.
@@ -86,13 +100,6 @@ fn timeout_millis(timeout: Option<Duration>) -> i64 {
             .unwrap_or(i64::MAX)
             .max(1)
     })
-}
-
-fn in_local_frame<T>(
-    isolate: &Isolate,
-    f: impl FnOnce(&mut JNIEnv<'_>) -> ExtractResult<T>,
-) -> ExtractResult<T> {
-    isolate.attach()?.with_local_frame(LOCAL_FRAME_CAPACITY, f)
 }
 
 /// Parses a document into a stream of its text, decoded with `char_set`.
@@ -112,7 +119,7 @@ pub(crate) fn parse_to_stream(
     password: Option<&Password>,
     options: &StreamOptions,
 ) -> ExtractResult<(StreamReader, Metadata)> {
-    let (stream, metadata) = in_local_frame(isolate, |env| {
+    let (stream, metadata) = isolate.with_env(|env| {
         let char_set_obj: JObject = jni_new_string(env, &options.char_set.to_string())?.into();
         let spool_dir_obj: JObject = match options.embedded {
             Some(spool) => {
@@ -132,19 +139,22 @@ pub(crate) fn parse_to_stream(
         let result = call_tika(
             env,
             source,
-            &format!("parse{}", source.method_suffix()),
+            TikaMethod {
+                name: format!("parse{}", source.method_suffix()),
+                params: "Ljava/lang/String;ZJLjava/lang/String;J",
+                returns: "Lai/yobix/ReaderResult;",
+            },
             configs,
             password,
-            "Ljava/lang/String;ZJLjava/lang/String;J)Lai/yobix/ReaderResult;",
             &[
                 JValue::Object(&char_set_obj),
-                JValue::Bool(options.as_xml.into()),
+                JValue::Bool(options.as_xml),
                 JValue::Long(timeout_millis(options.timeout)),
                 JValue::Object(&spool_dir_obj),
                 JValue::Long(byte_budget),
             ],
         )?;
-        let (stream, metadata) = reader_result(env, result)?;
+        let (stream, metadata) = reader_result(env, &result)?;
         Ok::<_, Error>((env.new_global_ref(stream)?, metadata))
     })?;
     let inner = JInputStream::new(isolate, stream);
@@ -160,17 +170,20 @@ pub(crate) fn parse_to_string(
     password: Option<&Password>,
     as_xml: bool,
 ) -> ExtractResult<(String, Metadata)> {
-    in_local_frame(isolate, |env| {
+    isolate.with_env(|env| {
         let result = call_tika(
             env,
             source,
-            &format!("parse{}ToString", source.method_suffix()),
+            TikaMethod {
+                name: format!("parse{}ToString", source.method_suffix()),
+                params: "IZ",
+                returns: "Lai/yobix/StringResult;",
+            },
             configs,
             password,
-            "IZ)Lai/yobix/StringResult;",
-            &[JValue::Int(max_length), JValue::Bool(as_xml.into())],
+            &[JValue::Int(max_length), JValue::Bool(as_xml)],
         )?;
-        string_result(env, result)
+        string_result(env, &result)
     })
 }
 
@@ -181,34 +194,37 @@ pub(crate) fn extract_embedded(
     configs: &ParserConfigs,
     password: Option<&Password>,
 ) -> ExtractResult<EmbeddedExtractResult> {
-    in_local_frame(isolate, |env| {
+    isolate.with_env(|env| {
         let result = call_tika(
             env,
             source,
-            &format!("extractEmbedded{}", source.method_suffix()),
+            TikaMethod {
+                name: format!("extractEmbedded{}", source.method_suffix()),
+                params: "",
+                returns: "Lai/yobix/EmbeddedExtractResult;",
+            },
             configs,
             password,
-            ")Lai/yobix/EmbeddedExtractResult;",
             &[],
         )?;
-        embedded_result(env, result)
+        embedded_result(env, &result)
     })
 }
 
 /// Detects the media type of a document with Tika's default detector.
 pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String> {
-    in_local_frame(isolate, |env| {
+    isolate.with_env(|env| {
         let source_obj = source.into_java(env)?;
-        let signature = format!("({})Lai/yobix/StringResult;", source.java_type());
         let result = jni_call_static_method(
             env,
             TIKA_NATIVE_MAIN,
             &format!("detect{}", source.method_suffix()),
-            &signature,
+            source.java_type(),
+            "Lai/yobix/StringResult;",
             &[JValue::Object(&source_obj)],
         )?
         .l()?;
-        let (media_type, _) = string_result(env, result)?;
+        let (media_type, _) = string_result(env, &result)?;
         Ok(media_type)
     })
 }
@@ -216,13 +232,14 @@ pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String>
 /// Waits for every parse in the isolate to end, cancelled ones included, for at most `timeout`.
 /// Returns whether they all did.
 pub(crate) fn await_idle_parses(isolate: &Isolate, timeout: Duration) -> ExtractResult<bool> {
-    in_local_frame(isolate, |env| {
+    isolate.with_env(|env| {
         let millis = i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX);
         Ok(jni_call_static_method(
             env,
             TIKA_NATIVE_MAIN,
             "awaitIdleParses",
-            "(J)Z",
+            "J",
+            "Z",
             &[JValue::Long(millis)],
         )?
         .z()?)
