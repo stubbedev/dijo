@@ -17,21 +17,21 @@ final class DjvuRenderer {
      * A page, counted from 1, rendered at full resolution as a PGM file, or null when ddjvu is
      * not installed.
      *
-     * @throws IOException when ddjvu could not render the page in time
+     * @throws IOException when ddjvu could not render the page
      */
     static Path render(Path djvu, int page, TemporaryResources temporary, long timeoutMillis)
             throws IOException {
         final Path image = temporary.createTempFile(".pgm");
-        final String output;
+        final Programs.Outcome rendering;
         try {
-            output = Programs.run(timeoutMillis, environment -> { }, PROGRAM, "-format=pgm",
+            rendering = Programs.run(timeoutMillis, environment -> { }, PROGRAM, "-format=pgm",
                     "-page=" + page, djvu.toString(), image.toString());
         } catch (IOException notInstalled) {
             return null;
         }
-        if (output == null) {
-            throw new IOException(PROGRAM + " could not render page " + page + " in "
-                    + timeoutMillis + " ms");
+        if (!rendering.succeeded()) {
+            throw new IOException("Rendering page " + page + " for OCR failed: "
+                    + rendering.failure());
         }
         return image;
     }

@@ -50,7 +50,6 @@ impl Scratch {
     /// Writes a tesseract into this directory that runs `before`, then the installed one.
     #[cfg(unix)]
     fn tesseract_wrapper(&self, before: &str) {
-        use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
         let real = String::from_utf8(
             Command::new("sh")
@@ -62,13 +61,16 @@ impl Scratch {
         .unwrap();
         let real = real.trim();
         assert!(!real.is_empty(), "tesseract is not installed");
-        let fake = self.0.join("tesseract");
-        fs::write(
-            &fake,
-            format!("#!/bin/sh\n{before}\nexec '{real}' \"$@\"\n"),
-        )
-        .unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        self.program("tesseract", &format!("{before}\nexec '{real}' \"$@\""));
+    }
+
+    /// Writes an executable shell script named `name` into this directory.
+    #[cfg(unix)]
+    pub fn program(&self, name: &str, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.0.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
 

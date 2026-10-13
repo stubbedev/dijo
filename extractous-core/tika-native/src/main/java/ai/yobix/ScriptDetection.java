@@ -59,11 +59,12 @@ final class ScriptDetection {
      * an unknown script and no turns.
      */
     static Result detect(String tesseract, Path image, long timeoutMillis) throws IOException {
-        final String output = Programs.run(timeoutMillis, OcrBundle::environment, tesseract,
-                image.toString(), "stdout", "--psm", "0");
-        if (output == null) {
+        final Programs.Outcome detection = Programs.run(timeoutMillis, OcrBundle::environment,
+                tesseract, image.toString(), "stdout", "--psm", "0");
+        if (!detection.succeeded()) {
             return UNKNOWN;
         }
+        final String output = detection.output();
         String script = null;
         int degrees = 0;
         for (final String line : output.lines().toList()) {
@@ -100,12 +101,13 @@ final class ScriptDetection {
 
     private static synchronized Set<String> installed(String tesseract) throws IOException {
         if (installed == null) {
-            final String output = Programs.run(LIST_LANGUAGES_TIMEOUT_MILLIS,
+            final Programs.Outcome listing = Programs.run(LIST_LANGUAGES_TIMEOUT_MILLIS,
                     OcrBundle::environment, tesseract, "--list-langs");
-            if (output == null) {
-                throw new IOException("tesseract --list-langs failed");
+            if (!listing.succeeded()) {
+                throw new IOException("Listing tesseract's languages failed: "
+                        + listing.failure());
             }
-            installed = output.lines()
+            installed = listing.output().lines()
                     .skip(1)
                     .map(String::trim)
                     .filter(line -> !line.isEmpty())
