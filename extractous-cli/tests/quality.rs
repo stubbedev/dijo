@@ -1,10 +1,10 @@
 mod common;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,10 @@ use common::{matched, tokens};
 const QUALITY: &str = "../quality";
 const JOBS: usize = 4;
 const ANCHOR_TOKENS: usize = 4;
+
+/// Names the external programs, such as `ddjvu`, that this environment lacks. The documents
+/// that need one are checked for the error naming it instead of being scored.
+const MISSING_HELPERS: &str = "QUALITY_MISSING_HELPERS";
 
 /// The categories whose text comes from OCR: scans, and PDFs whose text layer is garbage.
 const OCR_CATEGORIES: [&str; 2] = ["ocr", "broken-text-layer"];
@@ -33,6 +37,7 @@ struct Document {
     file: String,
     truth: String,
     category: String,
+    helper: Option<String>,
     arguments: Vec<String>,
 }
 
@@ -70,23 +75,62 @@ fn manifest() -> Vec<Document> {
         .skip(1)
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            assert_eq!(fields.len(), 4, "corpus.tsv line {line:?}");
+            assert_eq!(fields.len(), 5, "corpus.tsv line {line:?}");
             Document {
                 file: fields[0].to_string(),
                 truth: fields[1].to_string(),
                 category: fields[2].to_string(),
-                arguments: fields[3].split_whitespace().map(str::to_string).collect(),
+                helper: (!fields[3].is_empty()).then(|| fields[3].to_string()),
+                arguments: fields[4].split_whitespace().map(str::to_string).collect(),
             }
         })
         .collect()
 }
 
-fn extract(document: &Document) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+/// The helpers named by [`MISSING_HELPERS`], each one a helper some document needs.
+fn missing_helpers(documents: &[Document]) -> BTreeSet<String> {
+    let missing: BTreeSet<String> = std::env::var(MISSING_HELPERS)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let needed: BTreeSet<&String> = documents.iter().filter_map(|d| d.helper.as_ref()).collect();
+    for helper in &missing {
+        assert!(
+            needed.contains(helper),
+            "{MISSING_HELPERS} names {helper}, which no document in corpus.tsv needs"
+        );
+    }
+    missing
+}
+
+fn assert_scores_every_document(missing: &BTreeSet<String>, writer: &str) {
+    assert!(
+        missing.is_empty(),
+        "{writer} records every document's scores, so {MISSING_HELPERS} must name no helper"
+    );
+}
+
+fn run(document: &Document) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_extractous"))
         .args(&document.arguments)
         .arg(Path::new(QUALITY).join("corpus").join(&document.file))
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn assert_reports_missing(document: &Document, helper: &str) {
+    let output = run(document);
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && errors.contains(&format!("{helper} on the PATH")),
+        "{}: without {helper}: {errors}",
+        document.file
+    );
+}
+
+fn extract(document: &Document) -> String {
+    let output = run(document);
     assert!(
         output.status.success(),
         "{}: {}",
@@ -265,7 +309,7 @@ fn rivals(dir: &Path) -> Vec<Rival> {
 /// The scores of extractous and of its rivals side by side, for every document extracted with
 /// default options.
 fn comparison(
-    documents: &[Document],
+    documents: &[&Document],
     results: &BTreeMap<String, Scores>,
     rivals: &[Rival],
 ) -> String {
@@ -345,7 +389,7 @@ fn comparison(
     table
 }
 
-fn scoreboard(documents: &[Document], results: &BTreeMap<String, Scores>) -> String {
+fn scoreboard(documents: &[&Document], results: &BTreeMap<String, Scores>) -> String {
     let mut table = String::from(
         "| Document | Category | CER | Token error rate | Recall | Spurious | Reading order |\n\
          |---|---|---|---|---|---|---|\n",
@@ -369,7 +413,18 @@ fn scoreboard(documents: &[Document], results: &BTreeMap<String, Scores>) -> Str
 
 #[test]
 fn extraction_quality_does_not_regress() {
-    let documents = manifest();
+    let manifest = manifest();
+    let missing = missing_helpers(&manifest);
+    let (documents, unscored): (Vec<&Document>, Vec<&Document>) =
+        manifest.iter().partition(|document| {
+            document
+                .helper
+                .as_ref()
+                .is_none_or(|helper| !missing.contains(helper))
+        });
+    for document in unscored {
+        assert_reports_missing(document, document.helper.as_ref().unwrap());
+    }
     let results = Mutex::new(BTreeMap::new());
     let next = Mutex::new(documents.iter());
     std::thread::scope(|scope| {
@@ -393,9 +448,11 @@ fn extraction_quality_does_not_regress() {
     let table = scoreboard(&documents, &results);
     println!("{table}");
     if let Some(path) = std::env::var_os("QUALITY_SCOREBOARD") {
+        assert_scores_every_document(&missing, "QUALITY_SCOREBOARD");
         fs::write(PathBuf::from(path), &table).unwrap();
     }
     if let Some(dir) = std::env::var_os("QUALITY_COMPARE") {
+        assert_scores_every_document(&missing, "QUALITY_COMPARE");
         let path = std::env::var_os("QUALITY_COMPARISON")
             .expect("QUALITY_COMPARISON names the file to write the comparison to");
         fs::write(
@@ -407,6 +464,7 @@ fn extraction_quality_does_not_regress() {
 
     let baseline_path = Path::new(QUALITY).join("baseline.json");
     if std::env::var_os("QUALITY_BLESS").is_some() {
+        assert_scores_every_document(&missing, "QUALITY_BLESS");
         let json = serde_json::to_string_pretty(&results).unwrap();
         fs::write(&baseline_path, json + "\n").unwrap();
         return;

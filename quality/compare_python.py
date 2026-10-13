@@ -9,7 +9,7 @@ def corpus_files(corpus_tsv):
     rows = Path(corpus_tsv).read_text(encoding="utf-8").splitlines()[1:]
     files = []
     for row in rows:
-        file, _truth, _category, arguments = row.split("\t")
+        file, _truth, _category, _helper, arguments = row.split("\t")
         if not arguments and file not in files:
             files.append(file)
     return files
