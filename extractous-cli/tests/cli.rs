@@ -1275,6 +1275,22 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
 }
 
 #[test]
+fn comments_follow_the_sentence_they_are_anchored_in() {
+    for extension in ["docx", "doc"] {
+        let path = format!("../quality/corpus/revisions.{extension}");
+        for args in [&[path.as_str()][..], &["--no-normalize", "headers", &path]] {
+            let text = stdout(&extractous(args));
+            let sentence = text
+                .find("Historians found that the plain entries told a richer story.")
+                .unwrap_or_else(|| panic!("{extension} {args:?}: {text}"));
+            let comment = text.find("Cite the archive catalogue here.").unwrap();
+            assert!(sentence < comment, "{extension} {args:?}: {text}");
+            assert!(!text.contains('\u{fffd}'), "{extension} {args:?}: {text}");
+        }
+    }
+}
+
+#[test]
 fn a_clean_pdf_text_layer_is_kept() {
     let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
     for document in &objects {
