@@ -413,7 +413,7 @@
         },
         "script": {
           "type": "string",
-          "description": "The writing system, such as `Latin`, `Arabic` or `Mandarin`."
+          "description": "The Unicode script most of the letters are written in, such as `Latin`, `Arabic` or `Han`."
         },
         "confidence": {
           "type": "number",

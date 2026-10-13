@@ -1,0 +1,7 @@
+# The jars `just charsoup-reference` runs Apache Tika's CharSoup language detector from, from Maven Central,
+# then SHA-256. The Tika artifacts must be the version extractous-core/tika-native/build.gradle pins.
+org/apache/tika/tika-core/4.1.0/tika-core-4.1.0.jar	36f75bacc69de3b239135d7964a4250dfbe1ef59b3638a8da0ca1a7161060e24
+org/apache/tika/tika-langdetect-charsoup/4.1.0/tika-langdetect-charsoup-4.1.0.jar	79d1eae3e7e94abdd9eb80accc1686e1701780dc44f1683e95fe94aec1c95113
+org/apache/tika/tika-langdetect-charsoup-core/4.1.0/tika-langdetect-charsoup-core-4.1.0.jar	764a962d4631840562dc3586857224ed4e9fbc7fec0fafd76631f0f967ab2b7d
+org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar	7b751d952061954d5abfed7181c1f645d336091b679891591d63329c622eb832
+commons-io/commons-io/2.20.0/commons-io-2.20.0.jar	df90bba0fe3cb586b7f164e78fe8f8f4da3f2dd5c27fa645f888100ccc25dd72

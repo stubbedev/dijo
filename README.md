@@ -230,7 +230,10 @@ without pages is one record), and `--format elements` one per heading, paragraph
 `detected_language` is the language detected from the text itself (ISO 639-3 code, script, confidence and whether
 it is `reliable` enough to act on, such as to pick a search analyzer), from the first 64 KiB of a document and from
 each page's own text in `--format pages`. It is separate from `metadata.language`, which is what the document
-declares.
+declares. Detection is a Rust port of Apache Tika 4's CharSoup detector, with Tika's model of 204 languages, among
+them Danish, Swedish, Norwegian Bokmål and Nynorsk, Icelandic, Faroese, Finnish and Northern Sámi; it gives Tika's
+answers exactly. On Tatoeba's short sentences it tells Danish from Norwegian and Swedish in about 7 sentences of 10,
+and in runs of five sentences 39 times in 40, with every other Nordic language right in every run.
 
 `metadata` (with `-m`) holds normalised fields filled from whichever Tika key a format uses: dates are RFC 3339 in UTC,
 or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are

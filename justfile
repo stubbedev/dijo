@@ -35,6 +35,19 @@ test-fuzz:
 ocr-bundle dir="target/ocr-bundle":
     ci/ocr-bundle.sh {{dir}}
 
+# Regenerate the answers of Apache Tika's own CharSoup language detector that the Rust port is tested against, after
+# checking that the embedded model is the one in the pinned Tika version's jar.
+[unix]
+charsoup-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/charsoup
+    ci/fetch-charsoup.sh "$jars"
+    model=org/apache/tika/langdetect/charsoup/langdetect-20260320.bin
+    unzip -p "$jars"/tika-langdetect-charsoup-core-*.jar "$model" | cmp - "extractous-cli/models/$(basename "$model")"
+    fixtures=extractous-cli/tests/fixtures/language
+    java -cp "$jars/*" "$fixtures/CharSoupReference.java" "$fixtures" quality/truth "$fixtures/charsoup-reference.tsv"
+
 # Run the server under load for SOAK_SECONDS (120 by default) per test with a release build:
 # answers stay alike and memory level over a long run, and damaged documents are answered while
 # worker processes recover; SOAK_SEED repeats a run's damage.
@@ -181,12 +194,13 @@ tika-agent +inputs="test_files":
     done
     rm -rf graal-agent
 
-# Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries in the binary.
+# Regenerate THIRD-PARTY-LICENSES.md from the Rust crates, models and Java libraries in the binary.
 [unix]
 licenses:
     cd {{core}}/tika-native && ./gradlew --quiet generateLicenseReport
     cargo about generate --workspace --fail --output-file target/rust-licenses.md about.hbs
-    cat target/rust-licenses.md {{core}}/tika-native/build/licenses/java.md > target/THIRD-PARTY-LICENSES.md
+    cat target/rust-licenses.md extractous-cli/models/LICENSES.md {{core}}/tika-native/build/licenses/java.md \
+        > target/THIRD-PARTY-LICENSES.md
     mv target/THIRD-PARTY-LICENSES.md THIRD-PARTY-LICENSES.md
 
 # Write CycloneDX SBOMs of the Rust crates and Java libraries in the binary to target/sbom.
