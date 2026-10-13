@@ -34,7 +34,7 @@ env "CC_$triple_variable=$cc" "AR_$triple_variable=$toolchain/bin/$triple-ar" \
 program="$root/target/$triple/release/libextractous.a"
 
 builder="$GRAALVM_HOME/lib/svm/builder/svm.jar"
-javac --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
+"$GRAALVM_HOME/bin/javac" --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
     --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.hosted.c=ALL-UNNAMED \
     -cp "$builder" -d "$work/feature" \
     "$root/extractous-core/tika-native/src/static/java/ai/yobix/StaticAwtFeature.java"

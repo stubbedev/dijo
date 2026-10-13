@@ -123,6 +123,93 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/*
 
+  static:
+    name: static (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-linux-static
+            graalvm: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-linux-static
+            graalvm: linux-aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install GraalVM
+        run: |
+          home=$(ci/install-graalvm.sh ${{ matrix.graalvm }} "$RUNNER_TEMP/graalvm")
+          echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Bundle tesseract and its language data
+        run: |
+          ci/ocr-bundle.sh "$RUNNER_TEMP/ocr-bundle"
+          echo "EXTRACTOUS_OCR_BUNDLE=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_ENV"
+      - name: Build
+        run: ci/static-image.sh target/static-image/extractous
+      - name: Check that it is statically linked
+        run: |
+          binary=target/static-image/extractous
+          file "$binary"
+          file "$binary" | grep -q "statically linked"
+          if readelf --program-headers "$binary" | grep -q INTERP; then
+            echo "$binary asks for a dynamic loader" >&2
+            exit 1
+          fi
+          if readelf --dynamic "$binary" | grep -q NEEDED; then
+            echo "$binary needs shared libraries" >&2
+            exit 1
+          fi
+      - name: Smoke test, including OCR
+        run: |
+          binary=target/static-image/extractous
+          "$binary" --version
+          "$binary" --licenses > "$RUNNER_TEMP/licenses.txt"
+          grep -q "org.apache.tika:tika-core" "$RUNNER_TEMP/licenses.txt"
+          "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
+          "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
+          "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
+          "$binary" --format json quality/corpus/danish-scan.png > "$RUNNER_TEMP/danish.json"
+          grep -q '"code":"dan"' "$RUNNER_TEMP/danish.json"
+          grep -q "tusmørket" "$RUNNER_TEMP/danish.json"
+      - name: Smoke test in an empty container
+        run: |
+          context="$RUNNER_TEMP/scratch"
+          mkdir -p "$context"
+          cp target/static-image/extractous "$context/"
+          printf 'FROM scratch\nCOPY extractous /extractous\nENTRYPOINT ["/extractous"]\n' > "$context/Dockerfile"
+          docker build --quiet --tag extractous-static "$context"
+          bare() {
+            docker run --rm --env HOME=/ --volume "$PWD/test_files/documents:/documents:ro" \
+              --volume "$PWD/quality/corpus:/corpus:ro" extractous-static "$@"
+          }
+          bare --ocr always /documents/eng-ocr.pdf > "$RUNNER_TEMP/english.txt"
+          tr -s '[:space:]' ' ' < "$RUNNER_TEMP/english.txt" | grep -qi "the"
+          bare /corpus/arabic-scan-300dpi.png > "$RUNNER_TEMP/arabic.txt"
+          grep -q "المنارة" "$RUNNER_TEMP/arabic.txt"
+          bare --jobs 4 /corpus/danish.docx /corpus/swedish.pdf /corpus/norwegian.docx /corpus/prose.rtf \
+            > "$RUNNER_TEMP/batch.txt"
+          grep -q "Fyrvokterens loggbok" "$RUNNER_TEMP/batch.txt"
+      - name: Package
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi
+          name="extractous-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/static-image/extractous LICENSE README.md "dist/$name/"
+          target/static-image/extractous --licenses > "dist/$name/LICENSES.md"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/$name"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
   sbom:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -242,7 +329,7 @@ jobs:
           push-to-registry: true
 
   publish:
-    needs: [build, sbom]
+    needs: [build, static, sbom]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
