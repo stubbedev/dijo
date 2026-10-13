@@ -13,11 +13,8 @@ slf4j=$3
 output=$(realpath -m "$4")
 : "${GRAALVM_HOME:?GRAALVM_HOME must point to the GraalVM that builds the image}"
 
-digest() {
-    local sum
-    sum=$(sha256sum < "$1")
-    echo "${sum%% *}"
-}
+# shellcheck source=ci/fetch-pinned.sh
+source "$here/fetch-pinned.sh"
 
 fetch() {
     local name=$1 url sha256
@@ -27,17 +24,7 @@ fetch() {
         exit 1
     fi
     local file="$output/sources/$name"
-    if [ ! -f "$file" ] || [ "$(digest "$file")" != "$sha256" ]; then
-        mkdir -p "$output/sources"
-        curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 --max-time 600 \
-            --output "$file.part" "$url"
-        if [ "$(digest "$file.part")" != "$sha256" ]; then
-            rm -f "$file.part"
-            echo "$url does not have the pinned SHA-256 $sha256" >&2
-            exit 1
-        fi
-        mv "$file.part" "$file"
-    fi
+    fetch_pinned "$url" "$sha256" "$file"
     echo "$file"
 }
 
