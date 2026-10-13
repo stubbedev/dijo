@@ -15,6 +15,16 @@ pub struct Page {
     pub footer: Option<String>,
 }
 
+impl Page {
+    fn unchanged(text: String) -> Self {
+        Self {
+            text,
+            header: None,
+            footer: None,
+        }
+    }
+}
+
 /// Finds the lines repeated at the top or bottom of most pages (running headers and footers,
 /// page numbers) and moves them out of the page text. It learns them from the first pages, held
 /// back meanwhile, so the output still streams.
@@ -55,6 +65,9 @@ impl<'a, T> RunningLines<'a, T> {
     pub fn push(&mut self, with: T, text: String, placement: Placement) -> io::Result<()> {
         if let Some(patterns) = &self.learned {
             return (self.emit)(with, split(text, placement, patterns));
+        }
+        if self.held.is_empty() && placement == Placement::Loose {
+            return (self.emit)(with, Page::unchanged(text));
         }
         self.held_bytes += text.len();
         self.held.push((with, text, placement));
@@ -179,11 +192,7 @@ fn split(text: String, placement: Placement, patterns: &Patterns) -> Page {
         last_line,
     } = placement
     else {
-        return Page {
-            text,
-            header: None,
-            footer: None,
-        };
+        return Page::unchanged(text);
     };
     let mut body = text.as_str();
     let header = first_line
@@ -356,6 +365,7 @@ mod tests {
             Ok(())
         };
         let mut running = RunningLines::new(&mut emit, true);
+        running.push((), "A page".to_string(), WHOLE_PAGE).unwrap();
         running
             .push((), "x".repeat(WINDOW_BYTES), Placement::Loose)
             .unwrap();
@@ -363,7 +373,25 @@ mod tests {
             .push((), "more".to_string(), Placement::Loose)
             .unwrap();
         drop(running);
-        assert_eq!(emitted, 2);
+        assert_eq!(emitted, 3);
+    }
+
+    #[test]
+    fn text_before_any_page_is_passed_on_at_once() {
+        let mut out = Vec::new();
+        let mut emit = |_: (), page: Page| {
+            out.push(page.text);
+            Ok(())
+        };
+        let mut running = RunningLines::new(&mut emit, true);
+        running
+            .push((), "A sheet".to_string(), Placement::Loose)
+            .unwrap();
+        running
+            .push((), "Another sheet".to_string(), Placement::Loose)
+            .unwrap();
+        drop(running);
+        assert_eq!(out, ["A sheet", "Another sheet"]);
     }
 
     #[test]
