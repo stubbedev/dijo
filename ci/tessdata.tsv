@@ -1,12 +1,13 @@
-# The tesseract language models ci/ocr-bundle.sh bundles, from tessdata_fast at TESSDATA_COMMIT:
-# orientation and script detection, and a model for each script the automatic OCR language
-# reads (ScriptDetection.LANGUAGE_BY_SCRIPT). Language, then SHA-256.
+# The tesseract language models the OCR bundle carries and devenv and CI read with, from tessdata_fast at
+# TESSDATA_COMMIT: orientation and script detection, script/Latin and script/Greek for every language of those
+# scripts with its diacritics, a model for each other script the automatic OCR language reads
+# (ScriptDetection.LANGUAGE_BY_SCRIPT), and German for the tests of an explicit OCR language. Model path, then SHA-256.
 amh	3ec3311833a108e07d58a1152b00c0cf1848752e4f85769d46e8ca2b718a2ccc
 ara	e3206d3dc87fd50c24a0fb9f01838615911d25168f4e64415244b67d2bb3e729
 ben	31163084c279aaebd376216f0c3d5c17ad4b5fee8db49dae79c20000b5de5964
 bod	1aab1db8dae337dfc8fa0f94a1c137c47e4c7857c3e6b30093ec726cef912a0b
 chi_sim	a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730
-ell	4fba8a0b461038d51f1c20d043d4f2ac38c4e778f1b90830847f7bd8fa3ba726
+deu	19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d
 eng	7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
 guj	fa69658614b4946a9afae8853d67e0689838803dfa3d12c2e35ec53ee6f8df34
 heb	11f9e43ab227f786352a50f75c94c2e9906f1baba86d93276da19da7ce0904db
@@ -23,6 +24,8 @@ mya	02aa6c25cfe9e583fa7b5d4131eac948f962308983f0f397df077dea58212b03
 osd	9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff
 pan	1ec0907fc3534065ea9ae190c6bb7ec9e5c74fd9d2fa996aaec7407f11ad8131
 rus	e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225
+script/Greek	52e201e4a22336d89ee202b579aca04f15ffd6e5e6af1fe164498f2c7de898e6
+script/Latin	6dbdaf8ecc6c40f025c2648bf3b3f3fbffe073e1fd2df2047fde2e2b2f020d53
 sin	bc75c6df2375a30c9f7e759fa7d4b58ae3ecf9ce72668a702d01acb13e551422
 tam	d02fbec24be4b07e32e80d0ccfc3b6b67a3c5d61c9d0a7c8532677990912c6ec
 tel	d10691fddd5b67802e1c12800ebb321d3b8bcd8d24a2ac3ff206f93188c04ab5

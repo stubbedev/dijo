@@ -36,9 +36,12 @@ release binaries), so a container needs a base image with it, such as `debian:bo
 Nothing else needs installing.
 
 OCR runs the `tesseract` executable. The Linux release binaries carry their own, statically linked, with the language
-data the automatic language needs (orientation and script detection, and a fast model for each script it reads), so
-they need nothing installed beyond the C library: a binary built with `EXTRACTOUS_OCR_BUNDLE` pointing at a bundle
-from `just ocr-bundle` does the same (about 50 MB larger), and `--ocr-lang` can name only the bundled models there.
+data the automatic language needs (orientation and script detection, tesseract's `script/Latin` and `script/Greek`
+models, which read every language of those scripts with its diacritics, and a fast model for each other script it
+reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the C library: a binary built with
+`EXTRACTOUS_OCR_BUNDLE` pointing at a bundle from `just ocr-bundle` does the same (about 90 MB larger, 170 MB once
+unpacked), and `--ocr-lang` can name only the bundled models there. Reading Danish, Swedish, Norwegian, German, Polish,
+Czech or Turkish scans with the English model instead loses 3 to 13% of the characters, the diacritics.
 Other builds run `tesseract` from `PATH`, with its own language data. Without `--ocr-lang`,
 each image is first run through tesseract's orientation and script detection (the `osd` data, which distribution
 packages install with tesseract): it is turned upright and read with the installed model for its script, such as
@@ -269,8 +272,8 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.770, Kreuzberg 0.628 and Docling 0.607, at
-a token error rate of 0.011 against 0.290, 0.504 and 0.459. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.760, Kreuzberg 0.641 and Docling 0.623, at
+a token error rate of 0.010 against 0.294, 0.470 and 0.433. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
@@ -328,8 +331,8 @@ that worked stops working.
 
 ## Development
 
-Every development dependency (Rust toolchain, cargo-nextest, GraalVM CE, tesseract with the English, German and Arabic
-language data the OCR tests use, and just) comes from [devenv](https://devenv.sh). Enter it with `devenv shell`, or run
+Every development dependency (Rust toolchain, cargo-nextest, GraalVM CE, tesseract with exactly the language models
+the OCR bundle carries, and just) comes from [devenv](https://devenv.sh). Enter it with `devenv shell`, or run
 `direnv allow` once to load it on entry.
 
 All commands are recipes in the `justfile`; run `just` to list them.

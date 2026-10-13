@@ -14,6 +14,12 @@ report.docx	report	headers-footers
 report.pdf	report	headers-footers		--format pages
 german.pdf	german	script		
 german.docx	german	script		
+danish.pdf	danish	script		
+danish.docx	danish	script		
+swedish.pdf	swedish	script		
+swedish.docx	swedish	script		
+norwegian.pdf	norwegian	script		
+norwegian.docx	norwegian	script		
 arabic.pdf	arabic	script		
 arabic.docx	arabic	script		
 hebrew.pdf	hebrew	script		
@@ -78,3 +84,12 @@ polish-cp1250.txt	polish	legacy-encoding
 polish-iso-8859-2.txt	polish	legacy-encoding		
 czech-cp1250.txt	czech	legacy-encoding		
 turkish-cp1254.txt	turkish	legacy-encoding		
+danish-scan.png	danish	ocr		
+swedish-scan.png	swedish	ocr		
+norwegian-scan.png	norwegian	ocr		
+german-scan.png	german	ocr		
+polish-scan.png	polish	ocr		
+czech-scan.png	czech	ocr		
+turkish-scan.png	turkish	ocr		
+greek-scan.png	greek	ocr		
+russian-scan.png	russian	ocr		

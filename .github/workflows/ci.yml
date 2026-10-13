@@ -66,16 +66,13 @@ jobs:
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: just,cargo-nextest
-      - name: Install tesseract with the languages the tests use
+      - name: Install tesseract with the pinned models the OCR bundle carries
         run: |
           choco install tesseract --no-progress -y
-          tessdata="/c/Program Files/Tesseract-OCR/tessdata"
-          for language in deu ara; do
-            curl -sSfL --max-time 120 -o "$tessdata/$language.traineddata" \
-              "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$language.traineddata"
-          done
+          ci/fetch-tessdata.sh "$RUNNER_TEMP/tessdata"
+          echo "TESSDATA_PREFIX=$(cygpath --windows "$RUNNER_TEMP/tessdata")" >> "$GITHUB_ENV"
           echo "C:\\Program Files\\Tesseract-OCR" >> "$GITHUB_PATH"
-          "/c/Program Files/Tesseract-OCR/tesseract" --list-langs
+          TESSDATA_PREFIX="$RUNNER_TEMP/tessdata" "/c/Program Files/Tesseract-OCR/tesseract" --list-langs
       - name: Install heif-dec, which reads HEIC and AVIF images
         run: |
           /c/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-libheif

@@ -2,6 +2,7 @@
 
 let
   graalvm = pkgs.graalvmPackages.graalvm-ce;
+  tessdata = import ./ci/tessdata.nix { inherit pkgs; };
 in
 {
   packages = [
@@ -13,14 +14,7 @@ in
     pkgs.cargo-fuzz
     pkgs.pkg-config
     pkgs.openssl
-    (pkgs.tesseract.override {
-      enableLanguages = [
-        "eng"
-        "deu"
-        "ara"
-        "osd"
-      ];
-    })
+    (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
     pkgs.libheif.bin
     pkgs.djvulibre
     pkgs.git
@@ -35,4 +29,5 @@ in
 
   env.GRAALVM_HOME = graalvm;
   env.OMP_THREAD_LIMIT = "1";
+  env.TESSDATA_PREFIX = tessdata;
 }

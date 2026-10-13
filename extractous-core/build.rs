@@ -87,13 +87,10 @@ fn ocr_bundle(out_dir: &Path) -> Option<OcrBundle> {
     println!("cargo:rerun-if-env-changed={OCR_BUNDLE_VARIABLE}");
     let dir = PathBuf::from(env::var_os(OCR_BUNDLE_VARIABLE)?);
     println!("cargo:rerun-if-changed={}", dir.display());
-    let models: Vec<PathBuf> = list_dir(&dir.join(OCR_MODELS))
-        .into_iter()
-        .filter(|path| path.extension() == Some(OsStr::new(OCR_MODEL_EXTENSION)))
-        .collect();
+    let models = models_under(&dir.join(OCR_MODELS), OCR_MODELS);
     if models.is_empty() {
         panic!(
-            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {OCR_MODELS}/*.{OCR_MODEL_EXTENSION}",
+            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {OCR_MODELS}/**/*.{OCR_MODEL_EXTENSION}",
             dir.display()
         );
     }
@@ -102,21 +99,15 @@ fn ocr_bundle(out_dir: &Path) -> Option<OcrBundle> {
     create_dir(&compressed_dir.join(OCR_MODELS));
     let mut hasher = DefaultHasher::new();
     let mut files = Vec::with_capacity(models.len() + 1);
-    let named = std::iter::once((OCR_TESSERACT.to_string(), dir.join(OCR_TESSERACT))).chain(
-        models.iter().map(|model| {
-            let file = model
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap_or_else(|| panic!("OCR model name {} is not UTF-8", model.display()));
-            (format!("{OCR_MODELS}/{file}"), model.clone())
-        }),
-    );
+    let named = std::iter::once((OCR_TESSERACT.to_string(), dir.join(OCR_TESSERACT))).chain(models);
     for (name, path) in named {
         let content = read_file(&path);
         hasher.write(name.as_bytes());
         hasher.write(&content);
         let compressed = compressed_dir.join(format!("{name}.{COMPRESSED_EXTENSION}"));
+        if let Some(parent) = compressed.parent() {
+            create_dir(parent);
+        }
         compress_bytes(&content, &compressed);
         files.push((name, compressed));
     }
@@ -290,6 +281,25 @@ fn gradle_build(
 
 /// The entries of a directory, sorted, so that what is built from them does not depend on the
 /// order the file system lists them in.
+/// The language models under `dir`, in subdirectories too (tesseract's script models are in
+/// `script/`), each named by its path below `prefix` with `/` separators, in sorted order.
+fn models_under(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
+    let mut models = Vec::new();
+    for path in list_dir(dir) {
+        let file = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_else(|| panic!("OCR model path {} is not UTF-8", path.display()));
+        let name = format!("{prefix}/{file}");
+        if path.is_dir() {
+            models.extend(models_under(&path, &name));
+        } else if path.extension() == Some(OsStr::new(OCR_MODEL_EXTENSION)) {
+            models.push((name, path));
+        }
+    }
+    models
+}
+
 fn list_dir(dir: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("Failed to list {}: {e}", dir.display()))

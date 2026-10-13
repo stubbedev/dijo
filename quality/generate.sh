@@ -98,7 +98,7 @@ fodt "$truth/report.txt" "$work/report.fodt" running lr-tb
 convert "$work/report.fodt" report pdf pdf
 convert "$work/report.fodt" report docx "docx:MS Word 2007 XML"
 
-for language in german arabic hebrew chinese japanese thai hindi; do
+for language in german danish swedish norwegian arabic hebrew chinese japanese thai hindi; do
     direction=lr-tb
     complex="Noto Sans"
     asian="Noto Sans CJK SC"
@@ -174,6 +174,17 @@ magick "$work/scan-300.png" -colorspace Gray -type Palette "$corpus/prose-scan.p
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -compress RLE "$corpus/prose-scan.tga"
 magick "$work/scan-300.png" -colorspace Gray \( -size 2480x3508 radial-gradient:white-gray20 \) -compose multiply \
     -composite -depth 8 "$corpus/prose-scan-shadow.png"
+for language in danish swedish norwegian german polish czech turkish greek russian; do
+    if [ ! -f "$corpus/$language.pdf" ]; then
+        fodt "$truth/$language.txt" "$work/$language.fodt" plain lr-tb
+        soffice --headless --convert-to pdf --outdir "$work/out" "$work/$language.fodt" > /dev/null
+        mv "$work/out/$language.pdf" "$work/$language.pdf"
+    fi
+    pdf="$corpus/$language.pdf"
+    [ -f "$pdf" ] || pdf="$work/$language.pdf"
+    pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$pdf" "$work/$language-scan"
+    magick "$work/$language-scan.png" -colorspace Gray -depth 8 "$corpus/$language-scan.png"
+done
 pdftoppm -r 72 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-72"
 magick "$work/scan-72.png" -colorspace Gray -depth 8 "$corpus/prose-scan-72dpi.png"
 pdftoppm -r 200 -png "$corpus/report.pdf" "$work/report-scan"

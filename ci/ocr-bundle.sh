@@ -22,14 +22,9 @@ mkdir -p "$staging/tessdata" "$staging/licenses/tessdata_fast"
 install -m 755 "$bundle/tesseract" "$staging/tesseract"
 cp -r "$bundle/licenses/." "$staging/licenses/"
 chmod -R u+w "$staging/licenses"
-tessdata="https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT"
 curl --fail --silent --show-error --location --max-time 300 \
-    --output "$staging/licenses/tessdata_fast/LICENSE" "$tessdata/LICENSE"
-while IFS=$'\t' read -r language sha256; do
-    model="$staging/tessdata/$language.traineddata"
-    curl --fail --silent --show-error --location --max-time 300 --output "$model" \
-        "$tessdata/$language.traineddata"
-    echo "$sha256  $model" | sha256sum --check --quiet
-done < <(grep -v '^#' "$here/tessdata.tsv")
+    --output "$staging/licenses/tessdata_fast/LICENSE" \
+    "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT/LICENSE"
+"$here/fetch-tessdata.sh" "$staging/tessdata"
 rm -rf "$output"
 mv "$staging" "$output"
