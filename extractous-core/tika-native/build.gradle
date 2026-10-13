@@ -12,16 +12,21 @@ import com.github.jk1.license.render.ReportRenderer
 
 class ThirdPartyLicensesRenderer implements ReportRenderer {
 
-    private final File output
+    private static final Set<String> HOLDER_FREE_LICENSES = ['0BSD', 'Apache-2.0'] as Set
 
-    ThirdPartyLicensesRenderer(File output) {
+    private final File output
+    private final File storedTexts
+
+    ThirdPartyLicensesRenderer(File output, File storedTexts) {
         this.output = output
+        this.storedTexts = storedTexts
     }
 
     void render(ProjectData data) {
         def reportDir = new File(data.project.licenseReport.absoluteOutputDir as String)
         def libraryTexts = new TreeMap<String, SortedSet<String>>()
         def table = new StringBuilder()
+        def unusedTexts = new TreeSet<String>(storedTexts.list() as List)
         data.allDependencies.sort { "${it.group}:${it.name}:${it.version}" }.each { module ->
             def coordinate = "${module.group}:${module.name}"
             def licenses = (module.poms*.licenses.flatten()*.name + module.manifests*.license)
@@ -30,9 +35,25 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
                 throw new GradleException("No licence is declared for ${coordinate}:${module.version}")
             }
             table << "| `${coordinate}` | ${module.version} | ${licenses.join(', ')} |\n"
-            module.licenseFiles*.fileDetails.flatten().each { details ->
+            def shipped = module.licenseFiles*.fileDetails.flatten()
+            shipped.each { details ->
                 collect(libraryTexts, new File(reportDir, details.file), coordinate)
             }
+            if (!shipped.empty) {
+                return
+            }
+            def stored = storedText(module.group)
+            if (stored != null) {
+                collect(libraryTexts, stored, coordinate)
+                unusedTexts.remove(stored.name)
+            } else if (!HOLDER_FREE_LICENSES.containsAll(licenses)) {
+                throw new GradleException("${coordinate}:${module.version} ships no text of "
+                        + "${licenses.join(', ')}; add it as ${storedTexts}/${module.group}.txt")
+            }
+        }
+        if (!unusedTexts.empty) {
+            throw new GradleException("${storedTexts} holds texts of no library in the image: "
+                    + unusedTexts.join(', '))
         }
         def graalvmTexts = new TreeMap<String, SortedSet<String>>()
         graalvmLegalFiles().each { file -> collect(graalvmTexts, file, file.name) }
@@ -48,12 +69,18 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
         document << 'installed tesseract executable for OCR.\n\n'
         document << '| Library | Version | Declared licences |\n|---|---|---|\n'
         document << table
-        document << '\n### Licence and notice texts shipped with the Java libraries\n'
-        appendTexts(document, libraryTexts)
+        document << '\n### Licence and notice texts of the Java libraries\n'
+        appendTexts(document, libraryTexts, 'Applies to')
         document << '\n### Licence and notices of the GraalVM runtime and OpenJDK\n'
-        appendTexts(document, graalvmTexts)
+        appendTexts(document, graalvmTexts, 'Shipped with')
         output.parentFile.mkdirs()
         output.write(document.toString(), 'UTF-8')
+    }
+
+    private File storedText(String group) {
+        return storedTexts.listFiles()
+                .findAll { group == it.name - '.txt' || group.startsWith((it.name - '.txt') + '.') }
+                .max { it.name.length() }
     }
 
     private static List<File> graalvmLegalFiles() {
@@ -75,9 +102,10 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
         texts.computeIfAbsent(text) { new TreeSet<String>() } << source
     }
 
-    private static void appendTexts(StringBuilder document, Map<String, SortedSet<String>> texts) {
+    private static void appendTexts(StringBuilder document, Map<String, SortedSet<String>> texts,
+                                    String relation) {
         texts.entrySet().sort { it.value.first() }.each { entry ->
-            document << "\nShipped with ${entry.value.collect { "`${it}`" }.join(', ')}:\n\n"
+            document << "\n${relation} ${entry.value.collect { "`${it}`" }.join(', ')}:\n\n"
             document << "````text\n${entry.key}\n````\n"
         }
     }
@@ -153,7 +181,12 @@ licenseReport {
     configurations = ['runtimeClasspath']
     allowedLicensesFile = file('allowed-licenses.json')
     filters = [new ExcludeDependenciesWithoutArtifactsFilter(), new SpdxLicenseBundleNormalizer()]
-    renderers = [new ThirdPartyLicensesRenderer(layout.buildDirectory.file('licenses/java.md').get().asFile)]
+    renderers = [new ThirdPartyLicensesRenderer(layout.buildDirectory.file('licenses/java.md').get().asFile,
+            file('licenses'))]
+}
+
+tasks.named('generateLicenseReport') {
+    inputs.dir('licenses')
 }
 
 tasks.cyclonedxDirectBom {
