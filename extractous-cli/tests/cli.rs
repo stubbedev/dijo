@@ -1313,6 +1313,28 @@ fn a_page_written_vertically_is_read_column_by_column() {
     assert!(drawn.starts_with("灯\n台\n守\n"), "{drawn}");
 }
 
+fn notes_text(extension: &str) -> Vec<String> {
+    let path = format!("../quality/corpus/notes.{extension}");
+    [
+        &["--ocr", "never", path.as_str()][..],
+        &["--ocr", "never", "--no-normalize", "headers", &path],
+    ]
+    .iter()
+    .map(|args| stdout(&extractous(args)))
+    .collect()
+}
+
+#[test]
+fn table_cells_holding_paragraphs_share_their_row() {
+    for extension in ["odt", "docx", "doc", "pdf"] {
+        for text in notes_text(extension) {
+            let rows: Vec<&str> = text.lines().map(str::trim).collect();
+            assert!(rows.contains(&"Year\tShips"), "{extension}: {text}");
+            assert!(rows.contains(&"1921\t412"), "{extension}: {text}");
+        }
+    }
+}
+
 #[test]
 fn comments_follow_the_sentence_they_are_anchored_in() {
     for extension in ["odt", "docx", "doc"] {

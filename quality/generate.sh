@@ -118,6 +118,15 @@ fodt "$truth/japanese.txt" "$work/japanese-vertical.fodt" vertical page "Noto Sa
 convert "$work/japanese-vertical.fodt" japanese-vertical pdf \
     'pdf:writer_pdf_Export:{"UseTaggedPDF":{"type":"boolean","value":"false"}}'
 
+for extension in odt docx doc pdf; do
+    case "$extension" in
+        docx) filter="docx:MS Word 2007 XML" ;;
+        doc) filter="doc:MS Word 97" ;;
+        *) filter=$extension ;;
+    esac
+    convert "$here/notes.fodt" notes "$extension" "$filter"
+done
+
 convert "$here/revisions.fodt" revisions odt odt
 convert "$here/revisions.fodt" revisions docx "docx:MS Word 2007 XML"
 convert "$here/revisions.fodt" revisions doc "doc:MS Word 97"

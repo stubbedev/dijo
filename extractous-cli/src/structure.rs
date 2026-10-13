@@ -49,6 +49,14 @@ struct Open {
     text: String,
 }
 
+/// Where the text of an open table cell stands: whether it has text yet, and whether a block in
+/// it has ended since, so that its next text starts a new line of the cell.
+#[derive(Default)]
+struct Cell {
+    has_text: bool,
+    line_ended: bool,
+}
+
 struct Splitter<'e> {
     unit: Unit,
     emit: &'e mut dyn FnMut(Part) -> io::Result<()>,
@@ -62,6 +70,7 @@ struct Splitter<'e> {
     artifacts: String,
     in_pieces: bool,
     between_cells: bool,
+    cells: Vec<Cell>,
 }
 
 fn element_kind(name: &str) -> Option<(ElementKind, Option<u8>)> {
@@ -204,11 +213,18 @@ impl Splitter<'_> {
         }
         match name {
             "tr" => self.between_cells = true,
-            "td" | "th" => self.between_cells = false,
+            "td" | "th" => {
+                self.between_cells = false;
+                self.cells.push(Cell::default());
+            }
             _ => {}
         }
-        if self.element.is_none() && is_block(name) {
-            end_line(self.current_text());
+        if is_block(name) {
+            match self.cells.last_mut() {
+                Some(cell) => cell.line_ended |= cell.has_text,
+                None if self.element.is_none() => end_line(self.current_text()),
+                None => {}
+            }
         }
         if self.unit == Unit::Pages
             && self.page.is_some()
@@ -239,6 +255,7 @@ impl Splitter<'_> {
         }
         match name {
             "td" | "th" => {
+                self.cells.pop();
                 self.between_cells = true;
                 self.current_text().push('\t');
             }
@@ -249,7 +266,10 @@ impl Splitter<'_> {
                 text.truncate(trimmed);
                 text.push('\n');
             }
-            name if is_block(name) => end_line(self.current_text()),
+            name if is_block(name) => match self.cells.last_mut() {
+                Some(cell) => cell.line_ended |= cell.has_text,
+                None => end_line(self.current_text()),
+            },
             _ => {}
         }
         if self
@@ -286,8 +306,19 @@ impl Splitter<'_> {
         if !self.in_body {
             return Ok(());
         }
-        if text.trim().is_empty() && self.between_cells {
+        let blank = text.trim().is_empty();
+        if blank && self.between_cells {
             return Ok(());
+        }
+        if let Some(cell) = self.cells.last_mut() {
+            if blank && (!cell.has_text || cell.line_ended) {
+                return Ok(());
+            }
+            let new_line = std::mem::take(&mut cell.line_ended);
+            cell.has_text = true;
+            if new_line {
+                self.current_text().push('\n');
+            }
         }
         let current = self.current_text();
         if text.trim().is_empty() && (current.is_empty() || current.ends_with('\n')) {
@@ -498,6 +529,7 @@ pub fn split(
         artifacts: String::new(),
         in_pieces: false,
         between_cells: false,
+        cells: Vec::new(),
     };
     let mut buffer = Vec::new();
     loop {
@@ -629,6 +661,20 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn the_paragraphs_of_a_cell_are_its_lines() {
+        let xhtml = "<html><body><table><tr>\t<td><p>Year</p>\n</td>\t<td><p>Ships</p>\n\
+                     <p>at dusk</p>\n</td></tr>\n<tr>\t<td><p>1921</p>\n</td>\t\
+                     <td><p>412</p>\n</td></tr></table></body></html>";
+        for unit in [Unit::Pages, Unit::Elements] {
+            assert_eq!(
+                parts(xhtml, unit)[0].text,
+                "Year\tShips\nat dusk\n1921\t412",
+                "{unit:?}"
+            );
+        }
     }
 
     #[test]
