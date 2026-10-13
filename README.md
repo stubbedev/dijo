@@ -30,7 +30,11 @@ embedded in the binary, compressed (about 36 MB). On first use they are unpacked
 `$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
 Windows) and loaded from there, so the binary runs wherever it is copied.
 
-OCR runs the `tesseract` executable, which must be on `PATH` together with its language data. Without `--ocr-lang`,
+OCR runs the `tesseract` executable. The Linux release binaries carry their own, statically linked, with the language
+data the automatic language needs (orientation and script detection, and a fast model for each script it reads), so
+they need nothing installed beyond the C library: a binary built with `EXTRACTOUS_OCR_BUNDLE` pointing at a bundle
+from `just ocr-bundle` does the same (about 50 MB larger), and `--ocr-lang` can name only the bundled models there.
+Other builds run `tesseract` from `PATH`, with its own language data. Without `--ocr-lang`,
 each image is first run through tesseract's orientation and script detection (the `osd` data, which distribution
 packages install with tesseract): it is turned upright and read with the installed model for its script, such as
 `script/Arabic`, then `ara`, falling back to `eng`.

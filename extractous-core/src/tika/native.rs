@@ -137,12 +137,44 @@ fn unpack(staging: &Path) -> io::Result<()> {
         _ => {}
     }
     fs::create_dir(staging)?;
-    for (name, compressed) in &NATIVE_LIBRARIES {
+    for (name, compressed) in NATIVE_LIBRARIES.iter().chain(&OCR_FILES) {
         let mut content = Vec::new();
         GzDecoder::new(*compressed).read_to_end(&mut content)?;
-        fs::write(staging.join(name), content)?;
+        let path = staging.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, content)?;
+        if *name == OCR_TESSERACT {
+            make_executable(&path)?;
+        }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// The tesseract executable the build bundled, unpacked beside the native libraries, or None
+/// when the build bundled none and tesseract is looked up on `PATH`.
+pub(crate) fn bundled_tesseract() -> Result<Option<PathBuf>, String> {
+    if OCR_FILES.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(loaded()?.dir.join(OCR_TESSERACT)))
+}
+
+/// The licenses of the tesseract and the language data the build bundled.
+pub(crate) fn bundled_ocr_licenses() -> Option<&'static str> {
+    OCR_LICENSES
 }
 
 /// Creates a new GraalVM isolate: a disjoint heap, so work in one isolate cannot exhaust or
@@ -172,6 +204,26 @@ pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, Strin
     let max_heap_option = settings.max_heap_bytes.map(|bytes| {
         CString::new(format!("-XX:MaxHeapSize={bytes}")).expect("a number has no NUL")
     });
+    let ocr_options = if OCR_FILES.is_empty() {
+        Vec::new()
+    } else {
+        [
+            format!(
+                "-Dextractous.ocr.tesseract={}",
+                library_dir.join(OCR_TESSERACT).display()
+            ),
+            format!(
+                "-Dextractous.ocr.tessdata={}",
+                library_dir.join(OCR_MODELS).display()
+            ),
+        ]
+        .into_iter()
+        .map(|option| {
+            CString::new(option)
+                .map_err(|e| format!("Invalid native library directory {library_path}: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+    };
     let mut vm_options: Vec<sys::JavaVMOption> = [
         Some(library_path_option.as_c_str()),
         Some(c"-Djava.awt.headless=true"),
@@ -180,6 +232,7 @@ pub(crate) fn create_isolate(settings: &IsolateSettings) -> Result<JavaVM, Strin
     ]
     .into_iter()
     .flatten()
+    .chain(ocr_options.iter().map(CString::as_c_str))
     .map(|option| sys::JavaVMOption {
         optionString: option.as_ptr().cast_mut(),
         extraInfo: std::ptr::null_mut(),

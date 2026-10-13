@@ -118,9 +118,10 @@ final class ScriptDetection {
 
     /** The standard output of a command that succeeded in time, or null. */
     private static String run(long timeoutMillis, String... command) throws IOException {
-        final Process process = new ProcessBuilder(command)
-                .redirectError(ProcessBuilder.Redirect.DISCARD)
-                .start();
+        final ProcessBuilder builder = new ProcessBuilder(command)
+                .redirectError(ProcessBuilder.Redirect.DISCARD);
+        OcrBundle.environment(builder.environment());
+        final Process process = builder.start();
         try {
             process.getOutputStream().close();
             if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS) || process.exitValue() != 0) {

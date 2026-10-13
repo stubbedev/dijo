@@ -134,10 +134,18 @@ fn wait_for_stopping_extractions() {
 }
 
 fn print_licenses() -> bool {
-    io::stdout()
-        .lock()
-        .write_all(LICENSES.as_bytes())
-        .map_or_else(|error| stdout_failed(&error), |()| true)
+    let mut stdout = io::stdout().lock();
+    let written = stdout.write_all(LICENSES.as_bytes()).and_then(|()| {
+        match extractous_core::bundled_ocr_licenses() {
+            Some(licenses) => stdout
+                .write_all(
+                    b"\n# Bundled OCR: tesseract, the libraries it links and its language data\n\n",
+                )
+                .and_then(|()| stdout.write_all(licenses.as_bytes())),
+            None => Ok(()),
+        }
+    });
+    written.map_or_else(|error| stdout_failed(&error), |()| true)
 }
 
 fn run_command(cli: Cli) -> bool {

@@ -15,6 +15,11 @@ const DT_RPATH: i64 = 15;
 const DT_RUNPATH: i64 = 29;
 const ELF64_DYN_SIZE: usize = 16;
 const TIKA_LIBRARY_STEM: &str = "libtika_native";
+const OCR_BUNDLE_VARIABLE: &str = "EXTRACTOUS_OCR_BUNDLE";
+const OCR_TESSERACT: &str = "tesseract";
+const OCR_MODELS: &str = "tessdata";
+const OCR_MODEL_EXTENSION: &str = "traineddata";
+const OCR_LICENSES: &str = "licenses";
 
 fn main() {
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
@@ -63,7 +68,84 @@ fn main() {
         }
     }
 
-    write_native_module(&out_dir, &libs_dir, &fingerprint);
+    let ocr = ocr_bundle(&out_dir);
+    write_native_module(&out_dir, &libs_dir, &fingerprint, ocr.as_ref());
+}
+
+/// The OCR bundle `ci/ocr-bundle.sh` assembles, which `EXTRACTOUS_OCR_BUNDLE` names: a tesseract
+/// executable, its language data and the licenses of what it links, compressed beside the
+/// native libraries.
+struct OcrBundle {
+    /// Each file by its path below the unpacked libraries, and where its compressed copy is.
+    files: Vec<(String, PathBuf)>,
+    /// The licenses of the bundle, as one text.
+    licenses: PathBuf,
+    fingerprint: String,
+}
+
+fn ocr_bundle(out_dir: &Path) -> Option<OcrBundle> {
+    println!("cargo:rerun-if-env-changed={OCR_BUNDLE_VARIABLE}");
+    let dir = PathBuf::from(env::var_os(OCR_BUNDLE_VARIABLE)?);
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let models: Vec<PathBuf> = list_dir(&dir.join(OCR_MODELS))
+        .into_iter()
+        .filter(|path| path.extension() == Some(OsStr::new(OCR_MODEL_EXTENSION)))
+        .collect();
+    if models.is_empty() {
+        panic!(
+            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {OCR_MODELS}/*.{OCR_MODEL_EXTENSION}",
+            dir.display()
+        );
+    }
+    let compressed_dir = out_dir.join("ocr");
+    remove_dir_if_exists(&compressed_dir);
+    create_dir(&compressed_dir.join(OCR_MODELS));
+    let mut hasher = DefaultHasher::new();
+    let mut files = Vec::with_capacity(models.len() + 1);
+    let named = std::iter::once((OCR_TESSERACT.to_string(), dir.join(OCR_TESSERACT))).chain(
+        models.iter().map(|model| {
+            let file = model
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap_or_else(|| panic!("OCR model name {} is not UTF-8", model.display()));
+            (format!("{OCR_MODELS}/{file}"), model.clone())
+        }),
+    );
+    for (name, path) in named {
+        let content = read_file(&path);
+        hasher.write(name.as_bytes());
+        hasher.write(&content);
+        let compressed = compressed_dir.join(format!("{name}.{COMPRESSED_EXTENSION}"));
+        compress_bytes(&content, &compressed);
+        files.push((name, compressed));
+    }
+    let mut licenses = String::new();
+    for component in list_dir(&dir.join(OCR_LICENSES)) {
+        for file in list_dir(&component) {
+            let text = String::from_utf8_lossy(&read_file(&file)).into_owned();
+            licenses.push_str(&format!(
+                "## {} ({})\n\n```text\n{}\n```\n\n",
+                component.file_name().unwrap().to_string_lossy(),
+                file.file_name().unwrap().to_string_lossy(),
+                text.trim_end()
+            ));
+        }
+    }
+    if licenses.is_empty() {
+        panic!(
+            "{OCR_BUNDLE_VARIABLE} names {}, which holds no licenses",
+            dir.display()
+        );
+    }
+    let licenses_path = compressed_dir.join("LICENSES.md");
+    fs::write(&licenses_path, licenses)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", licenses_path.display()));
+    Some(OcrBundle {
+        files,
+        licenses: licenses_path,
+        fingerprint: format!("{:016x}", hasher.finish()),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,15 +288,19 @@ fn gradle_build(
     work_dir.join("build").join("native").join("nativeCompile")
 }
 
+/// The entries of a directory, sorted, so that what is built from them does not depend on the
+/// order the file system lists them in.
 fn list_dir(dir: &Path) -> Vec<PathBuf> {
-    fs::read_dir(dir)
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("Failed to list {}: {e}", dir.display()))
         .map(|entry| {
             entry
                 .unwrap_or_else(|e| panic!("Failed to list {}: {e}", dir.display()))
                 .path()
         })
-        .collect()
+        .collect();
+    entries.sort();
+    entries
 }
 
 fn compress_native_libraries(
@@ -364,7 +450,12 @@ fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<
     Ok(())
 }
 
-fn write_native_module(out_dir: &Path, libs_dir: &Path, fingerprint: &str) {
+fn write_native_module(
+    out_dir: &Path,
+    libs_dir: &Path,
+    fingerprint: &str,
+    ocr: Option<&OcrBundle>,
+) {
     let mut libraries: Vec<(String, PathBuf)> = list_dir(libs_dir)
         .into_iter()
         .filter(|path| path.extension() == Some(OsStr::new(COMPRESSED_EXTENSION)))
@@ -399,11 +490,29 @@ fn write_native_module(out_dir: &Path, libs_dir: &Path, fingerprint: &str) {
             format!("    ({name:?}, include_bytes!({path:?})),\n")
         })
         .collect();
+    let ocr_files: &[(String, PathBuf)] = ocr.map_or(&[], |ocr| &ocr.files);
+    let ocr_entries: String = ocr_files
+        .iter()
+        .map(|(name, path)| format!("    ({name:?}, include_bytes!({path:?})),\n"))
+        .collect();
+    let ocr_licenses = match ocr {
+        Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
+        None => "None".to_string(),
+    };
+    let fingerprint = match ocr {
+        Some(ocr) => format!("{fingerprint}-ocr-{}", ocr.fingerprint),
+        None => fingerprint.to_string(),
+    };
     let module = format!(
         "pub(crate) const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n\
          pub(crate) const TIKA_LIBRARY: &str = {tika_library:?};\n\
-         pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n",
-        libraries.len()
+         pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n\
+         pub(crate) const OCR_TESSERACT: &str = {OCR_TESSERACT:?};\n\
+         pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
+         pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
+         pub(crate) const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
+        libraries.len(),
+        ocr_files.len()
     );
     let module_path = out_dir.join("native.rs");
     if fs::read_to_string(&module_path).ok().as_deref() != Some(module.as_str()) {

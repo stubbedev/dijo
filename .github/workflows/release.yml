@@ -52,10 +52,17 @@ jobs:
           echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        if: runner.os == 'Linux'
+      - name: Bundle tesseract and its language data
+        if: runner.os == 'Linux'
+        run: |
+          ci/ocr-bundle.sh "$RUNNER_TEMP/ocr-bundle"
+          echo "EXTRACTOUS_OCR_BUNDLE=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_ENV"
       - name: Install tesseract for the smoke test
+        if: runner.os != 'Linux'
         run: |
           case "${{ runner.os }}" in
-            Linux) sudo apt-get update && sudo apt-get install -y tesseract-ocr ;;
             macOS) brew install tesseract ;;
             Windows)
               choco install tesseract --no-progress -y
@@ -80,6 +87,18 @@ jobs:
           "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
+      - name: Smoke test in a container with no tesseract
+        if: runner.os == 'Linux'
+        run: |
+          image=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+          docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" \
+            --volume "$PWD/test_files/documents:/data:ro" "$image" /extractous --ocr always /data/eng-ocr.pdf \
+            | tr -s '[:space:]' ' ' | grep -qi "the"
+          docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" \
+            --volume "$PWD/quality/corpus:/data:ro" "$image" /extractous /data/arabic-scan-300dpi.png \
+            | grep -q "المنارة"
+          docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" "$image" /extractous --licenses \
+            | grep -q "## tesseract"
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi
@@ -87,7 +106,8 @@ jobs:
           mkdir -p "dist/$name"
           suffix=""
           if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
-          cp "target/release/extractous$suffix" LICENSE README.md THIRD-PARTY-LICENSES.md "dist/$name/"
+          cp "target/release/extractous$suffix" LICENSE README.md "dist/$name/"
+          "target/release/extractous$suffix" --licenses > "dist/$name/LICENSES.md"
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$name.zip" "$name" > /dev/null

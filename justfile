@@ -29,6 +29,12 @@ test-large:
 test-fuzz:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test fuzz
 
+# Assemble a statically linked tesseract, its language data and their licenses, for a build that
+# carries its own OCR: EXTRACTOUS_OCR_BUNDLE=<dir> cargo build --release.
+[unix]
+ocr-bundle dir="target/ocr-bundle":
+    ci/ocr-bundle.sh {{dir}}
+
 # Run the server under load for SOAK_SECONDS (120 by default) per test with a release build:
 # answers stay alike and memory level over a long run, and damaged documents are answered while
 # worker processes recover; SOAK_SEED repeats a run's damage.

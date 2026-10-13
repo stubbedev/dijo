@@ -4,6 +4,7 @@ import org.apache.commons.io.IOUtils;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.EncryptedDocumentException;
+import org.apache.tika.exception.TikaConfigException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
@@ -116,8 +117,23 @@ public class TikaNativeMain {
         return parser;
     }
 
-    /** Tika's tesseract parser, when tesseract is installed. */
+    /**
+     * Tika's tesseract parser: running the tesseract the build bundled, or else the one on the
+     * PATH, when it is installed.
+     */
     private static TesseractOCRParser tesseract(DefaultParser defaults) {
+        if (OcrBundle.present()) {
+            final TesseractOCRParser bundled;
+            try {
+                bundled = OcrBundle.parser();
+            } catch (TikaConfigException e) {
+                throw new IllegalStateException("The bundled tesseract cannot be configured", e);
+            }
+            if (bundled.getSupportedTypes(new ParseContext()).isEmpty()) {
+                throw new IllegalStateException("The bundled tesseract does not run");
+            }
+            return bundled;
+        }
         for (final Parser candidate : defaults.getAllComponentParsers()) {
             if (candidate instanceof TesseractOCRParser ocr
                     && !ocr.getSupportedTypes(new ParseContext()).isEmpty()) {

@@ -522,7 +522,11 @@ fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
 
 /// The version tesseract reports, or why there is none, since OCR output depends on it.
 fn tesseract_version() -> String {
-    match Command::new("tesseract").arg("--version").output() {
+    let program = match extractous_core::tesseract_program() {
+        Ok(program) => program,
+        Err(error) => return format!("tesseract unavailable: {error}"),
+    };
+    match Command::new(program).arg("--version").output() {
         Ok(output) => format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
