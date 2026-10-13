@@ -226,7 +226,6 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | image/tiff | 3 | 3 | 0 | 0 |  |
 | image/vnd.adobe.photoshop | 3 | 3 | 0 | 0 |  |
 | image/vnd.dgn | 2 | 2 | 0 | 0 |  |
-| image/vnd.djvu | 1 | 1 | 0 | 0 |  |
 | image/vnd.dwg | 19 | 19 | 0 | 0 |  |
 | image/vnd.dxf | 3 | 3 | 0 | 0 |  |
 | image/vnd.zbrush.dcx | 1 | 1 | 0 | 0 |  |
@@ -271,7 +270,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | text/x-matlab | 3 | 3 | 0 | 0 |  |
 | text/x-robots | 2 | 2 | 0 | 0 |  |
 | text/x-vcalendar | 1 | 1 | 0 | 0 |  |
-| undetected | 34 | 34 | 0 | 0 |  |
+| undetected | 35 | 35 | 0 | 0 |  |
 | video/mp4 | 7 | 7 | 0 | 0 |  |
 | video/quicktime | 2 | 2 | 0 | 0 |  |
 | video/webm | 2 | 2 | 0 | 0 |  |

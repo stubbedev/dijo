@@ -267,8 +267,9 @@ as the spoken lines, without timings or markup; Jupyter notebooks cell by cell, 
 FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `.emlx` files as the email they hold.
 Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
 slides and table cells; Hancom Office HWPX documents, which Tika reads as a plain ZIP archive, for their paragraphs,
-tables and footnotes, without running headers and footers; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika
-detects but cannot read, for their text, title and authors.
+tables and footnotes, without running headers and footers; DjVu documents, which Tika detects but cannot read, for
+the hidden text layer of each page; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
+their text, title and authors.
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 1094 test documents both natively and with the same Tika

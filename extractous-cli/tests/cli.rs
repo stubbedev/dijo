@@ -354,6 +354,27 @@ fn a_sqlite_database_is_read_for_its_tables() {
 }
 
 #[test]
+fn djvu_documents_are_read_for_their_text_layers() {
+    let pages = page_records(&[], &document("ledger.djvu"));
+    let texts: Vec<&str> = pages
+        .iter()
+        .map(|page| page["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "The keeper climbed the hundred and twelve steps.\n\
+             He wrote one line in the ledger.\nShips passed before midnight.",
+            "The second page holds the storm."
+        ]
+    );
+    let objects = json_objects(&[&document("ledger.djvu"), &document("storm.djvu")]);
+    assert_eq!(objects[0]["mime_type"], "image/vnd.djvu");
+    assert_eq!(objects[0]["metadata"]["page_count"], 3);
+    assert_eq!(objects[1]["text"], "The second page holds the storm.\n");
+}
+
+#[test]
 fn hwpx_documents_are_read_as_paragraphs_and_tables() {
     let scratch = Scratch::new("hwpx");
     let path = scratch.0.join("report.hwpx");

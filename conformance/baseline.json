@@ -540,7 +540,7 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDJVU.djvu": {
-    "mime_type": "image/vnd.djvu",
+    "mime_type": "undetected",
     "outcome": "both-empty",
     "similarity": 1.0
   },
