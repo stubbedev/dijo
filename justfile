@@ -29,6 +29,18 @@ test-large:
 test-fuzz:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test fuzz
 
+# Fuzz the parsers of untrusted input (XHTML splitter, normaliser, query decoder, metadata) with
+# coverage guidance for the given seconds each; a failing input is kept under
+# extractous-cli/fuzz/artifacts.
+[unix]
+fuzz seconds="300":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd extractous-cli
+    for target in $(cargo fuzz list); do
+        cargo fuzz run --sanitizer none "$target" -- -max_total_time={{seconds}} -rss_limit_mb=2048
+    done
+
 # Measure the CLI's extraction throughput per format, peak memory and cold start with a release
 # build; BENCH_OUTPUT writes the Markdown table to a file, BENCH_ROUNDS sets the repetitions.
 throughput:

@@ -10,6 +10,7 @@ in
     pkgs.cargo-about
     pkgs.cargo-deny
     pkgs.cargo-cyclonedx
+    pkgs.cargo-fuzz
     pkgs.pkg-config
     pkgs.openssl
     (pkgs.tesseract.override {

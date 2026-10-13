@@ -166,6 +166,10 @@ Documents and requests are untrusted input. What the server defends against, and
   there is no SSRF surface. Passwords are never cached or logged.
 - **Damaged files.** A nightly job extracts randomly damaged copies of the test documents (`just test-fuzz`) and
   fails on any crash, hang or missing answer.
+- **Hostile markup and requests.** The parsers that read what a document or client controls (the XHTML splitter, the
+  text normaliser, the query string decoder and metadata normalisation) are fuzzed nightly with coverage guidance
+  (`just fuzz`, cargo-fuzz on stable Rust), each against a property it must keep: never panic, bounded output, the
+  same text however it arrives in chunks.
 
 What it leaves to the deployment:
 

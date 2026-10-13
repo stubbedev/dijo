@@ -415,6 +415,17 @@ fn push_char(character: char, out: &mut Vec<u8>) {
     out.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
 }
 
+/// Normalises `bytes` handed over in chunks of `size`.
+pub fn normalize_in_chunks(steps: Steps, bytes: &[u8], size: usize) -> Vec<u8> {
+    let mut normalizer = Normalizer::new(steps);
+    let mut out = Vec::new();
+    for chunk in bytes.chunks(size) {
+        normalizer.push(chunk, &mut out);
+    }
+    normalizer.finish(&mut out);
+    out
+}
+
 /// Normalises a whole piece of text.
 pub fn normalize(steps: Steps, text: &str) -> String {
     let mut normalizer = Normalizer::new(steps);
@@ -589,12 +600,7 @@ mod tests {
         let whole = normalize(Steps::ALL, text);
         assert_eq!(whole, "Résumé final office\n\n한국어 각 ẹ́ 漢字 tab\tend");
         for size in 1..=7 {
-            let mut normalizer = Normalizer::new(Steps::ALL);
-            let mut out = Vec::new();
-            for chunk in text.as_bytes().chunks(size) {
-                normalizer.push(chunk, &mut out);
-            }
-            normalizer.finish(&mut out);
+            let out = normalize_in_chunks(Steps::ALL, text.as_bytes(), size);
             assert_eq!(String::from_utf8(out).unwrap(), whole, "chunks of {size}");
         }
     }
@@ -627,12 +633,7 @@ mod tests {
         for text in random_texts() {
             let whole = normalize(Steps::ALL, &text);
             for size in [1, 2, 3, 5] {
-                let mut normalizer = Normalizer::new(Steps::ALL);
-                let mut out = Vec::new();
-                for chunk in text.as_bytes().chunks(size) {
-                    normalizer.push(chunk, &mut out);
-                }
-                normalizer.finish(&mut out);
+                let out = normalize_in_chunks(Steps::ALL, text.as_bytes(), size);
                 assert_eq!(
                     String::from_utf8(out).unwrap(),
                     whole,

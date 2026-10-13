@@ -282,7 +282,7 @@ fn busy() -> Response<ResponseBody> {
     response
 }
 
-fn query_pairs(query: Option<&str>) -> Vec<(String, String)> {
+pub(crate) fn query_pairs(query: Option<&str>) -> Vec<(String, String)> {
     query
         .unwrap_or_default()
         .split('&')
