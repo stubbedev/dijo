@@ -67,7 +67,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size (also for `serve`) |
 | `--cache-partial` | Also cache partial results (never those cut short by a timeout) |
 | `--cache-trust-mtime` | Skip rehashing inputs whose path, size and modification time match the last run |
-| `--max-heap-bytes <BYTES>` | Cap Tika's Java heap; an extraction that needs more fails with `limit-exceeded` and the next one runs normally |
+| `--max-heap-bytes <BYTES>` | Cap Tika's Java heap; an extraction that needs more fails with `limit-exceeded` and the next one runs normally. GraalVM raises a cap below its least heap, a few tens of MiB |
 | `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |

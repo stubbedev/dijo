@@ -927,7 +927,7 @@ fn a_heap_cap_fails_one_extraction_and_not_the_next() {
 
     let capped = json_objects(&[
         "--max-heap-bytes",
-        "8388608",
+        "67108864",
         "--jobs",
         "1",
         &hungry,

@@ -377,7 +377,7 @@ fn text_is_normalised_unless_raw() {
 
 #[test]
 fn a_heap_cap_fails_one_request_and_not_the_next() {
-    let server = Server::start(&["--max-heap-bytes", "8388608", "--workers", "1"]);
+    let server = Server::start(&["--max-heap-bytes", "67108864", "--workers", "1"]);
     let hungry = server.post_file("/extract", &[], "many-shared-strings.xlsx");
     assert_eq!(hungry.status, 413);
     assert_eq!(hungry.json()["errors"][0]["category"], "limit-exceeded");
