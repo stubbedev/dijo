@@ -83,7 +83,7 @@ extractous detect mystery.bin                 # application/pdf
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
 | `-r, --recursive` | Descend into directories, in sorted order |
-| `-j, --jobs <N>` | Inputs extracted in parallel (default: number of cores); output stays in input order |
+| `-j, --jobs <N>` | Inputs extracted in parallel (default: the number of cores, at most 4, past which extractions in the one shared isolate slow each other down); output stays in input order |
 | `--ocr auto\|never\|always` | OCR images, and PDF pages without text or with a garbage text layer (default); never; or every PDF page as well |
 | `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image from its script by default |
 
@@ -139,7 +139,8 @@ curl --data-binary @mystery.bin localhost:9998/detect
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics: requests by endpoint and status, failures by category, extraction time per media type, bytes in and out, workers and requests in flight. |
 
-Extraction runs on a fixed pool of worker threads (`--workers`). Uploads are spooled to disk and the response streams as
+Extraction runs on a fixed pool of worker threads (`--workers`, by default the number of cores up to 4: the threads
+share one isolate, and more of them slow each other down). Uploads are spooled to disk and the response streams as
 it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
@@ -151,7 +152,8 @@ request (408 while uploading, 504 before extraction starts, a cut connection aft
 or runs away with memory takes down one request and not the server. The server restarts the worker for the next
 request. A crashed worker fails its request with 500. A worker still running five seconds past `--timeout` is killed
 (504). On Linux, `--worker-max-rss-bytes` kills a worker whose resident memory grows past the limit (413). Each
-worker process holds its own Java heap, so memory use grows with `--workers`. With 4 workers on a mixed office and PDF
+worker process holds its own Java heap and isolate, so `--workers` defaults to one per core here, and memory use
+grows with it. With 4 workers on a mixed office and PDF
 corpus, process isolation took 565 MiB at peak against 163 MiB for threads. It served 243 requests/s against 202 at
 4 concurrent requests, and 37 against 52 one at a time.
 

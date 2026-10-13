@@ -105,7 +105,7 @@ pub fn work(args: &WorkerArgs) -> bool {
 
 fn start(args: &ServeArgs) -> Result<bool, String> {
     let metrics = Arc::new(Metrics::default());
-    let workers = args.workers.get();
+    let workers = args.workers().get();
     let pool_workers = match args.isolation {
         Isolation::Thread => Workers::Threads(Cache::from_args(&args.cache, false)?.map(Arc::new)),
         Isolation::Process => Workers::Processes(ProcessOptions {

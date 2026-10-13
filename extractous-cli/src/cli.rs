@@ -71,9 +71,10 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:9998", env = "EXTRACTOUS_LISTEN")]
     pub listen: std::net::SocketAddr,
 
-    /// Extraction workers: threads, or processes with --isolation process.
-    #[arg(long, env = "EXTRACTOUS_WORKERS", default_value_t = default_jobs())]
-    pub workers: NonZeroUsize,
+    /// Extraction workers: threads, at most 4 by default since threads share one isolate, or
+    /// with --isolation process, processes, one per core by default.
+    #[arg(long, env = "EXTRACTOUS_WORKERS")]
+    pub workers: Option<NonZeroUsize>,
 
     /// Requests that may wait for a worker before new ones get 503.
     #[arg(long, env = "EXTRACTOUS_QUEUE", default_value_t = 16)]
@@ -311,8 +312,9 @@ pub struct ExtractArgs {
     #[arg(short, long, value_name = "DIR", env = "EXTRACTOUS_OUTPUT")]
     pub output: Option<PathBuf>,
 
-    /// Number of inputs extracted in parallel. Output stays in input order.
-    #[arg(short, long, env = "EXTRACTOUS_JOBS", default_value_t = default_jobs())]
+    /// Number of inputs extracted in parallel, by default the cores up to 4, since extractions
+    /// share one isolate. Output stays in input order.
+    #[arg(short, long, env = "EXTRACTOUS_JOBS", default_value_t = shared_isolate_jobs())]
     pub jobs: NonZeroUsize,
 
     /// When to run OCR: on PDF pages and images without a text layer, never, or on every PDF
@@ -366,6 +368,24 @@ pub enum Ocr {
     Always,
 }
 
-fn default_jobs() -> NonZeroUsize {
+/// The most extractions that run well in parallel in one isolate: past it they contend inside
+/// the isolate, and the whole gets slower.
+const SHARED_ISOLATE_JOBS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+fn cores() -> NonZeroUsize {
     std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
+}
+
+fn shared_isolate_jobs() -> NonZeroUsize {
+    cores().min(SHARED_ISOLATE_JOBS)
+}
+
+impl ServeArgs {
+    /// The workers to run: as given, or by default as many as run well in parallel.
+    pub fn workers(&self) -> NonZeroUsize {
+        self.workers.unwrap_or_else(|| match self.isolation {
+            Isolation::Thread => shared_isolate_jobs(),
+            Isolation::Process => cores(),
+        })
+    }
 }
