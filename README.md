@@ -238,15 +238,16 @@ text output each embedded document starts with a `=== path ===` line. Exceeding 
 
 `quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
 HTML and EPUB, two-column PDFs (one drawn right column first), a report with running headers and footers, Arabic,
-Hebrew, Chinese, Japanese, Thai, Hindi and German documents, tables, a PDF hyphenated by TeX, PDFs with broken text
-layers, and scans at 300 and 150 dpi, skewed and rotated. Every extraction is scored against its truth: character
+Hebrew, Chinese, Japanese, Thai, Hindi and German documents, tables, Word and OpenDocument files with tracked changes,
+a comment and hidden text, a PDF hyphenated by TeX, PDFs with broken text layers, and scans at 300 and 150 dpi, skewed
+and rotated. Every extraction is scored against its truth: character
 and token error rate, recall (the share of the truth's words that were extracted at all), spurious text and paragraph
 order. The test suite fails when a score gets worse than `quality/baseline.json`
 allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
 `just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM alongside: over the documents extracted with default options, extractous recalls 0.996 of the truth's words
-against Tika's 0.854, at a token error rate of 0.016 against 0.202.
+against Tika's 0.861, at a token error rate of 0.015 against 0.198.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
 upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end. An Arabic PDF whose
@@ -277,6 +278,11 @@ slides and table cells; Hancom Office HWPX documents, which Tika reads as a plai
 tables and footnotes, without running headers and footers; DjVu documents, which Tika detects but cannot read, for
 the hidden text layer of each page; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
 their text, title and authors.
+
+Word and OpenDocument text is read as the document stands: tracked insertions are text, tracked deletions are not
+(`OfficeParserConfig::set_include_deleted_content` keeps them), and text formatted as hidden is text. Comments follow
+the paragraph they are anchored in (OpenDocument) or the document (Word), never cutting the sentence around their
+anchor; in Word 97-2003 files, the anchors of comments, footnotes and pictures no longer break a line either.
 
 Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
 `just conformance` therefore extracts Apache Tika's own 1094 test documents both natively and with the same Tika

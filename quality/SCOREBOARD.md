@@ -27,6 +27,9 @@
 | thai.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hindi.pdf | script | 0.074 | 0.060 | 1.000 | 0.056 | 1.000 |
 | hindi.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| revisions.odt | revisions | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| revisions.docx | revisions | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| revisions.doc | revisions | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | table.xlsx | tables | 0.168 | 0.156 | 1.000 | 0.135 | 1.000 |
 | table.docx | tables | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | table.html | tables | 0.044 | 0.031 | 1.000 | 0.030 | 1.000 |

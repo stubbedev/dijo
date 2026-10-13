@@ -356,6 +356,27 @@
     "spurious": 0.006578947368421052,
     "reading_order": 1.0
   },
+  "revisions.doc": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "revisions.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "revisions.odt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "russian-cp1251.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
