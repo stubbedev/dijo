@@ -22,6 +22,7 @@ in
       ];
     })
     pkgs.libheif.bin
+    pkgs.djvulibre
     pkgs.git
   ];
 

@@ -1365,6 +1365,34 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
 
 #[cfg(unix)]
 #[test]
+fn a_djvu_page_without_a_text_layer_is_read_by_ocr_when_ddjvu_renders_it() {
+    let scan = "../quality/corpus/prose-scan.djvu";
+    let read = &json_objects(&[scan])[0];
+    assert_matches_schema(read);
+    assert!(
+        read["text"].as_str().unwrap().contains("Lighthouse Keeper"),
+        "{read}"
+    );
+    assert_eq!(read["metadata"]["ocr"][0]["page"], 1, "{read}");
+
+    let scratch = Scratch::new("no-ddjvu");
+    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(["--format", "json", scan])
+        .env("PATH", scratch.path_with_only_tesseract())
+        .output()
+        .unwrap();
+    let unread: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        unread["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ddjvu"),
+        "{unread}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn heic_is_read_with_heif_dec_and_reported_without_it() {
     let photo = document("photo.heic");
     let read = &json_objects(&[&photo])[0];

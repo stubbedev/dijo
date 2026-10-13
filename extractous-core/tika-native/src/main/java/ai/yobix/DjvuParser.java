@@ -3,6 +3,15 @@ package ai.yobix;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.UnsupportedFormatException;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.io.TemporaryResources;
+import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.metadata.TikaPagedText;
+import org.apache.tika.parser.enricher.CompositeContentEnricher;
+import org.apache.tika.parser.enricher.ContentEnrichers;
+import org.apache.tika.parser.enricher.EnrichingParser;
+import org.apache.tika.parser.ocr.TesseractOCRConfig;
+import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.PagedText;
 import org.apache.tika.mime.MediaType;
@@ -16,6 +25,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,10 +35,21 @@ import java.util.regex.Pattern;
 /**
  * DjVu documents, single-page or bundled multi-page, read for the hidden text layer each page
  * carries (TXTa, or TXTz compressed with BZZ): a page of the output per page of the document,
- * its text split into paragraphs where the layer ends a column, region or paragraph. Only the
- * text chunks are read, never the images. Tika detects DjVu but has no parser for it.
+ * its text split into paragraphs where the layer ends a column, region or paragraph. A page
+ * without a text layer is rendered by DjVuLibre's ddjvu, when it is installed, and read by OCR.
+ * Tika detects DjVu but has no parser for it.
  */
-final class DjvuParser implements Parser {
+final class DjvuParser implements Parser, EnrichingParser {
+
+    private static final MediaType RENDERED = MediaType.image("x-portable-graymap");
+    private static final TesseractOCRConfig DEFAULTS = new TesseractOCRConfig();
+
+    private CompositeContentEnricher recognizers;
+
+    @Override
+    public void setContentEnrichers(CompositeContentEnricher recognizers) {
+        this.recognizers = recognizers;
+    }
 
     static final MediaType DJVU = MediaType.image("vnd.djvu");
 
@@ -46,24 +67,62 @@ final class DjvuParser implements Parser {
     @Override
     public void parse(TikaInputStream stream, ContentHandler handler, Metadata metadata,
                       ParseContext context) throws IOException, SAXException, TikaException {
+        final Path path = TikaInputStream.get(stream).getPath();
         final List<String> pages;
-        try (FileChannel file = FileChannel.open(TikaInputStream.get(stream).getPath(),
-                StandardOpenOption.READ)) {
+        try (FileChannel file = FileChannel.open(path, StandardOpenOption.READ)) {
             pages = pages(file);
         }
         metadata.set(PagedText.N_PAGES, pages.size());
         final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
-        for (final String page : pages) {
-            xhtml.startElement("div", "class", "page");
-            for (final String block : BLOCK_END.split(page)) {
-                if (!block.isBlank()) {
-                    xhtml.element("p", block.strip());
+        try (TemporaryResources temporary = new TemporaryResources()) {
+            for (int index = 0; index < pages.size(); index++) {
+                final String page = pages.get(index);
+                xhtml.startElement("div", "class", "page");
+                if (page.isBlank()) {
+                    readByOcr(path, index + 1, xhtml, metadata, context, temporary);
                 }
+                for (final String block : BLOCK_END.split(page)) {
+                    if (!block.isBlank()) {
+                        xhtml.element("p", block.strip());
+                    }
+                }
+                xhtml.endElement("div");
             }
-            xhtml.endElement("div");
         }
         xhtml.endDocument();
+    }
+
+    /** Reads a page without a text layer by OCR, when OCR is on and ddjvu can render it. */
+    private void readByOcr(Path djvu, int page, XHTMLContentHandler xhtml, Metadata metadata,
+                           ParseContext context, TemporaryResources temporary)
+            throws IOException, SAXException, TikaException {
+        final TesseractOCRConfig configured = context.get(TesseractOCRConfig.class);
+        if (configured != null && configured.isSkipOcr()) {
+            return;
+        }
+        final Metadata pageMetadata = new Metadata();
+        pageMetadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, RENDERED.toString());
+        pageMetadata.set(TikaPagedText.PAGE_NUMBER, page);
+        final Parser recognizer = ContentEnrichers.get(recognizers, RENDERED, pageMetadata,
+                context);
+        if (recognizer == null) {
+            return;
+        }
+        final Path image = DjvuRenderer.render(djvu, page, temporary,
+                (configured != null ? configured : DEFAULTS).getTimeoutMillis());
+        if (image == null) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, "Page " + page
+                    + " has no text layer; reading it by OCR needs DjVuLibre's ddjvu on the PATH");
+            return;
+        }
+        try (TikaInputStream rendered = TikaInputStream.get(image)) {
+            recognizer.parse(rendered, new EmbeddedContentHandler(new BodyContentHandler(xhtml)),
+                    pageMetadata, context);
+        }
+        for (final String report : pageMetadata.getValues(OcrReport.KEY)) {
+            metadata.add(OcrReport.KEY, report);
+        }
     }
 
     /** The text of each page, in order, empty for a page without a text layer. */

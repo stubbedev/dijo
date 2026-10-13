@@ -266,8 +266,8 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.824, Kreuzberg 0.671 and Docling 0.649, at
-a token error rate of 0.012 against 0.241, 0.470 and 0.422. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.812, Kreuzberg 0.662 and Docling 0.640, at
+a token error rate of 0.011 against 0.251, 0.477 and 0.429. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
@@ -306,7 +306,7 @@ FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `
 Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
 slides and table cells; Hancom Office HWPX documents, which Tika reads as a plain ZIP archive, for their paragraphs,
 tables and footnotes, without running headers and footers; DjVu documents, which Tika detects but cannot read, for
-the hidden text layer of each page; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
+the hidden text layer of each page, or by OCR for a page without one when DjVuLibre's `ddjvu` is on `PATH`; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
 their text, title and authors.
 
 Word and OpenDocument text is read as the document stands: tracked insertions are text, tracked deletions are not
