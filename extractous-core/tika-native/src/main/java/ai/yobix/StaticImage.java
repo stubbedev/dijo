@@ -48,4 +48,9 @@ public final class StaticImage {
     static void setMaxHeapBytes(long bytes) {
         RuntimeOptions.set("MaxHeapSize", bytes);
     }
+
+    /** Sets the heap kept at least, as `-XX:MinHeapSize` does where the program starts the VM. */
+    static void setMinHeapBytes(long bytes) {
+        RuntimeOptions.set("MinHeapSize", bytes);
+    }
 }

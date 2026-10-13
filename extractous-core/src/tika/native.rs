@@ -99,6 +99,7 @@ mod static_image {
         let vm = unsafe { JavaVM::from_raw(vm) };
         let properties = system_properties(settings)?;
         let max_heap_bytes = settings.max_heap_bytes.map_or(0, |bytes| bytes.get());
+        let min_heap_bytes = settings.min_heap_bytes();
         vm.attach_current_thread_for_scope(|env| {
             for (key, value) in &properties {
                 let key = jni_new_string(env, key)?;
@@ -122,6 +123,14 @@ mod static_image {
                     &[JValue::Long(max_heap_bytes as i64)],
                 )?;
             }
+            jni_call_static_method(
+                env,
+                STATIC_IMAGE,
+                "setMinHeapBytes",
+                "J",
+                "V",
+                &[JValue::Long(min_heap_bytes as i64)],
+            )?;
             Ok::<_, Error>(())
         })
         .map_err(|e| format!("Failed to configure the Java VM of the static image: {e}"))?;
@@ -233,6 +242,9 @@ mod shared_library {
         let max_heap_option = settings.max_heap_bytes.map(|bytes| {
             CString::new(format!("-XX:MaxHeapSize={bytes}")).expect("a number has no NUL")
         });
+        let min_heap_option =
+            CString::new(format!("-XX:MinHeapSize={}", settings.min_heap_bytes()))
+                .expect("a number has no NUL");
         let property_options = system_properties(settings)?
             .into_iter()
             .map(|(key, value)| {
@@ -243,6 +255,7 @@ mod shared_library {
         let mut vm_options: Vec<sys::JavaVMOption> = [
             Some(library_path_option.as_c_str()),
             max_heap_option.as_deref(),
+            Some(min_heap_option.as_c_str()),
         ]
         .into_iter()
         .flatten()

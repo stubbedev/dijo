@@ -112,6 +112,12 @@
         "parameterTypes": [
           "long"
         ]
+      },
+      {
+        "name": "setMinHeapBytes",
+        "parameterTypes": [
+          "long"
+        ]
       }
     ]
   }

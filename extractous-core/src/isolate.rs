@@ -46,6 +46,19 @@ pub struct IsolateSettings {
     pub max_heap_bytes: Option<NonZeroU64>,
 }
 
+/// The heap the isolate keeps at least: GraalVM CE collects only with its serial collector, which
+/// with its default sizing collects the young generation every few dozen megabytes, a sixth of
+/// the time spent on office documents.
+const MIN_HEAP_BYTES: u64 = 512 << 20;
+
+impl IsolateSettings {
+    /// The heap the isolate keeps at least, which may not exceed the cap.
+    pub(crate) fn min_heap_bytes(&self) -> u64 {
+        self.max_heap_bytes
+            .map_or(MIN_HEAP_BYTES, |max| max.get().min(MIN_HEAP_BYTES))
+    }
+}
+
 static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
 static SETTINGS: OnceLock<IsolateSettings> = OnceLock::new();
 
@@ -87,4 +100,23 @@ pub fn wait_for_extractions(timeout: Duration) -> ExtractResult<bool> {
 /// attaching and detaching each time. Worth it for long-lived worker threads.
 pub fn keep_current_thread_attached() -> ExtractResult<()> {
     isolate()?.vm.attach_current_thread(|_| Ok::<_, Error>(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(max_heap_bytes: Option<u64>) -> IsolateSettings {
+        IsolateSettings {
+            max_heap_bytes: max_heap_bytes.map(|bytes| NonZeroU64::new(bytes).unwrap()),
+            ..IsolateSettings::default()
+        }
+    }
+
+    #[test]
+    fn the_minimum_heap_never_exceeds_the_cap() {
+        assert_eq!(settings(None).min_heap_bytes(), MIN_HEAP_BYTES);
+        assert_eq!(settings(Some(64 << 20)).min_heap_bytes(), 64 << 20);
+        assert_eq!(settings(Some(4 << 30)).min_heap_bytes(), MIN_HEAP_BYTES);
+    }
 }
