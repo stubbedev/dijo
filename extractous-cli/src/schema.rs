@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use extractous_core::Metadata;
@@ -125,12 +126,16 @@ pub fn recorded_failures(metadata: &Metadata) -> Vec<ExtractionError> {
 }
 
 /// Turns a Java stack trace into the `class: message <- caused by class: message` form the rest
-/// of the errors use.
+/// of the errors use. A cause that reads the same as one already listed is left out: Tika
+/// rethrows the same failure once per nested document, hundreds of times for a deeply nested
+/// archive.
 fn summarize_stack_trace(trace: &str) -> String {
+    let mut seen = HashSet::new();
     trace
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with(char::is_whitespace))
         .map(|line| line.strip_prefix("Caused by: ").unwrap_or(line).trim_end())
+        .filter(|cause| seen.insert(*cause))
         .collect::<Vec<_>>()
         .join(" <- caused by ")
 }
@@ -177,6 +182,7 @@ impl ExtractionError {
         } else if message.contains("WriteLimitReachedException")
             || message.contains("java.lang.OutOfMemoryError")
             || message.contains(JAXP_LIMIT)
+            || message.contains("Suspected zip bomb")
         {
             ErrorCategory::LimitExceeded
         } else if message.contains("TimeoutException") || message.contains("timeout") {
@@ -457,6 +463,27 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_rethrown_per_nested_document_is_named_once() {
+        let rethrown = "Caused by: org.apache.tika.sax.TaggedSAXException: Suspected zip bomb\n\
+                        \tat a.b(C.java:1)\n\
+                        Caused by: org.apache.tika.sax.SecureSAXException: Suspected zip bomb\n";
+        let trace = format!(
+            "org.apache.tika.exception.TikaException: TIKA-237\n{}",
+            rethrown.repeat(3)
+        );
+        let failures = recorded_failures(&metadata(&[(
+            "tk:exception:container-exception",
+            &[trace.as_str()],
+        )]));
+        assert_eq!(
+            failures[0].message,
+            "org.apache.tika.exception.TikaException: TIKA-237 <- caused by \
+             org.apache.tika.sax.TaggedSAXException: Suspected zip bomb <- caused by \
+             org.apache.tika.sax.SecureSAXException: Suspected zip bomb"
+        );
+    }
+
+    #[test]
     fn mime_type_drops_parameters() {
         assert_eq!(
             mime_type(&metadata(&[(
@@ -511,6 +538,10 @@ mod tests {
         );
         assert_eq!(
             classify("TikaException: XML parse error <- caused by org.xml.sax.SAXParseException: JAXP00010001: The parser has encountered more than \"20\" entity expansions"),
+            ErrorCategory::LimitExceeded
+        );
+        assert_eq!(
+            classify("TikaException: TIKA-237: Illegal SAXException <- caused by org.apache.tika.sax.TaggedSAXException: Suspected zip bomb: 10 levels of package entry nesting"),
             ErrorCategory::LimitExceeded
         );
         assert_eq!(classify("something else"), ErrorCategory::Internal);

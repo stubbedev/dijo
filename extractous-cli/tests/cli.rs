@@ -5,7 +5,7 @@ use std::process::{Command, Output, Stdio};
 
 mod common;
 
-use common::{document, text_pdf, write_docx, Scratch, DOCUMENTS};
+use common::{document, text_pdf, write_docx, Scratch, StoredZip, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
     extractous_with_stdin(args, None)
@@ -351,6 +351,38 @@ fn a_sqlite_database_is_read_for_its_tables() {
         "{text}"
     );
     assert!(text.contains("Harbour"), "{text}");
+}
+
+#[test]
+fn archives_nested_past_the_limit_stop_there() {
+    let scratch = Scratch::new("nested");
+    let mut archive: Option<Vec<u8>> = None;
+    for level in 1..=10 {
+        let mut zip = StoredZip::new(Cursor::new(Vec::new()));
+        zip.entry(&format!("level{level}.txt"), |out| {
+            write!(out, "Text at nesting level {level}.")
+        })
+        .unwrap();
+        if let Some(inner) = &archive {
+            zip.entry("inner.zip", |out| out.write_all(inner)).unwrap();
+        }
+        archive = Some(zip.finish().unwrap().into_inner());
+    }
+    let path = scratch.0.join("nested.zip");
+    fs::write(&path, archive.unwrap()).unwrap();
+
+    let objects = json_objects(&[path.to_str().unwrap()]);
+    assert_eq!(objects[0]["status"], "partial", "{}", objects[0]);
+    assert!(objects[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Text at nesting level 2."));
+    let errors = objects[0]["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["category"], "limit-exceeded");
+    let message = errors[0]["message"].as_str().unwrap();
+    assert!(message.contains("Suspected zip bomb"), "{message}");
+    assert!(message.len() < 1000, "{message}");
 }
 
 #[test]

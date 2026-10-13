@@ -274,7 +274,7 @@ public class TikaNativeMain {
         final ContentHandler handler;
         final ContentHandler handlerForParser;
         if (asXML) {
-            handler = new WriteOutContentHandler(new ToXMLContentHandler(), maxLength);
+            handler = new WriteOutContentHandler(new WellFormedContentHandler(new ToXMLContentHandler()), maxLength);
             handlerForParser = handler;
         } else {
             handler = new WriteOutContentHandler(maxLength);

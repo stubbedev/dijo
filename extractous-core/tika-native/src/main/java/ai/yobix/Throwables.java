@@ -2,6 +2,7 @@ package ai.yobix;
 
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
@@ -15,20 +16,18 @@ public final class Throwables {
 
     /**
      * Renders a throwable and every cause behind it as "class: message", outermost first,
-     * so callers see why an operation failed and not only its outermost wrapper.
+     * so callers see why an operation failed and not only its outermost wrapper. A cause that
+     * reads the same as one already rendered is left out: Tika rethrows the same failure once
+     * per nested document, hundreds of times for a deeply nested archive.
      */
     public static String describe(Throwable throwable) {
-        final StringBuilder description = new StringBuilder();
         final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<String> rendered = new LinkedHashSet<>();
         for (Throwable t = throwable; t != null && seen.add(t); t = t.getCause()) {
-            if (description.length() > 0) {
-                description.append(" <- caused by ");
-            }
-            description.append(t.getClass().getName());
-            if (t.getMessage() != null) {
-                description.append(": ").append(t.getMessage());
-            }
+            rendered.add(t.getMessage() == null
+                    ? t.getClass().getName()
+                    : t.getClass().getName() + ": " + t.getMessage());
         }
-        return description.toString();
+        return String.join(" <- caused by ", rendered);
     }
 }
