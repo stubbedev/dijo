@@ -1,7 +1,8 @@
 //! `extractous serve` against tika-server of the same Tika version on the same machine, which
 //! `just server-compare` starts and names in TIKA_SERVER_ADDRESS and TIKA_SERVER_PID. Both read
 //! the test documents and the quality corpus with their default OCR, after a warm-up pass, from
-//! one client and from four. COMPARE_ROUNDS sets the passes measured, SERVER_COMPARISON the file
+//! one client and from four; extractous also with English OCR, which skips the script detection
+//! tika-server does not do. COMPARE_ROUNDS sets the passes measured, SERVER_COMPARISON the file
 //! the table is written to.
 
 #![cfg(target_os = "linux")]
@@ -128,6 +129,14 @@ fn extractous_serve_against_tika_server() {
             pid: ours.child.id(),
             method: "POST",
             path: "/extract",
+            headers: &[],
+        },
+        Target {
+            name: "extractous serve, English OCR",
+            address: &ours.address,
+            pid: ours.child.id(),
+            method: "POST",
+            path: "/extract?ocr_lang=eng",
             headers: &[],
         },
         Target {
