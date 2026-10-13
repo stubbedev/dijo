@@ -2884,8 +2884,8 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `commons-io:commons-io` | 2.22.0 | Apache-2.0 |
 | `commons-logging:commons-logging` | 1.4.0 | Apache-2.0 |
 | `info.picocli:picocli` | 4.7.7 | Apache-2.0 |
-| `jakarta.activation:jakarta.activation-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `jakarta.mail:jakarta.mail-api` | 2.1.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `jakarta.activation:jakarta.activation-api` | 2.1.4 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `jakarta.mail:jakarta.mail-api` | 2.1.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.apache.commons:commons-collections4` | 4.6.0 | Apache-2.0 |
 | `org.apache.commons:commons-compress` | 1.28.0 | Apache-2.0 |
 | `org.apache.commons:commons-csv` | 1.14.1 | Apache-2.0 |
@@ -2894,8 +2894,8 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.apache.commons:commons-math3` | 3.6.1 | Apache-2.0 |
 | `org.apache.james:apache-mime4j-core` | 0.8.15 | Apache-2.0 |
 | `org.apache.james:apache-mime4j-dom` | 0.8.15 | Apache-2.0 |
-| `org.apache.logging.log4j:log4j-api` | 2.24.3 | Apache-2.0 |
-| `org.apache.logging.log4j:log4j-to-slf4j` | 2.24.2 | Apache-2.0 |
+| `org.apache.logging.log4j:log4j-api` | 2.26.1 | Apache-2.0 |
+| `org.apache.logging.log4j:log4j-to-slf4j` | 2.26.1 | Apache-2.0 |
 | `org.apache.pdfbox:fontbox` | 3.0.8 | Apache-2.0 |
 | `org.apache.pdfbox:jbig2-imageio` | 3.0.5 | Apache-2.0 |
 | `org.apache.pdfbox:pdfbox-io` | 3.0.8 | Apache-2.0 |
@@ -2944,8 +2944,8 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.commonmark:commonmark-ext-gfm-strikethrough` | 0.30.0 | BSD-2-Clause |
 | `org.commonmark:commonmark-ext-gfm-tables` | 0.30.0 | BSD-2-Clause |
 | `org.commonmark:commonmark` | 0.30.0 | BSD-2-Clause |
-| `org.eclipse.angus:angus-activation` | 2.0.2 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
-| `org.eclipse.angus:angus-mail` | 2.0.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `org.eclipse.angus:angus-activation` | 2.0.3 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
+| `org.eclipse.angus:angus-mail` | 2.0.5 | BSD-3-Clause, EPL-2.0, GPL-2.0-only, GPL-2.0-only WITH Classpath-exception-2.0 |
 | `org.gagravarr:vorbis-java-core` | 0.8 | Apache-2.0 |
 | `org.jdom:jdom2` | 2.0.6.1 | Similar to Apache License but with the acknowledgment clause removed |
 | `org.jsoup:jsoup` | 1.23.2 | MIT |
@@ -2953,7 +2953,7 @@ libtika_native is a GraalVM native image. Besides the libraries below, it contai
 | `org.ow2.asm:asm` | 9.10.1 | Apache-2.0, BSD-3-Clause |
 | `org.slf4j:jcl-over-slf4j` | 2.0.20 | Apache-2.0, MIT |
 | `org.slf4j:slf4j-api` | 2.0.20 | MIT |
-| `org.slf4j:slf4j-nop` | 2.0.16 | MIT |
+| `org.slf4j:slf4j-nop` | 2.0.20 | MIT |
 | `org.tallison:jmatio` | 1.5 | 0BSD |
 | `org.tukaani:xz` | 1.12 | 0BSD |
 | `org.xerial:sqlite-jdbc` | 3.53.4.0 | Apache-2.0 |
@@ -4353,7 +4353,7 @@ Shipped with `jakarta.mail:jakarta.mail-api`:
 
 This content is produced and maintained by the Jakarta Mail project.
 
-* Project home: https://projects.eclipse.org/projects/ee4j.mail
+* Project home: [https://projects.eclipse.org/projects/ee4j.mail](https://projects.eclipse.org/projects/ee4j.mail)
 
 ## Trademarks
 
@@ -4369,11 +4369,11 @@ source code repository logs.
 
 This program and the accompanying materials are made available under the terms
 of the Eclipse Public License v. 2.0 which is available at
-https://www.eclipse.org/legal/epl-2.0. This Source Code may also be made
+[https://www.eclipse.org/legal/epl-2.0](https://www.eclipse.org/legal/epl-2.0). This Source Code may also be made
 available under the following Secondary Licenses when the conditions for such
 availability set forth in the Eclipse Public License v. 2.0 are satisfied:
 (secondary) GPL-2.0 with Classpath-exception-2.0 which is available at
-https://openjdk.java.net/legal/gplv2+ce.html.
+[https://openjdk.java.net/legal/gplv2+ce.html](https://openjdk.java.net/legal/gplv2+ce.html).
 
 SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only with Classpath-exception-2.0
 
@@ -4381,9 +4381,9 @@ SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only with Classpath-exception-2.0
 
 The project maintains the following source code repositories:
 
-* https://github.com/jakartaee/mail-api
-* https://github.com/jakartaee/mail-tck
-* https://github.com/jakartaee/mail-spec
+* [https://github.com/jakartaee/mail-api](https://github.com/jakartaee/mail-api)
+* [https://github.com/jakartaee/mail-tck](https://github.com/jakartaee/mail-tck)
+* [https://github.com/jakartaee/mail-spec](https://github.com/jakartaee/mail-spec)
 
 ## Third-party Content
 
@@ -4416,8 +4416,8 @@ normalize.css (3.0.2)
 SigTest (4.0)
 
 * License: (GPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0)
-* Project: https://wiki.openjdk.java.net/display/CodeTools/sigtest
-* Source: http://hg.openjdk.java.net/code-tools/sigtest/file/c57f97e2ac2f
+* Project: [https://wiki.openjdk.java.net/display/CodeTools/sigtest](https://wiki.openjdk.java.net/display/CodeTools/sigtest)
+* Source: [http://hg.openjdk.java.net/code-tools/sigtest/file/c57f97e2ac2f](http://hg.openjdk.java.net/code-tools/sigtest/file/c57f97e2ac2f)
 
 ## Cryptography
 
@@ -5011,7 +5011,7 @@ Shipped with `org.apache.logging.log4j:log4j-api`:
 
 ````text
 Apache Log4j API
-Copyright 1999-2024 The Apache Software Foundation
+Copyright 1999-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -5022,7 +5022,7 @@ Shipped with `org.apache.logging.log4j:log4j-to-slf4j`:
 
 ````text
 Log4j API to SLF4J Adapter
-Copyright 1999-2024 The Apache Software Foundation
+Copyright 1999-2026 The Apache Software Foundation
 
 
 This product includes software developed at
@@ -8895,36 +8895,10 @@ Apache License
    END OF TERMS AND CONDITIONS
 ````
 
-Shipped with `org.slf4j:slf4j-api`:
+Shipped with `org.slf4j:slf4j-api`, `org.slf4j:slf4j-nop`:
 
 ````text
 Copyright (c) 2004-2023 QOS.ch
-All rights reserved.
-
-Permission is hereby granted, free  of charge, to any person obtaining
-a  copy  of this  software  and  associated  documentation files  (the
-"Software"), to  deal in  the Software without  restriction, including
-without limitation  the rights to  use, copy, modify,  merge, publish,
-distribute,  sublicense, and/or sell  copies of  the Software,  and to
-permit persons to whom the Software  is furnished to do so, subject to
-the following conditions:
-
-The  above  copyright  notice  and  this permission  notice  shall  be
-included in all copies or substantial portions of the Software.
-
-THE  SOFTWARE IS  PROVIDED  "AS  IS", WITHOUT  WARRANTY  OF ANY  KIND,
-EXPRESS OR  IMPLIED, INCLUDING  BUT NOT LIMITED  TO THE  WARRANTIES OF
-MERCHANTABILITY,    FITNESS    FOR    A   PARTICULAR    PURPOSE    AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE,  ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-````
-
-Shipped with `org.slf4j:slf4j-nop`:
-
-````text
-Copyright (c) 2004-2022 QOS.ch Sarl (Switzerland)
 All rights reserved.
 
 Permission is hereby granted, free  of charge, to any person obtaining
