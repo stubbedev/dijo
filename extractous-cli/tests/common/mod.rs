@@ -377,3 +377,49 @@ pub fn documents(dir: &Path) -> Vec<PathBuf> {
     found.sort();
     found
 }
+
+/// The test documents and the quality corpus, by file name.
+pub fn corpus() -> Vec<(String, Vec<u8>)> {
+    let mut found: Vec<PathBuf> = documents(Path::new(DOCUMENTS));
+    found.extend(documents(Path::new("../quality/corpus")));
+    found
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            (name, fs::read(&path).unwrap())
+        })
+        .collect()
+}
+
+/// The resident memory of a process and every process below it, from /proc.
+#[cfg(target_os = "linux")]
+pub fn tree_rss_bytes(pid: u32) -> u64 {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let own = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| {
+            value
+                .trim()
+                .trim_end_matches(" kB")
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .map_or(0, |kib| kib * 1024);
+    let children: u64 = fs::read_dir(format!("/proc/{pid}/task"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|task| {
+            fs::read_to_string(task.path().join("children"))
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter_map(|child| child.parse().ok())
+        .map(tree_rss_bytes)
+        .sum();
+    own + children
+}

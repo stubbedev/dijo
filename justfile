@@ -76,6 +76,26 @@ quality-compare:
     QUALITY_COMPARE="$dir/tools" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
         cargo nextest run --package extractous --test quality
 
+# Load tika-server of the bundled Tika version and `extractous serve` alike on this machine, and
+# write their throughput, latency and memory to target/server-compare/comparison.md.
+[unix]
+server-compare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir={{justfile_directory()}}/target/server-compare
+    server=$(conformance/fetch-tika.sh "$dir" server-standard)
+    version=$(extractous-core/tika-native/tika-version.sh)
+    port=19998
+    java -jar "$server/tika-server-standard-$version.jar" -p "$port" > "$dir/tika-server.log" 2>&1 &
+    pid=$!
+    trap 'kill "$pid"' EXIT
+    until curl --silent --fail --output /dev/null "http://127.0.0.1:$port/tika"; do
+        kill -0 "$pid"
+        sleep 1
+    done
+    TIKA_SERVER_ADDRESS="127.0.0.1:$port" TIKA_SERVER_PID="$pid" SERVER_COMPARISON="$dir/comparison.md" \
+        cargo nextest run --package extractous --cargo-profile release --run-ignored only --test server_compare --no-capture
+
 # Accept the current conformance results as conformance/baseline.json.
 [unix]
 conformance-bless:

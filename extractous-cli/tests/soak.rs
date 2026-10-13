@@ -4,15 +4,15 @@
 mod common;
 
 use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use common::server::Server;
-use common::{documents, mutate, XorShift, DOCUMENTS};
+#[cfg(target_os = "linux")]
+use common::tree_rss_bytes;
+use common::{corpus, mutate, XorShift};
 
 const CLIENTS: usize = 4;
 const DEFAULT_SECONDS: u64 = 120;
@@ -39,39 +39,6 @@ fn seed() -> u64 {
         },
         |seed| seed.parse().expect("SOAK_SEED is a number"),
     )
-}
-
-/// The resident memory of a process and every process below it, from /proc.
-#[cfg(target_os = "linux")]
-fn tree_rss_bytes(pid: u32) -> u64 {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-    let own = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|value| {
-            value
-                .trim()
-                .trim_end_matches(" kB")
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .map_or(0, |kib| kib * 1024);
-    let children: u64 = fs::read_dir(format!("/proc/{pid}/task"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|task| {
-            fs::read_to_string(task.path().join("children"))
-                .unwrap_or_default()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter_map(|child| child.parse().ok())
-        .map(tree_rss_bytes)
-        .sum();
-    own + children
 }
 
 /// What a load run saw: how many requests were answered, and the server's memory, sampled every
@@ -123,25 +90,13 @@ fn load(
     }
 }
 
-fn originals() -> Vec<(String, Vec<u8>)> {
-    let mut found: Vec<PathBuf> = documents(Path::new(DOCUMENTS));
-    found.extend(documents(Path::new("../quality/corpus")));
-    found
-        .into_iter()
-        .map(|path| {
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            (name, fs::read(&path).unwrap())
-        })
-        .collect()
-}
-
 /// Every document, again and again, from four clients: each answers as it did the first time,
 /// and after the first half of the run the server's memory stays level.
 #[test]
 #[ignore = "runs for minutes; run with `just test-soak`"]
 fn a_long_run_answers_alike_and_keeps_its_memory_level() {
     let server = Server::start(&["--workers", &CLIENTS.to_string(), "--timeout", "60"]);
-    let originals = originals();
+    let originals = corpus();
     let first: Mutex<HashMap<String, u16>> = Mutex::new(HashMap::new());
     let run = load(
         &server,
@@ -195,7 +150,7 @@ fn damaged_documents_under_load_are_answered_and_workers_recover() {
         "--timeout",
         "20",
     ]);
-    let originals = originals();
+    let originals = corpus();
     let random = Mutex::new(XorShift(seed));
     let run = load(
         &server,

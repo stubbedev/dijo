@@ -47,11 +47,7 @@ impl Server {
     }
 
     pub fn connect(&self) -> TcpStream {
-        let stream = TcpStream::connect(&self.address).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(120)))
-            .unwrap();
-        stream
+        connect(&self.address)
     }
 
     pub fn request(
@@ -61,10 +57,7 @@ impl Server {
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> Response {
-        let mut stream = self.connect();
-        write_head(&mut stream, method, target, headers, body.len());
-        stream.write_all(body).unwrap();
-        read_response(stream)
+        request(&self.address, method, target, headers, body)
     }
 
     pub fn post_file(&self, target: &str, headers: &[(&str, &str)], name: &str) -> Response {
@@ -78,6 +71,29 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// A connection to a server at `address`, which gives up on an answer after two minutes.
+pub fn connect(address: &str) -> TcpStream {
+    let stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(120)))
+        .unwrap();
+    stream
+}
+
+/// Sends one request to the server at `address`, on a connection of its own.
+pub fn request(
+    address: &str,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Response {
+    let mut stream = connect(address);
+    write_head(&mut stream, method, target, headers, body.len());
+    stream.write_all(body).unwrap();
+    read_response(stream)
 }
 
 pub fn write_head(

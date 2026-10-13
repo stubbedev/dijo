@@ -9,12 +9,11 @@ fi
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 dir=$1
 version=$("$here/../extractous-core/tika-native/tika-version.sh")
-pins=$(awk -v version="$version" '$1 == version { print $2, $3 }' "$here/pins.tsv")
-if [ -z "$pins" ]; then
-    echo "conformance/pins.tsv pins no corpus commit and tika-app checksum for Tika $version" >&2
+commit=$(awk -v version="$version" '$1 == version { print $2 }' "$here/pins.tsv")
+if [ -z "$commit" ]; then
+    echo "conformance/pins.tsv pins no corpus commit for Tika $version" >&2
     exit 1
 fi
-read -r commit _ <<< "$pins"
 mkdir -p "$dir"
 
 repository="$dir/tika-$version"
