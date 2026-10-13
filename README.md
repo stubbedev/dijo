@@ -38,7 +38,8 @@ packages install with tesseract): it is turned upright and read with the install
 Under `--ocr auto`, each PDF page's text layer is checked before it is used. A page with next to no text is OCRed
 as a scan. A page whose text layer is garbage is OCRed and its text replaced. Garbage here means private-use or
 control characters, symbols where letters should be, words mixing alphabets, too few vowels for a language written
-in Latin script, or mostly unmapped glyphs (broken `ToUnicode` maps, custom font encodings). A page that is only
+in Latin script, Arabic words split into one-letter fragments, or mostly unmapped glyphs (broken `ToUnicode` maps,
+custom font encodings). A page that is only
 doubtful is OCRed as well and keeps whichever text reads better. The JSON metadata lists each replaced page and the
 reason under `rejected_text_layers`. Clean pages are never OCRed.
 
@@ -244,12 +245,12 @@ all), spurious text and paragraph order. The test suite fails when a score gets 
 allows, so CI holds every change to it. [`quality/SCOREBOARD.md`](quality/SCOREBOARD.md) has the current scores;
 `just quality` refreshes it, `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
-the JVM alongside: over the documents extracted with default options, extractous recalls 0.989 of the truth's words
-against Tika's 0.852, at a token error rate of 0.042 against 0.190.
+the JVM alongside: over the documents extracted with default options, extractous recalls 0.996 of the truth's words
+against Tika's 0.852, at a token error rate of 0.016 against 0.190.
 
 What it shows today: born-digital Office and OpenDocument files and scans (clean, skewed, rotated, or photographed
-upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end; right-to-left Arabic
-PDFs come out in the wrong word order.
+upside down with an EXIF orientation) extract exactly; PDFs add their bookmark text at the end. An Arabic PDF whose
+text layer splits words where their letters stop joining is read by OCR instead, which still misreads some words.
 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
 lines, estimated from projection profiles. Tesseract's layout analysis loses almost all text from a page skewed by as

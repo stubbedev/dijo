@@ -21,11 +21,11 @@
     "reading_order": 1.0
   },
   "arabic.pdf": {
-    "character_error_rate": 0.7912772585669782,
-    "token_error_rate": 1.6607142857142858,
-    "recall": 0.4642857142857143,
-    "spurious": 0.7425742574257426,
-    "reading_order": 0.5
+    "character_error_rate": 0.14953271028037382,
+    "token_error_rate": 0.16071428571428573,
+    "recall": 0.8928571428571429,
+    "spurious": 0.0,
+    "reading_order": 1.0
   },
   "chinese-gb18030.txt": {
     "character_error_rate": 0.0,

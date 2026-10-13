@@ -168,7 +168,7 @@
                     "minimum": 1
                   },
                   "fault": {
-                    "enum": ["no-text", "invalid-characters", "unmapped-glyphs", "symbols", "mixed-scripts", "too-few-vowels"]
+                    "enum": ["no-text", "invalid-characters", "unmapped-glyphs", "symbols", "mixed-scripts", "too-few-vowels", "fragmented-words"]
                   }
                 }
               }

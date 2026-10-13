@@ -1214,26 +1214,41 @@ fn a_worker_memory_limit_needs_process_isolation() {
     assert!(stderr(&output).contains("--worker-max-rss-bytes requires --isolation process"));
 }
 
-#[test]
-fn a_garbage_pdf_text_layer_is_replaced_by_ocr() {
-    let broken = "../quality/corpus/prose-broken-offset.pdf";
-    let objects = json_objects(&[broken]);
+fn assert_text_layer_replaced(pdf: &str, fault: &str, ocr_text: &str, layer_text: &str) {
+    let objects = json_objects(&[pdf]);
     let document = &objects[0];
     assert_matches_schema(document);
     assert!(
-        document["text"]
-            .as_str()
-            .unwrap()
-            .contains("Every evening at dusk the keeper climbed"),
+        document["text"].as_str().unwrap().contains(ocr_text),
         "{document}"
     );
     assert_eq!(
         document["metadata"]["rejected_text_layers"],
-        serde_json::json!([{ "page": 1, "fault": "too-few-vowels" }])
+        serde_json::json!([{ "page": 1, "fault": fault }])
     );
 
-    let kept = stdout(&extractous(&["--ocr", "never", broken]));
-    assert!(kept.contains("7KH /LJKWKRXVH"), "{kept}");
+    let kept = stdout(&extractous(&["--ocr", "never", pdf]));
+    assert!(kept.contains(layer_text), "{kept}");
+}
+
+#[test]
+fn a_garbage_pdf_text_layer_is_replaced_by_ocr() {
+    assert_text_layer_replaced(
+        "../quality/corpus/prose-broken-offset.pdf",
+        "too-few-vowels",
+        "Every evening at dusk the keeper climbed",
+        "7KH /LJKWKRXVH",
+    );
+}
+
+#[test]
+fn a_text_layer_splitting_arabic_words_is_replaced_by_ocr() {
+    assert_text_layer_replaced(
+        "../quality/corpus/arabic.pdf",
+        "fragmented-words",
+        "كان الحارس يصعد درج البرج كل مساء",
+        "يصعد درج الب",
+    );
 }
 
 #[test]

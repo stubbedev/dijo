@@ -17,7 +17,7 @@ The quality corpus extracted by extractous and by tika-app of the same Tika vers
 | report.docx | headers-footers | 0.006 / 0.006 | 0.006 / 0.006 | 1.000 / 1.000 | 0.005 / 0.005 |
 | german.pdf | script | 0.065 / 0.065 | 0.052 / 0.052 | 1.000 / 1.000 | 0.049 / 0.049 |
 | german.docx | script | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
-| arabic.pdf | script | 0.791 / 0.838 | 1.661 / 1.000 | 0.464 / 0.054 | 0.743 / 0.946 |
+| arabic.pdf | script | 0.150 / 0.838 | 0.161 / 1.000 | 0.893 / 0.054 | 0.000 / 0.946 |
 | arabic.docx | script | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
 | hebrew.pdf | script | 0.100 / 0.100 | 0.061 / 0.061 | 1.000 / 1.000 | 0.058 / 0.058 |
 | hebrew.docx | script | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
@@ -62,4 +62,4 @@ The quality corpus extracted by extractous and by tika-app of the same Tika vers
 | polish-iso-8859-2.txt | legacy-encoding | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
 | czech-cp1250.txt | legacy-encoding | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
 | turkish-cp1254.txt | legacy-encoding | 0.000 / 0.000 | 0.000 / 0.000 | 1.000 / 1.000 | 0.000 / 0.000 |
-| **Mean** | | 0.029 / 0.170 | 0.042 / 0.190 | 0.989 / 0.852 | 0.023 / 0.119 |
+| **Mean** | | 0.018 / 0.170 | 0.016 / 0.190 | 0.996 / 0.852 | 0.010 / 0.119 |

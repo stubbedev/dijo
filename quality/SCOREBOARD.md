@@ -14,7 +14,7 @@
 | report.pdf --format pages | headers-footers | 0.006 | 0.007 | 1.000 | 0.007 | 1.000 |
 | german.pdf | script | 0.065 | 0.052 | 1.000 | 0.049 | 1.000 |
 | german.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| arabic.pdf | script | 0.791 | 1.661 | 0.464 | 0.743 | 0.500 |
+| arabic.pdf | script | 0.150 | 0.161 | 0.893 | 0.000 | 1.000 |
 | arabic.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hebrew.pdf | script | 0.100 | 0.061 | 1.000 | 0.058 | 1.000 |
 | hebrew.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

@@ -253,6 +253,7 @@ pub enum TextLayerFault {
     Symbols,
     MixedScripts,
     TooFewVowels,
+    FragmentedWords,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

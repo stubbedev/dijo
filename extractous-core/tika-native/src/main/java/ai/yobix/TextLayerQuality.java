@@ -8,8 +8,10 @@ import java.util.Set;
 /**
  * Judges the text a PDF page's text layer yields, from signals cheap enough to compute for every
  * page: glyphs that map to no character, characters no real text contains, symbols where letters
- * should be, words mixing alphabets, and Latin letters with too few vowels among them (vowels are
- * a third or more of the letters in any language written in Latin script). Each signal is scaled
+ * should be, words mixing alphabets, Latin letters with too few vowels among them (vowels are
+ * a third or more of the letters in any language written in Latin script), and Arabic words broken
+ * into fragments (Arabic writes its one-letter words joined to the next, so a layer that splits
+ * words where their letters stop joining shows many). Each signal is scaled
  * so that 1 means garbage; the page's badness is the worst of them. Unmapped glyphs count only
  * from their limit on: below it they are as likely lost ligatures of intact text (whole Devanagari
  * or Thai clusters map to their first glyph) as lost text.
@@ -26,9 +28,11 @@ final class TextLayerQuality {
     private static final double MIXED_SCRIPT_SHARE = 0.3;
     private static final double NATURAL_VOWEL_SHARE = 0.32;
     private static final double GARBAGE_VOWEL_SHARE = 0.16;
+    private static final double ONE_LETTER_ARABIC_SHARE = 0.3;
     private static final int MIN_SAMPLE_CHARACTERS = 20;
     private static final int MIN_SAMPLE_WORDS = 10;
     private static final int MIN_SAMPLE_LATIN_LETTERS = 50;
+    private static final int MIN_SAMPLE_ARABIC_WORDS = 20;
     private static final Set<UnicodeScript> CASED_ALPHABETS =
             EnumSet.of(UnicodeScript.LATIN, UnicodeScript.GREEK, UnicodeScript.CYRILLIC);
     private static final String SYMBOL_PUNCTUATION = "#%&*@\\_";
@@ -83,6 +87,10 @@ final class TextLayerQuality {
             assessment = assessment.worst((NATURAL_VOWEL_SHARE - vowelShare)
                     / (NATURAL_VOWEL_SHARE - GARBAGE_VOWEL_SHARE), "too-few-vowels");
         }
+        if (counts.arabicWords >= MIN_SAMPLE_ARABIC_WORDS) {
+            assessment = assessment.worst((double) counts.oneLetterArabicWords
+                    / counts.arabicWords / ONE_LETTER_ARABIC_SHARE, "fragmented-words");
+        }
         return assessment;
     }
 
@@ -96,6 +104,8 @@ final class TextLayerQuality {
         int mixedScriptWords;
         int latinLetters;
         int latinVowels;
+        int arabicWords;
+        int oneLetterArabicWords;
     }
 
     private static Counts count(CharSequence text) {
@@ -169,6 +179,7 @@ final class TextLayerQuality {
         }
         final Set<UnicodeScript> alphabets = EnumSet.noneOf(UnicodeScript.class);
         int letters = 0;
+        boolean arabic = false;
         for (int index = 0; index < word.length(); ) {
             final int codePoint = Character.codePointAt(word, index);
             index += Character.charCount(codePoint);
@@ -179,6 +190,13 @@ final class TextLayerQuality {
             final UnicodeScript script = UnicodeScript.of(codePoint);
             if (CASED_ALPHABETS.contains(script)) {
                 alphabets.add(script);
+            }
+            arabic |= script == UnicodeScript.ARABIC;
+        }
+        if (arabic) {
+            counts.arabicWords++;
+            if (letters == 1) {
+                counts.oneLetterArabicWords++;
             }
         }
         if (letters < 2 || alphabets.isEmpty()) {
