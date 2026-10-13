@@ -1,8 +1,10 @@
 package ai.yobix;
 
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.exception.UnsupportedFormatException;
 import org.apache.tika.io.TemporaryResources;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.HttpHeaders;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TIFF;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -28,6 +30,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Set;
@@ -37,7 +40,8 @@ import java.util.Set;
  * readable first, turned upright by their EXIF orientation and by the skew of their text lines,
  * and enlarged when their text is too small. Images that need none of this go to tesseract
  * untouched, as do images too large to decode safely and images Java cannot decode (tesseract
- * reads more formats than ImageIO). Each page of a multi-page TIFF is prepared and read on its
+ * reads more formats than ImageIO, WebP among them). HEIC, HEIF and AVIF images, which neither
+ * can decode, are reported as unread rather than passed off as images without text. Each page of a multi-page TIFF is prepared and read on its
  * own, and becomes a page of the output.
  * <p>
  * With the automatic OCR language ({@link OcrConfig}), tesseract's orientation and script
@@ -48,6 +52,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
 
     private static final long MAX_PIXELS = 60_000_000L;
     private static final Set<String> PAGED_FORMATS = Set.of("tif", "tiff");
+    private static final Set<MediaType> UNDECODABLE = Set.of(
+            MediaType.image("heic"), MediaType.image("heic-sequence"), MediaType.image("heif"),
+            MediaType.image("heif-sequence"), MediaType.image("avif"));
 
     private final TesseractOCRParser ocr;
     private final String tesseract;
@@ -60,7 +67,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
 
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
-        return ocr.getSupportedTypes(context);
+        final Set<MediaType> types = new HashSet<>(ocr.getSupportedTypes(context));
+        types.add(WebpParser.WEBP);
+        types.addAll(UNDECODABLE);
+        return types;
     }
 
     @Override
@@ -74,6 +84,13 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         final TesseractOCRConfig configured = context.get(TesseractOCRConfig.class);
         if (configured != null && configured.isSkipOcr()) {
             ocr.parse(stream, handler, metadata, context);
+            return;
+        }
+        final MediaType type = MediaType.parse(metadata.get(HttpHeaders.CONTENT_TYPE));
+        if (type != null && UNDECODABLE.contains(type.getBaseType())) {
+            metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
+                    new UnsupportedFormatException("The " + type.getBaseType() + " image was not "
+                            + "read for text: no decoder for it is available to OCR").toString());
             return;
         }
         final OcrConfig auto = configured instanceof OcrConfig config && config.isAutoLanguage()

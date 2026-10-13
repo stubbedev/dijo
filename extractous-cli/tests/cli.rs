@@ -1364,6 +1364,26 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
 }
 
 #[test]
+fn an_image_no_decoder_reads_is_reported_rather_than_passed_off_as_empty() {
+    let photo = document("photo.heic");
+    let objects = json_objects(&[&photo]);
+    let read = &objects[0];
+    assert_matches_schema(read);
+    assert_eq!(read["status"], "failed", "{read}");
+    assert_eq!(read["errors"][0]["category"], "unsupported", "{read}");
+    assert!(
+        read["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("image/heic"),
+        "{read}"
+    );
+
+    let skipped = json_objects(&["--ocr", "never", &photo]);
+    assert_eq!(skipped[0]["status"], "complete", "{}", skipped[0]);
+}
+
+#[test]
 fn a_clean_pdf_text_layer_is_kept() {
     let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
     for document in &objects {

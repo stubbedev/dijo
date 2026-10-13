@@ -163,6 +163,7 @@ magick "$work/scan-300.png" -colorspace Gray -background white -rotate 2.5 -dept
 magick "$work/scan-300.png" -colorspace Gray -rotate 90 -depth 8 "$corpus/prose-scan-rotated.png"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -density 300 -compress jpeg -quality 85 "$corpus/prose-scan.pdf"
 magick "$work/scan-300.png" -colorspace Gray -negate -depth 8 "$corpus/prose-scan-inverted.png"
+magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.webp"
 magick "$work/scan-300.png" -colorspace Gray \( -size 2480x3508 radial-gradient:white-gray20 \) -compose multiply \
     -composite -depth 8 "$corpus/prose-scan-shadow.png"
 pdftoppm -r 72 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-72"

@@ -92,6 +92,7 @@ public class TikaNativeMain {
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
                 new SubtitleParser(), new NotebookParser(), new FictionBookParser(),
                 new IworkArchiveParser(), new HwpxParser(), new DjvuParser(),
+                new WebpParser(parsers.get(WebpParser.WEBP)),
                 new MobiParser(parsers.get(MediaType.text("html"))),
                 new EmlxParser(parsers.get(MediaType.parse("message/rfc822")))));
         final TesseractOCRParser tesseract = tesseract(defaults);
@@ -103,8 +104,10 @@ public class TikaNativeMain {
                     parsers.get(MediaType.application("pdf")));
             replacements.add(new TextLayerCheckingPdfParser(pdf, preparingOcr));
         }
-        injectTextRecognizers(defaults, new CompositeContentEnricher(recognizers));
+        final CompositeContentEnricher enrichers = new CompositeContentEnricher(recognizers);
+        injectTextRecognizers(defaults, enrichers);
         for (final Parser replacement : replacements) {
+            injectTextRecognizers(replacement, enrichers);
             for (final MediaType type : replacement.getSupportedTypes(new ParseContext())) {
                 parsers.put(type, replacement);
             }
