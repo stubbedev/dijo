@@ -536,7 +536,7 @@ fn a_worker_process_over_its_memory_limit_is_stopped() {
 }
 
 /// Sends `head` as it is, from a thread of its own, and returns the status line the server
-/// answers it with, or None when the server reset the connection before it could be read.
+/// answers it with, or None when the server reset the connection before all of it could be read.
 fn raw_status_line(server: &Server, head: Vec<u8>) -> Option<String> {
     let mut stream = server.connect();
     let mut writer = stream.try_clone().unwrap();
@@ -553,8 +553,8 @@ fn raw_status_line(server: &Server, head: Vec<u8>) -> Option<String> {
     }
     let _ = stream.shutdown(std::net::Shutdown::Both);
     writing.join().unwrap();
-    let line = String::from_utf8(line).unwrap();
-    (!line.is_empty()).then(|| line.trim_end().to_string())
+    let complete = line.ends_with(b"\r\n");
+    complete.then(|| String::from_utf8(line).unwrap().trim_end().to_string())
 }
 
 #[test]
