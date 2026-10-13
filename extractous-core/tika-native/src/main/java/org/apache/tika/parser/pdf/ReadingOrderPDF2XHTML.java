@@ -1,5 +1,6 @@
 package org.apache.tika.parser.pdf;
 
+import ai.yobix.PdfConfig;
 import ai.yobix.ReadingOrder;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.TextPosition;
@@ -17,16 +18,19 @@ import java.util.List;
 
 /**
  * Tika's writer of untagged PDF text, with each page's glyphs put into {@link ReadingOrder}
- * before PDFBox assembles them into lines and paragraphs. It lives in Tika's package because
- * Tika's writer and the types it takes are package-private.
+ * before PDFBox assembles them into lines and paragraphs, when the {@link PdfConfig} asks for it.
+ * It lives in Tika's package because Tika's writer and the types it takes are package-private.
  */
 final class ReadingOrderPDF2XHTML extends PDF2XHTML {
+
+    private final boolean readingOrder;
 
     private ReadingOrderPDF2XHTML(PDDocument document, ContentHandler handler,
                                   ParseContext context, Metadata metadata,
                                   PDFParserConfig config, PagesConfig pages, PageEmitter emitter,
                                   CompositeContentEnricher contentEnrichers) throws IOException {
         super(document, handler, context, metadata, config, pages, emitter, contentEnrichers);
+        readingOrder = config instanceof PdfConfig pdf && pdf.isReadingOrder();
     }
 
     /** Tika's {@code PDF2XHTML.process}, writing with this writer. */
@@ -56,8 +60,10 @@ final class ReadingOrderPDF2XHTML extends PDF2XHTML {
 
     @Override
     protected void writePage() throws IOException {
-        for (final List<TextPosition> article : charactersByArticle) {
-            ReadingOrder.arrange(article);
+        if (readingOrder) {
+            for (final List<TextPosition> article : charactersByArticle) {
+                ReadingOrder.arrange(article);
+            }
         }
         super.writePage();
     }

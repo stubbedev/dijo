@@ -31,6 +31,9 @@ pub enum Step {
     /// Join a word hyphenated across a line break, dropping the hyphen unless the text before
     /// shows the word is a hyphenated compound.
     Hyphenation,
+    /// Read an untagged PDF page in reading order (columns, then by position) rather than in
+    /// the order its content stream draws the text.
+    ReadingOrder,
 }
 
 impl Step {
@@ -51,7 +54,8 @@ impl Steps {
             | Step::Unicode.bit()
             | Step::Whitespace.bit()
             | Step::Headers.bit()
-            | Step::Hyphenation.bit(),
+            | Step::Hyphenation.bit()
+            | Step::ReadingOrder.bit(),
     );
     pub const NONE: Steps = Steps(0);
 

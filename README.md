@@ -59,7 +59,7 @@ extractous detect mystery.bin                 # application/pdf
 | --- | --- |
 | `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), Tika XHTML, one JSON object per input, or one JSON line per page or per element |
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
-| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers`, `hyphenation` |
+| `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers`, `hyphenation`, `reading-order` |
 | `--raw` | No normalisation at all: the text exactly as Tika extracted it |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
@@ -255,7 +255,8 @@ text layer splits words where their letters stop joining is read by OCR instead,
 An untagged PDF page is read in reading order, not in the order its content stream draws the text: columns left to
 right (right to left on a page of right-to-left text), a title before the columns it spans, a block above the blocks
 below it. A page drawn in reading order already keeps its order, and so does a page with text in more than one
-direction. Tagged PDFs are read in the order of their structure tree.
+direction. Tagged PDFs are read in the order of their structure tree. This is the `reading-order` normalisation step,
+so `--no-normalize reading-order`, `--raw` and XHTML output keep the content stream order.
 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
 lines, estimated from projection profiles. Tesseract's layout analysis loses almost all text from a page skewed by as

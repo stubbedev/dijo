@@ -34,6 +34,12 @@ impl RenderOptions {
             Format::Text | Format::Json => self.normalization.contains(Step::Headers),
         }
     }
+
+    /// Whether untagged PDF pages are read in reading order: for every format that is
+    /// normalised, which XHTML never is.
+    pub fn reads_in_reading_order(self) -> bool {
+        self.format != Format::Xhtml && self.normalization.contains(Step::ReadingOrder)
+    }
 }
 
 /// Where a part sits in its document, and the page furniture taken out of its text.

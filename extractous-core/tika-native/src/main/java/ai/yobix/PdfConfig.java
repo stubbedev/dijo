@@ -26,6 +26,17 @@ public final class PdfConfig extends PDFParserConfig {
     private static final float FASTER_UNMAPPED = 0.1f;
     private static final int DEFAULT_TOTAL_CHARACTERS = 10;
 
+    private boolean readingOrder = true;
+
+    /** Whether untagged pages are read in {@link ReadingOrder}, not content stream order. */
+    public boolean isReadingOrder() {
+        return readingOrder;
+    }
+
+    public void setReadingOrder(boolean readingOrder) {
+        this.readingOrder = readingOrder;
+    }
+
     /** Sets where page text comes from: NO_OCR, AUTO, OCR_ONLY or OCR_AND_TEXT_EXTRACTION. */
     public void setOcrStrategy(String strategy) {
         final TextPolicy text = STRATEGIES.get(strategy);

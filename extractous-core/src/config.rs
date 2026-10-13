@@ -105,6 +105,12 @@ tika_config! {
         /// page's glyphs with `%`), or at most `characters` characters.
         set_ocr_strategy_auto(ocr_strategy_auto: String) => "setOcrStrategyAuto",
 
+        /// Whether an untagged PDF page is read in reading order: columns left to right (right to
+        /// left on a page of right-to-left text), a title before the columns it spans, a block
+        /// above the blocks below it, rather than in the order its content stream draws the
+        /// text. Not a Tika setting: unless set, pages are read in reading order.
+        set_reading_order(reading_order: bool) => "setReadingOrder",
+
         /// If true, extract the literal inline embedded OBXImages. Beware: some PDF documents of
         /// modest size (~4MB) can contain thousands of embedded images totaling > 2.5 GB.
         /// Also, there can be surprisingly large memory consumption

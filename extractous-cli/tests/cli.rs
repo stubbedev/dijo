@@ -1252,6 +1252,29 @@ fn a_text_layer_splitting_arabic_words_is_replaced_by_ocr() {
 }
 
 #[test]
+fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
+    let pdf = "../quality/corpus/prose-columns-reversed.pdf";
+    let title = "The Lighthouse Keeper's Ledger";
+    let left = "Every evening at dusk the keeper climbed";
+    let right = "that no ships passed. The next morning,";
+    let position = |text: &str, line: &str| text.find(line).unwrap();
+
+    let read = stdout(&extractous(&["--ocr", "never", pdf]));
+    assert!(position(&read, title) < position(&read, left), "{read}");
+    assert!(position(&read, left) < position(&read, right), "{read}");
+
+    for args in [
+        &["--ocr", "never", "--no-normalize", "reading-order", pdf][..],
+        &["--ocr", "never", "--raw", pdf],
+        &["--ocr", "never", "--format", "xhtml", pdf],
+    ] {
+        let drawn = stdout(&extractous(args));
+        assert!(position(&drawn, right) < position(&drawn, left), "{args:?}");
+        assert!(position(&drawn, left) < position(&drawn, title), "{args:?}");
+    }
+}
+
+#[test]
 fn a_clean_pdf_text_layer_is_kept() {
     let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
     for document in &objects {
