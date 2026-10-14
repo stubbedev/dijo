@@ -1603,10 +1603,10 @@
     "reading_order": 1.0
   },
   "table.xlsx": {
-    "character_error_rate": 0.1678832116788321,
-    "token_error_rate": 0.15625,
+    "character_error_rate": 0.08029197080291971,
+    "token_error_rate": 0.0625,
     "recall": 1.0,
-    "spurious": 0.13513513513513514,
+    "spurious": 0.058823529411764705,
     "reading_order": 1.0
   },
   "thai-cp874.txt": {
