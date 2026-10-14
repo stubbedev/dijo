@@ -39,9 +39,10 @@ compiled for musl as a static library and linked into Tika's native image, whose
 JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked. Nothing is
 unpacked but the OCR language data. Its output is the same as the other Linux build's. Tika runs equally fast; on many
 small files, where the Rust side dominates, it is about 5% slower (it allocates with mimalloc rather than glibc's
-allocator); OCR is 20 to 35% faster, since each model is loaded once per process instead of once per image (more for
-documents with many small images) and script detection skips a page segmentation it would discard, at the cost of
-keeping the loaded models in memory: about 280 MB for `script/Latin` per extraction running at once. GraalVM ships no musl libraries for aarch64, so there is no static
+allocator); OCR is 30 to 40% faster, since each model is loaded once per process instead of once per image (more for
+documents with many small images), script detection skips a page segmentation it would discard, and tesseract
+allocates with mimalloc too, at the cost of keeping the loaded models in memory: about 280 MB for `script/Latin` per
+extraction running at once. GraalVM ships no musl libraries for aarch64, so there is no static
 aarch64 build. `just static` builds it on Linux into `target/static-image/extractous`, with nix providing the musl
 toolchain.
 
