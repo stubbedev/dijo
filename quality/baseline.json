@@ -56,11 +56,11 @@
     "reading_order": 1.0
   },
   "armenian-scan.png": {
-    "character_error_rate": 0.060191518467852256,
-    "token_error_rate": 0.3063583815028902,
-    "recall": 0.6936416184971098,
-    "spurious": 0.3063583815028902,
-    "reading_order": 0.3333333333333333
+    "character_error_rate": 0.03625170998632011,
+    "token_error_rate": 0.2138728323699422,
+    "recall": 0.7861271676300579,
+    "spurious": 0.2138728323699422,
+    "reading_order": 0.5555555555555556
   },
   "armenian.docx": {
     "character_error_rate": 0.0,

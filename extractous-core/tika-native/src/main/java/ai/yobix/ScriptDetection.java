@@ -39,7 +39,7 @@ final class ScriptDetection {
             Map.entry("Gujarati", "guj"),
             Map.entry("Gurmukhi", "pan"),
             Map.entry("Georgian", "kat"),
-            Map.entry("Armenian", "hye"),
+            Map.entry("Armenian", "script/Armenian"),
             Map.entry("Ethiopic", "amh"),
             Map.entry("Khmer", "khm"),
             Map.entry("Lao", "lao"),

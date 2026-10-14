@@ -172,7 +172,7 @@
 | ukrainian.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | albanian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| armenian-scan.png | ocr | 0.060 | 0.306 | 0.694 | 0.306 | 0.333 |
+| armenian-scan.png | ocr | 0.036 | 0.214 | 0.786 | 0.214 | 0.556 |
 | azerbaijani-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | belarusian-scan.png | ocr | 0.003 | 0.049 | 0.976 | 0.048 | 1.000 |
 | bosnian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
