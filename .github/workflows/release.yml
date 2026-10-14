@@ -4,7 +4,7 @@ on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [.github/workflows/release.yml, Dockerfile, ci/**]
+    paths: [.github/workflows/release.yml, .github/actions/**, Dockerfile, ci/**]
   workflow_dispatch:
 
 permissions:
@@ -54,26 +54,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         if: runner.os == 'Linux'
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: vcpkg-cache
-        if: runner.os != 'Linux'
-        with:
-          path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-${{ matrix.target }}-${{ hashFiles('ci/vcpkg.env', 'ci/tesseract-vcpkg.sh') }}
-      - name: Bundle tesseract and its language data
+      - uses: ./.github/actions/ocr-bundle
+        id: ocr
+      - name: Embed the OCR bundle
         env:
-          VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
-        run: |
-          temp=$RUNNER_TEMP
-          if [ "${{ runner.os }}" = Windows ]; then temp=$(cygpath --unix "$RUNNER_TEMP"); fi
-          mkdir -p "$temp/vcpkg-cache"
-          ci/ocr-bundle.sh "$temp/ocr-bundle"
-          echo "EXTRACTOUS_OCR_BUNDLE=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_ENV"
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: runner.os != 'Linux' && steps.vcpkg-cache.outputs.cache-hit != 'true'
-        with:
-          path: ${{ runner.temp }}/vcpkg-cache
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+          BUNDLE: ${{ steps.ocr.outputs.dir }}
+        run: echo "EXTRACTOUS_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
       - name: Build
         if: runner.os != 'Windows'
         run: cargo build --release --locked --package extractous
@@ -168,10 +154,12 @@ jobs:
         env:
           GRAALVM_PLATFORM: ${{ matrix.graalvm }}
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      - name: Bundle tesseract and its language data
-        run: |
-          ci/ocr-bundle.sh "$RUNNER_TEMP/ocr-bundle"
-          echo "EXTRACTOUS_OCR_BUNDLE=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/ocr-bundle
+        id: ocr
+      - name: Embed the OCR bundle
+        env:
+          BUNDLE: ${{ steps.ocr.outputs.dir }}
+        run: echo "EXTRACTOUS_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
       - name: Build
         run: ci/static-image.sh target/static-image/extractous
       - name: Check that it is statically linked

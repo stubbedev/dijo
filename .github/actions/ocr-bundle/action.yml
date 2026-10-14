@@ -1,0 +1,33 @@
+name: OCR bundle
+description: >
+  Assembles ci/ocr-bundle.sh's statically linked tesseract, its language data and their licences,
+  keeping vcpkg's binary cache between runs on macOS and Windows. Linux needs nix installed first.
+outputs:
+  dir:
+    description: The bundle's directory
+    value: ${{ steps.bundle.outputs.dir }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: vcpkg-cache
+      if: runner.os != 'Linux'
+      with:
+        path: ${{ runner.temp }}/vcpkg-cache
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/vcpkg.env', 'ci/tesseract-vcpkg.sh') }}
+    - id: bundle
+      shell: bash
+      run: |
+        temp=$RUNNER_TEMP
+        if [ "$RUNNER_OS" = Windows ]; then temp=$(cygpath --unix "$RUNNER_TEMP"); fi
+        if [ "$RUNNER_OS" != Linux ]; then
+          export VCPKG_DEFAULT_BINARY_CACHE="$RUNNER_TEMP/vcpkg-cache"
+          mkdir -p "$temp/vcpkg-cache"
+        fi
+        ci/ocr-bundle.sh "$temp/ocr-bundle"
+        echo "dir=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: runner.os != 'Linux' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ runner.temp }}/vcpkg-cache
+        key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
