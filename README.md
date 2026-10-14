@@ -275,7 +275,9 @@ text output each embedded document starts with a `=== path ===` line. Exceeding 
 
 `quality/` holds a corpus generated from known text (`quality/truth`): the same documents as ODT, DOCX, DOC, RTF, PDF,
 HTML and EPUB, two-column PDFs (one drawn right column first), a report with running headers and footers, Arabic,
-Hebrew, Chinese, Japanese (also written vertically), Thai, Hindi and German documents, tables, Word and OpenDocument
+Hebrew, Chinese, Japanese (also written vertically), Thai and Hindi documents, a PDF, a DOCX and a 300 dpi scan in
+each national language of Europe (and Armenian, Georgian and Azerbaijani), plain text in the legacy encodings each of
+them was written in (Windows code pages, ISO 8859, KOI8), tables, Word and OpenDocument
 files with tracked changes, a comment and hidden text, a document with a footnote, a sidebar and a captioned table, a
 PDF hyphenated by TeX, PDFs with broken text layers, and scans at 300 and 150 dpi, skewed and rotated. Every extraction
 is scored against its truth: character and token error rate, recall (the share of the truth's words that were extracted
@@ -285,8 +287,10 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.760, Kreuzberg 0.641 and Docling 0.623, at
-a token error rate of 0.010 against 0.294, 0.470 and 0.433. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.988 of the truth's words, Tika 0.847, Kreuzberg 0.741 and Docling 0.748, at
+a token error rate of 0.015 against 0.200, 0.332 and 0.275. Tika scores better on no document of a European language;
+of all the corpus, only on a two-column PDF, where it keeps a line-end hyphen that extractous joins, and on a
+Georgian scan that both misread, since orientation and script detection takes it for Malayalam. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or

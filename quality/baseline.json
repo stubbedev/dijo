@@ -1,4 +1,32 @@
 {
+  "albanian-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "albanian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "albanian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "albanian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "arabic-cp1256.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -24,6 +52,153 @@
     "character_error_rate": 0.17757009345794392,
     "token_error_rate": 0.16071428571428573,
     "recall": 0.8392857142857143,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "armenian-scan.png": {
+    "character_error_rate": 0.9890560875512996,
+    "token_error_rate": 1.0,
+    "recall": 0.0,
+    "spurious": 1.0,
+    "reading_order": 0.0
+  },
+  "armenian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "armenian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "azerbaijani-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "azerbaijani.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "azerbaijani.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "belarusian-scan.png": {
+    "character_error_rate": 0.0041293874741913286,
+    "token_error_rate": 0.05853658536585366,
+    "recall": 0.9707317073170731,
+    "spurious": 0.04784688995215311,
+    "reading_order": 1.0
+  },
+  "belarusian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "belarusian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bosnian-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bosnian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bosnian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bosnian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bulgarian-cp1251.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bulgarian-scan.png": {
+    "character_error_rate": 0.0007267441860465116,
+    "token_error_rate": 0.009345794392523364,
+    "recall": 0.9906542056074766,
+    "spurious": 0.004694835680751174,
+    "reading_order": 0.8571428571428571
+  },
+  "bulgarian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "bulgarian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "catalan-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "catalan-scan.png": {
+    "character_error_rate": 0.007512520868113523,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "catalan.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "catalan.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
   },
@@ -55,6 +230,34 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "croatian-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "croatian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "croatian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "croatian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "czech-cp1250.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -63,6 +266,34 @@
     "reading_order": 1.0
   },
   "czech-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "czech.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "czech.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "danish-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "danish-iso-8859-1.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
@@ -84,6 +315,188 @@
     "reading_order": 1.0
   },
   "danish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "dutch-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "dutch-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "dutch.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "dutch.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "estonian-cp1257.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "estonian-iso-8859-15.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "estonian-scan.png": {
+    "character_error_rate": 0.0020174848688634837,
+    "token_error_rate": 0.015706806282722512,
+    "recall": 0.9842931937172775,
+    "spurious": 0.015706806282722512,
+    "reading_order": 1.0
+  },
+  "estonian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "estonian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "faroese-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "faroese-scan.png": {
+    "character_error_rate": 0.0007535795026375283,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "faroese.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "faroese.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "finnish-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "finnish-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "finnish.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "finnish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "french-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "french-scan.png": {
+    "character_error_rate": 0.011673151750972763,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "french.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "french.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "georgian-scan.png": {
+    "character_error_rate": 0.9827700463883366,
+    "token_error_rate": 1.1144578313253013,
+    "recall": 0.0,
+    "spurious": 1.0,
+    "reading_order": 0.0
+  },
+  "georgian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "georgian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "german-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "german-iso-8859-1.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
@@ -125,6 +538,20 @@
     "spurious": 0.05263157894736842,
     "reading_order": 1.0
   },
+  "greek.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "greek.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "hebrew-cp1255.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -160,6 +587,41 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "hungarian-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "hungarian-iso-8859-2.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "hungarian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "hungarian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "hungarian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "hyphenated.pdf": {
     "character_error_rate": 0.001195457262402869,
     "token_error_rate": 0.006172839506172839,
@@ -172,6 +634,90 @@
     "token_error_rate": 0.29012345679012347,
     "recall": 0.8580246913580247,
     "spurious": 0.25268817204301075,
+    "reading_order": 1.0
+  },
+  "icelandic-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "icelandic-scan.png": {
+    "character_error_rate": 0.0007886435331230284,
+    "token_error_rate": 0.005050505050505051,
+    "recall": 0.9949494949494949,
+    "spurious": 0.005050505050505051,
+    "reading_order": 1.0
+  },
+  "icelandic.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "icelandic.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "irish-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "irish-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "irish.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "irish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "italian-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "italian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "italian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "italian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "japanese-euc-jp.txt": {
@@ -204,6 +750,153 @@
   },
   "japanese.pdf": {
     "character_error_rate": 0.015151515151515152,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "latvian-cp1257.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "latvian-scan.png": {
+    "character_error_rate": 0.0052434456928838954,
+    "token_error_rate": 0.022857142857142857,
+    "recall": 0.9771428571428571,
+    "spurious": 0.022857142857142857,
+    "reading_order": 1.0
+  },
+  "latvian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "latvian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "lithuanian-cp1257.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "lithuanian-iso-8859-13.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "lithuanian-scan.png": {
+    "character_error_rate": 0.008075370121130552,
+    "token_error_rate": 0.06217616580310881,
+    "recall": 0.9378238341968912,
+    "spurious": 0.06217616580310881,
+    "reading_order": 0.125
+  },
+  "lithuanian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "lithuanian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "luxembourgish-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "luxembourgish-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "luxembourgish.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "luxembourgish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "macedonian-cp1251.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "macedonian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "macedonian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "macedonian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "maltese-scan.png": {
+    "character_error_rate": 0.0064516129032258064,
+    "token_error_rate": 0.00423728813559322,
+    "recall": 0.9957627118644068,
+    "spurious": 0.00423728813559322,
+    "reading_order": 1.0
+  },
+  "maltese.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "maltese.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "norwegian-cp1252.txt": {
+    "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
@@ -258,6 +951,34 @@
     "spurious": 0.03333333333333333,
     "reading_order": 1.0
   },
+  "nynorsk-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "nynorsk-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "nynorsk.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "nynorsk.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "polish-cp1250.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -277,6 +998,48 @@
     "token_error_rate": 0.0196078431372549,
     "recall": 0.9803921568627451,
     "spurious": 0.0196078431372549,
+    "reading_order": 1.0
+  },
+  "polish.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "polish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "portuguese-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "portuguese-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "portuguese.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "portuguese.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "prose-broken-offset.pdf": {
@@ -552,6 +1315,62 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "romanian-iso-8859-16.txt": {
+    "character_error_rate": 0.03155680224403927,
+    "token_error_rate": 0.21052631578947367,
+    "recall": 0.7894736842105263,
+    "spurious": 0.21052631578947367,
+    "reading_order": 0.2857142857142857
+  },
+  "romanian-scan.png": {
+    "character_error_rate": 0.005610098176718092,
+    "token_error_rate": 0.03827751196172249,
+    "recall": 0.9617224880382775,
+    "spurious": 0.03827751196172249,
+    "reading_order": 0.8571428571428571
+  },
+  "romanian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "romanian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "romansh-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "romansh-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "romansh.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "romansh.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "russian-cp1251.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -567,6 +1386,167 @@
     "reading_order": 1.0
   },
   "russian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "russian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "russian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian-cp1251.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian-latin-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian-latin-scan.png": {
+    "character_error_rate": 0.0008045052292839903,
+    "token_error_rate": 0.005319148936170213,
+    "recall": 0.9946808510638298,
+    "spurious": 0.005319148936170213,
+    "reading_order": 1.0
+  },
+  "serbian-latin.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian-latin.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "serbian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovak-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovak-scan.png": {
+    "character_error_rate": 0.0025,
+    "token_error_rate": 0.016483516483516484,
+    "recall": 0.9835164835164835,
+    "spurious": 0.016483516483516484,
+    "reading_order": 1.0
+  },
+  "slovak.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovak.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovenian-cp1250.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovenian-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovenian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "slovenian.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "spanish-cp1252.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "spanish-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "spanish.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "spanish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "swedish-cp1252.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
@@ -651,6 +1631,55 @@
     "reading_order": 1.0
   },
   "turkish-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "turkish.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "turkish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "ukrainian-cp1251.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "ukrainian-koi8-u.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "ukrainian-scan.png": {
+    "character_error_rate": 0.0007423904974016332,
+    "token_error_rate": 0.004761904761904762,
+    "recall": 0.9952380952380953,
+    "spurious": 0.004761904761904762,
+    "reading_order": 1.0
+  },
+  "ukrainian.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "ukrainian.pdf": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
