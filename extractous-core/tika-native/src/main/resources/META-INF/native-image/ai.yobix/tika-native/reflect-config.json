@@ -1,5 +1,16 @@
 [
   {
+    "name": "org.apache.pdfbox.pdmodel.font.FontMapperImpl",
+    "methods": [
+      {
+        "name": "setProvider",
+        "parameterTypes": [
+          "org.apache.pdfbox.pdmodel.font.FontProvider"
+        ]
+      }
+    ]
+  },
+  {
     "name": "ai.yobix.EmbeddedExtractResult",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
