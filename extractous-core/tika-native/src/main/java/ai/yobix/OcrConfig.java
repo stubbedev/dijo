@@ -2,12 +2,15 @@ package ai.yobix;
 
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
 
+import java.util.Map;
+
 /**
  * Tika's tesseract configuration, plus the language {@value #AUTO_LANGUAGE}: detect each image's
  * script and read it with a model for that script. Tika rejects that value as a language code,
- * so it is kept as a flag here, and PreparingOcrParser sets the detected language per image.
- * Images lit unevenly are binarised with Sauvola's adaptive threshold, which keeps text in shadows
- * that a single threshold for the whole image loses, but thins delicate strokes on clean scans.
+ * so it is kept as a flag here, and PreparingOcrParser reads each image in the language detected
+ * for it. Images lit unevenly are binarised with Sauvola's adaptive threshold
+ * ({@link #thresholdingFor}), which keeps text in shadows that a single threshold for the whole
+ * image loses, but thins delicate strokes on clean scans.
  * Pages are segmented without tesseract's own orientation and script detection (mode 3, where
  * Tika's default is 1): PreparingOcrParser turns an image upright before reading it, and runs
  * detection only when a first reading needs it.
@@ -21,7 +24,7 @@ public final class OcrConfig extends TesseractOCRConfig {
     private static final String SAUVOLA = "2";
 
     private boolean autoLanguage;
-    private String assumedScript;
+    private volatile String assumedScript;
 
     public OcrConfig() {
         setPageSegMode(SEGMENTATION_WITHOUT_DETECTION);
@@ -57,12 +60,8 @@ public final class OcrConfig extends TesseractOCRConfig {
         assumedScript = script;
     }
 
-    void useDetectedLanguage(String language) {
-        super.setLanguage(language);
-    }
-
-    /** Binarises the next image adaptively when it is lit unevenly. */
-    void useThresholdingFor(boolean unevenLighting) {
-        addOtherTesseractConfig(THRESHOLDING_METHOD, unevenLighting ? SAUVOLA : OTSU);
+    /** The variable that binarises an image adaptively when it is lit unevenly. */
+    static Map<String, String> thresholdingFor(boolean unevenLighting) {
+        return Map.of(THRESHOLDING_METHOD, unevenLighting ? SAUVOLA : OTSU);
     }
 }

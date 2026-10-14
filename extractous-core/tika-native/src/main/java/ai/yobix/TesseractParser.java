@@ -75,16 +75,26 @@ final class TesseractParser implements Parser, TextRecognizer {
     /** Reads an image as configured. */
     Tesseract.Reading read(OcrImage image, TesseractOCRConfig config)
             throws IOException, TikaException {
-        return corrected(tesseract.read(image, config.getPageSegMode(), config.getLanguage(),
-                variables(config), config.getTimeoutMillis()));
+        return read(image, config, config.getLanguage(), Map.of());
     }
 
-    /** Reads an image as configured, unless the reading goes poorly: empty then. */
+    /**
+     * Reads an image as configured, but in a language and with variables set for this image,
+     * which leave the configuration, shared by the images of an extraction, as it is.
+     */
+    Tesseract.Reading read(OcrImage image, TesseractOCRConfig config, String language,
+                           Map<String, String> variables) throws IOException, TikaException {
+        return corrected(tesseract.read(image, config.getPageSegMode(), language,
+                variables(config, variables), config.getTimeoutMillis()));
+    }
+
+    /** Reads as {@link #read} does, unless the reading goes poorly: empty then. */
     Optional<Tesseract.Reading> readUnlessPoor(OcrImage image, TesseractOCRConfig config,
+                                               String language, Map<String, String> variables,
                                                Tesseract.Poor poor)
             throws IOException, TikaException {
         final Optional<Tesseract.Reading> reading = tesseract.readUnlessPoor(image,
-                config.getPageSegMode(), config.getLanguage(), variables(config), poor,
+                config.getPageSegMode(), language, variables(config, variables), poor,
                 config.getTimeoutMillis());
         return reading.map(TesseractParser::corrected);
     }
@@ -105,11 +115,13 @@ final class TesseractParser implements Parser, TextRecognizer {
         return configured != null ? configured : DEFAULTS;
     }
 
-    private static Map<String, String> variables(TesseractOCRConfig config) {
+    private static Map<String, String> variables(TesseractOCRConfig config,
+                                                 Map<String, String> forImage) {
         final Map<String, String> variables = new LinkedHashMap<>(
                 config.getOtherTesseractConfig());
         variables.put("page_separator", config.getPageSeparator());
         variables.put("preserve_interword_spaces", config.isPreserveInterwordSpacing() ? "1" : "0");
+        variables.putAll(forImage);
         return variables;
     }
 }

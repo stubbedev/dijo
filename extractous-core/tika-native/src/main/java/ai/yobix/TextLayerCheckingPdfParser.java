@@ -18,6 +18,7 @@ import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.parser.PasswordProvider;
+import org.apache.tika.parser.ocr.TesseractOCRConfig;
 import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.parser.pages.PagesConfig;
 import org.apache.tika.parser.pages.TextPolicy;
@@ -41,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Tika's PDF parser, with OCR under the automatic strategy decided page by page from the text the
@@ -114,6 +116,7 @@ final class TextLayerCheckingPdfParser implements Parser {
                 try {
                     pdf.parse(input, checker, metadata, context);
                 } finally {
+                    checker.abandon();
                     if (enclosing == null) {
                         config.pages().setText(TextPolicy.AUTO);
                         context.set(PageOcr.class, null);
@@ -164,15 +167,23 @@ final class TextLayerCheckingPdfParser implements Parser {
 
     /**
      * Holds each page back until it ends, then passes it on as it is, with OCR text added, or
-     * with its text replaced by OCR text.
+     * with its text replaced by OCR text. Pages that need OCR are rendered here, as the parse
+     * reaches them. The first is read here, as any image is; the rest are read on
+     * {@link PageReadings} side by side while the parse goes on, each first read in the script the
+     * first page left the extraction assuming ({@link AssumedScript}), so that every page reads
+     * the same whichever finishes first. Their output, and everything after it, is passed on in
+     * document order as the readings finish.
      */
     private final class PageChecker extends ContentHandlerDecorator {
         private final ContentHandler downstream;
         private final Metadata metadata;
-        private final ParseContext context;
         private final PageOcr pageOcr;
         private final PageRenderer renderer;
         private final TemporaryResources temporary;
+        private final TesseractOCRConfig ocrConfig;
+        private final PageReadings.InOrder pending = new PageReadings.InOrder();
+        private AssumedScript rest;
+        private Recording between;
         private int pageIndex;
         private Recording page;
         private int depth;
@@ -182,10 +193,21 @@ final class TextLayerCheckingPdfParser implements Parser {
             super(handler);
             this.downstream = handler;
             this.metadata = metadata;
-            this.context = context;
             this.pageOcr = pageOcr;
             this.renderer = renderer;
             this.temporary = temporary;
+            this.ocrConfig = context.get(TesseractOCRConfig.class);
+        }
+
+        /** Where an event outside a page goes: on, unless pages before it are still read. */
+        private ContentHandler outside() {
+            if (pending.isEmpty()) {
+                return downstream;
+            }
+            if (between == null) {
+                between = new Recording();
+            }
+            return between;
         }
 
         @Override
@@ -196,7 +218,7 @@ final class TextLayerCheckingPdfParser implements Parser {
                 page.startElement(uri, localName, name, atts);
                 return;
             }
-            super.startElement(uri, localName, name, atts);
+            outside().startElement(uri, localName, name, atts);
             if ("div".equals(localName) && "page".equals(atts.getValue("class"))) {
                 page = new Recording();
                 depth = 0;
@@ -206,7 +228,7 @@ final class TextLayerCheckingPdfParser implements Parser {
         @Override
         public void endElement(String uri, String localName, String name) throws SAXException {
             if (page == null) {
-                super.endElement(uri, localName, name);
+                outside().endElement(uri, localName, name);
                 return;
             }
             if (depth > 0) {
@@ -217,61 +239,43 @@ final class TextLayerCheckingPdfParser implements Parser {
             final Recording ended = page;
             page = null;
             endPage(ended);
-            super.endElement(uri, localName, name);
+            outside().endElement(uri, localName, name);
         }
 
         @Override
         public void characters(char[] ch, int start, int length) throws SAXException {
-            if (page != null) {
-                page.characters(ch, start, length);
-            } else {
-                super.characters(ch, start, length);
-            }
+            (page != null ? page : outside()).characters(ch, start, length);
         }
 
         @Override
         public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
-            if (page != null) {
-                page.ignorableWhitespace(ch, start, length);
-            } else {
-                super.ignorableWhitespace(ch, start, length);
-            }
+            (page != null ? page : outside()).ignorableWhitespace(ch, start, length);
         }
 
         @Override
         public void startPrefixMapping(String prefix, String uri) throws SAXException {
-            if (page != null) {
-                page.startPrefixMapping(prefix, uri);
-            } else {
-                super.startPrefixMapping(prefix, uri);
-            }
+            (page != null ? page : outside()).startPrefixMapping(prefix, uri);
         }
 
         @Override
         public void endPrefixMapping(String prefix) throws SAXException {
-            if (page != null) {
-                page.endPrefixMapping(prefix);
-            } else {
-                super.endPrefixMapping(prefix);
-            }
+            (page != null ? page : outside()).endPrefixMapping(prefix);
         }
 
         @Override
         public void processingInstruction(String target, String data) throws SAXException {
-            if (page != null) {
-                page.processingInstruction(target, data);
-            } else {
-                super.processingInstruction(target, data);
-            }
+            (page != null ? page : outside()).processingInstruction(target, data);
         }
 
         @Override
         public void skippedEntity(String name) throws SAXException {
-            if (page != null) {
-                page.skippedEntity(name);
-            } else {
-                super.skippedEntity(name);
-            }
+            (page != null ? page : outside()).skippedEntity(name);
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            passAll();
+            super.endDocument();
         }
 
         private void endPage(Recording text) throws SAXException {
@@ -280,25 +284,30 @@ final class TextLayerCheckingPdfParser implements Parser {
             final int unmapped = lastInt(PDF.UNMAPPED_UNICODE_CHARS_PER_PAGE, index);
             final PagesConfig.Auto thresholds = pageOcr.thresholds();
             if (glyphs <= thresholds.getTotalCharsPerPage()) {
-                text.replay(downstream);
-                final Recording ocrText = ocr(index);
-                if (ocrText != null) {
-                    useOcr(ocrText);
-                }
+                read(index, ocrText -> () -> {
+                    text.replay(downstream);
+                    if (ocrText != null) {
+                        useOcr(ocrText);
+                    }
+                });
                 return;
             }
             final float unmappedLimit = thresholds.getUnmappedUnicodeCharsPerPage();
             final TextLayerQuality.Assessment layer =
                     TextLayerQuality.assess(text.text(), glyphs, unmapped, unmappedLimit);
-            final Recording ocrText =
-                    layer.badness() < TextLayerQuality.DOUBTFUL ? null : ocr(index);
-            if (ocrText == null || !(layer.badness() >= TextLayerQuality.GARBAGE
-                    || readsBetter(ocrText, layer, unmappedLimit))) {
-                text.replay(downstream);
+            if (layer.badness() < TextLayerQuality.DOUBTFUL) {
+                queue(() -> text.replay(downstream));
                 return;
             }
-            metadata.add(REJECTED_TEXT_LAYER, (index + 1) + ":" + layer.fault());
-            useOcr(ocrText);
+            read(index, ocrText -> () -> {
+                if (ocrText == null || !(layer.badness() >= TextLayerQuality.GARBAGE
+                        || readsBetter(ocrText, layer, unmappedLimit))) {
+                    text.replay(downstream);
+                    return;
+                }
+                metadata.add(REJECTED_TEXT_LAYER, (index + 1) + ":" + layer.fault());
+                useOcr(ocrText);
+            });
         }
 
         /** Passes on a page's OCR text, with the report of how its image was read. */
@@ -325,28 +334,103 @@ final class TextLayerCheckingPdfParser implements Parser {
             return Integer.parseInt(values[values.length - 1]);
         }
 
-        /** The OCR text of a page, or null when it could not be read, with the reason noted. */
-        private Recording ocr(int index) throws SAXException {
-            final Recording ocrText = new Recording();
+        /**
+         * Renders a page and queues the output `then` makes of its OCR text, or of null when it
+         * could not be rendered or read, with the reason noted when the output is passed on.
+         */
+        private void read(int index, Function<Recording, PageReadings.Output> then)
+                throws SAXException {
+            final Path image;
             try {
-                final Path image = temporary.createTempFile(".png");
+                image = temporary.createTempFile(".png");
                 if (!ImageIO.write(renderer.render(index), "png", image.toFile())) {
                     throw new IOException("No PNG writer to render a page for OCR");
                 }
-                final Metadata pageMetadata = new Metadata();
-                pageMetadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, OCR_IMAGE_TYPE);
-                pageMetadata.set(TikaPagedText.PAGE_NUMBER, index + 1);
-                try (TikaInputStream input = TikaInputStream.get(image)) {
-                    ocr.parse(input, new EmbeddedContentHandler(new BodyContentHandler(ocrText)),
-                            pageMetadata, context);
-                }
-                ocrText.reports = pageMetadata.getValues(OcrReport.KEY);
-                return ocrText;
+            } catch (IOException e) {
+                queue(failed(index, e, then));
+                return;
+            }
+            if (rest != null) {
+                final AssumedScript assumed = rest;
+                flushBetween();
+                pending.read(() -> output(index, image, assumed, then));
+                return;
+            }
+            final OcrConfig auto = ocrConfig instanceof OcrConfig config && config.isAutoLanguage()
+                    ? config : null;
+            final AssumedScript first = new AssumedScript(auto == null ? null
+                    : auto.assumedScript());
+            final Metadata pageMetadata = new Metadata();
+            queue(output(index, image, first, pageMetadata, then));
+            final String learned = pageMetadata.get(AssumedScript.LEARNED);
+            if (auto != null && learned != null) {
+                auto.assumeScript(learned);
+            }
+            rest = learned != null ? new AssumedScript(learned) : first;
+        }
+
+        private PageReadings.Output output(int index, Path image, AssumedScript assumed,
+                                           Function<Recording, PageReadings.Output> then)
+                throws SAXException {
+            return output(index, image, assumed, new Metadata(), then);
+        }
+
+        /** Reads a rendered page, into its own metadata, and makes `then`'s output of it. */
+        private PageReadings.Output output(int index, Path image, AssumedScript assumed,
+                                           Metadata pageMetadata,
+                                           Function<Recording, PageReadings.Output> then)
+                throws SAXException {
+            final Recording ocrText = new Recording();
+            pageMetadata.set(TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE, OCR_IMAGE_TYPE);
+            pageMetadata.set(TikaPagedText.PAGE_NUMBER, index + 1);
+            final ParseContext pageContext = new ParseContext();
+            if (ocrConfig != null) {
+                pageContext.set(TesseractOCRConfig.class, ocrConfig);
+            }
+            pageContext.set(AssumedScript.class, assumed);
+            try (TikaInputStream input = TikaInputStream.get(image)) {
+                ocr.parse(input, new EmbeddedContentHandler(new BodyContentHandler(ocrText)),
+                        pageMetadata, pageContext);
             } catch (IOException | TikaException e) {
+                return failed(index, e, then);
+            }
+            ocrText.reports = pageMetadata.getValues(OcrReport.KEY);
+            return then.apply(ocrText);
+        }
+
+        private PageReadings.Output failed(int index, Exception e,
+                                           Function<Recording, PageReadings.Output> then) {
+            final PageReadings.Output output = then.apply(null);
+            return () -> {
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING,
                         "OCR of page " + (index + 1) + " failed: " + Throwables.describe(e));
-                return null;
+                output.pass();
+            };
+        }
+
+        /** Queues a page's output that is ready now behind what is queued already. */
+        private void queue(PageReadings.Output output) throws SAXException {
+            flushBetween();
+            pending.ready(output);
+        }
+
+        /** Queues what passed outside pages while pages before it were read. */
+        private void flushBetween() throws SAXException {
+            if (between != null) {
+                final Recording events = between;
+                between = null;
+                pending.ready(() -> events.replay(downstream));
             }
+        }
+
+        /** Passes on every queued page, in order, as its reading finishes. */
+        private void passAll() throws SAXException {
+            flushBetween();
+            pending.passAll();
+        }
+
+        void abandon() {
+            pending.abandon();
         }
     }
 

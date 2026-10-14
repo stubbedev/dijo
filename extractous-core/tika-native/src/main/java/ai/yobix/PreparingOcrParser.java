@@ -32,6 +32,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -129,6 +130,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         final MediaType type = MediaType.parse(metadata.get(HttpHeaders.CONTENT_TYPE));
         final OcrConfig auto = configured instanceof OcrConfig config && config.isAutoLanguage()
                 ? config : null;
+        final AssumedScript fixed = context.get(AssumedScript.class);
         try (TemporaryResources temporary = new TemporaryResources()) {
             final TikaInputStream received = TikaInputStream.get(stream, temporary, metadata);
             Path original = received.getPath();
@@ -155,77 +157,146 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                         new XHTMLContentHandler(handler, metadata, context);
                 xhtml.startDocument();
                 if (pages != null && pages.count() > 1) {
-                    readPages(pages, Files.size(original), xhtml, metadata, configured, auto);
+                    readPages(pages, Files.size(original), xhtml, metadata, configured, auto,
+                            fixed);
                 } else {
                     final BufferedImage image = pages == null ? null : pages.read(0);
-                    read(xhtml, readableByTesseract(original, type, image), Files.size(original),
-                            image, metadata, metadata.getInt(TikaPagedText.PAGE_NUMBER),
-                            configured, auto);
+                    final Recognized read = recognize(readableByTesseract(original, type, image),
+                            Files.size(original), image, metadata.get(TIFF.ORIENTATION),
+                            configured, auto, assumed(auto, fixed));
+                    learn(read.learned(), auto, fixed, metadata);
+                    emit(xhtml, metadata, metadata.getInt(TikaPagedText.PAGE_NUMBER), read.read(),
+                            configured != null ? configured : DEFAULTS);
                 }
                 xhtml.endDocument();
             }
         }
     }
 
-    /** Reads every page of a multi-page image as a page of the output. */
+    /**
+     * Reads every page of a multi-page image as a page of the output, decoded here in turn: the
+     * first as any image is read, the rest side by side on {@link PageReadings}, each first read
+     * in the script the first page left the extraction assuming, and passed on in order.
+     */
     private void readPages(Pages pages, long size, XHTMLContentHandler xhtml, Metadata metadata,
-                           TesseractOCRConfig configured, OcrConfig auto)
+                           TesseractOCRConfig configured, OcrConfig auto, AssumedScript fixed)
             throws IOException, SAXException, TikaException {
-        for (int index = 0; index < pages.count(); index++) {
-            final BufferedImage image = pages.read(index);
-            xhtml.startElement("div", "class", "page");
-            if (image == null) {
-                metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, "Page " + (index + 1)
-                        + " of the image is too large or damaged to OCR");
-            } else {
-                read(xhtml, new OcrImage.Pixels(image), size, image, metadata, index + 1,
-                        configured, auto);
+        final TesseractOCRConfig config = configured != null ? configured : DEFAULTS;
+        final String orientation = metadata.get(TIFF.ORIENTATION);
+        final PageReadings.InOrder outputs = new PageReadings.InOrder();
+        String rest = null;
+        try {
+            for (int index = 0; index < pages.count(); index++) {
+                final int page = index + 1;
+                final BufferedImage image = pages.read(index);
+                if (image == null) {
+                    outputs.ready(() -> {
+                        xhtml.startElement("div", "class", "page");
+                        metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, "Page "
+                                + page + " of the image is too large or damaged to OCR");
+                        xhtml.endElement("div");
+                    });
+                    continue;
+                }
+                final OcrImage pixels = new OcrImage.Pixels(image);
+                if (index == 0) {
+                    final String assumed = assumed(auto, fixed);
+                    final Recognized read = recognize(pixels, size, image, orientation,
+                            configured, auto, assumed);
+                    learn(read.learned(), auto, fixed, metadata);
+                    rest = read.learned() != null ? read.learned() : assumed;
+                    outputs.ready(page(xhtml, metadata, page, read.read(), config));
+                    continue;
+                }
+                final String assumed = rest;
+                outputs.read(() -> page(xhtml, metadata, page, recognize(pixels, size, image,
+                        orientation, configured, auto, assumed).read(), config));
             }
-            xhtml.endElement("div");
+            outputs.passAll();
+        } finally {
+            outputs.abandon();
         }
     }
 
+    private static PageReadings.Output page(XHTMLContentHandler xhtml, Metadata metadata,
+                                            int page, Attempt read, TesseractOCRConfig config) {
+        return () -> {
+            xhtml.startElement("div", "class", "page");
+            emit(xhtml, metadata, page, read, config);
+            xhtml.endElement("div");
+        };
+    }
+
     /**
-     * Prepares an image, reads it into the output and adds its OCR report. The image is first
-     * read as it is, upright text with the automatic language in the script detection last found
-     * in this extraction, or else in Latin script, the most common kind, or in the configured
-     * language otherwise. Only when tesseract is not confident of that reading
-     * ({@value #MIN_CONFIDENCE} or less) does its orientation and script detection run; the image
-     * is then turned by the quarter turns it finds and, with the automatic language, read with a
-     * model for the script it finds, unless that would read it as before. When no reading of an
-     * image with at least {@value #MIN_WORDS_TO_RETRY} words is confident, the scripts detection
-     * overlooks are tried as well, and the most confident reading is kept. With the automatic
-     * language, each of these readings is a guess, given up once its first
-     * {@value #POOR_AFTER_WORDS} words are read with a mean confidence below
-     * {@value #POOR_CONFIDENCE}, as a page in another script or turned is; when every one is
-     * given up, the image is read to the end as detection found it, in the first reading's
-     * script when detection found none.
-     *
-     * @param file  the image as tesseract can read it
-     * @param size  the size of the image's file, for the configured limits
-     * @param image its decoded pixels, or null when they could not be decoded within limits
-     * @param page  the page number of the image, when it is a page
+     * The script an image is first read in with the automatic language: the page's own when its
+     * pages are read side by side, or else the one the extraction last learned.
      */
-    private void read(XHTMLContentHandler xhtml, OcrImage file, long size, BufferedImage image,
-                      Metadata metadata, Integer page, TesseractOCRConfig configured,
-                      OcrConfig auto)
-            throws IOException, SAXException, TikaException {
+    private static String assumed(OcrConfig auto, AssumedScript fixed) {
+        return auto == null ? null : fixed != null ? fixed.script() : auto.assumedScript();
+    }
+
+    /**
+     * Keeps a script an image's reading learned: in the extraction's memory, or for a page read
+     * side by side with others, in its metadata for whoever reads the pages.
+     */
+    private static void learn(String learned, OcrConfig auto, AssumedScript fixed,
+                              Metadata metadata) {
+        if (auto == null || learned == null) {
+            return;
+        }
+        if (fixed != null) {
+            metadata.set(AssumedScript.LEARNED, learned);
+        } else {
+            auto.assumeScript(learned);
+        }
+    }
+
+    /** How an image was read, and the script it taught, if any. */
+    private record Recognized(Attempt read, String learned) {
+    }
+
+    /**
+     * Prepares an image and reads it: what is read, how, and the script the extraction learns
+     * from it, if any. The image is first read as it is, upright text with the automatic language
+     * in the script assumed, or in the configured language otherwise. Only when tesseract is not
+     * confident of that reading ({@value #MIN_CONFIDENCE} or less) does its orientation and
+     * script detection run; the image is then turned by the quarter turns it finds and, with the
+     * automatic language, read with a model for the script it finds, unless that would read it
+     * as before. When no reading of an image with at least {@value #MIN_WORDS_TO_RETRY} words is
+     * confident, the scripts detection overlooks are tried as well, and the most confident reading
+     * is kept. With the automatic language, each of these readings is a guess, given up once its
+     * first {@value #POOR_AFTER_WORDS} words are read with a mean confidence below
+     * {@value #POOR_CONFIDENCE}, as a page in another script or turned is; when every one is
+     * given up, the image is read to the end as detection found it, in the first reading's script
+     * when detection found none. Without a reading when the image is outside the configured
+     * limits.
+     *
+     * @param file        the image as tesseract can read it
+     * @param size        the size of the image's file, for the configured limits
+     * @param image       its decoded pixels, or null when they could not be decoded within limits
+     * @param orientation the image's EXIF orientation, or null
+     * @param assumed     the script to read it in first with the automatic language: the one
+     *                    detection last found in this extraction, or null for Latin, the most
+     *                    common kind
+     */
+    private Recognized recognize(OcrImage file, long size, BufferedImage image,
+                                 String orientation, TesseractOCRConfig configured,
+                                 OcrConfig auto, String assumed)
+            throws IOException, TikaException {
         final TesseractOCRConfig config = configured != null ? configured : DEFAULTS;
-        final Oriented oriented = Oriented.of(image, metadata);
+        final Oriented oriented = Oriented.of(image, orientation);
         final String assumedScript = auto == null ? null
-                : auto.assumedScript() != null ? auto.assumedScript() : ASSUMED_SCRIPT;
+                : assumed != null ? assumed : ASSUMED_SCRIPT;
         final Prepared first = finish(image, oriented, assumedScript,
                 language(assumedScript, auto), 0);
         if (!TesseractParser.withinLimits(size, config)) {
-            emit(xhtml, metadata, page, first, null, config);
-            return;
+            return new Recognized(new Attempt(first, null), null);
         }
         final Optional<Tesseract.Reading> optimistic = auto == null
                 ? Optional.of(read(file, first, config))
                 : readUnlessPoor(file, first, config);
         if (optimistic.isPresent() && optimistic.get().confidence() > MIN_CONFIDENCE) {
-            emit(xhtml, metadata, page, first, optimistic.get(), config);
-            return;
+            return new Recognized(new Attempt(first, optimistic.get()), null);
         }
         final ScriptDetection.Result detected = ScriptDetection.detect(tesseract,
                 first.image() != null ? first.image() : file, config.getTimeoutMillis());
@@ -233,9 +304,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                 : detected.script() == null && optimistic.isEmpty() ? first.script()
                 : detected.script();
         final String language = language(script, auto);
-        if (auto != null && script != null) {
-            auto.assumeScript(script);
-        }
+        String learned = auto != null ? script : null;
         Attempt best = new Attempt(first, optimistic.orElse(null));
         Prepared fallback = first;
         if (detected.clockwiseQuarterTurns() != 0 || !Objects.equals(language, first.language())) {
@@ -250,21 +319,24 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         }
         if (auto != null && !best.confident()
                 && (best.reading() == null || best.words() >= MIN_WORDS_TO_RETRY)) {
-            best = readOverlooked(best, file, image, oriented, config, auto);
+            best = readOverlooked(best, file, image, oriented, config);
+            if (best.prepared().script() != null) {
+                learned = best.prepared().script();
+            }
         }
         if (best.reading() == null) {
             best = new Attempt(fallback, read(file, fallback, config));
         }
-        emit(xhtml, metadata, page, best.prepared(), best.reading(), config);
+        return new Recognized(best, learned);
     }
 
     /**
      * Reads an image in the scripts detection overlooks, until one reads it confidently, giving
-     * up each reading that goes poorly, and assumes the script of the best reading for the rest
-     * of the extraction.
+     * up each reading that goes poorly: the best reading, whose script the rest of the
+     * extraction then assumes.
      */
     private Attempt readOverlooked(Attempt best, OcrImage file, BufferedImage image,
-                                   Oriented oriented, TesseractOCRConfig config, OcrConfig auto)
+                                   Oriented oriented, TesseractOCRConfig config)
             throws IOException, TikaException {
         Attempt overlooked = best;
         for (final String script : OVERLOOKED_SCRIPTS) {
@@ -277,9 +349,6 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             if (reading.isPresent()) {
                 overlooked = overlooked.or(new Attempt(retried, reading.get()));
             }
-        }
-        if (overlooked.prepared().script() != null) {
-            auto.assumeScript(overlooked.prepared().script());
         }
         return overlooked;
     }
@@ -313,23 +382,22 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
 
     private Tesseract.Reading read(OcrImage file, Prepared prepared, TesseractOCRConfig config)
             throws IOException, TikaException {
-        prepared.configure(config);
-        return ocr.read(prepared.image == null ? file : prepared.image, config);
+        return ocr.read(prepared.image == null ? file : prepared.image, config,
+                prepared.language(config), prepared.variables(config));
     }
 
     private Optional<Tesseract.Reading> readUnlessPoor(OcrImage file, Prepared prepared,
                                                        TesseractOCRConfig config)
             throws IOException, TikaException {
-        prepared.configure(config);
-        return ocr.readUnlessPoor(prepared.image == null ? file : prepared.image, config, POOR);
+        return ocr.readUnlessPoor(prepared.image == null ? file : prepared.image, config,
+                prepared.language(config), prepared.variables(config), POOR);
     }
 
     private static void emit(XHTMLContentHandler xhtml, Metadata metadata, Integer page,
-                             Prepared prepared, Tesseract.Reading reading,
-                             TesseractOCRConfig config) throws SAXException {
-        metadata.add(OcrReport.KEY, prepared.report(page, config));
-        if (reading != null) {
-            TesseractParser.write(xhtml, reading.text());
+                             Attempt read, TesseractOCRConfig config) throws SAXException {
+        metadata.add(OcrReport.KEY, read.prepared().report(page, config));
+        if (read.reading() != null) {
+            TesseractParser.write(xhtml, read.reading().text());
         }
     }
 
@@ -368,13 +436,16 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                     decoded, flattened, quarterTurns, skewDegrees, scale);
         }
 
-        void configure(TesseractOCRConfig config) {
-            if (config instanceof OcrConfig ocrConfig) {
-                if (ocrConfig.isAutoLanguage()) {
-                    ocrConfig.useDetectedLanguage(language);
-                }
-                ocrConfig.useThresholdingFor(unevenLighting);
-            }
+        /** The language to read the image in: its own with the automatic language. */
+        String language(TesseractOCRConfig config) {
+            return config instanceof OcrConfig ocrConfig && ocrConfig.isAutoLanguage()
+                    ? language : config.getLanguage();
+        }
+
+        /** The variables to read the image with beyond the configured ones. */
+        Map<String, String> variables(TesseractOCRConfig config) {
+            return config instanceof OcrConfig ? OcrConfig.thresholdingFor(unevenLighting)
+                    : Map.of();
         }
     }
 
@@ -388,11 +459,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      */
     private record Oriented(BufferedImage image, String exifOrientation, boolean flattened) {
 
-        static Oriented of(BufferedImage image, Metadata metadata) {
+        static Oriented of(BufferedImage image, String orientation) {
             if (image == null) {
                 return new Oriented(null, null, false);
             }
-            final String orientation = metadata.get(TIFF.ORIENTATION);
             final BufferedImage upright = OcrImages.applyOrientation(image, orientation);
             final BufferedImage flat = PageFlattening.flatten(upright);
             return new Oriented(flat != null ? flat : upright,

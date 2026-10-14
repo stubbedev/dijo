@@ -31,7 +31,7 @@ final class ReadingThreads implements AutoCloseable {
         return new ReadingThreads(Math.max(1, Math.min(MAX, processors() / running)));
     }
 
-    private static int processors() {
+    static int processors() {
         final String share = System.getProperty(PROCESSORS);
         return share == null ? Runtime.getRuntime().availableProcessors() : Integer.parseInt(share);
     }
