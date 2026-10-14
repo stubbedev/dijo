@@ -126,6 +126,17 @@ fn detect_labels_several_inputs() {
 }
 
 #[test]
+fn reads_an_outlook_offline_folder_without_its_name() {
+    let bytes = fs::read(document("offline-folder.ost")).unwrap();
+    let detected = extractous_with_stdin(&["detect", "-"], Some(&bytes));
+    assert!(detected.status.success(), "{}", stderr(&detected));
+    assert_eq!(stdout(&detected), "application/vnd.ms-outlook-pst\n");
+    let extracted = extractous_with_stdin(&["-"], Some(&bytes));
+    assert!(extracted.status.success(), "{}", stderr(&extracted));
+    assert!(stdout(&extracted).contains("This is the original email (html)"));
+}
+
+#[test]
 fn parallel_output_keeps_input_order() {
     let inputs: Vec<String> = [
         "2022_Q3_AAPL.pdf",
