@@ -341,9 +341,10 @@ little as 2.5°.
 
 Images are read in PNG, JPEG, TIFF (every page), GIF, BMP, PNM, JPEG 2000, WebP, Photoshop (the flattened image),
 PCX, TGA and JBIG2. HEIC, HEIF and AVIF images, the
-default of many phone cameras, are decoded by libheif: linked into the static Linux executable, and otherwise its
-`heif-dec` when it is on `PATH` (packaged as `libheif-examples` or with `libheif`); without it they are reported with an
-`unsupported` error rather than as images without text.
+default of many phone cameras, are decoded with libheif: linked into the static Linux executable, and bundled with
+tesseract in the other Linux and the Windows release binaries. macOS decodes them with its own `sips` (AVIF from
+macOS 13). A build without the bundle uses libheif's `heif-dec` when it is on `PATH` (packaged as `libheif-examples`
+or with `libheif`); without it they are reported with an `unsupported` error rather than as images without text.
 
 ## Supported formats
 

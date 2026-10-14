@@ -27,8 +27,8 @@ fn unpacked() -> Result<&'static Path, String> {
 }
 
 /// The system properties Tika is started with: its temporary directory, headless AWT, the
-/// processors OCR may use, and the bundled tesseract's language data and its executable unless
-/// the static build links it.
+/// processors OCR may use, the bundled tesseract's language data, and the bundled tesseract and
+/// heif-png unless the static build links them.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -51,6 +51,12 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
             "extractous.ocr.tessdata",
             dir.join(OCR_MODELS).display().to_string(),
         ));
+        if let Some(decoder) = OCR_HEIF_DECODER {
+            properties.push((
+                "extractous.ocr.heif",
+                dir.join(decoder).display().to_string(),
+            ));
+        }
     }
     Ok(properties)
 }
@@ -349,7 +355,7 @@ fn unpack(staging: &Path) -> io::Result<()> {
             fs::create_dir_all(parent)?;
         }
         fs::write(&path, content)?;
-        if *name == OCR_TESSERACT {
+        if *name == OCR_TESSERACT || Some(*name) == OCR_HEIF_DECODER {
             make_executable(&path)?;
         }
     }

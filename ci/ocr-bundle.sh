@@ -18,13 +18,13 @@ case "$(uname -s)" in
         rev=$(nix eval --raw --impure --expr \
             "(builtins.fromJSON (builtins.readFile $here/../devenv.lock)).nodes.nixpkgs.locked.rev")
         bundle=$(nix build --no-link --print-out-paths --impure --expr \
-            "import $here/tesseract-static.nix { nixpkgs = builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\"; system = builtins.currentSystem; }")
+            "import $here/ocr-static.nix { nixpkgs = builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\"; system = builtins.currentSystem; }")
         mkdir -p "$staging"
         cp -r "$bundle/." "$staging/"
         chmod -R u+w "$staging"
         ;;
     Darwin | MINGW* | MSYS*)
-        "$here/tesseract-vcpkg.sh" "$staging"
+        "$here/ocr-vcpkg.sh" "$staging"
         ;;
     *)
         echo "No tesseract build for $(uname -s)" >&2

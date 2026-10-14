@@ -17,6 +17,7 @@ const ELF64_DYN_SIZE: usize = 16;
 const TIKA_LIBRARY_STEM: &str = "libtika_native";
 const OCR_BUNDLE_VARIABLE: &str = "EXTRACTOUS_OCR_BUNDLE";
 const OCR_TESSERACT_STEM: &str = "tesseract";
+const OCR_HEIF_DECODER_STEM: &str = "heif-png";
 const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
 const OCR_LICENSES: &str = "licenses";
@@ -87,11 +88,13 @@ fn main() {
 }
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `EXTRACTOUS_OCR_BUNDLE` names: a tesseract
-/// executable, its language data and the licenses of what it links, compressed beside the
-/// native libraries.
+/// executable, heif-png on the platforms that need it, the language data and the licenses of
+/// what they link, compressed beside the native libraries.
 struct OcrBundle {
     /// Each file by its path below the unpacked libraries, and where its compressed copy is.
     files: Vec<(String, PathBuf)>,
+    /// The embedded heif-png's file name, if one is embedded.
+    heif_decoder: Option<String>,
     /// The licenses of the bundle, as one text.
     licenses: PathBuf,
     fingerprint: String,
@@ -122,12 +125,19 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, engine: OcrEngine) -> Option<O
     create_dir(&compressed_dir.join(OCR_MODELS));
     let mut hasher = DefaultHasher::new();
     let mut files = Vec::with_capacity(models.len() + 1);
-    let executable = (engine == OcrEngine::Executable).then(|| {
-        let name = platform.executable(OCR_TESSERACT_STEM);
-        let path = dir.join(&name);
-        (name, path)
-    });
-    let named = executable.into_iter().chain(models);
+    let programs = match engine {
+        OcrEngine::Executable => platform.bundled_programs(),
+        OcrEngine::Linked => Vec::new(),
+    };
+    let heif_decoder = (engine == OcrEngine::Executable && platform.heif_decoder_bundled())
+        .then(|| platform.executable(OCR_HEIF_DECODER_STEM));
+    let named = programs
+        .into_iter()
+        .map(|name| {
+            let path = dir.join(&name);
+            (name, path)
+        })
+        .chain(models);
     for (name, path) in named {
         let content = read_file(&path);
         hasher.write(name.as_bytes());
@@ -143,6 +153,7 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, engine: OcrEngine) -> Option<O
     write_licenses(&dir.join(OCR_LICENSES), OCR_BUNDLE_VARIABLE, &licenses);
     Some(OcrBundle {
         files,
+        heif_decoder,
         licenses,
         fingerprint: format!("{:016x}", hasher.finish()),
     })
@@ -203,6 +214,20 @@ impl Platform {
             "macos" => Platform::MacOs,
             _ => Platform::OtherUnix,
         }
+    }
+
+    /// The programs the OCR bundle carries beside its language data: tesseract, and heif-png
+    /// (ci/heif-png) everywhere but macOS, whose own sips decodes HEIC, HEIF and AVIF.
+    fn bundled_programs(self) -> Vec<String> {
+        let mut programs = vec![self.executable(OCR_TESSERACT_STEM)];
+        if self.heif_decoder_bundled() {
+            programs.push(self.executable(OCR_HEIF_DECODER_STEM));
+        }
+        programs
+    }
+
+    fn heif_decoder_bundled(self) -> bool {
+        self != Platform::MacOs
     }
 
     /// The file name of an executable.
@@ -558,8 +583,10 @@ fn ocr_items(platform: Platform, ocr: Option<&OcrBundle>) -> String {
         None => "None".to_string(),
     };
     let tesseract = platform.executable(OCR_TESSERACT_STEM);
+    let heif_decoder = ocr.and_then(|ocr| ocr.heif_decoder.as_deref());
     format!(
         "pub(crate) const OCR_TESSERACT: &str = {tesseract:?};\n\
+         pub(crate) const OCR_HEIF_DECODER: Option<&str> = {heif_decoder:?};\n\
          pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
          pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
          pub(crate) const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",

@@ -77,6 +77,7 @@ jobs:
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
           "$binary" quality/corpus/arabic-scan-300dpi.png | grep -q "المنارة"
+          "$binary" test_files/documents/photo.heic | grep -q "Lighthouse"
           grep -q "## tesseract" "$RUNNER_TEMP/licenses.txt"
       - name: Check that the Windows executable carries the Visual C++ runtime it needs
         if: runner.os == 'Windows'
@@ -105,6 +106,8 @@ jobs:
           tr -s '[:space:]' ' ' < "$RUNNER_TEMP/english.txt" | grep -qi "the"
           bare /corpus/arabic-scan-300dpi.png > "$RUNNER_TEMP/arabic.txt"
           grep -q "المنارة" "$RUNNER_TEMP/arabic.txt"
+          bare /documents/photo.heic > "$RUNNER_TEMP/heic.txt"
+          grep -q "Lighthouse" "$RUNNER_TEMP/heic.txt"
           bare --licenses > "$RUNNER_TEMP/bundled-licenses.txt"
           grep -q "## tesseract" "$RUNNER_TEMP/bundled-licenses.txt"
       - name: Package

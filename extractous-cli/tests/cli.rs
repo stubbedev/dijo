@@ -1511,7 +1511,7 @@ fn djvu_pages_without_a_text_layer_are_rendered_for_ocr_without_helpers() {
 
 #[cfg(unix)]
 #[test]
-fn heic_is_read_with_heif_dec_and_reported_without_it() {
+fn heic_is_read_and_reported_when_nothing_can_decode_it() {
     let photo = document("photo.heic");
     let read = &json_objects(&[&photo])[0];
     assert_matches_schema(read);
@@ -1533,15 +1533,26 @@ fn heic_is_read_with_heif_dec_and_reported_without_it() {
         serde_json::from_slice(&output.stdout).unwrap()
     };
     let without = unread(&[&photo]);
-    assert_eq!(without["status"], "failed", "{without}");
-    assert_eq!(without["errors"][0]["category"], "unsupported", "{without}");
-    assert!(
-        without["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("heif-dec"),
-        "{without}"
-    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            without["status"], "complete",
+            "macOS's sips decodes it: {without}"
+        );
+        assert!(
+            without["text"].as_str().unwrap().contains("Lighthouse"),
+            "{without}"
+        );
+    } else {
+        assert_eq!(without["status"], "failed", "{without}");
+        assert_eq!(without["errors"][0]["category"], "unsupported", "{without}");
+        assert!(
+            without["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("heif-dec"),
+            "{without}"
+        );
+    }
     assert_eq!(unread(&["--ocr", "never", &photo])["status"], "complete");
 }
 

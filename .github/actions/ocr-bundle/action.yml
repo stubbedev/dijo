@@ -1,6 +1,6 @@
 name: OCR bundle
 description: >
-  Assembles ci/ocr-bundle.sh's statically linked tesseract, its language data and their licences,
+  Assembles ci/ocr-bundle.sh's statically linked tesseract, heif-png, the language data and their licences,
   keeping vcpkg's binary cache between runs on macOS and Windows. Linux needs nix installed first.
 outputs:
   dir:
@@ -14,7 +14,8 @@ runs:
       if: runner.os != 'Linux'
       with:
         path: ${{ runner.temp }}/vcpkg-cache
-        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/vcpkg.env', 'ci/tesseract-vcpkg.sh') }}
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/vcpkg.env', 'ci/ocr-vcpkg.sh') }}
+        restore-keys: vcpkg-${{ runner.os }}-${{ runner.arch }}-
     - id: bundle
       shell: bash
       run: |

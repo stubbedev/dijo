@@ -1,7 +1,7 @@
 # What ci/static-image.sh links the static executable with, for the Linux of `system`: the musl
 # C compiler and binutils, the musl Rust toolchain, the static C libraries the JDK's AWT archives
 # need (FreeType and what it reads fonts with), tesseract with Leptonica and the image libraries
-# it reads with (the ones ci/tesseract-static.nix bundles as a program), libheif
+# it reads with (the ones ci/ocr-static.nix bundles as a program), libheif
 # (ci/image-decoders.nix), with the compiler and linker flags for them in extractous/, the
 # licenses of the libraries linked beyond tesseract's in extractous/licenses, and what
 # sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh).

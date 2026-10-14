@@ -6,19 +6,21 @@ import java.io.IOException;
 import java.nio.file.Path;
 
 /**
- * HEIC, HEIF and AVIF images decoded to PNG by libheif, since neither Java nor tesseract can
- * decode them: linked into the static executable, or else its {@code heif-dec} when it is on the
- * PATH.
+ * HEIC, HEIF and AVIF images decoded to PNG, since neither Java nor tesseract can decode them: by
+ * libheif linked into the static executable, by macOS's own {@code sips}, by the heif-png the OCR
+ * bundle carries, or else by libheif's {@code heif-dec} when it is on the PATH.
  */
 final class HeifDecoder {
 
     private static final String PROGRAM = "heif-dec";
+    private static final String MAC_OS_PROGRAM = "/usr/bin/sips";
+    private static final boolean MAC_OS = System.getProperty("os.name").startsWith("Mac");
 
     private HeifDecoder() {
     }
 
     /**
-     * The image as a PNG file, or null when libheif is neither linked nor installed.
+     * The image as a PNG file, or null when no decoder is linked, built in, bundled or installed.
      *
      * @throws IOException when libheif could not decode the image
      */
@@ -29,6 +31,15 @@ final class HeifDecoder {
             LinkedImages.decodeHeif(image, png);
             return png;
         }
+        if (MAC_OS) {
+            return decoded(Programs.run(timeoutMillis, environment -> { }, MAC_OS_PROGRAM, "-s",
+                    "format", "png", image.toString(), "--out", png.toString()), png);
+        }
+        final Path bundled = OcrBundle.heifDecoder();
+        if (bundled != null) {
+            return decoded(Programs.run(timeoutMillis, environment -> { }, bundled.toString(),
+                    image.toString(), png.toString()), png);
+        }
         final Programs.Outcome decoding;
         try {
             decoding = Programs.run(timeoutMillis, environment -> { }, PROGRAM, "--quiet",
@@ -36,6 +47,10 @@ final class HeifDecoder {
         } catch (IOException notInstalled) {
             return null;
         }
+        return decoded(decoding, png);
+    }
+
+    private static Path decoded(Programs.Outcome decoding, Path png) throws IOException {
         if (!decoding.succeeded()) {
             throw new IOException("Decoding the image for OCR failed: " + decoding.failure());
         }
