@@ -285,6 +285,13 @@ jobs:
             | tr -s '[:space:]' ' ' | grep -qi "the"
           docker run --rm --volume "$PWD/quality/corpus:/data:ro" extractous:smoke-test /data/danish-scan.png \
             | grep -q "tusmørket"
+      - name: Check that nothing is written outside the cache and temporary directories
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --tmpfs /var/cache/extractous:uid=10001,gid=10001 \
+            --volume "$PWD/quality/corpus:/data:ro" extractous:smoke-test --jobs 2 \
+            /data/danish-scan.png /data/prose-scan.heic /data/report.docx > "$RUNNER_TEMP/read-only.txt"
+          grep -q "tusmørket" "$RUNNER_TEMP/read-only.txt"
+          grep -q "Lighthouse Keeper" "$RUNNER_TEMP/read-only.txt"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: startsWith(github.ref, 'refs/tags/v')
         with:
