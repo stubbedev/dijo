@@ -26,8 +26,9 @@ fn unpacked() -> Result<&'static Path, String> {
         .map_err(Clone::clone)
 }
 
-/// The system properties Tika is started with: its temporary directory, headless AWT and the
-/// bundled tesseract's language data, and its executable unless the static build links it.
+/// The system properties Tika is started with: its temporary directory, headless AWT, the
+/// processors OCR may use, and the bundled tesseract's language data and its executable unless
+/// the static build links it.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -35,6 +36,9 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
             .to_str()
             .ok_or_else(|| format!("The temporary directory {} is not UTF-8", dir.display()))?;
         properties.push(("java.io.tmpdir", dir.to_string()));
+    }
+    if let Some(processors) = settings.processors {
+        properties.push(("extractous.processors", processors.to_string()));
     }
     if !OCR_FILES.is_empty() {
         let dir = unpacked()?;

@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
 use crate::cache::Cache;
-use crate::cli::{Embedded, Ocr};
+use crate::cli::{Embedded, Ocr, PROCESSORS_VARIABLE};
 use crate::render::RenderOptions;
 use crate::schema::ErrorCategory;
 use crate::server::handlers::{
@@ -211,6 +211,8 @@ impl<W: Write> Respond for ProcessResponder<'_, W> {
 pub struct ProcessOptions {
     /// The options of the `worker` command.
     pub arguments: Vec<OsString>,
+    /// The processors each worker process may use.
+    pub processors: NonZeroUsize,
     pub max_rss_bytes: Option<NonZeroU64>,
     /// How long past its deadline a job may keep its worker process before it is stopped.
     pub grace: Duration,
@@ -236,6 +238,7 @@ impl WorkerProcess {
         let mut child = Command::new(&executable)
             .arg("worker")
             .args(&options.arguments)
+            .env(PROCESSORS_VARIABLE, options.processors.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

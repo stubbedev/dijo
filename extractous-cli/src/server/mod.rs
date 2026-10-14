@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Sleep;
 
 use crate::cache::Cache;
-use crate::cli::{Embedded, Format, Isolation, Ocr, ServeArgs, WorkerArgs};
+use crate::cli::{processors_per_process, Embedded, Format, Isolation, Ocr, ServeArgs, WorkerArgs};
 use crate::normalize::{Step, Steps};
 use crate::render::RenderOptions;
 use crate::spool::Spool;
@@ -112,6 +112,7 @@ fn start(args: &ServeArgs) -> Result<bool, String> {
         Isolation::Thread => Workers::Threads(Cache::from_args(&args.cache, false)?.map(Arc::new)),
         Isolation::Process => Workers::Processes(ProcessOptions {
             arguments: [args.runtime.arguments(), args.cache.arguments()].concat(),
+            processors: processors_per_process(args.workers(), 1),
             max_rss_bytes: args.worker_max_rss_bytes,
             grace: RESPONSE_DEADLINE_GRACE,
         }),

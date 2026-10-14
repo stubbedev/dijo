@@ -1,5 +1,5 @@
 use std::fmt;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -45,6 +45,10 @@ pub struct IsolateSettings {
     /// grow to a large share of physical memory. The heap is sized to at least 512 MiB, or the
     /// cap when it is lower.
     pub max_heap_bytes: Option<NonZeroU64>,
+    /// The processors this process may use, when it shares the machine with other extracting
+    /// processes: OCR divides them among the readings running at once. All of the machine's by
+    /// default.
+    pub processors: Option<NonZeroUsize>,
 }
 
 /// The heap the isolate keeps at least: GraalVM CE collects only with its serial collector, which

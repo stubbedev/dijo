@@ -23,6 +23,7 @@ final class TesseractProgram implements Tesseract {
     private static final long CHECK_TIMEOUT_MILLIS = 60_000;
     private static final String TESSDATA_PREFIX = "TESSDATA_PREFIX";
     private static final String OMP_NUM_THREADS = "OMP_NUM_THREADS";
+    private static final String OMP_THREAD_LIMIT = "OMP_THREAD_LIMIT";
     private static final String OSD_PAGE_SEG_MODE = "0";
     private static final String TEXT_EXTENSION = ".txt";
     private static final String TSV_EXTENSION = ".tsv";
@@ -80,8 +81,9 @@ final class TesseractProgram implements Tesseract {
             addVariables(arguments, variables);
             arguments.addAll(List.of("-c", "tessedit_create_txt=1", "-c", "tessedit_create_tsv=1"));
             try (ReadingThreads threads = ReadingThreads.take()) {
+                final String granted = Integer.toString(threads.threads());
                 final Programs.Outcome outcome = run(timeoutMillis,
-                        Map.of(OMP_NUM_THREADS, Integer.toString(threads.threads())),
+                        Map.of(OMP_NUM_THREADS, granted, OMP_THREAD_LIMIT, granted),
                         arguments.toArray(String[]::new));
                 if (!outcome.finished()) {
                     throw new TikaTimeoutException("Reading " + image + " failed: "

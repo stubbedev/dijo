@@ -169,6 +169,9 @@ impl CacheArgs {
     }
 }
 
+/// Set in a worker process's environment to the processors it may use.
+pub const PROCESSORS_VARIABLE: &str = "EXTRACTOUS_PROCESSORS";
+
 /// Where extraction keeps temporary files and how much memory it may use.
 #[derive(Debug, Args)]
 pub struct RuntimeArgs {
@@ -184,6 +187,11 @@ pub struct RuntimeArgs {
     /// so that the collector runs less often.
     #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_HEAP_BYTES")]
     pub max_heap_bytes: Option<NonZeroU64>,
+
+    /// The processors this process may use, its share of the machine's as a worker process
+    /// among others.
+    #[arg(long, hide = true, value_name = "N", env = PROCESSORS_VARIABLE)]
+    pub processors: Option<NonZeroUsize>,
 }
 
 impl RuntimeArgs {
@@ -383,6 +391,16 @@ fn cores() -> NonZeroUsize {
     std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
 }
 
+/// The processors each worker process may use, when worker processes run `jobs` extractions at
+/// once, `jobs_per_process` in each: the same share of the machine's for every extraction.
+pub fn processors_per_process(jobs: NonZeroUsize, jobs_per_process: usize) -> NonZeroUsize {
+    share(cores(), jobs, jobs_per_process)
+}
+
+fn share(processors: NonZeroUsize, jobs: NonZeroUsize, jobs_per_process: usize) -> NonZeroUsize {
+    NonZeroUsize::new(processors.get() * jobs_per_process / jobs.get()).unwrap_or(NonZeroUsize::MIN)
+}
+
 fn shared_isolate_jobs() -> NonZeroUsize {
     cores().min(SHARED_ISOLATE_JOBS)
 }
@@ -394,5 +412,28 @@ impl ServeArgs {
             Isolation::Thread => shared_isolate_jobs(),
             Isolation::Process => cores(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn n(value: usize) -> NonZeroUsize {
+        NonZeroUsize::new(value).unwrap()
+    }
+
+    #[test]
+    fn worker_processes_share_the_processors_by_their_jobs() {
+        assert_eq!(share(n(12), n(12), 2), n(2));
+        assert_eq!(share(n(12), n(4), 2), n(6));
+        assert_eq!(share(n(12), n(12), 1), n(1));
+        assert_eq!(share(n(12), n(3), 1), n(4));
+    }
+
+    #[test]
+    fn a_worker_process_keeps_a_processor_when_jobs_outnumber_them() {
+        assert_eq!(share(n(4), n(16), 2), n(1));
+        assert_eq!(share(n(4), n(16), 1), n(1));
     }
 }

@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, BufWriter, Lines, Stdin, Write};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +17,7 @@ use std::thread;
 use extractous_core::Metadata;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::ExtractArgs;
+use crate::cli::{processors_per_process, ExtractArgs, PROCESSORS_VARIABLE};
 use crate::inputs::{Input, InputError, Source};
 use crate::schema::Status;
 use crate::server::answer_channel;
@@ -113,16 +114,18 @@ fn failed(display: &str, message: String) -> Finished {
     }
 }
 
-/// Extracts every input through `processes` worker processes and sends each result on as it is
-/// done.
+/// Extracts every input through worker processes, `jobs` at once, and sends each result on as it
+/// is done.
 pub fn extract(
     args: &ExtractArgs,
     inputs: &[Result<Resolved, InputError>],
     spool_dir: &Path,
     passwords: &[String],
-    processes: usize,
+    jobs: NonZeroUsize,
     sender: &mpsc::Sender<(usize, Finished)>,
 ) {
+    let processes = jobs.get().div_ceil(JOBS_PER_PROCESS);
+    let processors = processors_per_process(jobs, JOBS_PER_PROCESS);
     let next = AtomicUsize::new(0);
     let setup = serde_json::to_string(&Setup {
         passwords: passwords.to_vec(),
@@ -132,7 +135,9 @@ pub fn extract(
         for _ in 0..processes {
             let sender = sender.clone();
             let (next, setup) = (&next, setup.as_str());
-            scope.spawn(move || supervise(args, inputs, spool_dir, setup, next, &sender));
+            scope.spawn(move || {
+                supervise(args, inputs, spool_dir, setup, processors, next, &sender);
+            });
         }
     });
 }
@@ -145,6 +150,7 @@ fn supervise(
     inputs: &[Result<Resolved, InputError>],
     spool_dir: &Path,
     setup: &str,
+    processors: NonZeroUsize,
     next: &AtomicUsize,
     sender: &mpsc::Sender<(usize, Finished)>,
 ) {
@@ -178,7 +184,7 @@ fn supervise(
             };
             let started = match worker.take() {
                 Some(running) => Ok(running),
-                None => Worker::start(spool_dir, setup),
+                None => Worker::start(spool_dir, setup, processors),
             };
             let sent = started.and_then(|mut running| {
                 running.send(index, resolved)?;
@@ -289,11 +295,12 @@ struct Worker {
 }
 
 impl Worker {
-    fn start(spool_dir: &Path, setup: &str) -> io::Result<Self> {
+    fn start(spool_dir: &Path, setup: &str, processors: NonZeroUsize) -> io::Result<Self> {
         let executable = std::env::current_exe()?;
         let mut child = Command::new(&executable)
             .args(crate::arguments())
             .env(WORKER_VARIABLE, spool_dir)
+            .env(PROCESSORS_VARIABLE, processors.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

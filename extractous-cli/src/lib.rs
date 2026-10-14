@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufWriter, Write};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -211,6 +212,7 @@ fn run_command(cli: Cli) -> bool {
         let settings = IsolateSettings {
             temp_dir: runtime.spool_dir.clone(),
             max_heap_bytes: runtime.max_heap_bytes,
+            processors: runtime.processors,
         };
         if let Err(error) = extractous_core::configure_isolate(settings) {
             report("extractous", &error.to_string());
@@ -399,14 +401,15 @@ fn extract(args: &ExtractArgs) -> bool {
             return false;
         }
     };
-    let workers = args.jobs.get().min(inputs.len().max(1));
-    let processes = workers.div_ceil(batch::JOBS_PER_PROCESS);
+    let workers = args
+        .jobs
+        .min(NonZeroUsize::new(inputs.len()).unwrap_or(NonZeroUsize::MIN));
     let (sender, receiver) = mpsc::channel::<(usize, Finished)>();
-    if processes > 1 {
+    if workers.get() > batch::JOBS_PER_PROCESS {
         return thread::scope(|scope| {
             let (inputs, spool) = (&inputs, &spool);
             scope.spawn(move || {
-                batch::extract(args, inputs, spool.dir(), &passwords, processes, &sender);
+                batch::extract(args, inputs, spool.dir(), &passwords, workers, &sender);
             });
             emit_in_order(receiver, args.format, args.strict)
         });
@@ -424,12 +427,12 @@ fn extract(args: &ExtractArgs) -> bool {
         options: render_options(args),
         cache: cache.as_ref(),
         spool_dir: spool.dir(),
-        stream_to_stdout: workers == 1,
+        stream_to_stdout: workers == NonZeroUsize::MIN,
     };
     let next = AtomicUsize::new(0);
 
     let succeeded = thread::scope(|scope| {
-        for _ in 0..workers {
+        for _ in 0..workers.get() {
             let sender = sender.clone();
             let (inputs, next, context) = (&inputs, &next, &context);
             scope.spawn(move || loop {
