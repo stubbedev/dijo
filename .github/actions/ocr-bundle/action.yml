@@ -28,7 +28,7 @@ runs:
         ci/ocr-bundle.sh "$temp/ocr-bundle"
         echo "dir=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      if: runner.os != 'Linux' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+      if: always() && runner.os != 'Linux' && steps.vcpkg-cache.outputs.cache-hit != 'true'
       with:
         path: ${{ runner.temp }}/vcpkg-cache
         key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}

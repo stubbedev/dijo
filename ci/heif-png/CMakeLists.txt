@@ -8,7 +8,8 @@ set(DECODER "${CMAKE_CURRENT_SOURCE_DIR}/../../extractous-core/tika-native/src/s
 
 find_package(libheif CONFIG REQUIRED)
 find_package(leptonica CONFIG REQUIRED)
+find_path(LEPTONICA_HEADERS allheaders.h PATH_SUFFIXES leptonica REQUIRED)
 
 add_executable(heif-png main.cc "${DECODER}/heif.cc")
-target_include_directories(heif-png PRIVATE "${DECODER}")
+target_include_directories(heif-png PRIVATE "${DECODER}" "${LEPTONICA_HEADERS}")
 target_link_libraries(heif-png PRIVATE heif leptonica)
