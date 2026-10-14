@@ -1,0 +1,32 @@
+# The languages each group of closely related languages is told apart between, and the text it is trained on:
+# a shard of Wikipedia (wikimedia/wikipedia on Hugging Face, revision WIKIPEDIA_REVISION in language-groups.py)
+# with its SHA-256, and which of its text is taken: as it is, only its Cyrillic sentences, or only its Cyrillic
+# sentences transliterated to Latin script; and whether CharSoup scores the language in the group's script (it knows
+# Serbian only in Cyrillic). Group, script, ISO 639-3 label, shard, SHA-256, text, CharSoup.
+scandinavian	Latin	dan	20231101.da/train-00000-of-00002.parquet	b9450964db8ec7d9b1cf697f0efc9247fe38663be658ef4c6a1a29501876e218	as-is	scored
+scandinavian	Latin	nob	20231101.no/train-00000-of-00003.parquet	971f2477b874db3478db40b5e7b8b221bfabb064e90500cb291b37497a64c4fd	as-is	scored
+scandinavian	Latin	nno	20231101.nn/train-00000-of-00001.parquet	f5577209cd9b7b332c20f53fc9c5e15e65b363530b53738baa280417ceb3d4ac	as-is	scored
+scandinavian	Latin	swe	20231101.sv/train-00000-of-00005.parquet	d1b63dc7d7db0a71f06f59eee2376d8040b9690ac053f3e5275e94b483d5b4c4	as-is	scored
+scandinavian	Latin	isl	20231101.is/train-00000-of-00001.parquet	53e59ab6ebfe1f028be3afc616ba0cd1759ec9dacf007587671f028d9810405b	as-is	scored
+scandinavian	Latin	fao	20231101.fo/train-00000-of-00001.parquet	8241a95517118bdce46feb8dac5208b99c95e85e6bde31966e25e74e16f8fa24	as-is	scored
+south-slavic	Latin	hrv	20231101.hr/train-00000-of-00001.parquet	b7765a0e521b7df6d7bf72a8c8aaba3a66f5d110aa0be57d16fccfcb85266787	as-is	scored
+south-slavic	Latin	srp	20231101.sr/train-00000-of-00004.parquet	7fe95fc2269c20cb2470f869797543ec36186cefa8ae2c9d288ef55dfb31f68d	latin-from-cyrillic	unscored
+south-slavic	Latin	slv	20231101.sl/train-00000-of-00001.parquet	1506f09cb7372bfa122f3ee5a624a401929837e374953057918959c8fd00c96e	as-is	scored
+czech-slovak	Latin	ces	20231101.cs/train-00000-of-00004.parquet	b076e6240f38f889ee12018d7240b1bed8a2cf6487bc4b57dccc48ee85818e52	as-is	scored
+czech-slovak	Latin	slk	20231101.sk/train-00000-of-00001.parquet	2419ad32628ad8d35036689192e70a25323a63b98e9aace3c3ee364b09b3a92c	as-is	scored
+cyrillic	Cyrillic	rus	20231101.ru/train-00000-of-00021.parquet	9f8eaf92accb29a4641010655a50d1c8a5880d22020a5c98ea2666a28c7be66a	as-is	scored
+cyrillic	Cyrillic	ukr	20231101.uk/train-00000-of-00010.parquet	8e7e98f6b80d0e391adcfee52779f50bd09e2821d17a9019b01879ddbbd975b8	as-is	scored
+cyrillic	Cyrillic	bel	20231101.be/train-00000-of-00002.parquet	68048674aca99df6826cb3cc212a0c14eedd70ddf66aedd3833fb55aca7a8b39	as-is	scored
+cyrillic	Cyrillic	bul	20231101.bg/train-00000-of-00003.parquet	7be045e443daa2f516400ef115bf1e21f2e2c4698664d4935364f66037564f01	as-is	scored
+cyrillic	Cyrillic	mkd	20231101.mk/train-00000-of-00002.parquet	cb1d47a55dcc028155ea78a2bdec1b818b79bab354dc94d93bce54effc7585af	as-is	scored
+cyrillic	Cyrillic	srp	20231101.sr/train-00000-of-00004.parquet	7fe95fc2269c20cb2470f869797543ec36186cefa8ae2c9d288ef55dfb31f68d	cyrillic-only	scored
+iberian	Latin	spa	20231101.es/train-00000-of-00013.parquet	905d5162b5b8fa45f50ea8371cd1b7f4c6510b43ab2e5e8f0fd247462d0be1cc	as-is	scored
+iberian	Latin	por	20231101.pt/train-00000-of-00006.parquet	059136d457150f9c033a4bdfb7fbea2eef2b6e58e03e2c0cb8275144ce99fb34	as-is	scored
+iberian	Latin	glg	20231101.gl/train-00000-of-00001.parquet	855f9cf47f5c51642fe49baee0e429cbf865fcb292fca2a16977438541470f2d	as-is	scored
+iberian	Latin	cat	20231101.ca/train-00000-of-00004.parquet	8fd19fd918db7422682885713b919a284caa192ad572ac2a5afa5493e5b0e717	as-is	scored
+west-germanic	Latin	deu	20231101.de/train-00000-of-00020.parquet	8778fa2f0907e4eb65917b27092a911a400f9f2ee2eea4271423b706c29249a6	as-is	scored
+west-germanic	Latin	nld	20231101.nl/train-00000-of-00006.parquet	83d8a4c39a03e025071aeb64cf5b395870b74abcb4bb14c1c5d7ce44fd05c5d7	as-is	scored
+west-germanic	Latin	ltz	20231101.lb/train-00000-of-00001.parquet	d88fc77344535871bc5f2db666bc44d2e44428a8f439d444a79c403d6863335d	as-is	scored
+west-germanic	Latin	afr	20231101.af/train-00000-of-00001.parquet	bbc13cb52ed080480e495b7ffdf6d8cb531a1f7254fe8ad1988a19068eb7e547	as-is	scored
+baltic	Latin	lit	20231101.lt/train-00000-of-00001.parquet	ea5d0fc4e8d742ff8300dbb3607ba6f84a45ee8ac243cec8b6ea14746fda2f4b	as-is	scored
+baltic	Latin	lav	20231101.lv/train-00000-of-00001.parquet	a36e9c565a71fbc25d129c8a3c8026da40e383ec0e36e584e84fd86a11d0b35d	as-is	scored

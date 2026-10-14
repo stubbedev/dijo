@@ -1,7 +1,8 @@
 # Language detection fixtures
 
-- `tatoeba.tsv`: language, Tatoeba sentence ID and sentence, about 200 per language for Danish, Swedish, Norwegian
-  Bokmål and Nynorsk, Icelandic, Faroese, Finnish, Northern Sámi and their neighbours. The sentences are from
+- `tatoeba.tsv`: language, Tatoeba sentence ID and sentence, about 200 per language for every national language of
+  Europe that Tatoeba has (Serbian in Cyrillic as `srp` and in Latin script as `srp-Latn`), Armenian, Georgian,
+  Basque, Galician, Welsh and Northern Sámi. The sentences are from
   [Tatoeba](https://tatoeba.org) (`https://tatoeba.org/sentences/show/<ID>`), licensed under
   [CC BY 2.0 FR](https://creativecommons.org/licenses/by/2.0/fr/); they are unchanged, and only a sample of each
   language's sentences is kept.

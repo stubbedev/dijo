@@ -91,6 +91,7 @@ pub enum Confidence {
 
 /// The language a text is written in, by the model's own label (ISO 639-3, or a base code with
 /// a private-use orthography tag such as `be-x-old`).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Detection {
     pub label: &'static str,
@@ -104,15 +105,35 @@ pub struct Detection {
     pub script: Script,
 }
 
-/// The language of a text, or None when it has no letters or no language leads. Unlike Tika,
-/// which answers the model's biases for a text without letters, such a text has no language.
-pub fn detect(text: &str) -> Option<Detection> {
+/// The model's scores for a text: one logit per [`labels`] entry, with each confusable group
+/// pooled into its best member, and the script most of its letters are written in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scores {
+    pub logits: Vec<f32>,
+    pub script: Script,
+}
+
+/// The model's labels, in the order of [`Scores::logits`].
+pub fn labels() -> &'static [&'static str] {
+    &MODEL.labels
+}
+
+/// The model's scores for a text, or None when it has no letters.
+pub fn scores(text: &str) -> Option<Scores> {
     let features = extract(&preprocess(text));
     let script = features.dominant_script?;
     let model = &*MODEL;
-    let logits = model.collapse_groups(&model.logits(&features.counts));
-    let entropy = entropy(&logits);
-    let (top, top_logit, second_logit) = top_two(&logits);
+    Some(Scores {
+        logits: model.collapse_groups(&model.logits(&features.counts)),
+        script,
+    })
+}
+
+/// How Tika grades logits: the winner's index, the logistic of its lead over the runner-up, the
+/// entropy in bits and the confidence, or None when no logit leads.
+pub fn decide(logits: &[f32]) -> Option<(usize, f32, f32, Confidence)> {
+    let entropy = entropy(logits);
+    let (top, top_logit, second_logit) = top_two(logits);
     let score = sigmoid(top_logit - second_logit);
     let confidence = if score > 0.9 {
         Confidence::High
@@ -127,8 +148,18 @@ pub fn detect(text: &str) -> Option<Detection> {
     } else {
         return None;
     };
+    Some((top, score, entropy, confidence))
+}
+
+/// The language of a text as Tika detects it, or None when it has no letters or no language
+/// leads. Unlike Tika, which answers the model's biases for a text without letters, such a text
+/// has no language.
+#[cfg(test)]
+pub fn detect(text: &str) -> Option<Detection> {
+    let Scores { logits, script } = scores(text)?;
+    let (top, score, entropy, confidence) = decide(&logits)?;
     Some(Detection {
-        label: model.labels[top],
+        label: MODEL.labels[top],
         score,
         entropy,
         confidence,

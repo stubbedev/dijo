@@ -48,6 +48,27 @@ charsoup-reference:
     fixtures=extractous-cli/tests/fixtures/language
     java -cp "$jars/*" "$fixtures/CharSoupReference.java" "$fixtures" quality/truth "$fixtures/charsoup-reference.tsv"
 
+# Retrain the models that tell closely related languages apart (extractous-cli/models/language-groups.bin) from the
+# Wikipedia shards pinned in extractous-cli/models/language-groups.tsv, fetched into target/wikipedia (about 7 GB).
+[unix]
+language-groups:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sources=extractous-cli/models/language-groups.tsv
+    ci/fetch-wikipedia.sh "$sources" target/wikipedia
+    rev=$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile $PWD/devenv.lock)).nodes.nixpkgs.locked.rev")
+    python=$(nix build --no-link --print-out-paths --impure --expr \
+        "((builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\").legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ ps.pyarrow ]))")
+    "$python/bin/python3" -I extractous-cli/models/language-groups.py "$sources" target/wikipedia target/language-groups
+    LANGUAGE_GROUPS_SENTENCES="$PWD/target/language-groups" cargo test --release --package extractous --lib \
+        language::groups::tests::train -- --ignored
+
+# Compare language detection with Tika's CharSoup per language on a TSV of the expected ISO 639-3 code and a text per
+# line, and print the shares each detects right as a Markdown table.
+language-accuracy file:
+    LANGUAGE_EVALUATION={{absolute_path(file)}} cargo test --release --package extractous --lib \
+        language::tests::accuracy_against_tika -- --ignored --nocapture
+
 # Build the statically linked Linux executable target/static-image/extractous: the program linked into
 # Tika's GraalVM native image, with musl, needing nothing at run time.
 [linux]

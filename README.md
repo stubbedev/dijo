@@ -246,10 +246,21 @@ without pages is one record), and `--format elements` one per heading, paragraph
 `detected_language` is the language detected from the text itself (ISO 639-3 code, script, confidence and whether
 it is `reliable` enough to act on, such as to pick a search analyzer), from the first 64 KiB of a document and from
 each page's own text in `--format pages`. It is separate from `metadata.language`, which is what the document
-declares. Detection is a Rust port of Apache Tika 4's CharSoup detector, with Tika's model of 204 languages, among
-them Danish, Swedish, Norwegian Bokmål and Nynorsk, Icelandic, Faroese, Finnish and Northern Sámi; it gives Tika's
-answers exactly. On Tatoeba's short sentences it tells Danish from Norwegian and Swedish in about 7 sentences of 10,
-and in runs of five sentences 39 times in 40, with every other Nordic language right in every run.
+declares. Detection starts from a Rust port of Apache Tika 4's CharSoup detector, with Tika's model of 204 languages,
+and improves on it in two ways. A prior makes a national language more likely than the regional languages, dialects
+and historical and constructed languages CharSoup takes them for (Zazaki for Turkish, Swiss German for German, Walloon
+for French, Corsican for Italian). And where CharSoup's leader belongs to a group of closely related national
+languages (Danish, Norwegian Bokmål and Nynorsk, Swedish, Icelandic and Faroese; Croatian, Serbian and Slovene;
+Czech and Slovak; Russian, Ukrainian, Belarusian, Bulgarian, Macedonian and Serbian in Cyrillic; Spanish, Portuguese,
+Galician and Catalan; German, Dutch, Luxembourgish and Afrikaans; Lithuanian and Latvian), a model of that group
+trained on Wikipedia (CC BY-SA 4.0; `just language-groups`) decides between them. It also recognises Serbian written in Latin
+script, which Tika's model only knows in Cyrillic and reports as Croatian.
+
+On 200 Tatoeba sentences of each European language the test suite checks that every language is detected at least
+as often as Tika detects it, alone and in runs of five sentences; on average 86.7% of the sentences against Tika's
+80.5%, and 98.6% of the runs against 97.1%. Danish is right in 79.5% of the sentences (Tika 67.5%), Norwegian Bokmål
+in 83.0% (68.5%), Swedish in 83.5% (71.0%), Turkish in 83.5% (67.0%), and all four in every run of five.
+`just language-accuracy <tsv>` compares both on other texts.
 
 `metadata` (with `-m`) holds normalised fields filled from whichever Tika key a format uses: dates are RFC 3339 in UTC,
 or marked `unknown_offset` when the document gave no offset; multi-valued fields are always arrays. Tika's own keys are
@@ -363,6 +374,8 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just static` | Build the statically linked Linux executable with tesseract, libheif and DjVuLibre linked in, into `target/static-image/extractous` (uses nix) |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
+| `just language-groups` | Retrain the models that tell closely related languages apart, from pinned Wikipedia shards (about 7 GB) |
+| `just language-accuracy <tsv>` | Compare language detection with Tika's CharSoup, per language, on a TSV of codes and texts |
 | `just quality` | Score extraction against the quality corpus and write quality/SCOREBOARD.md |
 | `just quality-bless` | Accept the current quality scores as the new baseline |
 | `just quality-corpus` | Regenerate the quality corpus from its ground truth (uses LibreOffice via nix) |
