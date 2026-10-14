@@ -306,10 +306,9 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.988 of the truth's words, Tika 0.847, Kreuzberg 0.741 and Docling 0.748, at
-a token error rate of 0.015 against 0.200, 0.332 and 0.275. Tika scores better on no document of a European language;
-of all the corpus, only on a two-column PDF, where it keeps a line-end hyphen that extractous joins, and on a
-Georgian scan that both misread, since orientation and script detection takes it for Malayalam. A document an extractor cannot read, such as a DOC or RTF
+with default options, extractous recalls 0.996 of the truth's words, Tika 0.848, Kreuzberg 0.738 and Docling 0.744, at
+a token error rate of 0.006 against 0.199, 0.335 and 0.278. Tika scores better on no document of a European language;
+of all the corpus, only on the recall of a two-column PDF, where it keeps a line-end hyphen that extractous joins. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
