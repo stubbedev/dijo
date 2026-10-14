@@ -49,9 +49,9 @@ toolchain.
 
 OCR runs tesseract: linked in, in the static build, and otherwise the `tesseract` executable. The Linux release
 binaries carry their own, statically linked, with the language
-data the automatic language needs (orientation and script detection, tesseract's `script/Latin` and `script/Greek`
-models, which read every language of those scripts with its diacritics, and a fast model for each other script it
-reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the C library: a binary built with
+data the automatic language needs (orientation and script detection, tesseract's `script/Latin`, `script/Greek` and
+`script/Cyrillic` models, which read every language of those scripts with its letters and diacritics, and a fast model
+for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the C library: a binary built with
 `EXTRACTOUS_OCR_BUNDLE` pointing at a bundle from `just ocr-bundle` does the same (about 90 MB larger, 170 MB once
 unpacked), and `--ocr-lang` can name only the bundled models there. Reading Danish, Swedish, Norwegian, German, Polish,
 Czech or Turkish scans with the English model instead loses 3 to 13% of the characters, the diacritics.
