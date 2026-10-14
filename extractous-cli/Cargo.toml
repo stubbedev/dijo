@@ -34,7 +34,7 @@ quick-xml = "0.42.0"
 unicode-normalization = "0.1.25"
 unicode-general-category = "1.1.0"
 unicode-script = "0.5.8"
-mimalloc = { version = "0.1.52", optional = true }
+mimalloc = { version = "0.1.52", optional = true, features = ["override"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
