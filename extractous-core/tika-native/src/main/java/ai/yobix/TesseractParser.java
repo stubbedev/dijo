@@ -77,8 +77,9 @@ final class TesseractParser implements Parser, TextRecognizer {
         if (size < config.getMinFileSizeToOcr() || size > config.getMaxFileSizeToOcr()) {
             return null;
         }
-        return tesseract.read(image, config.getPageSegMode(), config.getLanguage(),
-                variables(config), config.getTimeoutMillis());
+        final Tesseract.Reading reading = tesseract.read(image, config.getPageSegMode(),
+                config.getLanguage(), variables(config), config.getTimeoutMillis());
+        return new Tesseract.Reading(OcrText.corrected(reading.text()), reading.confidence());
     }
 
     /** Writes text read from an image as Tika does: in a div of class ocr. */

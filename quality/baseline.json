@@ -1330,11 +1330,11 @@
     "reading_order": 0.2857142857142857
   },
   "romanian-scan.png": {
-    "character_error_rate": 0.007713884992987377,
-    "token_error_rate": 0.05263157894736842,
-    "recall": 0.9473684210526315,
-    "spurious": 0.05263157894736842,
-    "reading_order": 0.8571428571428571
+    "character_error_rate": 0.002805049088359046,
+    "token_error_rate": 0.019138755980861243,
+    "recall": 0.9808612440191388,
+    "spurious": 0.019138755980861243,
+    "reading_order": 1.0
   },
   "romanian.docx": {
     "character_error_rate": 0.0,

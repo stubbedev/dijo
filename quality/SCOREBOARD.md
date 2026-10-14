@@ -196,7 +196,7 @@
 | maltese-scan.png | ocr | 0.006 | 0.004 | 0.996 | 0.004 | 1.000 |
 | nynorsk-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | portuguese-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| romanian-scan.png | ocr | 0.008 | 0.053 | 0.947 | 0.053 | 0.857 |
+| romanian-scan.png | ocr | 0.003 | 0.019 | 0.981 | 0.019 | 1.000 |
 | romansh-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | serbian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | serbian-latin-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
