@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -17,7 +18,12 @@ impl Server {
     }
 
     pub fn start_with_env(args: &[&str], env: &[(&str, &str)]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        Self::start_program(Path::new(env!("CARGO_BIN_EXE_extractous")), args, env)
+    }
+
+    /// Starts `serve` of another build of extractous, such as the static executable.
+    pub fn start_program(program: &Path, args: &[&str], env: &[(&str, &str)]) -> Self {
+        let mut child = Command::new(program)
             .args(["serve", "--listen", "127.0.0.1:0"])
             .args(args)
             .envs(env.iter().copied())

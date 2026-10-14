@@ -3,13 +3,15 @@
 //! the test documents and the quality corpus with their default OCR, after a warm-up pass, from
 //! one client and from four; extractous also with English OCR, which skips the script detection
 //! tika-server does not do. COMPARE_ROUNDS sets the passes measured, SERVER_COMPARISON the file
-//! the table is written to.
+//! the table is written to, and SERVER_COMPARE_BINARY another build of extractous to serve, such
+//! as the static executable.
 
 #![cfg(target_os = "linux")]
 
 mod common;
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -121,7 +123,11 @@ fn extractous_serve_against_tika_server() {
     let rounds = std::env::var("COMPARE_ROUNDS").map_or(DEFAULT_ROUNDS, |rounds| {
         rounds.parse().expect("COMPARE_ROUNDS is a number")
     });
-    let ours = Server::start(&["--workers", &WORKERS.to_string()]);
+    let program = std::env::var_os("SERVER_COMPARE_BINARY").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_extractous")),
+        PathBuf::from,
+    );
+    let ours = Server::start_program(&program, &["--workers", &WORKERS.to_string()], &[]);
     let targets = [
         Target {
             name: "extractous serve",

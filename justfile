@@ -123,7 +123,8 @@ quality-compare:
         cargo nextest run --package extractous --test quality
 
 # Load tika-server of the bundled Tika version and `extractous serve` alike on this machine, and
-# write their throughput, latency and memory to target/server-compare/comparison.md.
+# write their throughput, latency and memory to target/server-compare/comparison.md;
+# SERVER_COMPARE_BINARY serves another build, such as target/static-image/extractous.
 [unix]
 server-compare:
     #!/usr/bin/env bash
