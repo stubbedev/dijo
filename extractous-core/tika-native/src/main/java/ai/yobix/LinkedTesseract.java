@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -29,11 +30,16 @@ final class LinkedTesseract implements Tesseract {
     private static final String DEFAULT_LANGUAGE = "eng";
     private static final String OSD_LANGUAGE = "osd";
     private static final String TEXT_EXTENSION = ".txt";
+    private static final long IDLE_NANOS = TimeUnit.MINUTES.toNanos(5);
     private static final String MODEL_EXTENSION = ".traineddata";
 
     private final Path tessdata;
     private final Set<String> languages;
-    private final Map<String, ConcurrentLinkedDeque<Long>> idle = new ConcurrentHashMap<>();
+    private final Map<String, ConcurrentLinkedDeque<Idle>> idle = new ConcurrentHashMap<>();
+
+    /** An engine no read is using, and since when, by {@link System#nanoTime()}. */
+    private record Idle(long engine, long since) {
+    }
 
     LinkedTesseract(Path tessdata) throws IOException {
         this.tessdata = tessdata;
@@ -152,12 +158,17 @@ final class LinkedTesseract implements Tesseract {
         return languages;
     }
 
-    /** An idle engine for a model, loaded when every engine for it is in use. */
+    /**
+     * An idle engine for a model, the one used last, loaded when every engine for it is in use.
+     * Engines idle for longer than {@link #IDLE_NANOS} are released first, so a long-running
+     * process does not keep a model it read with once in memory.
+     */
     private long take(String language) throws TikaException {
-        final Long engine = idle.computeIfAbsent(language, model -> new ConcurrentLinkedDeque<>())
-                .poll();
+        releaseIdle(System.nanoTime() - IDLE_NANOS);
+        final Idle engine = idle.computeIfAbsent(language, model -> new ConcurrentLinkedDeque<>())
+                .pollFirst();
         if (engine != null) {
-            return engine;
+            return engine.engine();
         }
         final long created = create(utf8(tessdata.toString()), utf8(language));
         if (created == 0) {
@@ -168,12 +179,27 @@ final class LinkedTesseract implements Tesseract {
     }
 
     private void release(String language, long engine) {
-        idle.get(language).push(engine);
+        idle.get(language).addFirst(new Idle(engine, System.nanoTime()));
+    }
+
+    /** Destroys the engines idle since before a moment, the longest idle of each model first. */
+    private void releaseIdle(long before) {
+        for (final ConcurrentLinkedDeque<Idle> engines : idle.values()) {
+            for (Idle oldest = engines.peekLast(); oldest != null && oldest.since() - before < 0;
+                 oldest = engines.peekLast()) {
+                if (engines.removeLastOccurrence(oldest)) {
+                    destroy(oldest.engine());
+                }
+            }
+        }
     }
 
     private static byte[] utf8(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }
+
+    /** Frees an engine and the model it loaded. */
+    private static native void destroy(long engine);
 
     /** Loads an engine for a model, or returns 0 when it cannot. */
     private static native long create(byte[] tessdata, byte[] language);

@@ -242,6 +242,10 @@ JNIEXPORT jlong JNICALL Java_ai_yobix_LinkedTesseract_create(JNIEnv *env, jclass
     }
 }
 
+JNIEXPORT void JNICALL Java_ai_yobix_LinkedTesseract_destroy(JNIEnv *, jclass, jlong engine) {
+    delete reinterpret_cast<tesseract::TessBaseAPI *>(engine);
+}
+
 JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_run(JNIEnv *env, jclass, jlong engine,
                                                          jbyteArray image, jbyteArray outputBase,
                                                          jint pageSegMode, jobjectArray names,
