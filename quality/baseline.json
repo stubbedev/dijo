@@ -1232,10 +1232,10 @@
     "reading_order": 1.0
   },
   "prose.epub": {
-    "character_error_rate": 0.031179138321995464,
-    "token_error_rate": 0.029508196721311476,
+    "character_error_rate": 0.008503401360544218,
+    "token_error_rate": 0.006557377049180328,
     "recall": 1.0,
-    "spurious": 0.028662420382165606,
+    "spurious": 0.006514657980456026,
     "reading_order": 1.0
   },
   "prose.html": {

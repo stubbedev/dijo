@@ -6,7 +6,7 @@
 | prose.rtf | born-digital | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.pdf | born-digital | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.html | born-digital | 0.005 | 0.003 | 1.000 | 0.003 | 1.000 |
-| prose.epub | born-digital | 0.031 | 0.030 | 1.000 | 0.029 | 1.000 |
+| prose.epub | born-digital | 0.009 | 0.007 | 1.000 | 0.007 | 1.000 |
 | prose-pandoc.docx | born-digital | 0.001 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-columns.pdf | multi-column | 0.001 | 0.007 | 0.993 | 0.003 | 1.000 |
 | prose-columns-reversed.pdf | multi-column | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
