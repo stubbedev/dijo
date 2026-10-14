@@ -26,6 +26,16 @@ cc="$toolchain/bin/$triple-gcc"
 work="$root/target/static-image"
 mkdir -p "$work/feature" "$work/clibraries"
 
+graalvm=$GRAALVM_HOME
+jdk_static="$GRAALVM_HOME/lib/static/$platform"
+if [ ! -d "$jdk_static/musl" ]; then
+    graalvm="$work/graalvm"
+    rm -rf "$graalvm"
+    cp -a "$GRAALVM_HOME/." "$graalvm"
+    chmod -R u+w "$graalvm/lib/static"
+    cp -a "$jdk_static/glibc" "$graalvm/lib/static/$platform/musl"
+fi
+
 if [ -z "${EXTRACTOUS_OCR_BUNDLE:-}" ]; then
     "$here/ocr-bundle.sh" "$work/ocr-bundle"
     export EXTRACTOUS_OCR_BUNDLE="$work/ocr-bundle"
@@ -38,14 +48,14 @@ env "CC_$triple_variable=$cc" "AR_$triple_variable=$toolchain/bin/$triple-ar" \
     --target "$triple" --features static-image --crate-type staticlib
 program="$root/target/$triple/release/libextractous.a"
 
-cp "$GRAALVM_HOME/lib/svm/clibraries/$platform/musl/libjvm.a" "$work/clibraries/libjvm.a"
+cp "$graalvm/lib/svm/clibraries/$platform/musl/libjvm.a" "$work/clibraries/libjvm.a"
 chmod u+w "$work/clibraries/libjvm.a"
 "$toolchain/bin/$triple-objcopy" --weaken-symbol=JVM_IsStaticallyLinked "$work/clibraries/libjvm.a"
 static_sources="$root/extractous-core/tika-native/src/static"
 objects=()
 for source in "$static_sources"/*.c; do
     object="$work/$(basename "$source" .c).o"
-    "$cc" -c -O2 -fPIC -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" -o "$object" "$source"
+    "$cc" -c -O2 -fPIC -I"$graalvm/include" -I"$graalvm/include/linux" -o "$object" "$source"
     objects+=("$object")
 done
 mapfile -t tesseract_cflags < "$toolchain/extractous/tesseract-cflags"
@@ -55,7 +65,7 @@ mapfile -t images_libs < "$toolchain/extractous/images-libs"
 for source in "$static_sources"/*.cc; do
     object="$work/$(basename "$source" .cc).o"
     "$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++17 "${tesseract_cflags[@]}" \
-        "${images_cflags[@]}" -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" \
+        "${images_cflags[@]}" -I"$graalvm/include" -I"$graalvm/include/linux" \
         -o "$object" "$source"
     objects+=("$object")
 done
@@ -76,9 +86,9 @@ classpath=${arguments[classpath_index]}
 arguments[classpath_index]="$classpath:$work/feature"
 
 mapfile -t static_java < <(find "$static_sources/java" -name '*.java' | sort)
-"$GRAALVM_HOME/bin/javac" --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
+"$graalvm/bin/javac" --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
     --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.hosted.c=ALL-UNNAMED \
-    -cp "$GRAALVM_HOME/lib/svm/builder/svm.jar:$classpath" -d "$work/feature" "${static_java[@]}"
+    -cp "$graalvm/lib/svm/builder/svm.jar:$classpath" -d "$work/feature" "${static_java[@]}"
 
 jar_in_classpath() {
     tr ':' '\n' <<< "$classpath" | grep -E "/$1-[0-9][^/]*\.jar$" | grep -v sources
@@ -89,9 +99,9 @@ sqlite_version=${sqlite_version#sqlite-jdbc-}
 PATH="$toolchain/bin:$PATH" "$here/static-sqlite.sh" "$sqlite_version" "$cc" \
     "$(jar_in_classpath slf4j-api)" "$work/sqlite"
 
-native_image="$GRAALVM_HOME/bin/native-image"
-if [ -x "$GRAALVM_HOME/bin/.native-image-wrapped" ]; then
-    native_image="$GRAALVM_HOME/bin/.native-image-wrapped"
+native_image="$graalvm/bin/native-image"
+if [ -x "$graalvm/bin/.native-image-wrapped" ]; then
+    native_image="$graalvm/bin/.native-image-wrapped"
 fi
 
 linked=()

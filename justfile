@@ -48,6 +48,17 @@ charsoup-reference:
     fixtures=extractous-cli/tests/fixtures/language
     java -cp "$jars/*" "$fixtures/CharSoupReference.java" "$fixtures" quality/truth "$fixtures/charsoup-reference.tsv"
 
+# Build the container image extractous:local, FROM scratch around the static executable that
+# `just static` built.
+[linux]
+container:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    context=$(mktemp -d)
+    trap 'rm -rf "$context"' EXIT
+    cp target/static-image/extractous "$context/"
+    docker build --file Dockerfile --tag extractous:local "$context"
+
 # Retrain the models that tell closely related languages apart (extractous-cli/models/language-groups.bin) from the
 # Wikipedia shards pinned in extractous-cli/models/language-groups.tsv, fetched into target/wikipedia (about 7 GB).
 [unix]

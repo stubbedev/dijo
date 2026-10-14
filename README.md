@@ -9,8 +9,8 @@ runs as native code inside the process.
 
 ## Install
 
-Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and a
-static build for x86_64, `x86_64-linux-static`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
+Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and static
+builds for both, `x86_64-linux-static` and `aarch64-linux-static`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
 SBOMs of the Rust crates and Java libraries, and build provenance you can check with
 `gh attestation verify <archive> --repo stubbedev/extractous`.
 
@@ -33,8 +33,8 @@ Windows) and loaded from there, so the binary runs wherever it is copied.
 These binaries link the system's C library (glibc 2.35 or later for the Linux release binaries), so a container needs
 a base image with it, such as `debian:bookworm-slim`. Nothing else needs installing.
 
-The `x86_64-linux-static` release binary needs nothing at all, not even a C library: it runs in a `FROM scratch`
-container. GraalVM builds static images only as executables, so this build turns the program around: the Rust code is
+The `x86_64-linux-static` and `aarch64-linux-static` release binaries need nothing at all, not even a C library: they
+run in a `FROM scratch` container. GraalVM builds static images only as executables, so this build turns the program around: the Rust code is
 compiled for musl as a static library and linked into Tika's native image, whose `main` hands over to it, and the
 JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked, and libheif (with
 its HEVC and AV1 decoders) and DjVuLibre instead of run as `heif-dec` and `ddjvu`. Nothing is unpacked but the OCR
@@ -43,9 +43,10 @@ small files, where the Rust side dominates, it is about 5% slower (it allocates 
 allocator); OCR is 30 to 40% faster, since each model is loaded once per process instead of once per image (more for
 documents with many small images), script detection skips a page segmentation it would discard, and tesseract
 allocates with mimalloc too, at the cost of keeping the loaded models in memory: about 280 MB for `script/Latin` per
-extraction running at once. GraalVM ships no musl libraries for aarch64, so there is no static
-aarch64 build. `just static` builds it on Linux into `target/static-image/extractous`, with nix providing the musl
-toolchain.
+extraction running at once. GraalVM ships the JDK's static libraries for aarch64 only built against glibc; the
+aarch64 build links those against musl, with the few glibc-only functions they call (the `*64` large-file names,
+`__xstat64` and the like) forwarded to musl's (`glibc_compat.c`). `just static` builds it on Linux into
+`target/static-image/extractous`, with nix providing the musl toolchain.
 
 OCR runs tesseract: linked in, in the static build, and otherwise the `tesseract` executable. The Linux release
 binaries carry their own, statically linked, with the language
@@ -218,16 +219,17 @@ What it leaves to the deployment:
 
 ### Container
 
-Each release publishes a multi-platform image (linux/amd64, linux/arm64) with tesseract and the language models the
-release binaries bundle (`ci/tessdata.tsv`), running the server as an unprivileged user:
+Each release publishes a multi-platform image (linux/amd64, linux/arm64) built `FROM scratch`: the static executable
+and nothing else but a `/tmp` and a cache directory, running the server as an unprivileged user (uid 10001). OCR reads
+with the models the executable bundles (`ci/tessdata.tsv`):
 
 ```sh
 docker run --rm -p 9998:9998 ghcr.io/stubbedev/extractous:latest
 docker run --rm -v "$PWD:/data:ro" ghcr.io/stubbedev/extractous:latest /data/report.pdf
 ```
 
-`docker build .` builds the same image from source. For OCR with other models, add them to
-`/usr/share/extractous/tessdata` in a derived image.
+`just static` and then `just container` build the same image locally as `extractous:local`. `--ocr-lang` can name
+only the bundled models.
 
 ## JSON output
 

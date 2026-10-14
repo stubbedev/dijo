@@ -1,8 +1,0 @@
-.git
-.devenv*
-.direnv
-**/target
-**/dist
-test_files
-**/build
-**/.gradle
