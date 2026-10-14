@@ -532,10 +532,10 @@
     "reading_order": 1.0
   },
   "greek-scan.png": {
-    "character_error_rate": 0.008695652173913044,
-    "token_error_rate": 0.05263157894736842,
-    "recall": 0.9473684210526315,
-    "spurious": 0.05263157894736842,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "greek.docx": {
