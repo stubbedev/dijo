@@ -33,7 +33,7 @@ fi
 
 triple_variable=${triple//-/_}
 env "CC_$triple_variable=$cc" "AR_$triple_variable=$toolchain/bin/$triple-ar" \
-    PATH="$toolchain/bin:$PATH" \
+    PATH="$toolchain/bin:$PATH" EXTRACTOUS_STATIC_LICENSES="$toolchain/extractous/licenses" \
     cargo rustc --manifest-path "$root/Cargo.toml" -p extractous --lib --release --locked \
     --target "$triple" --features static-image --crate-type staticlib
 program="$root/target/$triple/release/libextractous.a"
@@ -50,10 +50,15 @@ for source in "$static_sources"/*.c; do
 done
 mapfile -t tesseract_cflags < "$toolchain/extractous/tesseract-cflags"
 mapfile -t tesseract_libs < "$toolchain/extractous/tesseract-libs"
-"$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++17 "${tesseract_cflags[@]}" \
-    -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" \
-    -o "$work/tesseract.o" "$static_sources/tesseract.cc"
-objects+=("$work/tesseract.o")
+mapfile -t images_cflags < "$toolchain/extractous/images-cflags"
+mapfile -t images_libs < "$toolchain/extractous/images-libs"
+for source in "$static_sources"/*.cc; do
+    object="$work/$(basename "$source" .cc).o"
+    "$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++17 "${tesseract_cflags[@]}" \
+        "${images_cflags[@]}" -I"$GRAALVM_HOME/include" -I"$GRAALVM_HOME/include/linux" \
+        -o "$object" "$source"
+    objects+=("$object")
+done
 
 (cd "$root/extractous-core/tika-native" && ./gradlew -q nativeImageArguments) > "$work/arguments"
 mapfile -t arguments < "$work/arguments"
@@ -90,8 +95,8 @@ if [ -x "$GRAALVM_HOME/bin/.native-image-wrapped" ]; then
 fi
 
 linked=()
-for library in "${objects[@]}" "$program" "${tesseract_libs[@]}" -lfreetype -lpng16 -lbz2 \
-    -lbrotlidec -lbrotlicommon -lz -lstdc++; do
+for library in "${objects[@]}" "$program" "${tesseract_libs[@]}" "${images_libs[@]}" \
+    -lfreetype -lpng16 -lbz2 -lbrotlidec -lbrotlicommon -lz -lstdc++; do
     linked+=("-H:NativeLinkerOption=$library")
 done
 

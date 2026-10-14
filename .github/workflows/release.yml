@@ -186,6 +186,9 @@ jobs:
           bare --jobs 4 /corpus/danish.docx /corpus/swedish.pdf /corpus/norwegian.docx /corpus/prose.rtf \
             > "$RUNNER_TEMP/batch.txt"
           grep -q "Fyrvokterens loggbok" "$RUNNER_TEMP/batch.txt"
+          for image in prose-scan.heic prose-scan.avif prose-scan.djvu; do
+            bare "/corpus/$image" | grep -q "Lighthouse Keeper"
+          done
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi

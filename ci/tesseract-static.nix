@@ -24,27 +24,7 @@ let
         package = p;
       }) (inputsOf item.package);
   };
-  licenses = p: ''
-    target=$out/licenses/${p.pname or p.name}
-    mkdir -p "$target"
-    unpacked=$(mktemp -d)
-    if [ -d ${p.src} ]; then
-      cp -r --no-preserve=mode ${p.src}/. "$unpacked"
-    else
-      tar -xf ${p.src} -C "$unpacked"
-    fi
-    root=$unpacked
-    if [ "$(find "$unpacked" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ]; then
-      root=$(find "$unpacked" -mindepth 1 -maxdepth 1)
-    fi
-    find "$root" -maxdepth 1 -type f \( -iname '*licen[cs]e*' -o -iname 'COPYING*' \
-      -o -iname 'COPYRIGHT*' -o -iname 'NOTICE*' -o -iname 'README.ijg' \) -exec cp {} "$target"/ \;
-    if [ -z "$(ls -A "$target")" ]; then
-      echo "no license file found in the source of ${p.name}" >&2
-      exit 1
-    fi
-    rm -rf "$unpacked"
-  '';
+  licenses = import ./licenses.nix "$out/licenses";
 in
 pkgs.runCommand "tesseract-static-bundle" { } (
   ''

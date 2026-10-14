@@ -22,7 +22,8 @@ import java.util.Map;
  * natives of the headful X11 toolkit, which no archive here defines, stay unbound. GraalVM only
  * runs the load hooks of JDK libraries, so sqlite-jdbc's is linked as a plain library whose load
  * hook its loader runs ({@link Target_org_sqlite_SQLiteJDBCLoader}). The natives of
- * {@code LinkedTesseract} are bound to tesseract.cc, linked with libtesseract.
+ * {@code LinkedTesseract} are bound to tesseract.cc, linked with libtesseract, and those of
+ * {@code LinkedImages} to images.cc, linked with libheif and DjVuLibre.
  */
 public final class StaticJniLibrariesFeature implements Feature {
 
@@ -34,6 +35,7 @@ public final class StaticJniLibrariesFeature implements Feature {
     private static final String SQLITE = "sqlitejdbc";
     private static final String SQLITE_NATIVES = "org_sqlite_core_NativeDB";
     private static final String TESSERACT_NATIVES = "ai_yobix_LinkedTesseract";
+    private static final String IMAGES_NATIVES = "ai_yobix_LinkedImages";
 
     /**
      * Binds the native methods whose JNI symbols start with a prefix to the linked code: GraalVM
@@ -69,6 +71,7 @@ public final class StaticJniLibrariesFeature implements Feature {
         NativeLibraries.singleton().addStaticNonJniLibrary(SQLITE);
         bindNatives(SQLITE_NATIVES);
         bindNatives(TESSERACT_NATIVES);
+        bindNatives(IMAGES_NATIVES);
         for (final String library : LIBRARIES) {
             NativeLibrarySupport.singleton().preregisterUninitializedBuiltinLibrary(library);
             if (library.equals(AWT)) {

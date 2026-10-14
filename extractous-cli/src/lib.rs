@@ -177,16 +177,25 @@ fn wait_for_stopping_extractions() {
 }
 
 fn print_licenses() -> bool {
+    let sections = [
+        (
+            "Bundled OCR: tesseract, the libraries it links and its language data",
+            extractous_core::bundled_ocr_licenses(),
+        ),
+        (
+            "Linked native libraries: fonts, HEIC and AVIF decoding, DjVu rendering",
+            extractous_core::linked_native_licenses(),
+        ),
+    ];
     let mut stdout = io::stdout().lock();
     let written = stdout.write_all(LICENSES.as_bytes()).and_then(|()| {
-        match extractous_core::bundled_ocr_licenses() {
-            Some(licenses) => stdout
-                .write_all(
-                    b"\n# Bundled OCR: tesseract, the libraries it links and its language data\n\n",
-                )
-                .and_then(|()| stdout.write_all(licenses.as_bytes())),
-            None => Ok(()),
-        }
+        sections
+            .iter()
+            .filter_map(|(title, licenses)| licenses.map(|licenses| (title, licenses)))
+            .try_for_each(|(title, licenses)| {
+                write!(stdout, "\n# {title}\n\n")?;
+                stdout.write_all(licenses.as_bytes())
+            })
     });
     written.map_or_else(|error| stdout_failed(&error), |()| true)
 }

@@ -5,15 +5,14 @@ import java.nio.file.Path;
 
 /**
  * The tesseract and language data the build bundled, which the Rust side unpacks and names in
- * system properties: {@code extractous.ocr.tessdata} names the language data, and either
- * {@code extractous.ocr.tesseract} the executable, or {@code extractous.ocr.linked} says that
- * tesseract is linked into the process.
+ * system properties: {@code extractous.ocr.tessdata} names the language data, and
+ * {@code extractous.ocr.tesseract} the executable, unless tesseract is linked into the static
+ * executable.
  */
 final class OcrBundle {
 
     private static final String TESSERACT = System.getProperty("extractous.ocr.tesseract");
     private static final String TESSDATA = System.getProperty("extractous.ocr.tessdata");
-    private static final boolean LINKED = Boolean.getBoolean("extractous.ocr.linked");
 
     private OcrBundle() {
     }
@@ -24,7 +23,11 @@ final class OcrBundle {
      * @throws IllegalStateException when the bundled executable does not run
      */
     static Tesseract tesseract() throws IOException {
-        if (LINKED) {
+        if (StaticImage.running()) {
+            if (TESSDATA == null) {
+                throw new IllegalStateException("The static executable names no language data for "
+                        + "its linked tesseract");
+            }
             return new LinkedTesseract(Path.of(TESSDATA));
         }
         if (TESSERACT == null) {

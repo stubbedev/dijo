@@ -18,6 +18,8 @@ public final class StaticImage {
 
     private static final String PROGRAM = "extractous";
 
+    private static volatile boolean running;
+
     private StaticImage() {
     }
 
@@ -25,6 +27,7 @@ public final class StaticImage {
     private static native int extractousMain(int argc, CCharPointerPointer argv);
 
     public static void main(String[] args) {
+        running = true;
         final CCharPointerHolder[] holders = new CCharPointerHolder[args.length + 1];
         final CCharPointerPointer argv = UnmanagedMemory.malloc(
                 (args.length + 2) * SizeOf.get(CCharPointerPointer.class));
@@ -37,6 +40,14 @@ public final class StaticImage {
         }
         argv.write(holders.length, WordFactory.nullPointer());
         System.exit(extractousMain(holders.length, argv));
+    }
+
+    /**
+     * Whether this process is the static executable, which links tesseract, libheif and
+     * DjVuLibre in place of running their programs.
+     */
+    static boolean running() {
+        return running;
     }
 
     /** Sets a system property, as the program does before the first extraction. */

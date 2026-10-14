@@ -7,9 +7,3 @@ use crate::tika::native;
 pub fn tesseract_version() -> ExtractResult<String> {
     native::tesseract_version().map_err(Error::IoError)
 }
-
-/// The licenses of the tesseract and the language data the build bundled, or None when it
-/// bundled none.
-pub fn bundled_ocr_licenses() -> Option<&'static str> {
-    native::bundled_ocr_licenses()
-}

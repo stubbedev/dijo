@@ -20,6 +20,7 @@ const OCR_TESSERACT: &str = "tesseract";
 const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
 const OCR_LICENSES: &str = "licenses";
+const STATIC_LICENSES_VARIABLE: &str = "EXTRACTOUS_STATIC_LICENSES";
 
 fn main() {
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
@@ -30,7 +31,8 @@ fn main() {
                 "The static build links tesseract and needs {OCR_BUNDLE_VARIABLE} for its language data"
             )
         });
-        write_static_native_module(&out_dir, &ocr);
+        let linked_licenses = static_licenses(&out_dir);
+        write_static_native_module(&out_dir, &ocr, &linked_licenses);
         return;
     }
     for input in TIKA_NATIVE_INPUTS {
@@ -131,8 +133,36 @@ fn ocr_bundle(out_dir: &Path, engine: OcrEngine) -> Option<OcrBundle> {
         compress_bytes(&content, &compressed);
         files.push((name, compressed));
     }
+    let licenses = compressed_dir.join("LICENSES.md");
+    write_licenses(&dir.join(OCR_LICENSES), OCR_BUNDLE_VARIABLE, &licenses);
+    Some(OcrBundle {
+        files,
+        licenses,
+        fingerprint: format!("{:016x}", hasher.finish()),
+    })
+}
+
+/// The licenses of the native libraries the static image links beyond tesseract's, which
+/// `EXTRACTOUS_STATIC_LICENSES` names as a directory with one subdirectory per library, written
+/// into one file.
+fn static_licenses(out_dir: &Path) -> PathBuf {
+    println!("cargo:rerun-if-env-changed={STATIC_LICENSES_VARIABLE}");
+    let dir = PathBuf::from(env::var_os(STATIC_LICENSES_VARIABLE).unwrap_or_else(|| {
+        panic!(
+            "The static build needs {STATIC_LICENSES_VARIABLE} for the licenses of what it links"
+        )
+    }));
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let licenses = out_dir.join("LINKED-LICENSES.md");
+    write_licenses(&dir, STATIC_LICENSES_VARIABLE, &licenses);
+    licenses
+}
+
+/// Writes every license file in `dir`, which holds one subdirectory per component, as one
+/// Markdown text; `variable` names where `dir` came from.
+fn write_licenses(dir: &Path, variable: &str, target: &Path) {
     let mut licenses = String::new();
-    for component in list_dir(&dir.join(OCR_LICENSES)) {
+    for component in list_dir(dir) {
         for file in list_dir(&component) {
             let text = String::from_utf8_lossy(&read_file(&file)).into_owned();
             licenses.push_str(&format!(
@@ -145,18 +175,12 @@ fn ocr_bundle(out_dir: &Path, engine: OcrEngine) -> Option<OcrBundle> {
     }
     if licenses.is_empty() {
         panic!(
-            "{OCR_BUNDLE_VARIABLE} names {}, which holds no licenses",
+            "{variable} names {}, which holds no licenses",
             dir.display()
         );
     }
-    let licenses_path = compressed_dir.join("LICENSES.md");
-    fs::write(&licenses_path, licenses)
-        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", licenses_path.display()));
-    Some(OcrBundle {
-        files,
-        licenses: licenses_path,
-        fingerprint: format!("{:016x}", hasher.finish()),
-    })
+    fs::write(target, licenses)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", target.display()));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -481,10 +505,12 @@ fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<
 }
 
 /// The module of a static image build, which embeds no native libraries since this crate is
-/// linked into the image: only the OCR bundle, unpacked to run tesseract.
-fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle) {
+/// linked into the image: only the OCR bundle's language data, and the licenses of the native
+/// libraries linked into the image.
+fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle, linked_licenses: &Path) {
     let module = format!(
-        "pub(crate) const NATIVE_FINGERPRINT: &str = {:?};\n{}",
+        "pub(crate) const NATIVE_FINGERPRINT: &str = {:?};\n\
+         pub(crate) const LINKED_LICENSES: &str = include_str!({linked_licenses:?});\n{}",
         format!("static-ocr-{}", ocr.fingerprint),
         ocr_items(Some(ocr))
     );

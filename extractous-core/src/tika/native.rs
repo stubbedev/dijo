@@ -27,7 +27,7 @@ fn unpacked() -> Result<&'static Path, String> {
 }
 
 /// The system properties Tika is started with: its temporary directory, headless AWT and the
-/// bundled tesseract, which the static build links rather than runs.
+/// bundled tesseract's language data, and its executable unless the static build links it.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -38,8 +38,6 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
     }
     if !OCR_FILES.is_empty() {
         let dir = unpacked()?;
-        #[cfg(feature = "static-image")]
-        properties.push(("extractous.ocr.linked", "true".to_string()));
         #[cfg(not(feature = "static-image"))]
         properties.push((
             "extractous.ocr.tesseract",
@@ -398,4 +396,13 @@ pub(crate) fn tesseract_version() -> Result<String, String> {
 /// The licenses of the tesseract and the language data the build bundled.
 pub(crate) fn bundled_ocr_licenses() -> Option<&'static str> {
     OCR_LICENSES
+}
+
+/// The licenses of the native libraries linked into the static executable beyond tesseract's.
+pub(crate) fn linked_native_licenses() -> Option<&'static str> {
+    #[cfg(feature = "static-image")]
+    let licenses = Some(LINKED_LICENSES);
+    #[cfg(not(feature = "static-image"))]
+    let licenses = None;
+    licenses
 }

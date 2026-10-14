@@ -36,8 +36,9 @@ a base image with it, such as `debian:bookworm-slim`. Nothing else needs install
 The `x86_64-linux-static` release binary needs nothing at all, not even a C library: it runs in a `FROM scratch`
 container. GraalVM builds static images only as executables, so this build turns the program around: the Rust code is
 compiled for musl as a static library and linked into Tika's native image, whose `main` hands over to it, and the
-JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked. Nothing is
-unpacked but the OCR language data. Its output is the same as the other Linux build's. Tika runs equally fast; on many
+JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked, and libheif (with
+its HEVC and AV1 decoders) and DjVuLibre instead of run as `heif-dec` and `ddjvu`. Nothing is unpacked but the OCR
+language data. Its output is the same as the other Linux build's. Tika runs equally fast; on many
 small files, where the Rust side dominates, it is about 5% slower (it allocates with mimalloc rather than glibc's
 allocator); OCR is 30 to 40% faster, since each model is loaded once per process instead of once per image (more for
 documents with many small images), script detection skips a page segmentation it would discard, and tesseract
@@ -308,9 +309,9 @@ little as 2.5°.
 
 Images are read in PNG, JPEG, TIFF (every page), GIF, BMP, PNM, JPEG 2000, WebP, Photoshop (the flattened image),
 PCX, TGA and JBIG2. HEIC, HEIF and AVIF images, the
-default of many phone cameras, are decoded by libheif's `heif-dec` when it is on `PATH` (packaged as
-`libheif-examples` or with `libheif`); without it they are reported with an `unsupported` error rather than as images
-without text. The release binaries do not carry it, since libheif's HEVC decoding brings LGPL and patent terms.
+default of many phone cameras, are decoded by libheif: linked into the static Linux executable, and otherwise its
+`heif-dec` when it is on `PATH` (packaged as `libheif-examples` or with `libheif`); without it they are reported with an
+`unsupported` error rather than as images without text.
 
 ## Supported formats
 
@@ -325,7 +326,8 @@ FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `
 Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
 slides and table cells; Hancom Office HWPX documents, which Tika reads as a plain ZIP archive, for their paragraphs,
 tables and footnotes, without running headers and footers; DjVu documents, which Tika detects but cannot read, for
-the hidden text layer of each page, or by OCR for a page without one when DjVuLibre's `ddjvu` is on `PATH`; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
+the hidden text layer of each page, or by OCR for a page without one, rendered by DjVuLibre: linked into the static
+Linux executable, and otherwise its `ddjvu` when it is on `PATH`; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
 their text, title and authors.
 
 Word and OpenDocument text is read as the document stands: tracked insertions are text, tracked deletions are not
@@ -354,7 +356,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace, compiling Tika on first run |
 | `just ocr-bundle [dir]` | Assemble a statically linked tesseract, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` |
-| `just static` | Build the statically linked Linux executable with tesseract linked in, into `target/static-image/extractous` (uses nix) |
+| `just static` | Build the statically linked Linux executable with tesseract, libheif and DjVuLibre linked in, into `target/static-image/extractous` (uses nix) |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
 | `just quality` | Score extraction against the quality corpus and write quality/SCOREBOARD.md |

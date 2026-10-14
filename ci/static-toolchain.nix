@@ -1,12 +1,14 @@
 # What ci/static-image.sh links the static executable with, for the Linux of `system`: the musl
 # C compiler and binutils, the musl Rust toolchain, the static C libraries the JDK's AWT archives
 # need (FreeType and what it reads fonts with), tesseract with Leptonica and the image libraries
-# it reads with (the ones ci/tesseract-static.nix bundles as a program, with the compiler and
-# linker flags for them in extractous/), and what sqlite-jdbc's Makefile builds SQLite with
-# (ci/static-sqlite.sh).
+# it reads with (the ones ci/tesseract-static.nix bundles as a program), libheif and DjVuLibre
+# (ci/image-decoders.nix), with the compiler and linker flags for them in extractous/, the
+# licenses of the libraries linked beyond tesseract's in extractous/licenses, and what
+# sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh).
 { nixpkgs, system }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
+  lib = pkgs.lib;
   cross =
     {
       x86_64-linux = pkgs.pkgsCross.musl64;
@@ -15,6 +17,36 @@ let
     .${system};
   static = pkgs.pkgsStatic;
   tesseract = import ./tesseract.nix static;
+  decoders = import ./image-decoders.nix static;
+  awtLibraries = [
+    cross.pkgsStatic.zlib
+    cross.pkgsStatic.freetype
+    cross.pkgsStatic.libpng
+    cross.pkgsStatic.bzip2
+    cross.pkgsStatic.brotli
+  ];
+  decoderLibraries = [
+    decoders.libheif
+    static.libde265
+    static.dav1d
+    decoders.djvulibre
+  ];
+  pkgConfigPath = lib.makeSearchPathOutput "dev" "lib/pkgconfig";
+  licenses =
+    pkgs.runCommand "extractous-static-licenses" { }
+      (lib.concatMapStrings (import ./licenses.nix "$out/extractous/licenses") (
+        awtLibraries ++ decoderLibraries
+      ));
+  decoderFlags =
+    pkgs.runCommand "extractous-image-decoder-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
+      ''
+        export PKG_CONFIG_PATH=${pkgConfigPath (decoderLibraries ++ [ static.libjpeg ])}
+        mkdir -p $out/extractous
+        pkg-config --static --cflags libheif ddjvuapi | tr -s ' ' '\n' | sed '/^$/d' \
+          > $out/extractous/images-cflags
+        pkg-config --static --libs libheif ddjvuapi | tr -s ' ' '\n' | sed '/^$/d' \
+          > $out/extractous/images-libs
+      '';
   tesseractFlags =
     pkgs.runCommand "extractous-tesseract-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
       ''
@@ -28,16 +60,13 @@ let
 in
 pkgs.symlinkJoin {
   name = "extractous-static-toolchain";
-  paths = [
+  paths = map lib.getLib awtLibraries ++ [
     cross.stdenv.cc
     cross.buildPackages.cargo
     cross.buildPackages.rustc
-    cross.pkgsStatic.zlib
-    cross.pkgsStatic.freetype
-    cross.pkgsStatic.libpng
-    cross.pkgsStatic.bzip2.out
-    cross.pkgsStatic.brotli.lib
     tesseractFlags
+    decoderFlags
+    licenses
     pkgs.gnumake
     pkgs.gcc
     pkgs.tcl
