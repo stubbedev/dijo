@@ -16,7 +16,6 @@ in
     pkgs.openssl
     (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
     pkgs.libheif.bin
-    pkgs.djvulibre
     pkgs.git
   ];
 

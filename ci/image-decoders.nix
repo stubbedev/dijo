@@ -1,6 +1,5 @@
-# The image decoders the static build links in place of libheif's heif-dec and DjVuLibre's ddjvu,
-# built from a static package set: libheif with only its HEVC (libde265) and AV1 (dav1d) decoders,
-# and DjVuLibre's libdjvulibre.
+# The image decoder the static build links in place of libheif's heif-dec, built from a static
+# package set: libheif with only its HEVC (libde265) and AV1 (dav1d) decoders.
 static: {
   libheif =
     (static.libheif.override {
@@ -27,5 +26,4 @@ static: {
         env = removeAttrs old.env [ "PKG_CONFIG_GDK_PIXBUF_2_0_GDK_PIXBUF_MODULEDIR" ];
         postInstall = "";
       });
-  djvulibre = static.djvulibre;
 }

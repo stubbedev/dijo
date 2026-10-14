@@ -16,7 +16,7 @@ const QUALITY: &str = "../quality";
 const JOBS: usize = 4;
 const ANCHOR_TOKENS: usize = 4;
 
-/// Names the external programs, such as `ddjvu`, that this environment lacks. The documents
+/// Names the external programs, such as `heif-dec`, that this environment lacks. The documents
 /// that need one are checked for the error naming it instead of being scored.
 const MISSING_HELPERS: &str = "QUALITY_MISSING_HELPERS";
 

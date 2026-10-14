@@ -37,7 +37,7 @@ The `x86_64-linux-static` and `aarch64-linux-static` release binaries need nothi
 run in a `FROM scratch` container. GraalVM builds static images only as executables, so this build turns the program around: the Rust code is
 compiled for musl as a static library and linked into Tika's native image, whose `main` hands over to it, and the
 JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked, and libheif (with
-its HEVC and AV1 decoders) and DjVuLibre instead of run as `heif-dec` and `ddjvu`. Nothing is unpacked but the OCR
+its HEVC and AV1 decoders) instead of run as `heif-dec`. Nothing is unpacked but the OCR
 language data. Its output is the same as the other Linux build's. Tika runs equally fast; on many
 small files, where the Rust side dominates, it is about 5% slower (it allocates with mimalloc rather than glibc's
 allocator); OCR is 30 to 40% faster, since each model is loaded once per process instead of once per image (more for
@@ -358,8 +358,8 @@ FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `
 Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
 slides and table cells; Hancom Office HWPX documents, which Tika reads as a plain ZIP archive, for their paragraphs,
 tables and footnotes, without running headers and footers; DjVu documents, which Tika detects but cannot read, for
-the hidden text layer of each page, or by OCR for a page without one, rendered by DjVuLibre: linked into the static
-Linux executable, and otherwise its `ddjvu` when it is on `PATH`; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
+the hidden text layer of each page, or by OCR for a page without one, rendered by extractous's own JB2 and IW44
+decoders on every platform, with nothing installed; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
 their text, title and authors.
 
 Word and OpenDocument text is read as the document stands: tracked insertions are text, tracked deletions are not
@@ -388,7 +388,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace, compiling Tika on first run |
 | `just ocr-bundle [dir]` | Assemble a statically linked tesseract, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` |
-| `just static` | Build the statically linked Linux executable with tesseract, libheif and DjVuLibre linked in, into `target/static-image/extractous` (uses nix) |
+| `just static` | Build the statically linked Linux executable with tesseract and libheif linked in, into `target/static-image/extractous` (uses nix) |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
 | `just language-groups` | Retrain the models that tell closely related languages apart, from pinned Wikipedia shards (about 7 GB) |

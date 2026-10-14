@@ -43,8 +43,8 @@ public final class StaticImage {
     }
 
     /**
-     * Whether this process is the static executable, which links tesseract, libheif and
-     * DjVuLibre in place of running their programs.
+     * Whether this process is the static executable, which links tesseract and libheif in place
+     * of running their programs.
      */
     static boolean running() {
         return running;

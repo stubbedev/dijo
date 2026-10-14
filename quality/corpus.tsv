@@ -54,7 +54,7 @@ prose-scan.webp	prose	ocr
 prose-scan.heic	prose	ocr	heif-dec	
 prose-scan.avif	prose	ocr	heif-dec	
 prose-scan.pbm	prose	ocr		
-prose-scan.djvu	prose	ocr	ddjvu	
+prose-scan.djvu	prose	ocr		
 prose-scan.jb2	prose	ocr		
 prose-scan.psd	prose	ocr		
 prose-scan.pcx	prose	ocr		

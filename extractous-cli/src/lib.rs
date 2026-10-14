@@ -184,7 +184,7 @@ fn print_licenses() -> bool {
             extractous_core::bundled_ocr_licenses(),
         ),
         (
-            "Linked native libraries: fonts, HEIC and AVIF decoding, DjVu rendering",
+            "Linked native libraries: fonts, HEIC and AVIF decoding",
             extractous_core::linked_native_licenses(),
         ),
     ];

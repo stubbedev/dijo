@@ -1,7 +1,7 @@
 # What ci/static-image.sh links the static executable with, for the Linux of `system`: the musl
 # C compiler and binutils, the musl Rust toolchain, the static C libraries the JDK's AWT archives
 # need (FreeType and what it reads fonts with), tesseract with Leptonica and the image libraries
-# it reads with (the ones ci/tesseract-static.nix bundles as a program), libheif and DjVuLibre
+# it reads with (the ones ci/tesseract-static.nix bundles as a program), libheif
 # (ci/image-decoders.nix), with the compiler and linker flags for them in extractous/, the
 # licenses of the libraries linked beyond tesseract's in extractous/licenses, and what
 # sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh).
@@ -29,7 +29,6 @@ let
     decoders.libheif
     static.libde265
     static.dav1d
-    decoders.djvulibre
   ];
   pkgConfigPath = lib.makeSearchPathOutput "dev" "lib/pkgconfig";
   licenses =
@@ -40,11 +39,11 @@ let
   decoderFlags =
     pkgs.runCommand "extractous-image-decoder-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
       ''
-        export PKG_CONFIG_PATH=${pkgConfigPath (decoderLibraries ++ [ static.libjpeg ])}
+        export PKG_CONFIG_PATH=${pkgConfigPath decoderLibraries}
         mkdir -p $out/extractous
-        pkg-config --static --cflags libheif ddjvuapi | tr -s ' ' '\n' | sed '/^$/d' \
+        pkg-config --static --cflags libheif | tr -s ' ' '\n' | sed '/^$/d' \
           > $out/extractous/images-cflags
-        pkg-config --static --libs libheif ddjvuapi | tr -s ' ' '\n' | sed '/^$/d' \
+        pkg-config --static --libs libheif | tr -s ' ' '\n' | sed '/^$/d' \
           > $out/extractous/images-libs
       '';
   tesseractFlags =

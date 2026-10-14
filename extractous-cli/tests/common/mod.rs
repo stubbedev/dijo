@@ -66,7 +66,7 @@ impl Scratch {
 
     /// Writes an executable shell script named `name` into this directory.
     #[cfg(unix)]
-    pub fn program(&self, name: &str, script: &str) {
+    fn program(&self, name: &str, script: &str) {
         use std::os::unix::fs::PermissionsExt;
         let path = self.0.join(name);
         fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();

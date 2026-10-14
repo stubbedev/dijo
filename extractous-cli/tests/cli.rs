@@ -1469,52 +1469,44 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
 
 #[cfg(unix)]
 #[test]
-fn a_djvu_page_without_a_text_layer_is_read_by_ocr_when_ddjvu_renders_it() {
-    let scan = "../quality/corpus/prose-scan.djvu";
-    let read = &json_objects(&[scan])[0];
-    assert_matches_schema(read);
-    assert!(
-        read["text"].as_str().unwrap().contains("Lighthouse Keeper"),
-        "{read}"
-    );
-    assert_eq!(read["metadata"]["ocr"][0]["page"], 1, "{read}");
-
-    let scratch = Scratch::new("no-ddjvu");
-    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
-        .args(["--format", "json", scan])
-        .env("PATH", scratch.path_with_only_tesseract())
-        .output()
-        .unwrap();
-    let unread: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        unread["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("ddjvu"),
-        "{unread}"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn a_failing_page_renderer_is_reported_with_its_status_and_errors() {
-    let scratch = Scratch::new("failing-ddjvu");
+fn djvu_pages_without_a_text_layer_are_rendered_for_ocr_without_helpers() {
+    let scratch = Scratch::new("djvu-ocr");
     let path = scratch.path_with_only_tesseract();
-    scratch.program("ddjvu", "echo 'cannot decode page' >&2\nexit 3");
-    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
-        .args(["--format", "json", "../quality/corpus/prose-scan.djvu"])
-        .env("PATH", path)
-        .output()
-        .unwrap();
-    let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(read["status"], "failed", "{read}");
-    assert!(
-        read["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("ddjvu exited with status 3: cannot decode page"),
-        "{read}"
-    );
+    let read = |file: &str| -> serde_json::Value {
+        let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+            .args(["--format", "json", "--metadata", file])
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let cases = [
+        (
+            "../quality/corpus/prose-scan.djvu".to_string(),
+            vec!["Lighthouse Keeper"],
+        ),
+        (
+            document("shared-shapes.djvu"),
+            vec![
+                "Shared shapes on the first page",
+                "Shared shapes on the second page",
+            ],
+        ),
+        (
+            document("palette.djvu"),
+            vec!["Blue words on a tinted page", "red words below them"],
+        ),
+    ];
+    for (file, expected) in cases {
+        let read = read(&file);
+        assert_matches_schema(&read);
+        assert_eq!(read["status"], "complete", "{file}: {read}");
+        let text = read["text"].as_str().unwrap();
+        for line in expected {
+            assert!(text.contains(line), "{file}: {read}");
+        }
+        assert_eq!(read["metadata"]["ocr"][0]["page"], 1, "{file}: {read}");
+    }
 }
 
 #[cfg(unix)]

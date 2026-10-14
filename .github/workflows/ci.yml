@@ -92,6 +92,4 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
         shell: pwsh
-        env:
-          QUALITY_MISSING_HELPERS: ddjvu
         run: just check

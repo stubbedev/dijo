@@ -23,7 +23,7 @@ import java.util.Map;
  * runs the load hooks of JDK libraries, so sqlite-jdbc's is linked as a plain library whose load
  * hook its loader runs ({@link Target_org_sqlite_SQLiteJDBCLoader}). The natives of
  * {@code LinkedTesseract} are bound to tesseract.cc, linked with libtesseract, and those of
- * {@code LinkedImages} to images.cc, linked with libheif and DjVuLibre.
+ * {@code LinkedImages} to images.cc, linked with libheif.
  */
 public final class StaticJniLibrariesFeature implements Feature {
 

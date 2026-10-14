@@ -1,15 +1,11 @@
 #include <jni.h>
 
 #include <allheaders.h>
-#include <libdjvu/ddjvuapi.h>
 #include <libheif/heif.h>
 
-#include <algorithm>
-#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <vector>
 
 namespace {
 
@@ -111,108 +107,6 @@ std::string decode_heif(const std::string &input, const std::string &output) {
     return {};
 }
 
-struct DjvuContextDeleter {
-    void operator()(ddjvu_context_t *context) const { ddjvu_context_release(context); }
-};
-
-struct DjvuDocumentDeleter {
-    void operator()(ddjvu_document_t *document) const { ddjvu_document_release(document); }
-};
-
-struct DjvuPageDeleter {
-    void operator()(ddjvu_page_t *page) const { ddjvu_page_release(page); }
-};
-
-struct DjvuFormatDeleter {
-    void operator()(ddjvu_format_t *format) const { ddjvu_format_release(format); }
-};
-
-struct FileCloser {
-    void operator()(FILE *file) const { std::fclose(file); }
-};
-
-void drain(ddjvu_context_t *context, bool wait, std::string &errors) {
-    if (wait) {
-        ddjvu_message_wait(context);
-    }
-    while (const ddjvu_message_t *message = ddjvu_message_peek(context)) {
-        if (message->m_any.tag == DDJVU_ERROR && message->m_error.message != nullptr) {
-            errors += errors.empty() ? "" : "; ";
-            errors += message->m_error.message;
-        }
-        ddjvu_message_pop(context);
-    }
-}
-
-std::string djvu_failure(const std::string &attempt, const std::string &errors) {
-    return errors.empty() ? attempt : attempt + ": " + errors;
-}
-
-std::string render_djvu(const std::string &input, int page_number, const std::string &output) {
-    const std::unique_ptr<ddjvu_context_t, DjvuContextDeleter> context(
-        ddjvu_context_create("extractous"));
-    if (context == nullptr) {
-        return "Cannot create a DjVu context";
-    }
-    std::string errors;
-    const std::unique_ptr<ddjvu_document_t, DjvuDocumentDeleter> document(
-        ddjvu_document_create_by_filename_utf8(context.get(), input.c_str(), 1));
-    if (document == nullptr) {
-        drain(context.get(), false, errors);
-        return djvu_failure("Cannot open the DjVu document", errors);
-    }
-    while (!ddjvu_document_decoding_done(document.get())) {
-        drain(context.get(), true, errors);
-    }
-    if (ddjvu_document_decoding_error(document.get())) {
-        drain(context.get(), false, errors);
-        return djvu_failure("Cannot decode the DjVu document", errors);
-    }
-    const std::string page_name = "page " + std::to_string(page_number);
-    const std::unique_ptr<ddjvu_page_t, DjvuPageDeleter> page(
-        ddjvu_page_create_by_pageno(document.get(), page_number - 1));
-    if (page == nullptr) {
-        drain(context.get(), false, errors);
-        return djvu_failure("Cannot access " + page_name, errors);
-    }
-    while (!ddjvu_page_decoding_done(page.get())) {
-        drain(context.get(), true, errors);
-    }
-    if (ddjvu_page_decoding_error(page.get())) {
-        drain(context.get(), false, errors);
-        return djvu_failure("Cannot decode " + page_name, errors);
-    }
-    const int width = ddjvu_page_get_width(page.get());
-    const int height = ddjvu_page_get_height(page.get());
-    if (width <= 0 || height <= 0) {
-        return "The DjVu " + page_name + " has no size";
-    }
-    ddjvu_rect_t rectangle{0, 0, static_cast<unsigned int>(width),
-                           static_cast<unsigned int>(height)};
-    const std::unique_ptr<ddjvu_format_t, DjvuFormatDeleter> format(
-        ddjvu_format_create(DDJVU_FORMAT_GREY8, 0, nullptr));
-    if (format == nullptr) {
-        return "Cannot create a greyscale DjVu pixel format";
-    }
-    ddjvu_format_set_row_order(format.get(), 1);
-    const auto row = static_cast<size_t>(width);
-    std::vector<char> pixels(row * static_cast<size_t>(height), static_cast<char>(0xFF));
-    if (!ddjvu_page_render(page.get(), DDJVU_RENDER_COLOR, &rectangle, &rectangle, format.get(),
-                           static_cast<unsigned long>(row), pixels.data())) {
-        std::fill(pixels.begin(), pixels.end(), static_cast<char>(0xFF));
-    }
-    const std::unique_ptr<FILE, FileCloser> file(std::fopen(output.c_str(), "wb"));
-    if (file == nullptr) {
-        return "Cannot open " + output + " for the rendered " + page_name;
-    }
-    if (std::fprintf(file.get(), "P5\n%d %d\n255\n", width, height) < 0
-        || std::fwrite(pixels.data(), 1, pixels.size(), file.get()) != pixels.size()
-        || std::fflush(file.get()) != 0) {
-        return "Cannot write the rendered " + page_name + " to " + output;
-    }
-    return {};
-}
-
 }
 
 extern "C" {
@@ -225,17 +119,6 @@ JNIEXPORT jbyteArray JNICALL Java_ai_yobix_LinkedImages_heifToPng(JNIEnv *env, j
         return error.empty() ? nullptr : failure(env, error);
     } catch (const std::exception &e) {
         return failure(env, std::string("Decoding the HEIF image failed: ") + e.what());
-    }
-}
-
-JNIEXPORT jbyteArray JNICALL Java_ai_yobix_LinkedImages_djvuPageToPgm(JNIEnv *env, jclass,
-                                                                   jbyteArray input, jint page,
-                                                                   jbyteArray output) {
-    try {
-        const std::string error = render_djvu(bytes(env, input), page, bytes(env, output));
-        return error.empty() ? nullptr : failure(env, error);
-    } catch (const std::exception &e) {
-        return failure(env, std::string("Rendering the DjVu page failed: ") + e.what());
     }
 }
 
