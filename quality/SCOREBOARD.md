@@ -90,7 +90,7 @@
 | swedish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | norwegian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | german-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| polish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| polish-scan.png | ocr | 0.003 | 0.020 | 0.980 | 0.020 | 1.000 |
 | czech-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | turkish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | greek-scan.png | ocr | 0.009 | 0.053 | 0.947 | 0.053 | 1.000 |
@@ -172,7 +172,7 @@
 | ukrainian.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | albanian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| armenian-scan.png | ocr | 0.988 | 1.023 | 0.000 | 1.000 | 0.000 |
+| armenian-scan.png | ocr | 0.986 | 1.017 | 0.000 | 1.000 | 0.000 |
 | azerbaijani-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | belarusian-scan.png | ocr | 0.003 | 0.049 | 0.976 | 0.048 | 1.000 |
 | bosnian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -185,7 +185,7 @@
 | finnish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | french-scan.png | ocr | 0.012 | 0.000 | 1.000 | 0.000 | 1.000 |
 | georgian-scan.png | ocr | 0.983 | 1.114 | 0.000 | 1.000 | 0.000 |
-| hungarian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| hungarian-scan.png | ocr | 0.001 | 0.005 | 0.995 | 0.005 | 1.000 |
 | icelandic-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | irish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | italian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -196,7 +196,7 @@
 | maltese-scan.png | ocr | 0.006 | 0.004 | 0.996 | 0.004 | 1.000 |
 | nynorsk-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | portuguese-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| romanian-scan.png | ocr | 0.007 | 0.048 | 0.952 | 0.048 | 0.857 |
+| romanian-scan.png | ocr | 0.008 | 0.053 | 0.947 | 0.053 | 0.857 |
 | romansh-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | serbian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | serbian-latin-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

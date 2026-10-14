@@ -7,6 +7,7 @@ import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -273,20 +274,90 @@ final class OcrImages {
         return histogram.length - 1;
     }
 
-    /** The image resized by a factor, smoothly, so the letters keep their shapes. */
+    /**
+     * The image, in grey, resized by a factor with bicubic interpolation (Keys' kernel with
+     * a = -0.5, as Java2D interpolates), which keeps the strokes of letters sharp: each row is
+     * resampled first, then each column of the result, the pixels beyond the edges taken as the
+     * edge's.
+     */
     static BufferedImage scale(BufferedImage image, double factor) {
-        final int width = (int) Math.round(image.getWidth() * factor);
-        final int height = (int) Math.round(image.getHeight() * factor);
-        final BufferedImage scaled = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
-        final Graphics2D graphics = scaled.createGraphics();
-        try {
-            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                    RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-            graphics.drawImage(image, 0, 0, width, height, null);
-        } finally {
-            graphics.dispose();
+        final BufferedImage gray = gray(image, image.getWidth(), image.getHeight());
+        final int width = gray.getWidth();
+        final int height = gray.getHeight();
+        final int scaledWidth = Math.max(1, (int) Math.round(width * factor));
+        final int scaledHeight = Math.max(1, (int) Math.round(height * factor));
+        final Taps[] columns = Taps.bicubic(width, scaledWidth);
+        final Taps[] rows = Taps.bicubic(height, scaledHeight);
+        final float[] widened = new float[scaledWidth * height];
+        final byte[] row = new byte[width];
+        for (int y = 0; y < height; y++) {
+            gray.getRaster().getDataElements(0, y, width, 1, row);
+            final int offset = y * scaledWidth;
+            for (int x = 0; x < scaledWidth; x++) {
+                final Taps taps = columns[x];
+                float sum = 0;
+                for (int tap = 0; tap < Taps.COUNT; tap++) {
+                    sum += taps.weights()[tap] * (row[taps.sources()[tap]] & 0xFF);
+                }
+                widened[offset + x] = sum;
+            }
+        }
+        final BufferedImage scaled =
+                new BufferedImage(scaledWidth, scaledHeight, BufferedImage.TYPE_BYTE_GRAY);
+        final float[] sums = new float[scaledWidth];
+        final byte[] pixels = new byte[scaledWidth];
+        for (int y = 0; y < scaledHeight; y++) {
+            Arrays.fill(sums, 0);
+            final Taps taps = rows[y];
+            for (int tap = 0; tap < Taps.COUNT; tap++) {
+                final float weight = taps.weights()[tap];
+                final int offset = taps.sources()[tap] * scaledWidth;
+                for (int x = 0; x < scaledWidth; x++) {
+                    sums[x] += weight * widened[offset + x];
+                }
+            }
+            for (int x = 0; x < scaledWidth; x++) {
+                pixels[x] = (byte) Math.max(0, Math.min(255, Math.round(sums[x])));
+            }
+            scaled.getRaster().setDataElements(0, y, scaledWidth, 1, pixels);
         }
         return scaled;
+    }
+
+    /** The four source pixels a resampled pixel is interpolated from, and their weights. */
+    private record Taps(int[] sources, float[] weights) {
+
+        static final int COUNT = 4;
+        private static final double A = -0.5;
+
+        /** The taps of each of `resized` pixels over `original` pixels. */
+        static Taps[] bicubic(int original, int resized) {
+            final double step = (double) original / resized;
+            final Taps[] taps = new Taps[resized];
+            for (int index = 0; index < resized; index++) {
+                final double centre = (index + 0.5) * step - 0.5;
+                final int first = (int) Math.floor(centre) - 1;
+                final int[] sources = new int[COUNT];
+                final float[] weights = new float[COUNT];
+                for (int tap = 0; tap < COUNT; tap++) {
+                    sources[tap] = Math.max(0, Math.min(original - 1, first + tap));
+                    weights[tap] = (float) keys(centre - (first + tap));
+                }
+                taps[index] = new Taps(sources, weights);
+            }
+            return taps;
+        }
+
+        private static double keys(double distance) {
+            final double x = Math.abs(distance);
+            if (x <= 1) {
+                return ((A + 2) * x - (A + 3)) * x * x + 1;
+            }
+            if (x < 2) {
+                return ((A * x - 5 * A) * x + 8 * A) * x - 4 * A;
+            }
+            return 0;
+        }
     }
 
     static BufferedImage gray(BufferedImage image, int width, int height) {
