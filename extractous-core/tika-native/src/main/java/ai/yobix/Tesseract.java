@@ -29,7 +29,8 @@ interface Tesseract {
     String detect(Path image, long timeoutMillis) throws IOException;
 
     /**
-     * The models it reads with, named as {@code -l} names them: {@code eng}, {@code script/Latin}.
+     * The models it reads with, named as {@code -l} names them, with a slash before a model in a
+     * subdirectory on every platform: {@code eng}, {@code script/Latin}.
      */
     Set<String> languages() throws IOException;
 }

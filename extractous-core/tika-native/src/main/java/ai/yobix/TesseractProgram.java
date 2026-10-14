@@ -91,7 +91,7 @@ final class TesseractProgram implements Tesseract {
             }
             languages = listing.output().lines()
                     .skip(1)
-                    .map(String::trim)
+                    .map(line -> line.trim().replace('\\', '/'))
                     .filter(line -> !line.isEmpty())
                     .collect(Collectors.toUnmodifiableSet());
         }
