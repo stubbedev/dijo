@@ -81,14 +81,23 @@ final class ScriptDetection {
      * language, if installed, and English otherwise.
      */
     static String language(Tesseract tesseract, String script) throws IOException {
+        final String installed = installedLanguage(tesseract, script);
+        return installed != null ? installed : DEFAULT_LANGUAGE;
+    }
+
+    /**
+     * The installed model for a script: the script model, then the script's most common
+     * language, or null when neither is installed.
+     */
+    static String installedLanguage(Tesseract tesseract, String script) throws IOException {
         if (script == null) {
-            return DEFAULT_LANGUAGE;
+            return null;
         }
         final Set<String> models = tesseract.languages();
         if (models.contains(SCRIPT_MODEL_PREFIX + script)) {
             return SCRIPT_MODEL_PREFIX + script;
         }
         final String language = LANGUAGE_BY_SCRIPT.get(script);
-        return language != null && models.contains(language) ? language : DEFAULT_LANGUAGE;
+        return language != null && models.contains(language) ? language : null;
     }
 }

@@ -56,11 +56,11 @@
     "reading_order": 1.0
   },
   "armenian-scan.png": {
-    "character_error_rate": 0.987688098495212,
-    "token_error_rate": 1.023121387283237,
-    "recall": 0.0,
-    "spurious": 1.0,
-    "reading_order": 0.0
+    "character_error_rate": 0.060191518467852256,
+    "token_error_rate": 0.3063583815028902,
+    "recall": 0.6936416184971098,
+    "spurious": 0.3063583815028902,
+    "reading_order": 0.3333333333333333
   },
   "armenian.docx": {
     "character_error_rate": 0.0,
@@ -469,11 +469,11 @@
     "reading_order": 1.0
   },
   "georgian-scan.png": {
-    "character_error_rate": 0.9827700463883366,
-    "token_error_rate": 1.1144578313253013,
-    "recall": 0.0,
-    "spurious": 1.0,
-    "reading_order": 0.0
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
   },
   "georgian.docx": {
     "character_error_rate": 0.0,
@@ -602,10 +602,10 @@
     "reading_order": 1.0
   },
   "hungarian-scan.png": {
-    "character_error_rate": 0.0,
-    "token_error_rate": 0.0,
-    "recall": 1.0,
-    "spurious": 0.0,
+    "character_error_rate": 0.0006053268765133172,
+    "token_error_rate": 0.004739336492890996,
+    "recall": 0.995260663507109,
+    "spurious": 0.004739336492890996,
     "reading_order": 1.0
   },
   "hungarian.docx": {
@@ -994,10 +994,10 @@
     "reading_order": 1.0
   },
   "polish-scan.png": {
-    "character_error_rate": 0.0,
-    "token_error_rate": 0.0,
-    "recall": 1.0,
-    "spurious": 0.0,
+    "character_error_rate": 0.00267379679144385,
+    "token_error_rate": 0.0196078431372549,
+    "recall": 0.9803921568627451,
+    "spurious": 0.0196078431372549,
     "reading_order": 1.0
   },
   "polish.docx": {
@@ -1330,10 +1330,10 @@
     "reading_order": 0.2857142857142857
   },
   "romanian-scan.png": {
-    "character_error_rate": 0.0070126227208976155,
-    "token_error_rate": 0.04784688995215311,
-    "recall": 0.9521531100478469,
-    "spurious": 0.04784688995215311,
+    "character_error_rate": 0.007713884992987377,
+    "token_error_rate": 0.05263157894736842,
+    "recall": 0.9473684210526315,
+    "spurious": 0.05263157894736842,
     "reading_order": 0.8571428571428571
   },
   "romanian.docx": {

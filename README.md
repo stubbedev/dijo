@@ -60,8 +60,10 @@ each image is first read as upright text in Latin script, the most common kind. 
 in that reading is 80 or less (upright Latin pages read at 90 or more; other scripts, and pages upside down, at 60 or
 less) does tesseract's orientation and script detection run (the `osd` data, which distribution packages install with
 tesseract): the image is turned upright and read again with the installed model for its script, such as
-`script/Arabic`, then `ara`, falling back to `eng`. With `--ocr-lang`, a page is read in that language, and detection
-runs only to turn a page tesseract was not confident of. Tesseract segments pages without its own detection (page
+`script/Arabic`, then `ara`, falling back to `eng`. Detection takes Armenian for upside-down Latin and Georgian for
+Malayalam, so when no reading of a page with text is confident, those two are tried as well and the most confident
+reading is kept. With `--ocr-lang`, a page is read in that language, and detection runs only to turn a page
+tesseract was not confident of. Tesseract segments pages without its own detection (page
 segmentation mode 3, where Tika runs mode 1), since pages reach it upright.
 
 Under `--ocr auto`, each PDF page's text layer is checked before it is used. A page with next to no text is OCRed

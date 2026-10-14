@@ -172,7 +172,7 @@
 | ukrainian.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | albanian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| armenian-scan.png | ocr | 0.986 | 1.017 | 0.000 | 1.000 | 0.000 |
+| armenian-scan.png | ocr | 0.060 | 0.306 | 0.694 | 0.306 | 0.333 |
 | azerbaijani-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | belarusian-scan.png | ocr | 0.003 | 0.049 | 0.976 | 0.048 | 1.000 |
 | bosnian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -184,7 +184,7 @@
 | faroese-scan.png | ocr | 0.001 | 0.000 | 1.000 | 0.000 | 1.000 |
 | finnish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | french-scan.png | ocr | 0.012 | 0.000 | 1.000 | 0.000 | 1.000 |
-| georgian-scan.png | ocr | 0.983 | 1.114 | 0.000 | 1.000 | 0.000 |
+| georgian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hungarian-scan.png | ocr | 0.001 | 0.005 | 0.995 | 0.005 | 1.000 |
 | icelandic-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | irish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

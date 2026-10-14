@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -74,6 +75,12 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * pages of Latin script read at 90 or more, other scripts and turned pages at 60 or less.
      */
     private static final int MIN_CONFIDENCE = 80;
+    /**
+     * Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian
+     * for Malayalam), tried in turn when no reading of an image with plenty of text is confident.
+     */
+    private static final List<String> OVERLOOKED_SCRIPTS = List.of("Armenian", "Georgian");
+    private static final int MIN_WORDS_TO_RETRY = 20;
     private static final Set<MediaType> UNDECODABLE = Set.of(
             MediaType.image("heic"), MediaType.image("heic-sequence"), MediaType.image("heif"),
             MediaType.image("heif-sequence"), MediaType.image("avif"));
@@ -174,7 +181,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * language otherwise. Only when tesseract is not confident of that
      * reading ({@value #MIN_CONFIDENCE} or less) does its orientation and script detection run;
      * the image is then turned by the quarter turns it finds and, with the automatic language,
-     * read with a model for the script it finds, unless that would read it as before.
+     * read with a model for the script it finds, unless that would read it as before. When no
+     * reading of an image with at least {@value #MIN_WORDS_TO_RETRY} words is confident, the
+     * scripts detection overlooks are tried as well, and the most confident reading is kept.
      *
      * @param file  the image as tesseract can read it
      * @param size  the size of the image's file, for the configured limits
@@ -205,14 +214,46 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         if (auto != null && script != null) {
             auto.assumeScript(script);
         }
-        if (detected.clockwiseQuarterTurns() == 0 && Objects.equals(language, first.language())) {
-            emit(xhtml, metadata, page, first, reading, config);
-            return;
+        Attempt best = new Attempt(first, reading);
+        if (detected.clockwiseQuarterTurns() != 0 || !Objects.equals(language, first.language())) {
+            final Prepared detectedPrepared = finish(image, oriented, script, language,
+                    detected.clockwiseQuarterTurns());
+            best = best.or(new Attempt(detectedPrepared,
+                    read(file, size, detectedPrepared, config)));
         }
-        final Prepared detectedPrepared = finish(image, oriented, script, language,
-                detected.clockwiseQuarterTurns());
-        emit(xhtml, metadata, page, detectedPrepared, read(file, size, detectedPrepared, config),
-                config);
+        if (auto != null && !best.confident() && best.words() >= MIN_WORDS_TO_RETRY) {
+            for (final String overlooked : OVERLOOKED_SCRIPTS) {
+                final String model = ScriptDetection.installedLanguage(tesseract, overlooked);
+                if (model == null || best.confident()) {
+                    continue;
+                }
+                final Prepared retried = finish(image, oriented, overlooked, model, 0);
+                best = best.or(new Attempt(retried, read(file, size, retried, config)));
+            }
+            if (best.prepared().script() != null) {
+                auto.assumeScript(best.prepared().script());
+            }
+        }
+        emit(xhtml, metadata, page, best.prepared(), best.reading(), config);
+    }
+
+    /** A way an image was prepared and what tesseract read in it that way. */
+    private record Attempt(Prepared prepared, Tesseract.Reading reading) {
+
+        boolean confident() {
+            return reading != null && reading.confidence() > MIN_CONFIDENCE;
+        }
+
+        int words() {
+            return reading == null ? 0 : reading.text().split("\\s+").length;
+        }
+
+        /** The more confident of this attempt and another, this one on a tie. */
+        Attempt or(Attempt other) {
+            final int confidence = reading == null ? -1 : reading.confidence();
+            final int otherConfidence = other.reading == null ? -1 : other.reading.confidence();
+            return otherConfidence > confidence ? other : this;
+        }
     }
 
     /**
