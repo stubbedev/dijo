@@ -21,7 +21,12 @@ import java.util.PriorityQueue;
  * and not wholly above it, unless a third block between them vertically spans both. Blocks those
  * rules leave unordered keep their content stream order, so a page drawn in reading order is left
  * as it is, and a table drawn row by row stays one block. A page with text in more than one
- * direction, or more than {@link #MAX_BLOCKS} blocks, keeps its content stream order.
+ * direction, or more than {@link #MAX_BLOCKS} blocks, keeps its blocks in content stream order.
+ * <p>
+ * Within a block, a line drawn in runs of different fonts, as when a font lacks the spaces and
+ * punctuation of a script and they are drawn in another font before or after the letters, has
+ * its runs merged from the left, unless the page is written right to left. Each run keeps its
+ * own order, since the marks of complex scripts can sit left of the glyph they follow.
  * <p>
  * A page written vertically, as Japanese and Chinese are, has its glyphs drawn upright one below
  * the other, in columns read from the right; PDFBox, which breaks a line wherever the next glyph
@@ -54,16 +59,77 @@ public final class ReadingOrder {
             turnColumnsIntoLines(glyphs);
         }
         final List<Block> blocks = blocks(glyphs);
-        if (blocks.size() < 2 || blocks.size() > MAX_BLOCKS) {
-            return;
-        }
         final boolean rightToLeft = isRightToLeft(glyphs);
-        glyphs.clear();
-        for (final List<Block> band : bands(blocks)) {
-            for (final Block block : order(band, rightToLeft)) {
-                glyphs.addAll(block.glyphs);
+        final List<Block> ordered = new ArrayList<>(blocks.size());
+        if (blocks.size() > MAX_BLOCKS) {
+            ordered.addAll(blocks);
+        } else {
+            for (final List<Block> band : bands(blocks)) {
+                ordered.addAll(order(band, rightToLeft));
             }
         }
+        glyphs.clear();
+        for (final Block block : ordered) {
+            if (!rightToLeft) {
+                orderLinesFromTheLeft(block.glyphs);
+            }
+            glyphs.addAll(block.glyphs);
+        }
+    }
+
+    /**
+     * Merges the font runs of each line, a run of glyphs on one baseline, from the left, unless
+     * the glyphs are written right to left or in more than one direction. Lines keep their order.
+     */
+    public static void orderLines(List<TextPosition> glyphs) {
+        if (glyphs.size() < 2 || hasMixedDirections(glyphs) || isRightToLeft(glyphs)) {
+            return;
+        }
+        orderLinesFromTheLeft(glyphs);
+    }
+
+    private static void orderLinesFromTheLeft(List<TextPosition> glyphs) {
+        int start = 0;
+        for (int end = 1; end <= glyphs.size(); end++) {
+            if (end == glyphs.size() || !onOneLine(glyphs.get(start), glyphs.get(end))) {
+                mergeFontRuns(glyphs.subList(start, end));
+                start = end;
+            }
+        }
+    }
+
+    /**
+     * Merges the runs of glyphs in one font, each kept in its order, by taking next the glyph
+     * furthest left among the runs' next glyphs, from the earlier run on a tie.
+     */
+    private static void mergeFontRuns(List<TextPosition> line) {
+        final List<List<TextPosition>> runs = new ArrayList<>();
+        for (int index = 0; index < line.size(); index++) {
+            if (index == 0 || line.get(index).getFont() != line.get(index - 1).getFont()) {
+                runs.add(new ArrayList<>());
+            }
+            runs.get(runs.size() - 1).add(line.get(index));
+        }
+        if (runs.size() < 2) {
+            return;
+        }
+        final int[] next = new int[runs.size()];
+        for (int index = 0; index < line.size(); index++) {
+            int leftmost = -1;
+            for (int run = 0; run < runs.size(); run++) {
+                if (next[run] < runs.get(run).size() && (leftmost < 0
+                        || runs.get(run).get(next[run]).getXDirAdj()
+                        < runs.get(leftmost).get(next[leftmost]).getXDirAdj())) {
+                    leftmost = run;
+                }
+            }
+            line.set(index, runs.get(leftmost).get(next[leftmost]++));
+        }
+    }
+
+    private static boolean onOneLine(TextPosition one, TextPosition other) {
+        return Math.abs(other.getYDirAdj() - one.getYDirAdj())
+                <= SAME_LINE * Math.max(em(one), em(other));
     }
 
     /** The blocks in bands from the top, each in content stream order. */
