@@ -11,17 +11,27 @@ output=$1
 # shellcheck source=ci/tessdata.env
 source "$here/tessdata.env"
 
-rev=$(nix eval --raw --impure --expr \
-    "(builtins.fromJSON (builtins.readFile $here/../devenv.lock)).nodes.nixpkgs.locked.rev")
-bundle=$(nix build --no-link --print-out-paths --impure --expr \
-    "import $here/tesseract-static.nix { nixpkgs = builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\"; system = builtins.currentSystem; }")
-
 staging="$output.partial"
 rm -rf "$staging"
+case "$(uname -s)" in
+    Linux)
+        rev=$(nix eval --raw --impure --expr \
+            "(builtins.fromJSON (builtins.readFile $here/../devenv.lock)).nodes.nixpkgs.locked.rev")
+        bundle=$(nix build --no-link --print-out-paths --impure --expr \
+            "import $here/tesseract-static.nix { nixpkgs = builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\"; system = builtins.currentSystem; }")
+        mkdir -p "$staging"
+        cp -r "$bundle/." "$staging/"
+        chmod -R u+w "$staging"
+        ;;
+    Darwin | MINGW* | MSYS*)
+        "$here/tesseract-vcpkg.sh" "$staging"
+        ;;
+    *)
+        echo "No tesseract build for $(uname -s)" >&2
+        exit 1
+        ;;
+esac
 mkdir -p "$staging/tessdata" "$staging/licenses/tessdata_fast"
-install -m 755 "$bundle/tesseract" "$staging/tesseract"
-cp -r "$bundle/licenses/." "$staging/licenses/"
-chmod -R u+w "$staging/licenses"
 curl --fail --silent --show-error --location --max-time 300 \
     --output "$staging/licenses/tessdata_fast/LICENSE" \
     "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT/LICENSE"

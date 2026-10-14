@@ -48,11 +48,12 @@ aarch64 build links those against musl, with the few glibc-only functions they c
 `__xstat64` and the like) forwarded to musl's (`glibc_compat.c`). `just static` builds it on Linux into
 `target/static-image/extractous`, with nix providing the musl toolchain.
 
-OCR runs tesseract: linked in, in the static build, and otherwise the `tesseract` executable. The Linux release
-binaries carry their own, statically linked, with the language
+OCR runs tesseract: linked in, in the static build, and otherwise the `tesseract` executable. Every release binary
+carries its own, with its libraries linked statically (built with nix on Linux, and with vcpkg at a pinned commit on
+macOS and Windows), with the language
 data the automatic language needs (orientation and script detection, tesseract's `script/Latin`, `script/Greek` and
 `script/Cyrillic` models, which read every language of those scripts with its letters and diacritics, and a fast model
-for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the C library: a binary built with
+for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the system's C library: a binary built with
 `EXTRACTOUS_OCR_BUNDLE` pointing at a bundle from `just ocr-bundle` does the same (about 90 MB larger, 170 MB once
 unpacked), and `--ocr-lang` can name only the bundled models there. Reading Danish, Swedish, Norwegian, German, Polish,
 Czech or Turkish scans with the English model instead loses 3 to 13% of the characters, the diacritics.

@@ -2,7 +2,11 @@
 
 sha256_of() {
     local sum
-    sum=$(sha256sum < "$1")
+    if command -v sha256sum > /dev/null; then
+        sum=$(sha256sum < "$1")
+    else
+        sum=$(shasum -a 256 < "$1")
+    fi
     echo "${sum%% *}"
 }
 

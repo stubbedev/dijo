@@ -16,7 +16,7 @@ const DT_RUNPATH: i64 = 29;
 const ELF64_DYN_SIZE: usize = 16;
 const TIKA_LIBRARY_STEM: &str = "libtika_native";
 const OCR_BUNDLE_VARIABLE: &str = "EXTRACTOUS_OCR_BUNDLE";
-const OCR_TESSERACT: &str = "tesseract";
+const OCR_TESSERACT_STEM: &str = "tesseract";
 const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
 const OCR_LICENSES: &str = "licenses";
@@ -25,14 +25,15 @@ const STATIC_LICENSES_VARIABLE: &str = "EXTRACTOUS_STATIC_LICENSES";
 fn main() {
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
+    let platform = Platform::from_target_os(&required_env("CARGO_CFG_TARGET_OS"));
     if env::var_os("CARGO_FEATURE_STATIC_IMAGE").is_some() {
-        let ocr = ocr_bundle(&out_dir, OcrEngine::Linked).unwrap_or_else(|| {
+        let ocr = ocr_bundle(&out_dir, platform, OcrEngine::Linked).unwrap_or_else(|| {
             panic!(
                 "The static build links tesseract and needs {OCR_BUNDLE_VARIABLE} for its language data"
             )
         });
         let linked_licenses = static_licenses(&out_dir);
-        write_static_native_module(&out_dir, &ocr, &linked_licenses);
+        write_static_native_module(&out_dir, platform, &ocr, &linked_licenses);
         return;
     }
     for input in TIKA_NATIVE_INPUTS {
@@ -52,7 +53,6 @@ fn main() {
         );
     }
 
-    let platform = Platform::from_target_os(&required_env("CARGO_CFG_TARGET_OS"));
     let graalvm_home = graalvm_home(platform);
     let fingerprint = fingerprint(&source_dir, &graalvm_home);
     let libs_dir = out_dir.join("libs");
@@ -79,8 +79,8 @@ fn main() {
         }
     }
 
-    let ocr = ocr_bundle(&out_dir, OcrEngine::Executable);
-    write_native_module(&out_dir, &libs_dir, &fingerprint, ocr.as_ref());
+    let ocr = ocr_bundle(&out_dir, platform, OcrEngine::Executable);
+    write_native_module(&out_dir, platform, &libs_dir, &fingerprint, ocr.as_ref());
 }
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `EXTRACTOUS_OCR_BUNDLE` names: a tesseract
@@ -103,7 +103,7 @@ enum OcrEngine {
     Linked,
 }
 
-fn ocr_bundle(out_dir: &Path, engine: OcrEngine) -> Option<OcrBundle> {
+fn ocr_bundle(out_dir: &Path, platform: Platform, engine: OcrEngine) -> Option<OcrBundle> {
     println!("cargo:rerun-if-env-changed={OCR_BUNDLE_VARIABLE}");
     let dir = PathBuf::from(env::var_os(OCR_BUNDLE_VARIABLE)?);
     println!("cargo:rerun-if-changed={}", dir.display());
@@ -119,8 +119,11 @@ fn ocr_bundle(out_dir: &Path, engine: OcrEngine) -> Option<OcrBundle> {
     create_dir(&compressed_dir.join(OCR_MODELS));
     let mut hasher = DefaultHasher::new();
     let mut files = Vec::with_capacity(models.len() + 1);
-    let executable = (engine == OcrEngine::Executable)
-        .then(|| (OCR_TESSERACT.to_string(), dir.join(OCR_TESSERACT)));
+    let executable = (engine == OcrEngine::Executable).then(|| {
+        let name = platform.executable(OCR_TESSERACT_STEM);
+        let path = dir.join(&name);
+        (name, path)
+    });
     let named = executable.into_iter().chain(models);
     for (name, path) in named {
         let content = read_file(&path);
@@ -196,6 +199,14 @@ impl Platform {
             "windows" => Platform::Windows,
             "macos" => Platform::MacOs,
             _ => Platform::OtherUnix,
+        }
+    }
+
+    /// The file name of an executable.
+    fn executable(self, stem: &str) -> String {
+        match self {
+            Platform::Windows => format!("{stem}.exe"),
+            Platform::MacOs | Platform::OtherUnix => stem.to_string(),
         }
     }
 
@@ -507,18 +518,23 @@ fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<
 /// The module of a static image build, which embeds no native libraries since this crate is
 /// linked into the image: only the OCR bundle's language data, and the licenses of the native
 /// libraries linked into the image.
-fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle, linked_licenses: &Path) {
+fn write_static_native_module(
+    out_dir: &Path,
+    platform: Platform,
+    ocr: &OcrBundle,
+    linked_licenses: &Path,
+) {
     let module = format!(
         "pub(crate) const NATIVE_FINGERPRINT: &str = {:?};\n\
          pub(crate) const LINKED_LICENSES: &str = include_str!({linked_licenses:?});\n{}",
         format!("static-ocr-{}", ocr.fingerprint),
-        ocr_items(Some(ocr))
+        ocr_items(platform, Some(ocr))
     );
     write_if_changed(&out_dir.join("native.rs"), &module);
 }
 
 /// The items of the generated module that describe the OCR bundle.
-fn ocr_items(ocr: Option<&OcrBundle>) -> String {
+fn ocr_items(platform: Platform, ocr: Option<&OcrBundle>) -> String {
     let ocr_files: &[(String, PathBuf)] = ocr.map_or(&[], |ocr| &ocr.files);
     let ocr_entries: String = ocr_files
         .iter()
@@ -528,8 +544,9 @@ fn ocr_items(ocr: Option<&OcrBundle>) -> String {
         Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
         None => "None".to_string(),
     };
+    let tesseract = platform.executable(OCR_TESSERACT_STEM);
     format!(
-        "pub(crate) const OCR_TESSERACT: &str = {OCR_TESSERACT:?};\n\
+        "pub(crate) const OCR_TESSERACT: &str = {tesseract:?};\n\
          pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
          pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
          pub(crate) const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
@@ -546,6 +563,7 @@ fn write_if_changed(path: &Path, content: &str) {
 
 fn write_native_module(
     out_dir: &Path,
+    platform: Platform,
     libs_dir: &Path,
     fingerprint: &str,
     ocr: Option<&OcrBundle>,
@@ -593,7 +611,7 @@ fn write_native_module(
          pub(crate) const TIKA_LIBRARY: &str = {tika_library:?};\n\
          pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n{}",
         libraries.len(),
-        ocr_items(ocr)
+        ocr_items(platform, ocr)
     );
     write_if_changed(&out_dir.join("native.rs"), &module);
 }

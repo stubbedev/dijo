@@ -54,23 +54,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         if: runner.os == 'Linux'
-      - name: Bundle tesseract and its language data
-        if: runner.os == 'Linux'
-        run: |
-          ci/ocr-bundle.sh "$RUNNER_TEMP/ocr-bundle"
-          echo "EXTRACTOUS_OCR_BUNDLE=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_ENV"
-      - name: Install tesseract for the smoke test
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: runner.os != 'Linux'
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ matrix.target }}-${{ hashFiles('ci/vcpkg.env', 'ci/tesseract-vcpkg.sh') }}
+      - name: Bundle tesseract and its language data
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
         run: |
-          case "${{ runner.os }}" in
-            macOS) brew install tesseract ;;
-            Windows)
-              choco install tesseract --no-progress -y
-              echo "C:\\Program Files\\Tesseract-OCR" >> "$GITHUB_PATH"
-              export PATH="/c/Program Files/Tesseract-OCR:$PATH"
-              ;;
-          esac
-          tesseract --version
+          temp=$RUNNER_TEMP
+          if [ "${{ runner.os }}" = Windows ]; then temp=$(cygpath --unix "$RUNNER_TEMP"); fi
+          mkdir -p "$temp/vcpkg-cache"
+          ci/ocr-bundle.sh "$temp/ocr-bundle"
+          echo "EXTRACTOUS_OCR_BUNDLE=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_ENV"
       - name: Build
         if: runner.os != 'Windows'
         run: cargo build --release --locked --package extractous
@@ -87,6 +84,8 @@ jobs:
           "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
+          "$binary" quality/corpus/arabic-scan-300dpi.png | grep -q "المنارة"
+          grep -q "## tesseract" "$RUNNER_TEMP/licenses.txt"
       - name: Smoke test in a container with no tesseract
         if: runner.os == 'Linux'
         run: |
@@ -177,6 +176,8 @@ jobs:
           "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
+          "$binary" quality/corpus/arabic-scan-300dpi.png | grep -q "المنارة"
+          grep -q "## tesseract" "$RUNNER_TEMP/licenses.txt"
           "$binary" --format json quality/corpus/danish-scan.png > "$RUNNER_TEMP/danish.json"
           grep -q '"code":"dan"' "$RUNNER_TEMP/danish.json"
           grep -q "tusmørket" "$RUNNER_TEMP/danish.json"
