@@ -22,6 +22,7 @@ final class TesseractProgram implements Tesseract {
 
     private static final long CHECK_TIMEOUT_MILLIS = 60_000;
     private static final String TESSDATA_PREFIX = "TESSDATA_PREFIX";
+    private static final String OMP_NUM_THREADS = "OMP_NUM_THREADS";
     private static final String OSD_PAGE_SEG_MODE = "0";
     private static final String TEXT_EXTENSION = ".txt";
     private static final String TSV_EXTENSION = ".tsv";
@@ -50,7 +51,7 @@ final class TesseractProgram implements Tesseract {
     /** Whether the program starts and runs, which it does not when it is not installed. */
     boolean runs() {
         try {
-            return run(CHECK_TIMEOUT_MILLIS, "--version").succeeded();
+            return run(CHECK_TIMEOUT_MILLIS, Map.of(), "--version").succeeded();
         } catch (IOException e) {
             return false;
         }
@@ -78,9 +79,10 @@ final class TesseractProgram implements Tesseract {
             }
             addVariables(arguments, variables);
             arguments.addAll(List.of("-c", "tessedit_create_txt=1", "-c", "tessedit_create_tsv=1"));
-            try {
-                final Programs.Outcome outcome =
-                        run(timeoutMillis, arguments.toArray(String[]::new));
+            try (ReadingThreads threads = ReadingThreads.take()) {
+                final Programs.Outcome outcome = run(timeoutMillis,
+                        Map.of(OMP_NUM_THREADS, Integer.toString(threads.threads())),
+                        arguments.toArray(String[]::new));
                 if (!outcome.finished()) {
                     throw new TikaTimeoutException("Reading " + image + " failed: "
                             + outcome.failure());
@@ -122,7 +124,7 @@ final class TesseractProgram implements Tesseract {
                     image.file(temporary).toString(), "stdout", "--psm", OSD_PAGE_SEG_MODE));
             addVariables(arguments, variables);
             final Programs.Outcome outcome =
-                    run(timeoutMillis, arguments.toArray(String[]::new));
+                    run(timeoutMillis, Map.of(), arguments.toArray(String[]::new));
             return outcome.succeeded() ? outcome.output() : null;
         }
     }
@@ -137,7 +139,7 @@ final class TesseractProgram implements Tesseract {
     @Override
     public synchronized Set<String> languages() throws IOException {
         if (languages == null) {
-            final Programs.Outcome listing = run(CHECK_TIMEOUT_MILLIS, "--list-langs");
+            final Programs.Outcome listing = run(CHECK_TIMEOUT_MILLIS, Map.of(), "--list-langs");
             if (!listing.succeeded()) {
                 throw new IOException("Listing tesseract's languages failed: "
                         + listing.failure());
@@ -151,7 +153,9 @@ final class TesseractProgram implements Tesseract {
         return languages;
     }
 
-    private Programs.Outcome run(long timeoutMillis, String... arguments) throws IOException {
+    /** Runs the program with its language data and further environment variables. */
+    private Programs.Outcome run(long timeoutMillis, Map<String, String> variables,
+                                 String... arguments) throws IOException {
         final String[] command = new String[arguments.length + 1];
         command[0] = program;
         System.arraycopy(arguments, 0, command, 1, arguments.length);
@@ -159,6 +163,7 @@ final class TesseractProgram implements Tesseract {
             if (tessdata != null) {
                 environment.put(TESSDATA_PREFIX, tessdata);
             }
+            environment.putAll(variables);
         }, command);
     }
 }

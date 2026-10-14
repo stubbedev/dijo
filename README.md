@@ -43,7 +43,9 @@ small files, where the Rust side dominates, it is about 5% slower (it allocates 
 allocator); OCR is 30 to 40% faster, since each model is loaded once per process instead of once per image (more for
 documents with many small images), script detection skips a page segmentation it would discard, tesseract allocates
 with mimalloc too, and the x86_64 build copies memory with its own SSE2 `memcpy` (`memcpy.c`) rather than musl's,
-which starts a `rep movsq` for every copy and took a tenth of tesseract's time, at the cost of keeping the loaded models in memory: about 280 MB for `script/Latin` per
+which starts a `rep movsq` for every copy and took a tenth of tesseract's time, and a reading runs tesseract's
+recognizer on up to four threads, the processors shared among the readings running at once (one thread each once
+every processor has a reading), at the cost of keeping the loaded models in memory: about 280 MB for `script/Latin` per
 extraction running at once. GraalVM ships the JDK's static libraries for aarch64 only built against glibc; the
 aarch64 build links those against musl, with the few glibc-only functions they call (the `*64` large-file names,
 `__xstat64` and the like) forwarded to musl's (`glibc_compat.c`). `just static` builds it on Linux into

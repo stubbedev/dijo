@@ -93,19 +93,21 @@ final class LinkedTesseract implements Tesseract {
         final int segmentation = Integer.parseInt(pageSegMode);
         final int timeout = (int) Math.min(timeoutMillis, Integer.MAX_VALUE);
         final long engine = take(model);
-        try {
+        try (ReadingThreads threads = ReadingThreads.take()) {
             final byte[][] text = new byte[1][];
             final int status = switch (image) {
                 case OcrImage.File file -> runFile(engine, utf8(file.path().toString()),
                         segmentation, names, values, poor.afterWords(), poor.belowConfidence(),
-                        timeout, text);
+                        threads.threads(), timeout, text);
                 case OcrImage.Pixels pixels when pixels.gray() -> runGray(engine,
                         pixels.grayLevels(), pixels.image().getWidth(),
                         pixels.image().getHeight(), segmentation, names, values,
-                        poor.afterWords(), poor.belowConfidence(), timeout, text);
+                        poor.afterWords(), poor.belowConfidence(), threads.threads(), timeout,
+                        text);
                 case OcrImage.Pixels pixels -> runRgb(engine, pixels.rgb(),
                         pixels.image().getWidth(), pixels.image().getHeight(), segmentation,
-                        names, values, poor.afterWords(), poor.belowConfidence(), timeout, text);
+                        names, values, poor.afterWords(), poor.belowConfidence(),
+                        threads.threads(), timeout, text);
             };
             if (status == GAVE_UP) {
                 return Optional.empty();
@@ -218,25 +220,25 @@ final class LinkedTesseract implements Tesseract {
      */
     private static native int runFile(long engine, byte[] image, int pageSegMode, byte[][] names,
                                       byte[][] values, int giveUpAfterWords,
-                                      int giveUpBelowConfidence, int timeoutMillis,
+                                      int giveUpBelowConfidence, int threads, int timeoutMillis,
                                       byte[][] text);
 
     /**
      * Reads grey pixels, one byte each, row by row, as the tesseract program reads one page,
      * puts the text into text[0] and tells whether it succeeded, failed, timed out or gave up:
      * with giveUpAfterWords above 0, it gives up once that many words are read with a mean
-     * confidence below giveUpBelowConfidence.
+     * confidence below giveUpBelowConfidence. The recognizer divides its work among threads.
      */
     private static native int runGray(long engine, byte[] gray, int width, int height,
                                       int pageSegMode, byte[][] names, byte[][] values,
                                       int giveUpAfterWords, int giveUpBelowConfidence,
-                                      int timeoutMillis, byte[][] text);
+                                      int threads, int timeoutMillis, byte[][] text);
 
     /** Reads pixels of packed RGB as {@link #runGray} reads grey ones. */
     private static native int runRgb(long engine, int[] rgb, int width, int height,
                                      int pageSegMode, byte[][] names, byte[][] values,
                                      int giveUpAfterWords, int giveUpBelowConfidence,
-                                     int timeoutMillis, byte[][] text);
+                                     int threads, int timeoutMillis, byte[][] text);
 
     /** The mean confidence of the words an engine read last, as tesseract's MeanTextConf. */
     private static native int meanConfidence(long engine);

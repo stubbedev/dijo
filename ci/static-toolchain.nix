@@ -55,7 +55,7 @@ let
         { pkg-config --static --cflags tesseract lept; \
           echo -I${tesseract}/include/tesseract-internal -DHAVE_CONFIG_H; } \
           | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-cflags
-        { pkg-config --static --libs tesseract; echo -L${static.giflib}/lib -lm; } \
+        { pkg-config --static --libs tesseract; echo -L${static.giflib}/lib -lgomp -lm; } \
           | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-libs
       '';
 in

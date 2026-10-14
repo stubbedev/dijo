@@ -3,6 +3,7 @@
 #include <allheaders.h>
 #include <tesseract/baseapi.h>
 #include <tesseract/ocrclass.h>
+#include <omp.h>
 
 #include "pageres.h"
 
@@ -221,10 +222,11 @@ template <typename Visit> bool each_page(const std::string &image, Visit visit) 
 /**
  * Recognizes a page as ProcessPage does and appends its text as the text renderer does: after
  * the page separator unless it is the first page. With giveUpAfterWords above 0, gives up as
- * GiveUp tells.
+ * GiveUp tells. The recognizer divides its work among threads.
  */
 jint recognize(Engine &api, Pix *pix, int page, jint giveUpAfterWords,
-               jint giveUpBelowConfidence, jint timeoutMillis, std::string &text) {
+               jint giveUpBelowConfidence, jint threads, jint timeoutMillis, std::string &text) {
+    omp_set_num_threads(threads);
     api.SetImage(pix);
     GiveUp giveUp{api, giveUpAfterWords, giveUpBelowConfidence, false, false};
     tesseract::ETEXT_DESC monitor;
@@ -272,7 +274,7 @@ jint hand_over(JNIEnv *env, jint status, const std::string &text, jobjectArray r
 /** Reads pixels as one page and puts its text into result[0]. */
 jint read_pix(JNIEnv *env, Engine &api, Pix *pix, jint pageSegMode, jobjectArray names,
               jobjectArray values, jint giveUpAfterWords, jint giveUpBelowConfidence,
-              jint timeoutMillis, jobjectArray result) {
+              jint threads, jint timeoutMillis, jobjectArray result) {
     if (pix == nullptr) {
         return FAILED;
     }
@@ -280,7 +282,7 @@ jint read_pix(JNIEnv *env, Engine &api, Pix *pix, jint pageSegMode, jobjectArray
     api.SetPageSegMode(static_cast<tesseract::PageSegMode>(pageSegMode));
     std::string text;
     return hand_over(env,
-                     recognize(api, pix, 0, giveUpAfterWords, giveUpBelowConfidence,
+                     recognize(api, pix, 0, giveUpAfterWords, giveUpBelowConfidence, threads,
                                timeoutMillis, text),
                      text, result);
 }
@@ -336,8 +338,8 @@ JNIEXPORT void JNICALL Java_ai_yobix_LinkedTesseract_destroy(JNIEnv *, jclass, j
 
 JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_runFile(
     JNIEnv *env, jclass, jlong engine, jbyteArray image, jint pageSegMode, jobjectArray names,
-    jobjectArray values, jint giveUpAfterWords, jint giveUpBelowConfidence, jint timeoutMillis,
-    jobjectArray result) {
+    jobjectArray values, jint giveUpAfterWords, jint giveUpBelowConfidence, jint threads,
+    jint timeoutMillis, jobjectArray result) {
     try {
         auto &api = engine_of(engine);
         const std::string input = bytes(env, image);
@@ -348,7 +350,7 @@ JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_runFile(
         jint status = FAILED;
         if (!each_page(input, [&](Pix *pix, int page) {
                 status = recognize(api, pix, page, giveUpAfterWords, giveUpBelowConfidence,
-                                   timeoutMillis, text);
+                                   threads, timeoutMillis, text);
                 return status == SUCCEEDED;
             })) {
             return status == SUCCEEDED ? FAILED : status;
@@ -362,12 +364,12 @@ JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_runFile(
 JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_runGray(
     JNIEnv *env, jclass, jlong engine, jbyteArray gray, jint width, jint height,
     jint pageSegMode, jobjectArray names, jobjectArray values, jint giveUpAfterWords,
-    jint giveUpBelowConfidence, jint timeoutMillis, jobjectArray text) {
+    jint giveUpBelowConfidence, jint threads, jint timeoutMillis, jobjectArray text) {
     try {
         auto &api = engine_of(engine);
         const PixPointer pix = gray_pix(env, gray, width, height);
         return read_pix(env, api, pix.get(), pageSegMode, names, values, giveUpAfterWords,
-                        giveUpBelowConfidence, timeoutMillis, text);
+                        giveUpBelowConfidence, threads, timeoutMillis, text);
     } catch (...) {
         return FAILED;
     }
@@ -376,12 +378,12 @@ JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_runGray(
 JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_runRgb(
     JNIEnv *env, jclass, jlong engine, jintArray rgb, jint width, jint height,
     jint pageSegMode, jobjectArray names, jobjectArray values, jint giveUpAfterWords,
-    jint giveUpBelowConfidence, jint timeoutMillis, jobjectArray text) {
+    jint giveUpBelowConfidence, jint threads, jint timeoutMillis, jobjectArray text) {
     try {
         auto &api = engine_of(engine);
         const PixPointer pix = rgb_pix(env, rgb, width, height);
         return read_pix(env, api, pix.get(), pageSegMode, names, values, giveUpAfterWords,
-                        giveUpBelowConfidence, timeoutMillis, text);
+                        giveUpBelowConfidence, threads, timeoutMillis, text);
     } catch (...) {
         return FAILED;
     }
