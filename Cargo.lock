@@ -505,6 +505,7 @@ version = "0.2.1"
 dependencies = [
  "bytemuck",
  "criterion",
+ "encoding_rs",
  "flate2",
  "jni",
  "libc",

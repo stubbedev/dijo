@@ -23,3 +23,20 @@ Copyright 2007-2026 The Apache Software Foundation
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
 ````
+
+
+`nb-bigram.bin` and `utf16-specialist.bin` are the byte bigram charset classifier and the UTF-16 byte order classifier
+of Apache Tika 4.1.0's MojibusterEncodingDetector (`org.apache.tika:tika-encoding-detector-mojibuster`), licensed
+under the Apache License 2.0. They are embedded unchanged. Their notice:
+
+````text
+Apache Tika ML charset encoding detector
+Copyright 2007-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
+
+
+`java-charsets.bin` holds the names, aliases and decoding tables of the charsets of OpenJDK 25, as its decoders
+decode them, licensed under the GNU General Public License version 2 with the Classpath Exception.

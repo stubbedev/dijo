@@ -18,6 +18,16 @@ pub fn is_letter(c: char) -> bool {
     )
 }
 
+/// `Character.getType` of a cased letter: the general categories Lu, Ll and Lt.
+pub fn is_cased_letter(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+    )
+}
+
 /// `Character.getType` of a combining mark: the general categories Mn, Mc and Me.
 pub fn is_mark(c: char) -> bool {
     matches!(

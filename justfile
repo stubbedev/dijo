@@ -35,6 +35,24 @@ test-fuzz:
 ocr-bundle dir="target/ocr-bundle":
     ci/ocr-bundle.sh {{dir}}
 
+# Regenerate the JDK charset tables and Apache Tika's own encoding detection answers that the Rust port is
+# tested against, after checking that the embedded models are the ones in the pinned Tika version's jar.
+[unix]
+encoding-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    for model in nb-bigram.bin utf16-specialist.bin; do
+        unzip -p "$jars"/tika-encoding-detector-mojibuster-*.jar "org/apache/tika/ml/chardetect/$model" \
+            | cmp - "extractous-core/models/$model"
+    done
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    fixtures=extractous-core/tests/fixtures/charset
+    java "$fixtures/CharsetTables.java" extractous-core/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
+    java -cp "$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
+        "$CONFORMANCE_CORPUS" "$fixtures/encoding-reference.tsv.gz"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]
