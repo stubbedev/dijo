@@ -185,13 +185,25 @@ final class OcrImages {
     static double scaleFactor(BufferedImage image, long maxPixels, boolean reduce) {
         final int width = image.getWidth();
         final int height = image.getHeight();
-        final int[] gray = gray(image, width, height).getRaster()
-                .getPixels(0, 0, width, height, (int[]) null);
-        final int threshold = otsuThreshold(gray);
+        final BufferedImage gray = gray(image, width, height);
+        final long[] histogram = new long[256];
+        final int[] darkest = new int[height];
+        final byte[] row = new byte[width];
+        for (int y = 0; y < height; y++) {
+            gray.getRaster().getDataElements(0, y, width, 1, row);
+            int minimum = 255;
+            for (final byte pixel : row) {
+                final int value = pixel & 0xFF;
+                histogram[value]++;
+                minimum = Math.min(minimum, value);
+            }
+            darkest[y] = minimum;
+        }
+        final int threshold = otsuThreshold(histogram);
         final List<Integer> runs = new ArrayList<>();
         int run = 0;
         for (int y = 0; y <= height; y++) {
-            if (y < height && rowHasInk(gray, y, width, threshold)) {
+            if (y < height && darkest[y] < threshold) {
                 run++;
                 continue;
             }
@@ -216,15 +228,6 @@ final class OcrImages {
         final double wanted = Math.min(MAX_UPSCALE, (double) TARGET_LINE_PIXELS / lineHeight);
         final double allowed = Math.sqrt((double) maxPixels / ((long) width * height));
         return Math.max(1, Math.min(wanted, allowed));
-    }
-
-    private static boolean rowHasInk(int[] gray, int y, int width, int threshold) {
-        for (int x = 0; x < width; x++) {
-            if (gray[y * width + x] < threshold) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -425,7 +428,15 @@ final class OcrImages {
         for (final int value : gray) {
             histogram[value]++;
         }
-        final long total = gray.length;
+        return otsuThreshold(histogram);
+    }
+
+    /** Otsu's threshold of a histogram of grey levels. */
+    static int otsuThreshold(long[] histogram) {
+        long total = 0;
+        for (final long count : histogram) {
+            total += count;
+        }
         double sumAll = 0;
         for (int value = 0; value < 256; value++) {
             sumAll += (double) value * histogram[value];

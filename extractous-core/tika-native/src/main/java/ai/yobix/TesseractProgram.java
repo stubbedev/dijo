@@ -62,10 +62,11 @@ final class TesseractProgram implements Tesseract {
      * program writes by default, so both are asked for.
      */
     @Override
-    public Reading read(Path image, String pageSegMode, String language,
+    public Reading read(OcrImage ocrImage, String pageSegMode, String language,
                         Map<String, String> variables, long timeoutMillis)
             throws IOException, TikaException {
         try (TemporaryResources temporary = new TemporaryResources()) {
+            final Path image = ocrImage.file(temporary);
             final Path base = temporary.createTempFile();
             final Path text = base.resolveSibling(base.getFileName() + TEXT_EXTENSION);
             final Path words = base.resolveSibling(base.getFileName() + TSV_EXTENSION);
@@ -117,10 +118,12 @@ final class TesseractProgram implements Tesseract {
     }
 
     @Override
-    public String detect(Path image, long timeoutMillis) throws IOException {
-        final Programs.Outcome outcome = run(timeoutMillis, image.toString(), "stdout", "--psm",
-                OSD_PAGE_SEG_MODE);
-        return outcome.succeeded() ? outcome.output() : null;
+    public String detect(OcrImage image, long timeoutMillis) throws IOException {
+        try (TemporaryResources temporary = new TemporaryResources()) {
+            final Programs.Outcome outcome = run(timeoutMillis,
+                    image.file(temporary).toString(), "stdout", "--psm", OSD_PAGE_SEG_MODE);
+            return outcome.succeeded() ? outcome.output() : null;
+        }
     }
 
     @Override

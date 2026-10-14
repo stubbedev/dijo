@@ -26,6 +26,7 @@ import java.awt.image.BufferedImage;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -136,12 +137,12 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                         new XHTMLContentHandler(handler, metadata, context);
                 xhtml.startDocument();
                 if (pages != null && pages.count() > 1) {
-                    readPages(pages, xhtml, metadata, configured, auto, temporary);
+                    readPages(pages, Files.size(original), xhtml, metadata, configured, auto);
                 } else {
                     final BufferedImage image = pages == null ? null : pages.read(0);
-                    read(xhtml, readableByTesseract(original, type, image, temporary), image,
-                            metadata, metadata.getInt(TikaPagedText.PAGE_NUMBER), configured,
-                            auto, temporary);
+                    read(xhtml, readableByTesseract(original, type, image), Files.size(original),
+                            image, metadata, metadata.getInt(TikaPagedText.PAGE_NUMBER),
+                            configured, auto);
                 }
                 xhtml.endDocument();
             }
@@ -149,9 +150,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     }
 
     /** Reads every page of a multi-page image as a page of the output. */
-    private void readPages(Pages pages, XHTMLContentHandler xhtml, Metadata metadata,
-                           TesseractOCRConfig configured, OcrConfig auto,
-                           TemporaryResources temporary)
+    private void readPages(Pages pages, long size, XHTMLContentHandler xhtml, Metadata metadata,
+                           TesseractOCRConfig configured, OcrConfig auto)
             throws IOException, SAXException, TikaException {
         for (int index = 0; index < pages.count(); index++) {
             final BufferedImage image = pages.read(index);
@@ -160,8 +160,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                 metadata.add(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING, "Page " + (index + 1)
                         + " of the image is too large or damaged to OCR");
             } else {
-                read(xhtml, write(image, temporary), image, metadata, index + 1, configured, auto,
-                        temporary);
+                read(xhtml, new OcrImage.Pixels(image), size, image, metadata, index + 1,
+                        configured, auto);
             }
             xhtml.endElement("div");
         }
@@ -177,26 +177,27 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * read with a model for the script it finds, unless that would read it as before.
      *
      * @param file  the image as tesseract can read it
+     * @param size  the size of the image's file, for the configured limits
      * @param image its decoded pixels, or null when they could not be decoded within limits
      * @param page  the page number of the image, when it is a page
      */
-    private void read(XHTMLContentHandler xhtml, Path file, BufferedImage image, Metadata metadata,
-                      Integer page, TesseractOCRConfig configured, OcrConfig auto,
-                      TemporaryResources temporary)
+    private void read(XHTMLContentHandler xhtml, OcrImage file, long size, BufferedImage image,
+                      Metadata metadata, Integer page, TesseractOCRConfig configured,
+                      OcrConfig auto)
             throws IOException, SAXException, TikaException {
         final TesseractOCRConfig config = configured != null ? configured : DEFAULTS;
         final Oriented oriented = Oriented.of(image, metadata);
         final String assumedScript = auto == null ? null
                 : auto.assumedScript() != null ? auto.assumedScript() : ASSUMED_SCRIPT;
-        final Prepared first = finish(file, image, oriented, assumedScript,
-                language(assumedScript, auto), 0, temporary);
-        final Tesseract.Reading reading = read(file, first, config);
+        final Prepared first = finish(image, oriented, assumedScript,
+                language(assumedScript, auto), 0);
+        final Tesseract.Reading reading = read(file, size, first, config);
         if (reading == null || reading.confidence() > MIN_CONFIDENCE) {
             emit(xhtml, metadata, page, first, reading, config);
             return;
         }
-        final Path analysed = oriented.image() == null || oriented.image() == image
-                ? file : write(oriented.image(), temporary);
+        final OcrImage analysed = oriented.image() == null || oriented.image() == image
+                ? file : new OcrImage.Pixels(oriented.image());
         final ScriptDetection.Result detected =
                 ScriptDetection.detect(tesseract, analysed, config.getTimeoutMillis());
         final String script = auto != null ? detected.script() : null;
@@ -208,9 +209,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             emit(xhtml, metadata, page, first, reading, config);
             return;
         }
-        final Prepared detectedPrepared = finish(file, image, oriented, script, language,
-                detected.clockwiseQuarterTurns(), temporary);
-        emit(xhtml, metadata, page, detectedPrepared, read(file, detectedPrepared, config),
+        final Prepared detectedPrepared = finish(image, oriented, script, language,
+                detected.clockwiseQuarterTurns());
+        emit(xhtml, metadata, page, detectedPrepared, read(file, size, detectedPrepared, config),
                 config);
     }
 
@@ -222,10 +223,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         return auto != null ? ScriptDetection.language(tesseract, script) : null;
     }
 
-    private Tesseract.Reading read(Path file, Prepared prepared, TesseractOCRConfig config)
-            throws IOException, TikaException {
+    private Tesseract.Reading read(OcrImage file, long size, Prepared prepared,
+                                   TesseractOCRConfig config) throws IOException, TikaException {
         prepared.configure(config);
-        return ocr.read(prepared.path == null ? file : prepared.path, config);
+        return ocr.read(prepared.image == null ? file : prepared.image, size, config);
     }
 
     private static void emit(XHTMLContentHandler xhtml, Metadata metadata, Integer page,
@@ -238,7 +239,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     }
 
     /**
-     * @param path            the prepared image, or null when the original reads as it is
+     * @param image           the prepared image, or null when the original reads as it is
      * @param language        the language to read the image in, when it was chosen for its
      *                        script
      * @param unevenLighting  whether the image is lit unevenly
@@ -251,7 +252,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * @param skewDegrees     the skew corrected
      * @param scale           the resize applied, above 1 to enlarge small text
      */
-    private record Prepared(Path path, String language, boolean unevenLighting, String script,
+    private record Prepared(OcrImage image, String language, boolean unevenLighting, String script,
                             String exifOrientation, boolean decoded, boolean flattened,
                             int quarterTurns,
                             double skewDegrees, double scale) {
@@ -302,9 +303,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * Turns an oriented image by the quarter turns detection found, corrects its skew, scales its
      * text to a readable size and checks its lighting.
      */
-    private static Prepared finish(Path file, BufferedImage image, Oriented oriented,
-                                   String script, String language, int quarterTurns,
-                                   TemporaryResources temporary) throws IOException {
+    private static Prepared finish(BufferedImage image, Oriented oriented, String script,
+                                   String language, int quarterTurns) {
         if (oriented.image() == null) {
             return new Prepared(null, language, false, script, null, false, false, 0, 0, 1);
         }
@@ -319,37 +319,27 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         if (scale != 1) {
             upright = OcrImages.scale(upright, scale);
         }
-        return new Prepared(upright == image ? null : write(upright, temporary), language,
+        return new Prepared(upright == image ? null : new OcrImage.Pixels(upright), language,
                 OcrImages.unevenLighting(upright), script, oriented.exifOrientation(), true,
                 oriented.flattened(), quarterTurns, skew, scale);
     }
 
     /**
-     * The image as a file tesseract reads: the original, or the decoded pixels of an image
-     * tesseract cannot read.
+     * The image as tesseract reads it: the original file, or the decoded pixels of an image
+     * tesseract cannot decode.
      *
-     * @throws TikaException when tesseract cannot read the image and Java could not decode it
+     * @throws TikaException when tesseract cannot decode the image and Java could not either
      */
-    private static Path readableByTesseract(Path original, MediaType type, BufferedImage image,
-                                            TemporaryResources temporary)
-            throws IOException, TikaException {
+    private static OcrImage readableByTesseract(Path original, MediaType type,
+                                                BufferedImage image) throws TikaException {
         if (type == null || !DECODED_FOR_TESSERACT.contains(type.getBaseType())) {
-            return original;
+            return new OcrImage.File(original);
         }
         if (image == null) {
             throw new TikaException("The " + type.getBaseType() + " image could not be decoded "
                     + "for OCR: it is damaged or has more than " + MAX_PIXELS + " pixels");
         }
-        return write(image, temporary);
-    }
-
-    private static Path write(BufferedImage image, TemporaryResources temporary)
-            throws IOException {
-        final Path path = temporary.createTempFile(".png");
-        if (!ImageIO.write(image, "png", path.toFile())) {
-            throw new IOException("No PNG writer to prepare an image for OCR");
-        }
-        return path;
+        return new OcrImage.Pixels(image);
     }
 
     /**

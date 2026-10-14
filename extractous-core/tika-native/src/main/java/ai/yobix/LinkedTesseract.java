@@ -50,7 +50,7 @@ final class LinkedTesseract implements Tesseract {
     }
 
     @Override
-    public Reading read(Path image, String pageSegMode, String language,
+    public Reading read(OcrImage image, String pageSegMode, String language,
                         Map<String, String> variables, long timeoutMillis)
             throws IOException, TikaException {
         final String model = language == null || language.isBlank() ? DEFAULT_LANGUAGE : language;
@@ -62,47 +62,89 @@ final class LinkedTesseract implements Tesseract {
             values[index] = utf8(variable.getValue());
             index++;
         }
+        final int segmentation = Integer.parseInt(pageSegMode);
+        final int timeout = (int) Math.min(timeoutMillis, Integer.MAX_VALUE);
         final long engine = take(model);
+        try {
+            final byte[][] text = new byte[1][];
+            final int status = switch (image) {
+                case OcrImage.File file -> runFile(engine, file.path(), segmentation, names,
+                        values, timeout, text);
+                case OcrImage.Pixels pixels when pixels.gray() -> runGray(engine,
+                        pixels.grayLevels(), pixels.image().getWidth(),
+                        pixels.image().getHeight(), segmentation, names, values, timeout, text);
+                case OcrImage.Pixels pixels -> runRgb(engine, pixels.rgb(),
+                        pixels.image().getWidth(), pixels.image().getHeight(), segmentation,
+                        names, values, timeout, text);
+            };
+            if (status == TIMED_OUT) {
+                throw new TikaTimeoutException("Reading " + describe(image) + " failed: "
+                        + "tesseract did not finish within " + timeoutMillis + " ms");
+            }
+            if (status != SUCCEEDED) {
+                throw new TikaException("Reading " + describe(image) + " failed: tesseract "
+                        + "could not read it with " + model);
+            }
+            return new Reading(new String(text[0], StandardCharsets.UTF_8),
+                    meanConfidence(engine));
+        } finally {
+            release(model, engine);
+        }
+    }
+
+    /**
+     * Reads an image file as the tesseract program does, rendering its text into a file, and
+     * hands the text over.
+     */
+    private static int runFile(long engine, Path image, int pageSegMode, byte[][] names,
+                               byte[][] values, int timeoutMillis, byte[][] text)
+            throws IOException {
         try (TemporaryResources temporary = new TemporaryResources()) {
             final Path outputBase = temporary.createTempFile();
             final Path output =
                     outputBase.resolveSibling(outputBase.getFileName() + TEXT_EXTENSION);
             try {
                 final int status = run(engine, utf8(image.toString()), utf8(outputBase.toString()),
-                        Integer.parseInt(pageSegMode), names, values,
-                        (int) Math.min(timeoutMillis, Integer.MAX_VALUE));
-                if (status == TIMED_OUT) {
-                    throw new TikaTimeoutException("Reading " + image + " failed: tesseract did "
-                            + "not finish within " + timeoutMillis + " ms");
+                        pageSegMode, names, values, timeoutMillis);
+                if (status == SUCCEEDED) {
+                    text[0] = Files.readAllBytes(output);
                 }
-                if (status != SUCCEEDED) {
-                    throw new TikaException("Reading " + image + " failed: tesseract could not "
-                            + "read it with " + model);
-                }
-                return new Reading(Files.readString(output, StandardCharsets.UTF_8),
-                        meanConfidence(engine));
+                return status;
             } finally {
                 Files.deleteIfExists(output);
             }
-        } finally {
-            release(model, engine);
         }
     }
 
     @Override
-    public String detect(Path image, long timeoutMillis) throws IOException {
+    public String detect(OcrImage image, long timeoutMillis) throws IOException {
         final long engine;
         try {
             engine = take(OSD_LANGUAGE);
         } catch (TikaException e) {
-            throw new IOException("Detecting the script of " + image + " failed", e);
+            throw new IOException("Detecting the script of " + describe(image) + " failed", e);
         }
         try {
-            final byte[] report = detect(engine, utf8(image.toString()));
+            final byte[] report = switch (image) {
+                case OcrImage.File file -> detect(engine, utf8(file.path().toString()));
+                case OcrImage.Pixels pixels when pixels.gray() -> detectGray(engine,
+                        pixels.grayLevels(), pixels.image().getWidth(),
+                        pixels.image().getHeight());
+                case OcrImage.Pixels pixels -> detectRgb(engine, pixels.rgb(),
+                        pixels.image().getWidth(), pixels.image().getHeight());
+            };
             return report == null ? null : new String(report, StandardCharsets.UTF_8);
         } finally {
             release(OSD_LANGUAGE, engine);
         }
+    }
+
+    private static String describe(OcrImage image) {
+        return switch (image) {
+            case OcrImage.File file -> file.path().toString();
+            case OcrImage.Pixels pixels -> "a " + pixels.image().getWidth() + "x"
+                    + pixels.image().getHeight() + " image";
+        };
     }
 
     @Override
@@ -140,9 +182,28 @@ final class LinkedTesseract implements Tesseract {
     private static native int run(long engine, byte[] image, byte[] outputBase, int pageSegMode,
                                   byte[][] names, byte[][] values, int timeoutMillis);
 
+    /**
+     * Reads grey pixels, one byte each, row by row, as the tesseract program reads one page,
+     * puts the text into text[0] and tells whether it succeeded, failed or timed out.
+     */
+    private static native int runGray(long engine, byte[] gray, int width, int height,
+                                      int pageSegMode, byte[][] names, byte[][] values,
+                                      int timeoutMillis, byte[][] text);
+
+    /** Reads pixels of packed RGB as {@link #runGray} reads grey ones. */
+    private static native int runRgb(long engine, int[] rgb, int width, int height,
+                                     int pageSegMode, byte[][] names, byte[][] values,
+                                     int timeoutMillis, byte[][] text);
+
     /** The mean confidence of the words an engine read last, as tesseract's MeanTextConf. */
     private static native int meanConfidence(long engine);
 
     /** The orientation and script report of an osd engine on an image, or null when it has none. */
     private static native byte[] detect(long engine, byte[] image);
+
+    /** The orientation and script report of an osd engine on grey pixels, or null. */
+    private static native byte[] detectGray(long engine, byte[] gray, int width, int height);
+
+    /** The orientation and script report of an osd engine on RGB pixels, or null. */
+    private static native byte[] detectRgb(long engine, int[] rgb, int width, int height);
 }

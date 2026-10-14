@@ -3,7 +3,6 @@ package ai.yobix;
 import org.apache.tika.exception.TikaException;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 
@@ -28,15 +27,16 @@ interface Tesseract {
      *                                                        timeoutMillis
      * @throws TikaException                                  when tesseract fails
      */
-    Reading read(Path image, String pageSegMode, String language, Map<String, String> variables,
-                 long timeoutMillis) throws IOException, TikaException;
+    Reading read(OcrImage image, String pageSegMode, String language,
+                 Map<String, String> variables, long timeoutMillis)
+            throws IOException, TikaException;
 
     /**
      * Detects the orientation and script of an image, as {@code tesseract <image> stdout --psm 0}
      * prints them, or null when tesseract cannot judge the image, as when it has too little
      * text, or takes longer than timeoutMillis.
      */
-    String detect(Path image, long timeoutMillis) throws IOException;
+    String detect(OcrImage image, long timeoutMillis) throws IOException;
 
     /**
      * The models it reads with, named as {@code -l} names them, with a slash before a model in a

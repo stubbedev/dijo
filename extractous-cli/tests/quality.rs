@@ -111,8 +111,16 @@ fn assert_scores_every_document(missing: &BTreeSet<String>, writer: &str) {
     );
 }
 
+/// The extractous to score: QUALITY_BINARY, such as the static executable, or cargo's build.
+fn program() -> PathBuf {
+    std::env::var_os("QUALITY_BINARY").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_extractous")),
+        PathBuf::from,
+    )
+}
+
 fn run(document: &Document) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_extractous"))
+    Command::new(program())
         .args(&document.arguments)
         .arg(Path::new(QUALITY).join("corpus").join(&document.file))
         .output()

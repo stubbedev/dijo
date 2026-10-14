@@ -1,7 +1,6 @@
 package ai.yobix;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 
@@ -53,7 +52,8 @@ final class ScriptDetection {
      * Runs OSD on an image. An image OSD cannot judge, such as one with too little text, gives
      * an unknown script and no turns.
      */
-    static Result detect(Tesseract tesseract, Path image, long timeoutMillis) throws IOException {
+    static Result detect(Tesseract tesseract, OcrImage image, long timeoutMillis)
+            throws IOException {
         final String output = tesseract.detect(image, timeoutMillis);
         if (output == null) {
             return UNKNOWN;

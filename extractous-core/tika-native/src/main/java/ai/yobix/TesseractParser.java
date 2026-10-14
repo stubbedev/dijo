@@ -14,8 +14,6 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -61,7 +59,8 @@ final class TesseractParser implements Parser, TextRecognizer {
             final TikaInputStream image = TikaInputStream.get(stream, temporary, metadata);
             final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
-            final Tesseract.Reading reading = read(image.getPath(), config);
+            final Tesseract.Reading reading =
+                    read(new OcrImage.File(image.getPath()), image.getLength(), config);
             if (reading != null) {
                 write(xhtml, reading.text());
             }
@@ -70,12 +69,11 @@ final class TesseractParser implements Parser, TextRecognizer {
     }
 
     /**
-     * Reads an image as configured, or returns null when its size is outside the configured
-     * limits.
+     * Reads an image as configured, or returns null when the size of its file is outside the
+     * configured limits.
      */
-    Tesseract.Reading read(Path image, TesseractOCRConfig config)
+    Tesseract.Reading read(OcrImage image, long size, TesseractOCRConfig config)
             throws IOException, TikaException {
-        final long size = Files.size(image);
         if (size < config.getMinFileSizeToOcr() || size > config.getMaxFileSizeToOcr()) {
             return null;
         }
