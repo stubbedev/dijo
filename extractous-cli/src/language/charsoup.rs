@@ -12,6 +12,8 @@ use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
 use unicode_script::{Script, UnicodeScript};
 
+use extractous_core::unicode::{is_letter, lowercase};
+
 const MODEL_BYTES: &[u8] = include_bytes!("../../models/langdetect-20260320.bin");
 const MAGIC: u32 = 0x4C44_4D31;
 const VERSION: u32 = 2;
@@ -529,24 +531,6 @@ fn strip_emails(text: &str) -> Option<String> {
 fn is_transparent(c: char) -> bool {
     matches!(c, '\u{0640}' | '\u{200C}' | '\u{200D}')
         || get_general_category(c) == GeneralCategory::NonspacingMark
-}
-
-/// Java's `Character.isLetter`: the general categories L*.
-fn is_letter(c: char) -> bool {
-    matches!(
-        get_general_category(c),
-        GeneralCategory::UppercaseLetter
-            | GeneralCategory::LowercaseLetter
-            | GeneralCategory::TitlecaseLetter
-            | GeneralCategory::ModifierLetter
-            | GeneralCategory::OtherLetter
-    )
-}
-
-/// Java's `Character.toLowerCase(int)`, the simple lowercase mapping: the first character of the
-/// full mapping, which only differs for İ, whose full mapping adds a combining dot.
-fn lowercase(c: char) -> char {
-    c.to_lowercase().next().unwrap_or(c)
 }
 
 fn script_category(c: char, script: Script) -> usize {

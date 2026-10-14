@@ -5,9 +5,10 @@
 
 use std::sync::LazyLock;
 
-use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::UnicodeNormalization;
 use unicode_script::Script;
+
+use extractous_core::unicode;
 
 const MODEL_BYTES: &[u8] = include_bytes!("../../models/language-groups.bin");
 const MAGIC: u32 = 0x4C47_5250;
@@ -189,7 +190,7 @@ fn words(text: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
     for character in text.nfc() {
-        if is_letter(character) || (!word.is_empty() && WORD_JOINERS.contains(&character)) {
+        if is_word_character(character) || (!word.is_empty() && WORD_JOINERS.contains(&character)) {
             word.push(character);
         } else if !word.is_empty() {
             push_word(&mut words, &word);
@@ -207,18 +208,9 @@ fn push_word(words: &mut Vec<String>, word: &str) {
     }
 }
 
-fn is_letter(character: char) -> bool {
-    matches!(
-        get_general_category(character),
-        GeneralCategory::UppercaseLetter
-            | GeneralCategory::LowercaseLetter
-            | GeneralCategory::TitlecaseLetter
-            | GeneralCategory::ModifierLetter
-            | GeneralCategory::OtherLetter
-            | GeneralCategory::NonspacingMark
-            | GeneralCategory::SpacingMark
-            | GeneralCategory::EnclosingMark
-    )
+/// A character a word is made of: a letter, or a mark on one.
+fn is_word_character(character: char) -> bool {
+    unicode::is_letter(character) || unicode::is_mark(character)
 }
 
 /// FNV-1a over a tag byte and the UTF-8 of the characters.

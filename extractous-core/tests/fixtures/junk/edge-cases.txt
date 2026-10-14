@@ -1,0 +1,40 @@
+a
+A
+é
+12345
+...
+   
+\u0000
+���
+\u0001abc\u0002def
+abc  def
+😀😀 smile 😀
+English text with 中文 mixed in the middle
+ｶﾀｶﾅ と ひらがな の テキスト
+ΚΑΤΑΛΟΓΟΣ ΠΡΟΪΟΝΤΩΝ
+МУЗЕЙ ИСТОРИИ
+tHiS iS aLtErNaTiNg CaSe JuNk
+Hausj‰rven on kunta
+النَّصُّ العَرَبِيُّ مَعَ الحَرَكَاتِ
+ภาษาไทยเป็นภาษาที่สวยงาม
+हिन्दी भाषा में लिखा गया पाठ
+한국어 텍스트입니다
+日本語のテキストです。漢字とかなを含みます。
+café au lait
+ﬁnance ﬂow ﬀ
+ＡＢＣ ｆｕｌｌｗｉｄｔｈ
+Straße groß Fuß
+İstanbul ılık
+𝐀𝐁𝐂 𝑥𝑦𝑧
+https://example.com/path?query=1&other=two
+someone@example.com wrote this
+for (int i = 0; i < n; i++) { sum += a[i]; }
+tab\tseparated\tvalues\nnext line
+next line\u0085C1 control
+no break spaces
+Ã¦Ã¸Ã¥ dansk tekst med mojibake
+Ð¿Ñ€Ð¸Ð²ÐµÑ‚ Ð¼Ð¸Ñ€
+Ã¼ber die BrÃ¼cke
+Ø§Ù„Ø¹Ø±Ø¨ÙŠØ©
+A1B2C3 D4E5F6
+x

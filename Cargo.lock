@@ -518,6 +518,9 @@ dependencies = [
  "test-case",
  "textdistance",
  "thiserror",
+ "unicode-general-category",
+ "unicode-normalization",
+ "unicode-script",
  "walkdir",
  "windows-sys",
 ]

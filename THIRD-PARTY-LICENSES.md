@@ -3225,6 +3225,17 @@ This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
 ````
 
+
+`junkdetect.bin` is the text quality model of Apache Tika 4.1.0's JunkDetector (`org.apache.tika:tika-ml-junkdetect`),
+licensed under the Apache License 2.0. It is embedded unchanged. Its notice:
+
+````text
+Apache Tika ML junk detector — runtime and training tools
+Copyright 2007-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
 ## Java libraries compiled into libtika_native
 
 libtika_native is a GraalVM native image. Besides the libraries below, it contains the GraalVM Community Edition runtime and parts of the OpenJDK class library and its native libraries, licensed under GPL-2.0-only WITH Classpath-exception-2.0, which permits distributing the image under the terms of its own licence. Their licence and the notices of the third-party code they contain follow the libraries' texts. Tesseract is not part of the binary; extractous runs an installed tesseract executable for OCR.

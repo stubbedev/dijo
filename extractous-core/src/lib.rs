@@ -23,6 +23,9 @@ pub use ocr::tesseract_version;
 mod licenses;
 pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
+pub mod text;
+pub mod unicode;
+
 mod isolate;
 pub use isolate::{
     configure_isolate, keep_current_thread_attached, wait_for_extractions, IsolateSettings,

@@ -35,14 +35,28 @@ test-fuzz:
 ocr-bundle dir="target/ocr-bundle":
     ci/ocr-bundle.sh {{dir}}
 
+# Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
+# that the embedded model is the one in the pinned Tika version's jar.
+[unix]
+junk-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    model=org/apache/tika/ml/junkdetect/junkdetect.bin
+    unzip -p "$jars"/tika-ml-junkdetect-*.jar "$model" | cmp - "extractous-core/models/$(basename "$model")"
+    fixtures=extractous-core/tests/fixtures/junk
+    java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
+        extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
+
 # Regenerate the answers of Apache Tika's own CharSoup language detector that the Rust port is tested against, after
 # checking that the embedded model is the one in the pinned Tika version's jar.
 [unix]
 charsoup-reference:
     #!/usr/bin/env bash
     set -euo pipefail
-    jars=target/charsoup
-    ci/fetch-charsoup.sh "$jars"
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
     model=org/apache/tika/langdetect/charsoup/langdetect-20260320.bin
     unzip -p "$jars"/tika-langdetect-charsoup-core-*.jar "$model" | cmp - "extractous-cli/models/$(basename "$model")"
     fixtures=extractous-cli/tests/fixtures/language

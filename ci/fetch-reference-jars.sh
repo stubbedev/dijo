@@ -21,9 +21,9 @@ while IFS=$'\t' read -r path sha256; do
     case "$path" in
         org/apache/tika/*/"$tika"/*) ;;
         org/apache/tika/*)
-            echo "ci/charsoup-jars.tsv pins $path, but the build uses Tika $tika" >&2
+            echo "ci/reference-jars.tsv pins $path, but the build uses Tika $tika" >&2
             exit 1
             ;;
     esac
     fetch_pinned "https://repo1.maven.org/maven2/$path" "$sha256" "$dir/$(basename "$path")"
-done < "$here/charsoup-jars.tsv"
+done < "$here/reference-jars.tsv"

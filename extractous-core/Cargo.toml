@@ -27,6 +27,9 @@ libc = { version = "0.2.178" }
 jni = { version = "0.22.4" }
 libloading = "0.9.0"
 flate2 = "1.1.5"
+unicode-general-category = "1.1.0"
+unicode-normalization = "0.1.25"
+unicode-script = "0.5.8"
 thiserror = { version = "2.0.17" }
 bytemuck =  { version = "1.24.0"}
 # String enums
@@ -47,4 +50,7 @@ quick-xml = { version = "0.42.0", features = ["encoding"] }
 [build-dependencies]
 walkdir = "2.5.0"
 flate2 = "1.1.5"
+unicode-general-category = "1.1.0"
+unicode-normalization = "0.1.25"
+unicode-script = "0.5.8"
 object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }

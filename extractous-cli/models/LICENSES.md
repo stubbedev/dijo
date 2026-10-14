@@ -12,3 +12,14 @@ This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
 ````
 
+
+`junkdetect.bin` is the text quality model of Apache Tika 4.1.0's JunkDetector (`org.apache.tika:tika-ml-junkdetect`),
+licensed under the Apache License 2.0. It is embedded unchanged. Its notice:
+
+````text
+Apache Tika ML junk detector — runtime and training tools
+Copyright 2007-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+````
