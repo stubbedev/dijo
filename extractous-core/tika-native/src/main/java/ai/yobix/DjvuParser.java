@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
 final class DjvuParser implements Parser, EnrichingParser {
 
     private static final MediaType RENDERED = MediaType.image("x-portable-graymap");
-    private static final TesseractOCRConfig DEFAULTS = new TesseractOCRConfig();
+    private static final TesseractOCRConfig DEFAULTS = new OcrConfig();
 
     private CompositeContentEnricher recognizers;
 

@@ -200,8 +200,8 @@
                   },
                   "scale": {
                     "type": "number",
-                    "minimum": 1,
-                    "description": "The enlargement applied to text too small to read."
+                    "exclusiveMinimum": 0,
+                    "description": "The factor the image was resized by before reading: above 1 to enlarge text too small to read, below 1 to reduce large text, which reads as well and faster."
                   },
                   "thresholded": {
                     "type": "boolean",

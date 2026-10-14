@@ -50,8 +50,8 @@ final class LinkedTesseract implements Tesseract {
     }
 
     @Override
-    public String read(Path image, String pageSegMode, String language,
-                       Map<String, String> variables, long timeoutMillis)
+    public Reading read(Path image, String pageSegMode, String language,
+                        Map<String, String> variables, long timeoutMillis)
             throws IOException, TikaException {
         final String model = language == null || language.isBlank() ? DEFAULT_LANGUAGE : language;
         final byte[][] names = new byte[variables.size()][];
@@ -79,7 +79,8 @@ final class LinkedTesseract implements Tesseract {
                     throw new TikaException("Reading " + image + " failed: tesseract could not "
                             + "read it with " + model);
                 }
-                return Files.readString(output, StandardCharsets.UTF_8);
+                return new Reading(Files.readString(output, StandardCharsets.UTF_8),
+                        meanConfidence(engine));
             } finally {
                 Files.deleteIfExists(output);
             }
@@ -138,6 +139,9 @@ final class LinkedTesseract implements Tesseract {
     /** Reads an image with an engine and tells whether it succeeded, failed or timed out. */
     private static native int run(long engine, byte[] image, byte[] outputBase, int pageSegMode,
                                   byte[][] names, byte[][] values, int timeoutMillis);
+
+    /** The mean confidence of the words an engine read last, as tesseract's MeanTextConf. */
+    private static native int meanConfidence(long engine);
 
     /** The orientation and script report of an osd engine on an image, or null when it has none. */
     private static native byte[] detect(long engine, byte[] image);

@@ -166,6 +166,7 @@ magick "$work/scan-300.png" -colorspace Gray -depth 8 "$corpus/prose-scan-300dpi
 magick "$work/scan-150.png" -colorspace Gray -depth 8 "$corpus/prose-scan-150dpi.png"
 magick "$work/scan-300.png" -colorspace Gray -background white -rotate 2.5 -depth 8 "$corpus/prose-scan-skewed.png"
 magick "$work/scan-300.png" -colorspace Gray -rotate 90 -depth 8 "$corpus/prose-scan-rotated.png"
+magick "$work/scan-300.png" -colorspace Gray -rotate 180 -depth 8 "$corpus/prose-scan-upside-down.png"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -density 300 -compress jpeg -quality 85 "$corpus/prose-scan.pdf"
 magick "$work/scan-300.png" -colorspace Gray -negate -depth 8 "$corpus/prose-scan-inverted.png"
 magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.webp"

@@ -56,8 +56,8 @@
     "reading_order": 1.0
   },
   "armenian-scan.png": {
-    "character_error_rate": 0.9890560875512996,
-    "token_error_rate": 1.0,
+    "character_error_rate": 0.987688098495212,
+    "token_error_rate": 1.023121387283237,
     "recall": 0.0,
     "spurious": 1.0,
     "reading_order": 0.0
@@ -98,10 +98,10 @@
     "reading_order": 1.0
   },
   "belarusian-scan.png": {
-    "character_error_rate": 0.0041293874741913286,
-    "token_error_rate": 0.05853658536585366,
-    "recall": 0.9707317073170731,
-    "spurious": 0.04784688995215311,
+    "character_error_rate": 0.0034411562284927736,
+    "token_error_rate": 0.04878048780487805,
+    "recall": 0.975609756097561,
+    "spurious": 0.047619047619047616,
     "reading_order": 1.0
   },
   "belarusian.docx": {
@@ -182,10 +182,10 @@
     "reading_order": 1.0
   },
   "catalan-scan.png": {
-    "character_error_rate": 0.007512520868113523,
-    "token_error_rate": 0.0,
-    "recall": 1.0,
-    "spurious": 0.0,
+    "character_error_rate": 0.008347245409015025,
+    "token_error_rate": 0.004672897196261682,
+    "recall": 0.9953271028037384,
+    "spurious": 0.004672897196261682,
     "reading_order": 1.0
   },
   "catalan.docx": {
@@ -364,10 +364,10 @@
     "reading_order": 1.0
   },
   "estonian-scan.png": {
-    "character_error_rate": 0.0020174848688634837,
-    "token_error_rate": 0.015706806282722512,
-    "recall": 0.9842931937172775,
-    "spurious": 0.015706806282722512,
+    "character_error_rate": 0.0013449899125756557,
+    "token_error_rate": 0.010471204188481676,
+    "recall": 0.9895287958115183,
+    "spurious": 0.010471204188481676,
     "reading_order": 1.0
   },
   "estonian.docx": {
@@ -644,10 +644,10 @@
     "reading_order": 1.0
   },
   "icelandic-scan.png": {
-    "character_error_rate": 0.0007886435331230284,
-    "token_error_rate": 0.005050505050505051,
-    "recall": 0.9949494949494949,
-    "spurious": 0.005050505050505051,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "icelandic.docx": {
@@ -763,10 +763,10 @@
     "reading_order": 1.0
   },
   "latvian-scan.png": {
-    "character_error_rate": 0.0052434456928838954,
-    "token_error_rate": 0.022857142857142857,
-    "recall": 0.9771428571428571,
-    "spurious": 0.022857142857142857,
+    "character_error_rate": 0.000749063670411985,
+    "token_error_rate": 0.005714285714285714,
+    "recall": 0.9942857142857143,
+    "spurious": 0.005714285714285714,
     "reading_order": 1.0
   },
   "latvian.docx": {
@@ -798,10 +798,10 @@
     "reading_order": 1.0
   },
   "lithuanian-scan.png": {
-    "character_error_rate": 0.008075370121130552,
-    "token_error_rate": 0.06217616580310881,
-    "recall": 0.9378238341968912,
-    "spurious": 0.06217616580310881,
+    "character_error_rate": 0.005383580080753701,
+    "token_error_rate": 0.04145077720207254,
+    "recall": 0.9585492227979274,
+    "spurious": 0.04145077720207254,
     "reading_order": 0.125
   },
   "lithuanian.docx": {
@@ -875,7 +875,7 @@
     "reading_order": 1.0
   },
   "maltese-scan.png": {
-    "character_error_rate": 0.0064516129032258064,
+    "character_error_rate": 0.005734767025089606,
     "token_error_rate": 0.00423728813559322,
     "recall": 0.9957627118644068,
     "spurious": 0.00423728813559322,
@@ -994,10 +994,10 @@
     "reading_order": 1.0
   },
   "polish-scan.png": {
-    "character_error_rate": 0.0053475935828877,
-    "token_error_rate": 0.0196078431372549,
-    "recall": 0.9803921568627451,
-    "spurious": 0.0196078431372549,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "polish.docx": {
@@ -1127,13 +1127,20 @@
     "reading_order": 1.0
   },
   "prose-scan-shadow.png": {
+    "character_error_rate": 0.0022675736961451248,
+    "token_error_rate": 0.009836065573770493,
+    "recall": 0.9901639344262295,
+    "spurious": 0.009836065573770493,
+    "reading_order": 1.0
+  },
+  "prose-scan-skewed.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
   },
-  "prose-scan-skewed.png": {
+  "prose-scan-upside-down.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
@@ -1323,10 +1330,10 @@
     "reading_order": 0.2857142857142857
   },
   "romanian-scan.png": {
-    "character_error_rate": 0.005610098176718092,
-    "token_error_rate": 0.03827751196172249,
-    "recall": 0.9617224880382775,
-    "spurious": 0.03827751196172249,
+    "character_error_rate": 0.0070126227208976155,
+    "token_error_rate": 0.04784688995215311,
+    "recall": 0.9521531100478469,
+    "spurious": 0.04784688995215311,
     "reading_order": 0.8571428571428571
   },
   "romanian.docx": {
@@ -1421,10 +1428,10 @@
     "reading_order": 1.0
   },
   "serbian-latin-scan.png": {
-    "character_error_rate": 0.0008045052292839903,
-    "token_error_rate": 0.005319148936170213,
-    "recall": 0.9946808510638298,
-    "spurious": 0.005319148936170213,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "serbian-latin.docx": {
@@ -1470,10 +1477,10 @@
     "reading_order": 1.0
   },
   "slovak-scan.png": {
-    "character_error_rate": 0.0025,
-    "token_error_rate": 0.016483516483516484,
-    "recall": 0.9835164835164835,
-    "spurious": 0.016483516483516484,
+    "character_error_rate": 0.0016666666666666668,
+    "token_error_rate": 0.01098901098901099,
+    "recall": 0.989010989010989,
+    "spurious": 0.01098901098901099,
     "reading_order": 1.0
   },
   "slovak.docx": {
@@ -1498,10 +1505,10 @@
     "reading_order": 1.0
   },
   "slovenian-scan.png": {
-    "character_error_rate": 0.0,
-    "token_error_rate": 0.0,
-    "recall": 1.0,
-    "spurious": 0.0,
+    "character_error_rate": 0.0007518796992481203,
+    "token_error_rate": 0.005154639175257732,
+    "recall": 0.9948453608247423,
+    "spurious": 0.005154639175257732,
     "reading_order": 1.0
   },
   "slovenian.docx": {
@@ -1666,10 +1673,10 @@
     "reading_order": 1.0
   },
   "ukrainian-scan.png": {
-    "character_error_rate": 0.0007423904974016332,
-    "token_error_rate": 0.004761904761904762,
-    "recall": 0.9952380952380953,
-    "spurious": 0.004761904761904762,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "ukrainian.docx": {

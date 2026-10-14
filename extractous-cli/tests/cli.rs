@@ -1571,7 +1571,7 @@ fn images_tesseract_cannot_read_are_decoded_for_it() {
 #[test]
 fn each_ocred_image_reports_how_it_was_read() {
     let objects = json_objects(&[
-        "../quality/corpus/prose-scan-rotated.png",
+        "../quality/corpus/prose-scan-upside-down.png",
         "../quality/corpus/arabic-scan-300dpi.png",
         "../quality/corpus/report-scan.tif",
         "../quality/corpus/prose-photo-perspective.jpg",
@@ -1586,11 +1586,11 @@ fn each_ocred_image_reports_how_it_was_read() {
             .clone()
     };
 
-    let rotated = &reports(0)[0];
-    assert_eq!(rotated["turned_degrees"], 270, "{rotated}");
-    assert_eq!(rotated["script"], "Latin", "{rotated}");
-    assert_eq!(rotated["prepared"], true, "{rotated}");
-    assert_eq!(rotated["flattened"], false, "{rotated}");
+    let upside_down = &reports(0)[0];
+    assert_eq!(upside_down["turned_degrees"], 180, "{upside_down}");
+    assert_eq!(upside_down["script"], "Latin", "{upside_down}");
+    assert_eq!(upside_down["prepared"], true, "{upside_down}");
+    assert_eq!(upside_down["flattened"], false, "{upside_down}");
 
     let arabic = &reports(1)[0];
     assert_eq!(arabic["script"], "Arabic", "{arabic}");

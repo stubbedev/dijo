@@ -56,9 +56,13 @@ for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothi
 unpacked), and `--ocr-lang` can name only the bundled models there. Reading Danish, Swedish, Norwegian, German, Polish,
 Czech or Turkish scans with the English model instead loses 3 to 13% of the characters, the diacritics.
 Other builds run `tesseract` from `PATH`, with its own language data. Without `--ocr-lang`,
-each image is first run through tesseract's orientation and script detection (the `osd` data, which distribution
-packages install with tesseract): it is turned upright and read with the installed model for its script, such as
-`script/Arabic`, then `ara`, falling back to `eng`.
+each image is first read as upright text in Latin script, the most common kind. Only when tesseract's mean confidence
+in that reading is 80 or less (upright Latin pages read at 90 or more; other scripts, and pages upside down, at 60 or
+less) does tesseract's orientation and script detection run (the `osd` data, which distribution packages install with
+tesseract): the image is turned upright and read again with the installed model for its script, such as
+`script/Arabic`, then `ara`, falling back to `eng`. With `--ocr-lang`, a page is read in that language, and detection
+runs only to turn a page tesseract was not confident of. Tesseract segments pages without its own detection (page
+segmentation mode 3, where Tika runs mode 1), since pages reach it upright.
 
 Under `--ocr auto`, each PDF page's text layer is checked before it is used. A page with next to no text is OCRed
 as a scan. A page whose text layer is garbage is OCRed and its text replaced. Garbage here means private-use or
@@ -317,7 +321,9 @@ structure tree, and a tagged page written vertically still comes out a glyph per
 normalisation step, so `--no-normalize reading-order`, `--raw` and XHTML output keep the content stream order.
 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
-lines, estimated from projection profiles. A page photographed at an angle is made flat first: found as the largest
+lines, estimated from projection profiles. They are then resized so their text lines are about 32 pixels high:
+enlarged when they are under 20, and, for the alphabets of Europe, reduced when they are over 40, which tesseract
+reads as accurately and a third faster (a 300 dpi scan of 11 pt text is reduced to about 70%). A page photographed at an angle is made flat first: found as the largest
 bright region with sharp edges against a darker background, and mapped from the quadrilateral its corners span back
 to a rectangle. Tesseract's layout analysis loses almost all text from a page skewed by as
 little as 2.5°.

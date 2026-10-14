@@ -161,6 +161,15 @@ JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_run(JNIEnv *env, jclass, jl
     }
 }
 
+JNIEXPORT jint JNICALL Java_ai_yobix_LinkedTesseract_meanConfidence(JNIEnv *, jclass,
+                                                                    jlong engine) {
+    try {
+        return reinterpret_cast<tesseract::TessBaseAPI *>(engine)->MeanTextConf();
+    } catch (...) {
+        return 0;
+    }
+}
+
 JNIEXPORT jbyteArray JNICALL Java_ai_yobix_LinkedTesseract_detect(JNIEnv *env, jclass,
                                                                   jlong engine,
                                                                   jbyteArray image) {

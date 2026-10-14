@@ -11,15 +11,25 @@ import java.util.Set;
 interface Tesseract {
 
     /**
+     * What tesseract read in an image.
+     *
+     * @param text       the text, as {@code tesseract <image> stdout ... txt} prints it
+     * @param confidence the mean confidence of its words, from 0 to 100, as tesseract's
+     *                   {@code MeanTextConf} averages them: 0 when it found no words
+     */
+    record Reading(String text, int confidence) {
+    }
+
+    /**
      * Reads the text in an image, as {@code tesseract <image> stdout --psm <pageSegMode>
-     * -l <language> -c <name>=<value>... txt} prints it.
+     * -l <language> -c <name>=<value>... txt} prints it, with its words' mean confidence.
      *
      * @throws org.apache.tika.exception.TikaTimeoutException when it takes longer than
      *                                                        timeoutMillis
      * @throws TikaException                                  when tesseract fails
      */
-    String read(Path image, String pageSegMode, String language, Map<String, String> variables,
-                long timeoutMillis) throws IOException, TikaException;
+    Reading read(Path image, String pageSegMode, String language, Map<String, String> variables,
+                 long timeoutMillis) throws IOException, TikaException;
 
     /**
      * Detects the orientation and script of an image, as {@code tesseract <image> stdout --psm 0}

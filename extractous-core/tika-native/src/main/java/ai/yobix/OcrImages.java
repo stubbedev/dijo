@@ -24,7 +24,10 @@ final class OcrImages {
     private static final double MIN_CORRECTION_DEGREES = 0.3;
     private static final double MIN_SHARPNESS_GAIN = 1.05;
     private static final int MIN_LINE_PIXELS = 20;
+    private static final int MAX_LINE_PIXELS = 40;
     private static final int TARGET_LINE_PIXELS = 32;
+    private static final int MIN_MEASURED_LINES = 3;
+    private static final int MAX_LINE_SHARE_OF_HEIGHT = 10;
     private static final double MAX_UPSCALE = 4;
     private static final int MIN_INK_RUN_PIXELS = 3;
     private static final int LIGHTING_TILES = 8;
@@ -169,11 +172,16 @@ final class OcrImages {
     }
 
     /**
-     * How much to enlarge the image so its text lines are tall enough for tesseract, which reads
-     * small text poorly: 1 when the lines are at least {@value #MIN_LINE_PIXELS} pixels high, the
-     * image has no lines of text, or enlarging it would take it past maxPixels.
+     * How much to resize the image so its text lines are about {@value #TARGET_LINE_PIXELS}
+     * pixels high: enlarged when they are below {@value #MIN_LINE_PIXELS}, since tesseract reads
+     * small text poorly, but no further than maxPixels allows, and, when reduce allows it,
+     * reduced when they are above {@value #MAX_LINE_PIXELS}, since tesseract reads such text as
+     * well and faster once it is smaller. The line height is only trusted for reducing when at
+     * least {@value #MIN_MEASURED_LINES} lines were measured, each under a tenth of the image's
+     * height: on an inverted page or one with a dark border, every row holds ink. 1 when the
+     * image has no lines of text.
      */
-    static double upscaleFactor(BufferedImage image, long maxPixels) {
+    static double scaleFactor(BufferedImage image, long maxPixels, boolean reduce) {
         final int width = image.getWidth();
         final int height = image.getHeight();
         final int[] gray = gray(image, width, height).getRaster()
@@ -196,6 +204,11 @@ final class OcrImages {
         }
         Collections.sort(runs);
         final int lineHeight = runs.get(runs.size() / 2);
+        if (lineHeight > MAX_LINE_PIXELS) {
+            final boolean measured = runs.size() >= MIN_MEASURED_LINES
+                    && runs.get(runs.size() - 1) * MAX_LINE_SHARE_OF_HEIGHT < height;
+            return reduce && measured ? (double) TARGET_LINE_PIXELS / lineHeight : 1;
+        }
         if (lineHeight >= MIN_LINE_PIXELS) {
             return 1;
         }
@@ -260,7 +273,7 @@ final class OcrImages {
         return histogram.length - 1;
     }
 
-    /** The image enlarged by a factor, smoothly, so the letters keep their shapes. */
+    /** The image resized by a factor, smoothly, so the letters keep their shapes. */
     static BufferedImage scale(BufferedImage image, double factor) {
         final int width = (int) Math.round(image.getWidth() * factor);
         final int height = (int) Math.round(image.getHeight() * factor);

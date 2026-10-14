@@ -8,15 +8,23 @@ import org.apache.tika.parser.ocr.TesseractOCRConfig;
  * so it is kept as a flag here, and PreparingOcrParser sets the detected language per image.
  * Images lit unevenly are binarised with Sauvola's adaptive threshold, which keeps text in shadows
  * that a single threshold for the whole image loses, but thins delicate strokes on clean scans.
+ * Pages are segmented without tesseract's own orientation and script detection (mode 3, where
+ * Tika's default is 1): PreparingOcrParser turns an image upright before reading it, and runs
+ * detection only when a first reading needs it.
  */
 public final class OcrConfig extends TesseractOCRConfig {
 
     static final String AUTO_LANGUAGE = "auto";
+    private static final String SEGMENTATION_WITHOUT_DETECTION = "3";
     private static final String THRESHOLDING_METHOD = "thresholding_method";
     private static final String OTSU = "0";
     private static final String SAUVOLA = "2";
 
     private boolean autoLanguage;
+
+    public OcrConfig() {
+        setPageSegMode(SEGMENTATION_WITHOUT_DETECTION);
+    }
 
     @Override
     public void setLanguage(String language) {

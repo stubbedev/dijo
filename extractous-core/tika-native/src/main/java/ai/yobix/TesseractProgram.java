@@ -2,8 +2,11 @@ package ai.yobix;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.TikaTimeoutException;
+import org.apache.tika.io.TemporaryResources;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +23,10 @@ final class TesseractProgram implements Tesseract {
     private static final long CHECK_TIMEOUT_MILLIS = 60_000;
     private static final String TESSDATA_PREFIX = "TESSDATA_PREFIX";
     private static final String OSD_PAGE_SEG_MODE = "0";
+    private static final String TEXT_EXTENSION = ".txt";
+    private static final String TSV_EXTENSION = ".tsv";
+    private static final String TSV_WORD_LEVEL = "5";
+    private static final int TSV_CONFIDENCE = 10;
 
     private final String program;
     private final String tessdata;
@@ -49,29 +56,64 @@ final class TesseractProgram implements Tesseract {
         }
     }
 
+    /**
+     * Writes the text and, for the confidence, the TSV renderer's word table beside each other,
+     * as {@code <base>.txt} and {@code <base>.tsv}: asking for the TSV turns off the text the
+     * program writes by default, so both are asked for.
+     */
     @Override
-    public String read(Path image, String pageSegMode, String language,
-                       Map<String, String> variables, long timeoutMillis)
+    public Reading read(Path image, String pageSegMode, String language,
+                        Map<String, String> variables, long timeoutMillis)
             throws IOException, TikaException {
-        final List<String> arguments = new ArrayList<>(
-                List.of(image.toString(), "stdout", "--psm", pageSegMode));
-        if (language != null && !language.isBlank()) {
-            arguments.add("-l");
-            arguments.add(language);
+        try (TemporaryResources temporary = new TemporaryResources()) {
+            final Path base = temporary.createTempFile();
+            final Path text = base.resolveSibling(base.getFileName() + TEXT_EXTENSION);
+            final Path words = base.resolveSibling(base.getFileName() + TSV_EXTENSION);
+            final List<String> arguments = new ArrayList<>(
+                    List.of(image.toString(), base.toString(), "--psm", pageSegMode));
+            if (language != null && !language.isBlank()) {
+                arguments.add("-l");
+                arguments.add(language);
+            }
+            variables.forEach((name, value) -> {
+                arguments.add("-c");
+                arguments.add(name + "=" + value);
+            });
+            arguments.addAll(List.of("-c", "tessedit_create_txt=1", "-c", "tessedit_create_tsv=1"));
+            try {
+                final Programs.Outcome outcome =
+                        run(timeoutMillis, arguments.toArray(String[]::new));
+                if (!outcome.finished()) {
+                    throw new TikaTimeoutException("Reading " + image + " failed: "
+                            + outcome.failure());
+                }
+                if (!outcome.succeeded()) {
+                    throw new TikaException("Reading " + image + " failed: " + outcome.failure());
+                }
+                return new Reading(Files.readString(text, StandardCharsets.UTF_8),
+                        meanConfidence(Files.readAllLines(words, StandardCharsets.UTF_8)));
+            } finally {
+                Files.deleteIfExists(text);
+                Files.deleteIfExists(words);
+            }
         }
-        variables.forEach((name, value) -> {
-            arguments.add("-c");
-            arguments.add(name + "=" + value);
-        });
-        arguments.add("txt");
-        final Programs.Outcome outcome = run(timeoutMillis, arguments.toArray(String[]::new));
-        if (!outcome.finished()) {
-            throw new TikaTimeoutException("Reading " + image + " failed: " + outcome.failure());
+    }
+
+    /**
+     * The mean confidence of the words in a TSV word table, as tesseract's MeanTextConf takes it:
+     * the integer mean of the word rows' confidences, 0 without words.
+     */
+    static int meanConfidence(List<String> table) {
+        int sum = 0;
+        int count = 0;
+        for (final String row : table) {
+            final String[] cells = row.split("\t", -1);
+            if (cells.length > TSV_CONFIDENCE && TSV_WORD_LEVEL.equals(cells[0])) {
+                sum += (int) Float.parseFloat(cells[TSV_CONFIDENCE]);
+                count++;
+            }
         }
-        if (!outcome.succeeded()) {
-            throw new TikaException("Reading " + image + " failed: " + outcome.failure());
-        }
-        return outcome.output();
+        return count == 0 ? 0 : sum / count;
     }
 
     @Override

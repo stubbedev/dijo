@@ -14,6 +14,7 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -31,7 +32,7 @@ final class TesseractParser implements Parser, TextRecognizer {
             MediaType.image("jpeg"), MediaType.image("tiff"), MediaType.image("bmp"),
             MediaType.image("gif"), MediaType.image("jp2"), MediaType.image("jpx"),
             MediaType.image("x-portable-pixmap"));
-    private static final TesseractOCRConfig DEFAULTS = new TesseractOCRConfig();
+    private static final TesseractOCRConfig DEFAULTS = new OcrConfig();
 
     private final Tesseract tesseract;
 
@@ -58,19 +59,35 @@ final class TesseractParser implements Parser, TextRecognizer {
         }
         try (TemporaryResources temporary = new TemporaryResources()) {
             final TikaInputStream image = TikaInputStream.get(stream, temporary, metadata);
-            final Path path = image.getPath();
             final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
-            final long size = image.getLength();
-            if (size >= config.getMinFileSizeToOcr() && size <= config.getMaxFileSizeToOcr()) {
-                final String text = tesseract.read(path, config.getPageSegMode(),
-                        config.getLanguage(), variables(config), config.getTimeoutMillis());
-                xhtml.startElement("div", "class", "ocr");
-                xhtml.characters(text);
-                xhtml.endElement("div");
+            final Tesseract.Reading reading = read(image.getPath(), config);
+            if (reading != null) {
+                write(xhtml, reading.text());
             }
             xhtml.endDocument();
         }
+    }
+
+    /**
+     * Reads an image as configured, or returns null when its size is outside the configured
+     * limits.
+     */
+    Tesseract.Reading read(Path image, TesseractOCRConfig config)
+            throws IOException, TikaException {
+        final long size = Files.size(image);
+        if (size < config.getMinFileSizeToOcr() || size > config.getMaxFileSizeToOcr()) {
+            return null;
+        }
+        return tesseract.read(image, config.getPageSegMode(), config.getLanguage(),
+                variables(config), config.getTimeoutMillis());
+    }
+
+    /** Writes text read from an image as Tika does: in a div of class ocr. */
+    static void write(XHTMLContentHandler xhtml, String text) throws SAXException {
+        xhtml.startElement("div", "class", "ocr");
+        xhtml.characters(text);
+        xhtml.endElement("div");
     }
 
     private static TesseractOCRConfig config(ParseContext context) {
