@@ -72,9 +72,9 @@ public class TikaNativeMain {
     private static final Parser PARSER = createParser();
 
     static {
-        PdfFonts.withoutInstalledFonts();
         java.awt.GraphicsEnvironment.isHeadless();
         javax.imageio.ImageIO.getReaderFormatNames();
+        PdfFonts.install();
     }
 
     /**
