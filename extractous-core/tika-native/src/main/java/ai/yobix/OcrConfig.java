@@ -21,6 +21,7 @@ public final class OcrConfig extends TesseractOCRConfig {
     private static final String SAUVOLA = "2";
 
     private boolean autoLanguage;
+    private String assumedScript;
 
     public OcrConfig() {
         setPageSegMode(SEGMENTATION_WITHOUT_DETECTION);
@@ -41,6 +42,19 @@ public final class OcrConfig extends TesseractOCRConfig {
     /** Sets how long a tesseract run may take, in whole seconds. */
     public void setTimeoutSeconds(int seconds) {
         setTimeoutMillis(seconds * 1000L);
+    }
+
+    /**
+     * The script the next image of this extraction is first read in, with the automatic
+     * language: the one detection last found in an earlier image, or null before any.
+     */
+    String assumedScript() {
+        return assumedScript;
+    }
+
+    /** Remembers the script detection found, for the next images of this extraction. */
+    void assumeScript(String script) {
+        assumedScript = script;
     }
 
     void useDetectedLanguage(String language) {

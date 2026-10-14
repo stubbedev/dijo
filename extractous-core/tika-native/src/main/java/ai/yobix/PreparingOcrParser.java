@@ -66,7 +66,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * and joins of Arabic, for one, need the resolution.
      */
     private static final Set<String> REDUCIBLE_SCRIPTS = Set.of("Latin", "Cyrillic", "Greek");
-    /** The script an image is first read in, without detection. */
+    /** The script the first image of an extraction is first read in, without detection. */
     private static final String ASSUMED_SCRIPT = "Latin";
     /**
      * The mean word confidence above which a first reading as upright Latin text stands: upright
@@ -169,8 +169,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
 
     /**
      * Prepares an image, reads it into the output and adds its OCR report. The image is first
-     * read as it is, upright text in Latin script with the automatic language, the most common
-     * kind, or in the configured language otherwise. Only when tesseract is not confident of that
+     * read as it is, upright text with the automatic language in the script detection last found
+     * in this extraction, or else in Latin script, the most common kind, or in the configured
+     * language otherwise. Only when tesseract is not confident of that
      * reading ({@value #MIN_CONFIDENCE} or less) does its orientation and script detection run;
      * the image is then turned by the quarter turns it finds and, with the automatic language,
      * read with a model for the script it finds, unless that would read it as before.
@@ -185,7 +186,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             throws IOException, SAXException, TikaException {
         final TesseractOCRConfig config = configured != null ? configured : DEFAULTS;
         final Oriented oriented = Oriented.of(image, metadata);
-        final String assumedScript = auto != null ? ASSUMED_SCRIPT : null;
+        final String assumedScript = auto == null ? null
+                : auto.assumedScript() != null ? auto.assumedScript() : ASSUMED_SCRIPT;
         final Prepared first = finish(file, image, oriented, assumedScript,
                 language(assumedScript, auto), 0, temporary);
         final Tesseract.Reading reading = read(file, first, config);
@@ -199,6 +201,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                 ScriptDetection.detect(tesseract, analysed, config.getTimeoutMillis());
         final String script = auto != null ? detected.script() : null;
         final String language = language(script, auto);
+        if (auto != null && script != null) {
+            auto.assumeScript(script);
+        }
         if (detected.clockwiseQuarterTurns() == 0 && Objects.equals(language, first.language())) {
             emit(xhtml, metadata, page, first, reading, config);
             return;
