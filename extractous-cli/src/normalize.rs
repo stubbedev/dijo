@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ const MAX_HELD_BYTES: usize = 64 * 1024;
 const MAX_CONSECUTIVE_NEWLINES: u8 = 2;
 const MAX_WORD_CHARS: usize = 64;
 const MAX_REMEMBERED_WORDS: usize = 1 << 16;
+const MIN_PREFIX_CONTINUATIONS: u8 = 2;
 
 /// One normalisation step applied to extracted text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -256,13 +257,16 @@ impl Normalizer {
 /// word that starts the next, until that word ends. Whether the hyphen stays is decided from the
 /// text before: it stays when the word already holds a hyphen (`state-of-the-` / `art`), or when
 /// the joined word did not occur but the hyphenated compound did, or both halves did as words of
-/// their own (`south` and `west`, where hyphenation leaves fragments such as `extrac`).
+/// their own (`south` and `west`, where hyphenation leaves fragments such as `extrac`), or the
+/// part before the hyphen began hyphenated compounds with more than one other word, as articles
+/// and prefixes do (Maltese `tal-membri`, `tal-familja`, then `tal-` / `ħajja`).
 #[derive(Default)]
 struct Dehyphenator {
     token: String,
     held: Held,
     words: HashSet<String>,
     compounds: HashSet<String>,
+    prefixes: HashMap<String, u8>,
 }
 
 #[derive(Default)]
@@ -355,6 +359,10 @@ impl Dehyphenator {
                 && (self
                     .compounds
                     .contains(&format!("{before}-{next_lowercase}"))
+                    || self
+                        .prefixes
+                        .get(&before)
+                        .is_some_and(|&continuations| continuations >= MIN_PREFIX_CONTINUATIONS)
                     || (self.words.contains(&before) && self.words.contains(&next_lowercase))));
         if compound {
             self.pass(hyphen, out);
@@ -387,11 +395,14 @@ impl Dehyphenator {
                 self.words.extend(parts.iter().map(|part| part.to_string()));
             }
             if self.compounds.len() < MAX_REMEMBERED_WORDS {
-                self.compounds.extend(
-                    parts
-                        .windows(2)
-                        .map(|pair| format!("{}-{}", pair[0], pair[1])),
-                );
+                for pair in parts.windows(2) {
+                    if self.compounds.insert(format!("{}-{}", pair[0], pair[1]))
+                        && self.prefixes.len() < MAX_REMEMBERED_WORDS
+                    {
+                        let continuations = self.prefixes.entry(pair[0].to_string()).or_default();
+                        *continuations = continuations.saturating_add(1);
+                    }
+                }
             }
         }
     }
@@ -559,6 +570,24 @@ mod tests {
         assert_eq!(
             join("some thing or something, some-\nthing"),
             "some thing or something, something"
+        );
+        assert_eq!(
+            join("tal-membri tal-familja, tal-\nħajja"),
+            "tal-membri tal-familja, tal-ħajja"
+        );
+        assert_eq!(
+            join("anti-war and anti-trust, then anti-\nvirus"),
+            "anti-war and anti-trust, then anti-virus"
+        );
+    }
+
+    #[test]
+    fn a_prefix_hyphenated_once_or_whose_word_occurred_does_not_keep_the_hyphen() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(join("re-elect the re-\nport"), "re-elect the report");
+        assert_eq!(
+            join("talħajja, tal-membri tal-familja, tal-\nħajja"),
+            "talħajja, tal-membri tal-familja, talħajja"
         );
     }
 
