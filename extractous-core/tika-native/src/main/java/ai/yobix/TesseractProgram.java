@@ -76,10 +76,7 @@ final class TesseractProgram implements Tesseract {
                 arguments.add("-l");
                 arguments.add(language);
             }
-            variables.forEach((name, value) -> {
-                arguments.add("-c");
-                arguments.add(name + "=" + value);
-            });
+            addVariables(arguments, variables);
             arguments.addAll(List.of("-c", "tessedit_create_txt=1", "-c", "tessedit_create_tsv=1"));
             try {
                 final Programs.Outcome outcome =
@@ -118,12 +115,23 @@ final class TesseractProgram implements Tesseract {
     }
 
     @Override
-    public String detect(OcrImage image, long timeoutMillis) throws IOException {
+    public String detect(OcrImage image, Map<String, String> variables, long timeoutMillis)
+            throws IOException {
         try (TemporaryResources temporary = new TemporaryResources()) {
-            final Programs.Outcome outcome = run(timeoutMillis,
-                    image.file(temporary).toString(), "stdout", "--psm", OSD_PAGE_SEG_MODE);
+            final List<String> arguments = new ArrayList<>(List.of(
+                    image.file(temporary).toString(), "stdout", "--psm", OSD_PAGE_SEG_MODE));
+            addVariables(arguments, variables);
+            final Programs.Outcome outcome =
+                    run(timeoutMillis, arguments.toArray(String[]::new));
             return outcome.succeeded() ? outcome.output() : null;
         }
+    }
+
+    private static void addVariables(List<String> arguments, Map<String, String> variables) {
+        variables.forEach((name, value) -> {
+            arguments.add("-c");
+            arguments.add(name + "=" + value);
+        });
     }
 
     @Override

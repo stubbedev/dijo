@@ -64,7 +64,7 @@ mapfile -t images_cflags < "$toolchain/extractous/images-cflags"
 mapfile -t images_libs < "$toolchain/extractous/images-libs"
 for source in "$static_sources"/*.cc; do
     object="$work/$(basename "$source" .cc).o"
-    "$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++17 "${tesseract_cflags[@]}" \
+    "$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++20 "${tesseract_cflags[@]}" \
         "${images_cflags[@]}" -I"$graalvm/include" -I"$graalvm/include/linux" \
         -o "$object" "$source"
     objects+=("$object")

@@ -33,6 +33,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -81,6 +82,16 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      */
     private static final List<String> OVERLOOKED_SCRIPTS = List.of("Armenian", "Georgian");
     private static final int MIN_WORDS_TO_RETRY = 20;
+    /**
+     * The first words of a reading in the assumed script that show the page is in another one:
+     * the Latin model reads the first twenty words of a Cyrillic, Greek, Armenian or Georgian
+     * page with a mean confidence of at most about 55, and of a Latin page with at least about
+     * 88.
+     */
+    private static final int POOR_AFTER_WORDS = 20;
+    private static final int POOR_CONFIDENCE = 70;
+    private static final Tesseract.Poor POOR = new Tesseract.Poor(POOR_AFTER_WORDS,
+            POOR_CONFIDENCE);
     private static final Set<MediaType> UNDECODABLE = Set.of(
             MediaType.image("heic"), MediaType.image("heic-sequence"), MediaType.image("heif"),
             MediaType.image("heif-sequence"), MediaType.image("avif"));
@@ -178,12 +189,17 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * Prepares an image, reads it into the output and adds its OCR report. The image is first
      * read as it is, upright text with the automatic language in the script detection last found
      * in this extraction, or else in Latin script, the most common kind, or in the configured
-     * language otherwise. Only when tesseract is not confident of that
-     * reading ({@value #MIN_CONFIDENCE} or less) does its orientation and script detection run;
-     * the image is then turned by the quarter turns it finds and, with the automatic language,
-     * read with a model for the script it finds, unless that would read it as before. When no
-     * reading of an image with at least {@value #MIN_WORDS_TO_RETRY} words is confident, the
-     * scripts detection overlooks are tried as well, and the most confident reading is kept.
+     * language otherwise. Only when tesseract is not confident of that reading
+     * ({@value #MIN_CONFIDENCE} or less) does its orientation and script detection run; the image
+     * is then turned by the quarter turns it finds and, with the automatic language, read with a
+     * model for the script it finds, unless that would read it as before. When no reading of an
+     * image with at least {@value #MIN_WORDS_TO_RETRY} words is confident, the scripts detection
+     * overlooks are tried as well, and the most confident reading is kept. With the automatic
+     * language, each of these readings is a guess, given up once its first
+     * {@value #POOR_AFTER_WORDS} words are read with a mean confidence below
+     * {@value #POOR_CONFIDENCE}, as a page in another script or turned is; when every one is
+     * given up, the image is read to the end as detection found it, in the first reading's
+     * script when detection found none.
      *
      * @param file  the image as tesseract can read it
      * @param size  the size of the image's file, for the configured limits
@@ -200,41 +216,72 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                 : auto.assumedScript() != null ? auto.assumedScript() : ASSUMED_SCRIPT;
         final Prepared first = finish(image, oriented, assumedScript,
                 language(assumedScript, auto), 0);
-        final Tesseract.Reading reading = read(file, size, first, config);
-        if (reading == null || reading.confidence() > MIN_CONFIDENCE) {
-            emit(xhtml, metadata, page, first, reading, config);
+        if (!TesseractParser.withinLimits(size, config)) {
+            emit(xhtml, metadata, page, first, null, config);
             return;
         }
-        final OcrImage analysed = oriented.image() == null || oriented.image() == image
-                ? file : new OcrImage.Pixels(oriented.image());
-        final ScriptDetection.Result detected =
-                ScriptDetection.detect(tesseract, analysed, config.getTimeoutMillis());
-        final String script = auto != null ? detected.script() : null;
+        final Optional<Tesseract.Reading> optimistic = auto == null
+                ? Optional.of(read(file, first, config))
+                : readUnlessPoor(file, first, config);
+        if (optimistic.isPresent() && optimistic.get().confidence() > MIN_CONFIDENCE) {
+            emit(xhtml, metadata, page, first, optimistic.get(), config);
+            return;
+        }
+        final ScriptDetection.Result detected = ScriptDetection.detect(tesseract,
+                first.image() != null ? first.image() : file, config.getTimeoutMillis());
+        final String script = auto == null ? null
+                : detected.script() == null && optimistic.isEmpty() ? first.script()
+                : detected.script();
         final String language = language(script, auto);
         if (auto != null && script != null) {
             auto.assumeScript(script);
         }
-        Attempt best = new Attempt(first, reading);
+        Attempt best = new Attempt(first, optimistic.orElse(null));
+        Prepared fallback = first;
         if (detected.clockwiseQuarterTurns() != 0 || !Objects.equals(language, first.language())) {
-            final Prepared detectedPrepared = finish(image, oriented, script, language,
+            fallback = prepare(first, image, oriented, script, language,
                     detected.clockwiseQuarterTurns());
-            best = best.or(new Attempt(detectedPrepared,
-                    read(file, size, detectedPrepared, config)));
+            final Optional<Tesseract.Reading> reading = auto != null
+                    ? readUnlessPoor(file, fallback, config)
+                    : Optional.of(read(file, fallback, config));
+            if (reading.isPresent()) {
+                best = best.or(new Attempt(fallback, reading.get()));
+            }
         }
-        if (auto != null && !best.confident() && best.words() >= MIN_WORDS_TO_RETRY) {
-            for (final String overlooked : OVERLOOKED_SCRIPTS) {
-                final String model = ScriptDetection.installedLanguage(tesseract, overlooked);
-                if (model == null || best.confident()) {
-                    continue;
-                }
-                final Prepared retried = finish(image, oriented, overlooked, model, 0);
-                best = best.or(new Attempt(retried, read(file, size, retried, config)));
-            }
-            if (best.prepared().script() != null) {
-                auto.assumeScript(best.prepared().script());
-            }
+        if (auto != null && !best.confident()
+                && (best.reading() == null || best.words() >= MIN_WORDS_TO_RETRY)) {
+            best = readOverlooked(best, file, image, oriented, config, auto);
+        }
+        if (best.reading() == null) {
+            best = new Attempt(fallback, read(file, fallback, config));
         }
         emit(xhtml, metadata, page, best.prepared(), best.reading(), config);
+    }
+
+    /**
+     * Reads an image in the scripts detection overlooks, until one reads it confidently, giving
+     * up each reading that goes poorly, and assumes the script of the best reading for the rest
+     * of the extraction.
+     */
+    private Attempt readOverlooked(Attempt best, OcrImage file, BufferedImage image,
+                                   Oriented oriented, TesseractOCRConfig config, OcrConfig auto)
+            throws IOException, TikaException {
+        Attempt overlooked = best;
+        for (final String script : OVERLOOKED_SCRIPTS) {
+            final String model = ScriptDetection.installedLanguage(tesseract, script);
+            if (model == null || overlooked.confident()) {
+                continue;
+            }
+            final Prepared retried = prepare(best.prepared(), image, oriented, script, model, 0);
+            final Optional<Tesseract.Reading> reading = readUnlessPoor(file, retried, config);
+            if (reading.isPresent()) {
+                overlooked = overlooked.or(new Attempt(retried, reading.get()));
+            }
+        }
+        if (overlooked.prepared().script() != null) {
+            auto.assumeScript(overlooked.prepared().script());
+        }
+        return overlooked;
     }
 
     /** A way an image was prepared and what tesseract read in it that way. */
@@ -264,10 +311,17 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         return auto != null ? ScriptDetection.language(tesseract, script) : null;
     }
 
-    private Tesseract.Reading read(OcrImage file, long size, Prepared prepared,
-                                   TesseractOCRConfig config) throws IOException, TikaException {
+    private Tesseract.Reading read(OcrImage file, Prepared prepared, TesseractOCRConfig config)
+            throws IOException, TikaException {
         prepared.configure(config);
-        return ocr.read(prepared.image == null ? file : prepared.image, size, config);
+        return ocr.read(prepared.image == null ? file : prepared.image, config);
+    }
+
+    private Optional<Tesseract.Reading> readUnlessPoor(OcrImage file, Prepared prepared,
+                                                       TesseractOCRConfig config)
+            throws IOException, TikaException {
+        prepared.configure(config);
+        return ocr.readUnlessPoor(prepared.image == null ? file : prepared.image, config, POOR);
     }
 
     private static void emit(XHTMLContentHandler xhtml, Metadata metadata, Integer page,
@@ -308,6 +362,12 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                     .json();
         }
 
+        /** This preparation, to read in another script and language. */
+        Prepared readIn(String otherScript, String otherLanguage) {
+            return new Prepared(image, otherLanguage, unevenLighting, otherScript, exifOrientation,
+                    decoded, flattened, quarterTurns, skewDegrees, scale);
+        }
+
         void configure(TesseractOCRConfig config) {
             if (config instanceof OcrConfig ocrConfig) {
                 if (ocrConfig.isAutoLanguage()) {
@@ -344,6 +404,23 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * Turns an oriented image by the quarter turns detection found, corrects its skew, scales its
      * text to a readable size and checks its lighting.
      */
+    /**
+     * Prepares an image to read in a script and language as {@link #finish} does, reusing an
+     * earlier preparation that turned it as far and reduces it as this script is reduced.
+     */
+    private static Prepared prepare(Prepared earlier, BufferedImage image, Oriented oriented,
+                                    String script, String language, int quarterTurns) {
+        if (quarterTurns == earlier.quarterTurns()
+                && reducible(script) == reducible(earlier.script())) {
+            return earlier.readIn(script, language);
+        }
+        return finish(image, oriented, script, language, quarterTurns);
+    }
+
+    private static boolean reducible(String script) {
+        return script != null && REDUCIBLE_SCRIPTS.contains(script);
+    }
+
     private static Prepared finish(BufferedImage image, Oriented oriented, String script,
                                    String language, int quarterTurns) {
         if (oriented.image() == null) {
@@ -355,8 +432,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         if (skew != 0) {
             upright = OcrImages.rotate(upright, skew);
         }
-        final double scale = OcrImages.scaleFactor(upright, MAX_PIXELS,
-                script != null && REDUCIBLE_SCRIPTS.contains(script));
+        final double scale = OcrImages.scaleFactor(upright, MAX_PIXELS, reducible(script));
         if (scale != 1) {
             upright = OcrImages.scale(upright, scale);
         }

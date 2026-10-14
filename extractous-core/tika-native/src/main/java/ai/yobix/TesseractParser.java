@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -59,26 +60,36 @@ final class TesseractParser implements Parser, TextRecognizer {
             final TikaInputStream image = TikaInputStream.get(stream, temporary, metadata);
             final XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata, context);
             xhtml.startDocument();
-            final Tesseract.Reading reading =
-                    read(new OcrImage.File(image.getPath()), image.getLength(), config);
-            if (reading != null) {
-                write(xhtml, reading.text());
+            if (withinLimits(image.getLength(), config)) {
+                write(xhtml, read(new OcrImage.File(image.getPath()), config).text());
             }
             xhtml.endDocument();
         }
     }
 
-    /**
-     * Reads an image as configured, or returns null when the size of its file is outside the
-     * configured limits.
-     */
-    Tesseract.Reading read(OcrImage image, long size, TesseractOCRConfig config)
+    /** Whether an image whose file has a size is to be read, within the configured limits. */
+    static boolean withinLimits(long size, TesseractOCRConfig config) {
+        return size >= config.getMinFileSizeToOcr() && size <= config.getMaxFileSizeToOcr();
+    }
+
+    /** Reads an image as configured. */
+    Tesseract.Reading read(OcrImage image, TesseractOCRConfig config)
             throws IOException, TikaException {
-        if (size < config.getMinFileSizeToOcr() || size > config.getMaxFileSizeToOcr()) {
-            return null;
-        }
-        final Tesseract.Reading reading = tesseract.read(image, config.getPageSegMode(),
-                config.getLanguage(), variables(config), config.getTimeoutMillis());
+        return corrected(tesseract.read(image, config.getPageSegMode(), config.getLanguage(),
+                variables(config), config.getTimeoutMillis()));
+    }
+
+    /** Reads an image as configured, unless the reading goes poorly: empty then. */
+    Optional<Tesseract.Reading> readUnlessPoor(OcrImage image, TesseractOCRConfig config,
+                                               Tesseract.Poor poor)
+            throws IOException, TikaException {
+        final Optional<Tesseract.Reading> reading = tesseract.readUnlessPoor(image,
+                config.getPageSegMode(), config.getLanguage(), variables(config), poor,
+                config.getTimeoutMillis());
+        return reading.map(TesseractParser::corrected);
+    }
+
+    private static Tesseract.Reading corrected(Tesseract.Reading reading) {
         return new Tesseract.Reading(OcrText.corrected(reading.text()), reading.confidence());
     }
 

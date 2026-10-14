@@ -4,6 +4,7 @@ import org.apache.tika.exception.TikaException;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /** Tesseract, as the build provides it. */
@@ -20,6 +21,13 @@ interface Tesseract {
     }
 
     /**
+     * A reading going badly: once {@code afterWords} of its words are read, their mean
+     * confidence, as {@code MeanTextConf} takes it, is below {@code belowConfidence}.
+     */
+    record Poor(int afterWords, int belowConfidence) {
+    }
+
+    /**
      * Reads the text in an image, as {@code tesseract <image> stdout --psm <pageSegMode>
      * -l <language> -c <name>=<value>... txt} prints it, with its words' mean confidence.
      *
@@ -32,11 +40,24 @@ interface Tesseract {
             throws IOException, TikaException;
 
     /**
-     * Detects the orientation and script of an image, as {@code tesseract <image> stdout --psm 0}
-     * prints them, or null when tesseract cannot judge the image, as when it has too little
-     * text, or takes longer than timeoutMillis.
+     * Reads as {@link #read} does, but gives up a reading that goes {@link Poor poorly}, as far
+     * as the engine can tell while it reads: empty when it gave up. An engine that cannot tell
+     * reads to the end.
      */
-    String detect(OcrImage image, long timeoutMillis) throws IOException;
+    default Optional<Reading> readUnlessPoor(OcrImage image, String pageSegMode, String language,
+                                             Map<String, String> variables, Poor poor,
+                                             long timeoutMillis)
+            throws IOException, TikaException {
+        return Optional.of(read(image, pageSegMode, language, variables, timeoutMillis));
+    }
+
+    /**
+     * Detects the orientation and script of an image, as {@code tesseract <image> stdout --psm 0
+     * -c <name>=<value>...} prints them, or null when tesseract cannot judge the image, as when
+     * it has too little text, or takes longer than timeoutMillis.
+     */
+    String detect(OcrImage image, Map<String, String> variables, long timeoutMillis)
+            throws IOException;
 
     /**
      * The models it reads with, named as {@code -l} names them, with a slash before a model in a

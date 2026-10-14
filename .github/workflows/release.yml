@@ -201,6 +201,8 @@ jobs:
           "$binary" --format json quality/corpus/danish-scan.png > "$RUNNER_TEMP/danish.json"
           grep -q '"code":"dan"' "$RUNNER_TEMP/danish.json"
           grep -q "tusmørket" "$RUNNER_TEMP/danish.json"
+          "$binary" quality/corpus/ukrainian-scan.png | grep -q "ДЕКЛАРАЦІЯ"
+          "$binary" quality/corpus/georgian-scan.png | grep -q "დეკლარაცია"
       - name: Smoke test in an empty container
         run: |
           context="$RUNNER_TEMP/scratch"

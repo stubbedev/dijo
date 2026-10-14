@@ -52,8 +52,9 @@ let
       ''
         export PKG_CONFIG_PATH=${tesseract}/lib/pkgconfig:${static.leptonica}/lib/pkgconfig
         mkdir -p $out/extractous
-        pkg-config --static --cflags tesseract lept | tr -s ' ' '\n' | sed '/^$/d' \
-          > $out/extractous/tesseract-cflags
+        { pkg-config --static --cflags tesseract lept; \
+          echo -I${tesseract}/include/tesseract-internal -DHAVE_CONFIG_H; } \
+          | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-cflags
         { pkg-config --static --libs tesseract; echo -L${static.giflib}/lib -lm; } \
           | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-libs
       '';

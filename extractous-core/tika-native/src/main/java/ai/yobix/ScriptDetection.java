@@ -15,6 +15,8 @@ final class ScriptDetection {
     }
 
     private static final Result UNKNOWN = new Result(null, 0);
+    private static final Map<String, String> VARIABLES = Map.of("min_characters_to_try", "10");
+    private static final double UNDECIDED = 0;
     private static final String DEFAULT_LANGUAGE = "eng";
     private static final String SCRIPT_MODEL_PREFIX = "script/";
 
@@ -49,16 +51,19 @@ final class ScriptDetection {
     }
 
     /**
-     * Runs OSD on an image. An image OSD cannot judge, such as one with too little text, gives
-     * an unknown script and no turns.
+     * Runs OSD on an image, stopping once it is sure of the first ten characters it classifies
+     * rather than of fifty, as it does by default. An image OSD cannot judge, such as one with
+     * too little text or one where no script is likelier than another, gives an unknown script
+     * and no turns.
      */
     static Result detect(Tesseract tesseract, OcrImage image, long timeoutMillis)
             throws IOException {
-        final String output = tesseract.detect(image, timeoutMillis);
+        final String output = tesseract.detect(image, VARIABLES, timeoutMillis);
         if (output == null) {
             return UNKNOWN;
         }
         String script = null;
+        Double scriptConfidence = null;
         int degrees = 0;
         for (final String line : output.lines().toList()) {
             final int colon = line.indexOf(':');
@@ -68,10 +73,18 @@ final class ScriptDetection {
             final String value = line.substring(colon + 1).trim();
             switch (line.substring(0, colon).trim()) {
                 case "Script" -> script = value;
+                case "Script confidence" -> scriptConfidence = Double.parseDouble(value);
                 case "Rotate" -> degrees = Integer.parseInt(value);
                 default -> {
                 }
             }
+        }
+        if (scriptConfidence == null) {
+            throw new IOException("tesseract's orientation and script report has no script "
+                    + "confidence: " + output);
+        }
+        if (scriptConfidence <= UNDECIDED) {
+            return UNKNOWN;
         }
         return new Result(script, Math.floorMod(degrees / 90, 4));
     }
