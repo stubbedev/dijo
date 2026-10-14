@@ -1654,6 +1654,18 @@ fn every_page_of_a_skewed_multi_page_tiff_is_ocred_as_a_page() {
 }
 
 #[test]
+fn the_pages_of_a_scan_read_alike_whichever_finishes_first() {
+    let scan = document("greek-danish-greek-scan.tif");
+    let pages = page_records(&[], &scan);
+    let languages: Vec<_> = pages
+        .iter()
+        .map(|page| page["detected_language"]["code"].clone())
+        .collect();
+    assert_eq!(languages, ["ell", "dan", "ell"], "{pages:?}");
+    assert_eq!(page_records(&[], &scan), pages);
+}
+
+#[test]
 fn tiff_images_with_exif_directories_are_ocred() {
     let output = extractous(&["../quality/corpus/report-scan.tif"]);
     assert!(output.status.success(), "{}", stderr(&output));

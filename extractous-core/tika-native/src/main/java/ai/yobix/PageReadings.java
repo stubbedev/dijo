@@ -35,6 +35,75 @@ final class PageReadings {
         void pass() throws SAXException;
     }
 
+    /** A reading of a page that is first read in a given script. */
+    @FunctionalInterface
+    interface InScript<T> {
+        T read(AssumedScript script) throws Exception;
+    }
+
+    /**
+     * The script the pages of a document after its first are first read in: the one assumed
+     * before the first page, unless reading it teaches another. A later page read before the
+     * first is done is read in the assumed script, then read again if the first teaches another,
+     * so that every page reads as it would after the first, whichever finishes first.
+     */
+    static final class FirstPage {
+        private final AssumedScript assumed;
+        private final CompletableFuture<String> learned = new CompletableFuture<>();
+
+        FirstPage(AssumedScript assumed) {
+            this.assumed = assumed;
+        }
+
+        AssumedScript assumed() {
+            return assumed;
+        }
+
+        /**
+         * Settles the script of the later pages: the one the first page learned, or, when it is
+         * null, the one assumed. Only the first call counts, so that a page that could not be
+         * read, or a parse that is given up, settles it as assumed.
+         */
+        void settle(String script) {
+            learned.complete(script);
+        }
+
+        /** The script the first page learned, or null when it learned none or is not settled. */
+        String learned() {
+            return learned.getNow(null);
+        }
+
+        /**
+         * Reads a later page in the script the first page settles; a guess in the assumed script
+         * that fails counts only when the first page settles on that script.
+         */
+        <T> T later(InScript<T> reading) throws Exception {
+            if (learned.isDone()) {
+                return reading.read(settled());
+            }
+            T guess = null;
+            Exception failure = null;
+            try {
+                guess = reading.read(assumed);
+            } catch (Exception e) {
+                failure = e;
+            }
+            final AssumedScript script = settled();
+            if (!script.equals(assumed)) {
+                return reading.read(script);
+            }
+            if (failure != null) {
+                throw failure;
+            }
+            return guess;
+        }
+
+        private AssumedScript settled() throws InterruptedException, ExecutionException {
+            final String script = learned.get();
+            return script != null ? new AssumedScript(script) : assumed;
+        }
+    }
+
     /**
      * The outputs of a document's pages, in document order: each is passed on as soon as it and
      * every one before it are ready, and the parse waits for the oldest while as many are being

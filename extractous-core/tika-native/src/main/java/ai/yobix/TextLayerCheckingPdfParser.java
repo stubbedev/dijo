@@ -168,11 +168,12 @@ final class TextLayerCheckingPdfParser implements Parser {
     /**
      * Holds each page back until it ends, then passes it on as it is, with OCR text added, or
      * with its text replaced by OCR text. Pages that need OCR are rendered here, as the parse
-     * reaches them. The first is read here, as any image is; the rest are read on
-     * {@link PageReadings} side by side while the parse goes on, each first read in the script the
-     * first page left the extraction assuming ({@link AssumedScript}), so that every page reads
-     * the same whichever finishes first. Their output, and everything after it, is passed on in
-     * document order as the readings finish.
+     * reaches them, and read on {@link PageReadings} side by side while the parse goes on: the
+     * first as any image is, the rest first in the script it leaves the extraction assuming
+     * ({@link PageReadings.FirstPage}), so that every page reads the same whichever finishes
+     * first. Their output, and everything after it, is passed on in document order as the
+     * readings finish, and the extraction assumes the script the first page learned once the
+     * document ends.
      */
     private final class PageChecker extends ContentHandlerDecorator {
         private final ContentHandler downstream;
@@ -182,7 +183,7 @@ final class TextLayerCheckingPdfParser implements Parser {
         private final TemporaryResources temporary;
         private final TesseractOCRConfig ocrConfig;
         private final PageReadings.InOrder pending = new PageReadings.InOrder();
-        private AssumedScript rest;
+        private PageReadings.FirstPage first;
         private Recording between;
         private int pageIndex;
         private Recording page;
@@ -275,6 +276,9 @@ final class TextLayerCheckingPdfParser implements Parser {
         @Override
         public void endDocument() throws SAXException {
             passAll();
+            if (first != null && first.learned() != null && ocrConfig instanceof OcrConfig auto) {
+                auto.assumeScript(first.learned());
+            }
             super.endDocument();
         }
 
@@ -350,23 +354,27 @@ final class TextLayerCheckingPdfParser implements Parser {
                 queue(failed(index, e, then));
                 return;
             }
-            if (rest != null) {
-                final AssumedScript assumed = rest;
-                flushBetween();
-                pending.read(() -> output(index, image, assumed, then));
+            flushBetween();
+            if (first != null) {
+                final PageReadings.FirstPage settling = first;
+                pending.read(() -> settling.later(script -> output(index, image, script, then)));
                 return;
             }
-            final OcrConfig auto = ocrConfig instanceof OcrConfig config && config.isAutoLanguage()
-                    ? config : null;
-            final AssumedScript first = new AssumedScript(auto == null ? null
-                    : auto.assumedScript());
-            final Metadata pageMetadata = new Metadata();
-            queue(output(index, image, first, pageMetadata, then));
-            final String learned = pageMetadata.get(AssumedScript.LEARNED);
-            if (auto != null && learned != null) {
-                auto.assumeScript(learned);
-            }
-            rest = learned != null ? new AssumedScript(learned) : first;
+            final PageReadings.FirstPage settling = new PageReadings.FirstPage(new AssumedScript(
+                    ocrConfig instanceof OcrConfig auto && auto.isAutoLanguage()
+                            ? auto.assumedScript() : null));
+            first = settling;
+            pending.read(() -> {
+                try {
+                    final Metadata pageMetadata = new Metadata();
+                    final PageReadings.Output output =
+                            output(index, image, settling.assumed(), pageMetadata, then);
+                    settling.settle(pageMetadata.get(AssumedScript.LEARNED));
+                    return output;
+                } finally {
+                    settling.settle(null);
+                }
+            });
         }
 
         private PageReadings.Output output(int index, Path image, AssumedScript assumed,
@@ -430,6 +438,9 @@ final class TextLayerCheckingPdfParser implements Parser {
         }
 
         void abandon() {
+            if (first != null) {
+                first.settle(null);
+            }
             pending.abandon();
         }
     }

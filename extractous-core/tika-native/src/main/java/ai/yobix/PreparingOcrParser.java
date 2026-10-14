@@ -174,9 +174,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     }
 
     /**
-     * Reads every page of a multi-page image as a page of the output, decoded here in turn: the
-     * first as any image is read, the rest side by side on {@link PageReadings}, each first read
-     * in the script the first page left the extraction assuming, and passed on in order.
+     * Reads every page of a multi-page image as a page of the output, decoded here in turn, side
+     * by side on {@link PageReadings}: the first page read as any image is, and the rest first
+     * read in the script it leaves the extraction assuming ({@link PageReadings.FirstPage}), each
+     * passed on in order.
      */
     private void readPages(Pages pages, long size, XHTMLContentHandler xhtml, Metadata metadata,
                            TesseractOCRConfig configured, OcrConfig auto, AssumedScript fixed)
@@ -184,7 +185,9 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         final TesseractOCRConfig config = configured != null ? configured : DEFAULTS;
         final String orientation = metadata.get(TIFF.ORIENTATION);
         final PageReadings.InOrder outputs = new PageReadings.InOrder();
-        String rest = null;
+        final PageReadings.FirstPage first =
+                new PageReadings.FirstPage(new AssumedScript(assumed(auto, fixed)));
+        boolean firstQueued = false;
         try {
             for (int index = 0; index < pages.count(); index++) {
                 final int page = index + 1;
@@ -199,21 +202,32 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                     continue;
                 }
                 final OcrImage pixels = new OcrImage.Pixels(image);
-                if (index == 0) {
-                    final String assumed = assumed(auto, fixed);
-                    final Recognized read = recognize(pixels, size, image, orientation,
-                            configured, auto, assumed);
-                    learn(read.learned(), auto, fixed, metadata);
-                    rest = read.learned() != null ? read.learned() : assumed;
-                    outputs.ready(page(xhtml, metadata, page, read.read(), config));
+                if (firstQueued) {
+                    outputs.read(() -> first.later(script -> page(xhtml, metadata, page,
+                            recognize(pixels, size, image, orientation, configured, auto,
+                                    script.script()).read(), config)));
                     continue;
                 }
-                final String assumed = rest;
-                outputs.read(() -> page(xhtml, metadata, page, recognize(pixels, size, image,
-                        orientation, configured, auto, assumed).read(), config));
+                firstQueued = true;
+                outputs.read(() -> {
+                    try {
+                        final Recognized read = recognize(pixels, size, image, orientation,
+                                configured, auto, first.assumed().script());
+                        first.settle(read.learned());
+                        final PageReadings.Output output =
+                                page(xhtml, metadata, page, read.read(), config);
+                        return () -> {
+                            learn(read.learned(), auto, fixed, metadata);
+                            output.pass();
+                        };
+                    } finally {
+                        first.settle(null);
+                    }
+                });
             }
             outputs.passAll();
         } finally {
+            first.settle(null);
             outputs.abandon();
         }
     }
