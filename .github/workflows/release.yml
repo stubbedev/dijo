@@ -86,6 +86,20 @@ jobs:
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
           "$binary" quality/corpus/arabic-scan-300dpi.png | grep -q "المنارة"
           grep -q "## tesseract" "$RUNNER_TEMP/licenses.txt"
+      - name: Check that the Windows executable carries the Visual C++ runtime it needs
+        if: runner.os == 'Windows'
+        run: |
+          unpacked=$(find "$(cygpath --unix "$LOCALAPPDATA")/extractous" -mindepth 1 -maxdepth 1 -type d ! -name '.*')
+          status=0
+          while IFS= read -r -d '' file; do
+            while read -r dll; do
+              if [ -z "$(find "$unpacked" -maxdepth 1 -iname "$dll")" ]; then
+                echo "$file needs $dll, which Windows does not include and is not unpacked beside it" >&2
+                status=1
+              fi
+            done < <(llvm-objdump -p "$file" | tr -d '\r' | sed -n 's/^ *DLL Name: //p' | grep -iE '^(vcruntime|msvcp|vcomp|concrt)')
+          done < <(find target/release/extractous.exe "$unpacked" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
+          exit "$status"
       - name: Smoke test in a container with no tesseract
         if: runner.os == 'Linux'
         run: |

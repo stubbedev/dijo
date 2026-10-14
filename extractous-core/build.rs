@@ -21,6 +21,9 @@ const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
 const OCR_LICENSES: &str = "licenses";
 const STATIC_LICENSES_VARIABLE: &str = "EXTRACTOUS_STATIC_LICENSES";
+/// The Visual C++ runtime the GraalVM library and the JDK's DLLs link, which Windows does not
+/// include, shipped in the JDK's bin directory for applications to carry beside them.
+const VISUAL_CPP_RUNTIME: [&str; 3] = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 
 fn main() {
     let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
@@ -382,14 +385,24 @@ fn compress_native_libraries(
         let mut content = read_file(&path);
         relocate_graalvm_runpaths(&mut content, graalvm_home)
             .unwrap_or_else(|e| panic!("Failed to rewrite the runpath of {}: {e}", path.display()));
-        let compressed = staging_dir
-            .join(path.file_name().unwrap())
-            .with_added_extension(COMPRESSED_EXTENSION);
-        compress_bytes(&content, &compressed);
+        compress_library(&path, &content, staging_dir);
+    }
+    if platform == Platform::Windows {
+        for name in VISUAL_CPP_RUNTIME {
+            let path = graalvm_home.join("bin").join(name);
+            compress_library(&path, &read_file(&path), staging_dir);
+        }
     }
     let fingerprint_path = staging_dir.join(FINGERPRINT_FILE);
     fs::write(&fingerprint_path, fingerprint)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", fingerprint_path.display()));
+}
+
+fn compress_library(path: &Path, content: &[u8], staging_dir: &Path) {
+    let compressed = staging_dir
+        .join(path.file_name().unwrap())
+        .with_added_extension(COMPRESSED_EXTENSION);
+    compress_bytes(content, &compressed);
 }
 
 fn install_libs(out_dir: &Path, libs_dir: &Path, fill: impl FnOnce(&Path)) {
