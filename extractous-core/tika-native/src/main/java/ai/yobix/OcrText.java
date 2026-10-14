@@ -1,5 +1,7 @@
 package ai.yobix;
 
+import java.util.regex.Pattern;
+
 /**
  * Corrections to text tesseract read that need more than the character it read.
  * <ul>
@@ -8,6 +10,9 @@ package ai.yobix;
  * A reading that also holds an ă, which only Romanian of these writes, gets the commas.</li>
  * <li>Tesseract reads the Greek mu as the micro sign, which Unicode deems the same letter: one
  * beside a Greek letter becomes mu.</li>
+ * <li>Tesseract reads Lithuanian's preposition į ("into") as j, which is no Lithuanian word. In a
+ * reading that holds both ė and ų, which together only Lithuanian writes, a j standing alone
+ * becomes į.</li>
  * </ul>
  */
 final class OcrText {
@@ -18,8 +23,17 @@ final class OcrText {
     private static final char MICRO_SIGN = '\u00B5';
     private static final char MU = '\u03BC';
 
+    private static final Pattern LONE_J = Pattern.compile("(?<![\\p{L}\\p{M}])j(?![\\p{L}\\p{M}])");
+
     static String corrected(String text) {
-        return greekMu(romanianCommas(text));
+        return lithuanianInto(greekMu(romanianCommas(text)));
+    }
+
+    private static String lithuanianInto(String text) {
+        if (text.indexOf('ė') < 0 || text.indexOf('ų') < 0) {
+            return text;
+        }
+        return LONE_J.matcher(text).replaceAll("į");
     }
 
     private static String romanianCommas(String text) {

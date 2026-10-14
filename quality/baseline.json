@@ -798,11 +798,11 @@
     "reading_order": 1.0
   },
   "lithuanian-scan.png": {
-    "character_error_rate": 0.005383580080753701,
-    "token_error_rate": 0.04145077720207254,
-    "recall": 0.9585492227979274,
-    "spurious": 0.04145077720207254,
-    "reading_order": 0.125
+    "character_error_rate": 0.0006729475100942127,
+    "token_error_rate": 0.0051813471502590676,
+    "recall": 0.9948186528497409,
+    "spurious": 0.0051813471502590676,
+    "reading_order": 1.0
   },
   "lithuanian.docx": {
     "character_error_rate": 0.0,

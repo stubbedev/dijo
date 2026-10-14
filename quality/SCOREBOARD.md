@@ -190,7 +190,7 @@
 | irish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | italian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | latvian-scan.png | ocr | 0.001 | 0.006 | 0.994 | 0.006 | 1.000 |
-| lithuanian-scan.png | ocr | 0.005 | 0.041 | 0.959 | 0.041 | 0.125 |
+| lithuanian-scan.png | ocr | 0.001 | 0.005 | 0.995 | 0.005 | 1.000 |
 | luxembourgish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | macedonian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | maltese-scan.png | ocr | 0.006 | 0.004 | 0.996 | 0.004 | 1.000 |
