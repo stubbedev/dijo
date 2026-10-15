@@ -40,11 +40,13 @@ pub struct IsolateSettings {
     /// Where Tika puts its temporary files (PDF scratch files, spooled streams) instead of the
     /// system temporary directory.
     pub temp_dir: Option<PathBuf>,
-    /// The most memory the Java heap may take. Beyond it an extraction fails with an
-    /// OutOfMemoryError, and the isolate stays usable for the next one. By default the heap may
-    /// grow to a large share of physical memory. The heap is sized to at least 512 MiB, or the
-    /// cap when it is lower. While a cap is set, every document is extracted on Tika's path,
-    /// where it applies: native parsers have no memory budget yet (#98).
+    /// The most memory the Java heap may take, and a native extraction may hold. Beyond it an
+    /// extraction fails, with an OutOfMemoryError on Tika's path and
+    /// [`crate::Error::MemoryLimit`] on the native one, and the next one runs normally. By
+    /// default the heap may grow to a large share of physical memory. The heap is sized to at
+    /// least 512 MiB, or the cap when it is lower. A native extraction is held to the cap only
+    /// in a program that counts allocations with [`crate::memory::CountingAllocator`]; in any
+    /// other, every document is extracted on Tika's path while a cap is set.
     pub max_heap_bytes: Option<NonZeroU64>,
     /// The processors this process may use, when it shares the machine with other extracting
     /// processes: OCR divides them among the readings running at once. All of the machine's by
@@ -79,12 +81,12 @@ pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
         .map_err(|message| Error::NativeLibrary(message.clone()))
 }
 
-/// Whether the Java heap is capped. Native parsers have no memory budget yet (#98), so while
-/// it is, every document is extracted on Tika's path, where the cap bounds it.
-pub(crate) fn heap_capped() -> bool {
+/// The cap on the Java heap, which a native extraction is held to as well, if one is set.
+pub(crate) fn heap_cap() -> Option<u64> {
     SETTINGS
         .get()
-        .is_some_and(|settings| settings.max_heap_bytes.is_some())
+        .and_then(|settings| settings.max_heap_bytes)
+        .map(NonZeroU64::get)
 }
 
 /// Whether the process has created its isolate, which nothing but Tika's path needs.

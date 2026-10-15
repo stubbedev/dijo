@@ -36,6 +36,9 @@ pub enum Error {
 
     #[error("The extraction exceeded its time limit")]
     Timeout,
+
+    #[error("The native extraction exceeded its memory budget of {0} bytes")]
+    MemoryLimit(u64),
 }
 
 impl From<Error> for io::Error {

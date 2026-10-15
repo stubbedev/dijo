@@ -151,6 +151,7 @@ impl ExtractionError {
             extractous_core::Error::IoError(_) => ErrorCategory::Unreadable,
             extractous_core::Error::Encrypted(_) => ErrorCategory::Encrypted,
             extractous_core::Error::Timeout => ErrorCategory::Timeout,
+            extractous_core::Error::MemoryLimit(_) => ErrorCategory::LimitExceeded,
             _ => return Self::from_message(message),
         };
         Self {

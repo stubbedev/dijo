@@ -9,7 +9,13 @@ use crate::formats::embedded::{
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
 use crate::isolate::isolate;
+use crate::memory;
 use crate::tika::{self, EmbeddedOutcome};
+
+/// Whether the extraction holds no more memory than its budget, which it checks as it writes.
+pub(crate) fn within_budget() -> Result<(), Stop> {
+    memory::overrun().map_or(Ok(()), |limit| Err(Stop::MemoryLimit(limit)))
+}
 
 /// The XHTML namespace, which every element a native parser writes is in.
 pub(crate) const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
@@ -57,6 +63,8 @@ pub(crate) enum Stop {
     LimitReached,
     /// Whoever was reading the output went away.
     ReaderGone,
+    /// The extraction holds more memory than its budget of this many bytes.
+    MemoryLimit(u64),
 }
 
 /// Where the XHTML of a document goes: the SAX events Tika's handlers receive, all in the XHTML
@@ -174,6 +182,7 @@ impl<'h> Xhtml<'h> {
         name: &str,
         attributes: &[(&str, &str)],
     ) -> Result<(), Stop> {
+        within_budget()?;
         if name == "frameset" {
             return self.end_head(true);
         }
@@ -198,6 +207,7 @@ impl<'h> Xhtml<'h> {
     /// Ends `name` as a parser that names it in `namespace` does: only an element ended in the
     /// XHTML namespace is followed by a line break.
     pub(crate) fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        within_budget()?;
         if AUTO.contains(&name) {
             return Ok(());
         }
@@ -218,6 +228,7 @@ impl<'h> Xhtml<'h> {
 
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
     fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.safe_text(text, Text::Characters)
@@ -226,6 +237,7 @@ impl<'h> Xhtml<'h> {
     /// Writes Java characters, as Tika's `characters(char[], int, int)`: a surrogate without its
     /// pair is invalid like the characters XML cannot hold, and each becomes U+FFFD.
     pub(crate) fn characters_utf16(&mut self, units: &[u16]) -> Result<(), Stop> {
+        within_budget()?;
         let frameset = self.frameset();
         self.end_head(frameset)?;
         let mut run = String::with_capacity(units.len());
@@ -246,6 +258,7 @@ impl<'h> Xhtml<'h> {
     }
 
     pub(crate) fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
         self.safe_text(text, Text::IgnorableWhitespace)
     }
 
@@ -303,6 +316,7 @@ impl<'h> Xhtml<'h> {
         metadata: &TikaMetadata,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
+        within_budget()?;
         if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
             return Ok(());
         }
