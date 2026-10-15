@@ -20,6 +20,7 @@ mod iwork;
 pub(crate) mod java;
 pub(crate) mod java_time;
 mod jdk_zip;
+mod list_numbering;
 mod mail;
 pub(crate) mod metadata;
 mod mobi;
