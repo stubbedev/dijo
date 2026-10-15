@@ -2,7 +2,7 @@
 //! it decodes them with: the content, decoded whole, handed to the embedded document extractor
 //! as one entry, named by the gzip header or after the compressed file.
 
-use super::nesting::{Nesting, TOO_DEEP_REASON};
+use super::nesting::Scan;
 use crate::compress::compressor::Compressor;
 use crate::compress::gzip;
 use crate::config::ParserConfigs;
@@ -60,14 +60,17 @@ impl Parser for CompressorParser {
             Ok(decoded) => decoded,
             Err(undecoded) => return Some(format!("the {compressor:?} stream: {undecoded}")),
         };
-        if Nesting::new().too_deep(&decoded.content) {
-            return Some(TOO_DEEP_REASON.to_owned());
+        let mut scan = Scan::new();
+        if let Some(reason) = scan.entry(&decoded.content) {
+            return Some(reason);
         }
-        entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME))
-            .err()
-            .map(|LowerCaseMismatch| {
-                "lower-casing the file name changes its length, which GzipUtils mixes up".to_owned()
-            })
+        if entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME)).is_err() {
+            return Some(
+                "lower-casing the file name changes its length, which GzipUtils mixes up"
+                    .to_owned(),
+            );
+        }
+        scan.document(input.len())
     }
 
     fn parse(
@@ -192,6 +195,17 @@ mod tests {
                 "application/gzip",
                 Some("\u{130}.Z")
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn defers_what_tika_may_take_for_a_zip_bomb() {
+        let bomb = gzip(&vec![b'a'; 600_000], None);
+        let reason = defers(&bomb, "application/gzip", None).unwrap();
+        assert!(reason.contains("zip bomb"), "{reason}");
+        assert_eq!(
+            defers(&gzip(&vec![b'a'; 400_000], None), "application/gzip", None),
             None
         );
     }

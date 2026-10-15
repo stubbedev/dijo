@@ -175,7 +175,7 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[],
     );
-    assert_eq!(deferred, ["quine.gz", "testZ_oom.Z"]);
+    assert_eq!(deferred, ["TIKA-216.tgz", "quine.gz", "testZ_oom.Z"]);
 }
 
 #[test]

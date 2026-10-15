@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use super::nesting::{Nesting, TOO_DEEP_REASON};
+use super::nesting::Scan;
 use super::write_entry_div;
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{NameSource, ZipEntry, ZipFile};
@@ -147,7 +147,7 @@ impl Parser for ZipParser {
                 "the JVM's default time zone, which entry times are read in, is unknown".to_owned(),
             );
         }
-        let mut nesting = Nesting::new();
+        let mut scan = Scan::new();
         for entry in zip.entries() {
             if entry.is_directory() || !entry.can_read() {
                 continue;
@@ -161,8 +161,8 @@ impl Parser for ZipParser {
             }
             match zip.read(entry) {
                 Some(Content::Complete(content)) => {
-                    if nesting.too_deep(&content) {
-                        return Some(TOO_DEEP_REASON.to_owned());
+                    if let Some(reason) = scan.entry(&content) {
+                        return Some(reason);
                     }
                 }
                 Some(Content::Truncated(_)) => {
@@ -188,7 +188,7 @@ impl Parser for ZipParser {
                 }
             }
         }
-        None
+        scan.document(input.len())
     }
 
     fn parse(
