@@ -14,7 +14,7 @@ dir=$1
 tika=$("$here/../extractous-core/tika-native/tika-version.sh")
 mkdir -p "$dir"
 
-while IFS=$'\t' read -r path sha256; do
+while IFS=$'\t' read -r path sha256 group; do
     case "$path" in
         '' | '#'*) continue ;;
     esac
@@ -27,7 +27,7 @@ while IFS=$'\t' read -r path sha256; do
     esac
     case "$path" in
         *-sources.jar) target="$dir/sources" ;;
-        *) target="$dir" ;;
+        *) target="$dir${group:+/$group}" ;;
     esac
     fetch_pinned "https://repo1.maven.org/maven2/$path" "$sha256" "$target/$(basename "$path")"
 done < "$here/reference-jars.tsv"
