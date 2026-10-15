@@ -184,6 +184,11 @@ impl<'h> Xhtml<'h> {
         self.safe_text(text, Text::IgnorableWhitespace)
     }
 
+    /// Whether `name` is a block element a line break ends (`XHTMLContentHandler.ENDLINE`).
+    pub(crate) fn is_endline(name: &str) -> bool {
+        ENDLINE.contains(&name)
+    }
+
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
         self.handler.ignorable_whitespace("\n")
     }
@@ -196,6 +201,16 @@ impl<'h> Xhtml<'h> {
         self.start_element(name)?;
         self.characters(value)?;
         self.end_element(name)
+    }
+
+    /// `result`, with the document ended when it failed, as a Tika parser ending the document in
+    /// a `finally` block leaves it: a failure to end it replaces the first. A successful result
+    /// leaves the document to [`Xhtml::write`] to end.
+    pub(crate) fn ended_on_failure(&mut self, result: Result<(), Stop>) -> Result<(), Stop> {
+        result.or_else(|stop| {
+            self.end_document()?;
+            Err(stop)
+        })
     }
 
     fn end_document(&mut self) -> Result<(), Stop> {

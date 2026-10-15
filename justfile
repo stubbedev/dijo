@@ -104,6 +104,33 @@ text-reference:
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
+# Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
+# html5lib's tree construction tests, the trees jsoup builds for them, and jsoup's named character references,
+# which the Rust port of the parser is tested against and reads.
+[unix]
+html-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    # shellcheck source=ci/fetch-pinned.sh
+    source ci/fetch-pinned.sh
+    commit=9329e64694e7835d0dcff9811e22856ef6ad16f9
+    tests=target/html5lib-tests
+    fetch_pinned "https://codeload.github.com/html5lib/html5lib-tests/tar.gz/$commit" \
+        37d2a0619856234e0631cfb08cf77f32420cba07ad4f3b3871ea991126cc5b57 "$tests.tar.gz"
+    rm -rf "$tests"
+    mkdir -p "$tests"
+    tar -xzf "$tests.tar.gz" -C "$tests" --strip-components 1
+    mkdir -p extractous-core/tests/fixtures/html
+    rules=$(just native-image-rules)
+    java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
+        extractous-core/tests/fixtures/formats/HtmlReference.java \
+        extractous-core/tests/fixtures/html extractous-core/models \
+        "$tests/tree-construction" documents=test_files/documents corpus=quality/corpus \
+        truth=quality/truth tika="$CONFORMANCE_CORPUS"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]

@@ -6,6 +6,7 @@
 mod auto_detect_reader;
 mod fiction_book;
 pub(crate) mod handlers;
+mod html;
 mod media_type;
 pub(crate) mod metadata;
 #[cfg(test)]
@@ -76,6 +77,7 @@ pub(crate) trait Parser: Sync {
 
 static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
+    &html::JSoupParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
 ];
