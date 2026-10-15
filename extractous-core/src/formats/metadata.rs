@@ -60,6 +60,16 @@ impl TikaMetadata {
         }
     }
 
+    /// Replaces the values of `name` with `values` as Tika's `Metadata.set` does for a
+    /// `Property` with an array: it removes the name and adds it again, which puts it last in
+    /// its bucket of the map, and leaves it out when `values` is empty.
+    pub(crate) fn reset_values(&mut self, name: &str, values: Vec<String>) {
+        self.entries.retain(|entry| entry.name != name);
+        if !values.is_empty() {
+            self.insert(name, values);
+        }
+    }
+
     /// Appends `value` to the values of `name`, as Tika's `Metadata.add`.
     pub(crate) fn add(&mut self, name: &str, value: impl Into<String>) {
         let value = value.into();
@@ -186,6 +196,20 @@ mod tests {
             metadata.names().collect::<Vec<_>>(),
             expected.split_whitespace().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn resetting_values_moves_a_name_to_the_end_of_its_bucket() {
+        let mut metadata = TikaMetadata::new();
+        metadata.set("a", "1");
+        metadata.set("q", "1");
+        metadata.set_values("a", vec!["2".to_owned()]);
+        assert_eq!(metadata.names().collect::<Vec<_>>(), ["a", "q"]);
+        metadata.reset_values("a", vec!["3".to_owned(), "4".to_owned()]);
+        assert_eq!(metadata.names().collect::<Vec<_>>(), ["q", "a"]);
+        assert_eq!(metadata.values("a"), ["3", "4"]);
+        metadata.reset_values("q", Vec::new());
+        assert_eq!(metadata.names().collect::<Vec<_>>(), ["a"]);
     }
 
     #[test]

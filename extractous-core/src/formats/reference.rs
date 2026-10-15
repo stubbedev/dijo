@@ -8,6 +8,7 @@ use std::io::Read;
 
 use flate2::read::GzDecoder;
 
+use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
 use crate::formats::Parser;
@@ -94,7 +95,7 @@ pub(crate) fn difference(parser: &dyn Parser, case: &Case) -> Option<String> {
     }
     given.set("Content-Type", case.content_type.clone());
     let (metadata, result) = Xhtml::write(&mut recorder, given, |xhtml| {
-        parser.parse(&case.input, xhtml)
+        parser.parse(&case.input, &ParserConfigs::default(), xhtml)
     });
     if let Err(failure) = result {
         return Some(format!("{}: failed: {failure:?}", case.label));

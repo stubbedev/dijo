@@ -31,6 +31,7 @@ mod trees;
 use dom::Dom;
 use reader::Source;
 
+use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -67,7 +68,13 @@ impl Parser for JSoupParser {
         }
     }
 
-    fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    /// Parses as `JSoupParser.parse`, which ends the document even when writing it fails.
+    fn parse(
+        &self,
+        input: &[u8],
+        _configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         let previous = xhtml.metadata_mut().get("Content-Type").map(str::to_owned);
         let document = read(input, previous.as_deref())?;
         let metadata = xhtml.metadata_mut();
@@ -84,8 +91,11 @@ impl Parser for JSoupParser {
             metadata.set("Content-Type", format!("{kind}; charset={charset}"));
         }
         metadata.set("Content-Encoding", charset);
-        let written = handler::write(&document.dom, xhtml);
-        xhtml.ended_on_failure(written).map_err(Failure::from)
+        let Err(stop) = handler::write(&document.dom, xhtml) else {
+            return Ok(());
+        };
+        xhtml.end_document()?;
+        Err(stop.into())
     }
 }
 
@@ -131,7 +141,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, documents};
+    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
     const TIKA_NAME: &str = "org.apache.tika.parser.html.JSoupParser";
 
@@ -140,9 +150,9 @@ mod tests {
         let (parsed, deferred) = documents(
             &JSoupParser,
             &[
-                "../test_files/documents",
-                "../quality/corpus",
-                "../quality/truth",
+                Path::new("../test_files/documents"),
+                Path::new("../quality/corpus"),
+                Path::new("../quality/truth"),
             ],
         );
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
@@ -152,12 +162,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs Tika's test documents: conformance/prepare.sh target/conformance"]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-        let (parsed, deferred) = documents(
-            &JSoupParser,
-            &["../target/conformance/tika-4.1.0/tika-parsers"],
-        );
+        let (parsed, deferred) = documents(&JSoupParser, &[&conformance_corpus()]);
         let deferred: Vec<String> = deferred
             .iter()
             .filter_map(|path| path.file_name())
@@ -173,6 +180,7 @@ mod tests {
             ],
             "deferred"
         );
+        assert!(parsed.len() >= 31, "{} documents", parsed.len());
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika(&paths, TIKA_NAME);
     }

@@ -102,6 +102,7 @@ pub(crate) struct Xhtml<'h> {
     handler: &'h mut dyn ContentHandler,
     metadata: TikaMetadata,
     head: Head,
+    ended: bool,
 }
 
 impl<'h> Xhtml<'h> {
@@ -117,6 +118,7 @@ impl<'h> Xhtml<'h> {
             handler,
             metadata,
             head: Head::NotStarted,
+            ended: false,
         };
         let result = xhtml
             .handler
@@ -159,11 +161,17 @@ impl<'h> Xhtml<'h> {
     }
 
     pub(crate) fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.end_element_in(XHTML_NAMESPACE, name)
+    }
+
+    /// Ends `name` as a parser that names it in `namespace` does: only an element ended in the
+    /// XHTML namespace is followed by a line break.
+    pub(crate) fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
         if AUTO.contains(&name) {
             return Ok(());
         }
         self.handler.end_element(name)?;
-        if ENDLINE.contains(&name) {
+        if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
             self.newline()?;
         }
         Ok(())
@@ -177,6 +185,28 @@ impl<'h> Xhtml<'h> {
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.safe_text(text, Text::Characters)
+    }
+
+    /// Writes Java characters, as Tika's `characters(char[], int, int)`: a surrogate without its
+    /// pair is invalid like the characters XML cannot hold, and each becomes U+FFFD.
+    pub(crate) fn characters_utf16(&mut self, units: &[u16]) -> Result<(), Stop> {
+        let frameset = self.frameset();
+        self.end_head(frameset)?;
+        let mut run = String::with_capacity(units.len());
+        for decoded in char::decode_utf16(units.iter().copied()) {
+            match decoded {
+                Ok(character) if !is_invalid(character) => run.push(character),
+                _ => {
+                    if !run.is_empty() {
+                        self.handler.characters(&run)?;
+                        run.clear();
+                    }
+                    self.handler
+                        .characters(REPLACEMENT.encode_utf8(&mut [0; 4]))?;
+                }
+            }
+        }
+        self.handler.characters(&run)
     }
 
     #[cfg_attr(not(test), expect(dead_code))]
@@ -203,17 +233,14 @@ impl<'h> Xhtml<'h> {
         self.end_element(name)
     }
 
-    /// `result`, with the document ended when it failed, as a Tika parser ending the document in
-    /// a `finally` block leaves it: a failure to end it replaces the first. A successful result
-    /// leaves the document to [`Xhtml::write`] to end.
-    pub(crate) fn ended_on_failure(&mut self, result: Result<(), Stop>) -> Result<(), Stop> {
-        result.or_else(|stop| {
-            self.end_document()?;
-            Err(stop)
-        })
-    }
-
-    fn end_document(&mut self) -> Result<(), Stop> {
+    /// Ends the document, once: the body and `html`. [`Xhtml::write`] ends a document whose
+    /// parser succeeds; a parser that ends its document even when it fails, as a Tika parser does
+    /// in a `finally` block, calls this before it returns its failure.
+    pub(crate) fn end_document(&mut self) -> Result<(), Stop> {
+        if self.ended {
+            return Ok(());
+        }
+        self.ended = true;
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.handler
