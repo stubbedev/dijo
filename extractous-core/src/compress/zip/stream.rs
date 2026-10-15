@@ -3,11 +3,12 @@
 //!
 //! A stored entry with a data descriptor is found by scanning for the next signature, as
 //! `readStoredEntry` does, without its 512-byte buffering. Entries are read stored or deflated
-//! only, as by [`super::file`].
+//! only, as by [`super::file`]. Names come from the Unicode path extra field where its CRC
+//! matches, as `useUnicodeExtraFields` asks.
 
-use super::file::{
-    decode_name, extra_fields, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATED, LFH_SIG, STORED,
-};
+use super::extra::{self, ExtraFields, Times};
+use super::file::{entry_name, unicode_text};
+use super::{decode_name, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATED, LFH_SIG, STORED};
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
 const DD_SIG: [u8; 4] = *b"PK\x07\x08";
@@ -111,15 +112,21 @@ impl<'a> ZipStream<'a> {
             }
             return Err(Failure::Io);
         }
+        let version = u16_at(header, 4);
         let flags = u16_at(header, 6);
         let name_length = usize::from(u16_at(header, 26));
         let extra_length = usize::from(u16_at(header, 28));
-        let name = decode_name(self.bytes(header_at + 30, name_length)?);
+        let raw_name = self.bytes(header_at + 30, name_length)?;
         let extra = self.bytes(header_at + 30 + name_length, extra_length)?;
-        let zip64 = extra_fields(extra)
-            .into_iter()
-            .find(|(id, _)| *id == 0x0001)
-            .map(|(_, field)| field);
+        let fields =
+            ExtraFields::from_central(extra, &mut Times::default()).map_err(|_| Failure::Io)?;
+        let mut name = entry_name(decode_name(raw_name), version);
+        if flags & 0x0800 == 0 {
+            if let Some(unicode) = unicode_text(&fields, extra::UNICODE_PATH, raw_name) {
+                name = entry_name(unicode, version);
+            }
+        }
+        let zip64 = super::file::zip64_field(extra);
         let mut current = Current {
             flags,
             method: u16_at(header, 8),

@@ -9,7 +9,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::file::{Content, ZipEntry, ZipFile};
+use crate::compress::zip::file::{ZipEntry, ZipFile};
+use crate::compress::zip::Content;
 use crate::mime::java::{self, JavaString};
 use crate::mime::media_type::MediaType;
 use crate::mime::uri;

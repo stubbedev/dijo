@@ -4,17 +4,16 @@
 //! and Android archives, KMZ, OpenDocument, StarOffice XML, Frictionless data packages and
 //! GeoGebra. An archive `ZipFile` cannot open is read entry by entry instead.
 
-mod file;
 mod opc;
-mod stream;
 
 use std::collections::HashSet;
 
+use crate::compress::zip::file::ZipFile;
+use crate::compress::zip::stream::{Failure, StreamEntry, ZipStream};
+use crate::compress::zip::Content;
 use crate::mime::archive::{self, Archive};
 use crate::mime::media_type::MediaType;
 use crate::xml::{self, Event, Flow, XMLNS};
-use file::{Content, ZipFile};
-use stream::{Failure, StreamEntry, ZipStream};
 
 /// What the ZIP container detector found in a ZIP archive.
 #[derive(Debug, Clone, PartialEq, Eq)]

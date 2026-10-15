@@ -124,8 +124,13 @@ fn julian_fixed_date(year: i32, month: i32) -> i64 {
 /// What `DateUtils.formatDate` makes of a `Date`: its instant truncated to the second, as
 /// `Instant.toString` writes it.
 pub(crate) fn format_instant(epoch_millis: i64) -> String {
-    let seconds = epoch_millis.div_euclid(1000);
-    let mut text = String::with_capacity(24);
+    instant_string(epoch_millis.div_euclid(1000), 0)
+}
+
+/// `Instant.toString`: the UTC date and time, with a fraction of three, six or nine digits when
+/// the nanoseconds need them.
+pub(crate) fn instant_string(seconds: i64, nanos: u32) -> String {
+    let mut text = String::with_capacity(32);
     if seconds >= -SECONDS_0000_TO_1970 {
         let zero = seconds - SECONDS_PER_10000_YEARS + SECONDS_0000_TO_1970;
         let high = zero.div_euclid(SECONDS_PER_10000_YEARS) + 1;
@@ -148,6 +153,15 @@ pub(crate) fn format_instant(epoch_millis: i64) -> String {
             } else {
                 text.insert_str(1, &high.abs().to_string());
             }
+        }
+    }
+    if nanos > 0 {
+        if nanos.is_multiple_of(1_000_000) {
+            text.push_str(&format!(".{:03}", nanos / 1_000_000));
+        } else if nanos.is_multiple_of(1000) {
+            text.push_str(&format!(".{:06}", nanos / 1000));
+        } else {
+            text.push_str(&format!(".{nanos:09}"));
         }
     }
     text.push('Z');
