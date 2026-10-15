@@ -2,6 +2,14 @@
 //! `sun.util.calendar.ZoneInfo` answers for it: the zone named by `TZ`, `/etc/timezone` or the
 //! `/etc/localtime` link, with its rules read from the system's zoneinfo files. Like `ZoneInfo`,
 //! it knows no local mean time: before 1900 a zone is at its current standard offset.
+#![cfg_attr(
+    all(not(unix), not(test)),
+    expect(
+        dead_code,
+        reason = "Java reads the default zone from the registry on Windows, which is not ported, \
+                  so only the tests read zoneinfo files there"
+    )
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

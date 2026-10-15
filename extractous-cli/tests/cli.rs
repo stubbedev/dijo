@@ -194,7 +194,8 @@ fn a_failed_input_does_not_stop_the_batch() {
         stderr.contains(&format!("extractous: {missing}: ")),
         "{stderr}"
     );
-    assert!(stderr.contains("NoSuchFileException"), "{stderr}");
+    let not_found = std::fs::read(&missing).unwrap_err().to_string();
+    assert!(stderr.contains(&not_found), "{stderr}");
 }
 
 #[test]
