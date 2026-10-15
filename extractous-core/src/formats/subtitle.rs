@@ -7,11 +7,12 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
-use crate::formats::handlers::{is_blank, is_java_whitespace};
+use crate::formats::handlers::is_blank;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Deferral, Failure, Parser, Prepared};
 use crate::mime::MediaType;
+use crate::unicode::is_whitespace;
 
 const SUBSTATION_DIALOGUE: &str = "Dialogue:";
 const SUBSTATION_TEXT_FIELD: usize = 9;
@@ -114,7 +115,7 @@ fn substation_cues(text: &str) -> Vec<String> {
 
 /// Java's `String.strip`.
 fn strip(text: &str) -> &str {
-    text.trim_matches(is_java_whitespace)
+    text.trim_matches(is_whitespace)
 }
 
 fn add_cue(cues: &mut Vec<String>, cue: &mut String) {

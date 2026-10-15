@@ -3,6 +3,7 @@
 
 use super::Unported;
 use crate::text::charset::Charset;
+use crate::unicode::is_whitespace;
 
 const BASE64_PAD: u8 = b'=';
 const CR: u8 = b'\r';
@@ -70,11 +71,6 @@ pub(super) fn decode_base64(input: &[u8]) -> Vec<u8> {
         }
     }
     out
-}
-
-/// Java's `Character.isWhitespace` of a byte as a character.
-fn is_java_whitespace(byte: u8) -> bool {
-    matches!(byte, b'\t'..=b'\r' | 0x1C..=0x20)
 }
 
 fn hex_value(byte: Option<u8>) -> Option<u8> {
@@ -223,7 +219,7 @@ impl QuotedPrintableReader {
                         break;
                     }
                     self.escape(&mut out);
-                } else if is_java_whitespace(b) {
+                } else if is_whitespace(char::from(b)) {
                     self.blanks.push(b);
                 } else {
                     self.transfer(&mut out, Some(b), true);
@@ -245,7 +241,7 @@ impl QuotedPrintableReader {
                     self.blanks.push(EQ);
                 }
             }
-            Some(b2) if is_java_whitespace(b2) => {
+            Some(b2) if is_whitespace(char::from(b2)) => {
                 if self.peek(0) == Some(LF) {
                     self.last_was_cr = b2 == CR;
                 }

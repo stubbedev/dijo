@@ -4,10 +4,10 @@
 //! together and keeping the names of embedded images and the language code in the text.
 
 use crate::config::ParserConfigs;
-use crate::formats::handlers::is_java_whitespace;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Deferral, Failure, Parser, Prepared};
+use crate::unicode::is_whitespace;
 
 const MAX_HEADING_LEVEL: usize = 6;
 const PARAGRAPHS: [&str; 4] = ["p", "v", "text-author", "subtitle"];
@@ -143,7 +143,7 @@ fn collapse_whitespace(text: &str) -> String {
             in_run = false;
         }
     }
-    collapsed.trim_matches(is_java_whitespace).to_owned()
+    collapsed.trim_matches(is_whitespace).to_owned()
 }
 
 const WHAT: &str = "The FictionBook XML";
