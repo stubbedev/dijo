@@ -6,13 +6,15 @@ import java.nio.file.Path;
 /**
  * The tesseract and language data the build bundled, which the Rust side unpacks and names in
  * system properties: {@code extractous.ocr.tessdata} names the language data,
- * {@code extractous.ocr.tesseract} the executable, unless tesseract is linked into the static
+ * {@code extractous.ocr.tesseract} the executable or {@code extractous.ocr.library} the library
+ * of {@link LinkedTesseract}'s native functions, unless tesseract is linked into the static
  * executable, and {@code extractous.ocr.heif} the heif-png that decodes HEIC, HEIF and AVIF, on
  * the platforms whose bundle carries one.
  */
 final class OcrBundle {
 
     private static final String TESSERACT = System.getProperty("extractous.ocr.tesseract");
+    private static final String LIBRARY = System.getProperty("extractous.ocr.library");
     private static final String TESSDATA = System.getProperty("extractous.ocr.tessdata");
     private static final String HEIF_DECODER = System.getProperty("extractous.ocr.heif");
 
@@ -30,10 +32,13 @@ final class OcrBundle {
      * @throws IllegalStateException when the bundled executable does not run
      */
     static Tesseract tesseract() throws IOException {
-        if (StaticImage.running()) {
+        if (StaticImage.running() || LIBRARY != null) {
             if (TESSDATA == null) {
-                throw new IllegalStateException("The static executable names no language data for "
-                        + "its linked tesseract");
+                throw new IllegalStateException("The build names no language data for its linked "
+                        + "tesseract");
+            }
+            if (LIBRARY != null) {
+                System.load(LIBRARY);
             }
             return new LinkedTesseract(Path.of(TESSDATA));
         }

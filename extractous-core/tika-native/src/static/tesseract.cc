@@ -3,7 +3,9 @@
 #include <allheaders.h>
 #include <tesseract/baseapi.h>
 #include <tesseract/ocrclass.h>
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 
 #include "pageres.h"
 
@@ -222,11 +224,14 @@ template <typename Visit> bool each_page(const std::string &image, Visit visit) 
 /**
  * Recognizes a page as ProcessPage does and appends its text as the text renderer does: after
  * the page separator unless it is the first page. With giveUpAfterWords above 0, gives up as
- * GiveUp tells. The recognizer divides its work among threads.
+ * GiveUp tells. A tesseract built with OpenMP divides the recognizer's work among threads.
  */
 jint recognize(Engine &api, Pix *pix, int page, jint giveUpAfterWords,
-               jint giveUpBelowConfidence, jint threads, jint timeoutMillis, std::string &text) {
+               jint giveUpBelowConfidence, [[maybe_unused]] jint threads, jint timeoutMillis,
+               std::string &text) {
+#ifdef _OPENMP
     omp_set_num_threads(threads);
+#endif
     api.SetImage(pix);
     GiveUp giveUp{api, giveUpAfterWords, giveUpBelowConfidence, false, false};
     tesseract::ETEXT_DESC monitor;
@@ -314,6 +319,11 @@ jbyteArray detect_pix(JNIEnv *env, tesseract::TessBaseAPI &api, Pix *pix, jobjec
 }
 
 extern "C" {
+
+/** The version of the tesseract linked with these functions. */
+JNIEXPORT const char *extractous_tesseract_version() {
+    return tesseract::TessBaseAPI::Version();
+}
 
 JNIEXPORT jlong JNICALL Java_ai_yobix_LinkedTesseract_create(JNIEnv *env, jclass,
                                                              jbyteArray tessdata,

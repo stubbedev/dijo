@@ -68,19 +68,10 @@ jobs:
           tool: just,cargo-nextest
       - uses: ./.github/actions/ocr-bundle
         id: ocr
-      - name: Put the bundled tesseract on the PATH with its language data
+      - name: Embed the OCR bundle, whose tesseract library the tests then load
         env:
           BUNDLE: ${{ steps.ocr.outputs.dir }}
-        run: |
-          bundle=$(cygpath --unix "$BUNDLE")
-          echo "TESSDATA_PREFIX=$(cygpath --windows "$bundle/tessdata")" >> "$GITHUB_ENV"
-          cygpath --windows "$bundle" >> "$GITHUB_PATH"
-          TESSDATA_PREFIX="$bundle/tessdata" "$bundle/tesseract" --list-langs
-      - name: Install heif-dec, which reads HEIC and AVIF images
-        run: |
-          /c/msys64/usr/bin/pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-libheif
-          echo "C:\\msys64\\ucrt64\\bin" >> "$GITHUB_PATH"
-          /c/msys64/ucrt64/bin/heif-dec --version
+        run: echo "EXTRACTOUS_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

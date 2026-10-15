@@ -27,8 +27,8 @@ fn unpacked() -> Result<&'static Path, String> {
 }
 
 /// The system properties Tika is started with: its temporary directory, headless AWT, the
-/// processors OCR may use, the bundled tesseract's language data, and the bundled tesseract and
-/// heif-png unless the static build links them.
+/// processors OCR may use, the bundled tesseract's language data, the bundled tesseract program or
+/// library unless the static build links it, and the bundled heif-png.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -42,11 +42,18 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
     }
     if !OCR_FILES.is_empty() {
         let dir = unpacked()?;
-        #[cfg(not(feature = "static-image"))]
-        properties.push((
-            "extractous.ocr.tesseract",
-            dir.join(OCR_TESSERACT).display().to_string(),
-        ));
+        if let Some(program) = OCR_TESSERACT_PROGRAM {
+            properties.push((
+                "extractous.ocr.tesseract",
+                dir.join(program).display().to_string(),
+            ));
+        }
+        if let Some(library) = OCR_TESSERACT_LIBRARY {
+            properties.push((
+                "extractous.ocr.library",
+                dir.join(library).display().to_string(),
+            ));
+        }
         properties.push((
             "extractous.ocr.tessdata",
             dir.join(OCR_MODELS).display().to_string(),
@@ -355,11 +362,16 @@ fn unpack(staging: &Path) -> io::Result<()> {
             fs::create_dir_all(parent)?;
         }
         fs::write(&path, content)?;
-        if *name == OCR_TESSERACT || Some(*name) == OCR_HEIF_DECODER {
+        if is_program(name) {
             make_executable(&path)?;
         }
     }
     Ok(())
+}
+
+/// Whether an embedded file is a program the build runs: the bundled tesseract or heif-png.
+fn is_program(name: &str) -> bool {
+    OCR_TESSERACT_PROGRAM == Some(name) || OCR_HEIF_DECODER == Some(name)
 }
 
 #[cfg(unix)]
@@ -373,16 +385,33 @@ fn make_executable(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The version of the tesseract OCR runs, as `tesseract --version` reports it: the bundled
-/// executable, unpacked beside the native libraries, or else `tesseract` on `PATH`.
+/// The version of the tesseract the build runs: the bundled library or program, or without a
+/// bundle the program on the PATH.
 #[cfg(not(feature = "static-image"))]
 pub(crate) fn tesseract_version() -> Result<String, String> {
-    let program = if OCR_FILES.is_empty() {
-        PathBuf::from("tesseract")
-    } else {
-        unpacked()?.join(OCR_TESSERACT)
-    };
-    let output = process::Command::new(&program)
+    if let Some(library) = OCR_TESSERACT_LIBRARY {
+        return library_version(&unpacked()?.join(library));
+    }
+    match OCR_TESSERACT_PROGRAM {
+        Some(program) => program_version(&unpacked()?.join(program)),
+        None => program_version(Path::new("tesseract")),
+    }
+}
+
+/// The version of the tesseract linked into the static executable.
+#[cfg(feature = "static-image")]
+pub(crate) fn tesseract_version() -> Result<String, String> {
+    unsafe extern "C" {
+        fn extractous_tesseract_version() -> *const std::ffi::c_char;
+    }
+    Ok(linked_version(unsafe {
+        std::ffi::CStr::from_ptr(extractous_tesseract_version())
+    }))
+}
+
+#[cfg(not(feature = "static-image"))]
+fn program_version(program: &Path) -> Result<String, String> {
+    let output = process::Command::new(program)
         .arg("--version")
         .output()
         .map_err(|e| format!("Failed to run {}: {e}", program.display()))?;
@@ -393,14 +422,23 @@ pub(crate) fn tesseract_version() -> Result<String, String> {
     ))
 }
 
-/// The version of the tesseract linked into the static executable.
-#[cfg(feature = "static-image")]
-pub(crate) fn tesseract_version() -> Result<String, String> {
-    unsafe extern "C" {
-        fn TessVersion() -> *const std::ffi::c_char;
+#[cfg(not(feature = "static-image"))]
+fn library_version(library: &Path) -> Result<String, String> {
+    let fail = |e: libloading::Error| format!("Failed to load {}: {e}", library.display());
+    let loaded = unsafe { libloading::Library::new(library) }.map_err(fail)?;
+    let version = unsafe {
+        loaded.get::<unsafe extern "C" fn() -> *const std::ffi::c_char>(
+            b"extractous_tesseract_version",
+        )
     }
-    let version = unsafe { std::ffi::CStr::from_ptr(TessVersion()) };
-    Ok(format!("tesseract {} (linked)", version.to_string_lossy()))
+    .map_err(fail)?;
+    Ok(linked_version(unsafe {
+        std::ffi::CStr::from_ptr(version())
+    }))
+}
+
+fn linked_version(version: &std::ffi::CStr) -> String {
+    format!("tesseract {} (linked)", version.to_string_lossy())
 }
 
 /// The licenses of the tesseract and the language data the build bundled.

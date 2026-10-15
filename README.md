@@ -51,9 +51,10 @@ aarch64 build links those against musl, with the few glibc-only functions they c
 `__xstat64` and the like) forwarded to musl's (`glibc_compat.c`). `just static` builds it on Linux into
 `target/static-image/extractous`, with nix providing the musl toolchain.
 
-OCR runs tesseract: linked in, in the static build, and otherwise the `tesseract` executable. Every release binary
-carries its own, with its libraries linked statically (built with nix on Linux, and with vcpkg at a pinned commit on
-macOS and Windows), with the language
+OCR runs tesseract in the process: linked into the static build, and on macOS and Windows loaded from a library the
+binary carries. The other Linux binary runs the `tesseract` executable it carries for each image. Each carries its
+tesseract with its libraries linked statically (built with nix on Linux, and on macOS and Windows from tesseract's
+pinned source with vcpkg's libraries at a pinned commit), with the language
 data the automatic language needs (orientation and script detection, tesseract's `script/Latin`, `script/Greek` and
 `script/Cyrillic` models, which read every language of those scripts with its letters and diacritics, and a fast model
 for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the system's C library: a binary built with
@@ -68,7 +69,7 @@ tesseract), stopping once it is sure of ten characters rather than fifty, and fi
 than another: the image is turned upright and read again with the installed model for its script, such as
 `script/Arabic`, then `ara`, falling back to `eng`. Detection takes upright Armenian for upside-down Latin and Georgian
 for Malayalam, so when no reading of a page with text is confident, those two are tried as well and the most confident
-reading is kept. In the static build each of these readings is a guess that tesseract gives up once the mean
+reading is kept. Where tesseract runs in the process, each of these readings is a guess that tesseract gives up once the mean
 confidence of its first 20 words is below 70 (the Latin model reads the first words of a Cyrillic, Greek, Armenian or
 Georgian page at 55 or less, and of a Latin page at 88 or more), so a page in another script costs little more than
 one reading in the right one; when every guess is given up, the page is read to the end as detection found it. With `--ocr-lang`, a page is read in that language, and detection runs only to turn a page
