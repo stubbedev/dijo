@@ -4,7 +4,7 @@
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
 use crate::config::ParserConfigs;
-use crate::formats::embedded::{self, Embedding, Event, Wrapping, PACKAGE_ENTRY};
+use crate::formats::embedded::{self, EmbeddedRecord, Embedding, Event, Wrapping, PACKAGE_ENTRY};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
 use crate::isolate::isolate;
@@ -115,14 +115,14 @@ impl<'h> Xhtml<'h> {
     /// Writes a document to `handler`: starts it, has `body` write its content, and ends it when
     /// `body` succeeds. A failed document stays unfinished, as a Tika parser that throws leaves
     /// it. Documents embedded in it are parsed under `configs`. Returns the metadata as `body`
-    /// left it, with what Tika's `CompositeParser` adds once a parser has returned, whether or
-    /// not it failed.
+    /// left it, and what its embedded documents leave for it, which
+    /// [`EmbeddedRecord::finish`] adds as Tika's `CompositeParser` does once a parser has returned.
     pub(crate) fn write<E: From<Stop>>(
         handler: &'h mut dyn ContentHandler,
         metadata: TikaMetadata,
         configs: &'h ParserConfigs,
         body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
-    ) -> (TikaMetadata, Result<(), E>) {
+    ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
         let mut xhtml = Self {
             handler,
             metadata,
@@ -136,13 +136,7 @@ impl<'h> Xhtml<'h> {
             .map_err(E::from)
             .and_then(|()| body(&mut xhtml))
             .and_then(|()| xhtml.end_document().map_err(E::from));
-        let Xhtml {
-            mut metadata,
-            embedding,
-            ..
-        } = xhtml;
-        embedding.finish(&mut metadata);
-        (metadata, result)
+        (xhtml.metadata, xhtml.embedding.into_record(), result)
     }
 
     /// The metadata, which the head shows as it stands when the first body content is written.

@@ -365,7 +365,7 @@ fn parse_relationships(content: &[u8]) -> Option<BTreeMap<JavaString, Relationsh
                 }
             }
             Event::End(_) => depth -= 1,
-            Event::Text(..) => {}
+            Event::Text(..) | Event::DocumentType => {}
         }
         Flow::Continue
     });
@@ -454,7 +454,7 @@ fn parse_content_types(content: &[u8]) -> Result<ContentTypes, Invalid> {
                 }
             }
             Event::End(_) => depth -= 1,
-            Event::Text(..) => {}
+            Event::Text(..) | Event::DocumentType => {}
         }
         Flow::Continue
     });
@@ -575,6 +575,7 @@ fn check_core_properties(content: &[u8]) -> Result<(), Invalid> {
                     String::new(),
                 ));
             }
+            Event::DocumentType => {}
             Event::Text(text, _) => {
                 for &index in &open {
                     elements[index].2.push_str(text);

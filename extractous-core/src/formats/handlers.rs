@@ -419,10 +419,12 @@ impl<H: ContentHandler> ContentHandler for WellFormed<H> {
 /// Passes on at most `limit` UTF-16 code units of text, as the limit of Tika's
 /// `WriteOutContentHandler`: the text that reaches the limit is cut there, and the parse stops
 /// with [`Stop::LimitReached`]. A cut never splits a character, so a character that would
-/// straddle the limit is left out.
+/// straddle the limit is left out. Text after the cut is dropped, as Java drops it for a parser
+/// that carries on past the exception.
 pub(crate) struct WriteLimit<H> {
     next: H,
     remaining: usize,
+    reached: bool,
 }
 
 impl<H: ContentHandler> WriteLimit<H> {
@@ -430,6 +432,7 @@ impl<H: ContentHandler> WriteLimit<H> {
         Self {
             next,
             remaining: limit,
+            reached: false,
         }
     }
 
@@ -451,6 +454,14 @@ impl<H: ContentHandler> WriteLimit<H> {
         self.remaining = 0;
         (&text[..end], true)
     }
+
+    fn stop_if(&mut self, reached: bool) -> Result<(), Stop> {
+        self.reached = reached;
+        if reached {
+            return Err(Stop::LimitReached);
+        }
+        Ok(())
+    }
 }
 
 impl<H: ContentHandler> ContentHandler for WriteLimit<H> {
@@ -467,21 +478,21 @@ impl<H: ContentHandler> ContentHandler for WriteLimit<H> {
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        if self.reached {
+            return Ok(());
+        }
         let (kept, reached) = self.take(text);
         self.next.characters(kept)?;
-        if reached {
-            return Err(Stop::LimitReached);
-        }
-        Ok(())
+        self.stop_if(reached)
     }
 
     fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        if self.reached {
+            return Ok(());
+        }
         let (kept, reached) = self.take(text);
         self.next.ignorable_whitespace(kept)?;
-        if reached {
-            return Err(Stop::LimitReached);
-        }
-        Ok(())
+        self.stop_if(reached)
     }
 
     fn end_document(&mut self) -> Result<(), Stop> {
@@ -736,7 +747,7 @@ mod tests {
         let body = &calls[1..calls.len() - 1];
         let configs = ParserConfigs::default();
         let mut out = StringOut::default();
-        let (_, result) = chain.write_to(&mut out, |handler| {
+        let (_, _, result) = chain.write_to(&mut out, |handler| {
             Xhtml::write(handler, metadata, &configs, |xhtml| {
                 for call in body {
                     let field = |index: usize| call.get(index).map_or("", String::as_str);
@@ -814,5 +825,19 @@ mod tests {
         }
         assert_eq!(compared, scripts.len() * 6);
         assert!(differences.is_empty(), "{}", differences.join("\n"));
+    }
+
+    #[test]
+    fn drops_text_past_the_limit_for_a_parser_that_carries_on() {
+        use crate::formats::xhtml::ContentHandler;
+        let mut out = StringOut::default();
+        {
+            let mut limit = super::WriteLimit::new(super::ToText::new(&mut out), 3);
+            assert_eq!(limit.characters("abcd"), Err(Stop::LimitReached));
+            assert_eq!(limit.characters("ef"), Ok(()));
+            assert_eq!(limit.ignorable_whitespace("\n"), Ok(()));
+            assert_eq!(limit.start_element("p", &[]), Ok(()));
+        }
+        assert_eq!(out.0, "abc");
     }
 }

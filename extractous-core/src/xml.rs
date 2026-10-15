@@ -67,6 +67,8 @@ pub(crate) enum TextKind {
 
 /// What the parser reports.
 pub(crate) enum Event<'a> {
+    /// A document type declaration, once the parser has read it.
+    DocumentType,
     Start(&'a Name, &'a [Attribute]),
     End(&'a Name),
     /// Text inside an element, in the pieces of markup and references it comes in.
@@ -544,6 +546,9 @@ impl Parser {
                 }
                 seen_doctype = true;
                 self.doctype()?;
+                if handler(Event::DocumentType) == Flow::Stop {
+                    return Err(Stop::Handler);
+                }
             } else if self.peek_at(1)?.is_some_and(is_name_start) {
                 break;
             } else {
@@ -1381,6 +1386,7 @@ mod tests {
                 Event::Start(name, _) => format!("<{}>", name.local_name),
                 Event::End(name) => format!("</{}>", name.local_name),
                 Event::Text(text, _) => text.to_owned(),
+                Event::DocumentType => "<!DOCTYPE>".to_owned(),
             });
             Flow::Continue
         });

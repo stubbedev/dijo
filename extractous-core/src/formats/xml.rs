@@ -6,9 +6,9 @@
 use std::borrow::Cow;
 
 use crate::formats::Failure;
-use crate::xml::{self, Event, Flow, TextKind, XmlError, XMLNS};
+use crate::xml::{self, Event, Flow, TextKind, XmlError};
 
-pub(crate) use crate::xml::Attribute;
+pub(crate) use crate::xml::{Attribute, XMLNS};
 
 /// The value of the attribute named `local_name` in `namespace`, as SAX's `getValue(uri, name)`.
 pub(crate) fn attribute<'a>(
@@ -19,6 +19,17 @@ pub(crate) fn attribute<'a>(
     attributes
         .iter()
         .find(|attribute| attribute.namespace == namespace && attribute.local_name == local_name)
+        .map(|attribute| attribute.value.as_str())
+}
+
+/// The value of the attribute written `qualified_name`, as SAX's `getValue(qName)`.
+pub(crate) fn attribute_named<'a>(
+    attributes: &'a [Attribute],
+    qualified_name: &str,
+) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.qualified_name == qualified_name)
         .map(|attribute| attribute.value.as_str())
 }
 
@@ -33,6 +44,28 @@ pub(crate) trait SaxHandler {
     ) -> Result<(), Failure>;
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure>;
     fn characters(&mut self, text: &str) -> Result<(), Failure>;
+
+    /// The start of an element with what SAX also reports of it: its qualified name, and with
+    /// the `namespace-prefixes` feature, its namespace declarations. A handler that needs no
+    /// more than [`SaxHandler::start_element`] leaves this to call it.
+    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
+        self.start_element(tag.namespace, tag.local_name, tag.attributes)
+    }
+
+    /// A document type declaration, which Tika's parsers skip and POI's refuse.
+    fn document_type(&mut self) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+/// A start tag as [`SaxHandler::start_tag`] receives it.
+pub(crate) struct StartTag<'t> {
+    pub(crate) namespace: &'t str,
+    pub(crate) local_name: &'t str,
+    pub(crate) qualified_name: &'t str,
+    pub(crate) attributes: &'t [Attribute],
+    /// The `xmlns` attributes, in the XMLNS namespace.
+    pub(crate) declarations: &'t [Attribute],
 }
 
 /// Reads the XML document `input` as the JDK's namespace-aware SAX parser does, handing `handler`
@@ -48,20 +81,25 @@ pub(crate) fn parse_sax(
     let mut failure = None;
     let result = xml::parse(input, &mut |event| {
         let handled = match event {
+            Event::DocumentType => handler.document_type(),
             Event::Start(name, attributes) => {
-                let attributes: Cow<'_, [Attribute]> =
+                let (declarations, attributes): (Cow<'_, [Attribute]>, Cow<'_, [Attribute]>) =
                     if attributes.iter().any(|a| a.namespace == XMLNS) {
-                        Cow::Owned(
-                            attributes
-                                .iter()
-                                .filter(|a| a.namespace != XMLNS)
-                                .cloned()
-                                .collect(),
-                        )
+                        let (declarations, attributes) = attributes
+                            .iter()
+                            .cloned()
+                            .partition(|a| a.namespace == XMLNS);
+                        (Cow::Owned(declarations), Cow::Owned(attributes))
                     } else {
-                        Cow::Borrowed(attributes)
+                        (Cow::Borrowed(&[]), Cow::Borrowed(attributes))
                     };
-                handler.start_element(&name.namespace, &name.local_name, &attributes)
+                handler.start_tag(&StartTag {
+                    namespace: &name.namespace,
+                    local_name: &name.local_name,
+                    qualified_name: &name.qualified_name,
+                    attributes: &attributes,
+                    declarations: &declarations,
+                })
             }
             Event::End(name) => handler.end_element(&name.namespace, &name.local_name),
             Event::Text(text, TextKind::Data) => {

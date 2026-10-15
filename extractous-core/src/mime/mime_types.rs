@@ -157,7 +157,7 @@ impl MimeTypes {
                         types.start(&mut reading, &name.qualified_name, attributes)
                     }
                     Event::End(name) => types.end(&mut reading, &name.qualified_name),
-                    Event::Text(..) => Ok(()),
+                    Event::Text(..) | Event::DocumentType => Ok(()),
                 };
                 match outcome {
                     Ok(()) => Flow::Continue,

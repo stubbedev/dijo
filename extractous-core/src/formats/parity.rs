@@ -72,8 +72,8 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     })
 }
 
-fn routed(path: &str) -> Routed<'_> {
-    formats::route(Source::File(path), false)
+fn routed<'a>(path: &'a str, configs: &ParserConfigs) -> Routed<'a> {
+    formats::route(Source::File(path), false, configs)
         .unwrap()
         .unwrap_or_else(|| panic!("{path} has no native parser, or its parser defers it to Tika"))
 }
@@ -84,7 +84,7 @@ fn native_stream(
     output: Output,
     char_set: CharSet,
 ) -> Outcome {
-    let routed = routed(path);
+    let routed = routed(path, configs);
     let options = StreamOptions {
         char_set,
         output,
@@ -109,7 +109,7 @@ fn native_stream(
 }
 
 fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
-    let routed = routed(path);
+    let routed = routed(path, configs);
     let (text, metadata) = formats::parse_to_string(
         routed.parser,
         &routed.input,
@@ -210,7 +210,7 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     let mut differences = Vec::new();
     for document in documents {
         let path = document.to_str().unwrap();
-        let native_name = routed(path).parser.name();
+        let native_name = routed(path, configs).parser.name();
         for output in [Output::Text, Output::Xml] {
             let mut comparisons = vec![(
                 "string",
@@ -274,7 +274,10 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, 
         if input.is_empty() {
             continue;
         }
-        if parser.defers(&input).is_some() {
+        if parser
+            .defers_with(&input, &ParserConfigs::default())
+            .is_some()
+        {
             deferred.push(file);
         } else {
             parsed.push(file);

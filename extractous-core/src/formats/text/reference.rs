@@ -165,7 +165,7 @@ fn parses_as_tika_does() {
         let mut given = TikaMetadata::new();
         given.set("Content-Type", case.content_type.clone());
         let configs = ParserConfigs::default();
-        let (metadata, result) = Xhtml::write(&mut recorder, given, &configs, |xhtml| {
+        let (metadata, _, result) = Xhtml::write(&mut recorder, given, &configs, |xhtml| {
             TextAndCsvParser.parse(&case.input, &configs, xhtml)
         });
         result.unwrap_or_else(|e: Failure| panic!("{}: {e:?}", case.label));

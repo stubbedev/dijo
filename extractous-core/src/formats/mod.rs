@@ -4,12 +4,15 @@
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
 mod auto_detect_reader;
+mod docx;
 pub(crate) mod embedded;
 mod fiction_book;
 pub(crate) mod handlers;
+pub(crate) mod java;
 mod java_time;
 pub(crate) mod metadata;
 mod odf;
+mod ooxml;
 #[cfg(test)]
 pub(crate) mod parity;
 mod rtf;
@@ -72,6 +75,12 @@ pub(crate) trait Parser: Sync {
         None
     }
 
+    /// [`Parser::defers`] for a document extracted under the parser settings `configs`, with the
+    /// reason in full, for a parser whose deferrals depend on the settings or the document.
+    fn defers_with(&self, input: &[u8], _configs: &ParserConfigs) -> Option<String> {
+        self.defers(input).map(str::to_owned)
+    }
+
     /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
     /// it replaces does, under the parser settings `configs` the extraction was given. The
     /// document is started before and ended after it.
@@ -84,6 +93,7 @@ pub(crate) trait Parser: Sync {
 }
 
 static PARSERS: &[&dyn Parser] = &[
+    &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
@@ -128,7 +138,11 @@ pub(crate) struct Routed<'a> {
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
-pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<Routed<'_>>> {
+pub(crate) fn route<'a>(
+    source: Source<'a>,
+    spooling: bool,
+    configs: &ParserConfigs,
+) -> ExtractResult<Option<Routed<'a>>> {
     if spooling || matches!(source, Source::Url(_)) || !any_parsers() {
         return Ok(None);
     }
@@ -141,7 +155,7 @@ pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<
     let Some(parser) = parser_for(&detected.media_type) else {
         return Ok(None);
     };
-    if parser.defers(&input).is_some() {
+    if parser.defers_with(&input, configs).is_some() {
         return Ok(None);
     }
     Ok(Some(Routed {
@@ -240,9 +254,12 @@ fn run(
     configs: &ParserConfigs,
     handler: &mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    Xhtml::write(handler, detected.metadata_for(parser), configs, |xhtml| {
-        parser.parse(input, configs, xhtml)
-    })
+    let (mut metadata, record, result) =
+        Xhtml::write(handler, detected.metadata_for(parser), configs, |xhtml| {
+            parser.parse(input, configs, xhtml)
+        });
+    record.finish(&mut metadata, parser.name());
+    (metadata, result)
 }
 
 fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {

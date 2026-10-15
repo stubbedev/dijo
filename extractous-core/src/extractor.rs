@@ -314,7 +314,7 @@ impl Extractor {
         source: Source,
         embedded: Option<&EmbeddedSpool>,
     ) -> ExtractResult<(StreamReader, Metadata)> {
-        if let Some(routed) = formats::route(source, embedded.is_some())? {
+        if let Some(routed) = formats::route(source, embedded.is_some(), &self.configs)? {
             let options = formats::StreamOptions {
                 char_set: self.encoding,
                 output: self.output(),
@@ -347,7 +347,7 @@ impl Extractor {
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
-        if let Some(routed) = formats::route(source, false)? {
+        if let Some(routed) = formats::route(source, false, &self.configs)? {
             let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
                 Error::ParseError(format!(
                     "The maximum string length must not be negative: {}",

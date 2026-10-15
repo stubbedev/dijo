@@ -74,6 +74,28 @@ pub fn is_whitespace(c: char) -> bool {
     }
 }
 
+/// `Character.isISOControl`: U+0000 to U+001F and U+007F to U+009F.
+pub fn is_iso_control(c: char) -> bool {
+    matches!(c, '\u{0}'..='\u{1F}' | '\u{7F}'..='\u{9F}')
+}
+
+/// `Character.digit(c, 10)`: the value of a decimal digit of any script, the general category
+/// Nd. Unicode encodes such digits in runs of ten from zero, so a digit's value is its distance
+/// from the run's start, modulo ten for runs that follow each other directly.
+pub fn decimal_digit(c: char) -> Option<u32> {
+    if c.is_ascii_digit() {
+        return Some(u32::from(c) - u32::from('0'));
+    }
+    let is_digit = |c: char| get_general_category(c) == GeneralCategory::DecimalNumber;
+    if !is_digit(c) {
+        return None;
+    }
+    let preceding = (1..=u32::from(c))
+        .map_while(|back| char::from_u32(u32::from(c) - back).filter(|&d| is_digit(d)))
+        .count();
+    Some((preceding % 10) as u32)
+}
+
 /// `Character.UnicodeScript.of`: the Script property, without script extensions.
 pub fn script(c: char) -> Script {
     c.script()

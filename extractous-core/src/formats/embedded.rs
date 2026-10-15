@@ -18,20 +18,18 @@ const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 
 /// What the embedded documents of a document are parsed with, and what they leave for its
-/// metadata: the parsers that read them and the failures Tika records.
+/// metadata.
 #[derive(Debug)]
 pub(crate) struct Embedding<'c> {
     configs: &'c ParserConfigs,
-    parsers: Vec<String>,
-    exceptions: Vec<String>,
+    record: EmbeddedRecord,
 }
 
 impl<'c> Embedding<'c> {
     pub(crate) fn new(configs: &'c ParserConfigs) -> Self {
         Self {
             configs,
-            parsers: Vec::new(),
-            exceptions: Vec::new(),
+            record: EmbeddedRecord::default(),
         }
     }
 
@@ -43,8 +41,8 @@ impl<'c> Embedding<'c> {
     /// records each when it starts, before any of the document's content is written.
     pub(crate) fn absorb_parsers(&mut self, metadata: &crate::Metadata) {
         for parser in metadata.get(PARSED_BY_FULL_SET).into_iter().flatten() {
-            if !self.parsers.contains(parser) {
-                self.parsers.push(parser.clone());
+            if !self.record.parsers.contains(parser) {
+                self.record.parsers.push(parser.clone());
             }
         }
     }
@@ -53,29 +51,42 @@ impl<'c> Embedding<'c> {
     /// embedded in it, then its own `recorded` failure, in the order Tika's shared `ParseRecord`
     /// records them, once the content has been written.
     pub(crate) fn absorb_failures(&mut self, metadata: &crate::Metadata, recorded: Option<String>) {
-        self.exceptions.extend(
+        self.record.exceptions.extend(
             metadata
                 .get(EMBEDDED_EXCEPTION)
                 .into_iter()
                 .flatten()
                 .cloned(),
         );
-        self.exceptions.extend(recorded);
+        self.record.exceptions.extend(recorded);
     }
 
-    /// Adds to `metadata` what Tika's `CompositeParser` adds once the document's parser has
-    /// returned: every parser that read it or a document embedded in it, and the failures of its
-    /// embedded documents.
-    pub(crate) fn finish(self, metadata: &mut TikaMetadata) {
-        let mut parsers = metadata.values("tk:parsed-by").to_vec();
+    pub(crate) fn into_record(self) -> EmbeddedRecord {
+        self.record
+    }
+}
+
+/// What a document's embedded documents leave for its metadata: the parsers that read them and
+/// the failures Tika records.
+#[derive(Debug, Default)]
+pub(crate) struct EmbeddedRecord {
+    parsers: Vec<String>,
+    exceptions: Vec<String>,
+}
+
+impl EmbeddedRecord {
+    /// Adds to `metadata` what Tika's `CompositeParser` adds once the document's parser, the
+    /// one it `dispatched` to, has returned: that parser and every parser a document embedded
+    /// in it was dispatched to (not the extractors a parser records in `tk:parsed-by` itself),
+    /// and the failures of its embedded documents.
+    pub(crate) fn finish(self, metadata: &mut TikaMetadata, dispatched: &str) {
+        let mut parsers = vec![dispatched.to_owned()];
         for parser in self.parsers {
             if !parsers.contains(&parser) {
                 parsers.push(parser);
             }
         }
-        if !parsers.is_empty() {
-            metadata.set_values(PARSED_BY_FULL_SET, parsers);
-        }
+        metadata.set_values(PARSED_BY_FULL_SET, parsers);
         for exception in self.exceptions {
             metadata.add(EMBEDDED_EXCEPTION, exception);
         }
@@ -232,8 +243,7 @@ mod tests {
         embedding.absorb_parsers(&second);
         embedding.absorb_failures(&second, None);
         let mut metadata = TikaMetadata::new();
-        metadata.add("tk:parsed-by", "native");
-        embedding.finish(&mut metadata);
+        embedding.into_record().finish(&mut metadata, "native");
         assert_eq!(
             metadata.values(PARSED_BY_FULL_SET),
             ["native", "a", "b", "c"]
