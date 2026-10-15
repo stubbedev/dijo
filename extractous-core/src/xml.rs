@@ -12,7 +12,9 @@
 //! entities (a reference to one is noted, not expanded), and general entities whose replacement
 //! text holds markup.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::text::charset::Charset;
 
@@ -38,7 +40,7 @@ fn malformed<T>(what: impl Into<String>) -> Result<T> {
 pub(crate) const XMLNS: &str = XMLNS_NAMESPACE;
 
 /// An attribute of a start tag, its namespace resolved: the empty string for none.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Attribute {
     pub(crate) qualified_name: String,
     pub(crate) namespace: String,
@@ -49,9 +51,40 @@ pub(crate) struct Attribute {
 /// An element's name, its namespace resolved: the empty string for none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Name {
-    pub(crate) qualified_name: String,
-    pub(crate) namespace: String,
-    pub(crate) local_name: String,
+    qualified: QName,
+    namespace: Rc<str>,
+}
+
+impl Name {
+    pub(crate) fn qualified_name(&self) -> &str {
+        &self.qualified.name
+    }
+
+    pub(crate) fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub(crate) fn local_name(&self) -> &str {
+        self.qualified.local()
+    }
+}
+
+/// A qualified name: a local name after an optional prefix and colon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QName {
+    name: String,
+    /// Where the local name starts: after the colon, or at the start.
+    local_start: usize,
+}
+
+impl QName {
+    fn prefix(&self) -> Option<&str> {
+        (self.local_start > 0).then(|| &self.name[..self.local_start - 1])
+    }
+
+    fn local(&self) -> &str {
+        &self.name[self.local_start..]
+    }
 }
 
 /// Where text in an element comes from, which decides how Xerces hands it over.
@@ -96,6 +129,8 @@ pub(crate) fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) ->
         external_subset: false,
         parameter_references: false,
         standalone: false,
+        attributes: Vec::new(),
+        spare_names: Vec::new(),
     };
     match parser.document(handler) {
         Ok(()) | Err(Stop::Handler) => Ok(()),
@@ -134,11 +169,11 @@ enum Reader {
 const FIRST_READS: usize = 4 + 28;
 
 /// The document's characters, decoded as Xerces decodes them, line ends normalized, up to the
-/// first character its reader cannot deliver. Only the characters are kept, four bytes each: the
-/// byte offsets the switch to a declared encoding needs are decoded again for the few characters
-/// of the declaration.
+/// first character its reader cannot deliver. A UTF-8 document without carriage returns is read
+/// where it lies; any other is held decoded, as UTF-8. The byte offsets the switch to a declared
+/// encoding needs are decoded again for the few characters of the declaration.
 struct Text<'a> {
-    chars: Vec<char>,
+    text: Cow<'a, str>,
     /// Whether the characters stop at a malformed sequence rather than at the end.
     malformed: bool,
     bytes: &'a [u8],
@@ -153,13 +188,34 @@ struct Text<'a> {
 
 impl<'a> Text<'a> {
     fn new(bytes: &'a [u8], detected: &'static str, reader: Reader, start: usize) -> Text<'a> {
-        let mut chars = Vec::with_capacity(bytes.len().saturating_sub(start));
-        let malformed = decode_normalized(reader, bytes, start, |c, _| {
-            chars.push(c);
-            true
-        });
+        let (text, malformed) = match reader {
+            Reader::Utf8 => {
+                let body = &bytes[start.min(bytes.len())..];
+                let (valid, malformed) = match std::str::from_utf8(body) {
+                    Ok(text) => (text, false),
+                    Err(error) => (
+                        std::str::from_utf8(&body[..error.valid_up_to()])
+                            .expect("the prefix up to the error is valid UTF-8"),
+                        true,
+                    ),
+                };
+                if valid.contains('\r') {
+                    (Cow::Owned(normalize_line_ends(valid)), malformed)
+                } else {
+                    (Cow::Borrowed(valid), malformed)
+                }
+            }
+            _ => {
+                let mut text = String::with_capacity(bytes.len().saturating_sub(start));
+                let malformed = decode_normalized(reader, bytes, start, |c, _| {
+                    text.push(c);
+                    true
+                });
+                (Cow::Owned(text), malformed)
+            }
+        };
         Text {
-            chars,
+            text,
             malformed,
             bytes,
             start,
@@ -172,6 +228,7 @@ impl<'a> Text<'a> {
     /// Switches to the declared encoding, as `XMLEntityScanner.setEncoding` does: the
     /// characters the first reader decoded stay, and a new reader takes over where the first
     /// stopped reading bytes, which loses what a malformed sequence left unread in the first.
+    /// `declaration_end` counts the characters up to the end of the declaration.
     fn switch(&mut self, declared: &str, declaration_end: usize) -> Result<()> {
         if declared == self.detected {
             return Ok(());
@@ -207,22 +264,44 @@ impl<'a> Text<'a> {
             first_read += 1;
             previous_end = end;
         }
+        let holds_first_read_only = self.text.chars().take(first_read + 1).count() == first_read;
         let (kept, resume) = if declaration_end > first_read {
             (declaration_end, ends[declaration_end - 1])
-        } else if first_read == self.chars.len() && self.malformed {
+        } else if holds_first_read_only && self.malformed {
             (first_read, self.first_read_end)
         } else {
             (first_read, previous_end.max(self.first_read_end))
         };
-        self.chars.truncate(kept);
+        let kept_bytes = self
+            .text
+            .char_indices()
+            .nth(kept)
+            .map_or(self.text.len(), |(index, _)| index);
+        let text = self.text.to_mut();
+        text.truncate(kept_bytes);
         self.reader = reader;
-        let chars = &mut self.chars;
         self.malformed = decode_normalized(reader, self.bytes, resume, |c, _| {
-            chars.push(c);
+            text.push(c);
             true
         });
         Ok(())
     }
+}
+
+/// `text` with each `\r\n` and lone `\r` made a `\n`.
+fn normalize_line_ends(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('\r') {
+        normalized.push_str(&rest[..at]);
+        normalized.push('\n');
+        rest = &rest[at + 1..];
+        if let Some(after) = rest.strip_prefix('\n') {
+            rest = after;
+        }
+    }
+    normalized.push_str(rest);
+    normalized
 }
 
 /// `XMLEntityManager.getEncodingInfo`: the encoding the first four bytes imply, its reader, and
@@ -435,51 +514,71 @@ struct Parser<'a> {
     external_subset: bool,
     parameter_references: bool,
     standalone: bool,
+    /// The attributes of the start tag being read, their strings kept for the next one.
+    attributes: Vec<Attribute>,
+    /// The strings of names whose elements ended, for the next ones.
+    spare_names: Vec<String>,
 }
 
 /// The namespace scopes of the open elements.
 struct Scopes {
-    bindings: Vec<(String, String)>,
+    bindings: Vec<(String, Rc<str>)>,
     marks: Vec<usize>,
+    /// The namespace of a name without one.
+    none: Rc<str>,
 }
 
 impl Scopes {
     fn new() -> Scopes {
         Scopes {
-            bindings: vec![("xml".to_owned(), XML_NAMESPACE.to_owned())],
+            bindings: vec![("xml".to_owned(), Rc::from(XML_NAMESPACE))],
             marks: Vec::new(),
+            none: Rc::from(""),
         }
     }
 
-    fn resolve(&self, prefix: &str) -> Option<&str> {
+    fn resolve(&self, prefix: &str) -> Option<&Rc<str>> {
         self.bindings
             .iter()
             .rev()
             .find(|(p, _)| p == prefix)
-            .map(|(_, uri)| uri.as_str())
+            .map(|(_, uri)| uri)
     }
 }
 
 impl Parser<'_> {
-    fn peek_at(&self, offset: usize) -> Result<Option<char>> {
-        let index = self.position + offset;
-        if index < self.text.chars.len() {
-            return Ok(Some(self.text.chars[index]));
-        }
+    /// The characters from the position on.
+    fn rest(&self) -> &str {
+        &self.text.text[self.position..]
+    }
+
+    /// The end of the characters: where the document ends, or the error of the sequence the
+    /// reader could not deliver.
+    fn text_end(&self) -> Result<Option<char>> {
         if self.text.malformed {
             return Err(XmlError::CharConversion);
         }
         Ok(None)
     }
 
+    fn peek_at(&self, offset: usize) -> Result<Option<char>> {
+        match self.rest().chars().nth(offset) {
+            Some(c) => Ok(Some(c)),
+            None => self.text_end(),
+        }
+    }
+
     fn peek(&self) -> Result<Option<char>> {
-        self.peek_at(0)
+        match self.rest().chars().next() {
+            Some(c) => Ok(Some(c)),
+            None => self.text_end(),
+        }
     }
 
     fn next(&mut self) -> Result<Option<char>> {
         let c = self.peek()?;
-        if c.is_some() {
-            self.position += 1;
+        if let Some(c) = c {
+            self.position += c.len_utf8();
         }
         Ok(c)
     }
@@ -492,19 +591,25 @@ impl Parser<'_> {
         }
     }
 
-    /// Whether the text goes on with `literal`, read up to the first character that differs.
+    /// Whether the text goes on with the ASCII `literal`, read up to the first character that
+    /// differs.
     fn starts_with(&self, literal: &str) -> Result<bool> {
-        for (offset, expected) in literal.chars().enumerate() {
-            if self.peek_at(offset)? != Some(expected) {
-                return Ok(false);
-            }
+        debug_assert!(literal.is_ascii());
+        let rest = self.rest().as_bytes();
+        let compared = rest.len().min(literal.len());
+        if rest[..compared] != literal.as_bytes()[..compared] {
+            return Ok(false);
+        }
+        if compared < literal.len() {
+            self.text_end()?;
+            return Ok(false);
         }
         Ok(true)
     }
 
     fn skip(&mut self, literal: &str) -> Result<bool> {
         if self.starts_with(literal)? {
-            self.position += literal.chars().count();
+            self.position += literal.len();
             Ok(true)
         } else {
             Ok(false)
@@ -520,15 +625,17 @@ impl Parser<'_> {
     }
 
     fn skip_spaces(&mut self) -> Result<bool> {
-        let mut skipped = false;
-        while let Some(c) = self.peek()? {
-            if !is_space(c) {
-                break;
-            }
-            self.position += 1;
-            skipped = true;
+        let start = self.position;
+        let skipped = self
+            .rest()
+            .bytes()
+            .take_while(|&b| is_space(char::from(b)))
+            .count();
+        self.position += skipped;
+        if self.position == self.text.text.len() {
+            self.text_end()?;
         }
-        Ok(skipped)
+        Ok(self.position > start)
     }
 
     fn require_spaces(&mut self, what: &str) -> Result<()> {
@@ -540,19 +647,91 @@ impl Parser<'_> {
     }
 
     fn name(&mut self, what: &str) -> Result<String> {
+        let mut name = String::new();
+        self.name_into(what, &mut name)?;
+        Ok(name)
+    }
+
+    /// Reads a name into `name`, which it replaces.
+    fn name_into(&mut self, what: &str, name: &mut String) -> Result<()> {
         match self.peek()? {
             Some(c) if is_name_start(c) => {}
             _ => return malformed(format!("a name expected for {what}")),
         }
-        let mut name = String::new();
-        while let Some(c) = self.peek()? {
-            if !is_name_char(c) {
-                break;
-            }
-            name.push(c);
-            self.position += 1;
+        let length = self.name_length();
+        name.clear();
+        name.push_str(&self.rest()[..length]);
+        self.position += length;
+        if self.position == self.text.text.len() {
+            self.text_end()?;
         }
-        Ok(name)
+        Ok(())
+    }
+
+    /// The length in bytes of the run of name characters at the position.
+    fn name_length(&self) -> usize {
+        let rest = self.rest();
+        let bytes = rest.as_bytes();
+        let mut length = 0;
+        while length < bytes.len() {
+            let byte = bytes[length];
+            if byte.is_ascii() {
+                if !is_name_char(char::from(byte)) {
+                    break;
+                }
+                length += 1;
+            } else {
+                let c = rest[length..]
+                    .chars()
+                    .next()
+                    .expect("a character starts here");
+                if !is_name_char(c) {
+                    break;
+                }
+                length += c.len_utf8();
+            }
+        }
+        length
+    }
+
+    /// Where the run of characters Xerces accepts from the position on ends: at the end, at a
+    /// character it rejects, or at an ASCII byte `stops` picks.
+    fn scan_plain(&self, stops: impl Fn(u8) -> bool) -> usize {
+        let text = self.text.text.as_ref();
+        let bytes = text.as_bytes();
+        let mut at = self.position;
+        while at < bytes.len() {
+            let byte = bytes[at];
+            if byte.is_ascii() {
+                if stops(byte) || (byte < 0x20 && !is_space(char::from(byte))) {
+                    break;
+                }
+                at += 1;
+            } else {
+                let c = text[at..].chars().next().expect("a character starts here");
+                if !is_char(c) {
+                    break;
+                }
+                at += c.len_utf8();
+            }
+        }
+        at
+    }
+
+    /// Reads up to and past the ASCII `terminator`, each character on the way one Xerces
+    /// accepts in `what`, as a loop of [`Parser::skip`] and [`Parser::expect_char`] would; the
+    /// characters before the terminator.
+    fn until(&mut self, terminator: &str, what: &str) -> Result<std::ops::Range<usize>> {
+        let first = terminator.as_bytes()[0];
+        let start = self.position;
+        loop {
+            self.position = self.scan_plain(|byte| byte == first);
+            let end = self.position;
+            if self.skip(terminator)? {
+                return Ok(start..end);
+            }
+            self.expect_char(what)?;
+        }
     }
 
     /// Whether an XML declaration starts the document. Xerces' `skipString` reads all five
@@ -568,7 +747,7 @@ impl Parser<'_> {
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
         if self.declaration_follows()? {
-            self.position += 5;
+            self.position += "<?xml".len();
             self.declaration()?;
         }
         let mut seen_doctype = false;
@@ -682,21 +861,18 @@ impl Parser<'_> {
             if !is_encoding_name(&encoding) {
                 return malformed(format!("invalid encoding name {encoding}"));
             }
-            self.text.switch(&encoding, self.position)?;
+            let declaration_end = self.text.text[..self.position].chars().count();
+            self.text.switch(&encoding, declaration_end)?;
         }
         Ok(())
     }
 
     fn comment(&mut self) -> Result<()> {
-        loop {
-            if self.skip("--")? {
-                if self.skip(">")? {
-                    return Ok(());
-                }
-                return malformed("-- inside a comment");
-            }
-            self.expect_char("a comment")?;
+        self.until("--", "a comment")?;
+        if self.skip(">")? {
+            return Ok(());
         }
+        malformed("-- inside a comment")
     }
 
     fn processing_instruction(&mut self) -> Result<()> {
@@ -711,12 +887,8 @@ impl Parser<'_> {
             return Ok(());
         }
         self.require_spaces("after a processing instruction target")?;
-        loop {
-            if self.skip("?>")? {
-                return Ok(());
-            }
-            self.expect_char("a processing instruction")?;
-        }
+        self.until("?>", "a processing instruction")?;
+        Ok(())
     }
 
     fn quoted(&mut self, what: &str) -> Result<String> {
@@ -841,7 +1013,7 @@ impl Parser<'_> {
                 if !spaced || parameter {
                     return malformed("NDATA misplaced");
                 }
-                self.position += 5;
+                self.position += "NDATA".len();
                 self.require_spaces("after NDATA")?;
                 self.name("a notation")?;
             }
@@ -904,8 +1076,8 @@ impl Parser<'_> {
     fn enumeration(&mut self) -> Result<()> {
         loop {
             self.skip_spaces()?;
-            while self.peek()?.is_some_and(is_name_char) {
-                self.position += 1;
+            while let Some(c) = self.peek()?.filter(|&c| is_name_char(c)) {
+                self.position += c.len_utf8();
             }
             self.skip_spaces()?;
             match self.next()? {
@@ -918,19 +1090,35 @@ impl Parser<'_> {
 
     /// An attribute value, its references replaced and its white space normalized.
     fn attribute_value(&mut self) -> Result<String> {
+        let mut value = String::new();
+        self.attribute_value_into(&mut value)?;
+        Ok(value)
+    }
+
+    /// Reads an attribute value into `value`, which it replaces.
+    fn attribute_value_into(&mut self, value: &mut String) -> Result<()> {
         let quote = match self.next()? {
             Some(q @ ('"' | '\'')) => q,
             _ => return malformed("a quoted attribute value expected"),
         };
-        let mut value = String::new();
+        value.clear();
         loop {
+            let plain = self
+                .rest()
+                .bytes()
+                .take_while(|&b| {
+                    b.is_ascii() && b >= 0x20 && b != quote as u8 && b != b'<' && b != b'&'
+                })
+                .count();
+            value.push_str(&self.rest()[..plain]);
+            self.position += plain;
             let c = self.expect_char("an attribute value")?;
             match c {
-                c if c == quote => return Ok(value),
+                c if c == quote => return Ok(()),
                 '<' => return malformed("< in an attribute value"),
                 '&' => {
                     let reference = self.reference()?;
-                    self.expand_in_attribute(reference, &mut value, 0)?;
+                    self.expand_in_attribute(reference, value, 0)?;
                 }
                 c if is_space(c) => value.push(' '),
                 c => value.push(c),
@@ -1055,15 +1243,15 @@ impl Parser<'_> {
         }
     }
 
-    fn qname(&mut self, what: &str) -> Result<(String, Option<String>, String)> {
-        let name = self.name(what)?;
+    /// Reads a qualified name into `name`, which it replaces; where its local name starts.
+    fn qname_into(&mut self, what: &str, name: &mut String) -> Result<usize> {
+        self.name_into(what, name)?;
         match name.split_once(':') {
-            None => Ok((name.clone(), None, name)),
+            None => Ok(0),
             Some((prefix, local))
                 if !prefix.is_empty() && !local.is_empty() && !local.contains(':') =>
             {
-                let (prefix, local) = (prefix.to_owned(), local.to_owned());
-                Ok((name, Some(prefix), local))
+                Ok(prefix.len() + 1)
             }
             Some(_) => malformed(format!("{name} is not a qualified name")),
         }
@@ -1082,6 +1270,7 @@ impl Parser<'_> {
                 open.push(name);
             } else {
                 Self::end(&name, scopes, handler)?;
+                self.spare_names.push(name.qualified.name);
             }
             loop {
                 if open.is_empty() {
@@ -1089,17 +1278,21 @@ impl Parser<'_> {
                 }
                 self.content(handler)?;
                 if self.skip("</")? {
-                    let (qname, _, _) = self.qname("an end tag")?;
+                    let mut qname = self.spare_names.pop().unwrap_or_default();
+                    self.qname_into("an end tag", &mut qname)?;
                     self.skip_spaces()?;
                     self.require(">", "the end of an end tag")?;
                     let name = open.pop().expect("an element is open");
-                    if name.qualified_name != qname {
+                    if name.qualified_name() != qname {
                         return fatal(format!(
                             "the element {} must end with </{}>",
-                            name.qualified_name, name.qualified_name
+                            name.qualified_name(),
+                            name.qualified_name()
                         ));
                     }
+                    self.spare_names.push(qname);
                     Self::end(&name, scopes, handler)?;
+                    self.spare_names.push(name.qualified.name);
                 } else if self.peek()?.is_none() {
                     return fatal("the document ends inside an element");
                 } else {
@@ -1136,23 +1329,19 @@ impl Parser<'_> {
                 Err(Stop::Handler)
             }
         };
-        let mut data = String::new();
         loop {
+            let data_start = self.position;
+            self.character_data()?;
+            let data = &self.text.text[data_start..self.position];
             match self.peek()? {
-                None => return emit(&data, TextKind::Data),
+                None => return emit(data, TextKind::Data),
                 Some('<') => {
-                    emit(&std::mem::take(&mut data), TextKind::Data)?;
+                    emit(data, TextKind::Data)?;
                     if self.skip("<!--")? {
                         self.comment()?;
                     } else if self.skip("<![CDATA[")? {
-                        let mut section = String::new();
-                        loop {
-                            if self.skip("]]>")? {
-                                break;
-                            }
-                            section.push(self.expect_char("a CDATA section")?);
-                        }
-                        emit(&section, TextKind::CData)?;
+                        let section = self.until("]]>", "a CDATA section")?;
+                        emit(&self.text.text[section], TextKind::CData)?;
                     } else if self.skip("<?")? {
                         self.processing_instruction()?;
                     } else if self.peek_at(1)? == Some('/')
@@ -1164,18 +1353,30 @@ impl Parser<'_> {
                     }
                 }
                 Some('&') => {
-                    emit(&std::mem::take(&mut data), TextKind::Data)?;
+                    emit(data, TextKind::Data)?;
                     self.position += 1;
                     let reference = self.reference()?;
                     let mut expansion = String::new();
                     self.expand_in_content(reference, &mut expansion, 0)?;
                     emit(&expansion, TextKind::Reference)?;
                 }
+                Some(_) => unreachable!("character data runs up to markup or a reference"),
+            }
+        }
+    }
+
+    /// Reads a run of character data up to markup, a reference or the end, failing on `]]>`
+    /// and on a character Xerces rejects in content.
+    fn character_data(&mut self) -> Result<()> {
+        loop {
+            self.position = self.scan_plain(|byte| matches!(byte, b'<' | b'&' | b']'));
+            match self.peek()? {
+                None | Some('<' | '&') => return Ok(()),
                 Some(_) => {
                     if self.starts_with("]]>")? {
-                        return fatal("]]> in content");
+                        return malformed("]]> in content");
                     }
-                    data.push(self.expect_char("content")?);
+                    self.expect_char("content")?;
                 }
             }
         }
@@ -1246,8 +1447,52 @@ impl Parser<'_> {
         scopes: &mut Scopes,
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(Name, bool), Stop> {
-        let (qname, prefix, local) = self.qname("an element")?;
-        let mut raw: Vec<(String, Option<String>, String, String)> = Vec::new();
+        let mut element = self.spare_names.pop().unwrap_or_default();
+        let local_start = self.qname_into("an element", &mut element)?;
+        let qualified = QName {
+            name: element,
+            local_start,
+        };
+        let mut slots = std::mem::take(&mut self.attributes);
+        let read = self.attributes_into(&qualified, &mut slots, scopes);
+        let result = read.and_then(|(count, empty, namespace)| {
+            let name = Name {
+                qualified,
+                namespace,
+            };
+            match handler(Event::Start(&name, &slots[..count])) {
+                Flow::Continue => Ok((name, empty)),
+                Flow::Stop => Err(Stop::Handler),
+            }
+        });
+        self.attributes = slots;
+        result
+    }
+
+    /// The namespace of an element, once its start tag's declarations are in scope.
+    fn element_namespace(qualified: &QName, scopes: &Scopes) -> std::result::Result<Rc<str>, Stop> {
+        match qualified.prefix() {
+            None => Ok(scopes.resolve("").unwrap_or(&scopes.none).clone()),
+            Some(prefix) => match scopes.resolve(prefix) {
+                Some(uri) if !uri.is_empty() => Ok(uri.clone()),
+                _ => fatal(format!(
+                    "the prefix {prefix} of {} is not bound",
+                    qualified.name
+                )),
+            },
+        }
+    }
+
+    /// Reads the attributes of the start tag of `element` into `slots`, defaults added and
+    /// namespaces resolved, and opens the element's namespace scope: how many there are,
+    /// whether the element is empty, and its namespace.
+    fn attributes_into(
+        &mut self,
+        element: &QName,
+        slots: &mut Vec<Attribute>,
+        scopes: &mut Scopes,
+    ) -> std::result::Result<(usize, bool, Rc<str>), Stop> {
+        let mut count = 0;
         let empty = loop {
             let spaced = self.skip_spaces()?;
             if self.skip("/>")? {
@@ -1257,39 +1502,65 @@ impl Parser<'_> {
                 break false;
             }
             if !spaced {
-                return fatal(format!("the element {qname} is unterminated"));
+                return fatal(format!("the element {} is unterminated", element.name));
             }
-            let (name, attribute_prefix, attribute_local) = self.qname("an attribute")?;
+            if count == slots.len() {
+                slots.push(Attribute::default());
+            }
+            let local_start = self.qname_into("an attribute", &mut slots[count].qualified_name)?;
             self.skip_spaces()?;
             self.require("=", "= after an attribute name")?;
             self.skip_spaces()?;
-            let value = self.attribute_value()?;
-            if raw.iter().any(|(q, ..)| *q == name) {
-                return fatal(format!("the attribute {name} appears twice"));
+            self.attribute_value_into(&mut slots[count].value)?;
+            let (read, slot) = slots.split_at_mut(count);
+            let slot = &mut slot[0];
+            if read.iter().any(|a| a.qualified_name == slot.qualified_name) {
+                return fatal(format!(
+                    "the attribute {} appears twice",
+                    slot.qualified_name
+                ));
             }
-            raw.push((name, attribute_prefix, attribute_local, value));
+            slot.local_name.clear();
+            slot.local_name
+                .push_str(&slot.qualified_name[local_start..]);
+            count += 1;
         };
-        if let Some(defaults) = self.defaults.get(&qname) {
+        if let Some(defaults) = self.defaults.get(&element.name) {
             for default in defaults {
-                if !raw.iter().any(|(q, ..)| *q == default.name) {
-                    let (prefix, local) = match default.name.split_once(':') {
-                        Some((p, l)) => (Some(p.to_owned()), l.to_owned()),
-                        None => (None, default.name.clone()),
-                    };
-                    raw.push((default.name.clone(), prefix, local, default.value.clone()));
+                if slots[..count]
+                    .iter()
+                    .any(|a| a.qualified_name == default.name)
+                {
+                    continue;
                 }
+                if count == slots.len() {
+                    slots.push(Attribute::default());
+                }
+                let slot = &mut slots[count];
+                let local_start = default.name.find(':').map_or(0, |colon| colon + 1);
+                slot.qualified_name.clear();
+                slot.qualified_name.push_str(&default.name);
+                slot.local_name.clear();
+                slot.local_name.push_str(&default.name[local_start..]);
+                slot.value.clear();
+                slot.value.push_str(&default.value);
+                count += 1;
             }
         }
         scopes.marks.push(scopes.bindings.len());
-        for (name, attribute_prefix, attribute_local, value) in &raw {
-            let declared = match (attribute_prefix.as_deref(), name.as_str()) {
-                (None, "xmlns") => Some(String::new()),
-                (Some("xmlns"), _) => Some(attribute_local.clone()),
+        for attribute in &slots[..count] {
+            let declared = match (
+                attribute_prefix(attribute),
+                attribute.qualified_name.as_str(),
+            ) {
+                (None, "xmlns") => Some(""),
+                (Some("xmlns"), _) => Some(attribute.local_name.as_str()),
                 _ => None,
             };
             let Some(declared) = declared else {
                 continue;
             };
+            let value = attribute.value.as_str();
             if declared == "xmlns" {
                 return fatal("the prefix xmlns cannot be declared");
             }
@@ -1302,50 +1573,47 @@ impl Parser<'_> {
             if !declared.is_empty() && value.is_empty() {
                 return fatal(format!("the prefix {declared} cannot be unbound"));
             }
-            scopes.bindings.push((declared, value.clone()));
+            scopes.bindings.push((declared.to_owned(), Rc::from(value)));
         }
-        let uri = match prefix.as_deref() {
-            None => scopes.resolve("").unwrap_or("").to_owned(),
-            Some(prefix) => match scopes.resolve(prefix) {
-                Some(uri) if !uri.is_empty() => uri.to_owned(),
-                _ => return fatal(format!("the prefix {prefix} of {qname} is not bound")),
-            },
-        };
-        let mut attributes: Vec<Attribute> = Vec::with_capacity(raw.len());
-        for (name, attribute_prefix, attribute_local, value) in raw {
-            let uri = match attribute_prefix.as_deref() {
-                None if name == "xmlns" => XMLNS_NAMESPACE.to_owned(),
-                None => String::new(),
-                Some("xmlns") => XMLNS_NAMESPACE.to_owned(),
+        let namespace = Self::element_namespace(element, scopes)?;
+        for index in 0..count {
+            let (resolved, rest) = slots.split_at_mut(index);
+            let attribute = &mut rest[0];
+            let uri: &str = match attribute_prefix(attribute) {
+                None if attribute.qualified_name == "xmlns" => XMLNS_NAMESPACE,
+                None => "",
+                Some("xmlns") => XMLNS_NAMESPACE,
                 Some(p) => match scopes.resolve(p) {
-                    Some(uri) if !uri.is_empty() => uri.to_owned(),
-                    _ => return fatal(format!("the prefix {p} of {name} is not bound")),
+                    Some(uri) if !uri.is_empty() => uri,
+                    _ => {
+                        return fatal(format!(
+                            "the prefix {p} of {} is not bound",
+                            attribute.qualified_name
+                        ))
+                    }
                 },
             };
             if !uri.is_empty()
-                && attributes
+                && resolved
                     .iter()
-                    .any(|a| a.namespace == uri && a.local_name == attribute_local)
+                    .any(|a| a.namespace == uri && a.local_name == attribute.local_name)
             {
-                return fatal(format!("the attribute {name} appears twice"));
+                return fatal(format!(
+                    "the attribute {} appears twice",
+                    attribute.qualified_name
+                ));
             }
-            attributes.push(Attribute {
-                qualified_name: name,
-                namespace: uri,
-                local_name: attribute_local,
-                value,
-            });
+            attribute.namespace.clear();
+            attribute.namespace.push_str(uri);
         }
-        let name = Name {
-            qualified_name: qname,
-            namespace: uri,
-            local_name: local,
-        };
-        match handler(Event::Start(&name, &attributes)) {
-            Flow::Continue => Ok((name, empty)),
-            Flow::Stop => Err(Stop::Handler),
-        }
+        Ok((count, empty, namespace))
     }
+}
+
+/// The prefix of an attribute's qualified name, if it has one.
+fn attribute_prefix(attribute: &Attribute) -> Option<&str> {
+    let prefix_length = attribute.qualified_name.len() - attribute.local_name.len();
+    (prefix_length > 0).then(|| &attribute.qualified_name[..prefix_length - 1])
 }
 
 enum Reference {
@@ -1368,7 +1636,7 @@ mod tests {
         let mut found = None;
         parse(bytes, &mut |event| {
             if let Event::Start(name, _) = event {
-                found = Some((name.namespace.clone(), name.local_name.clone()));
+                found = Some((name.namespace().to_owned(), name.local_name().to_owned()));
                 return Flow::Stop;
             }
             Flow::Continue
@@ -1426,14 +1694,33 @@ mod tests {
         let mut events = Vec::new();
         let result = parse(bytes, &mut |event| {
             events.push(match event {
-                Event::Start(name, _) => format!("<{}>", name.local_name),
-                Event::End(name) => format!("</{}>", name.local_name),
+                Event::Start(name, _) => format!("<{}>", name.local_name()),
+                Event::End(name) => format!("</{}>", name.local_name()),
                 Event::Text(text, _) => text.to_owned(),
                 Event::DocumentType => "<!DOCTYPE>".to_owned(),
             });
             Flow::Continue
         });
         (events, result)
+    }
+
+    #[test]
+    fn normalizes_line_ends_as_xerces_does() {
+        assert_eq!(
+            events(b"<a>1\r2\r\n3\n\r4\r</a>\r\n"),
+            (
+                vec![
+                    "<a>".to_owned(),
+                    "1\n2\n3\n\n4\n".to_owned(),
+                    "</a>".to_owned()
+                ],
+                Ok(())
+            )
+        );
+        assert_eq!(
+            events(b"<a b='\r\n\rc'>\xE2\x82\xAC</a>").0,
+            ["<a>", "\u{20AC}", "</a>"]
+        );
     }
 
     /// What the JDK's SAX parser reports and throws for Latin-1 bytes read as UTF-8.
