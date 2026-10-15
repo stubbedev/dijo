@@ -161,11 +161,17 @@ impl<'h> Xhtml<'h> {
     }
 
     pub(crate) fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.end_element_in(XHTML_NAMESPACE, name)
+    }
+
+    /// Ends `name` as a parser that names it in `namespace` does: only an element ended in the
+    /// XHTML namespace is followed by a line break.
+    pub(crate) fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
         if AUTO.contains(&name) {
             return Ok(());
         }
         self.handler.end_element(name)?;
-        if ENDLINE.contains(&name) {
+        if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
             self.newline()?;
         }
         Ok(())

@@ -6,6 +6,7 @@
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
+use crate::config::ParserConfigs;
 use crate::formats::handlers::is_java_whitespace;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -26,7 +27,12 @@ impl Parser for FictionBookParser {
         &["application/x-fictionbook+xml"]
     }
 
-    fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn parse(
+        &self,
+        input: &[u8],
+        _configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         let blocks = read_book(input, xhtml.metadata_mut())?;
         for block in blocks {
             xhtml.element(&block.element, &block.text)?;

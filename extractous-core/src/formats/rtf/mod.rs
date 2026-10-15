@@ -8,6 +8,7 @@ mod embedded;
 mod extractor;
 mod input;
 
+use crate::config::ParserConfigs;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
@@ -55,7 +56,12 @@ impl Parser for RtfParser {
     }
 
     /// Parses as `RTFParser.parse`, which ends the document even when the parse fails.
-    fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn parse(
+        &self,
+        input: &[u8],
+        _configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
         let failure = match extractor::extract(input, xhtml) {
             Ok(()) => return Ok(()),
@@ -102,12 +108,12 @@ impl ContentHandler for Discard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::parity::{assert_fails_as_tika_does, assert_same_as_tika};
+    use crate::formats::parity::{
+        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
+    };
     use std::path::{Path, PathBuf};
 
     const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.rtf.RTFParser";
-    const CONFORMANCE_HINT: &str =
-        "set CONFORMANCE_CORPUS as conformance/prepare.sh prints it, to Tika's tika-parsers";
     /// The conformance documents with pictures or embedded objects Tika parses.
     const DEFERRED: [&str; 4] = [
         "testBinControlWord.rtf",
@@ -226,34 +232,6 @@ mod tests {
         }
     }
 
-    /// The `.rtf` files among the test documents of Tika's parsers.
-    fn conformance_documents() -> Vec<PathBuf> {
-        let corpus = std::env::var_os("CONFORMANCE_CORPUS").expect(CONFORMANCE_HINT);
-        let mut documents = Vec::new();
-        let mut directories = vec![PathBuf::from(corpus)];
-        while let Some(directory) = directories.pop() {
-            for entry in std::fs::read_dir(&directory).expect(CONFORMANCE_HINT) {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    directories.push(path);
-                } else if path.extension().is_some_and(|extension| extension == "rtf")
-                    && path
-                        .components()
-                        .any(|part| part.as_os_str() == "test-documents")
-                {
-                    documents.push(path);
-                }
-            }
-        }
-        documents.sort();
-        assert!(!documents.is_empty(), "{CONFORMANCE_HINT}");
-        documents
-    }
-
-    fn is_deferred(path: &Path) -> bool {
-        DEFERRED.contains(&path.file_name().unwrap().to_str().unwrap())
-    }
-
     fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {
         paths.iter().map(PathBuf::as_path).collect()
     }
@@ -275,7 +253,7 @@ mod tests {
 
     #[test]
     fn fails_where_tikas_path_fails() {
-        assert_fails_as_tika_does(&SnippetFiles::new("failing", FAILING_SNIPPETS).paths());
+        assert_fails_as_tika(&SnippetFiles::new("failing", FAILING_SNIPPETS).paths());
     }
 
     #[test]
@@ -288,26 +266,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the conformance corpus in CONFORMANCE_CORPUS"]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
-        let documents: Vec<PathBuf> = conformance_documents()
-            .into_iter()
-            .filter(|path| !is_deferred(path))
+        let (parsed, deferred) = documents(&RtfParser, &[&conformance_corpus()]);
+        let mut deferred: Vec<&str> = deferred
+            .iter()
+            .map(|path| path.file_name().unwrap().to_str().unwrap())
             .collect();
-        assert_same_as_tika(&as_paths(&documents), TIKA_PARSER);
-    }
-
-    #[test]
-    #[ignore = "needs the conformance corpus in CONFORMANCE_CORPUS"]
-    fn defers_the_conformance_documents_with_pictures_and_objects() {
-        for path in conformance_documents() {
-            let input = std::fs::read(&path).unwrap();
-            assert_eq!(
-                RtfParser.defers(&input).is_some(),
-                is_deferred(&path),
-                "{}",
-                path.display()
-            );
-        }
+        deferred.sort_unstable();
+        let mut expected = DEFERRED;
+        expected.sort_unstable();
+        assert_eq!(deferred, expected);
+        assert!(parsed.len() >= 39, "{} documents", parsed.len());
+        assert_same_as_tika(&as_paths(&parsed), TIKA_PARSER);
     }
 }

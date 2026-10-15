@@ -67,6 +67,7 @@ mod sniffer;
 
 use sniffer::Delimiter;
 
+use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::media_type::MediaType;
 use crate::formats::xhtml::Xhtml;
@@ -93,7 +94,12 @@ impl Parser for TextAndCsvParser {
         AutoDetectReader::defers(input)
     }
 
-    fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn parse(
+        &self,
+        input: &[u8],
+        _configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         let content_type = xhtml
             .metadata_mut()
             .get("Content-Type")
@@ -244,7 +250,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, documents};
+    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
     const TIKA_NAME: &str = "org.apache.tika.parser.csv.TextAndCSVParser";
 
@@ -253,9 +259,9 @@ mod tests {
         let (parsed, deferred) = documents(
             &TextAndCsvParser,
             &[
-                "../test_files/documents",
-                "../quality/corpus",
-                "../quality/truth",
+                Path::new("../test_files/documents"),
+                Path::new("../quality/corpus"),
+                Path::new("../quality/truth"),
             ],
         );
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
@@ -265,12 +271,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs Tika's test documents: conformance/prepare.sh target/conformance"]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-        let (parsed, deferred) = documents(
-            &TextAndCsvParser,
-            &["../target/conformance/tika-4.1.0/tika-parsers"],
-        );
+        let (parsed, deferred) = documents(&TextAndCsvParser, &[&conformance_corpus()]);
         assert!(parsed.len() >= 15, "{} documents", parsed.len());
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();

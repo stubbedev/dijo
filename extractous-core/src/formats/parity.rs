@@ -1,8 +1,8 @@
 //! Compares a native parser with Tika's path, which it replaces, on the same documents: the
 //! streamed text and XHTML, their final metadata, and the text and XHTML of a string extraction
 //! cut by a small length limit. The only difference allowed is the parser's name in
-//! `tk:parsed-by`, which the native output is compared under Tika's. On documents Tika's path
-//! fails on, the native parser must fail too.
+//! `tk:parsed-by`, which the native output is compared under Tika's. Documents Tika's path fails
+//! on are compared on their outcome alone: the native parser must fail too.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,11 +16,14 @@ use crate::{CharSet, Metadata};
 const SMALL_LIMIT: usize = 100;
 
 /// One extraction's result, as the two paths are compared on it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Extracted {
     text: Vec<u8>,
     metadata: Vec<(String, Vec<String>)>,
 }
+
+/// An extraction's result, or why it failed.
+type Outcome = Result<Extracted, String>;
 
 fn sorted(metadata: Metadata) -> Vec<(String, Vec<String>)> {
     let mut sorted: Vec<_> = metadata.into_iter().collect();
@@ -28,7 +31,7 @@ fn sorted(metadata: Metadata) -> Vec<(String, Vec<String>)> {
     sorted
 }
 
-fn tika_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
+fn tika_stream(path: &str, configs: &ParserConfigs, output: Output, char_set: CharSet) -> Outcome {
     let options = tika::StreamOptions {
         char_set,
         as_xml: output == Output::Xml,
@@ -38,33 +41,35 @@ fn tika_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
     let (mut reader, _) = tika::parse_to_stream(
         isolate().unwrap(),
         Source::File(path),
-        &ParserConfigs::default(),
+        configs,
         None,
         &options,
     )
-    .unwrap_or_else(|e| panic!("Tika could not extract {path}: {e}"));
+    .map_err(|e| e.to_string())?;
     let mut text = Vec::new();
-    reader.read_to_end(&mut text).unwrap();
-    Extracted {
+    reader
+        .read_to_end(&mut text)
+        .map_err(|e| format!("reading failed: {e}"))?;
+    Ok(Extracted {
         text,
-        metadata: sorted(reader.metadata().unwrap()),
-    }
+        metadata: sorted(reader.metadata().map_err(|e| e.to_string())?),
+    })
 }
 
-fn tika_string(path: &str, output: Output) -> Extracted {
+fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     let (text, metadata) = tika::parse_to_string(
         isolate().unwrap(),
         Source::File(path),
         i32::try_from(SMALL_LIMIT).unwrap(),
-        &ParserConfigs::default(),
+        configs,
         None,
         output == Output::Xml,
     )
-    .unwrap_or_else(|e| panic!("Tika could not extract {path}: {e}"));
-    Extracted {
+    .map_err(|e| e.to_string())?;
+    Ok(Extracted {
         text: text.into_bytes(),
         metadata: sorted(metadata),
-    }
+    })
 }
 
 fn routed(path: &str) -> Routed<'_> {
@@ -73,7 +78,12 @@ fn routed(path: &str) -> Routed<'_> {
         .unwrap_or_else(|| panic!("{path} has no native parser, or its parser defers it to Tika"))
 }
 
-fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
+fn native_stream(
+    path: &str,
+    configs: &ParserConfigs,
+    output: Output,
+    char_set: CharSet,
+) -> Outcome {
     let routed = routed(path);
     let options = StreamOptions {
         char_set,
@@ -84,31 +94,35 @@ fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
         routed.parser,
         routed.input.into_owned(),
         routed.detected,
+        configs.clone(),
         options,
     )
-    .unwrap();
+    .map_err(|e| e.to_string())?;
     let mut text = Vec::new();
-    stream.read_to_end(&mut text).unwrap();
-    Extracted {
+    stream
+        .read_to_end(&mut text)
+        .map_err(|e| format!("reading failed: {e}"))?;
+    Ok(Extracted {
         text,
-        metadata: sorted(stream.metadata().unwrap()),
-    }
+        metadata: sorted(stream.metadata().map_err(|e| e.to_string())?),
+    })
 }
 
-fn native_string(path: &str, output: Output) -> Extracted {
+fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     let routed = routed(path);
     let (text, metadata) = formats::parse_to_string(
         routed.parser,
         &routed.input,
         &routed.detected,
+        configs,
         SMALL_LIMIT,
         output,
     )
-    .unwrap();
-    Extracted {
+    .map_err(|e| e.to_string())?;
+    Ok(Extracted {
         text: text.into_bytes(),
         metadata: sorted(metadata),
-    }
+    })
 }
 
 /// The native result as Tika's path would name its parser.
@@ -151,11 +165,93 @@ fn replace_bytes(haystack: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     replaced
 }
 
+fn describe(outcome: &Outcome) -> String {
+    match outcome {
+        Ok(extracted) => format!(
+            "{}\n         {:?}",
+            String::from_utf8_lossy(&extracted.text),
+            extracted.metadata
+        ),
+        Err(error) => format!("failed: {error}"),
+    }
+}
+
+/// What Tika's path and the native parser are expected to do with a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expected<'a> {
+    /// Both extract it identically, Tika's path naming its parser with this class name.
+    Same(&'a str),
+    /// Both fail on it.
+    Failure,
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts exactly what Tika's path does under Tika's default settings.
+pub(crate) fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
+    assert_same_as_tika_with(documents, tika_name, &ParserConfigs::default());
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts exactly what Tika's path does under the settings `configs`.
+pub(crate) fn assert_same_as_tika_with(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+) {
+    compare(documents, configs, Expected::Same(tika_name));
+}
+
+/// Asserts that Tika's path fails on each document, and that the native parser fails too.
+pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
+    compare(documents, &ParserConfigs::default(), Expected::Failure);
+}
+
+fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
+    let mut differences = Vec::new();
+    for document in documents {
+        let path = document.to_str().unwrap();
+        let native_name = routed(path).parser.name();
+        for output in [Output::Text, Output::Xml] {
+            let mut comparisons = vec![(
+                "string",
+                CharSet::UTF_8,
+                tika_string(path, configs, output),
+                native_string(path, configs, output),
+            )];
+            for char_set in [CharSet::UTF_8, CharSet::US_ASCII, CharSet::UTF_16BE] {
+                comparisons.push((
+                    "stream",
+                    char_set,
+                    tika_stream(path, configs, output, char_set),
+                    native_stream(path, configs, output, char_set),
+                ));
+            }
+            for (entry, char_set, tika, native) in comparisons {
+                let as_expected = match (expected, &tika, &native) {
+                    (Expected::Same(tika_name), Ok(tika), Ok(native)) => {
+                        *tika == as_tika(native.clone(), native_name, tika_name, char_set)
+                    }
+                    (Expected::Failure, Err(_), Err(_)) => true,
+                    _ => false,
+                };
+                if !as_expected {
+                    differences.push(format!(
+                        "{path} ({entry}, {output:?}, {char_set}), expected {expected:?}:\n  tika   {}\n  native {}",
+                        describe(&tika),
+                        describe(&native),
+                    ));
+                }
+            }
+        }
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
 /// The non-empty files under `roots` that Tika's detection gives a type `parser` reads, split into
 /// those it parses and those it defers to Tika.
-pub(crate) fn documents(parser: &dyn Parser, roots: &[&str]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut pending: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
+    let mut pending: Vec<PathBuf> = roots.iter().map(|root| root.to_path_buf()).collect();
     while let Some(path) = pending.pop() {
         if path.is_dir() {
             let entries = std::fs::read_dir(&path)
@@ -187,105 +283,10 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&str]) -> (Vec<PathBuf>, V
     (parsed, deferred)
 }
 
-/// Asserts that the native parser of each document, which Tika's path parses with
-/// `tika_name`, extracts exactly what Tika's path does.
-pub(crate) fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
-    let mut differences = Vec::new();
-    for document in documents {
-        let path = document.to_str().unwrap();
-        let native_name = routed(path).parser.name();
-        for output in [Output::Text, Output::Xml] {
-            let mut comparisons = vec![(
-                "string",
-                CharSet::UTF_8,
-                tika_string(path, output),
-                native_string(path, output),
-            )];
-            for char_set in [CharSet::UTF_8, CharSet::US_ASCII, CharSet::UTF_16BE] {
-                comparisons.push((
-                    "stream",
-                    char_set,
-                    tika_stream(path, output, char_set),
-                    native_stream(path, output, char_set),
-                ));
-            }
-            for (entry, char_set, tika, native) in comparisons {
-                let native = as_tika(native, native_name, tika_name, char_set);
-                if native != tika {
-                    differences.push(format!(
-                        "{path} ({entry}, {output:?}, {char_set}):\n  tika   {}\n         {:?}\n  native {}\n         {:?}",
-                        String::from_utf8_lossy(&tika.text),
-                        tika.metadata,
-                        String::from_utf8_lossy(&native.text),
-                        native.metadata,
-                    ));
-                }
-            }
-        }
-    }
-    assert!(differences.is_empty(), "{}", differences.join("\n"));
-}
-
-/// Asserts that Tika's path fails on each document, and that its native parser fails too: in a
-/// string extraction and in reading a stream to its end.
-pub(crate) fn assert_fails_as_tika_does(documents: &[&Path]) {
-    let mut differences = Vec::new();
-    for document in documents {
-        let path = document.to_str().unwrap();
-        let tika_string = tika::parse_to_string(
-            isolate().unwrap(),
-            Source::File(path),
-            i32::MAX,
-            &ParserConfigs::default(),
-            None,
-            false,
-        )
-        .is_err();
-        let options = tika::StreamOptions {
-            char_set: CharSet::UTF_8,
-            as_xml: false,
-            timeout: None,
-            embedded: None,
-        };
-        let tika_stream = tika::parse_to_stream(
-            isolate().unwrap(),
-            Source::File(path),
-            &ParserConfigs::default(),
-            None,
-            &options,
-        )
-        .map_or(true, |(mut reader, _)| {
-            reader.read_to_end(&mut Vec::new()).is_err() || reader.metadata().is_err()
-        });
-        let routed = routed(path);
-        let native_string = formats::parse_to_string(
-            routed.parser,
-            &routed.input,
-            &routed.detected,
-            usize::MAX,
-            Output::Text,
-        )
-        .is_err();
-        let native_options = StreamOptions {
-            char_set: CharSet::UTF_8,
-            output: Output::Text,
-            timeout: None,
-        };
-        let native_stream = formats::parse_to_stream(
-            routed.parser,
-            routed.input.into_owned(),
-            routed.detected,
-            native_options,
-        )
-        .map_or(true, |(mut stream, _)| {
-            stream.read_to_end(&mut Vec::new()).is_err() || stream.metadata().is_err()
-        });
-        let outcomes = [tika_string, tika_stream, native_string, native_stream];
-        if outcomes != [true; 4] {
-            differences.push(format!(
-                "{path}: fails in Tika's string, Tika's stream, the native string, the native stream: {outcomes:?}"
-            ));
-        }
-    }
-    assert!(differences.is_empty(), "{}", differences.join("\n"));
+/// Tika's own test documents, which `conformance/prepare.sh` checks out and names in
+/// `CONFORMANCE_CORPUS`, for the ignored tests that compare a parser on all of them.
+pub(crate) fn conformance_corpus() -> PathBuf {
+    PathBuf::from(std::env::var_os("CONFORMANCE_CORPUS").expect(
+        "CONFORMANCE_CORPUS names Tika's test documents: eval \"$(conformance/prepare.sh target/conformance)\"",
+    ))
 }

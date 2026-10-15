@@ -9,6 +9,7 @@ use std::io::Read;
 use flate2::read::GzDecoder;
 
 use super::TextAndCsvParser;
+use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
 use crate::formats::{Failure, Parser};
@@ -164,7 +165,7 @@ fn parses_as_tika_does() {
         let mut given = TikaMetadata::new();
         given.set("Content-Type", case.content_type.clone());
         let (metadata, result) = Xhtml::write(&mut recorder, given, |xhtml| {
-            TextAndCsvParser.parse(&case.input, xhtml)
+            TextAndCsvParser.parse(&case.input, &ParserConfigs::default(), xhtml)
         });
         result.unwrap_or_else(|e: Failure| panic!("{}: {e:?}", case.label));
         let metadata: BTreeMap<String, String> = metadata

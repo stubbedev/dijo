@@ -9,6 +9,7 @@ pub(crate) mod handlers;
 mod java_time;
 mod media_type;
 pub(crate) mod metadata;
+mod odf;
 #[cfg(test)]
 pub(crate) mod parity;
 mod rtf;
@@ -24,6 +25,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::config::ParserConfigs;
 use crate::errors::{Error, ExtractResult};
 use crate::isolate::isolate;
 use crate::tika::{self, Source};
@@ -68,12 +70,19 @@ pub(crate) trait Parser: Sync {
     }
 
     /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
-    /// it replaces does. The document is started before and ended after it.
-    fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure>;
+    /// it replaces does, under the parser settings `configs` the extraction was given. The
+    /// document is started before and ended after it.
+    fn parse(
+        &self,
+        input: &[u8],
+        configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure>;
 }
 
 static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
+    &odf::OpenDocumentParser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
@@ -181,10 +190,11 @@ fn run(
     parser: &dyn Parser,
     input: &[u8],
     detected: &Detected,
+    configs: &ParserConfigs,
     handler: &mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
     let (mut metadata, result) = Xhtml::write(handler, detected.metadata_for(parser), |xhtml| {
-        parser.parse(input, xhtml)
+        parser.parse(input, configs, xhtml)
     });
     finish_metadata(&mut metadata);
     (metadata, result)
@@ -282,12 +292,14 @@ pub(crate) fn parse_to_string(
     parser: &dyn Parser,
     input: &[u8],
     detected: &Detected,
+    configs: &ParserConfigs,
     max_length: usize,
     output: Output,
 ) -> ExtractResult<(String, Metadata)> {
     let mut out = StringOut::default();
-    let (metadata, result) = Chain::String { output, max_length }
-        .write_to(&mut out, |handler| run(parser, input, detected, handler));
+    let (metadata, result) = Chain::String { output, max_length }.write_to(&mut out, |handler| {
+        run(parser, input, detected, configs, handler)
+    });
     match result {
         Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => Ok((out.0, metadata.to_map())),
         Err(failure) => Err(failure_error(parser, failure)),
@@ -378,6 +390,7 @@ pub(crate) fn parse_to_stream(
     parser: &'static dyn Parser,
     input: Vec<u8>,
     detected: Detected,
+    configs: ParserConfigs,
     options: StreamOptions,
 ) -> ExtractResult<(NativeStream, Metadata)> {
     let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
@@ -395,8 +408,9 @@ pub(crate) fn parse_to_stream(
                 output: options.output,
                 encoding: char_set_name(options.char_set),
             };
-            let (metadata, result) =
-                chain.write_to(&mut out, |handler| run(parser, &input, &detected, handler));
+            let (metadata, result) = chain.write_to(&mut out, |handler| {
+                run(parser, &input, &detected, &configs, handler)
+            });
             let outcome = match result {
                 Ok(()) => Ok(metadata.to_map()),
                 Err(Failure::Stopped(Stop::ReaderGone)) => return,

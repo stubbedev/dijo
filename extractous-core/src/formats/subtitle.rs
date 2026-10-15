@@ -5,6 +5,7 @@
 //! Tika's `CharsetUtils.clean` leaves as it is for every name the JDK gives), and leaves
 //! `Content-Type` as detected.
 
+use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
 use crate::formats::handlers::{is_blank, is_java_whitespace};
 use crate::formats::media_type::MediaType;
@@ -29,7 +30,12 @@ impl Parser for SubtitleParser {
         AutoDetectReader::defers(input)
     }
 
-    fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn parse(
+        &self,
+        input: &[u8],
+        _configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         let content_type = xhtml
             .metadata_mut()
             .get("Content-Type")
@@ -209,7 +215,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, documents};
+    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
     const TIKA_NAME: &str = "ai.yobix.SubtitleParser";
 
@@ -217,7 +223,10 @@ mod tests {
     fn extracts_what_tikas_path_extracts() {
         let (parsed, deferred) = documents(
             &SubtitleParser,
-            &["../test_files/documents", "../quality/corpus"],
+            &[
+                Path::new("../test_files/documents"),
+                Path::new("../quality/corpus"),
+            ],
         );
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         let names: Vec<_> = parsed.iter().filter_map(|path| path.file_name()).collect();
@@ -227,12 +236,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs Tika's test documents: conformance/prepare.sh target/conformance"]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-        let (parsed, deferred) = documents(
-            &SubtitleParser,
-            &["../target/conformance/tika-4.1.0/tika-parsers"],
-        );
+        let (parsed, deferred) = documents(&SubtitleParser, &[&conformance_corpus()]);
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         assert_eq!(parsed.len(), 5, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
