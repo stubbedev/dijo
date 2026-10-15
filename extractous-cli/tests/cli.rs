@@ -1590,6 +1590,7 @@ fn each_ocred_image_reports_how_it_was_read() {
         "../quality/corpus/report-scan.tif",
         "../quality/corpus/prose-photo-perspective.jpg",
         "../quality/corpus/prose-scan-inverted.png",
+        "../quality/corpus/danish-scan-fax.png",
     ]);
     for object in &objects {
         assert_matches_schema(object);
@@ -1607,6 +1608,7 @@ fn each_ocred_image_reports_how_it_was_read() {
     assert_eq!(upside_down["prepared"], true, "{upside_down}");
     assert_eq!(upside_down["flattened"], false, "{upside_down}");
     assert_eq!(upside_down["inverted"], false, "{upside_down}");
+    assert_eq!(upside_down["despeckled"], false, "{upside_down}");
 
     let arabic = &reports(1)[0];
     assert_eq!(arabic["script"], "Arabic", "{arabic}");
@@ -1631,6 +1633,17 @@ fn each_ocred_image_reports_how_it_was_read() {
             .starts_with("The Lighthouse Keeper's Ledger"),
         "{}",
         objects[4]
+    );
+
+    let fax = &reports(5)[0];
+    assert_eq!(fax["despeckled"], true, "{fax}");
+    assert!(
+        objects[5]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Fyrmesterens logbog"),
+        "{}",
+        objects[5]
     );
 }
 

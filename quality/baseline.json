@@ -300,6 +300,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "danish-scan-fax.png": {
+    "character_error_rate": 0.01166489925768823,
+    "token_error_rate": 0.06535947712418301,
+    "recall": 0.9411764705882353,
+    "spurious": 0.06493506493506493,
+    "reading_order": 0.75
+  },
   "danish-scan.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -991,6 +998,13 @@
     "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "polish-scan-fax.png": {
+    "character_error_rate": 0.0053475935828877,
+    "token_error_rate": 0.0196078431372549,
+    "recall": 0.9803921568627451,
+    "spurious": 0.0196078431372549,
     "reading_order": 1.0
   },
   "polish-scan.png": {

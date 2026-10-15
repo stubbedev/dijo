@@ -87,10 +87,12 @@
 | czech-cp1250.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | turkish-cp1254.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | danish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| danish-scan-fax.png | ocr | 0.012 | 0.065 | 0.941 | 0.065 | 0.750 |
 | swedish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | norwegian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | german-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | polish-scan.png | ocr | 0.003 | 0.020 | 0.980 | 0.020 | 1.000 |
+| polish-scan-fax.png | ocr | 0.005 | 0.020 | 0.980 | 0.020 | 1.000 |
 | czech-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | turkish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | greek-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

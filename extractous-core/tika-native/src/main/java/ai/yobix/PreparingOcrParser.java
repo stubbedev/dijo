@@ -451,14 +451,15 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * @param decoded         whether Java decoded the image to prepare it
      * @param flattened       whether a page photographed at an angle was made flat
      * @param inverted        whether light text on a dark ground was inverted
+     * @param despeckled      whether a speckled image was cleared of its specks
      * @param quarterTurns    the clockwise quarter turns detection found and applied
      * @param skewDegrees     the skew corrected
      * @param scale           the resize applied, above 1 to enlarge small text
      */
     private record Prepared(OcrImage image, String language, boolean unevenLighting, String script,
                             String exifOrientation, boolean decoded, boolean flattened,
-                            boolean inverted, int quarterTurns, double skewDegrees,
-                            double scale) {
+                            boolean inverted, boolean despeckled, int quarterTurns,
+                            double skewDegrees, double scale) {
 
         String report(Integer page, TesseractOCRConfig configured) {
             final String model = language != null ? language : configured.getLanguage();
@@ -466,15 +467,15 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
                     .page(page)
                     .script(script)
                     .exifOrientation(exifOrientation)
-                    .prepared(decoded, flattened, inverted, quarterTurns, skewDegrees, scale,
-                            unevenLighting)
+                    .prepared(decoded, flattened, inverted, despeckled, quarterTurns,
+                            skewDegrees, scale, unevenLighting)
                     .json();
         }
 
         /** This preparation, to read in another script and language. */
         Prepared readIn(String otherScript, String otherLanguage) {
             return new Prepared(image, otherLanguage, unevenLighting, otherScript, exifOrientation,
-                    decoded, flattened, inverted, quarterTurns, skewDegrees, scale);
+                    decoded, flattened, inverted, despeckled, quarterTurns, skewDegrees, scale);
         }
 
         /** The language to read the image in: its own with the automatic language. */
@@ -535,14 +536,18 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     private static Prepared finish(BufferedImage image, Oriented oriented, String script,
                                    String language, int quarterTurns) {
         if (oriented.image() == null) {
-            return new Prepared(null, language, false, script, null, false, false, false, 0, 0,
-                    1);
+            return new Prepared(null, language, false, script, null, false, false, false, false, 0,
+                    0, 1);
         }
         BufferedImage upright = quarterTurns == 0
                 ? oriented.image() : OcrImages.turnClockwise(oriented.image(), quarterTurns);
         final boolean inverted = OcrImages.inverted(upright);
         if (inverted) {
             upright = OcrImages.invert(upright);
+        }
+        final boolean despeckled = OcrImages.speckled(upright);
+        if (despeckled) {
+            upright = OcrImages.despeckle(upright);
         }
         final double skew = OcrImages.skewDegrees(upright);
         if (skew != 0) {
@@ -554,7 +559,7 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         }
         return new Prepared(upright == image ? null : new OcrImage.Pixels(upright), language,
                 OcrImages.unevenLighting(upright), script, oriented.exifOrientation(), true,
-                oriented.flattened(), inverted, quarterTurns, skew, scale);
+                oriented.flattened(), inverted, despeckled, quarterTurns, skew, scale);
     }
 
     /**

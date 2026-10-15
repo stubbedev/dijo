@@ -161,7 +161,7 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["language", "prepared", "flattened", "inverted", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
+                "required": ["language", "prepared", "flattened", "inverted", "despeckled", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
                 "properties": {
                   "page": {
                     "type": "integer",
@@ -193,6 +193,10 @@
                   "inverted": {
                     "type": "boolean",
                     "description": "Whether light text on a dark ground was inverted to dark text on a light one."
+                  },
+                  "despeckled": {
+                    "type": "boolean",
+                    "description": "Whether a speckled image, such as a fax, was cleared of isolated specks with a 3x3 median filter."
                   },
                   "turned_degrees": {
                     "enum": [0, 90, 180, 270],

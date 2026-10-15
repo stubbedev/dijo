@@ -86,8 +86,8 @@ in Latin script, Arabic words split into one-letter fragments, or mostly unmappe
 custom font encodings). A page that is only
 doubtful is OCRed as well and keeps whichever text reads better. The JSON metadata lists each replaced page and the
 reason under `rejected_text_layers`. Clean pages are never OCRed. Every image or page OCR reads gets a report under
-`ocr` in the JSON metadata: the model it was read with, the script detected, and the EXIF orientation, inversion, turn,
-deskewing, enlargement and thresholding applied to it first.
+`ocr` in the JSON metadata: the model it was read with, the script detected, and the EXIF orientation, inversion,
+despeckling, turn, deskewing, enlargement and thresholding applied to it first.
 
 ## Usage
 
@@ -338,7 +338,10 @@ normalisation step, so `--no-normalize reading-order`, `--raw` and XHTML output 
 Before OCR, images and rendered PDF pages are turned upright: by their EXIF orientation, and by the skew of their text
 lines, estimated from projection profiles. Light text on a dark ground (more than 85% of the image darker than its Otsu
 threshold) is inverted first, so tesseract reads each line once rather than again inverted, and the page's text lines
-can be measured. They are then resized so their text lines are about 32 pixels high:
+can be measured. A speckled image, as a fax is (more than 2% of its dark pixels without a dark neighbour, where clean
+scans down to 72 dpi have under 0.3%), is cleared of its specks with a 3×3 median filter: tesseract's Latin model
+reads specks beside letters as diacritics, and a speckled Danish or Polish fax goes from 12 to 14% of its characters
+wrong to under 2%. They are then resized so their text lines are about 32 pixels high:
 enlarged when they are under 20, and, for the alphabets of Europe, reduced when they are over 40, which tesseract
 reads as accurately and a third faster (a 300 dpi scan of 11 pt text is reduced to about 70%). A page photographed at an angle is made flat first: found as the largest
 bright region with sharp edges against a darker background, and mapped from the quadrilateral its corners span back

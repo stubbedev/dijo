@@ -86,10 +86,12 @@ polish-iso-8859-2.txt	polish	legacy-encoding
 czech-cp1250.txt	czech	legacy-encoding		
 turkish-cp1254.txt	turkish	legacy-encoding		
 danish-scan.png	danish	ocr		
+danish-scan-fax.png	danish	ocr		
 swedish-scan.png	swedish	ocr		
 norwegian-scan.png	norwegian	ocr		
 german-scan.png	german	ocr		
 polish-scan.png	polish	ocr		
+polish-scan-fax.png	polish	ocr		
 czech-scan.png	czech	ocr		
 turkish-scan.png	turkish	ocr		
 greek-scan.png	greek	ocr		

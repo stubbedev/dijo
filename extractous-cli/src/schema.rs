@@ -290,6 +290,7 @@ pub struct OcrReport {
     pub prepared: bool,
     pub flattened: bool,
     pub inverted: bool,
+    pub despeckled: bool,
     pub turned_degrees: u16,
     pub deskewed_degrees: f64,
     pub scale: f64,

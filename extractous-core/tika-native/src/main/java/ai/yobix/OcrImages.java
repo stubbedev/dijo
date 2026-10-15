@@ -35,6 +35,7 @@ final class OcrImages {
     private static final double BACKGROUND_PERCENTILE = 0.9;
     private static final int UNEVEN_BACKGROUND_LEVELS = 48;
     private static final int MIN_INVERTED_DARK_PERCENT = 85;
+    private static final int MIN_SPECKLE_PERCENT = 2;
 
     private OcrImages() {
     }
@@ -410,6 +411,98 @@ final class OcrImages {
             inverted.getRaster().setDataElements(0, y, width, 1, row);
         }
         return inverted;
+    }
+
+    /**
+     * Whether the image is speckled, as a fax or a noisy scan is: whether more than
+     * {@value #MIN_SPECKLE_PERCENT}% of its pixels darker than its Otsu threshold have no dark
+     * neighbour. Clean scans down to 72 dpi have under 0.3% such pixels, and a fax-like scan
+     * 30% or more, whose specks tesseract's Latin model reads as diacritics.
+     */
+    static boolean speckled(BufferedImage image) {
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        if (width < 3 || height < 3) {
+            return false;
+        }
+        final BufferedImage gray = gray(image, width, height);
+        final long[] histogram = new long[256];
+        final byte[] row = new byte[width];
+        for (int y = 0; y < height; y++) {
+            gray.getRaster().getDataElements(0, y, width, 1, row);
+            for (final byte pixel : row) {
+                histogram[pixel & 0xFF]++;
+            }
+        }
+        final int threshold = otsuThreshold(histogram);
+        byte[] above = new byte[width];
+        byte[] middle = new byte[width];
+        byte[] below = new byte[width];
+        gray.getRaster().getDataElements(0, 0, width, 1, middle);
+        gray.getRaster().getDataElements(0, 1, width, 1, below);
+        long dark = 0;
+        long isolated = 0;
+        for (int y = 1; y < height - 1; y++) {
+            final byte[] oldest = above;
+            above = middle;
+            middle = below;
+            below = oldest;
+            gray.getRaster().getDataElements(0, y + 1, width, 1, below);
+            for (int x = 1; x < width - 1; x++) {
+                if ((middle[x] & 0xFF) >= threshold) {
+                    continue;
+                }
+                dark++;
+                if (lightAround(above, middle, below, x, threshold)) {
+                    isolated++;
+                }
+            }
+        }
+        return isolated * 100 > dark * MIN_SPECKLE_PERCENT;
+    }
+
+    private static boolean lightAround(byte[] above, byte[] middle, byte[] below, int x,
+                                       int threshold) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if ((above[x + dx] & 0xFF) < threshold || (below[x + dx] & 0xFF) < threshold) {
+                return false;
+            }
+        }
+        return (middle[x - 1] & 0xFF) >= threshold && (middle[x + 1] & 0xFF) >= threshold;
+    }
+
+    /**
+     * The image in grey with each pixel the median of its 3×3 neighbourhood, edges repeated,
+     * which removes isolated specks and keeps strokes two pixels wide or more.
+     */
+    static BufferedImage despeckle(BufferedImage image) {
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        final BufferedImage gray = gray(image, width, height);
+        final BufferedImage despeckled = new BufferedImage(width, height,
+                BufferedImage.TYPE_BYTE_GRAY);
+        final byte[][] rows = new byte[3][width];
+        final byte[] out = new byte[width];
+        final int[] window = new int[9];
+        for (int y = 0; y < height; y++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                final int source = Math.min(height - 1, Math.max(0, y + dy));
+                gray.getRaster().getDataElements(0, source, width, 1, rows[dy + 1]);
+            }
+            for (int x = 0; x < width; x++) {
+                int count = 0;
+                for (final byte[] neighbours : rows) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        window[count++] = neighbours[Math.min(width - 1, Math.max(0, x + dx))]
+                                & 0xFF;
+                    }
+                }
+                Arrays.sort(window);
+                out[x] = (byte) window[4];
+            }
+            despeckled.getRaster().setDataElements(0, y, width, 1, out);
+        }
+        return despeckled;
     }
 
     static BufferedImage gray(BufferedImage image, int width, int height) {
