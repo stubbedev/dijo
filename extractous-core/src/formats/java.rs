@@ -1,6 +1,6 @@
 //! What ports of Tika code need from Java itself to give Java's results: the iteration order of
-//! a `java.util.HashMap` with string keys, and `Integer.parseInt`, `Long.parseLong` and
-//! `String.trim`.
+//! a `java.util.HashMap` with string keys, `Integer.parseInt`, `Long.parseLong`,
+//! `Double.parseDouble`, `Math.round` and `String.trim`.
 
 use std::collections::HashMap;
 
@@ -300,6 +300,147 @@ pub(crate) fn trim(text: &str) -> &str {
     text.trim_matches(|character| character <= ' ')
 }
 
+/// The double `Double.parseDouble(text)` gives, or `None` where it throws.
+pub(crate) fn parse_double(text: &str) -> Option<f64> {
+    let text = trim(text);
+    let (negative, body) = match text.as_bytes().first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
+    };
+    let magnitude = match body {
+        "NaN" => f64::NAN,
+        "Infinity" => f64::INFINITY,
+        _ if body.starts_with("0x") || body.starts_with("0X") => parse_hex_double(&body[2..])?,
+        _ => parse_decimal(body)?,
+    };
+    Some(if negative { -magnitude } else { magnitude })
+}
+
+/// `Math.round(double)`: the nearest `long`, a tie towards positive infinity, NaN as 0 and the
+/// infinities and anything beyond saturated.
+pub(crate) fn round(value: f64) -> i64 {
+    let floor = value.floor();
+    let rounded = if value - floor >= 0.5 {
+        floor + 1.0
+    } else {
+        floor
+    };
+    rounded as i64
+}
+
+fn strip_suffix(text: &str) -> &str {
+    text.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(text)
+}
+
+fn parse_decimal(text: &str) -> Option<f64> {
+    let text = strip_suffix(text);
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    let integer = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    at += integer;
+    let mut fraction = 0;
+    if bytes.get(at) == Some(&b'.') {
+        at += 1;
+        fraction = bytes[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        at += fraction;
+    }
+    if integer + fraction == 0 {
+        return None;
+    }
+    if matches!(bytes.get(at), Some(b'e' | b'E')) {
+        at += 1;
+        if matches!(bytes.get(at), Some(b'+' | b'-')) {
+            at += 1;
+        }
+        let exponent = bytes[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if exponent == 0 {
+            return None;
+        }
+        at += exponent;
+    }
+    if at != bytes.len() {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// A hexadecimal significand `h.hhh` with its required `p` exponent, rounded to nearest even.
+fn parse_hex_double(text: &str) -> Option<f64> {
+    let text = strip_suffix(text);
+    let (significand, exponent) = text.split_once(['p', 'P'])?;
+    let exponent_digits = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+    if exponent_digits.is_empty() || !exponent_digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let exponent: i64 = exponent.parse().unwrap_or(if exponent.starts_with('-') {
+        i64::MIN / 4
+    } else {
+        i64::MAX / 4
+    });
+    let (whole, fraction) = significand.split_once('.').unwrap_or((significand, ""));
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    if !whole
+        .bytes()
+        .chain(fraction.bytes())
+        .all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let mut mantissa: u128 = 0;
+    let mut sticky = false;
+    let mut binary_exponent = exponent.saturating_sub(4 * fraction.len() as i64);
+    for digit in whole.chars().chain(fraction.chars()) {
+        let value = u128::from(digit.to_digit(16).unwrap_or(0));
+        if mantissa >> 120 == 0 {
+            mantissa = mantissa * 16 + value;
+        } else {
+            sticky |= value != 0;
+            binary_exponent = binary_exponent.saturating_add(4);
+        }
+    }
+    if mantissa == 0 {
+        return Some(0.0);
+    }
+    let bits = 128 - i64::from(mantissa.leading_zeros());
+    let mut unbiased = binary_exponent + bits - 1;
+    let precision: i64 = if unbiased < -1022 {
+        (53 - (-1022 - unbiased)).max(0)
+    } else {
+        53
+    };
+    let shift = bits - precision;
+    let mut rounded = if shift > 0 {
+        let shift = u32::try_from(shift).unwrap_or(127).min(127);
+        let kept = mantissa >> shift;
+        let remainder = mantissa & ((1u128 << shift) - 1);
+        let half = 1u128 << (shift - 1);
+        let above_half = remainder > half || (remainder == half && (sticky || kept & 1 == 1));
+        kept + u128::from(above_half)
+    } else {
+        mantissa << u32::try_from(-shift).unwrap_or(0)
+    };
+    let mut scale = binary_exponent + shift;
+    if rounded >> precision.max(0) != 0 && precision > 0 {
+        rounded >>= 1;
+        scale += 1;
+        unbiased += 1;
+    }
+    if unbiased > 1023 {
+        return Some(f64::INFINITY);
+    }
+    let value = rounded as f64;
+    Some(value * 2f64.powi(i32::try_from(scale.clamp(-1100, 1100)).unwrap_or(0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +514,30 @@ mod tests {
     #[test]
     fn trims_as_java_does() {
         assert_eq!(trim("\u{1}\t a \u{a0}\n"), "a \u{a0}");
+    }
+
+    #[test]
+    fn parses_what_java_parses() {
+        assert_eq!(parse_double("1.5"), Some(1.5));
+        assert_eq!(parse_double(" -2e3 "), Some(-2000.0));
+        assert_eq!(parse_double("1."), Some(1.0));
+        assert_eq!(parse_double(".5d"), Some(0.5));
+        assert_eq!(parse_double("+7f"), Some(7.0));
+        assert!(parse_double("NaN").unwrap().is_nan());
+        assert_eq!(parse_double("-Infinity"), Some(f64::NEG_INFINITY));
+        assert_eq!(parse_double("0x1p3"), Some(8.0));
+        assert_eq!(parse_double("0x1.8p1"), Some(3.0));
+        for invalid in ["", "e5", "1e", "1,5", "inf", "nan", "0x1", "1.2.3", "1 2"] {
+            assert_eq!(parse_double(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn rounds_as_java_does() {
+        assert_eq!(round(2.5), 3);
+        assert_eq!(round(-2.5), -2);
+        assert_eq!(round(0.49999999999999994), 0);
+        assert_eq!(round(f64::NAN), 0);
+        assert_eq!(round(1e300), i64::MAX);
     }
 }

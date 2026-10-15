@@ -13,6 +13,10 @@ filter = 'binary(large)'
 slow-timeout = { period = "60s", terminate-after = 30 }
 
 [[profile.default.overrides]]
+filter = 'test(/many_shared_strings/)'
+slow-timeout = { period = "60s", terminate-after = 30 }
+
+[[profile.default.overrides]]
 filter = 'binary(quality)'
 test-group = 'ocr'
 

@@ -467,6 +467,44 @@ impl<'a> Document<'a> {
     }
 }
 
+/// What `handleGeneralTextContainingPart` writes for the diagrams or charts of a part of the
+/// other formats: the `parts`, each a name and its XML, read by one of Tika's text handlers at
+/// its defaults, `new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
+/// new HashMap<>())`, without styles, lists, notes or metadata. The div of class `class` Tika
+/// opens around them goes to that handler too, which writes nothing of it.
+pub(crate) fn write_general_text_parts(
+    parts: impl IntoIterator<Item = (String, Vec<u8>)>,
+    class: &str,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
+    let mut lists = ListManager::new(None);
+    let inline = InlineParts::default();
+    let body = Body::new(
+        xhtml,
+        Context {
+            styles: None,
+            lists: &mut lists,
+            inline: &inline,
+            records_metadata: false,
+            include_deleted: false,
+            include_move_from: false,
+        },
+    );
+    let relationships = HashMap::new();
+    let mut handler = TextHandler::new(body, &relationships, TextOptions::default());
+    let div = [Attribute {
+        qualified_name: "class".to_owned(),
+        namespace: String::new(),
+        local_name: "class".to_owned(),
+        value: class.to_owned(),
+    }];
+    handler.start_element("", "div", &div)?;
+    for (name, bytes) in parts {
+        xml::parse_sax(&bytes, &name, &mut handler)?;
+    }
+    handler.end_element("", "div")
+}
+
 /// `FileHelper.getFilename(new File(uri))`: the last segment of the path `File` makes of it.
 fn file_name(uri: &str) -> String {
     let path = uri.trim_end_matches('/');

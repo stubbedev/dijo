@@ -519,6 +519,7 @@ dependencies = [
  "libloading",
  "object",
  "quick-xml",
+ "regex",
  "serde",
  "serde_json",
  "strum",
