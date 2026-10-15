@@ -17,6 +17,7 @@ pub(crate) mod java;
 pub(crate) mod java_time;
 mod mail;
 pub(crate) mod metadata;
+mod notebook;
 mod odf;
 mod ooxml;
 mod open_pgp;
@@ -125,6 +126,7 @@ static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
     &mail::EmlxParser,
+    &notebook::NotebookParser,
     &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
