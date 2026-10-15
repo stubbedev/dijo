@@ -181,12 +181,12 @@ fn push_date_time(text: &mut String, epoch_second: i64) -> i64 {
 }
 
 /// Proleptic Gregorian dates, counted in days from 1970-01-01.
-mod civil {
-    pub(super) fn is_leap_year(year: i64) -> bool {
+pub(crate) mod civil {
+    pub(crate) fn is_leap_year(year: i64) -> bool {
         year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
     }
 
-    pub(super) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
         let year = if month <= 2 { year - 1 } else { year };
         let era = year.div_euclid(400);
         let year_of_era = year - era * 400;
@@ -196,7 +196,7 @@ mod civil {
         era * 146_097 + day_of_era - 719_468
     }
 
-    pub(super) fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
         let days = days + 719_468;
         let era = days.div_euclid(146_097);
         let day_of_era = days - era * 146_097;

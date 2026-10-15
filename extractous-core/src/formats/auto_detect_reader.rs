@@ -17,8 +17,8 @@ pub(crate) struct AutoDetectReader {
 
 impl AutoDetectReader {
     /// Reads `input` as Tika does when the metadata's `Content-Type` is `content_type`.
-    pub(crate) fn read(input: &[u8], content_type: &str) -> Result<Self, Failure> {
-        let detection = charset::detect(input, Some(content_type));
+    pub(crate) fn read(input: &[u8], content_type: Option<&str>) -> Result<Self, Failure> {
+        let detection = charset::detect(input, content_type);
         let mut text = detection.decode_as.decode(input).ok_or_else(|| {
             Failure::Malformed(format!(
                 "the text is detected as {}, which the native decoders do not decode",
@@ -92,7 +92,11 @@ mod tests {
 
     #[test]
     fn drops_one_byte_order_mark() {
-        let read = |input: &[u8]| AutoDetectReader::read(input, "text/plain").unwrap().text;
+        let read = |input: &[u8]| {
+            AutoDetectReader::read(input, Some("text/plain"))
+                .unwrap()
+                .text
+        };
         assert_eq!(read(b"\xEF\xBB\xBFplain text"), "plain text");
         assert_eq!(
             read(b"\xEF\xBB\xBF\xEF\xBB\xBFplain text"),
