@@ -188,6 +188,8 @@ for language in danish polish; do
     magick "$corpus/$language-scan.png" -resize 50% -seed 1 -attenuate 0.3 +noise Impulse -threshold 55% \
         "$corpus/$language-scan-fax.png"
 done
+magick "$corpus/danish-scan.png" \( "$corpus/french-scan.png" -flop -fill white -colorize 82% \) \
+    -compose multiply -composite -depth 8 "$corpus/danish-scan-bleed.png"
 pdftoppm -r 72 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-72"
 magick "$work/scan-72.png" -colorspace Gray -depth 8 "$corpus/prose-scan-72dpi.png"
 pdftoppm -r 200 -png "$corpus/report.pdf" "$work/report-scan"

@@ -87,6 +87,7 @@ czech-cp1250.txt	czech	legacy-encoding
 turkish-cp1254.txt	turkish	legacy-encoding		
 danish-scan.png	danish	ocr		
 danish-scan-fax.png	danish	ocr		
+danish-scan-bleed.png	danish	ocr		
 swedish-scan.png	swedish	ocr		
 norwegian-scan.png	norwegian	ocr		
 german-scan.png	german	ocr		

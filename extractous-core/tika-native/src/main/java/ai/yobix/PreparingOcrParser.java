@@ -370,8 +370,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
 
     /**
      * Reads an image in the given scripts in turn, until one reads it confidently, giving up
-     * each reading that goes poorly: the best reading, whose script the rest of the extraction
-     * then assumes.
+     * each reading that goes poorly and passing over each whose letters are mostly in another
+     * script: the best reading, whose script the rest of the extraction then assumes.
      */
     private Attempt readOverlooked(Attempt best, List<String> scripts, OcrImage file,
                                    BufferedImage image, Oriented oriented,
@@ -385,11 +385,34 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             }
             final Prepared retried = prepare(best.prepared(), image, oriented, script, model, 0);
             final Optional<Tesseract.Reading> reading = readUnlessPoor(file, retried, config);
-            if (reading.isPresent()) {
+            if (reading.isPresent() && writtenIn(reading.get().text(), script)) {
                 overlooked = overlooked.or(new Attempt(retried, reading.get()));
             }
         }
         return overlooked;
+    }
+
+    /**
+     * Whether most letters of a text are in a script. A model for a script that detection
+     * overlooked reads a page in another script with the Latin letters its model also has, often
+     * with more confidence than a reading spoiled by noise, and without that page's diacritics.
+     */
+    private static boolean writtenIn(String text, String script) {
+        final Character.UnicodeScript expected = Character.UnicodeScript.forName(script);
+        long letters = 0;
+        long inScript = 0;
+        for (int index = 0; index < text.length(); ) {
+            final int codePoint = text.codePointAt(index);
+            index += Character.charCount(codePoint);
+            if (!Character.isLetter(codePoint)) {
+                continue;
+            }
+            letters++;
+            if (Character.UnicodeScript.of(codePoint) == expected) {
+                inScript++;
+            }
+        }
+        return inScript * 2 > letters;
     }
 
     /** A way an image was prepared and what tesseract read in it that way. */
@@ -549,6 +572,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         if (despeckled) {
             upright = OcrImages.despeckle(upright);
         }
+        final boolean unevenLighting = OcrImages.unevenLighting(upright);
+        if (!unevenLighting) {
+            upright = OcrImages.whitenFaintMarks(upright);
+        }
         final double skew = OcrImages.skewDegrees(upright);
         if (skew != 0) {
             upright = OcrImages.rotate(upright, skew);
@@ -558,8 +585,8 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
             upright = OcrImages.scale(upright, scale);
         }
         return new Prepared(upright == image ? null : new OcrImage.Pixels(upright), language,
-                OcrImages.unevenLighting(upright), script, oriented.exifOrientation(), true,
-                oriented.flattened(), inverted, despeckled, quarterTurns, skew, scale);
+                unevenLighting, script, oriented.exifOrientation(), true, oriented.flattened(),
+                inverted, despeckled, quarterTurns, skew, scale);
     }
 
     /**

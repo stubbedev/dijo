@@ -61,7 +61,7 @@
 | prose-scan.pcx | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan.tga | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| prose-photo-perspective.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose-photo-perspective.jpg | ocr | 0.001 | 0.003 | 0.997 | 0.003 | 1.000 |
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |
 | prose-broken-private-use.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -88,10 +88,11 @@
 | turkish-cp1254.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | danish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | danish-scan-fax.png | ocr | 0.012 | 0.065 | 0.941 | 0.065 | 0.750 |
+| danish-scan-bleed.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | swedish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | norwegian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | german-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| polish-scan.png | ocr | 0.003 | 0.020 | 0.980 | 0.020 | 1.000 |
+| polish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | polish-scan-fax.png | ocr | 0.005 | 0.020 | 0.980 | 0.020 | 1.000 |
 | czech-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | turkish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -174,7 +175,7 @@
 | ukrainian.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | albanian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| armenian-scan.png | ocr | 0.036 | 0.214 | 0.786 | 0.214 | 0.556 |
+| armenian-scan.png | ocr | 0.035 | 0.214 | 0.786 | 0.214 | 0.556 |
 | azerbaijani-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | belarusian-scan.png | ocr | 0.003 | 0.049 | 0.976 | 0.048 | 1.000 |
 | bosnian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -187,7 +188,7 @@
 | finnish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | french-scan.png | ocr | 0.012 | 0.000 | 1.000 | 0.000 | 1.000 |
 | georgian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| hungarian-scan.png | ocr | 0.001 | 0.005 | 0.995 | 0.005 | 1.000 |
+| hungarian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | icelandic-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | irish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | italian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

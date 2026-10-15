@@ -341,7 +341,9 @@ threshold) is inverted first, so tesseract reads each line once rather than agai
 can be measured. A speckled image, as a fax is (more than 2% of its dark pixels without a dark neighbour, where clean
 scans down to 72 dpi have under 0.3%), is cleared of its specks with a 3×3 median filter: tesseract's Latin model
 reads specks beside letters as diacritics, and a speckled Danish or Polish fax goes from 12 to 14% of its characters
-wrong to under 2%. They are then resized so their text lines are about 32 pixels high:
+wrong to under 2%. On an evenly lit page, every pixel lighter than 72% of the way from its ink (darkest half percent)
+to its paper (90th percentile) is made white: text showing through from the back of the page would otherwise fill
+the gaps between words. They are then resized so their text lines are about 32 pixels high:
 enlarged when they are under 20, and, for the alphabets of Europe, reduced when they are over 40, which tesseract
 reads as accurately and a third faster (a 300 dpi scan of 11 pt text is reduced to about 70%). A page photographed at an angle is made flat first: found as the largest
 bright region with sharp edges against a darker background, and mapped from the quadrilateral its corners span back

@@ -36,6 +36,8 @@ final class OcrImages {
     private static final int UNEVEN_BACKGROUND_LEVELS = 48;
     private static final int MIN_INVERTED_DARK_PERCENT = 85;
     private static final int MIN_SPECKLE_PERCENT = 2;
+    private static final double INK_PERCENTILE = 0.005;
+    private static final int FAINT_PERCENT = 72;
 
     private OcrImages() {
     }
@@ -503,6 +505,39 @@ final class OcrImages {
             despeckled.getRaster().setDataElements(0, y, width, 1, out);
         }
         return despeckled;
+    }
+
+    /**
+     * The image in grey with every pixel lighter than {@value #FAINT_PERCENT}% of the way from its
+     * ink to its paper made white: faint marks, such as text showing through from the back of the
+     * page, that tesseract's single threshold takes for ink between the words. Its ink is its
+     * darkest half percent and its paper its 90th percentile.
+     */
+    static BufferedImage whitenFaintMarks(BufferedImage image) {
+        final int[] levels = Analysis.of(image, 1).gray();
+        final int[] histogram = new int[256];
+        for (final int level : levels) {
+            histogram[level]++;
+        }
+        final int ink = percentile(histogram, levels.length, INK_PERCENTILE);
+        final int paper = percentile(histogram, levels.length, BACKGROUND_PERCENTILE);
+        final int faint = ink + (paper - ink) * FAINT_PERCENT / 100;
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        final BufferedImage gray = gray(image, width, height);
+        final BufferedImage whitened = new BufferedImage(width, height,
+                BufferedImage.TYPE_BYTE_GRAY);
+        final byte[] row = new byte[width];
+        for (int y = 0; y < height; y++) {
+            gray.getRaster().getDataElements(0, y, width, 1, row);
+            for (int x = 0; x < width; x++) {
+                if ((row[x] & 0xFF) >= faint) {
+                    row[x] = (byte) 0xFF;
+                }
+            }
+            whitened.getRaster().setDataElements(0, y, width, 1, row);
+        }
+        return whitened;
     }
 
     static BufferedImage gray(BufferedImage image, int width, int height) {

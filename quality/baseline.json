@@ -56,7 +56,7 @@
     "reading_order": 1.0
   },
   "armenian-scan.png": {
-    "character_error_rate": 0.03625170998632011,
+    "character_error_rate": 0.03488372093023256,
     "token_error_rate": 0.2138728323699422,
     "recall": 0.7861271676300579,
     "spurious": 0.2138728323699422,
@@ -294,6 +294,13 @@
     "reading_order": 1.0
   },
   "danish-iso-8859-1.txt": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "danish-scan-bleed.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
@@ -609,10 +616,10 @@
     "reading_order": 1.0
   },
   "hungarian-scan.png": {
-    "character_error_rate": 0.0006053268765133172,
-    "token_error_rate": 0.004739336492890996,
-    "recall": 0.995260663507109,
-    "spurious": 0.004739336492890996,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "hungarian.docx": {
@@ -1008,10 +1015,10 @@
     "reading_order": 1.0
   },
   "polish-scan.png": {
-    "character_error_rate": 0.00267379679144385,
-    "token_error_rate": 0.0196078431372549,
-    "recall": 0.9803921568627451,
-    "spurious": 0.0196078431372549,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "polish.docx": {
@@ -1092,10 +1099,10 @@
     "reading_order": 1.0
   },
   "prose-photo-perspective.jpg": {
-    "character_error_rate": 0.0,
-    "token_error_rate": 0.0,
-    "recall": 1.0,
-    "spurious": 0.0,
+    "character_error_rate": 0.0005668934240362812,
+    "token_error_rate": 0.003278688524590164,
+    "recall": 0.9967213114754099,
+    "spurious": 0.003278688524590164,
     "reading_order": 1.0
   },
   "prose-photo-upside-down.jpg": {
