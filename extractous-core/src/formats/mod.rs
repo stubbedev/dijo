@@ -29,6 +29,7 @@ mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
+mod pdf;
 pub(crate) mod plist;
 mod pptx;
 #[cfg(test)]
@@ -144,6 +145,7 @@ static PARSERS: &[&dyn Parser] = &[
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
     &open_pgp::OpenPgpParser,
+    &pdf::PdfParser,
     &plist::PListParser,
     &pptx::PptxParser,
     &mail::Rfc822Parser,

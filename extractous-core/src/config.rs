@@ -143,6 +143,44 @@ tika_config! {
     }
 }
 
+/// The settings native PDF parsing reads, unset ones as Tika's defaults have them.
+impl PdfParserConfig {
+    /// Whether untagged pages are read in reading order, as they are unless told not to.
+    pub(crate) fn reads_in_reading_order(&self) -> bool {
+        self.reading_order.unwrap_or(true)
+    }
+
+    /// The Java setter of a setting native PDF parsing does not read, if one is set.
+    pub(crate) fn unread_setting(&self) -> Option<&'static str> {
+        [
+            (self.ocr_strategy.is_some(), "setOcrStrategy"),
+            (self.ocr_strategy_auto.is_some(), "setOcrStrategyAuto"),
+            (
+                self.extract_inline_images.is_some(),
+                "setExtractInlineImages",
+            ),
+            (
+                self.extract_unique_inline_images_only.is_some(),
+                "setExtractUniqueInlineImagesOnly",
+            ),
+            (
+                self.extract_marked_content.is_some(),
+                "setExtractMarkedContent",
+            ),
+            (
+                self.extract_bookmarks_text.is_some(),
+                "setExtractBookmarksText",
+            ),
+            (
+                self.extract_annotation_text.is_some(),
+                "setExtractAnnotationText",
+            ),
+        ]
+        .into_iter()
+        .find_map(|(set, setter)| set.then_some(setter))
+    }
+}
+
 tika_config! {
     /// Microsoft Office parser configuration settings
     OfficeParserConfig => "org/apache/tika/parser/microsoft/OfficeParserConfig" {

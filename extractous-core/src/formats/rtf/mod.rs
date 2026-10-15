@@ -9,9 +9,10 @@ mod extractor;
 mod input;
 
 use crate::config::ParserConfigs;
+use crate::formats::handlers::Discard;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
+use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
 use extractor::Interrupt;
 
@@ -78,39 +79,6 @@ impl Parser for RtfParser {
         };
         xhtml.end_document()?;
         Err(failure)
-    }
-}
-
-/// Takes a document's XHTML and drops it, for reading a document ahead.
-struct Discard;
-
-impl ContentHandler for Discard {
-    fn start_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn start_element(&mut self, _name: &str, _attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn end_element(&mut self, _name: &str) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn characters(&mut self, _text: &str) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn ignorable_whitespace(&mut self, _text: &str) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn end_document(&mut self) -> Result<(), Stop> {
-        Ok(())
     }
 }
 

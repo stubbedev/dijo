@@ -17,6 +17,7 @@ pub(crate) const INTERNAL_PATH: &str = "tk:internal-path";
 pub(crate) const RELATIONSHIP_ID: &str = "tk:embedded-relationship-id";
 pub(crate) const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 pub(crate) const THUMBNAIL: &str = "THUMBNAIL";
+pub(crate) const ATTACHMENT: &str = "ATTACHMENT";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
@@ -45,9 +46,19 @@ impl<'c> Embedding<'c> {
     /// records each when it starts, before any of the document's content is written.
     pub(crate) fn absorb_parsers(&mut self, metadata: &crate::Metadata) {
         for parser in metadata.get(PARSED_BY_FULL_SET).into_iter().flatten() {
-            if !self.record.parsers.contains(parser) {
-                self.record.parsers.push(parser.clone());
-            }
+            self.record_parser(parser);
+        }
+    }
+
+    /// Records a parser the extraction used, once.
+    pub(crate) fn record_parser(&mut self, parser: &str) {
+        if !self
+            .record
+            .parsers
+            .iter()
+            .any(|recorded| recorded == parser)
+        {
+            self.record.parsers.push(parser.to_owned());
         }
     }
 
