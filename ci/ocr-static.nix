@@ -6,7 +6,7 @@
 let
   pkgs = nixpkgs.legacyPackages.${system};
   lib = pkgs.lib;
-  static = pkgs.pkgsStatic;
+  static = import ./static-packages.nix pkgs;
   tesseract = import ./tesseract.nix static;
   decoders = import ./image-decoders.nix static;
   heifPng = static.stdenv.mkDerivation {

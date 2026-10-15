@@ -15,7 +15,7 @@ let
       aarch64-linux = pkgs.pkgsCross.aarch64-multiplatform-musl;
     }
     .${system};
-  static = pkgs.pkgsStatic;
+  static = import ./static-packages.nix pkgs;
   tesseract = import ./tesseract.nix static;
   decoders = import ./image-decoders.nix static;
   awtLibraries = [
