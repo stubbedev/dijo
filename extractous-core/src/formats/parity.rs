@@ -290,3 +290,30 @@ pub(crate) fn conformance_corpus() -> PathBuf {
         "CONFORMANCE_CORPUS names Tika's test documents: eval \"$(conformance/prepare.sh target/conformance)\"",
     ))
 }
+
+/// A directory for the documents a test writes, removed with it.
+pub(crate) struct Scratch(PathBuf);
+
+impl Scratch {
+    pub(crate) fn new(test: &str) -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("extractous-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        Self(directory)
+    }
+
+    /// Writes `bytes` as the document `name`, returning its path.
+    pub(crate) fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = self.0.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+}

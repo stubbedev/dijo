@@ -264,9 +264,9 @@ const STATISTICS: [(&str, &str); 8] = [
     ("character-count", "meta:character-count"),
 ];
 
-/// The handlers Tika tees `meta.xml`'s events to, in their order.
-struct MetaHandler<'m> {
-    metadata: &'m mut TikaMetadata,
+/// The handlers Tika's `OpenDocumentMetaParser.getContentHandler` tees metadata events to, in
+/// their order, behind its `NSNormalizerContentHandler`.
+pub(super) struct MetaHandlers {
     depth: usize,
     dublin_core: [ElementValue; 10],
     created: MetaValue,
@@ -276,10 +276,9 @@ struct MetaHandler<'m> {
     user_defined: UserDefined,
 }
 
-impl<'m> MetaHandler<'m> {
-    fn new(metadata: &'m mut TikaMetadata) -> Self {
+impl MetaHandlers {
+    pub(super) fn new() -> Self {
         Self {
-            metadata,
             depth: 0,
             dublin_core: [
                 ElementValue::new("title", "dc:title", Values::Bag),
@@ -307,51 +306,13 @@ impl<'m> MetaHandler<'m> {
         }
     }
 
-    fn attribute_value(
+    pub(super) fn start(
         &mut self,
-        name: &str,
-        attributes: &[Attribute<'_>],
+        metadata: &mut TikaMetadata,
         namespace: &str,
         local_name: &str,
+        attributes: &[Attribute<'_>],
     ) {
-        for attribute in attributes {
-            if attribute.namespace == namespace && attribute.local_name == local_name {
-                let value = java_trim(&attribute.value);
-                if !value.is_empty() {
-                    set_unless_equal(name, value.to_owned(), self.metadata);
-                }
-            }
-        }
-    }
-
-    /// What Tika's `OpenDocumentMetaParser.parse` does once the handlers are done.
-    fn finish(self) {
-        let metadata = self.metadata;
-        if let Some(subject) = metadata.get(SUBJECT).filter(|subject| !subject.is_empty()) {
-            if metadata.get(DESCRIPTION).is_none_or(str::is_empty) {
-                let subject = subject.to_owned();
-                metadata.set(DESCRIPTION, subject);
-            }
-        }
-        let subjects: Vec<String> = metadata
-            .values(KEYWORD)
-            .iter()
-            .chain(metadata.values(SUBJECT))
-            .cloned()
-            .collect();
-        if !subjects.is_empty() {
-            metadata.reset_values(SUBJECT, subjects);
-        }
-    }
-}
-
-impl SaxHandler for MetaHandler<'_> {
-    fn start_element(
-        &mut self,
-        namespace: &str,
-        local_name: &str,
-        attributes: &[Attribute<'_>],
-    ) -> Result<(), Failure> {
         let namespace: Cow<str> = normalized_namespace(namespace);
         let root = self.depth == 0;
         self.depth += 1;
@@ -359,7 +320,7 @@ impl SaxHandler for MetaHandler<'_> {
             element.start(&namespace, local_name);
         }
         if root && namespace == OFFICE_NS && local_name == "document-meta" {
-            self.attribute_value("odf:version", attributes, OFFICE_NS, "version");
+            attribute_value(metadata, "odf:version", attributes, OFFICE_NS, "version");
         }
         self.created.start(&namespace, local_name);
         self.modified.start(&namespace, local_name);
@@ -370,29 +331,27 @@ impl SaxHandler for MetaHandler<'_> {
         self.user_defined.start(&namespace, local_name, attributes);
         if namespace == META_NS && local_name == "document-statistic" {
             for (attribute, name) in STATISTICS {
-                self.attribute_value(name, attributes, META_NS, attribute);
+                attribute_value(metadata, name, attributes, META_NS, attribute);
             }
         }
-        Ok(())
     }
 
-    fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
+    pub(super) fn end(&mut self, metadata: &mut TikaMetadata, namespace: &str, local_name: &str) {
         let namespace = normalized_namespace(namespace);
         self.depth -= 1;
         for element in &mut self.dublin_core {
-            element.end(&namespace, local_name, self.metadata);
+            element.end(&namespace, local_name, metadata);
         }
-        self.created.end(&namespace, local_name, self.metadata);
-        self.modified.end(&namespace, local_name, self.metadata);
-        self.subject.end(&namespace, local_name, self.metadata);
+        self.created.end(&namespace, local_name, metadata);
+        self.modified.end(&namespace, local_name, metadata);
+        self.subject.end(&namespace, local_name, metadata);
         for element in &mut self.meta {
-            element.end(&namespace, local_name, self.metadata);
+            element.end(&namespace, local_name, metadata);
         }
-        self.user_defined.end(&namespace, local_name, self.metadata);
-        Ok(())
+        self.user_defined.end(&namespace, local_name, metadata);
     }
 
-    fn characters(&mut self, text: &str) -> Result<(), Failure> {
+    pub(super) fn characters(&mut self, text: &str) {
         for element in &mut self.dublin_core {
             element.characters(text);
         }
@@ -403,15 +362,84 @@ impl SaxHandler for MetaHandler<'_> {
             element.characters(text);
         }
         self.user_defined.characters(text);
+    }
+}
+
+/// Tika's `AttributeMetadataHandler`: the trimmed value of an attribute under `name`.
+fn attribute_value(
+    metadata: &mut TikaMetadata,
+    name: &str,
+    attributes: &[Attribute<'_>],
+    namespace: &str,
+    local_name: &str,
+) {
+    for attribute in attributes {
+        if attribute.namespace == namespace && attribute.local_name == local_name {
+            let value = java_trim(&attribute.value);
+            if !value.is_empty() {
+                set_unless_equal(name, value.to_owned(), metadata);
+            }
+        }
+    }
+}
+
+/// `meta.xml` as Tika's `OpenDocumentMetaParser` reads it.
+struct MetaFile<'m> {
+    metadata: &'m mut TikaMetadata,
+    handlers: MetaHandlers,
+}
+
+impl SaxHandler for MetaFile<'_> {
+    fn start_element(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        attributes: &[Attribute<'_>],
+    ) -> Result<(), Failure> {
+        self.handlers
+            .start(self.metadata, namespace, local_name, attributes);
         Ok(())
+    }
+
+    fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
+        self.handlers.end(self.metadata, namespace, local_name);
+        Ok(())
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Failure> {
+        self.handlers.characters(text);
+        Ok(())
+    }
+}
+
+/// What Tika's `OpenDocumentMetaParser.parse` does once its handlers are done: a subject is the
+/// description too where there is none, and the keywords join the subjects.
+fn merge_subjects(metadata: &mut TikaMetadata) {
+    if let Some(subject) = metadata.get(SUBJECT).filter(|subject| !subject.is_empty()) {
+        if metadata.get(DESCRIPTION).is_none_or(str::is_empty) {
+            let subject = subject.to_owned();
+            metadata.set(DESCRIPTION, subject);
+        }
+    }
+    let subjects: Vec<String> = metadata
+        .values(KEYWORD)
+        .iter()
+        .chain(metadata.values(SUBJECT))
+        .cloned()
+        .collect();
+    if !subjects.is_empty() {
+        metadata.reset_values(SUBJECT, subjects);
     }
 }
 
 /// Reads the metadata of `meta.xml`, decoded as `text`, into `metadata`.
 pub(super) fn read_meta(text: &str, metadata: &mut TikaMetadata) -> Result<(), Failure> {
-    let mut handler = MetaHandler::new(metadata);
-    xml::parse_sax(text, "meta.xml", &mut handler)?;
-    handler.finish();
+    let mut file = MetaFile {
+        metadata,
+        handlers: MetaHandlers::new(),
+    };
+    xml::parse_sax(text, "meta.xml", &mut file)?;
+    merge_subjects(file.metadata);
     Ok(())
 }
 

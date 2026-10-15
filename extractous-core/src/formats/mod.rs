@@ -83,6 +83,7 @@ pub(crate) trait Parser: Sync {
 static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
     &odf::OpenDocumentParser,
+    &odf::FlatOpenDocumentParser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,

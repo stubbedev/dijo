@@ -6,6 +6,9 @@
 //! documents are left to Tika.
 
 mod body;
+mod flat;
+
+pub(crate) use flat::FlatOpenDocumentParser;
 mod meta;
 
 use std::borrow::Cow;
@@ -359,8 +362,11 @@ impl Parser for OpenDocumentParser {
                 EntryKind::Body => {
                     let bytes = archive.read(entry)?;
                     let text = xml::decode(&bytes, &entry.name)?;
-                    let mut body =
-                        body::Body::new(xhtml, configs.office.includes_deleted_content());
+                    let mut body = body::Body::new(
+                        xhtml,
+                        configs.office.includes_deleted_content(),
+                        body::Namespaces::Normalized,
+                    );
                     xml::parse_sax(&text, &entry.name, &mut body)?;
                 }
                 EntryKind::Embedded => {
@@ -386,6 +392,7 @@ mod tests {
     use crate::config::OfficeParserConfig;
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_with, conformance_corpus,
+        Scratch,
     };
     use std::path::{Path, PathBuf};
 
@@ -500,32 +507,6 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
-    /// A directory for the documents of a test, removed with it.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(test: &str) -> Self {
-            let directory =
-                std::env::temp_dir().join(format!("extractous-odf-{test}-{}", std::process::id()));
-            std::fs::create_dir_all(&directory).unwrap();
-            Self(directory)
-        }
-
-        fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
-            let path = self.0.join(name);
-            std::fs::write(&path, bytes).unwrap();
-            path
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            if !std::thread::panicking() {
-                std::fs::remove_dir_all(&self.0).unwrap();
-            }
-        }
-    }
-
     #[test]
     fn extracts_what_tikas_path_extracts_from_every_kind_of_element() {
         let text = content(
@@ -552,7 +533,7 @@ mod tests {
         let meta = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} office:version="1.3"><office:meta><meta:generator>Test</meta:generator><dc:title>Elements</dc:title><meta:initial-creator>Anna</meta:initial-creator><dc:creator>Bo</dc:creator><meta:keyword>hav</meta:keyword><meta:keyword>sten</meta:keyword><dc:subject>Lys</dc:subject><dc:language>da-DK</dc:language><dc:date>2026-01-02T03:04:05</dc:date><meta:creation-date>2026-01-01T00:00:00</meta:creation-date><meta:editing-duration>PT1M</meta:editing-duration><meta:editing-cycles>3</meta:editing-cycles><meta:user-defined meta:name="Info 1">Tekst</meta:user-defined><meta:user-defined meta:name="Info 1">Mere</meta:user-defined><meta:document-statistic meta:page-count="2" meta:paragraph-count="9" meta:word-count="40" meta:character-count="200" meta:table-count="1" meta:image-count="2" meta:object-count="1"/></office:meta></office:document-meta>"#
         );
-        let scratch = Scratch::new("elements");
+        let scratch = Scratch::new("odf-elements");
         let documents = [
             scratch.write(
                 "elements.odt",
@@ -608,7 +589,7 @@ mod tests {
 
     #[test]
     fn fails_where_tikas_path_fails() {
-        let scratch = Scratch::new("failures");
+        let scratch = Scratch::new("odf-failures");
         let documents = [
             scratch.write(
                 "malformed.odt",
