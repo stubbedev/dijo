@@ -32,6 +32,7 @@ mod tagged;
 mod truetype;
 mod type1;
 mod writer;
+mod xfa;
 mod xmp;
 
 use std::sync::OnceLock;
@@ -552,6 +553,34 @@ mod tests {
         let scratch = Scratch::new("pdf-type3");
         let type3 = scratch.write("type3.pdf", &document(&objects, b"", &[]));
         assert_same_as_tika_delegating(&[&type3], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn extracts_xfa_forms_as_tikas_path_does() {
+        let template = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.0/\">\n\
+             <subform><draw><value><text>Ans&#248;gning om tilskud</text></value></draw>\n\
+             <field name=\"navn\"><assist><toolTip>Dit <p>fulde</p> navn</toolTip></assist>\
+             </field>\n<field name=\"by\"/><field name=\"tom\"/></subform>\n</template>";
+        let data = "<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">\n\
+             <xfa:data>\n<form1>\n<navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>\n\
+             </xfa:data></xfa:datasets>";
+        let stream =
+            |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
+        let mut objects = page_objects(TEXT);
+        objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
+        objects.extend([
+            "<< /Fields [] /XFA [(preamble) 7 0 R (template) 8 0 R (datasets) 9 0 R \
+             (postamble) 10 0 R] >>"
+                .to_owned(),
+            stream("<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"),
+            stream(template),
+            stream(data),
+            stream("</xdp:xdp>"),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let scratch = Scratch::new("pdf-xfa");
+        let xfa = scratch.write("xfa.pdf", &document(&objects, b"", &[]));
+        assert_same_as_tika_delegating(&[&xfa], tika_name(), &DELEGATES);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use super::position::TextPosition;
 use super::reading_order;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
-use super::{jfloat, Unported};
+use super::{jfloat, xfa, Unported};
 use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::is_blank;
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -717,16 +717,16 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         Ok(())
     }
 
-    /// `extractAcroForm`: the form's fields, as nested ordered lists.
+    /// `extractAcroForm`: an XFA form as `XFAExtractor` reads it, otherwise the form's fields,
+    /// as nested ordered lists.
     fn acro_form(&mut self) -> Result<(), WriteFailure> {
         let pdf = self.pdf;
-        if let Some(form) = pdf
+        let xfa = pdf
             .catalog()
             .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
-        {
-            if pdf.get(form, b"XFA").is_some() {
-                return Err(Unported("an XFA form".to_owned()).into());
-            }
+            .and_then(|form| pdf.get(form, b"XFA"));
+        if let Some(xfa) = xfa {
+            return self.xfa(&xfa::extract(&xfa::bytes(pdf, xfa)?)?);
         }
         let Some(lines) = form::lines(pdf, self.page.xhtml.metadata_mut())? else {
             return Ok(());
@@ -757,6 +757,28 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
             }
         }
         xhtml.end_element("ol")?;
+        xhtml.end_element("div")?;
+        Ok(())
+    }
+
+    /// `XFAExtractor.extract`'s output: the form's paragraphs, then its fields.
+    fn xfa(&mut self, form: &xfa::Form) -> Result<(), WriteFailure> {
+        let xhtml = &mut self.page.xhtml;
+        xhtml.start_element_with("div", &[("class", "xfa_content")])?;
+        for paragraph in &form.paragraphs {
+            xhtml.element("p", paragraph)?;
+        }
+        if !form.fields.is_empty() {
+            xhtml.start_element_with("div", &[("class", "xfa_form")])?;
+            xhtml.start_element("ol")?;
+            for (name, text) in &form.fields {
+                xhtml.start_element_with("li", &[("fieldName", name)])?;
+                xhtml.characters(text)?;
+                xhtml.end_element("li")?;
+            }
+            xhtml.end_element("ol")?;
+            xhtml.end_element("div")?;
+        }
         xhtml.end_element("div")?;
         Ok(())
     }
