@@ -19,6 +19,7 @@ mod odf;
 mod ooxml;
 #[cfg(test)]
 pub(crate) mod parity;
+mod pdf;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -107,6 +108,7 @@ static PARSERS: &[&dyn Parser] = &[
     &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
+    &pdf::PdfParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,

@@ -84,7 +84,9 @@ impl TimeZone {
         DEFAULT.as_ref().map_err(Clone::clone)
     }
 
-    fn fixed(offset: i64) -> Self {
+    /// A zone of a fixed offset, in seconds east of UTC, as a `SimpleTimeZone` without daylight
+    /// saving time.
+    pub(crate) fn fixed(offset: i64) -> Self {
         Self {
             raw_offset: offset,
             transitions: Vec::new(),

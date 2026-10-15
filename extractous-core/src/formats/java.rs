@@ -239,8 +239,14 @@ pub(crate) fn url_decode(text: &str) -> Option<String> {
     Some(decoded)
 }
 
-/// `Integer.parseInt(text, 16)` for the two characters of an escape.
+/// `Integer.parseInt(text, 16)` for the two characters of an escape, which must not be negative.
 fn parse_hex(text: &str) -> Option<i32> {
+    parse_hex_int(text).filter(|&value| value >= 0)
+}
+
+/// `Integer.parseInt(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
+/// reads them, in range.
+pub(crate) fn parse_hex_int(text: &str) -> Option<i32> {
     let (negative, digits) = match text.chars().next()? {
         '-' => (true, &text[1..]),
         '+' => (false, &text[1..]),
@@ -249,11 +255,14 @@ fn parse_hex(text: &str) -> Option<i32> {
     if digits.is_empty() {
         return None;
     }
-    let magnitude = digits.chars().try_fold(0i32, |value, character| {
-        Some(value * 16 + i32::try_from(hex_digit(character)?).ok()?)
-    })?;
-    let value = if negative { -magnitude } else { magnitude };
-    (value >= 0).then_some(value)
+    let mut magnitude: i64 = 0;
+    for character in digits.chars() {
+        magnitude = magnitude * 16 + i64::from(hex_digit(character)?);
+        if magnitude > i64::from(i32::MAX) + 1 {
+            return None;
+        }
+    }
+    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
 /// `Long.parseLong(text)`: an optional sign and decimal digits of any script, in range.

@@ -41,9 +41,19 @@ impl<'c> Embedding<'c> {
     /// records each when it starts, before any of the document's content is written.
     pub(crate) fn absorb_parsers(&mut self, metadata: &crate::Metadata) {
         for parser in metadata.get(PARSED_BY_FULL_SET).into_iter().flatten() {
-            if !self.record.parsers.contains(parser) {
-                self.record.parsers.push(parser.clone());
-            }
+            self.record_parser(parser);
+        }
+    }
+
+    /// Records a parser the extraction used, once.
+    pub(crate) fn record_parser(&mut self, parser: &str) {
+        if !self
+            .record
+            .parsers
+            .iter()
+            .any(|recorded| recorded == parser)
+        {
+            self.record.parsers.push(parser.to_owned());
         }
     }
 

@@ -29,6 +29,7 @@ libloading = "0.9.0"
 flate2 = "1.1.5"
 encoding_rs = "0.8.42"
 fancy-regex = "0.19.2"
+unicode-bidi = "0.3.18"
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 unicode-script = "0.5.8"
@@ -38,6 +39,7 @@ bytemuck =  { version = "1.24.0"}
 strum = { version = "0.28.0" }
 strum_macros = { version = "0.28.0" }
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+lopdf = { version = "0.45.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }

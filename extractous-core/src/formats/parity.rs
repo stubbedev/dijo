@@ -2,7 +2,8 @@
 //! streamed text and XHTML, their final metadata, and the text and XHTML of a string extraction
 //! cut by a small length limit. The only difference allowed is the parser's name in
 //! `tk:parsed-by`, which the native output is compared under Tika's. Documents Tika's path fails
-//! on are compared on their outcome alone: the native parser must fail too.
+//! on are compared on their outcome alone: the native parser must fail too. A native parser that
+//! records the parsers its Tika counterpart delegates to is compared under their Tika names too.
 //!
 //! Two things of a document's embedded documents, which Tika parses either way, are compared as
 //! they can be: the parsers that read them, each once as Tika's record keeps it, once the native
@@ -131,14 +132,19 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
     })
 }
 
-/// The native result as Tika's path would name its parser.
-fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: CharSet) -> Extracted {
-    let mut native_bytes = Vec::new();
-    let mut tika_bytes = Vec::new();
-    formats::encode(native_name, char_set, &mut native_bytes);
-    formats::encode(tika_name, char_set, &mut tika_bytes);
+/// The native result as Tika's path would name its parsers: each native name of `names` as the
+/// Tika name paired with it.
+fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
+    let mut text = native.text;
+    for (native_name, tika_name) in names {
+        let mut native_bytes = Vec::new();
+        let mut tika_bytes = Vec::new();
+        formats::encode(native_name, char_set, &mut native_bytes);
+        formats::encode(tika_name, char_set, &mut tika_bytes);
+        text = replace_bytes(&text, &native_bytes, &tika_bytes);
+    }
     Extracted {
-        text: replace_bytes(&native.text, &native_bytes, &tika_bytes),
+        text,
         metadata: native
             .metadata
             .into_iter()
@@ -146,11 +152,10 @@ fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: Char
                 let values = values
                     .into_iter()
                     .map(|value| {
-                        if value == native_name {
-                            tika_name.to_owned()
-                        } else {
-                            value
-                        }
+                        names
+                            .iter()
+                            .find(|(native_name, _)| *native_name == value)
+                            .map_or(value, |(_, tika_name)| (*tika_name).to_owned())
                     })
                     .collect();
                 (name, values)
@@ -243,8 +248,13 @@ fn describe(outcome: &Outcome) -> String {
 /// What Tika's path and the native parser are expected to do with a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expected<'a> {
-    /// Both extract it identically, Tika's path naming its parser with this class name.
-    Same(&'a str),
+    /// Both extract it identically, Tika's path naming its parser with the class name
+    /// `tika_name`, and the parsers it delegates to with the Tika names `delegates` pairs with
+    /// their native names.
+    Same {
+        tika_name: &'a str,
+        delegates: &'a [(&'a str, &'a str)],
+    },
     /// Both fail on it.
     Failure,
 }
@@ -262,7 +272,26 @@ pub(crate) fn assert_same_as_tika_with(
     tika_name: &str,
     configs: &ParserConfigs,
 ) {
-    compare(documents, configs, Expected::Same(tika_name));
+    let expected = Expected::Same {
+        tika_name,
+        delegates: &[],
+    };
+    compare(documents, configs, expected);
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts exactly what Tika's path does under Tika's default settings, the
+/// parsers it delegates to named as `delegates` pairs their native names with Tika's.
+pub(crate) fn assert_same_as_tika_delegating(
+    documents: &[&Path],
+    tika_name: &str,
+    delegates: &[(&str, &str)],
+) {
+    let expected = Expected::Same {
+        tika_name,
+        delegates,
+    };
+    compare(documents, &ParserConfigs::default(), expected);
 }
 
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
@@ -292,9 +321,20 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             }
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
-                    (Expected::Same(tika_name), Ok(tika), Ok(native)) => {
+                    (
+                        Expected::Same {
+                            tika_name,
+                            delegates,
+                        },
+                        Ok(tika),
+                        Ok(native),
+                    ) => {
+                        let names: Vec<(&str, &str)> = [(native_name, tika_name)]
+                            .into_iter()
+                            .chain(delegates.iter().copied())
+                            .collect();
                         comparable(tika.clone())
-                            == comparable(as_tika(native.clone(), native_name, tika_name, char_set))
+                            == comparable(as_tika(native.clone(), &names, char_set))
                     }
                     (Expected::Failure, Err(_), Err(_)) => true,
                     _ => false,

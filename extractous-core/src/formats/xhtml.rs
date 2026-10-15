@@ -163,6 +163,14 @@ impl<'h> Xhtml<'h> {
         &mut self.metadata
     }
 
+    /// Records that the document's parser hands it to `parser`, as Tika's `CompositeParser`
+    /// records the parser it delegates to: in `tk:parsed-by`, and among the parsers the
+    /// extraction used.
+    pub(crate) fn delegate_to(&mut self, parser: &str) {
+        self.metadata.add("tk:parsed-by", parser);
+        self.embedding.record_parser(parser);
+    }
+
     pub(crate) fn start_element(&mut self, name: &str) -> Result<(), Stop> {
         self.start_element_with(name, &[])
     }
@@ -250,6 +258,21 @@ impl<'h> Xhtml<'h> {
     /// Whether `name` is a block element a line break ends (`XHTMLContentHandler.ENDLINE`).
     pub(crate) fn is_endline(name: &str) -> bool {
         ENDLINE.contains(&name)
+    }
+
+    /// Whether `name` is an element a tab starts (`XHTMLContentHandler.INDENT`).
+    pub(crate) fn is_indented(name: &str) -> bool {
+        INDENT.contains(&name)
+    }
+
+    /// The character Tika's safe content handler writes for `character`: U+FFFD for one XML
+    /// cannot hold.
+    pub(crate) fn safe_char(character: char) -> char {
+        if is_invalid(character) {
+            REPLACEMENT
+        } else {
+            character
+        }
     }
 
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
