@@ -105,8 +105,8 @@ text-reference:
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
 # Regenerate the PDFBox resources the Rust PDF parser reads, from the PDFBox jars Tika's native image holds: the
-# glyph lists, the Unicode mirroring pairs, the standard 14 fonts' metrics without their kerning pairs, and the
-# built-in simple font encodings.
+# glyph lists, the Unicode mirroring pairs, the fallback font it measures fonts it finds no program for with, the
+# standard 14 fonts' metrics without their kerning pairs, and the built-in simple font encodings.
 [unix]
 pdf-resources:
     #!/usr/bin/env bash
@@ -120,6 +120,7 @@ pdf-resources:
         unzip -p "$pdfbox" "org/apache/pdfbox/resources/glyphlist/$list.txt" > "$models/$list.txt"
     done
     unzip -p "$pdfbox" org/apache/pdfbox/resources/text/BidiMirroring.txt > "$models/BidiMirroring.txt"
+    unzip -p "$pdfbox" org/apache/pdfbox/resources/ttf/LiberationSans-Regular.ttf > "$models/LiberationSans-Regular.ttf"
     for font in Courier Courier-Bold Courier-BoldOblique Courier-Oblique Helvetica Helvetica-Bold \
         Helvetica-BoldOblique Helvetica-Oblique Times-Roman Times-Bold Times-BoldItalic Times-Italic Symbol \
         ZapfDingbats; do

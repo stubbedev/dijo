@@ -26,6 +26,7 @@ mod stripper;
 mod structure;
 mod tagged;
 mod truetype;
+mod type1;
 mod writer;
 mod xmp;
 
@@ -355,32 +356,13 @@ mod tests {
     }
 
     /// The documents of the corpora the port leaves to Tika, and why.
-    const DEFERRED: [(&str, Why); 13] = [
+    const DEFERRED: [(&str, Why); 9] = [
         ("arabic.pdf", Why::Ocr),
-        (
-            "chinese.pdf",
-            Why::Unported("an embedded Type 1 font program"),
-        ),
         ("deu-ocr.pdf", Why::Ocr),
         ("eng-ocr.pdf", Why::Ocr),
         ("hindi.pdf", Why::Ocr),
-        (
-            "hyphenated.pdf",
-            Why::Unported("an embedded Type 1 font program"),
-        ),
-        (
-            "japanese-vertical.pdf",
-            Why::Unported("an embedded Type 1 font program"),
-        ),
-        (
-            "japanese.pdf",
-            Why::Unported("an embedded Type 1 font program"),
-        ),
         ("prose-broken-offset.pdf", Why::Doubtful),
-        (
-            "prose-broken-private-use.pdf",
-            Why::Unported("a font PDFBox measures with its fallback"),
-        ),
+        ("prose-broken-private-use.pdf", Why::Doubtful),
         ("prose-scan.pdf", Why::Ocr),
         ("thai.pdf", Why::Ocr),
         (

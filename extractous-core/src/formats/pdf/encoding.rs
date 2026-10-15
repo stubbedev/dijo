@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 use lopdf::{Dictionary, Object};
 
 use super::cos::{name_string, Pdf};
+use super::Unported;
 
 const ENCODINGS: &str = include_str!("../../../models/pdf/encodings.tsv");
 const GLYPH_LIST: &str = include_str!("../../../models/pdf/glyphlist.txt");
@@ -174,6 +175,48 @@ impl Encoding {
         encoding
     }
 
+    /// `Type1Encoding.fromFontBox` of a FontBox encoding filled with `entries` in their order:
+    /// in the iteration order of FontBox's `HashMap<Integer, String>(250)`.
+    pub(super) fn from_font_box(entries: &[(i32, String)]) -> Encoding {
+        let ordered: Vec<(i32, String)> = java_integer_map_order_from(entries, 256)
+            .into_iter()
+            .map(|(code, name)| (code, name.clone()))
+            .collect();
+        Self::in_order(&ordered)
+    }
+
+    /// The code `PDType1Font.getInvertedEncoding` gives a name: the first that has it in the
+    /// iteration order of the codes, which is ascending for the codes of a byte.
+    pub(super) fn first_code(&self, name: &str) -> Result<Option<i32>, Unported> {
+        if self
+            .code_to_name
+            .keys()
+            .any(|code| !(0..=255).contains(code))
+        {
+            return Err(Unported(
+                "an encoding with codes past a byte, whose inverse PDFBox takes in hash order"
+                    .to_owned(),
+            ));
+        }
+        Ok(self
+            .code_to_name
+            .iter()
+            .filter(|(_, candidate)| *candidate == name)
+            .map(|(&code, _)| code)
+            .min())
+    }
+
+    /// The codes and names of the encoding, by code.
+    pub(super) fn entries(&self) -> Vec<(i32, String)> {
+        let mut entries: Vec<(i32, String)> = self
+            .code_to_name
+            .iter()
+            .map(|(&code, name)| (code, name.clone()))
+            .collect();
+        entries.sort_by_key(|(code, _)| *code);
+        entries
+    }
+
     /// A `Type1Encoding` from metrics, in their order.
     pub(super) fn in_order(entries: &[(i32, String)]) -> Encoding {
         let mut encoding = Encoding {
@@ -281,6 +324,11 @@ impl Encoding {
 /// iterates them: by bucket, the table grown as `HashMap` grows it, and within a bucket in
 /// insertion order.
 pub(super) fn java_integer_map_order<V>(entries: &[(i32, V)]) -> Vec<(i32, &V)> {
+    java_integer_map_order_from(entries, 16)
+}
+
+/// [`java_integer_map_order`] of a map whose table starts at `table` buckets, a power of two.
+pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize) -> Vec<(i32, &V)> {
     let mut unique: Vec<(i32, &V)> = Vec::with_capacity(entries.len());
     let mut positions: HashMap<i32, usize> = HashMap::new();
     for (key, value) in entries {
@@ -292,7 +340,7 @@ pub(super) fn java_integer_map_order<V>(entries: &[(i32, V)]) -> Vec<(i32, &V)> 
             }
         }
     }
-    let mut capacity: usize = 16;
+    let mut capacity: usize = table;
     while unique.len() * 4 > capacity * 3 {
         capacity *= 2;
     }

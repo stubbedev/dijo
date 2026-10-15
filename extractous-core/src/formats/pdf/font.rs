@@ -1,11 +1,12 @@
 //! PDFBox's fonts as its text extraction reads them (`PDFont` and its subclasses): how codes
 //! are read from strings, mapped to Unicode, and measured, with the fallbacks PDFBox takes and
-//! the font programs it reads. Where PDFBox would read the fallback font `PdfFonts` maps
-//! non-embedded fonts to, or a font program the port does not read, the font is [`Unported`].
+//! the font programs it reads, the fallback font `PdfFonts` maps non-embedded fonts to among
+//! them. Where PDFBox would read a font program the port does not read, the font is
+//! [`Unported`].
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use lopdf::{Dictionary, Object, Stream};
 
@@ -16,6 +17,7 @@ use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
 use super::jfloat;
 use super::matrix::Matrix;
 use super::truetype::{self, TrueType};
+use super::type1::{self, BuiltIn, Type1};
 use super::Unported;
 
 /// `PDFontDescriptor`, as far as text extraction reads it.
@@ -93,11 +95,112 @@ pub(super) fn rectangle(pdf: &Pdf, array: &[Object]) -> [f32; 4] {
 }
 
 /// Where PDFBox reads a font: the program embedded in the document, or the fallback font
-/// `PdfFonts` maps every other font to, which the port does not read.
+/// `PdfFonts` maps every other font to.
 #[derive(Debug)]
 enum Program<T> {
     Embedded(T),
     Fallback,
+}
+
+/// PDFBox's bundled Liberation Sans, which `PdfFonts` maps every font to that PDFBox finds no
+/// program for.
+static FALLBACK: LazyLock<Result<TrueType, Unported>> = LazyLock::new(|| {
+    TrueType::read_bundled(include_bytes!(
+        "../../../models/pdf/LiberationSans-Regular.ttf"
+    ))
+});
+
+fn fallback_font() -> Result<&'static TrueType, Unported> {
+    FALLBACK.as_ref().map_err(Clone::clone)
+}
+
+impl Program<Box<TrueType>> {
+    /// The TrueType program PDFBox measures with: the embedded one, or the fallback font.
+    fn font(&self) -> Result<&TrueType, Unported> {
+        match self {
+            Program::Embedded(ttf) => Ok(ttf),
+            Program::Fallback => fallback_font(),
+        }
+    }
+}
+
+/// What PDFBox measures a Type 1 font's glyphs with (`genericFont`): its embedded program, or
+/// the fallback font.
+#[derive(Debug)]
+enum Generic {
+    Program(Box<Type1>),
+    Fallback,
+}
+
+/// `PDType1Font.ALT_NAMES`: names a substitute font may give ligatures.
+fn alternative_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "ff" => "f_f",
+        "ffi" => "f_f_i",
+        "ffl" => "f_f_l",
+        "fi" => "f_i",
+        "fl" => "f_l",
+        "st" => "s_t",
+        "IJ" => "I_J",
+        "ij" => "i_j",
+        "ellipsis" => "elipsis",
+        _ => return None,
+    })
+}
+
+/// `UniUtil.getUniNameOfCodePoint`.
+fn uni_name(code_point: char) -> String {
+    format!("uni{:04X}", u32::from(code_point))
+}
+
+impl Generic {
+    /// `hasGlyph`.
+    fn has_glyph(&self, name: &str) -> Result<bool, Unported> {
+        Ok(match self {
+            Generic::Program(program) => program.has_glyph(name),
+            Generic::Fallback => fallback_font()?.name_to_glyph(name) != 0,
+        })
+    }
+
+    /// `getWidth(name)`, in the program's glyph space.
+    fn width(&self, name: &str) -> Result<f32, Unported> {
+        match self {
+            Generic::Program(program) => program.width(name),
+            Generic::Fallback => {
+                let font = fallback_font()?;
+                Ok(f32::from(font.advance_width(font.name_to_glyph(name))))
+            }
+        }
+    }
+
+    /// `PDType1Font.getFontMatrix`: the program's matrix of six numbers, else PDFBox's default.
+    fn font_matrix(&self) -> Result<[f32; 6], Unported> {
+        Ok(match self {
+            Generic::Program(program) => match program.font_matrix[..] {
+                [a, b, c, d, e, f] => [a, b, c, d, e, f],
+                _ => [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+            },
+            Generic::Fallback => {
+                let scale = 0.001f32 * (1000.0f32 / f32::from(fallback_font()?.units_per_em));
+                [scale, 0.0, 0.0, scale, 0.0, 0.0]
+            }
+        })
+    }
+
+    /// `getFontBBox`.
+    fn font_bbox(&self) -> Result<[f32; 4], Unported> {
+        match self {
+            Generic::Program(program) => match program.font_bbox[..] {
+                [a, b, c, d, ..] => Ok([a, b, c, d]),
+                _ => Err(Unported(
+                    "a Type 1 font program without four numbers in its FontBBox measured, which \
+                     FontBox throws on"
+                        .to_owned(),
+                )),
+            },
+            Generic::Fallback => Ok(fallback_font()?.font_bbox()),
+        }
+    }
 }
 
 fn fallback() -> Unported {
@@ -159,9 +262,9 @@ impl Widths {
 #[derive(Debug)]
 enum SimpleKind {
     TrueType(Program<Box<TrueType>>),
-    /// A Type 1 font: one of the standard 14 PDFBox measures with its metrics, or one measured
-    /// with the fallback font.
-    Type1,
+    /// A Type 1 font, measured with its program or, unless it is one of the standard 14 PDFBox
+    /// measures with their metrics, with the fallback font.
+    Type1(Generic),
     Type3 {
         matrix: Matrix,
         bbox: Option<[f32; 4]>,
@@ -294,7 +397,7 @@ impl Font {
 
     fn placeholder() -> FontKind {
         FontKind::Simple(SimpleFont {
-            kind: SimpleKind::Type1,
+            kind: SimpleKind::Type1(Generic::Fallback),
             encoding: None,
             zapf_dingbats: false,
             symbolic: false,
@@ -314,7 +417,7 @@ impl Font {
             .and_then(|_| pdf.dict(dict, b"FontDescriptor"))
             .and_then(|fd| pdf.stream(fd, b"FontFile2"))
         {
-            match read_true_type(pdf, stream, true)? {
+            match read_true_type(pdf, stream)? {
                 Some(ttf) => program = Program::Embedded(ttf),
                 None => damaged = true,
             }
@@ -338,6 +441,8 @@ impl Font {
     fn type1(pdf: &Pdf, identity: Identity, dict: &Dictionary) -> Result<Font, Unported> {
         let name = pdf.name_as_string(dict, b"BaseFont");
         let mut font = Self::base(pdf, identity, dict, name, Self::placeholder())?;
+        let mut generic = Generic::Fallback;
+        let mut damaged = false;
         if let Some(fd) = pdf.dict(dict, b"FontDescriptor") {
             if fd.has(b"FontFile3") {
                 return Err(Unported(
@@ -346,21 +451,27 @@ impl Font {
                         .to_owned(),
                 ));
             }
-            if pdf.stream(fd, b"FontFile").is_some() {
-                return Err(Unported(
-                    "an embedded Type 1 font program, which the port does not read".to_owned(),
-                ));
+            if let Some(stream) = pdf.stream(fd, b"FontFile") {
+                let bytes = pdf.decode(stream)?;
+                let length1 = pdf.int(&stream.dict, b"Length1", -1);
+                let length2 = pdf.int(&stream.dict, b"Length2", -1);
+                match type1::read(&bytes, length1, length2) {
+                    type1::Read::Font(program) => generic = Generic::Program(program),
+                    type1::Read::Absent => {}
+                    type1::Read::Damaged => damaged = true,
+                    type1::Read::Unported(reason) => return Err(Unported(reason)),
+                }
             }
         }
-        let simple = SimpleFont {
-            kind: SimpleKind::Type1,
+        let embedded = matches!(generic, Generic::Program(_));
+        let mut simple = SimpleFont {
+            kind: SimpleKind::Type1(generic),
             encoding: None,
             zapf_dingbats: false,
             symbolic: false,
-            embedded: false,
-            damaged: false,
+            embedded,
+            damaged,
         };
-        let mut simple = simple;
         simple.encoding = Some(Box::new(font.read_encoding(pdf, dict, &simple)?));
         simple.zapf_dingbats = font.standard14_name() == Some(Standard14::ZapfDingbats);
         font.kind = FontKind::Simple(simple);
@@ -570,7 +681,22 @@ impl Font {
             }
         }
         match &simple.kind {
-            SimpleKind::Type1 => Ok(Builtin::Standard.encoding().clone()),
+            SimpleKind::Type1(Generic::Fallback) => Ok(Builtin::Standard.encoding().clone()),
+            SimpleKind::Type1(Generic::Program(program)) => match &program.encoding {
+                None => Err(Unported(
+                    "a Type 1 font program without an encoding, which PDFBox fails on".to_owned(),
+                )),
+                Some(BuiltIn::Standard) => Ok(Encoding::from_font_box(
+                    &Builtin::Standard.encoding().entries(),
+                )),
+                Some(BuiltIn::Custom(entries)) => {
+                    let parsed: Vec<(i32, String)> = encoding::java_integer_map_order(entries)
+                        .into_iter()
+                        .map(|(code, name)| (code, name.clone()))
+                        .collect();
+                    Ok(Encoding::from_font_box(&parsed))
+                }
+            },
             SimpleKind::TrueType(program) => {
                 if self.descriptor.as_ref().map(Descriptor::is_symbolic) == Some(false) {
                     return Ok(Builtin::Standard.encoding().clone());
@@ -584,9 +710,7 @@ impl Font {
                 {
                     return Ok(Builtin::Standard.encoding().clone());
                 }
-                let Program::Embedded(ttf) = program else {
-                    return Err(fallback());
-                };
+                let ttf = program.font()?;
                 let mut entries = Vec::new();
                 for code in 0..=256 {
                     let glyph = true_type_code_to_gid_symbolic_unsettled(ttf, code);
@@ -848,11 +972,20 @@ impl Font {
     fn code_to_gid(&self, code: u32) -> Result<u32, Unported> {
         match &self.kind {
             FontKind::Simple(simple) => {
-                let SimpleKind::TrueType(Program::Embedded(ttf)) = &simple.kind else {
-                    return Err(fallback());
+                let SimpleKind::TrueType(program) = &simple.kind else {
+                    return Err(Unported(
+                        "a glyph id asked of a font that is not TrueType, which PDFBox has none \
+                         for"
+                        .to_owned(),
+                    ));
                 };
                 let encoding = simple.encoding.as_deref().ok_or_else(fallback)?;
-                Ok(true_type_code_to_gid(ttf, encoding, simple.symbolic, code))
+                Ok(true_type_code_to_gid(
+                    program.font()?,
+                    encoding,
+                    simple.symbolic,
+                    code,
+                ))
             }
             FontKind::Type0(type0) => {
                 let descendant = &type0.descendant;
@@ -935,17 +1068,19 @@ impl Font {
     fn width_from_font(&self, code: u32) -> Result<f32, Unported> {
         match &self.kind {
             FontKind::Simple(simple) => match &simple.kind {
-                SimpleKind::TrueType(Program::Embedded(ttf)) => {
+                SimpleKind::TrueType(program) => {
                     let glyph = self.code_to_gid(code)?;
-                    Ok(scaled_advance(ttf, glyph))
+                    Ok(scaled_advance(program.font()?, glyph))
                 }
-                SimpleKind::TrueType(Program::Fallback) => Err(fallback()),
-                SimpleKind::Type1 => {
+                SimpleKind::Type1(generic) => {
                     let encoding = simple.encoding.as_deref().ok_or_else(fallback)?;
-                    if encoding.name(code as i32) == ".notdef" {
+                    let name = self.name_in_font(simple, generic, encoding.name(code as i32))?;
+                    if !simple.embedded && name == ".notdef" {
                         return Ok(250.0);
                     }
-                    Err(fallback())
+                    let width = generic.width(&name)?;
+                    let [a, _, _, _, e, _] = generic.font_matrix()?;
+                    Ok((f64::from(width) * (f64::from(a) * 1000.0) + f64::from(e)) as f32)
                 }
                 SimpleKind::Type3 { .. } => Err(Unported(
                     "a Type 3 glyph measured from its glyph procedure, which the port does not \
@@ -999,10 +1134,7 @@ impl Font {
             FontKind::Type0(type0) => &type0.descendant.program,
             FontKind::Simple(_) => return Ok(None),
         };
-        match program {
-            Program::Embedded(ttf) => Ok(Some(ttf.units_per_em)),
-            Program::Fallback => Err(fallback()),
-        }
+        Ok(Some(program.font()?.units_per_em))
     }
 
     /// `getFontDescriptor`.
@@ -1022,15 +1154,14 @@ impl Font {
                     if let Some(bbox) = self.descriptor.as_ref().and_then(|d| d.font_bbox) {
                         return Ok(bbox);
                     }
-                    match program {
-                        Program::Embedded(ttf) => Ok(ttf.font_bbox()),
-                        Program::Fallback => Err(fallback()),
+                    Ok(program.font()?.font_bbox())
+                }
+                SimpleKind::Type1(generic) => {
+                    match self.descriptor.as_ref().and_then(|d| d.font_bbox) {
+                        Some(bbox) if nonzero(&bbox) => Ok(bbox),
+                        _ => generic.font_bbox(),
                     }
                 }
-                SimpleKind::Type1 => match self.descriptor.as_ref().and_then(|d| d.font_bbox) {
-                    Some(bbox) if nonzero(&bbox) => Ok(bbox),
-                    _ => Err(fallback()),
-                },
                 SimpleKind::Type3 { bbox, .. } => match bbox {
                     None => Ok([0.0; 4]),
                     Some(bbox) if nonzero(bbox) => Ok(*bbox),
@@ -1094,7 +1225,7 @@ impl Font {
         match &self.kind {
             FontKind::Type0(type0) => type0.descendant.average_width(),
             FontKind::Simple(SimpleFont {
-                kind: SimpleKind::Type1,
+                kind: SimpleKind::Type1(_),
                 ..
             }) if self.afm.is_some() => self.afm.map_or(0.0, FontMetrics::average_character_width),
             FontKind::Simple(_) => self.widths.average,
@@ -1150,6 +1281,41 @@ impl Font {
         Ok(Some(width))
     }
 
+    /// `PDType1Font.getNameInFont`: the name a glyph has in the program PDFBox measures with,
+    /// `.notdef` where a substitute has no glyph for it.
+    fn name_in_font(
+        &self,
+        simple: &SimpleFont,
+        generic: &Generic,
+        name: &str,
+    ) -> Result<String, Unported> {
+        if simple.embedded || generic.has_glyph(name)? {
+            return Ok(name.to_owned());
+        }
+        if let Some(alternative) = alternative_name(name) {
+            if generic.has_glyph(alternative)? {
+                return Ok(alternative.to_owned());
+            }
+        }
+        let list: &GlyphList = if simple.zapf_dingbats {
+            &encoding::ZAPF_DINGBATS
+        } else {
+            &encoding::ADOBE
+        };
+        if let Some(unicode) = list.to_unicode(name) {
+            let mut chars = unicode.chars();
+            if let (Some(only), None) = (chars.next(), chars.next()) {
+                if only.len_utf16() == 1 {
+                    let uni = uni_name(only);
+                    if generic.has_glyph(&uni)? {
+                        return Ok(uni);
+                    }
+                }
+            }
+        }
+        Ok(".notdef".to_owned())
+    }
+
     /// `encode(32)`: the bytes of a space in the font, or `None` where PDFBox throws an
     /// `IllegalArgumentException` or an `UnsupportedOperationException`.
     fn encode_space(&self) -> Result<Option<Vec<u8>>, Unported> {
@@ -1163,23 +1329,25 @@ impl Font {
                 let name = list.code_point_to_name(' ');
                 match &simple.kind {
                     SimpleKind::Type3 { .. } => Ok(None),
-                    SimpleKind::Type1 => {
+                    SimpleKind::Type1(generic) => {
                         let encoding = simple.encoding.as_deref().ok_or_else(fallback)?;
                         if !encoding.contains(name) {
                             return Ok(None);
                         }
-                        if !self.is_standard14() {
-                            return Err(fallback());
+                        if self.is_standard14() {
+                            if name == ".notdef" {
+                                return Ok(None);
+                            }
+                        } else {
+                            let in_font = self.name_in_font(simple, generic, name)?;
+                            if in_font == ".notdef" || !generic.has_glyph(&in_font)? {
+                                return Ok(None);
+                            }
                         }
-                        if name == ".notdef" {
-                            return Ok(None);
-                        }
-                        Ok(encoding.code(name).map(|code| vec![code as u8]))
+                        Ok(encoding.first_code(name)?.map(|code| vec![code as u8]))
                     }
                     SimpleKind::TrueType(program) => {
-                        let Program::Embedded(ttf) = program else {
-                            return Err(fallback());
-                        };
+                        let ttf = program.font()?;
                         let encoding = simple.encoding.as_deref().ok_or_else(|| {
                             Unported(
                                 "a TrueType font without an encoding, which PDFBox encodes \
@@ -1381,14 +1549,10 @@ fn mac_roman(ttf: &TrueType) -> Option<&truetype::CmapSubtable> {
     })
 }
 
-/// Reads a TrueType program: the font, or `None` when it is damaged to PDFBox.
-fn read_true_type(
-    pdf: &Pdf,
-    stream: &Stream,
-    embedded: bool,
-) -> Result<Option<Box<TrueType>>, Unported> {
+/// Reads an embedded TrueType program: the font, or `None` when it is damaged to PDFBox.
+fn read_true_type(pdf: &Pdf, stream: &Stream) -> Result<Option<Box<TrueType>>, Unported> {
     let data = pdf.decode(stream)?;
-    match TrueType::read(&data, embedded) {
+    match TrueType::read(&data) {
         truetype::Read::Font(ttf) => Ok(Some(Box::new(ttf))),
         truetype::Read::Damaged(_) => Ok(None),
         truetype::Read::Unported(reason) => Err(Unported(reason)),
@@ -1453,7 +1617,7 @@ impl CidFont {
                 .or_else(|| pdf.stream(fd, b"FontFile"))
         });
         if let Some(stream) = stream {
-            match read_true_type(pdf, stream, true)? {
+            match read_true_type(pdf, stream)? {
                 Some(ttf) => {
                     font.program = Program::Embedded(ttf);
                     font.embedded = true;
