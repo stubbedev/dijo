@@ -10,6 +10,8 @@ mod media_type;
 pub(crate) mod metadata;
 #[cfg(test)]
 pub(crate) mod parity;
+#[cfg(test)]
+pub(crate) mod reference;
 mod subtitle;
 mod text;
 pub(crate) mod xhtml;

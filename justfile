@@ -99,7 +99,8 @@ text-reference:
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     fixtures=extractous-core/tests/fixtures/text
     rules=$(just native-image-rules)
-    java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" "$fixtures/TextReference.java" \
+    java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
+        extractous-core/tests/fixtures/formats/TextReference.java \
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
