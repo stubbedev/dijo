@@ -595,7 +595,7 @@ impl<'a> Workbook<'a> {
 
 /// `PageAnchoring.applySheetMetadata`: the sheets an embedded picture is drawn on, and the
 /// sheet where it is one.
-fn write_sheet_numbers(sheets: &BTreeSet<usize>, metadata: &mut TikaMetadata) {
+pub(crate) fn write_sheet_numbers(sheets: &BTreeSet<usize>, metadata: &mut TikaMetadata) {
     for sheet in sheets {
         metadata.add(excel::SHEET_NUMBERS, sheet.to_string());
     }

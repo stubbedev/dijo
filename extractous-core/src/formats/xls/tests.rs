@@ -8,14 +8,11 @@ use crate::formats::parity::{self, assert_same_as_tika_with};
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 11] = [
-    ("testEXCEL_1img.xls", "has pictures"),
+const DEFERRED_CONFORMANCE: [(&str, &str); 8] = [
     ("testEXCEL_5.xls", "before BIFF8"),
     ("testEXCEL_95.xls", "before BIFF8"),
-    ("testEXCEL_embeddedPDF_mac.xls", "has pictures"),
     ("testEXCEL_embeddedPDF_windows.xls", "embeds documents"),
     ("testEXCEL_embeded.xls", "embeds documents"),
-    ("testEXCEL_extra_metadata.xls", "has pictures"),
     ("testEXCEL_protected_passtika.xls", "encrypted"),
     ("testExcel_embeddedPDF.xls", "embeds documents"),
     ("testMSChart-govdocs-428996.xls", "embeds documents"),
@@ -63,7 +60,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     documents.sort();
     let defaults = ParserConfigs::default();
     let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert_eq!(ported.len(), 17);
+    assert_eq!(ported.len(), 20);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_with(&documents, TIKA_PARSER, &defaults);
 }
@@ -131,7 +128,7 @@ fn settings() -> OfficeParserConfig {
 
 fn read(stream: &[u8]) -> Result<Extracted, Unported> {
     let zone = TimeZone::fixed(0);
-    read_records(stream, &settings(), Box::leak(Box::new(zone)))
+    read_records(stream, &settings(), Box::leak(Box::new(zone))).map(|(read, _)| read)
 }
 
 fn texts(out: &[Out]) -> Vec<String> {
@@ -229,4 +226,48 @@ fn fails_where_a_shared_string_comes_before_the_table() {
     stream.extend(record(sid::LABEL_SST, &shared));
     stream.extend(record(sid::EOF, &[]));
     assert!(read(&stream).is_err());
+}
+
+fn escher(options: u16, kind: u16, body: &[u8]) -> Vec<u8> {
+    let mut bytes = options.to_le_bytes().to_vec();
+    bytes.extend(kind.to_le_bytes());
+    bytes.extend((body.len() as i32).to_le_bytes());
+    bytes.extend(body);
+    bytes
+}
+
+#[test]
+fn finds_the_pictures_and_the_sheets_showing_them() {
+    let mut blip = vec![0; 17];
+    blip.extend(b"png?");
+    let mut stored = vec![0; 36];
+    stored.extend(escher(0x6E00, 0xF01E, &blip));
+    let group = escher(
+        0x000F,
+        0xF000,
+        &escher(0x000F, 0xF001, &escher(0x0062, 0xF007, &stored)),
+    );
+    let mut options = 0x0104u16.to_le_bytes().to_vec();
+    options.extend(1i32.to_le_bytes());
+    let shapes = escher(
+        0x000F,
+        0xF002,
+        &escher(0x000F, 0xF004, &escher(0x0013, 0xF00B, &options)),
+    );
+    let mut stream = globals(&["One", "Two"], &[]);
+    let end = stream.len() - 4;
+    stream.splice(end..end, record(sid::DRAWING_GROUP, &group));
+    stream.extend(bof(0x10));
+    stream.extend(record(sid::EOF, &[]));
+    stream.extend(bof(0x10));
+    stream.extend(record(sid::DRAWING, &shapes));
+    stream.extend(record(sid::EOF, &[]));
+    let zone = TimeZone::fixed(0);
+    let (_, pictures) = read_records(&stream, &settings(), Box::leak(Box::new(zone))).unwrap();
+    let [picture] = &pictures[..] else {
+        panic!("one picture");
+    };
+    assert_eq!(picture.data, b"png?");
+    assert_eq!(picture.media_type, "image/png");
+    assert_eq!(picture.sheets, BTreeSet::from([2]));
 }

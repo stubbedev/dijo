@@ -1,16 +1,17 @@
 //! Excel 97–2003 workbooks (XLS, BIFF8) as Tika's `OfficeParser` reads them with its Excel
 //! extractor, `ExcelExtractor`: the summary information as metadata, then the workbook stream's
 //! records through POI's event model into Tika's `TikaHSSFListener`, a page per sheet with its
-//! cells in a table and the text found outside the cells after it, and the hidden sheets, rows,
-//! columns, protection and comment authors as metadata.
+//! cells in a table and the text found outside the cells after it, the pictures the drawing
+//! groups store as embedded documents, and the hidden sheets, rows, columns, protection and
+//! comment authors as metadata.
 //!
 //! Numbers are written as Tika's listener writes them: dates and the general format with
 //! Tika's `TikaExcelDataFormatter`, other formats with POI's own `DataFormatter`, both in the
 //! `en_US` locale with dates in Java's default time zone and the 1900 date system; see
 //! [`crate::formats::data_format`].
 //!
-//! An encrypted workbook, one in a format before BIFF8, one POI throws on, one with pictures or
-//! embedded documents, and macros extracted when asked to, are left to Tika: see
+//! An encrypted workbook, one in a format before BIFF8, one POI throws on, one with documents
+//! embedded in `MBD` storages, and macros extracted when asked to, are left to Tika: see
 //! [`XlsParser::defers`].
 
 mod drawing;
@@ -19,15 +20,20 @@ mod listener;
 mod records;
 mod stream;
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use drawing::{Content, Escher};
 use factory::{Event, Records};
 use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settings};
 use stream::Thrown;
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::formats::embedded::Wrapping;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::parse_summaries;
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::xlsx::write_sheet_numbers;
 use crate::formats::{Failure, Parser, Unported};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{EntryKind, Ole2, Unreadable};
@@ -63,8 +69,8 @@ impl Parser for XlsParser {
     }
 
     /// Defers workbooks POI or Tika throws on, encrypted ones, ones before BIFF8, ones with
-    /// pictures or embedded documents, macros extracted when asked to, and any workbook when
-    /// Java's default time zone, which dates are written in, cannot be read.
+    /// embedded documents, macros extracted when asked to, and any workbook when Java's default
+    /// time zone, which dates are written in, cannot be read.
     fn defers(
         &self,
         input: &[u8],
@@ -106,6 +112,15 @@ impl Parser for XlsParser {
 struct Workbook<'a> {
     file: Ole2<'a>,
     read: Extracted,
+    pictures: Vec<Picture>,
+}
+
+/// A picture of the drawing groups, as `findPictures` hands it to `handleEmbeddedResource`.
+struct Picture {
+    data: Vec<u8>,
+    media_type: &'static str,
+    /// The sheets whose shapes show it, numbered from one.
+    sheets: BTreeSet<usize>,
 }
 
 impl<'a> Workbook<'a> {
@@ -160,8 +175,12 @@ impl<'a> Workbook<'a> {
         let stream = file.read(entry).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot read the workbook stream: {reason}"))
         })?;
-        let read = read_records(&stream, config, zone)?;
-        Ok(Workbook { file, read })
+        let (read, pictures) = read_records(&stream, config, zone)?;
+        Ok(Workbook {
+            file,
+            read,
+            pictures,
+        })
     }
 
     /// Writes the sheets as the listener does while it reads the records. Where the output
@@ -185,6 +204,14 @@ impl<'a> Workbook<'a> {
             }
         }
         write_outside(outside, xhtml)?;
+        for picture in &self.pictures {
+            let mut metadata = TikaMetadata::new();
+            if !picture.sheets.is_empty() {
+                write_sheet_numbers(&picture.sheets, &mut metadata);
+            }
+            metadata.set("Content-Type", picture.media_type);
+            xhtml.parse_embedded(&picture.data, &metadata, Wrapping::PackageEntry)?;
+        }
         if let Some(stop) = stopped {
             return Err(stop.into());
         }
@@ -257,13 +284,13 @@ fn write_out(out: &[Out], xhtml: &mut Xhtml) -> Result<(), Stop> {
     Ok(())
 }
 
-/// `TikaHSSFListener.processFile`: the records through the listener, and the text left outside
-/// the sheets. An encrypted workbook, and pictures of the drawing groups, are left to Tika.
+/// `TikaHSSFListener.processFile`: the records through the listener, the text left outside the
+/// sheets, and the pictures of the drawing groups. An encrypted workbook is left to Tika.
 fn read_records(
     stream: &[u8],
     config: &OfficeParserConfig,
     zone: &'static TimeZone,
-) -> Result<Extracted, Unported> {
+) -> Result<(Extracted, Vec<Picture>), Unported> {
     let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
     let settings = Settings {
         headers_and_footers: config.includes_headers_and_footers(),
@@ -289,24 +316,61 @@ fn read_records(
         }
     }
     let read = listener.finish().map_err(throws)?;
+    let sheets_of_pictures = sheets_of_pictures(&read.sheet_drawings);
+    let mut pictures = Vec::new();
+    let mut stored = 0;
     for &index in &read.drawing_groups {
-        match drawing::has_pictures(&records.drawing_groups[index]) {
-            Some(false) => {}
-            Some(true) => {
-                return Err(Unported(
-                    "the workbook has pictures, which this port does not parse".to_owned(),
-                ))
-            }
-            None => {
-                return Err(Unported(
-                    "the workbook has drawing data that runs past its end, which this port does \
-                     not read as POI does"
-                        .to_owned(),
-                ))
+        let records = drawing::decode(&records.drawing_groups[index]).map_err(throws)?;
+        find_pictures(&records, &sheets_of_pictures, &mut stored, &mut pictures);
+    }
+    Ok((read, pictures))
+}
+
+/// `buildPicToSheetsMap`: the sheets, numbered from one, whose shapes show each stored picture,
+/// by its number.
+fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSet<usize>> {
+    fn collect(record: &Escher, sheet: usize, map: &mut HashMap<i32, BTreeSet<usize>>) {
+        if let Content::Options(pictures) = &record.content {
+            for &picture in pictures {
+                if picture > 0 {
+                    map.entry(picture).or_default().insert(sheet);
+                }
             }
         }
+        for child in &record.children {
+            collect(child, sheet, map);
+        }
     }
-    Ok(read)
+    let mut map = HashMap::new();
+    for (&index, data) in drawings {
+        let sheet = index as usize + 1;
+        for record in drawing::sheet_records(data) {
+            collect(&record, sheet, &mut map);
+        }
+    }
+    map
+}
+
+/// `findPictures`: each BSE record counted, and the picture of each that holds one.
+fn find_pictures(
+    records: &[Escher],
+    sheets: &HashMap<i32, BTreeSet<usize>>,
+    stored: &mut i32,
+    pictures: &mut Vec<Picture>,
+) {
+    for record in records {
+        if let Content::Stored(blip) = &record.content {
+            *stored += 1;
+            if let Some(blip) = blip {
+                pictures.push(Picture {
+                    data: drawing::picture_data(&blip.data).to_vec(),
+                    media_type: drawing::media_type(blip.record_id),
+                    sheets: sheets.get(stored).cloned().unwrap_or_default(),
+                });
+            }
+        }
+        find_pictures(&record.children, sheets, stored, pictures);
+    }
 }
 
 #[cfg(test)]
