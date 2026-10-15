@@ -25,6 +25,7 @@ pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
 mod formats;
 mod mime;
+mod ole2;
 pub mod text;
 pub mod unicode;
 mod xml;

@@ -7,9 +7,9 @@ use std::collections::HashSet;
 use super::package::refuse_document_type;
 use super::package::{Package, Unported, CORE_PROPERTIES_CONTENT_TYPE};
 use super::read_quietly;
-use crate::formats::handlers::is_blank;
 use crate::formats::java::{self, parse_long};
-use crate::formats::metadata::TikaMetadata;
+use crate::formats::metadata::{TikaMetadata, USER_DEFINED_PREFIX};
+use crate::formats::ole2::add_multi;
 use crate::formats::xml::{
     self, attribute, attribute_named, Attribute, SaxHandler, StartTag, XMLNS,
 };
@@ -33,10 +33,6 @@ const CUSTOM_PROPERTIES: &str =
 const MAX_TEXT_LENGTH: usize = 64 * 1024;
 /// `SAXBasedMetadataExtractor.MAX_DECIMAL_LENGTH`.
 const MAX_DECIMAL_LENGTH: usize = 256;
-/// `Metadata.MAX_PREFIX_ROUTE_NAME_LENGTH`.
-const MAX_CUSTOM_NAME_LENGTH: usize = 1024;
-/// `Metadata.MAX_PREFIX_ROUTE_NAMES`.
-const MAX_CUSTOM_NAMES: usize = 10_000;
 /// The largest number of digits this port writes a decimal custom property out with.
 const MAX_PLAIN_DECIMAL_DIGITS: i64 = 100_000;
 
@@ -172,34 +168,6 @@ fn set_date(metadata: &mut TikaMetadata, name: &str, value: Option<Instant>) {
     }
 }
 
-/// `SummaryExtractor.addMulti`: the values separated by semicolons, each not blank and not
-/// present yet.
-fn add_multi(metadata: &mut TikaMetadata, name: &str, value: &str) {
-    if is_blank(value) {
-        return;
-    }
-    let mut seen: HashSet<String> = metadata.values(name).iter().cloned().collect();
-    for part in java_split(value, ';') {
-        if !seen.contains(part) && !is_blank(part) {
-            metadata.add(name, part);
-            seen.insert(part.to_owned());
-        }
-    }
-}
-
-/// `String.split` on one character: without the empty strings at the end.
-fn java_split(text: &str, separator: char) -> Vec<&str> {
-    let mut parts: Vec<&str> = text.split(separator).collect();
-    while parts.len() > 1 && parts.last().is_some_and(|part| part.is_empty()) {
-        parts.pop();
-    }
-    if parts.len() == 1 && parts[0].is_empty() && !text.is_empty() {
-        parts.clear();
-    }
-    parts
-}
-
-/// The fields of the core properties, by element.
 const CORE_FIELDS: [(&str, &str); 16] = [
     (CORE_NAMESPACE, "category"),
     (CORE_NAMESPACE, "contentStatus"),
@@ -640,24 +608,13 @@ impl CustomProperties {
         if let Some(unported) = &self.unported {
             return Err(Unported(unported.clone()));
         }
-        let mut names = 0;
         for (name, value) in &self.values {
             let value = if self.dates.contains(name) {
                 parse_offset_date_time(value).map_or_else(|| value.clone(), Instant::format)
             } else {
                 value.clone()
             };
-            if is_blank(name) || name.encode_utf16().count() > MAX_CUSTOM_NAME_LENGTH {
-                continue;
-            }
-            let key = format!("custom:{name}");
-            if metadata.values(&key).is_empty() {
-                if names >= MAX_CUSTOM_NAMES {
-                    continue;
-                }
-                names += 1;
-            }
-            metadata.add(&key, value);
+            metadata.add_prefixed(USER_DEFINED_PREFIX, name, value);
         }
         Ok(())
     }

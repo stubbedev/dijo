@@ -22,14 +22,14 @@ use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
-use crate::formats::java::trim;
+use crate::formats::java::{self, trim};
 use crate::formats::java_time::TimeZone;
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 use date_format::{is_a_date_format, is_valid_excel_date, java_date, ExcelStyleDateFormatter};
 use decimal::{BigDecimal, Rounding};
 use decimal_format::DecimalFormat;
-use dtoa::java_double_to_string;
+pub(crate) use dtoa::java_double_to_string;
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.
@@ -821,7 +821,7 @@ fn create_date_format(format: &str) -> Created {
 
 /// The fraction format `createFormat` makes of a format with a `#/` or `?/`.
 fn create_fraction_format(format: &str) -> Result<Format, FormatError> {
-    for chunk in java_split(format, ';') {
+    for chunk in java::split(format, ';') {
         let chunk = chunk.replace('?', "#");
         let chunk = FRACTION_STRIPPER.replace_all(&chunk, " ");
         let chunk = SPACES.replace_all(&chunk, " ");
@@ -836,18 +836,6 @@ fn create_fraction_format(format: &str) -> Result<Format, FormatError> {
         }
     }
     FractionFormat::new(DEFAULT_FRACTION_WHOLE_PART, DEFAULT_FRACTION_PART).map(Format::Fraction)
-}
-
-/// `String.split(separator)`: the pieces between the separators, trailing empty ones dropped.
-fn java_split(text: &str, separator: char) -> Vec<&str> {
-    let mut pieces: Vec<&str> = text.split(separator).collect();
-    while pieces.len() > 1 && pieces.last().is_some_and(|piece| piece.is_empty()) {
-        pieces.pop();
-    }
-    if pieces == [""] && !text.is_empty() {
-        pieces.clear();
-    }
-    pieces
 }
 
 /// `createNumberFormat`, the general format where the pattern does not compile.

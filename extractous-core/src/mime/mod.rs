@@ -25,6 +25,7 @@ mod registry;
 mod text;
 mod uri;
 
+pub(crate) use detectors::ole::directory_type as ole_directory_type;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
@@ -138,7 +139,7 @@ pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, Detec
     let ole_header = ole::is_ole(data);
     let ole_file = if ole_header {
         written.spool(origin);
-        ole::OleFile::open(data)
+        ole::OleFile::open(data).ok()
     } else {
         None
     };

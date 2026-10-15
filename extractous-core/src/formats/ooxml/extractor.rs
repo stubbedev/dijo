@@ -10,6 +10,7 @@ use super::package::{
 use crate::config::OfficeParserConfig;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::ole2::object::{self, OleObject};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -154,8 +155,8 @@ fn embedding(package: &Package, relationship: &Relationship) -> Option<(usize, E
 }
 
 /// What of `handleEmbeddedPart`'s work on one relationship of a main part this port does not
-/// do: opening an OLE object as a compound file, and extracting macros when asked to; with
-/// `files`, also parsing an embedded file.
+/// do: an OLE object POI throws on, and extracting macros when asked to; with `files`, also
+/// parsing an embedded file or OLE object.
 pub(crate) fn check_embedded(
     package: &Package,
     config: &OfficeParserConfig,
@@ -180,9 +181,8 @@ pub(crate) fn check_embedded(
     let Some((target, embedding)) = embedding(package, relationship) else {
         return Ok(());
     };
-    let unported = matches!(embedding, Embedding::OleObject)
-        || (embedding == Embedding::Macros && config.extracts_macros())
-        || (files && matches!(embedding, Embedding::File(_)));
+    let unported = (embedding == Embedding::Macros && config.extracts_macros())
+        || (files && matches!(embedding, Embedding::File(_) | Embedding::OleObject));
     if unported {
         return Err(Unported(format!(
             "{} embeds {} ({}), which Tika parses",
@@ -191,7 +191,27 @@ pub(crate) fn check_embedded(
             relationship.kind
         )));
     }
+    if embedding == Embedding::OleObject {
+        ole_object(package, source, relationship, target)?;
+    }
     Ok(())
+}
+
+/// `handleEmbeddedOLE`'s reading of the OLE object a relationship leads to.
+fn ole_object(
+    package: &Package,
+    source: usize,
+    relationship: &Relationship,
+    target: usize,
+) -> Result<OleObject, Unported> {
+    let bytes = package
+        .read(target)
+        .map_err(|_| Unported(format!("the part {} cannot be read", package.name(target))))?;
+    object::open(
+        &bytes,
+        &relationship_id(package, source, relationship),
+        package.name(target),
+    )
 }
 
 /// `handleEmbeddedParts` for the relationships of the `main_parts`, once [`check_embedded`]
@@ -226,27 +246,29 @@ pub(crate) fn write_embedded_parts(
             let Some((target, embedding)) = embedding(package, relationship) else {
                 continue;
             };
+            let file = |resource_type, xhtml: &mut Xhtml| {
+                let metadata = embedded_file_metadata(
+                    package,
+                    source,
+                    relationship,
+                    target,
+                    resource_type,
+                    anchor,
+                );
+                xhtml.parse_embedded(&package.read(target)?, &metadata, Wrapping::PackageEntry)
+            };
             match embedding {
-                Embedding::File(resource_type) => {
-                    let metadata = embedded_file_metadata(
-                        package,
-                        source,
-                        relationship,
-                        target,
-                        resource_type,
-                        anchor,
-                    );
-                    xhtml.parse_embedded(
-                        &package.read(target)?,
-                        &metadata,
-                        Wrapping::PackageEntry,
-                    )?;
-                }
+                Embedding::File(resource_type) => file(resource_type, xhtml)?,
                 Embedding::OleObject => {
-                    return Err(Failure::Malformed(format!(
-                        "{} is an OLE object, which this port does not open",
-                        package.name(target)
-                    )))
+                    match ole_object(package, source, relationship, target)
+                        .map_err(|Unported(reason)| Failure::Malformed(reason))?
+                    {
+                        OleObject::Document { data, metadata } => {
+                            xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)?;
+                        }
+                        OleObject::Part => file("ATTACHMENT", xhtml)?,
+                        OleObject::Nothing => {}
+                    }
                 }
                 Embedding::SmallOleObject | Embedding::Macros => {}
             }
@@ -268,11 +290,7 @@ fn embedded_file_metadata(
     let mut metadata = TikaMetadata::new();
     metadata.set(
         "tk:embedded-relationship-id",
-        format!(
-            "{}{}",
-            source_description(package.name(source)),
-            relationship.id
-        ),
+        relationship_id(package, source, relationship),
     );
     metadata.set("tk:embedded-resource-type", resource_type);
     let name = package.name(target);
@@ -284,6 +302,16 @@ fn embedded_file_metadata(
     metadata.set("Content-Type", package.parts[target].content_type.clone());
     anchor(target, &mut metadata);
     metadata
+}
+
+/// The relationship id `handleEmbeddedPart` gives an embedded document: the relationship's,
+/// after its source's description.
+fn relationship_id(package: &Package, source: usize, relationship: &Relationship) -> String {
+    format!(
+        "{}{}",
+        source_description(package.name(source)),
+        relationship.id
+    )
 }
 
 /// The prefix `handleEmbeddedPart` gives the relationship ids of a slide's embedded files: the

@@ -17,6 +17,7 @@ mod java_time;
 mod mail;
 pub(crate) mod metadata;
 mod odf;
+mod ole2;
 mod ooxml;
 #[cfg(test)]
 pub(crate) mod parity;
@@ -51,6 +52,10 @@ use xhtml::{ContentHandler, Stop, Xhtml};
 const CHUNK_BYTES: usize = 8192;
 /// The chunks a streamed extraction writes ahead of its reader.
 const CHUNKS_AHEAD: usize = 16;
+
+/// Why a native parser leaves a document to Tika: what of it the port does not reproduce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unported(pub(crate) String);
 
 /// Why a native parser did not finish its document.
 #[derive(Debug)]

@@ -295,6 +295,19 @@ pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
             .all(|(x, y)| x == y || upper(x) == upper(y) || lower(upper(x)) == lower(upper(y)))
 }
 
+/// `String.split` on one character that is no regex metacharacter: the pieces without the
+/// empty ones at the end, and none for a text of separators only.
+pub(crate) fn split(text: &str, separator: char) -> Vec<&str> {
+    let mut pieces: Vec<&str> = text.split(separator).collect();
+    while pieces.len() > 1 && pieces.last().is_some_and(|piece| piece.is_empty()) {
+        pieces.pop();
+    }
+    if pieces == [""] && !text.is_empty() {
+        pieces.clear();
+    }
+    pieces
+}
+
 /// `String.trim()`: without the characters up to U+0020 at either end.
 pub(crate) fn trim(text: &str) -> &str {
     text.trim_matches(|character| character <= ' ')
