@@ -1,18 +1,8 @@
-//! gzip files as commons-compress's `GzipCompressorInputStream` reads them without
-//! `decompressConcatenated`: the first member only, its header checked, its content inflated and
-//! checked against the trailer's CRC and size, whatever follows it ignored.
+//! gzip files, which flate2 decodes, read as `GzipCompressorInputStream` reads them without
+//! `decompressConcatenated`: the first member only; and `GzipUtils`'s names of what they hold.
 
-use super::{crc32, inflate_whole, throws, Undecoded};
+use super::{read_whole, Undecoded};
 use crate::formats::handlers::utf16_length;
-
-const ID1: u8 = 31;
-const ID2: u8 = 139;
-const DEFLATED: u8 = 8;
-const FHCRC: u8 = 0x02;
-const FEXTRA: u8 = 0x04;
-const FNAME: u8 = 0x08;
-const FCOMMENT: u8 = 0x10;
-const FRESERVED: u8 = 0xE0;
 
 /// `GzipUtils`'s suffixes of gzip file names, with what replaces each in the uncompressed name.
 const UNCOMPRESSED_SUFFIXES: [(&str, &str); 11] = [
@@ -62,116 +52,20 @@ pub(crate) fn uncompressed_file_name(name: &str) -> Option<String> {
 /// The first member of a gzip file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Member {
-    /// The original file name of the header, decoded as ISO-8859-1.
+    /// The original file name of the header, decoded as ISO-8859-1 as commons-compress decodes it.
     pub(crate) file_name: Option<String>,
     pub(crate) content: Vec<u8>,
 }
 
-/// The header fields read front to back, a read past the end failing as `DataInput` fails.
-struct Header<'a> {
-    data: &'a [u8],
-    at: usize,
-}
-
-impl<'a> Header<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8], Undecoded> {
-        let end = self
-            .at
-            .checked_add(count)
-            .filter(|end| *end <= self.data.len())
-            .ok_or_else(|| throws("the input ends inside the .gz header"))?;
-        let taken = &self.data[self.at..end];
-        self.at = end;
-        Ok(taken)
-    }
-
-    fn byte(&mut self) -> Result<u8, Undecoded> {
-        Ok(self.take(1)?[0])
-    }
-
-    /// `readToNull`: the bytes up to a zero byte, which is taken too.
-    fn up_to_null(&mut self) -> Result<&'a [u8], Undecoded> {
-        let rest = &self.data[self.at..];
-        let length = rest
-            .iter()
-            .position(|&byte| byte == 0)
-            .ok_or_else(|| throws("the input ends inside the .gz header"))?;
-        self.at += length + 1;
-        Ok(&rest[..length])
-    }
-}
-
-/// `ExtraField.fromBytes`: subfields that fill the extra field exactly.
-fn check_extra(extra: &[u8]) -> Result<(), Undecoded> {
-    let mut at = 0;
-    while at + 4 <= extra.len() {
-        let length = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
-        at += 4;
-        if length > extra.len() - at {
-            return Err(throws("an extra subfield is longer than the extra field"));
-        }
-        at += length;
-    }
-    if at < extra.len() {
-        return Err(throws("the extra field ends inside a subfield"));
-    }
-    Ok(())
-}
-
-/// The first member of the gzip file `data`, or why commons-compress fails on it.
+/// The first member of the gzip file `data`, as flate2 reads it: the header checked, the
+/// content checked against the trailer's CRC and size, whatever follows ignored.
 pub(crate) fn decode(data: &[u8]) -> Result<Member, Undecoded> {
-    let mut header = Header { data, at: 0 };
-    if data.first() != Some(&ID1) || data.get(1) != Some(&ID2) {
-        return Err(throws("Input is not in the .gz format."));
-    }
-    header.at = 2;
-    let method = header.byte()?;
-    if method != DEFLATED {
-        return Err(throws(format!(
-            "Unsupported compression method {method} in the .gz header"
-        )));
-    }
-    let flags = header.byte()?;
-    if flags & FRESERVED != 0 {
-        return Err(throws("Reserved flags are set in the .gz header."));
-    }
-    header.take(6)?;
-    if flags & FEXTRA != 0 {
-        let length = header.take(2)?;
-        let length = usize::from(u16::from_le_bytes([length[0], length[1]]));
-        check_extra(header.take(length)?)?;
-    }
-    let file_name = if flags & FNAME != 0 {
-        Some(
-            header
-                .up_to_null()?
-                .iter()
-                .map(|&byte| char::from(byte))
-                .collect(),
-        )
-    } else {
-        None
-    };
-    if flags & FCOMMENT != 0 {
-        header.up_to_null()?;
-    }
-    if flags & FHCRC != 0 {
-        header.take(2)?;
-    }
-    let (content, taken) = inflate_whole(&data[header.at..], false)?;
-    let trailer = data
-        .get(header.at + taken..header.at + taken + 8)
-        .ok_or_else(|| throws("the input ends inside the .gz trailer"))?;
-    let crc = u32::from_le_bytes(trailer[..4].try_into().expect("four bytes"));
-    if crc != crc32(&content) {
-        return Err(throws("Gzip-compressed data is corrupt (CRC32 error)."));
-    }
-    let size = u32::from_le_bytes(trailer[4..].try_into().expect("four bytes"));
-    if u64::from(size) != content.len() as u64 & 0xFFFF_FFFF {
-        return Err(throws(
-            "Gzip-compressed data is corrupt (uncompressed size mismatch).",
-        ));
-    }
+    let mut decoder = flate2::bufread::GzDecoder::new(data);
+    let content = read_whole(&mut decoder)?;
+    let file_name = decoder
+        .header()
+        .and_then(flate2::GzHeader::filename)
+        .map(|name| name.iter().map(|&byte| char::from(byte)).collect());
     Ok(Member { file_name, content })
 }
 
@@ -216,7 +110,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn fails_where_commons_compress_fails() {
+    fn fails_on_what_is_not_a_whole_member() {
         let data = gzip(b"some content", None);
         assert!(decode(&data[..data.len() - 1]).is_err());
         assert!(decode(&data[..12]).is_err());
@@ -227,10 +121,17 @@ pub(crate) mod tests {
         let mut reserved = data.clone();
         reserved[3] |= 0x20;
         assert!(decode(&reserved).is_err());
+    }
+
+    /// commons-compress rejects an extra field its subfields do not fill exactly; flate2,
+    /// like gzip itself, does not look inside it.
+    #[test]
+    fn reads_an_extra_field_commons_compress_rejects() {
+        let data = gzip(b"some content", None);
         let mut extra = data[..10].to_vec();
-        extra[3] |= FEXTRA;
+        extra[3] |= 0x04;
         extra.extend_from_slice(&[5, 0, b'a', b'b', 9, 0, 0]);
         extra.extend_from_slice(&data[10..]);
-        assert!(decode(&extra).is_err());
+        assert_eq!(decode(&extra).unwrap().content, b"some content");
     }
 }

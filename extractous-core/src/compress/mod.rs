@@ -15,10 +15,17 @@ pub(crate) mod lz4;
 pub(crate) mod lzw;
 pub(crate) mod snappy;
 pub(crate) mod tar;
+pub(crate) mod xz;
 pub(crate) mod zip;
 pub(crate) mod zlib;
+pub(crate) mod zstd;
 
 use std::fmt;
+use std::io::Read;
+
+/// `CompressorParser`'s `memoryLimitInKb`, which the decoders that size their memory by the
+/// stream keep within.
+pub(crate) const MEMORY_LIMIT_KIB: u32 = 100_000;
 
 /// The most bytes a stream is decoded into: Tika's path, which streams them, reads more.
 pub(crate) const MAX_DECODED: usize = 256 * 1024 * 1024;
@@ -93,29 +100,16 @@ fn within_limit(decoded: &[u8]) -> Result<(), Undecoded> {
     }
 }
 
-/// Inflates the deflate data at the start of `input` to its end, raw or behind a zlib header
-/// as `zlib` says: what it decodes into and how many bytes of `input` it takes, or why it fails
-/// to end, as `java.util.zip.Inflater` fails when the input runs out or turns out corrupt.
-fn inflate_whole(input: &[u8], zlib: bool) -> Result<(Vec<u8>, usize), Undecoded> {
-    let mut inflater = flate2::Decompress::new(zlib);
-    let mut out = Vec::with_capacity(input.len().saturating_mul(4).min(MAX_DECODED));
-    loop {
-        let consumed = usize::try_from(inflater.total_in()).expect("the input fits in memory");
-        let produced = out.len();
-        out.reserve(64 * 1024);
-        let status = inflater
-            .decompress_vec(&input[consumed..], &mut out, flate2::FlushDecompress::None)
-            .map_err(|e| throws(format!("the compressed data is corrupt: {e}")))?;
-        within_limit(&out)?;
-        let taken = usize::try_from(inflater.total_in()).expect("the input fits in memory");
-        match status {
-            flate2::Status::StreamEnd => return Ok((out, taken)),
-            _ if taken == consumed && out.len() == produced => {
-                return Err(throws("the input ends inside the compressed data"))
-            }
-            _ => {}
-        }
-    }
+/// What `reader`, a crate's decoder, gives up to its end, failing where it fails or past
+/// [`MAX_DECODED`] bytes.
+fn read_whole(reader: impl Read) -> Result<Vec<u8>, Undecoded> {
+    let mut out = Vec::new();
+    reader
+        .take(MAX_DECODED as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| throws(e.to_string()))?;
+    within_limit(&out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -172,12 +166,10 @@ pub(crate) mod tests {
     #[test]
     fn stops_decoding_past_the_limit() {
         let small = deflated_zeros(3);
-        assert_eq!(
-            inflate_whole(&small, false).unwrap(),
-            (vec![0; 775], small.len())
-        );
+        let inflate = |data| read_whole(flate2::bufread::DeflateDecoder::new(data));
+        assert_eq!(inflate(&small[..]).unwrap(), vec![0; 775]);
         let bomb = deflated_zeros(MAX_DECODED / 258 + 1);
-        assert_eq!(inflate_whole(&bomb, false), Err(Undecoded::TooLarge));
+        assert_eq!(inflate(&bomb[..]), Err(Undecoded::TooLarge));
         assert!(matches!(zip::inflate(&bomb), zip::Content::Oversized(_)));
     }
 }

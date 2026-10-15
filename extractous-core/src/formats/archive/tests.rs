@@ -12,8 +12,10 @@ use crate::compress::lz4::tests::lz4;
 use crate::compress::lzw::tests::encode as compress;
 use crate::compress::snappy::tests::snappy;
 use crate::compress::tar::tests::{pax, tar};
+use crate::compress::xz::tests::{lzma, xz};
 use crate::compress::zip::file::tests::zip;
 use crate::compress::zlib::tests::zlib;
+use crate::compress::zstd::tests::zstd;
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 use crate::formats::Parser;
 
@@ -162,8 +164,32 @@ fn extracts_compressed_files_as_tikas_path_does() {
             ("notes.txt.Z", compress(&text.repeat(3))),
             ("notes.sz", snappy(text)),
             ("notes.lz4", lz4(text)),
+            ("notes.txt.xz", xz(text)),
+            ("notes.lzma", lzma(text)),
         ],
     );
+}
+
+/// Why the native path extracts Zstandard files Tika's path leaves empty: Tika's native image
+/// lacks zstd-jni, so its path parses them with `EmptyParser`.
+const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as its native \
+                                     image lacks zstd-jni; the native path decodes it";
+
+#[test]
+fn decodes_zstandard_which_tikas_path_leaves_empty() {
+    let scratch = Scratch::new("archive-zstd");
+    let path = scratch.write("notes.txt.zst", &zstd(b"Zstandard text."));
+    let (parsed, _) = crate::formats::parity::documents(&CompressorParser, &[scratch.directory()]);
+    assert_eq!(
+        parsed,
+        std::slice::from_ref(&path),
+        "{ZSTD_WITHOUT_ZSTD_JNI}"
+    );
+    let text = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap()
+        .0;
+    assert!(text.contains("Zstandard text."), "{text}");
 }
 
 #[test]
@@ -173,9 +199,12 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &CompressorParser,
         COMPRESSOR_PARSER,
         &[&conformance_corpus()],
-        &[],
+        &[("testZSTD.zst", ZSTD_WITHOUT_ZSTD_JNI)],
     );
-    assert_eq!(deferred, ["TIKA-216.tgz", "quine.gz", "testZ_oom.Z"]);
+    assert_eq!(
+        deferred,
+        ["TIKA-216.tgz", "quine.gz", "testLZMA_oom", "testZ_oom.Z"]
+    );
 }
 
 #[test]

@@ -1,20 +1,11 @@
-//! zlib streams as commons-compress's `DeflateCompressorInputStream` reads them: the zlib
-//! header, the deflate data and the Adler-32 checksum through `InflaterInputStream`, whatever
-//! follows ignored.
+//! zlib streams, which flate2 decodes, read as `DeflateCompressorInputStream` reads them: the
+//! header, the deflate data and the Adler-32 checksum, whatever follows ignored.
 
-use super::{inflate_whole, throws, Undecoded};
-
-/// The `FDICT` flag of the header's second byte: the data needs a preset dictionary.
-const FDICT: u8 = 0x20;
+use super::{read_whole, Undecoded};
 
 /// The content of the zlib stream `data`, or why it is not decoded natively.
 pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
-    if data.get(1).is_some_and(|flags| flags & FDICT != 0) {
-        return Err(throws(
-            "the stream needs a preset dictionary, without which InflaterInputStream ends it",
-        ));
-    }
-    inflate_whole(data, true).map(|(content, _)| content)
+    read_whole(flate2::bufread::ZlibDecoder::new(data))
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! The compression formats commons-compress's `CompressorStreamFactory.detect` recognizes by
 //! their first bytes, and their decoding.
 
-use super::{bzip2, gzip, lz4, lzw, snappy, zlib, Undecoded};
+use super::{bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Undecoded};
 
 /// A compression format `CompressorStreamFactory.detect` recognizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,9 +114,10 @@ impl Compressor {
             Compressor::Z => lzw::decode(data).map(content),
             Compressor::SnappyFramed => snappy::decode(data).map(content),
             Compressor::Lz4Framed => lz4::decode(data).map(content),
-            Compressor::Pack200 | Compressor::Xz | Compressor::Lzma | Compressor::Zstd => {
-                Err(Undecoded::Unported)
-            }
+            Compressor::Xz => xz::decode_xz(data).map(content),
+            Compressor::Lzma => xz::decode_lzma(data).map(content),
+            Compressor::Zstd => zstd::decode(data).map(content),
+            Compressor::Pack200 => Err(Undecoded::Unported),
         }
     }
 }

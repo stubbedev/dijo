@@ -3,14 +3,12 @@
 //! little-endian bit stream, realigned to a multiple of eight codes whenever the width changes,
 //! the stream ending at the first code the input cannot fill.
 
-use super::{throws, within_limit, Undecoded};
+use super::{throws, within_limit, Undecoded, MEMORY_LIMIT_KIB};
 
 const MAGIC: [u8; 2] = [0x1F, 0x9D];
 const BLOCK_MODE: u8 = 0x80;
 const MAX_CODE_SIZE_MASK: u8 = 0x1F;
 const DEFAULT_CODE_SIZE: u32 = 9;
-/// `CompressorParser`'s `memoryLimitInKb`.
-const MEMORY_LIMIT_KIB: u64 = 100_000;
 const UNUSED_PREFIX: i32 = -1;
 
 /// `BitInputStream` in little-endian order: bytes taken one at a time into a cache of bits.
@@ -163,7 +161,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
         )));
     }
     let memory_kib = ((1u64 << max_code_size) * 6) >> 10;
-    if max_code_size == 31 || memory_kib > MEMORY_LIMIT_KIB {
+    if max_code_size == 31 || memory_kib > u64::from(MEMORY_LIMIT_KIB) {
         return Err(throws(format!(
             "{memory_kib} KiB of memory would be needed, beyond the limit of {MEMORY_LIMIT_KIB} KiB"
         )));

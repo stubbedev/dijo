@@ -13,13 +13,16 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
-const NATIVE: [Compressor; 6] = [
+const NATIVE: [Compressor; 9] = [
     Compressor::Gzip,
     Compressor::Bzip2,
     Compressor::Zlib,
     Compressor::Z,
     Compressor::SnappyFramed,
     Compressor::Lz4Framed,
+    Compressor::Xz,
+    Compressor::Lzma,
+    Compressor::Zstd,
 ];
 
 const MEDIA_TYPES: [&str; NATIVE.len()] = [
@@ -29,6 +32,9 @@ const MEDIA_TYPES: [&str; NATIVE.len()] = [
     NATIVE[3].media_type(),
     NATIVE[4].media_type(),
     NATIVE[5].media_type(),
+    NATIVE[6].media_type(),
+    NATIVE[7].media_type(),
+    NATIVE[8].media_type(),
 ];
 
 /// Tika's `CompressorParser`.
