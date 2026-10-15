@@ -165,6 +165,19 @@ fn java_two_decimals(confidence: f32) -> String {
 
 /// Detects the charset of text in `input`, as Tika does when told its content type.
 pub fn detect(input: &[u8], content_type: Option<&str>) -> Detection {
+    detect_declared(input, content_type, None)
+}
+
+/// Detects the charset of text in `input` as Tika does without a content type but with a
+/// content-type hint (`tk:content-type-hint`), a source's claim about the bytes, whose charset
+/// `MetadataCharsetDetector` declares.
+pub(crate) fn detect_hinted(input: &[u8], hint: &str) -> Detection {
+    detect_declared(input, None, Some(hint))
+}
+
+/// The detection, `MetadataCharsetDetector` declaring the charset of the content type, else of
+/// the hint.
+fn detect_declared(input: &[u8], content_type: Option<&str>, hint: Option<&str>) -> Detection {
     let declared = |charset| vec![Candidate::new(charset, 1.0, Kind::Declarative)];
     let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
     let mut reports = Vec::with_capacity(4);
@@ -184,7 +197,10 @@ pub fn detect(input: &[u8], content_type: Option<&str>) -> Detection {
             candidates: declared(charset),
         });
     }
-    if let Some(charset) = content_type.and_then(content_type_charset) {
+    let metadata_charset = content_type
+        .and_then(content_type_charset)
+        .or_else(|| hint.and_then(content_type_charset));
+    if let Some(charset) = metadata_charset {
         reports.push(Report {
             detector: Detector::ContentType,
             candidates: declared(charset),

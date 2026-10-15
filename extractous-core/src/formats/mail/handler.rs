@@ -9,6 +9,7 @@ use super::codec::decode_encoded_words;
 use super::date::parse_date_lenient;
 use super::stream::{events, BodyDescriptor, Event, MimeError};
 use super::Unported;
+use crate::formats::handlers::is_blank;
 use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
 use crate::mime::MediaType;
@@ -355,11 +356,6 @@ fn is_inline_text(metadata: &TikaMetadata) -> bool {
         && metadata
             .get("Content-Type")
             .is_some_and(|kind| kind.starts_with("text"))
-}
-
-/// Tika's `StringUtils.isBlank`: empty or only white space.
-fn is_blank(text: &str) -> bool {
-    text.chars().all(char::is_whitespace)
 }
 
 /// `MailUtil.setPersonAndEmail` for the sender: the person and the email address of `text`,

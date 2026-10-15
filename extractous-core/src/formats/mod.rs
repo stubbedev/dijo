@@ -3,6 +3,7 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod archive;
 mod auto_detect_reader;
 mod docx;
 mod element_metadata;
@@ -12,7 +13,7 @@ mod fiction_book;
 pub(crate) mod handlers;
 mod html;
 pub(crate) mod java;
-mod java_time;
+pub(crate) mod java_time;
 mod mail;
 pub(crate) mod metadata;
 mod odf;
@@ -40,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::ParserConfigs;
 use crate::errors::{Error, ExtractResult};
-use crate::isolate::isolate;
+use crate::isolate::{heap_capped, isolate};
 use crate::mime::{self, Detection, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
@@ -103,6 +104,10 @@ pub(crate) trait Parser: Sync {
 }
 
 static PARSERS: &[&dyn Parser] = &[
+    &archive::CompressorParser,
+    &archive::PackageParser,
+    &archive::SevenZParser,
+    &archive::ZipParser,
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
@@ -150,7 +155,8 @@ pub(crate) struct Routed<'a> {
 /// Routes a document to its native parser, if its format has one and the parser does not defer
 /// this document to Tika. The document is detected in Rust, without the JVM, so a document a
 /// native parser reads never starts it. Documents read from a URL, those whose embedded
-/// documents are spooled, and files too large to read whole for their detection stay with Tika.
+/// documents are spooled, files too large to read whole for their detection, and every document
+/// while the Java heap is capped (native parsers have no memory budget yet, #98) stay with Tika.
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
@@ -159,7 +165,7 @@ pub(crate) fn route<'a>(
     spooling: bool,
     configs: &ParserConfigs,
 ) -> ExtractResult<Option<Routed<'a>>> {
-    if spooling || matches!(source, Source::Url(_)) || !any_parsers() {
+    if spooling || matches!(source, Source::Url(_)) || !any_parsers() || heap_capped() {
         return Ok(None);
     }
     let Some(input) = detection_input(source)? else {
