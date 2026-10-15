@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use super::java::{self, JavaString};
 use super::java_regex::{Anchor, JavaRegex};
-use super::magic::{Clause, MagicMatch, MatchAttributes};
+use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
 use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
@@ -358,13 +358,14 @@ impl MimeTypes {
         if data.is_empty() {
             return vec![self.octet_stream];
         }
+        let haystack = Haystack::new(data);
         let mut result = Vec::new();
         let mut current_priority = -1;
         for magic in &self.magics {
             if current_priority > 0 && current_priority > magic.priority {
                 break;
             }
-            if magic.clause.eval(data) {
+            if magic.clause.eval(&haystack) {
                 result.push(magic.type_id);
                 current_priority = magic.priority;
             }
@@ -397,7 +398,7 @@ impl MimeTypes {
                         .magics
                         .iter()
                         .filter(|m| m.type_id == self.text_html)
-                        .any(|m| m.clause.eval(data));
+                        .any(|m| m.clause.eval(&haystack));
                     *slot = if html {
                         self.text_html
                     } else {
