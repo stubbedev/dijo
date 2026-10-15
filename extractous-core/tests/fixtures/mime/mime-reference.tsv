@@ -48,6 +48,10 @@ documents	keynote2018.key	file	application/vnd.apple.keynote.18	tk:content-type-
 documents	keynote2018.key	bytes	application/vnd.apple.keynote.18	tk:content-type-magic-detected=application/zip	Content-Length=54228	zip:detector-zip-file-opened=true
 documents	ledger.djvu	file	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
 documents	ledger.djvu	bytes	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
+documents	lighthouse.fodg	file	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
+documents	lighthouse.fodg	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
+documents	lighthouse.fodp	file	application/vnd.oasis.opendocument.flat.presentation	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.presentation
+documents	lighthouse.fodp	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	mail.emlx	file	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	mail.emlx	bytes	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	malayalam-scan.png	file	image/png	tk:content-type-magic-detected=image/png
@@ -60,6 +64,8 @@ documents	nested.zip	file	application/zip	tk:content-type-magic-detected=applica
 documents	nested.zip	bytes	application/zip	tk:content-type-magic-detected=application/zip	Content-Length=12788	zip:detector-zip-file-opened=true
 documents	notebook.ipynb	file	application/x-ipynb+json	tk:content-type-magic-detected=application/x-ipynb+json
 documents	notebook.ipynb	bytes	application/x-ipynb+json	tk:content-type-magic-detected=application/x-ipynb+json
+documents	notes.fodt	file	application/vnd.oasis.opendocument.flat.text	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.text
+documents	notes.fodt	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	notes.sqlite	file	application/x-sqlite3	tk:content-type-magic-detected=application/x-sqlite3
 documents	notes.sqlite	bytes	application/x-sqlite3	tk:content-type-magic-detected=application/x-sqlite3
 documents	offline-folder.ost	file	application/vnd.ms-outlook-pst	tk:content-type-magic-detected=application/vnd.ms-outlook-pst
@@ -90,6 +96,8 @@ documents	partially-damaged.zip	file	application/zip	tk:content-type-magic-detec
 documents	partially-damaged.zip	bytes	application/zip	tk:content-type-magic-detected=application/zip	Content-Length=5585	zip:detector-zip-file-opened=true
 documents	photo.heic	file	image/heic	tk:content-type-magic-detected=image/heic
 documents	photo.heic	bytes	image/heic	tk:content-type-magic-detected=image/heic
+documents	revisions.fodt	file	application/vnd.oasis.opendocument.flat.text	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.text
+documents	revisions.fodt	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	sample.eml	file	message/rfc822	tk:content-type-magic-detected=message/rfc822
 documents	sample.eml	bytes	message/rfc822	tk:content-type-magic-detected=message/rfc822
 documents	sample.html	file	text/html	tk:content-type-magic-detected=text/html
@@ -120,6 +128,8 @@ documents	table-multi-row-column-cells-actual.csv	file	text/csv	tk:content-type-
 documents	table-multi-row-column-cells-actual.csv	bytes	text/plain	tk:content-type-magic-detected=text/plain
 documents	table-multi-row-column-cells.png	file	image/png	tk:content-type-magic-detected=image/png
 documents	table-multi-row-column-cells.png	bytes	image/png	tk:content-type-magic-detected=image/png
+documents	table.fods	file	application/vnd.oasis.opendocument.flat.spreadsheet	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.spreadsheet
+documents	table.fods	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	truncated.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=false
 documents	truncated.docx	bytes	application/x-tika-ooxml	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5610	zip:detector-zip-file-opened=false
 documents	unnormalized.txt	file	text/plain	tk:content-type-magic-detected=text/plain
