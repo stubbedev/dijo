@@ -8,7 +8,9 @@ use crate::compress::ar::tests::ar;
 use crate::compress::bzip2::tests::bzip2;
 use crate::compress::cpio::tests::cpio;
 use crate::compress::gzip::tests::gzip;
+use crate::compress::lz4::tests::lz4;
 use crate::compress::lzw::tests::encode as compress;
+use crate::compress::snappy::tests::snappy;
 use crate::compress::tar::tests::{pax, tar};
 use crate::compress::zip::file::tests::zip;
 use crate::compress::zlib::tests::zlib;
@@ -163,6 +165,8 @@ fn extracts_compressed_files_as_tikas_path_does() {
             ("notes.txt.bz2", bzip2(text)),
             ("notes.zlib", zlib(text)),
             ("notes.txt.Z", compress(&text.repeat(3))),
+            ("notes.sz", snappy(text)),
+            ("notes.lz4", lz4(text)),
         ],
     );
 }

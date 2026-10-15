@@ -2,7 +2,7 @@
 //! it decodes them with: the content, decoded whole, handed to the embedded document extractor
 //! as one entry, named by the gzip header or after the compressed file.
 
-use crate::compress::{bzip2, gzip, lzw, zlib, Undecoded};
+use crate::compress::{bzip2, gzip, lz4, lzw, snappy, zlib, Undecoded};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::handlers::is_blank;
@@ -17,14 +17,18 @@ enum Compressor {
     Bzip2,
     Zlib,
     Z,
+    SnappyFramed,
+    Lz4Framed,
 }
 
 /// `MIMES_TO_NAME`: the content types that name a compressor, each with it.
-const NAMED: [(&str, Compressor); 4] = [
+const NAMED: [(&str, Compressor); 6] = [
     ("application/gzip", Compressor::Gzip),
     ("application/x-bzip2", Compressor::Bzip2),
     ("application/zlib", Compressor::Zlib),
     ("application/x-compress", Compressor::Z),
+    ("application/x-snappy", Compressor::SnappyFramed),
+    ("application/x-lz4", Compressor::Lz4Framed),
 ];
 
 /// What a compressed file decodes into.
@@ -56,6 +60,8 @@ impl Compressor {
             Compressor::Bzip2 => bzip2::decode(input).map(content),
             Compressor::Zlib => zlib::decode(input).map(content),
             Compressor::Z => lzw::decode(input).map(content),
+            Compressor::SnappyFramed => snappy::decode(input).map(content),
+            Compressor::Lz4Framed => lz4::decode(input).map(content),
         }
     }
 }
@@ -74,6 +80,8 @@ impl Parser for CompressorParser {
             "application/x-bzip2",
             "application/zlib",
             "application/x-compress",
+            "application/x-snappy",
+            "application/x-lz4",
         ]
     }
 
