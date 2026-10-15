@@ -36,7 +36,8 @@ target_include_directories(extractous_tesseract PRIVATE
   "${JAVA_HOME}/include" "${JAVA_HOME}/include/${JNI_PLATFORM}"
   "${CMAKE_CURRENT_BINARY_DIR}/tesseract" "${CMAKE_CURRENT_BINARY_DIR}/tesseract/include"
   "${LEPTONICA_HEADERS}")
-target_compile_definitions(extractous_tesseract PRIVATE HAVE_CONFIG_H)
+get_directory_property(TESSERACT_DEFINITIONS DIRECTORY "${TESSERACT_SOURCE}" COMPILE_DEFINITIONS)
+target_compile_definitions(extractous_tesseract PRIVATE ${TESSERACT_DEFINITIONS})
 target_link_libraries(extractous_tesseract PRIVATE libtesseract)
 set_target_properties(extractous_tesseract PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/out>"
