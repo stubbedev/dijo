@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><author><first-name>Анна</first-name><middle-name>Петровна</middle-name><last-name>Смотрителева</last-name></author><author><nickname>Маяк</nickname></author><book-title>Журнал смотрителя маяка</book-title><lang>ru</lang></title-info></description>
+<body><title><p>Часть первая</p><p>Вечера</p></title>
+<epigraph><p>Свет должен гореть.</p><text-author>Старый смотритель</text-author></epigraph>
+<section><title><p>Глава 1</p></title>
+<p>Каждый вечер в сумерках смотритель поднимался на сто двенадцать ступеней башни &#8212; и записывал одну строку.</p>
+<p><emphasis>За сорок лет</emphasis> журнал заполнил одиннадцать томов.</p>
+<section><subtitle>Стихи</subtitle><poem><stanza><v>Ветер с юго-запада,</v><v>кораблей не было.</v></stanza></poem></section>
+</section></body>
+<binary id="cover.jpg" content-type="image/jpeg">AAAA</binary>
+</FictionBook>

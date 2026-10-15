@@ -54,6 +54,24 @@ encoding-reference:
     java -cp "$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/encoding-reference.tsv.gz"
 
+# Regenerate what Tika's XHTMLContentHandler and our handler chains write for the parser calls in
+# extractous-core/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.
+[unix]
+handler-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/handlers
+    sources=target/handler-reference/ai/yobix
+    rm -rf "$sources"
+    mkdir -p "$sources"
+    for handler in AnchoredBlockHandler BlockBreakHandler WellFormedContentHandler; do
+        cp "extractous-core/tika-native/src/main/java/ai/yobix/$handler.java" "$sources/"
+    done
+    cp "$fixtures/HandlerChainReference.java" "$sources/"
+    java -cp "$jars/*" "$sources/HandlerChainReference.java" "$fixtures/scripts.txt" "$fixtures/chains.tsv"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]
