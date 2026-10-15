@@ -475,6 +475,9 @@ fn handle_direction(word: &str) -> Result<String, Unported> {
         return Ok(word.to_owned());
     }
     let info = BidiInfo::new(word, None);
+    if info.levels.iter().all(|level| level.is_ltr()) {
+        return Ok(word.to_owned());
+    }
     let [paragraph] = info.paragraphs.as_slice() else {
         return Err(Unported(
             "a word holding a paragraph separator, which the port does not order as \
@@ -534,6 +537,15 @@ mod tests {
         assert_eq!(list_item_pattern("iv."), Some(9));
         assert_eq!(list_item_pattern("I."), Some(4));
         assert_eq!(list_item_pattern("word"), None);
+    }
+
+    #[test]
+    fn keeps_left_to_right_words_across_paragraph_separators() {
+        assert_eq!(
+            handle_direction("þú\u{2029}ħ\rö").unwrap(),
+            "þú\u{2029}ħ\rö"
+        );
+        assert!(handle_direction("\u{5D0}\u{2029}b").is_err());
     }
 
     #[test]
