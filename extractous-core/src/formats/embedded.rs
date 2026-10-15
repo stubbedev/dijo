@@ -12,10 +12,12 @@ use crate::formats::Failure;
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
 pub(crate) const RESOURCE_NAME: &str = "tk:resource-name";
+pub(crate) const INTERNAL_PATH: &str = "tk:internal-path";
 pub(crate) const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 pub(crate) const THUMBNAIL: &str = "THUMBNAIL";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
+const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 
 /// What the embedded documents of a document are parsed with, and what they leave for its
 /// metadata.
@@ -105,6 +107,13 @@ pub(crate) enum Wrapping {
 /// would only add a garbled copy of the front page's text.
 pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
     metadata.get(RESOURCE_TYPE) != Some(THUMBNAIL)
+}
+
+/// `EmbeddedDocumentUtil.recordEmbeddedStreamException` of an exception a parser makes itself,
+/// `class: message`: the first line of the stack trace Tika records, without the frames of the
+/// Java parser, which the native one replaces.
+pub(crate) fn record_stream_exception(metadata: &mut TikaMetadata, exception: &str) {
+    metadata.add(EMBEDDED_STREAM_EXCEPTION, format!("{exception}\n"));
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.

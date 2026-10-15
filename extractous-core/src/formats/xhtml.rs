@@ -321,7 +321,38 @@ impl<'h> Xhtml<'h> {
             self.embedding.absorb_parsers(metadata);
         }
         let mut open = Vec::new();
-        for event in embedded::decode(&parsed.events)? {
+        if let Err(stop) = self.replay(embedded::decode(&parsed.events)?, &mut open) {
+            if wrapping == Wrapping::PackageEntry {
+                self.end_open(&mut open)?;
+                self.end_element("div")?;
+            }
+            return Err(stop.into());
+        }
+        let (clean, failure) = match parsed.outcome {
+            EmbeddedOutcome::Parsed {
+                metadata,
+                recorded_exception,
+            } => {
+                let clean = recorded_exception.is_none();
+                self.embedding
+                    .absorb_failures(&metadata, recorded_exception);
+                (clean, None)
+            }
+            EmbeddedOutcome::Failed(error) => (false, Some(error)),
+        };
+        if wrapping == Wrapping::PackageEntry {
+            if !clean {
+                self.end_open(&mut open)?;
+            }
+            self.end_element("div")?;
+        }
+        failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
+    }
+
+    /// Writes the events of an embedded document, keeping the names of the elements left open
+    /// in `open`, until the output stops taking them.
+    fn replay(&mut self, events: Vec<Event>, open: &mut Vec<String>) -> Result<(), Stop> {
+        for event in events {
             match event {
                 Event::Start { name, attributes } => {
                     let borrowed: Vec<(&str, &str)> = attributes
@@ -339,27 +370,16 @@ impl<'h> Xhtml<'h> {
                 Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
             }
         }
-        let (clean, failure) = match parsed.outcome {
-            EmbeddedOutcome::Parsed {
-                metadata,
-                recorded_exception,
-            } => {
-                let clean = recorded_exception.is_none();
-                self.embedding
-                    .absorb_failures(&metadata, recorded_exception);
-                (clean, None)
-            }
-            EmbeddedOutcome::Failed(error) => (false, Some(error)),
-        };
-        if wrapping == Wrapping::PackageEntry {
-            if !clean {
-                while let Some(name) = open.pop() {
-                    self.end_element(&name)?;
-                }
-            }
-            self.end_element("div")?;
+        Ok(())
+    }
+
+    /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements an aborted embedded parse
+    /// left open, innermost first.
+    fn end_open(&mut self, open: &mut Vec<String>) -> Result<(), Stop> {
+        while let Some(name) = open.pop() {
+            self.end_element(&name)?;
         }
-        failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
+        Ok(())
     }
 
     fn frameset(&self) -> bool {
@@ -480,4 +500,31 @@ fn replace_invalid(text: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::formats::{Chain, Output, StringOut};
+
+    #[test]
+    fn closes_an_embedded_document_the_output_stops_in() {
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "lines.txt");
+        let text = "A line of text the write limit cuts short.\n".repeat(4);
+        let mut out = StringOut::default();
+        let chain = Chain::String {
+            output: Output::Xml,
+            max_length: 100,
+        };
+        let result = chain.write_to(&mut out, |handler| {
+            Xhtml::write(handler, TikaMetadata::new(), &configs, |xhtml| {
+                xhtml.parse_embedded(text.as_bytes(), &entry, Wrapping::PackageEntry)
+            })
+            .2
+        });
+        assert!(matches!(result, Err(Failure::Stopped(_))));
+        assert!(out.0.ends_with("</p></div>"), "{}", out.0);
+    }
 }
