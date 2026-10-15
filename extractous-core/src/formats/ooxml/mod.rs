@@ -7,13 +7,12 @@
 //! `application/x-tika-ooxml-protected`, so it never reaches a native parser; were it to,
 //! [`Package::open`] would leave it to Tika as an archive it cannot read.
 
+pub(crate) mod extractor;
 mod package;
 mod properties;
 mod uri;
 
-pub(crate) use package::{
-    Package, Relationship, Unported, HYPERLINK_RELATIONSHIP, RELATIONSHIPS_CONTENT_TYPE,
-};
+pub(crate) use package::{Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};
 pub(crate) use properties::extract as extract_properties;
 
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
