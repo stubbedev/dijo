@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+pub(crate) use crate::mime::java_trim as trim;
 use crate::unicode::decimal_digit;
 
 const INITIAL_CAPACITY: usize = 16;
@@ -293,11 +294,6 @@ pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
         && a.chars()
             .zip(b.chars())
             .all(|(x, y)| x == y || upper(x) == upper(y) || lower(upper(x)) == lower(upper(y)))
-}
-
-/// `String.trim()`: without the characters up to U+0020 at either end.
-pub(crate) fn trim(text: &str) -> &str {
-    text.trim_matches(|character| character <= ' ')
 }
 
 /// The double `Double.parseDouble(text)` gives, or `None` where it throws.
