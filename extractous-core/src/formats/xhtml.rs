@@ -335,8 +335,14 @@ impl<'h> Xhtml<'h> {
                     open.pop();
                     self.end_element(&name)?;
                 }
-                Event::Characters(text) => self.characters_chunk(&text)?,
-                Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
+                Event::Characters(text) => {
+                    let written = self.characters_chunk(&text);
+                    self.close_cut(written, &mut open, wrapping)?;
+                }
+                Event::IgnorableWhitespace(text) => {
+                    let written = self.ignorable_whitespace(&text);
+                    self.close_cut(written, &mut open, wrapping)?;
+                }
             }
         }
         let (clean, failure) = match parsed.outcome {
@@ -360,6 +366,27 @@ impl<'h> Xhtml<'h> {
             self.end_element("div")?;
         }
         failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
+    }
+
+    /// Where the text of an embedded document reaches the length limit, Tika's parser of it
+    /// and `parseEmbedded` still close the elements they opened as the limit's exception passes
+    /// through them: the elements of the document still open, then its `package-entry` div.
+    fn close_cut(
+        &mut self,
+        written: Result<(), Stop>,
+        open: &mut Vec<String>,
+        wrapping: Wrapping,
+    ) -> Result<(), Stop> {
+        let Err(Stop::LimitReached) = written else {
+            return written;
+        };
+        while let Some(name) = open.pop() {
+            self.end_element(&name)?;
+        }
+        if wrapping == Wrapping::PackageEntry {
+            self.end_element("div")?;
+        }
+        Err(Stop::LimitReached)
     }
 
     fn frameset(&self) -> bool {

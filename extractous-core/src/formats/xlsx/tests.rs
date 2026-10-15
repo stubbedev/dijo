@@ -87,26 +87,8 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let documents = workbooks(&[&parity::conformance_corpus()]);
     let defaults = ParserConfigs::default();
     let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    for cut in CUT_IN_AN_EMBEDDED_DOCUMENT {
-        assert!(ported.iter().any(|document| file_name(document) == cut));
-    }
-    let compared: Vec<PathBuf> = ported
-        .into_iter()
-        .filter(|document| !CUT_IN_AN_EMBEDDED_DOCUMENT.contains(&file_name(document).as_str()))
-        .collect();
-    assert_same_as_tika(&compared, &defaults);
+    assert_same_as_tika(&ported, &defaults);
 }
-
-/// The workbooks of Tika's tests whose string extraction, cut at 100 characters, is cut in a
-/// document they embed, a PDF or the document of an OLE object: Tika's parser of it then closes
-/// the elements it opened, which the replay of the embedded document's recorded events cannot
-/// know of, so the cut output lacks their end tags.
-const CUT_IN_AN_EMBEDDED_DOCUMENT: [&str; 4] = [
-    "testEXCEL_embeddedPDF_mac.xlsx",
-    "testEXCEL_embeddedPDF_windows.xlsx",
-    "testMSChart-govdocs-428996.xlsx",
-    "testWPSAttachment.xlsx",
-];
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const RELATIONSHIPS_NS: &str =
