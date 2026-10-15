@@ -193,20 +193,33 @@ pub fn take_java_exception(env: &mut Env) -> Error {
         return Error::JniEnvCall("A Java call failed without throwing an exception");
     };
     env.exception_clear();
-    let describe = |env: &mut Env| -> ExtractResult<String> {
-        let description = jni_call_static_method(
-            env,
-            "ai/yobix/Throwables",
-            "describe",
-            "Ljava/lang/Throwable;",
-            STRING,
-            &[JValue::Object(&throwable)],
-        )?;
-        returned_string(env, description)?
-            .ok_or_else(|| Error::Unknown("Throwables.describe returned null".to_string()))
-    };
-    match describe(env) {
+    match describe_throwable(env, &throwable) {
         Ok(description) => Error::JavaException(description),
         Err(error) => error,
+    }
+}
+
+/// What `Throwables.describe` says of `throwable`. Describing it is never described in turn: a
+/// throwable thrown while describing becomes a fixed error, so a failing description cannot
+/// recurse.
+fn describe_throwable(env: &mut Env, throwable: &JObject) -> ExtractResult<String> {
+    let class = env.find_class(JNIString::new("ai/yobix/Throwables"))?;
+    let signature = signature("Ljava/lang/Throwable;", STRING)?;
+    let description = env.call_static_method(
+        &class,
+        JNIString::new("describe"),
+        signature.method_signature(),
+        &[JValue::Object(throwable)],
+    );
+    match description {
+        Ok(description) => returned_string(env, description)?
+            .ok_or_else(|| Error::Unknown("Throwables.describe returned null".to_string())),
+        Err(jni::errors::Error::JavaException) => {
+            env.exception_clear();
+            Err(Error::JniEnvCall(
+                "A Java call threw an exception that Throwables.describe failed to describe",
+            ))
+        }
+        Err(error) => Err(Error::JniError(error)),
     }
 }
