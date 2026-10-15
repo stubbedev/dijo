@@ -11,6 +11,7 @@ use std::sync::{LazyLock, OnceLock};
 use lopdf::{Dictionary, Object, Stream};
 
 use super::afm::{FontMetrics, Standard14};
+use super::cff::{self, Cff};
 use super::cmap::{self, CMap, CMapError};
 use super::cos::{as_dict, float_value, int_value, name_string, Identity, Pdf};
 use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
@@ -124,11 +125,12 @@ impl Program<Box<TrueType>> {
     }
 }
 
-/// What PDFBox measures a Type 1 font's glyphs with (`genericFont`): its embedded program, or
-/// the fallback font.
+/// What PDFBox measures a Type 1 font's glyphs with (`genericFont`): its embedded program, a
+/// Type 1 program or a compact one, or the fallback font.
 #[derive(Debug)]
 enum Generic {
     Program(Box<Type1>),
+    Compact(Box<Cff>),
     Fallback,
 }
 
@@ -158,6 +160,7 @@ impl Generic {
     fn has_glyph(&self, name: &str) -> Result<bool, Unported> {
         Ok(match self {
             Generic::Program(program) => program.has_glyph(name),
+            Generic::Compact(program) => program.has_glyph(name),
             Generic::Fallback => fallback_font()?.name_to_glyph(name) != 0,
         })
     }
@@ -166,6 +169,7 @@ impl Generic {
     fn width(&self, name: &str) -> Result<f32, Unported> {
         match self {
             Generic::Program(program) => program.width(name),
+            Generic::Compact(program) => program.width(name),
             Generic::Fallback => {
                 let font = fallback_font()?;
                 Ok(f32::from(font.advance_width(font.name_to_glyph(name))))
@@ -178,6 +182,10 @@ impl Generic {
         Ok(match self {
             Generic::Program(program) => match program.font_matrix[..] {
                 [a, b, c, d, e, f] => [a, b, c, d, e, f],
+                _ => [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+            },
+            Generic::Compact(program) => match program.font_matrix[..] {
+                [a, b, c, d, e, f] => [a, b, c, d, e, f].map(cff::Number::float_value),
                 _ => [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
             },
             Generic::Fallback => {
@@ -194,6 +202,14 @@ impl Generic {
                 [a, b, c, d, ..] => Ok([a, b, c, d]),
                 _ => Err(Unported(
                     "a Type 1 font program without four numbers in its FontBBox measured, which \
+                     FontBox throws on"
+                        .to_owned(),
+                )),
+            },
+            Generic::Compact(program) => match program.font_bbox[..] {
+                [a, b, c, d, ..] => Ok([a, b, c, d].map(cff::Number::float_value)),
+                _ => Err(Unported(
+                    "a CFF font program without four numbers in its FontBBox measured, which \
                      FontBox throws on"
                         .to_owned(),
                 )),
@@ -265,6 +281,8 @@ enum SimpleKind {
     /// A Type 1 font, measured with its program or, unless it is one of the standard 14 PDFBox
     /// measures with their metrics, with the fallback font.
     Type1(Generic),
+    /// A Type 1 font with a compact font program (`PDType1CFont`), measured likewise.
+    Type1C(Generic),
     Type3 {
         matrix: Matrix,
         bbox: Option<[f32; 4]>,
@@ -291,13 +309,22 @@ struct CidFont {
     dw2: [f32; 2],
     vertical: HashMap<i32, (f32, f32, f32)>,
     vertical_ranges: Vec<(i32, i32, f32, f32, f32)>,
-    program: Program<Box<TrueType>>,
+    kind: CidKind,
     cid_to_gid: Option<Vec<u32>>,
     embedded: bool,
     damaged: bool,
     registry: Option<String>,
     ordering: Option<String>,
     supplement: Option<i32>,
+}
+
+/// The kind of a composite font's descendant, with what PDFBox reads of its program.
+#[derive(Debug)]
+enum CidKind {
+    /// `PDCIDFontType2`: its TrueType program, or the fallback font.
+    TrueType(Program<Box<TrueType>>),
+    /// `PDCIDFontType0`: its CFF program, CID-keyed or not, or the fallback font.
+    Compact(Program<Box<Cff>>),
 }
 
 /// What a composite font maps to Unicode with when it has no usable `ToUnicode` map: the
@@ -439,18 +466,17 @@ impl Font {
     }
 
     fn type1(pdf: &Pdf, identity: Identity, dict: &Dictionary) -> Result<Font, Unported> {
+        if pdf
+            .dict(dict, b"FontDescriptor")
+            .is_some_and(|fd| fd.has(b"FontFile3"))
+        {
+            return Self::type1c(pdf, identity, dict);
+        }
         let name = pdf.name_as_string(dict, b"BaseFont");
-        let mut font = Self::base(pdf, identity, dict, name, Self::placeholder())?;
+        let font = Self::base(pdf, identity, dict, name, Self::placeholder())?;
         let mut generic = Generic::Fallback;
         let mut damaged = false;
         if let Some(fd) = pdf.dict(dict, b"FontDescriptor") {
-            if fd.has(b"FontFile3") {
-                return Err(Unported(
-                    "a Type 1 font embedded as a compact font program, which the port does not \
-                     read"
-                        .to_owned(),
-                ));
-            }
             if let Some(stream) = pdf.stream(fd, b"FontFile") {
                 let bytes = pdf.decode(stream)?;
                 let length1 = pdf.int(&stream.dict, b"Length1", -1);
@@ -464,19 +490,56 @@ impl Font {
             }
         }
         let embedded = matches!(generic, Generic::Program(_));
+        font.settle_simple(pdf, dict, SimpleKind::Type1(generic), embedded, damaged)
+    }
+
+    /// `new PDType1CFont`: a Type 1 font with a compact font program, which PDFBox calls damaged
+    /// when it fails to parse or is CID-keyed, and ignores when it is empty.
+    fn type1c(pdf: &Pdf, identity: Identity, dict: &Dictionary) -> Result<Font, Unported> {
+        let name = pdf.name_as_string(dict, b"BaseFont");
+        let font = Self::base(pdf, identity, dict, name, Self::placeholder())?;
+        let mut generic = Generic::Fallback;
+        let mut damaged = false;
+        if let Some(stream) = pdf
+            .dict(dict, b"FontDescriptor")
+            .and_then(|fd| pdf.stream(fd, b"FontFile3"))
+        {
+            let bytes = pdf.decode(stream)?;
+            if !bytes.is_empty() {
+                match cff::read(&bytes) {
+                    cff::Read::Font(program) if program.is_cid() => damaged = true,
+                    cff::Read::Font(program) => generic = Generic::Compact(program),
+                    cff::Read::Damaged => damaged = true,
+                    cff::Read::Unported(reason) => return Err(Unported(reason)),
+                }
+            }
+        }
+        let embedded = matches!(generic, Generic::Compact(_));
+        font.settle_simple(pdf, dict, SimpleKind::Type1C(generic), embedded, damaged)
+    }
+
+    /// A simple font of `kind`, its encoding read and its symbolic flag settled.
+    fn settle_simple(
+        mut self,
+        pdf: &Pdf,
+        dict: &Dictionary,
+        kind: SimpleKind,
+        embedded: bool,
+        damaged: bool,
+    ) -> Result<Font, Unported> {
         let mut simple = SimpleFont {
-            kind: SimpleKind::Type1(generic),
+            kind,
             encoding: None,
             zapf_dingbats: false,
             symbolic: false,
             embedded,
             damaged,
         };
-        simple.encoding = Some(Box::new(font.read_encoding(pdf, dict, &simple)?));
-        simple.zapf_dingbats = font.standard14_name() == Some(Standard14::ZapfDingbats);
-        font.kind = FontKind::Simple(simple);
-        font.settle_symbolic();
-        Ok(font)
+        simple.encoding = Some(Box::new(self.read_encoding(pdf, dict, &simple)?));
+        simple.zapf_dingbats = self.standard14_name() == Some(Standard14::ZapfDingbats);
+        self.kind = FontKind::Simple(simple);
+        self.settle_symbolic();
+        Ok(self)
     }
 
     fn type3(pdf: &Pdf, identity: Identity, dict: &Dictionary) -> Result<Font, Unported> {
@@ -550,10 +613,7 @@ impl Font {
         let descendant =
             match subtype {
                 Some(b"CIDFontType2") => CidFont::true_type(pdf, descendant_dict)?,
-                Some(b"CIDFontType0") => return Err(Unported(
-                    "a composite font with a compact font program, which the port does not read"
-                        .to_owned(),
-                )),
+                Some(b"CIDFontType0") => CidFont::compact(pdf, descendant_dict)?,
                 _ => return Err(Unported(
                     "a composite font with a descendant of no known type, which PDFBox throws on"
                         .to_owned(),
@@ -681,7 +741,21 @@ impl Font {
             }
         }
         match &simple.kind {
-            SimpleKind::Type1(Generic::Fallback) => Ok(Builtin::Standard.encoding().clone()),
+            SimpleKind::Type1(Generic::Fallback) | SimpleKind::Type1C(Generic::Fallback) => {
+                Ok(Builtin::Standard.encoding().clone())
+            }
+            SimpleKind::Type1(Generic::Compact(_)) | SimpleKind::Type1C(Generic::Program(_)) => {
+                Err(Unported(
+                    "a program of the other Type 1 kind in a font, which PDFBox cannot hold"
+                        .to_owned(),
+                ))
+            }
+            SimpleKind::Type1C(Generic::Compact(program)) => {
+                let entries = program.encoding().ok_or_else(|| {
+                    Unported("a CID-keyed program read for its encoding".to_owned())
+                })?;
+                Ok(Encoding::from_font_box(entries))
+            }
             SimpleKind::Type1(Generic::Program(program)) => match &program.encoding {
                 None => Err(Unported(
                     "a Type 1 font program without an encoding, which PDFBox fails on".to_owned(),
@@ -933,10 +1007,10 @@ impl Font {
                         return Err(Unported(reason.clone()));
                     }
                 }
-                let Program::Embedded(ttf) = &type0.descendant.program else {
-                    return Err(fallback());
+                let CidKind::TrueType(program) = &type0.descendant.kind else {
+                    return Ok(None);
                 };
-                let Some(cmap) = ttf.unicode_cmap() else {
+                let Some(cmap) = program.font()?.unicode_cmap() else {
                     return Ok(None);
                 };
                 let glyph = if type0.descendant.embedded {
@@ -989,10 +1063,24 @@ impl Font {
             }
             FontKind::Type0(type0) => {
                 let descendant = &type0.descendant;
-                let Program::Embedded(ttf) = &descendant.program else {
-                    return Err(fallback());
+                let CidKind::TrueType(program) = &descendant.kind else {
+                    return Err(Unported(
+                        "a glyph id asked of a compact composite font, which the port does not \
+                         map"
+                        .to_owned(),
+                    ));
                 };
                 let cid = self.code_to_cid(code);
+                let Program::Embedded(ttf) = program else {
+                    let Some(unicode) = self.to_unicode(code, false)? else {
+                        return Ok(cid);
+                    };
+                    let cmap = fallback_font()?.unicode_cmap().ok_or_else(|| {
+                        Unported("the fallback font without a Unicode cmap".to_owned())
+                    })?;
+                    let first = unicode.chars().next().map_or(0, u32::from);
+                    return Ok(cmap.glyph(first));
+                };
                 if let Some(map) = &descendant.cid_to_gid {
                     return Ok(map.get(cid as usize).copied().unwrap_or(0));
                 }
@@ -1072,10 +1160,11 @@ impl Font {
                     let glyph = self.code_to_gid(code)?;
                     Ok(scaled_advance(program.font()?, glyph))
                 }
-                SimpleKind::Type1(generic) => {
+                SimpleKind::Type1(generic) | SimpleKind::Type1C(generic) => {
+                    let compact = matches!(simple.kind, SimpleKind::Type1C(_));
                     let encoding = simple.encoding.as_deref().ok_or_else(fallback)?;
                     let name = self.name_in_font(simple, generic, encoding.name(code as i32))?;
-                    if !simple.embedded && name == ".notdef" {
+                    if !compact && !simple.embedded && name == ".notdef" {
                         return Ok(250.0);
                     }
                     let width = generic.width(&name)?;
@@ -1088,9 +1177,39 @@ impl Font {
                         .to_owned(),
                 )),
             },
-            FontKind::Type0(type0) => match &type0.descendant.program {
-                Program::Embedded(ttf) => Ok(scaled_advance(ttf, self.code_to_gid(code)?)),
-                Program::Fallback => Err(fallback()),
+            FontKind::Type0(type0) => match &type0.descendant.kind {
+                CidKind::TrueType(program) => {
+                    Ok(scaled_advance(program.font()?, self.code_to_gid(code)?))
+                }
+                CidKind::Compact(program) => {
+                    let (width, matrix) = match program {
+                        Program::Embedded(cff) => {
+                            let width = cff.cid_width(self.code_to_cid(code))?;
+                            let matrix = match cff.font_matrix[..] {
+                                [a, _, _, _, e, _] if cff.font_matrix.len() == 6 => {
+                                    [a.float_value(), e.float_value()]
+                                }
+                                _ => [0.001, 0.0],
+                            };
+                            (width, matrix)
+                        }
+                        Program::Fallback => {
+                            let font = fallback_font()?;
+                            let name = match self.to_unicode(code, false)? {
+                                Some(unicode) => unicode
+                                    .chars()
+                                    .next()
+                                    .map_or(".notdef".to_owned(), uni_name),
+                                None => ".notdef".to_owned(),
+                            };
+                            let width = f32::from(font.advance_width(font.name_to_glyph(&name)));
+                            let scale = 0.001f32 * (1000.0f32 / f32::from(font.units_per_em));
+                            (width, [scale, 0.0])
+                        }
+                    };
+                    let [a, e] = matrix;
+                    Ok((f64::from(width) * (f64::from(a) * 1000.0) + f64::from(e)) as f32)
+                }
             },
         }
     }
@@ -1131,7 +1250,10 @@ impl Font {
                 kind: SimpleKind::TrueType(program),
                 ..
             }) => program,
-            FontKind::Type0(type0) => &type0.descendant.program,
+            FontKind::Type0(type0) => match &type0.descendant.kind {
+                CidKind::TrueType(program) => program,
+                CidKind::Compact(_) => return Ok(None),
+            },
             FontKind::Simple(_) => return Ok(None),
         };
         Ok(Some(program.font()?.units_per_em))
@@ -1156,7 +1278,7 @@ impl Font {
                     }
                     Ok(program.font()?.font_bbox())
                 }
-                SimpleKind::Type1(generic) => {
+                SimpleKind::Type1(generic) | SimpleKind::Type1C(generic) => {
                     match self.descriptor.as_ref().and_then(|d| d.font_bbox) {
                         Some(bbox) if nonzero(&bbox) => Ok(bbox),
                         _ => generic.font_bbox(),
@@ -1182,9 +1304,13 @@ impl Font {
                 {
                     return Ok(bbox);
                 }
-                match &type0.descendant.program {
-                    Program::Embedded(ttf) => Ok(ttf.font_bbox()),
-                    Program::Fallback => Err(fallback()),
+                match &type0.descendant.kind {
+                    CidKind::TrueType(program) => Ok(program.font()?.font_bbox()),
+                    CidKind::Compact(Program::Embedded(cff)) => Ok(match cff.font_bbox[..] {
+                        [a, b, c, d, ..] => [a, b, c, d].map(cff::Number::float_value),
+                        _ => [0.0; 4],
+                    }),
+                    CidKind::Compact(Program::Fallback) => Ok(fallback_font()?.font_bbox()),
                 }
             }
         }
@@ -1224,6 +1350,10 @@ impl Font {
     pub(super) fn average_width(&self) -> f32 {
         match &self.kind {
             FontKind::Type0(type0) => type0.descendant.average_width(),
+            FontKind::Simple(SimpleFont {
+                kind: SimpleKind::Type1C(_),
+                ..
+            }) => 500.0,
             FontKind::Simple(SimpleFont {
                 kind: SimpleKind::Type1(_),
                 ..
@@ -1268,6 +1398,26 @@ impl Font {
     /// `PDFont.getStringWidth(" ")`: `None` where encoding the space throws an exception
     /// `getSpaceWidth` catches.
     fn string_width_of_space(&self) -> Result<Option<f32>, Unported> {
+        if let FontKind::Simple(SimpleFont {
+            kind: SimpleKind::Type1C(generic),
+            zapf_dingbats,
+            ..
+        }) = &self.kind
+        {
+            let Generic::Compact(program) = generic else {
+                return Ok(Some(0.0));
+            };
+            let list: &GlyphList = if *zapf_dingbats {
+                &encoding::ZAPF_DINGBATS
+            } else {
+                &encoding::ADOBE
+            };
+            let name = list.code_point_to_name(' ');
+            if !program.has_glyph(name) {
+                return Ok(None);
+            }
+            return program.width(name).map(Some);
+        }
         let Some(bytes) = self.encode_space()? else {
             return Ok(None);
         };
@@ -1281,8 +1431,9 @@ impl Font {
         Ok(Some(width))
     }
 
-    /// `PDType1Font.getNameInFont`: the name a glyph has in the program PDFBox measures with,
-    /// `.notdef` where a substitute has no glyph for it.
+    /// `getNameInFont` of a Type 1 font: the name a glyph has in the program PDFBox measures
+    /// with, `.notdef` where a substitute has no glyph for it; `PDType1CFont` does not try the
+    /// alternative ligature names `PDType1Font` does.
     fn name_in_font(
         &self,
         simple: &SimpleFont,
@@ -1292,9 +1443,11 @@ impl Font {
         if simple.embedded || generic.has_glyph(name)? {
             return Ok(name.to_owned());
         }
-        if let Some(alternative) = alternative_name(name) {
-            if generic.has_glyph(alternative)? {
-                return Ok(alternative.to_owned());
+        if matches!(simple.kind, SimpleKind::Type1(_)) {
+            if let Some(alternative) = alternative_name(name) {
+                if generic.has_glyph(alternative)? {
+                    return Ok(alternative.to_owned());
+                }
             }
         }
         let list: &GlyphList = if simple.zapf_dingbats {
@@ -1329,6 +1482,10 @@ impl Font {
                 let name = list.code_point_to_name(' ');
                 match &simple.kind {
                     SimpleKind::Type3 { .. } => Ok(None),
+                    SimpleKind::Type1C(_) => Err(Unported(
+                        "a compact Type 1 font encoding text, which the port does not do"
+                            .to_owned(),
+                    )),
                     SimpleKind::Type1(generic) => {
                         let encoding = simple.encoding.as_deref().ok_or_else(fallback)?;
                         if !encoding.contains(name) {
@@ -1619,7 +1776,7 @@ impl CidFont {
         if let Some(stream) = stream {
             match read_true_type(pdf, stream)? {
                 Some(ttf) => {
-                    font.program = Program::Embedded(ttf);
+                    font.kind = CidKind::TrueType(Program::Embedded(ttf));
                     font.embedded = true;
                 }
                 None => font.damaged = true,
@@ -1642,6 +1799,32 @@ impl CidFont {
         Ok(font)
     }
 
+    /// `new PDCIDFontType0`: a composite font's CFF program, which PDFBox calls damaged when it
+    /// fails to parse or starts as a Type 1 program does.
+    fn compact(pdf: &Pdf, dict: &Dictionary) -> Result<CidFont, Unported> {
+        let mut font = Self::common(pdf, dict);
+        font.kind = CidKind::Compact(Program::Fallback);
+        if let Some(stream) = pdf
+            .dict(dict, b"FontDescriptor")
+            .and_then(|fd| pdf.stream(fd, b"FontFile3"))
+        {
+            let bytes = pdf.decode(stream)?;
+            if bytes.first() == Some(&b'%') {
+                font.damaged = true;
+                return Ok(font);
+            }
+            match cff::read(&bytes) {
+                cff::Read::Font(program) => {
+                    font.kind = CidKind::Compact(Program::Embedded(program));
+                    font.embedded = true;
+                }
+                cff::Read::Damaged => font.damaged = true,
+                cff::Read::Unported(reason) => return Err(Unported(reason)),
+            }
+        }
+        Ok(font)
+    }
+
     /// `PDCIDFont(COSDictionary, PDType0Font)`: the widths and vertical metrics.
     fn common(pdf: &Pdf, dict: &Dictionary) -> CidFont {
         let mut font = CidFont {
@@ -1654,7 +1837,7 @@ impl CidFont {
             dw2: [880.0, -1000.0],
             vertical: HashMap::new(),
             vertical_ranges: Vec::new(),
-            program: Program::Fallback,
+            kind: CidKind::TrueType(Program::Fallback),
             cid_to_gid: None,
             embedded: false,
             damaged: false,
@@ -1798,8 +1981,11 @@ impl CidFont {
     }
 
     /// `PDCIDFont.getAverageFontWidth`: the positive widths averaged in the order a Java
-    /// `HashMap<Integer, Float>` iterates them.
+    /// `HashMap<Integer, Float>` iterates them; `PDCIDFontType0` takes 500.
     fn average_width(&self) -> f32 {
+        if matches!(self.kind, CidKind::Compact(_)) {
+            return 500.0;
+        }
         let mut total = 0.0f32;
         let mut count = 0;
         for (_, width) in encoding::java_integer_map_order(&self.width_order) {

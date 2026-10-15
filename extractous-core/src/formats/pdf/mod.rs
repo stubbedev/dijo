@@ -8,6 +8,7 @@
 //! among others), are left to Tika.
 
 mod afm;
+mod cff;
 mod cmap;
 mod content;
 mod cos;

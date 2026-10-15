@@ -106,7 +106,8 @@ text-reference:
 
 # Regenerate the PDFBox resources the Rust PDF parser reads, from the PDFBox jars Tika's native image holds: the
 # glyph lists, the Unicode mirroring pairs, the fallback font it measures fonts it finds no program for with, the
-# standard 14 fonts' metrics without their kerning pairs, and the built-in simple font encodings.
+# standard 14 fonts' metrics without their kerning pairs, the built-in simple font encodings, and FontBox's
+# predefined CFF strings, charsets and encodings.
 [unix]
 pdf-resources:
     #!/usr/bin/env bash
@@ -128,6 +129,7 @@ pdf-resources:
             | grep -v -e '^KPX' -e '^Comment' -e '^$' > "$models/afm/$font.afm"
     done
     java -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/PdfEncodings.java "$models/encodings.tsv"
+    java -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
 
 # Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
 # html5lib's tree construction tests, the trees jsoup builds for them, and jsoup's named character references,
