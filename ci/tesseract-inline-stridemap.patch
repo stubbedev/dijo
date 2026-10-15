@@ -1,0 +1,245 @@
+--- a/src/lstm/stridemap.cpp
++++ b/src/lstm/stridemap.cpp
+@@ -16,118 +16,10 @@
+ ///////////////////////////////////////////////////////////////////////
+ 
+ #include "stridemap.h"
+-#include <cassert> // for assert
+ 
+ namespace tesseract {
+ 
+ // Returns true if *this is a valid index.
+-bool StrideMap::Index::IsValid() const {
+-  // Cheap check first.
+-  for (int index : indices_) {
+-    if (index < 0) {
+-      return false;
+-    }
+-  }
+-  for (int d = 0; d < FD_DIMSIZE; ++d) {
+-    if (indices_[d] > MaxIndexOfDim(static_cast<FlexDimensions>(d))) {
+-      return false;
+-    }
+-  }
+-  return true;
+-}
+-
+-// Returns true if the index of the given dimension is the last.
+-bool StrideMap::Index::IsLast(FlexDimensions dimension) const {
+-  return MaxIndexOfDim(dimension) == indices_[dimension];
+-}
+-
+-// Given that the dimensions up to and including dim-1 are valid, returns the
+-// maximum index for dimension dim.
+-int StrideMap::Index::MaxIndexOfDim(FlexDimensions dim) const {
+-  int max_index = stride_map_->shape_[dim] - 1;
+-  if (dim == FD_BATCH) {
+-    return max_index;
+-  }
+-  assert(0 <= indices_[FD_BATCH]);
+-  const size_t batch = indices_[FD_BATCH];
+-  if (dim == FD_HEIGHT) {
+-    if (batch >= stride_map_->heights_.size() || stride_map_->heights_[batch] > max_index) {
+-      return max_index;
+-    }
+-    return stride_map_->heights_[batch] - 1;
+-  }
+-  if (batch >= stride_map_->widths_.size() || stride_map_->widths_[batch] > max_index) {
+-    return max_index;
+-  }
+-  return stride_map_->widths_[batch] - 1;
+-}
+-
+-// Adds the given offset to the given dimension. Returns true if the result
+-// makes a valid index.
+-bool StrideMap::Index::AddOffset(int offset, FlexDimensions dimension) {
+-  indices_[dimension] += offset;
+-  SetTFromIndices();
+-  return IsValid();
+-}
+-
+-// Increments the index in some encapsulated way that guarantees to remain
+-// valid until it returns false, meaning that the iteration is complete.
+-bool StrideMap::Index::Increment() {
+-  for (int d = FD_DIMSIZE - 1; d >= 0; --d) {
+-    if (!IsLast(static_cast<FlexDimensions>(d))) {
+-      t_ += stride_map_->t_increments_[d];
+-      ++indices_[d];
+-      return true;
+-    }
+-    t_ -= stride_map_->t_increments_[d] * indices_[d];
+-    indices_[d] = 0;
+-    // Now carry to the next dimension.
+-  }
+-  return false;
+-}
+-
+-// Decrements the index in some encapsulated way that guarantees to remain
+-// valid until it returns false, meaning that the iteration (that started
+-// with InitToLast()) is complete.
+-bool StrideMap::Index::Decrement() {
+-  for (int d = FD_DIMSIZE - 1; d >= 0; --d) {
+-    if (indices_[d] > 0) {
+-      --indices_[d];
+-      if (d == FD_BATCH) {
+-        // The upper limits of the other dimensions may have changed as a result
+-        // of a different batch index, so they have to be reset.
+-        InitToLastOfBatch(indices_[FD_BATCH]);
+-      } else {
+-        t_ -= stride_map_->t_increments_[d];
+-      }
+-      return true;
+-    }
+-    indices_[d] = MaxIndexOfDim(static_cast<FlexDimensions>(d));
+-    t_ += stride_map_->t_increments_[d] * indices_[d];
+-    // Now borrow from the next dimension.
+-  }
+-  return false;
+-}
+-
+-// Initializes the indices to the last valid location in the given batch
+-// index.
+-void StrideMap::Index::InitToLastOfBatch(int batch) {
+-  indices_[FD_BATCH] = batch;
+-  for (int d = FD_BATCH + 1; d < FD_DIMSIZE; ++d) {
+-    indices_[d] = MaxIndexOfDim(static_cast<FlexDimensions>(d));
+-  }
+-  SetTFromIndices();
+-}
+-
+-// Computes and sets t_ from the current indices_.
+-void StrideMap::Index::SetTFromIndices() {
+-  t_ = 0;
+-  for (int d = 0; d < FD_DIMSIZE; ++d) {
+-    t_ += stride_map_->t_increments_[d] * indices_[d];
+-  }
+-}
+-
+-// Sets up the stride for the given array of height, width pairs.
+ void StrideMap::SetStride(const std::vector<std::pair<int, int>> &h_w_pairs) {
+   int max_height = 0;
+   int max_width = 0;
+--- a/src/lstm/stridemap.h
++++ b/src/lstm/stridemap.h
+@@ -17,6 +17,7 @@
+ #ifndef TESSERACT_LSTM_STRIDEMAP_H_
+ #define TESSERACT_LSTM_STRIDEMAP_H_
+ 
++#include <cassert>
+ #include <cstring>
+ #include <vector>
+ 
+@@ -139,6 +140,113 @@
+   std::vector<int> widths_;
+ };
+ 
++inline bool StrideMap::Index::IsValid() const {
++  // Cheap check first.
++  for (int index : indices_) {
++    if (index < 0) {
++      return false;
++    }
++  }
++  for (int d = 0; d < FD_DIMSIZE; ++d) {
++    if (indices_[d] > MaxIndexOfDim(static_cast<FlexDimensions>(d))) {
++      return false;
++    }
++  }
++  return true;
++}
++
++// Returns true if the index of the given dimension is the last.
++inline bool StrideMap::Index::IsLast(FlexDimensions dimension) const {
++  return MaxIndexOfDim(dimension) == indices_[dimension];
++}
++
++// Given that the dimensions up to and including dim-1 are valid, returns the
++// maximum index for dimension dim.
++inline int StrideMap::Index::MaxIndexOfDim(FlexDimensions dim) const {
++  int max_index = stride_map_->shape_[dim] - 1;
++  if (dim == FD_BATCH) {
++    return max_index;
++  }
++  assert(0 <= indices_[FD_BATCH]);
++  const size_t batch = indices_[FD_BATCH];
++  if (dim == FD_HEIGHT) {
++    if (batch >= stride_map_->heights_.size() || stride_map_->heights_[batch] > max_index) {
++      return max_index;
++    }
++    return stride_map_->heights_[batch] - 1;
++  }
++  if (batch >= stride_map_->widths_.size() || stride_map_->widths_[batch] > max_index) {
++    return max_index;
++  }
++  return stride_map_->widths_[batch] - 1;
++}
++
++// Adds the given offset to the given dimension. Returns true if the result
++// makes a valid index.
++inline bool StrideMap::Index::AddOffset(int offset, FlexDimensions dimension) {
++  indices_[dimension] += offset;
++  SetTFromIndices();
++  return IsValid();
++}
++
++// Increments the index in some encapsulated way that guarantees to remain
++// valid until it returns false, meaning that the iteration is complete.
++inline bool StrideMap::Index::Increment() {
++  for (int d = FD_DIMSIZE - 1; d >= 0; --d) {
++    if (!IsLast(static_cast<FlexDimensions>(d))) {
++      t_ += stride_map_->t_increments_[d];
++      ++indices_[d];
++      return true;
++    }
++    t_ -= stride_map_->t_increments_[d] * indices_[d];
++    indices_[d] = 0;
++    // Now carry to the next dimension.
++  }
++  return false;
++}
++
++// Decrements the index in some encapsulated way that guarantees to remain
++// valid until it returns false, meaning that the iteration (that started
++// with InitToLast()) is complete.
++inline bool StrideMap::Index::Decrement() {
++  for (int d = FD_DIMSIZE - 1; d >= 0; --d) {
++    if (indices_[d] > 0) {
++      --indices_[d];
++      if (d == FD_BATCH) {
++        // The upper limits of the other dimensions may have changed as a result
++        // of a different batch index, so they have to be reset.
++        InitToLastOfBatch(indices_[FD_BATCH]);
++      } else {
++        t_ -= stride_map_->t_increments_[d];
++      }
++      return true;
++    }
++    indices_[d] = MaxIndexOfDim(static_cast<FlexDimensions>(d));
++    t_ += stride_map_->t_increments_[d] * indices_[d];
++    // Now borrow from the next dimension.
++  }
++  return false;
++}
++
++// Initializes the indices to the last valid location in the given batch
++// index.
++inline void StrideMap::Index::InitToLastOfBatch(int batch) {
++  indices_[FD_BATCH] = batch;
++  for (int d = FD_BATCH + 1; d < FD_DIMSIZE; ++d) {
++    indices_[d] = MaxIndexOfDim(static_cast<FlexDimensions>(d));
++  }
++  SetTFromIndices();
++}
++
++// Computes and sets t_ from the current indices_.
++inline void StrideMap::Index::SetTFromIndices() {
++  t_ = 0;
++  for (int d = 0; d < FD_DIMSIZE; ++d) {
++    t_ += stride_map_->t_increments_[d] * indices_[d];
++  }
++}
++
++// Sets up the stride for the given array of height, width pairs.
+ } // namespace tesseract
+ 
+ #endif // TESSERACT_LSTM_STRIDEMAP_H_

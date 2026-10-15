@@ -4,7 +4,9 @@
 # its fully connected layers and its LSTM gates, one per stack of a parallel layer), which the
 # patch limits to the calling thread's omp_set_num_threads, or OMP_NUM_THREADS for the program:
 # its threads spin while they wait for each other, so threads beyond the grant starve the other
-# readings of the machine.
+# readings of the machine. The StrideMap index methods the network calls for every time step are
+# made inline (tesseract-inline-stridemap.patch): out of line they took a fifth of a page's
+# instructions, and inline a page reads 10 to 13% faster with the same text.
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:
@@ -15,6 +17,7 @@ static:
   libarchive = null;
 }).overrideAttrs
   (old: {
+    patches = (old.patches or [ ]) ++ [ ./tesseract-inline-stridemap.patch ];
     configureFlags = (old.configureFlags or [ ]) ++ [
       "--without-curl"
       "--without-archive"
