@@ -4,10 +4,11 @@
 //! `/etc/localtime` link, with its rules read from the system's zoneinfo files. Like `ZoneInfo`,
 //! it knows no local mean time: before 1900 a zone is at its current standard offset.
 #![cfg_attr(
-    all(not(unix), not(windows), not(test)),
+    all(not(unix), not(test)),
     expect(
         dead_code,
-        reason = "only Unix and Windows have a default zone this port can find"
+        reason = "only Unix finds the default zone by its ID or zoneinfo file; Windows reads it \
+                  from the bundled database, so outside the tests that lookup is Unix's alone"
     )
 )]
 
