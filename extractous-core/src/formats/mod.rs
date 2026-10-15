@@ -4,6 +4,7 @@
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
 mod auto_detect_reader;
+mod data_format;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;

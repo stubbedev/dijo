@@ -46,10 +46,9 @@ impl Styles {
         if index == -1 {
             return None;
         }
-        self.formats
-            .get(&index)
-            .cloned()
-            .or_else(|| super::format::builtin_format(i32::from(index)).map(str::to_owned))
+        self.formats.get(&index).cloned().or_else(|| {
+            crate::formats::data_format::builtin_format(i32::from(index)).map(str::to_owned)
+        })
     }
 }
 

@@ -917,7 +917,7 @@ fn clean_format_for_number(format: &str) -> Result<String, FormatError> {
 mod tests {
     use super::*;
 
-    const FORMATS: &[u8] = include_bytes!("../../../../tests/fixtures/xlsx/formats.tsv.gz");
+    const FORMATS: &[u8] = include_bytes!("../../../tests/fixtures/xlsx/formats.tsv.gz");
 
     fn unescape(field: &str) -> String {
         let mut text = String::new();
