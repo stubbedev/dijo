@@ -49,36 +49,29 @@ impl MediaType {
     }
 
     /// The media type a content type names, as `MediaType.parse` reads it: `type/subtype`,
-    /// optionally followed by `;`-separated `name=value` parameters whose values may be quoted;
-    /// `None` for a content type it does not parse. Tika's other form, a charset parameter
-    /// before the type, is not one Tika's detection gives, and is not read.
+    /// optionally followed by `;`-separated `name=value` parameters whose values may be quoted,
+    /// or a `charset=` parameter, a `;` and `type/subtype`; `None` for a content type it does
+    /// not parse.
     pub(crate) fn parse(content_type: &str) -> Option<Self> {
-        let trimmed = content_type.trim_start_matches(is_java_space);
-        let slash = trimmed.find('/')?;
-        let kind = trimmed[..slash].trim_end_matches(is_java_space);
-        let rest = trimmed[slash + 1..].trim_start_matches(is_java_space);
-        let subtype_end = rest
-            .find(|c: char| !is_valid_name_char(c))
-            .unwrap_or(rest.len());
-        let subtype = &rest[..subtype_end];
-        let tail = rest[subtype_end..].trim_start_matches(is_java_space);
-        let names_valid = [kind, subtype]
-            .iter()
-            .all(|name| !name.is_empty() && name.chars().all(is_valid_name_char));
-        if !names_valid || !(tail.is_empty() || tail.starts_with(';')) {
-            return None;
+        if let Some((kind, subtype, tail)) = type_and_subtype(content_type) {
+            if tail.is_empty() || tail.starts_with(';') {
+                return Some(MediaType::new(kind, subtype).with_parameters(tail));
+            }
         }
-        let mut media_type = MediaType::new(kind, subtype);
-        for parameter in tail.split(';') {
+        charset_first(content_type)
+    }
+
+    /// This media type with the parameters `MediaType.parseParameters` reads from `text`.
+    fn with_parameters(mut self, text: &str) -> Self {
+        for parameter in text.split(';') {
             let (name, value) = parameter.split_once('=').unwrap_or((parameter, ""));
             let name = java_trim(name);
             if !name.is_empty() {
-                media_type
-                    .parameters
+                self.parameters
                     .insert(name.to_lowercase(), unquote(java_trim(value)).to_string());
             }
         }
-        Some(media_type)
+        self
     }
 
     /// The type and subtype, without parameters: `getBaseType`.
@@ -92,6 +85,57 @@ impl MediaType {
             .insert(java_trim(name).to_lowercase(), value.to_string());
         self
     }
+}
+
+/// The type, subtype and what follows them at the start of `text`, as
+/// `\s*VALID+\s*/\s*VALID+\s*` matches them: what follows starts after the white space.
+fn type_and_subtype(text: &str) -> Option<(&str, &str, &str)> {
+    let trimmed = text.trim_start_matches(is_java_space);
+    let slash = trimmed.find('/')?;
+    let kind = trimmed[..slash].trim_end_matches(is_java_space);
+    let rest = trimmed[slash + 1..].trim_start_matches(is_java_space);
+    let subtype_end = rest
+        .find(|c: char| !is_valid_name_char(c))
+        .unwrap_or(rest.len());
+    let subtype = &rest[..subtype_end];
+    let names_valid = [kind, subtype]
+        .iter()
+        .all(|name| !name.is_empty() && name.chars().all(is_valid_name_char));
+    names_valid.then(|| {
+        (
+            kind,
+            subtype,
+            rest[subtype_end..].trim_start_matches(is_java_space),
+        )
+    })
+}
+
+/// Tika's form with the charset first, `(?is)\s*(charset\s*=\s*[^\c;\s]+)\s*;\s*TYPE\s*`, where
+/// Java reads `\c;` as `{`: the value runs over any `;` but the last one the type can follow.
+fn charset_first(text: &str) -> Option<MediaType> {
+    let trimmed = text.trim_start_matches(is_java_space);
+    let keyword = trimmed.get(..7)?;
+    if !keyword.eq_ignore_ascii_case("charset") {
+        return None;
+    }
+    let after = trimmed[7..].trim_start_matches(is_java_space);
+    let value_start = after.strip_prefix('=')?.trim_start_matches(is_java_space);
+    let run = value_start
+        .find(|c: char| c == '{' || is_java_space(c))
+        .unwrap_or(value_start.len());
+    let value_offset = trimmed.len() - value_start.len();
+    let ends: Vec<usize> = value_start[..run]
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .collect();
+    ends.into_iter().rev().find_map(|end| {
+        let rest = value_start[end..]
+            .trim_start_matches(is_java_space)
+            .strip_prefix(';')?;
+        let (kind, subtype, tail) = type_and_subtype(rest)?;
+        tail.is_empty()
+            .then(|| MediaType::new(kind, subtype).with_parameters(&trimmed[..value_offset + end]))
+    })
 }
 
 /// Tika's fuzzy unquoting: every leading and trailing `"` or `'` dropped.
@@ -139,6 +183,8 @@ mod tests {
             ("text/x-a; b=c;; ;d", "text/x-a; b=c; d="),
             ("text/x-a; note=\"a b\"", "text/x-a; note=\"a b\""),
             ("text/x-a; path='/x'", "text/x-a; path=\"\\/x\""),
+            (" Charset = utf-8 ; Text/HTML ", "text/html; charset=utf-8"),
+            ("charset=a;b;text/html", "text/html; b=; charset=a"),
         ];
         for (input, expected) in cases {
             let parsed = MediaType::parse(input).unwrap_or_else(|| panic!("{input} parses"));
