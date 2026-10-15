@@ -2,6 +2,10 @@
 //! an indirect reference resolves to its object, `null` and a missing object to nothing, a stream
 //! is a dictionary too, and numbers, names and text strings convert as PDFBox converts them.
 
+use std::cell::Cell;
+use std::collections::BTreeSet;
+
+use lopdf::xref::XrefEntry;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 use super::Unported;
@@ -30,9 +34,50 @@ impl Identity {
 /// A parsed document and its objects.
 pub(super) struct Pdf {
     pub(super) doc: Document,
+    /// The objects the cross-reference table lists that `lopdf` could not read.
+    lost: BTreeSet<u32>,
+    /// The first of them the extraction asked for, if it asked for one.
+    lost_needed: Cell<Option<u32>>,
 }
 
 impl Pdf {
+    pub(super) fn new(doc: Document) -> Self {
+        let present: BTreeSet<u32> = doc.objects.keys().map(|&(number, _)| number).collect();
+        let lost = doc
+            .reference_table
+            .entries
+            .iter()
+            .filter(|(_, entry)| {
+                matches!(
+                    entry,
+                    XrefEntry::Normal { .. } | XrefEntry::Compressed { .. }
+                )
+            })
+            .map(|(&number, _)| number)
+            .filter(|number| !present.contains(number))
+            .collect();
+        Self {
+            doc,
+            lost,
+            lost_needed: Cell::new(None),
+        }
+    }
+
+    /// The first object the extraction needed that `lopdf` could not read, if there was one:
+    /// what PDFBox would make of it is not known.
+    pub(super) fn lost_object_needed(&self) -> Option<u32> {
+        self.lost_needed.get()
+    }
+
+    /// The indirect object `id`, noting when it is one `lopdf` could not read.
+    pub(super) fn indirect(&self, id: ObjectId) -> Option<&Object> {
+        let object = self.doc.objects.get(&id);
+        if object.is_none() && self.lost.contains(&id.0) && self.lost_needed.get().is_none() {
+            self.lost_needed.set(Some(id.0));
+        }
+        object
+    }
+
     /// The object `object` stands for: itself, or what its references lead to; nothing for
     /// `null`, a reference to a missing object or a chain of references too long to follow.
     pub(super) fn resolve<'a>(&'a self, object: &'a Object) -> Option<&'a Object> {
@@ -50,7 +95,7 @@ impl Pdf {
             match current {
                 Object::Reference(id) => {
                     identity = Identity::Indirect(*id);
-                    current = self.doc.objects.get(id)?;
+                    current = self.indirect(*id)?;
                 }
                 Object::Null => return None,
                 _ => return Some((identity, current)),

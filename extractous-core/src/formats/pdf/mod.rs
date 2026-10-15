@@ -98,10 +98,10 @@ impl Parser for PdfParser {
         if ocr_runs() {
             xhtml.delegate_to(PDF_PARSER);
         }
-        let pdf = load(input).map_err(|Unported(reason)| {
+        let loaded = load(input).map_err(|Unported(reason)| {
             Failure::Malformed(format!("the PDF was not deferred, though {reason}"))
         })?;
-        extract(&pdf, input, configs, xhtml, false)?;
+        extract(&loaded, input, configs, xhtml, false)?;
         Ok(())
     }
 }
@@ -114,12 +114,17 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Result<(), Unported> {
             "the PDF setting {setting}, which the port does not read"
         )));
     }
-    let pdf = load(input)?;
+    let loaded = load(input)?;
     let mut layers = Vec::new();
     let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), configs, |xhtml| {
-        layers = extract(&pdf, input, configs, xhtml, true)?;
+        layers = extract(&loaded, input, configs, xhtml, true)?;
         Ok(())
     });
+    if let Some(number) = loaded.pdf.lost_object_needed() {
+        return Err(Unported(format!(
+            "object {number}, which lopdf cannot read and PDFBox may recover"
+        )));
+    }
     match result {
         Ok(()) => {}
         Err(WriteFailure::Unported(unported)) => return Err(unported),
@@ -161,28 +166,93 @@ fn ocr_deferral(page: usize, layer: &PageLayer) -> Result<(), Unported> {
     Ok(())
 }
 
-/// The document's objects, as `lopdf` reads them; an encrypted document is left to Tika.
-fn load(input: &[u8]) -> Result<Pdf, Unported> {
-    let doc = Document::load_mem(input)
+/// A document's objects, as `lopdf` reads them, and what the empty password opens it with.
+struct Loaded {
+    pdf: Pdf,
+    access: Access,
+}
+
+/// The document's objects, decrypted with the empty password as Tika's `PDFParser` opens an
+/// encrypted document without one. A document the empty password does not open is left to
+/// Tika, which asks for a password.
+fn load(input: &[u8]) -> Result<Loaded, Unported> {
+    let mut doc = Document::load_mem(input)
         .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?;
-    if doc.was_encrypted() || doc.is_encrypted() {
+    if doc.trailer.has(b"Encrypt") {
         return Err(Unported(
-            "encryption, whose permissions the port does not read".to_owned(),
+            "encryption the empty password does not open, which Tika asks a password for"
+                .to_owned(),
         ));
     }
-    Ok(Pdf { doc })
+    let access = match doc.encryption_state.clone() {
+        None => Access::Unencrypted,
+        Some(state) => Access::of(&mut doc, &state)?,
+    };
+    Ok(Loaded {
+        pdf: Pdf::new(doc),
+        access,
+    })
+}
+
+/// What a document lets the one who opened it do, as PDFBox's `AccessPermission` holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Unencrypted,
+    /// Opened with the owner password: everything.
+    Owner,
+    /// Opened with the user password: what the permission bits `P` grant.
+    User(u64),
+}
+
+impl Access {
+    /// `StandardSecurityHandler.prepareForDecryption` with the empty password, which opens the
+    /// document as its owner when it is the owner password too, else as a user.
+    fn of(doc: &mut Document, state: &lopdf::EncryptionState) -> Result<Self, Unported> {
+        let dictionary = state.encode().map_err(|error| {
+            Unported(format!(
+                "an encryption dictionary lopdf cannot restate: {error}"
+            ))
+        })?;
+        let id = (
+            doc.objects
+                .keys()
+                .next_back()
+                .map_or(1, |&(number, _)| number + 1),
+            0,
+        );
+        doc.objects
+            .insert(id, lopdf::Object::Dictionary(dictionary));
+        doc.trailer.set("Encrypt", lopdf::Object::Reference(id));
+        let owner = doc.authenticate_raw_owner_password(b"").is_ok();
+        doc.trailer.remove(b"Encrypt");
+        doc.objects.remove(&id);
+        Ok(if owner {
+            Self::Owner
+        } else {
+            Self::User(state.permissions().bits())
+        })
+    }
+
+    /// `AccessPermission.isPermissionBitOn`.
+    fn grants(self, bit: u32) -> bool {
+        match self {
+            Self::Unencrypted | Self::Owner => true,
+            Self::User(permissions) => permissions & (1 << (bit - 1)) != 0,
+        }
+    }
 }
 
 /// `PDFParser.parse` from the cross-reference scan on: the metadata, then the pages and the
 /// end of the document, written by the tagged writer for a document with marked content. Each
 /// page's text layer is returned when `record_layers` asks for it.
 fn extract(
-    pdf: &Pdf,
+    loaded: &Loaded,
     input: &[u8],
     configs: &ParserConfigs,
     xhtml: &mut Xhtml,
     record_layers: bool,
 ) -> Result<Vec<PageLayer>, WriteFailure> {
+    let pdf = &loaded.pdf;
     let metadata = xhtml.metadata_mut();
     let mut startxrefs = 0;
     for offset in metadata::scan_startxrefs(input) {
@@ -205,8 +275,20 @@ fn extract(
     let has_marked_content = StructureIndex::<()>::has_marked_content(pdf);
     metadata.set("pdf:has-marked-content", has_marked_content.to_string());
     metadata.set("Content-Type", MEDIA_TYPE);
-    metadata::access_permissions(metadata);
-    metadata.set("pdf:encrypted", "false");
+    for (name, bit) in [
+        ("access-permission:extract-for-accessibility", 10),
+        ("access-permission:extract-content", 5),
+        ("access-permission:assemble-document", 11),
+        ("access-permission:fill-in-form", 9),
+        ("access-permission:can-modify", 4),
+        ("access-permission:modify-annotations", 6),
+        ("access-permission:can-print", 3),
+        ("access-permission:can-print-faithful", 12),
+    ] {
+        metadata.set(name, loaded.access.grants(bit).to_string());
+    }
+    let encrypted = loaded.access != Access::Unencrypted;
+    metadata.set("pdf:encrypted", encrypted.to_string());
     let has_fields = acro_form
         .and_then(|form| pdf.array(form, b"Fields"))
         .is_some_and(|fields| {
@@ -251,7 +333,9 @@ fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika_delegating, conformance_corpus, documents};
+    use crate::formats::parity::{
+        assert_same_as_tika_delegating, conformance_corpus, documents, Scratch,
+    };
     use std::path::{Path, PathBuf};
 
     const TIKA_PDF_PARSER: &str = "org.apache.tika.parser.pdf.PDFParser";
@@ -271,8 +355,7 @@ mod tests {
     }
 
     /// The documents of the corpora the port leaves to Tika, and why.
-    const DEFERRED: [(&str, Why); 15] = [
-        ("2022_Q3_AAPL.pdf", Why::Unported("encryption")),
+    const DEFERRED: [(&str, Why); 13] = [
         ("arabic.pdf", Why::Ocr),
         (
             "chinese.pdf",
@@ -293,7 +376,6 @@ mod tests {
             "japanese.pdf",
             Why::Unported("an embedded Type 1 font program"),
         ),
-        ("owner-password-only.pdf", Why::Unported("encryption")),
         ("prose-broken-offset.pdf", Why::Doubtful),
         (
             "prose-broken-private-use.pdf",
@@ -301,7 +383,10 @@ mod tests {
         ),
         ("prose-scan.pdf", Why::Ocr),
         ("thai.pdf", Why::Ocr),
-        ("user-password.pdf", Why::Unported("encryption")),
+        (
+            "user-password.pdf",
+            Why::Unported("encryption the empty password does not open"),
+        ),
     ];
 
     fn tika_name() -> &'static str {
@@ -325,6 +410,91 @@ mod tests {
         PdfParser
             .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
             .unwrap_or_else(|| panic!("{} is not deferred", path.display()))
+    }
+
+    /// A document of the given objects, numbered from 1 with the catalog first, and a
+    /// cross-reference table whose entries `shift` moves off their objects.
+    fn document(objects: &[&str], prefix: &[u8], shift: &[(usize, usize)]) -> Vec<u8> {
+        let mut out = prefix.to_vec();
+        let start = out.len();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(out.len() - start);
+            out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = out.len() - start;
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for (index, offset) in offsets.iter().enumerate() {
+            let moved = shift
+                .iter()
+                .find(|(object, _)| *object == index + 1)
+                .map_or(0, |(_, by)| *by);
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset + moved).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A page of Helvetica text drawn by `content`.
+    fn page_objects(content: &str) -> Vec<String> {
+        vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len() + 1
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_owned(),
+        ]
+    }
+
+    const TEXT: &str =
+        "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
+                        0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
+
+    #[test]
+    fn extracts_documents_lopdf_recovers_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-recovered");
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let plain = scratch.write("plain.pdf", &document(&objects, b"", &[]));
+        let marked = scratch.write("marked.pdf", &document(&objects, b"\xef\xbb\xbf", &[]));
+        assert_same_as_tika_delegating(&[&plain, &marked], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn defers_a_needed_object_lopdf_cannot_read() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[(4, 3)]);
+        assert_eq!(
+            PdfParser
+                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some("object 4, which lopdf cannot read and PDFBox may recover")
+        );
+    }
+
+    #[test]
+    fn grants_what_the_permission_bits_grant_to_a_user() {
+        let user = Access::User(0xFFFF_FFEC);
+        assert!(user.grants(3) && user.grants(4) && !user.grants(2));
+        let no_extraction = Access::User(-532_i64 as u64);
+        assert!(!no_extraction.grants(5) && !no_extraction.grants(10) && no_extraction.grants(3));
+        assert!(Access::Owner.grants(5) && Access::Unencrypted.grants(10));
     }
 
     #[test]

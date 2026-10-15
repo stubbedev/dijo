@@ -719,9 +719,7 @@ fn has_file_spec(pdf: &Pdf, object: &Object, depth: usize, seen: &mut HashSet<Id
     seen.insert(identity);
     match object {
         Object::Reference(id) => pdf
-            .doc
-            .objects
-            .get(id)
+            .indirect(*id)
             .is_some_and(|target| has_file_spec(pdf, target, depth + 1, seen)),
         Object::Array(items) => items
             .iter()

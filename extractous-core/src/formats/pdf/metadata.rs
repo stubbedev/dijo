@@ -234,22 +234,6 @@ fn info_date(pdf: &Pdf, info: &lopdf::Dictionary, key: &[u8]) -> Result<Option<i
     }
 }
 
-/// The access permissions of a document, which an unencrypted one grants all of.
-pub(super) fn access_permissions(metadata: &mut TikaMetadata) {
-    for name in [
-        "access-permission:extract-for-accessibility",
-        "access-permission:extract-content",
-        "access-permission:assemble-document",
-        "access-permission:fill-in-form",
-        "access-permission:can-modify",
-        "access-permission:modify-annotations",
-        "access-permission:can-print",
-        "access-permission:can-print-faithful",
-    ] {
-        metadata.set(name, "true");
-    }
-}
-
 /// `PDFParser.extractMetadata` from the catalog's language on: the XMP packet, the page count,
 /// the document information and the version.
 pub(super) fn document(
