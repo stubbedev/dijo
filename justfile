@@ -86,6 +86,32 @@ junk-reference:
     java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
         extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
 
+# Regenerate the media types and detection metadata of Apache Tika's own default detector that the Rust port
+# is tested against, on the jars of the native image's class path in its order, which decides the order of
+# the ZIP container detectors, and with its custom-mimetypes.xml, after checking that the embedded
+# tika-mimetypes.xml is the pinned Tika version's.
+[unix]
+mime-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    unzip -p "$jars"/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - {{core}}/models/tika-mimetypes.xml
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    classpath={{core}}/tika-native/src/main/resources
+    for jar in slf4j-nop-2.0.20 log4j-to-slf4j-2.26.1 tika-parser-microsoft-module-4.1.0 \
+        tika-parser-miscoffice-module-4.1.0 tika-core-4.1.0 tika-parser-apple-module-4.1.0 \
+        tika-parser-audiovideo-module-4.1.0 tika-parser-pkg-module-4.1.0 slf4j-api-2.0.20 poi-ooxml-5.5.1 \
+        poi-5.5.1 log4j-api-2.26.1 tika-parser-zip-commons-4.1.0 commons-compress-1.28.0 commons-io-2.22.0 \
+        tika-parser-image-module-4.1.0 commons-codec-1.22.1 commons-lang3-3.20.0 dd-plist-1.30 \
+        vorbis-java-core-0.8 commons-collections4-4.6.0 commons-math3-3.6.1 SparseBitSet-1.3 xmlbeans-5.3.0 \
+        curvesapi-1.08; do
+        classpath="$classpath:$jars/$jar.jar"
+    done
+    fixtures={{core}}/tests/fixtures/mime
+    java -cp "$classpath" "$fixtures/MimeReference.java" test_files/documents quality/corpus \
+        "$CONFORMANCE_CORPUS" "$fixtures/mime-reference.tsv"
+
 # Regenerate the answers of Apache Tika's own CharSoup language detector that the Rust port is tested against, after
 # checking that the embedded model is the one in the pinned Tika version's jar.
 [unix]
