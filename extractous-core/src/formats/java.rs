@@ -1,11 +1,14 @@
 //! What ports of Tika code need from Java itself to give Java's results: the iteration order of
 //! a `java.util.HashMap` with string keys, `Integer.parseInt`, `Long.parseLong`,
-//! `Double.parseDouble`, `Math.round`, `String.trim` and `String.strip`.
+//! `Double.parseDouble`, `Math.round`, `String.trim`, `String.strip` and `System.lineSeparator`.
 
 use std::collections::HashMap;
 
 use crate::formats::handlers::is_java_whitespace;
 use crate::unicode::decimal_digit;
+
+/// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
+pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
