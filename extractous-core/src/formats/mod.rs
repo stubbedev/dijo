@@ -3,11 +3,17 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod auto_detect_reader;
 mod fiction_book;
 pub(crate) mod handlers;
+mod java_time;
+mod media_type;
 pub(crate) mod metadata;
 #[cfg(test)]
 pub(crate) mod parity;
+mod rtf;
+mod subtitle;
+mod text;
 pub(crate) mod xhtml;
 pub(crate) mod xml;
 
@@ -66,7 +72,12 @@ pub(crate) trait Parser: Sync {
     fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure>;
 }
 
-static PARSERS: &[&dyn Parser] = &[&fiction_book::FictionBookParser];
+static PARSERS: &[&dyn Parser] = &[
+    &fiction_book::FictionBookParser,
+    &rtf::RtfParser,
+    &subtitle::SubtitleParser,
+    &text::TextAndCsvParser,
+];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
 fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
@@ -284,12 +295,17 @@ pub(crate) fn parse_to_string(
 }
 
 enum Message {
+    /// A full chunk of output, written while the parse goes on.
     Chunk(Vec<u8>),
-    Done(ExtractResult<Metadata>),
+    /// The output after the last full chunk, and how the parse ended.
+    Done {
+        tail: Vec<u8>,
+        outcome: ExtractResult<Metadata>,
+    },
 }
 
 /// Encodes written text with the stream's charset, as Java's `OutputStreamWriter` does, and
-/// hands it to the reader a chunk at a time.
+/// hands it to the reader a full chunk at a time; what is left at the end goes with the outcome.
 struct ChannelOut {
     sender: SyncSender<Message>,
     char_set: CharSet,
@@ -318,7 +334,7 @@ impl Write for ChannelOut {
     }
 
     fn finish(&mut self) -> Result<(), Stop> {
-        self.send()
+        Ok(())
     }
 }
 
@@ -355,14 +371,17 @@ pub(crate) struct StreamOptions {
 }
 
 /// Parses `input` on a thread of its own into a stream encoded with the options' charset,
-/// through the handlers `ParsingInputStream` uses.
+/// through the handlers `ParsingInputStream` uses. Like `ParsingInputStream`, it returns once
+/// the parse has written its first chunk or ended, with the metadata known then: the final
+/// metadata of a document whose output fits in one chunk, else that of its detection.
 pub(crate) fn parse_to_stream(
     parser: &'static dyn Parser,
     input: Vec<u8>,
     detected: Detected,
     options: StreamOptions,
-) -> ExtractResult<NativeStream> {
+) -> ExtractResult<(NativeStream, Metadata)> {
     let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
+    let detected_metadata = detected.metadata.to_map();
     let (sender, receiver) = mpsc::sync_channel(CHUNKS_AHEAD);
     thread::Builder::new()
         .name(format!("extractous {}", parser.name()))
@@ -378,12 +397,13 @@ pub(crate) fn parse_to_stream(
             };
             let (metadata, result) =
                 chain.write_to(&mut out, |handler| run(parser, &input, &detected, handler));
-            let done = match result {
+            let outcome = match result {
                 Ok(()) => Ok(metadata.to_map()),
                 Err(Failure::Stopped(Stop::ReaderGone)) => return,
                 Err(failure) => Err(failure_error(parser, failure)),
             };
-            let _ = sender.send(Message::Done(done));
+            let tail = std::mem::take(&mut out.buffer);
+            let _ = sender.send(Message::Done { tail, outcome });
         })
         .map_err(|e| {
             Error::IoError(format!(
@@ -391,13 +411,20 @@ pub(crate) fn parse_to_stream(
                 parser.name()
             ))
         })?;
-    Ok(NativeStream {
+    let mut stream = NativeStream {
         receiver,
         chunk: Vec::new(),
         position: 0,
         deadline,
         outcome: None,
-    })
+    };
+    let first = stream.next_message()?;
+    stream.accept(first);
+    let metadata = match &stream.outcome {
+        Some(Ok(metadata)) => metadata.clone(),
+        _ => detected_metadata,
+    };
+    Ok((stream, metadata))
 }
 
 /// The text of a native parse, read as it is written.
@@ -419,18 +446,29 @@ impl NativeStream {
         }
     }
 
-    fn next_message(&mut self) -> io::Result<Message> {
+    fn accept(&mut self, message: Message) {
+        match message {
+            Message::Chunk(chunk) => self.chunk = chunk,
+            Message::Done { tail, outcome } => {
+                self.chunk = tail;
+                self.outcome = Some(outcome);
+            }
+        }
+        self.position = 0;
+    }
+
+    fn next_message(&self) -> ExtractResult<Message> {
         let disconnected = || {
-            io::Error::other(Error::ParseError(
+            Error::ParseError(
                 "The native parser's thread ended without finishing its document".to_owned(),
-            ))
+            )
         };
         match self.deadline {
             None => self.receiver.recv().map_err(|_| disconnected()),
             Some(deadline) => {
                 let wait = deadline.saturating_duration_since(Instant::now());
                 self.receiver.recv_timeout(wait).map_err(|e| match e {
-                    RecvTimeoutError::Timeout => io::Error::other(Error::Timeout),
+                    RecvTimeoutError::Timeout => Error::Timeout,
                     RecvTimeoutError::Disconnected => disconnected(),
                 })
             }
@@ -447,13 +485,8 @@ impl Read for NativeStream {
                     Err(error) => Err(io::Error::other(Error::ParseError(error.to_string()))),
                 };
             }
-            match self.next_message()? {
-                Message::Chunk(chunk) => {
-                    self.chunk = chunk;
-                    self.position = 0;
-                }
-                Message::Done(outcome) => self.outcome = Some(outcome),
-            }
+            let message = self.next_message().map_err(io::Error::other)?;
+            self.accept(message);
         }
         let count = buf.len().min(self.chunk.len() - self.position);
         buf[..count].copy_from_slice(&self.chunk[self.position..self.position + count]);

@@ -37,9 +37,10 @@ import java.util.zip.DeflaterOutputStream;
  * its u32 cells, each less the one before it (wrapping), which compresses the runs of
  * consecutive characters.
  *
- * The decoder reference has one line per multi-byte charset: its name and, in hexadecimal and
- * separated by a tab, the hash {@link DecoderReference} takes of what its decoder makes of
- * pseudo-random bytes.
+ * The decoder reference has one line per multi-byte charset and per Unicode charset of
+ * {@link #UNICODE}: its name and, in hexadecimal and separated by a tab, the hash
+ * {@link DecoderReference} takes of what its decoder makes of pseudo-random bytes (of the
+ * decoded text alone for a Unicode charset).
  */
 public final class CharsetTables {
 
@@ -54,6 +55,9 @@ public final class CharsetTables {
     static final int EUC_JP = 4;
     static final int EUC_TW = 5;
     static final int GB18030 = 6;
+
+    /** The Unicode charsets whose decoders the Rust port mirrors without tables. */
+    static final List<String> UNICODE = List.of("UTF-8", "UTF-16", "UTF-16BE", "UTF-16LE");
 
     public static void main(String[] args) throws IOException {
         if (args.length != 2) {
@@ -76,6 +80,10 @@ public final class CharsetTables {
             if (writeDecoding(out, charset)) {
                 reference.add(charset.name() + "\t" + Long.toHexString(DecoderReference.hash(charset)));
             }
+        }
+        for (String name : UNICODE) {
+            reference.add(name + "\t" + Long.toHexString(DecoderReference.textHash(
+                    Charset.forName(name))));
         }
         out.flush();
         Files.write(Path.of(args[0]), bytes.toByteArray());
@@ -321,6 +329,15 @@ final class DecoderReference {
     static final long FNV_PRIME = 0x100000001b3L;
 
     static long hash(Charset charset) {
+        return hash(charset, true);
+    }
+
+    /** The hash of the decoded texts alone, for a charset without a CJK decode check. */
+    static long textHash(Charset charset) {
+        return hash(charset, false);
+    }
+
+    private static long hash(Charset charset, boolean firstCharacters) {
         final long[] state = {0x5EED};
         long hash = FNV_OFFSET;
         for (int n = 0; n < INPUTS; n++) {
@@ -333,7 +350,7 @@ final class DecoderReference {
                 hash = (hash ^ unit) * FNV_PRIME;
             }
             hash = (hash ^ ERROR) * FNV_PRIME;
-            for (int i = 0; i < input.length; i++) {
+            for (int i = 0; firstCharacters && i < input.length; i++) {
                 hash = (hash ^ decodeFirst(charset, input, i)) * FNV_PRIME;
             }
         }

@@ -17,6 +17,7 @@ mod strip;
 mod structural;
 
 pub use jdk::Charset;
+use junk_filter::Arbitration;
 
 /// How a detector knows a charset, in the order Mojibuster trusts them: a proof from the
 /// bytes' structure, a declaration, or a statistical guess.
@@ -28,6 +29,15 @@ enum Kind {
 }
 
 impl Kind {
+    /// The name of Tika's `EncodingResult.ResultType`.
+    fn tika_name(self) -> &'static str {
+        match self {
+            Kind::Declarative => "DECLARATIVE",
+            Kind::Structural => "STRUCTURAL",
+            Kind::Statistical => "STATISTICAL",
+        }
+    }
+
     fn rank(self) -> u8 {
         match self {
             Kind::Structural => 0,
@@ -86,7 +96,7 @@ struct Report {
 }
 
 /// The outcome of a detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
     /// The charset detected.
     pub charset: Charset,
@@ -95,6 +105,62 @@ pub struct Detection {
     pub decode_as: Charset,
     /// The detector whose report won.
     pub detector: Detector,
+    /// How the detection went, as Tika traces it.
+    pub trace: Trace,
+}
+
+/// What each detector that reported anything reported first, in the order they ran, and how
+/// the JunkFilter's arbitration among them ended: Tika's `tk:encoding-detection-trace`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trace {
+    reports: Vec<(Detector, Candidate)>,
+    arbitration: Arbitration,
+}
+
+/// Tika's form of the trace, as `CompositeEncodingDetector.buildTrace` writes it: each report
+/// as `detector->charset[KIND]`, a statistical one followed by its confidence to two decimals,
+/// separated by `, `, and the arbitration's note in brackets, e.g.
+/// `MojibusterEncodingDetector->ISO-8859-16[STATISTICAL](1.00) [junk-filter-selected]`.
+impl std::fmt::Display for Trace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, (detector, top)) in self.reports.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(
+                f,
+                "{}->{}[{}]",
+                detector.tika_name(),
+                top.charset.name(),
+                top.kind.tika_name()
+            )?;
+            if top.kind == Kind::Statistical {
+                write!(f, "({})", java_two_decimals(top.confidence))?;
+            }
+        }
+        if let Some(note) = self.arbitration.note() {
+            write!(f, " [{note}]")?;
+        }
+        Ok(())
+    }
+}
+
+/// A confidence from 0 to 1 as Java's `String.format("%.2f", confidence)` writes it: the
+/// shortest decimal digits that identify the value, rounded half up to two decimals.
+fn java_two_decimals(confidence: f32) -> String {
+    let shortest = f64::from(confidence).to_string();
+    let (whole, fraction) = shortest.split_once('.').unwrap_or((&shortest, ""));
+    let digit = |i: usize| {
+        fraction
+            .as_bytes()
+            .get(i)
+            .map_or(0, |&d| u32::from(d - b'0'))
+    };
+    let whole: u32 = whole
+        .parse()
+        .unwrap_or_else(|_| panic!("A confidence is between 0 and 1, not {shortest}"));
+    let hundredths = whole * 100 + digit(0) * 10 + digit(1) + u32::from(digit(2) >= 5);
+    format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
 /// Detects the charset of text in `input`, as Tika does when told its content type.
@@ -124,7 +190,8 @@ pub fn detect(input: &[u8], content_type: Option<&str>) -> Detection {
             candidates: declared(charset),
         });
     }
-    let (charset, detector) = match junk_filter::arbitrate(&reports, probe) {
+    let arbitration = junk_filter::arbitrate(&reports, probe);
+    let (charset, detector) = match arbitration.winner() {
         Some(winner) => (
             winner,
             reports
@@ -138,7 +205,33 @@ pub fn detect(input: &[u8], content_type: Option<&str>) -> Detection {
         charset,
         decode_as: mojibuster::superset(charset),
         detector,
+        trace: Trace {
+            reports: reports
+                .iter()
+                .map(|report| (report.detector, report.candidates[0]))
+                .collect(),
+            arbitration,
+        },
     }
+}
+
+/// A charset that a detector may report for `input` and that this port does not decode, which
+/// leaves what Tika makes of the input unknown: one an HTML declaration names, or an ISO-2022
+/// charset other than ISO-2022-JP that a 7-bit input's escapes designate. Every charset the
+/// statistical models name decodes.
+pub fn undecodable(input: &[u8]) -> Option<Charset> {
+    let declared = html::detect(input);
+    let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
+    let seven_bit = probe.iter().all(|&b| b != 0 && b < 0x80);
+    let designated = seven_bit
+        .then(|| structural::iso2022(probe))
+        .flatten()
+        .map(Charset::named);
+    [declared, designated]
+        .into_iter()
+        .flatten()
+        .map(mojibuster::superset)
+        .find(|charset| charset.decode(b"").is_none())
 }
 
 /// The Unicode charset a byte order mark starts the input with.
@@ -172,7 +265,7 @@ fn content_type_charset(content_type: &str) -> Option<Charset> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::Read;
 
     use flate2::read::GzDecoder;
@@ -182,7 +275,8 @@ mod tests {
     const REFERENCE: &[u8] =
         include_bytes!("../../../tests/fixtures/charset/encoding-reference.tsv.gz");
 
-    fn base64(text: &str) -> Vec<u8> {
+    /// The bytes of base64 text, as the reference generators write input.
+    pub(crate) fn base64(text: &str) -> Vec<u8> {
         let value = |c: u8| match c {
             b'A'..=b'Z' => c - b'A',
             b'a'..=b'z' => c - b'a' + 26,
@@ -205,13 +299,35 @@ mod tests {
             .collect()
     }
 
-    fn candidates(input: &[u8], content_type: &str) -> String {
+    fn candidates(input: &[u8], content_type: &str) -> Vec<(&'static str, f32, &'static str)> {
         let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
         mojibuster::detect(probe, Some(content_type))
             .iter()
-            .map(|candidate| candidate.charset.name())
-            .collect::<Vec<_>>()
-            .join(" ")
+            .map(|candidate| {
+                (
+                    candidate.charset.name(),
+                    candidate.confidence,
+                    candidate.kind.tika_name(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn writes_confidences_as_java_does() {
+        let cases = [
+            (1.0, "1.00"),
+            (0.1, "0.10"),
+            (0.125, "0.13"),
+            (0.375, "0.38"),
+            (0.995, "1.00"),
+            (0.994, "0.99"),
+            (0.0, "0.00"),
+            (0.7349, "0.73"),
+        ];
+        for (confidence, expected) in cases {
+            assert_eq!(java_two_decimals(confidence), expected, "{confidence}");
+        }
     }
 
     #[test]
@@ -228,15 +344,21 @@ mod tests {
             let input = base64(fields[0]);
             let content_type = fields[1];
             count += 1;
-            let expected_candidates: Vec<&str> = fields[5]
+            let expected_candidates: Vec<(&str, f32, &str)> = fields[5]
                 .split(' ')
                 .filter(|field| !field.is_empty())
-                .map(|field| field.split('@').next().unwrap())
+                .map(|field| {
+                    let parts: Vec<&str> = field.split('@').collect();
+                    let confidence = parts[1]
+                        .parse()
+                        .unwrap_or_else(|e| panic!("confidence {field}: {e}"));
+                    (parts[0], confidence, parts[2])
+                })
                 .collect();
             let actual_candidates = candidates(&input, content_type);
-            if actual_candidates != expected_candidates.join(" ") {
+            if actual_candidates != expected_candidates {
                 mojibuster_mismatches.push(format!(
-                    "{content_type} {:?}: Tika [{}], port [{actual_candidates}]",
+                    "{content_type} {:?}: Tika [{}], port {actual_candidates:?}",
                     String::from_utf8_lossy(&input[..input.len().min(60)]),
                     fields[5]
                 ));

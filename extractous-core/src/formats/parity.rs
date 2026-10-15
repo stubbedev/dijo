@@ -1,13 +1,14 @@
 //! Compares a native parser with Tika's path, which it replaces, on the same documents: the
 //! streamed text and XHTML, their final metadata, and the text and XHTML of a string extraction
 //! cut by a small length limit. The only difference allowed is the parser's name in
-//! `tk:parsed-by`, which the native output is compared under Tika's.
+//! `tk:parsed-by`, which the native output is compared under Tika's. On documents Tika's path
+//! fails on, the native parser must fail too.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::ParserConfigs;
-use crate::formats::{self, Output, Routed, StreamOptions};
+use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
@@ -79,7 +80,7 @@ fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
         output,
         timeout: None,
     };
-    let mut stream = formats::parse_to_stream(
+    let (mut stream, _) = formats::parse_to_stream(
         routed.parser,
         routed.input.into_owned(),
         routed.detected,
@@ -150,6 +151,42 @@ fn replace_bytes(haystack: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     replaced
 }
 
+/// The non-empty files under `roots` that Tika's detection gives a type `parser` reads, split into
+/// those it parses and those it defers to Tika.
+pub(crate) fn documents(parser: &dyn Parser, roots: &[&str]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut pending: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            let entries = std::fs::read_dir(&path)
+                .unwrap_or_else(|e| panic!("cannot list {}: {e}", path.display()));
+            pending.extend(entries.map(|entry| entry.unwrap().path()));
+        } else {
+            files.push(path);
+        }
+    }
+    files.sort();
+    let (mut parsed, mut deferred) = (Vec::new(), Vec::new());
+    for file in files {
+        let path = file.to_str().unwrap();
+        let (media_type, _) = tika::detect_with_metadata(isolate().unwrap(), Source::File(path))
+            .unwrap_or_else(|e| panic!("Tika could not detect {path}: {e}"));
+        if !parser.media_types().contains(&media_type.as_str()) {
+            continue;
+        }
+        let input = std::fs::read(&file).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+        if input.is_empty() {
+            continue;
+        }
+        if parser.defers(&input).is_some() {
+            deferred.push(file);
+        } else {
+            parsed.push(file);
+        }
+    }
+    (parsed, deferred)
+}
+
 /// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, extracts exactly what Tika's path does.
 pub(crate) fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
@@ -184,6 +221,70 @@ pub(crate) fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
                     ));
                 }
             }
+        }
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// Asserts that Tika's path fails on each document, and that its native parser fails too: in a
+/// string extraction and in reading a stream to its end.
+pub(crate) fn assert_fails_as_tika_does(documents: &[&Path]) {
+    let mut differences = Vec::new();
+    for document in documents {
+        let path = document.to_str().unwrap();
+        let tika_string = tika::parse_to_string(
+            isolate().unwrap(),
+            Source::File(path),
+            i32::MAX,
+            &ParserConfigs::default(),
+            None,
+            false,
+        )
+        .is_err();
+        let options = tika::StreamOptions {
+            char_set: CharSet::UTF_8,
+            as_xml: false,
+            timeout: None,
+            embedded: None,
+        };
+        let tika_stream = tika::parse_to_stream(
+            isolate().unwrap(),
+            Source::File(path),
+            &ParserConfigs::default(),
+            None,
+            &options,
+        )
+        .map_or(true, |(mut reader, _)| {
+            reader.read_to_end(&mut Vec::new()).is_err() || reader.metadata().is_err()
+        });
+        let routed = routed(path);
+        let native_string = formats::parse_to_string(
+            routed.parser,
+            &routed.input,
+            &routed.detected,
+            usize::MAX,
+            Output::Text,
+        )
+        .is_err();
+        let native_options = StreamOptions {
+            char_set: CharSet::UTF_8,
+            output: Output::Text,
+            timeout: None,
+        };
+        let native_stream = formats::parse_to_stream(
+            routed.parser,
+            routed.input.into_owned(),
+            routed.detected,
+            native_options,
+        )
+        .map_or(true, |(mut stream, _)| {
+            stream.read_to_end(&mut Vec::new()).is_err() || stream.metadata().is_err()
+        });
+        let outcomes = [tika_string, tika_stream, native_string, native_stream];
+        if outcomes != [true; 4] {
+            differences.push(format!(
+                "{path}: fails in Tika's string, Tika's stream, the native string, the native stream: {outcomes:?}"
+            ));
         }
     }
     assert!(differences.is_empty(), "{}", differences.join("\n"));

@@ -648,7 +648,7 @@ impl<W: Write> ContentHandler for ToXml<W> {
 }
 
 /// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
-fn is_blank(text: &str) -> bool {
+pub(crate) fn is_blank(text: &str) -> bool {
     text.chars().all(is_java_whitespace)
 }
 

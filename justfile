@@ -51,8 +51,24 @@ encoding-reference:
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     fixtures=extractous-core/tests/fixtures/charset
     java "$fixtures/CharsetTables.java" extractous-core/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
-    java -cp "$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
+    rules=$(just native-image-rules)
+    java -cp "$rules:$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/encoding-reference.tsv.gz"
+
+# Compile Tika's encoding rules with the change the native image substitutes into them, for the reference
+# recipes to detect encodings as extractous does, and print the class directory to put ahead of Tika's jars.
+[unix]
+native-image-rules:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    rules=target/native-image-rules
+    rm -rf "$rules"
+    mkdir -p "$rules"
+    java extractous-core/tests/fixtures/charset/NativeImageRules.java \
+        "$jars/sources/tika-encoding-detector-mojibuster-4.1.0-sources.jar" "$jars/*" "$rules" >&2
+    echo "$rules"
 
 # Regenerate what Tika's XHTMLContentHandler and our handler chains write for the parser calls in
 # extractous-core/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.
@@ -71,6 +87,38 @@ handler-reference:
     done
     cp "$fixtures/HandlerChainReference.java" "$sources/"
     java -cp "$jars/*" "$sources/HandlerChainReference.java" "$fixtures/scripts.txt" "$fixtures/chains.tsv"
+
+# Regenerate what Apache Tika's TextAndCSVParser makes of the plain text, CSV and TSV inputs of the corpora,
+# which the Rust port of its decisions is tested against.
+[unix]
+text-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    fixtures=extractous-core/tests/fixtures/text
+    rules=$(just native-image-rules)
+    java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" "$fixtures/TextReference.java" \
+        "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
+        truth=quality/truth tika="$CONFORMANCE_CORPUS"
+
+# Regenerate what Apache Tika's RTFParser makes of the code pages RTF names and of the dates in its
+# info group, which the Rust port is tested against, after refreshing the fixture zoneinfo files the
+# dates are computed with from the system's.
+[unix]
+rtf-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/rtf
+    system=$(readlink -f /etc/localtime | sed 's|/zoneinfo/.*|/zoneinfo|')
+    (cd "$fixtures/zoneinfo" && find . -type f) | while IFS= read -r zone; do
+        cp -L "$system/$zone" "$fixtures/zoneinfo/$zone"
+        chmod u+w "$fixtures/zoneinfo/$zone"
+    done
+    java -cp "$jars/*" "$fixtures/RtfReference.java" "$fixtures"
 
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
@@ -96,7 +144,7 @@ mime-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    unzip -p "$jars"/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - {{core}}/models/tika-mimetypes.xml
+    unzip -p "$jars"/mime/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - {{core}}/models/tika-mimetypes.xml
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     classpath={{core}}/tika-native/src/main/resources
     for jar in slf4j-nop-2.0.20 log4j-to-slf4j-2.26.1 tika-parser-microsoft-module-4.1.0 \
@@ -106,7 +154,7 @@ mime-reference:
         tika-parser-image-module-4.1.0 commons-codec-1.22.1 commons-lang3-3.20.0 dd-plist-1.30 \
         vorbis-java-core-0.8 commons-collections4-4.6.0 commons-math3-3.6.1 SparseBitSet-1.3 xmlbeans-5.3.0 \
         curvesapi-1.08; do
-        classpath="$classpath:$jars/$jar.jar"
+        classpath="$classpath:$jars/mime/$jar.jar"
     done
     fixtures={{core}}/tests/fixtures/mime
     java -cp "$classpath" "$fixtures/MimeReference.java" test_files/documents quality/corpus \

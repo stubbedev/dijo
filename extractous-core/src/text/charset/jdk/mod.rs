@@ -2,9 +2,10 @@
 //! JDK Tika runs on, found by name or alias as `Charset.forName` finds it. Single-byte charsets
 //! and the East Asian multi-byte ones decode with the JDK's own tables
 //! (`models/java-charsets.bin`, written by `just encoding-reference`), character for character as
-//! Java does; Unicode and ISO-2022-JP decode with `encoding_rs`, whose decoders are the WHATWG
-//! equivalents of the JDK's; the rest, rarely seen charsets such as the IBM EBCDIC double-byte
-//! ones, are known by name but not decoded.
+//! Java does; UTF-8, UTF-16 and UTF-32 decode with ports of the JDK's decoders, which replace
+//! malformed input differently from WHATWG's; ISO-2022-JP decodes with `encoding_rs`, whose
+//! decoder is the WHATWG equivalent of the JDK's; the rest, rarely seen charsets such as the IBM
+//! EBCDIC double-byte ones, are known by name but not decoded.
 
 mod multibyte;
 
@@ -26,8 +27,13 @@ enum Decoding {
     SingleByte(Box<[char; 256]>),
     MultiByte(MultiByte),
     Whatwg(&'static Encoding),
-    /// Java's `UTF-16`: big-endian unless a byte order mark says otherwise, which is dropped.
-    Utf16,
+    Utf8,
+    /// With `sniff_bom` (Java's `UTF-16`), a byte order mark at the start sets the byte order
+    /// and is dropped.
+    Utf16 {
+        big_endian: bool,
+        sniff_bom: bool,
+    },
     Utf32 {
         big_endian: bool,
         sniff_bom: bool,
@@ -52,9 +58,6 @@ static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
 /// The `encoding_rs` decoder of a JDK charset without tables, where the JDK's and WHATWG's agree.
 fn whatwg(name: &str) -> Option<&'static Encoding> {
     Some(match name {
-        "UTF-8" => encoding_rs::UTF_8,
-        "UTF-16BE" => encoding_rs::UTF_16BE,
-        "UTF-16LE" => encoding_rs::UTF_16LE,
         "ISO-2022-JP"
         | "ISO-2022-JP-2"
         | "x-windows-iso2022jp"
@@ -105,7 +108,19 @@ impl Registry {
                     Decoding::SingleByte(table)
                 }
                 0 => match name.as_str() {
-                    "UTF-16" => Decoding::Utf16,
+                    "UTF-8" => Decoding::Utf8,
+                    "UTF-16" => Decoding::Utf16 {
+                        big_endian: true,
+                        sniff_bom: true,
+                    },
+                    "UTF-16BE" => Decoding::Utf16 {
+                        big_endian: true,
+                        sniff_bom: false,
+                    },
+                    "UTF-16LE" => Decoding::Utf16 {
+                        big_endian: false,
+                        sniff_bom: false,
+                    },
                     "UTF-32" => Decoding::Utf32 {
                         big_endian: true,
                         sniff_bom: true,
@@ -166,20 +181,11 @@ impl Charset {
             Decoding::Whatwg(encoding) => {
                 encoding.decode_without_bom_handling(bytes).0.into_owned()
             }
-            Decoding::Utf16 => match bytes {
-                [0xFF, 0xFE, rest @ ..] => encoding_rs::UTF_16LE
-                    .decode_without_bom_handling(rest)
-                    .0
-                    .into_owned(),
-                [0xFE, 0xFF, rest @ ..] => encoding_rs::UTF_16BE
-                    .decode_without_bom_handling(rest)
-                    .0
-                    .into_owned(),
-                _ => encoding_rs::UTF_16BE
-                    .decode_without_bom_handling(bytes)
-                    .0
-                    .into_owned(),
-            },
+            Decoding::Utf8 => decode_utf8(bytes),
+            Decoding::Utf16 {
+                big_endian,
+                sniff_bom,
+            } => decode_utf16(bytes, *big_endian, *sniff_bom),
             Decoding::Utf32 {
                 big_endian,
                 sniff_bom,
@@ -198,6 +204,160 @@ impl Charset {
             _ => None,
         }
     }
+}
+
+fn is_continuation(b: u8) -> bool {
+    b & 0xC0 == 0x80
+}
+
+/// The bytes the JDK's UTF-8 decoder (`sun.nio.cs.UTF_8`) replaces as one malformed sequence at
+/// the start of `bytes`, which starts with a non-ASCII byte, or `None` for a well-formed
+/// character. Input that ends inside a sequence the decoder cannot yet call malformed is one
+/// malformed sequence to the end.
+fn utf8_malformed_length(bytes: &[u8]) -> Option<usize> {
+    let b1 = bytes[0];
+    let at = |i: usize| bytes.get(i).copied();
+    let continues = |i: usize| at(i).is_some_and(is_continuation);
+    Some(match b1 {
+        0xC2..=0xDF if bytes.len() < 2 => bytes.len(),
+        0xC2..=0xDF if !continues(1) => 1,
+        0xC2..=0xDF => return None,
+        0xE0..=0xEF => {
+            let overlong = |b2: u8| b1 == 0xE0 && b2 & 0xE0 == 0x80;
+            match (at(1), at(2)) {
+                (Some(b2), _) if overlong(b2) || !is_continuation(b2) => 1,
+                (Some(_), Some(b3)) if !is_continuation(b3) => 2,
+                (Some(b2), Some(b3)) => {
+                    let unit = (u32::from(b1 & 0x0F) << 12)
+                        | (u32::from(b2 & 0x3F) << 6)
+                        | u32::from(b3 & 0x3F);
+                    if (0xD800..=0xDFFF).contains(&unit) {
+                        3
+                    } else {
+                        return None;
+                    }
+                }
+                _ => bytes.len(),
+            }
+        }
+        0xF0..=0xF7 => {
+            let bad_second = |b2: u8| {
+                b1 > 0xF4
+                    || (b1 == 0xF0 && !(0x90..=0xBF).contains(&b2))
+                    || (b1 == 0xF4 && b2 & 0xF0 != 0x80)
+                    || !is_continuation(b2)
+            };
+            match (at(1), at(2), at(3)) {
+                _ if b1 > 0xF4 => 1,
+                (Some(b2), _, _) if bad_second(b2) => 1,
+                (Some(_), Some(b3), _) if !is_continuation(b3) => 2,
+                (Some(_), Some(_), Some(b4)) if !is_continuation(b4) => 3,
+                (Some(_), Some(_), Some(_)) => return None,
+                _ => bytes.len(),
+            }
+        }
+        _ => 1,
+    })
+}
+
+/// What `new String(bytes, UTF_8)` gives: each malformed sequence, as the JDK's decoder
+/// delimits it, replaced by one U+FFFD.
+fn decode_utf8(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let ascii = bytes[i..].iter().take_while(|b| b.is_ascii()).count();
+        text.push_str(std::str::from_utf8(&bytes[i..i + ascii]).expect("ASCII is UTF-8"));
+        i += ascii;
+        if i == bytes.len() {
+            break;
+        }
+        match utf8_malformed_length(&bytes[i..]) {
+            Some(length) => {
+                text.push(char::REPLACEMENT_CHARACTER);
+                i += length;
+            }
+            None => {
+                let length = match bytes[i] {
+                    0xC2..=0xDF => 2,
+                    0xE0..=0xEF => 3,
+                    _ => 4,
+                };
+                text.push_str(
+                    std::str::from_utf8(&bytes[i..i + length])
+                        .expect("the JDK's well-formed UTF-8 is Rust's"),
+                );
+                i += length;
+            }
+        }
+    }
+    text
+}
+
+/// What `new String(bytes, charset)` gives for Java's UTF-16 charsets (`UnicodeDecoder`): an
+/// unpaired low surrogate replaced by U+FFFD, a high
+/// surrogate followed by anything but a low one replaced together with what follows, and an
+/// incomplete unit or pair at the end replaced.
+fn decode_utf16(bytes: &[u8], big_endian: bool, sniff_bom: bool) -> String {
+    let mut big_endian = big_endian;
+    let mut body = bytes;
+    if sniff_bom {
+        match bytes {
+            [0xFE, 0xFF, rest @ ..] => {
+                big_endian = true;
+                body = rest;
+            }
+            [0xFF, 0xFE, rest @ ..] => {
+                big_endian = false;
+                body = rest;
+            }
+            _ => {}
+        }
+    }
+    let (pairs, remainder) = body.as_chunks::<2>();
+    let units: Vec<u16> = pairs
+        .iter()
+        .map(|&pair| {
+            if big_endian {
+                u16::from_be_bytes(pair)
+            } else {
+                u16::from_le_bytes(pair)
+            }
+        })
+        .collect();
+    let mut text = String::with_capacity(units.len());
+    let mut i = 0;
+    while i < units.len() {
+        let unit = units[i];
+        match unit {
+            0xD800..=0xDBFF => {
+                let Some(&low) = units.get(i + 1) else {
+                    text.push(char::REPLACEMENT_CHARACTER);
+                    return text;
+                };
+                if (0xDC00..=0xDFFF).contains(&low) {
+                    let cp =
+                        0x10000 + ((u32::from(unit) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
+                    text.push(char::from_u32(cp).expect("a surrogate pair is a character"));
+                } else {
+                    text.push(char::REPLACEMENT_CHARACTER);
+                }
+                i += 2;
+            }
+            0xDC00..=0xDFFF => {
+                text.push(char::REPLACEMENT_CHARACTER);
+                i += 1;
+            }
+            _ => {
+                text.push(char::from_u32(u32::from(unit)).expect("a unit outside surrogates"));
+                i += 1;
+            }
+        }
+    }
+    if !remainder.is_empty() {
+        text.push(char::REPLACEMENT_CHARACTER);
+    }
+    text
 }
 
 fn decode_utf32(bytes: &[u8], big_endian: bool, sniff_bom: bool) -> String {
@@ -274,11 +434,12 @@ mod tests {
                     }
                 })
                 .collect();
-            let text = charset
-                .decode(&input)
-                .expect("a multi-byte charset decodes");
+            let text = charset.decode(&input).expect("the charset decodes");
             text.encode_utf16().for_each(&mut add);
             add(ERROR);
+            if !matches!(charset.decoding(), Decoding::MultiByte(_)) {
+                continue;
+            }
             for at in 0..input.len() {
                 let window = &input[at..input.len().min(at + 4)];
                 add(
@@ -301,17 +462,22 @@ mod tests {
             .lines()
             .map(|line| line.split('\t').next().unwrap())
             .collect();
-        let mut multi_byte: Vec<&str> = REGISTRY
+        let mut ported: Vec<&str> = REGISTRY
             .entries
             .iter()
-            .filter(|entry| matches!(entry.decoding, Decoding::MultiByte(_)))
+            .filter(|entry| {
+                matches!(
+                    entry.decoding,
+                    Decoding::MultiByte(_) | Decoding::Utf8 | Decoding::Utf16 { .. }
+                )
+            })
             .map(|entry| entry.name.as_str())
             .collect();
         expected.sort_unstable();
-        multi_byte.sort_unstable();
+        ported.sort_unstable();
         assert_eq!(
-            expected, multi_byte,
-            "the reference covers every multi-byte charset"
+            expected, ported,
+            "the reference covers every multi-byte, UTF-8 and UTF-16 charset"
         );
         let mismatches: Vec<String> = REFERENCE
             .lines()
