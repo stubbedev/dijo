@@ -430,13 +430,16 @@ pub(crate) fn conformance_corpus() -> PathBuf {
     ))
 }
 
-/// A directory for the documents a test writes, removed with it.
+/// A directory for the documents a test writes, removed with it. Each is a directory of its
+/// own, so tests running at once never share one.
 pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
     pub(crate) fn new(test: &str) -> Self {
+        static CREATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let number = CREATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let directory =
-            std::env::temp_dir().join(format!("extractous-{test}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("extractous-{test}-{}-{number}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         Self(directory)
     }
