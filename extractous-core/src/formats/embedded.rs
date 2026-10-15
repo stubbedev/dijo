@@ -11,7 +11,8 @@ use crate::formats::Failure;
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
-const RESOURCE_NAME: &str = "tk:resource-name";
+pub(crate) const RESOURCE_NAME: &str = "tk:resource-name";
+pub(crate) const INTERNAL_PATH: &str = "tk:internal-path";
 const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 const THUMBNAIL: &str = "THUMBNAIL";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";

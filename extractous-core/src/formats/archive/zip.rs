@@ -10,8 +10,9 @@ use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::stream::ZipStream;
 use crate::compress::zip::Content;
+use crate::compress::MAX_DECODED;
 use crate::config::ParserConfigs;
-use crate::formats::embedded::{record_stream_exception, Wrapping};
+use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::java_time::{instant_string, TimeZone};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -161,6 +162,13 @@ impl Parser for ZipParser {
                     return Some(format!(
                         "the data of the entry {} is cut short or corrupt, which Tika's embedded \
                          parser reads as far as it goes",
+                        entry.name
+                    ))
+                }
+                Some(Content::Oversized(_)) => {
+                    return Some(format!(
+                        "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
+                         path streams",
                         entry.name
                     ))
                 }
@@ -319,8 +327,8 @@ fn entry_metadata(entry: &ZipEntry, name: &str, zone: &TimeZone) -> TikaMetadata
     let mut metadata = TikaMetadata::new();
     if !name.is_empty() {
         let name = name.replace('\\', "/");
-        metadata.set("tk:resource-name", name.clone());
-        metadata.set("tk:internal-path", name);
+        metadata.set(RESOURCE_NAME, name.clone());
+        metadata.set(INTERNAL_PATH, name);
     }
     if let Some(created) = entry.created() {
         metadata.set("dcterms:created", instant(created));

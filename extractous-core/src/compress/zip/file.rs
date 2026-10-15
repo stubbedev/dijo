@@ -5,9 +5,10 @@
 
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
-    crc32, decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG, DEFLATED,
-    LFH_SIG, STORED,
+    decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG, DEFLATED, LFH_SIG,
+    STORED,
 };
+use crate::compress::crc32;
 use crate::formats::java_time::{CalendarFields, TimeZone};
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";

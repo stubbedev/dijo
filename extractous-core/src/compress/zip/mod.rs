@@ -7,6 +7,8 @@ pub(crate) mod stream;
 
 use flate2::{Decompress, FlushDecompress, Status};
 
+use super::MAX_DECODED;
+
 pub(crate) const LFH_SIG: [u8; 4] = *b"PK\x03\x04";
 pub(crate) const CFH_SIG: [u8; 4] = *b"PK\x01\x02";
 pub(crate) const STORED: u16 = 0;
@@ -16,17 +18,21 @@ pub(crate) const DEFLATED: u16 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Corrupt;
 
-/// An entry's content: all of it, or what was read before the data failed.
+/// An entry's content: all of it, what was read before the data failed, or the first
+/// [`MAX_DECODED`] bytes and more of an entry that inflates past them, which is not read on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Content {
     Complete(Vec<u8>),
     Truncated(Vec<u8>),
+    Oversized(Vec<u8>),
 }
 
 impl Content {
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
-            Content::Complete(bytes) | Content::Truncated(bytes) => bytes,
+            Content::Complete(bytes) | Content::Truncated(bytes) | Content::Oversized(bytes) => {
+                bytes
+            }
         }
     }
 }
@@ -61,14 +67,9 @@ pub(crate) fn u64_at(data: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(data[offset..offset + 8].try_into().expect("eight bytes"))
 }
 
-pub(crate) fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = flate2::Crc::new();
-    crc.update(bytes);
-    crc.sum()
-}
-
 /// Raw deflate data inflated as `InflaterInputStream` inflates it: to the end of the deflate
-/// stream, or as far as it goes before the input runs out or turns out corrupt.
+/// stream, or as far as it goes before the input runs out or turns out corrupt, or past
+/// [`MAX_DECODED`] bytes.
 pub(crate) fn inflate(raw: &[u8]) -> Content {
     let mut inflater = Decompress::new(false);
     let mut out = Vec::new();
@@ -82,6 +83,7 @@ pub(crate) fn inflate(raw: &[u8]) -> Content {
             std::cmp::Ordering::Greater => return Content::Truncated(out),
         };
         match inflater.decompress_vec(input, &mut out, FlushDecompress::None) {
+            Ok(_) if out.len() > MAX_DECODED => return Content::Oversized(out),
             Ok(Status::StreamEnd) => return Content::Complete(out),
             Err(_) => return Content::Truncated(out),
             Ok(_) if inflater.total_in() == before_in && out.len() == before_out => {

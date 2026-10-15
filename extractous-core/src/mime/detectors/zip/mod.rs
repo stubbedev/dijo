@@ -264,7 +264,7 @@ fn open_document_file(zip: &ZipFile<'_>) -> Option<MediaType> {
     let entry = zip.entry("mimetype").filter(|entry| entry.size > 0)?;
     match zip.read(entry)? {
         Content::Complete(bytes) => MediaType::parse(&String::from_utf8_lossy(&bytes)),
-        Content::Truncated(_) => None,
+        Content::Truncated(_) | Content::Oversized(_) => None,
     }
 }
 
@@ -548,7 +548,7 @@ impl Streaming {
 /// throws.
 fn bounded(data: &Result<Content, Failure>, limit: usize) -> Result<&[u8], Failure> {
     match data {
-        Ok(Content::Complete(bytes)) => {
+        Ok(Content::Complete(bytes) | Content::Oversized(bytes)) => {
             Ok(&bytes[..bytes.len().min(limit)])
         }
         Ok(Content::Truncated(bytes)) if bytes.len() >= limit => Ok(&bytes[..limit]),

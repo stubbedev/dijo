@@ -504,7 +504,7 @@ fn open(zip: &ZipFile<'_>, content_types_entry: &ZipEntry) -> Result<Package, In
             if let Some(relationships) = relationship_part_name(part) {
                 if let Some((_, _, relationships_entry)) = parts.get(&relationships.key()) {
                     let content = read_entry(zip, relationships_entry).ok_or(Invalid)?;
-                    if matches!(content, Content::Truncated(_)) {
+                    if matches!(content, Content::Truncated(_) | Content::Oversized(_)) {
                         return Err(Invalid);
                     }
                     parse_relationships(content.bytes()).ok_or(Invalid)?;
