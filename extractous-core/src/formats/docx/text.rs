@@ -1,11 +1,12 @@
 //! Tika's `OOXMLWordAndPowerPointTextHandler`: reads a part of a Word document element by
-//! element, by local name, and hands paragraphs, runs, links, fields and pictures
+//! element, by local name, and hands paragraphs, runs, tables, links, fields and pictures
 //! to the [`Body`] that writes them.
 
 use std::collections::HashMap;
 
 use super::body::{Body, ParagraphProperties};
 use super::W_NAMESPACE;
+use crate::formats::java::parse_int;
 use crate::formats::xhtml::Stop;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -72,6 +73,7 @@ pub(super) struct TextHandler<'x, 'h, 'c, 'r> {
     in_run: bool,
     in_text: bool,
     in_run_properties: bool,
+    in_numbering_properties: bool,
     in_ruby_text: bool,
     last_start_was_paragraph: bool,
     paragraphs_started: Vec<bool>,
@@ -104,6 +106,7 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
             in_run: false,
             in_text: false,
             in_run_properties: false,
+            in_numbering_properties: false,
             in_ruby_text: false,
             last_start_was_paragraph: false,
             paragraphs_started: Vec::new(),
@@ -231,6 +234,12 @@ fn on_off(attributes: &[Attribute<'_>]) -> bool {
     )
 }
 
+fn int_value(attributes: &[Attribute<'_>]) -> i32 {
+    attribute(attributes, W_NAMESPACE, "val")
+        .and_then(parse_int)
+        .unwrap_or(-1)
+}
+
 impl SaxHandler for TextHandler<'_, '_, '_, '_> {
     fn start_element(
         &mut self,
@@ -271,6 +280,7 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
             }
             "b" if self.in_run && self.in_run_properties => self.run.bold = on_off(attributes),
             "b" => {}
+            "tc" => self.body.start_cell()?,
             "pStyle" => self.paragraph.style_id = w("val").map(str::to_owned),
             "i" if self.in_run && self.in_run_properties => self.run.italic = on_off(attributes),
             "i" => {}
@@ -282,6 +292,14 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
                 self.run.set_underline(w("val").unwrap_or_default());
             }
             "u" => {}
+            "tr" => self.body.start_row()?,
+            "numPr" => self.in_numbering_properties = true,
+            "ilvl" if self.in_numbering_properties => self.paragraph.level = int_value(attributes),
+            "ilvl" => {}
+            "numId" if self.in_numbering_properties => {
+                self.paragraph.num_id = int_value(attributes);
+            }
+            "numId" => {}
             "br" | "cr" => self.run_buffer.push('\n'),
             "noBreakHyphen" => self.run_buffer.push('\u{2011}'),
             "softHyphen" => self.run_buffer.push('\u{ad}'),
@@ -307,6 +325,7 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
                     }
                 }
             }
+            "tbl" => self.body.start_table()?,
             "blip" => {
                 self.picture.relationship =
                     attribute(attributes, R_NAMESPACE, "embed").map(str::to_owned);
@@ -383,6 +402,9 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
                 }
                 self.last_start_was_paragraph = false;
             }
+            "tc" => self.body.end_cell()?,
+            "tr" => self.body.end_row()?,
+            "tbl" => self.body.end_table()?,
             "hyperlink" => self.body.hyperlink_end()?,
             "pict" => self.end_picture()?,
             "v" if namespace == C_NAMESPACE => {

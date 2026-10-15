@@ -1,7 +1,8 @@
 //! How Tika's `OOXMLTikaBodyPartHandler` writes what the text handler finds as XHTML:
-//! paragraphs as their style's element, links and bookmarks, with `FormattingTagManager`
-//! keeping bold, italic, strike-through, underline and links nested.
+//! paragraphs as their style's element, tables, list numbers, links and bookmarks, with
+//! `FormattingTagManager` keeping bold, italic, strike-through, underline and links nested.
 
+use super::numbering::ListManager;
 use super::styles::{paragraph_tag_and_style, Styles};
 use super::text::RunProperties;
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -16,17 +17,24 @@ const HAS_VML_HYPERLINKS: &str = "msoffice:has-vml-hyperlinks";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ParagraphProperties {
     pub(super) style_id: Option<String>,
+    pub(super) level: i32,
+    pub(super) num_id: i32,
 }
 
 impl ParagraphProperties {
     pub(super) fn new() -> Self {
-        Self::default()
+        Self {
+            style_id: None,
+            level: -1,
+            num_id: -1,
+        }
     }
 }
 
 /// What a body handler writes besides the text itself.
 pub(super) struct Context<'c> {
     pub(super) styles: Option<&'c Styles>,
+    pub(super) lists: &'c mut ListManager,
     /// Whether the handler records features of the document in its metadata.
     pub(super) records_metadata: bool,
 }
@@ -37,6 +45,9 @@ pub(super) struct Body<'x, 'h, 'c> {
     context: Context<'c>,
     formatting: Formatting,
     paragraph_depth: i32,
+    table_depth: i32,
+    cell_depth: i32,
+    paragraphs_in_cell: i32,
     paragraph_tag: String,
 }
 
@@ -47,6 +58,9 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
             context,
             formatting: Formatting::default(),
             paragraph_depth: 0,
+            table_depth: 0,
+            cell_depth: 0,
+            paragraphs_in_cell: 0,
             paragraph_tag: "p".to_owned(),
         }
     }
@@ -65,7 +79,10 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
     }
 
     pub(super) fn start_paragraph(&mut self, properties: &ParagraphProperties) -> Result<(), Stop> {
-        if self.paragraph_depth == 0 {
+        if self.cell_depth > 0 && self.paragraphs_in_cell > 0 {
+            self.xhtml.characters("\n")?;
+        }
+        if self.paragraph_depth == 0 && self.table_depth == 0 {
             let mut tag = "p".to_owned();
             let mut class = None;
             if let (Some(id), Some(styles)) = (&properties.style_id, self.context.styles) {
@@ -81,19 +98,63 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
             }
             self.paragraph_tag = tag;
         }
+        if properties.level >= 0 && properties.num_id >= 0 {
+            let number = self
+                .context
+                .lists
+                .formatted_number(properties.num_id, properties.level);
+            self.xhtml.characters(&number)?;
+        }
         self.paragraph_depth += 1;
         Ok(())
     }
 
     pub(super) fn end_paragraph(&mut self) -> Result<(), Stop> {
         self.formatting.close_all(self.xhtml)?;
-        if self.paragraph_depth == 1 {
+        if self.paragraph_depth == 1 && self.table_depth == 0 {
             let tag = self.paragraph_tag.clone();
             self.xhtml.end_element(&tag)?;
-        } else {
+        } else if self.cell_depth == 0 || self.paragraphs_in_cell > 0 {
             self.xhtml.characters("\n")?;
         }
+        if self.cell_depth > 0 {
+            self.paragraphs_in_cell += 1;
+        }
         self.paragraph_depth -= 1;
+        Ok(())
+    }
+
+    pub(super) fn start_table(&mut self) -> Result<(), Stop> {
+        self.formatting.close_all(self.xhtml)?;
+        self.xhtml.start_element("table")?;
+        self.table_depth += 1;
+        Ok(())
+    }
+
+    pub(super) fn end_table(&mut self) -> Result<(), Stop> {
+        self.xhtml.end_element("table")?;
+        self.table_depth -= 1;
+        Ok(())
+    }
+
+    pub(super) fn start_row(&mut self) -> Result<(), Stop> {
+        self.xhtml.start_element("tr")
+    }
+
+    pub(super) fn end_row(&mut self) -> Result<(), Stop> {
+        self.xhtml.end_element("tr")
+    }
+
+    pub(super) fn start_cell(&mut self) -> Result<(), Stop> {
+        self.xhtml.start_element("td")?;
+        self.cell_depth += 1;
+        Ok(())
+    }
+
+    pub(super) fn end_cell(&mut self) -> Result<(), Stop> {
+        self.xhtml.end_element("td")?;
+        self.paragraphs_in_cell = 0;
+        self.cell_depth -= 1;
         Ok(())
     }
 

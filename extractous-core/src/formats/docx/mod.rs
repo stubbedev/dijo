@@ -8,12 +8,14 @@
 //! way or refuse, and one using what this port does not read: see [`DocxParser::defers_with`].
 
 mod body;
+mod numbering;
 mod styles;
 mod text;
 
 use std::collections::HashMap;
 
 use body::{Body, Context};
+use numbering::{ListManager, Numbering};
 use styles::Styles;
 use text::{TextHandler, TextOptions};
 
@@ -56,6 +58,8 @@ mod kind {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
     pub(super) const STYLES: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+    pub(super) const NUMBERING: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
     pub(super) const SETTINGS: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
     pub(super) const WEB_SETTINGS: &str =
@@ -281,6 +285,7 @@ impl<'a> Document<'a> {
                 }
             }
             let quietly_read = [
+                Package::first_related(self.relationships(story), kind::NUMBERING),
                 Package::first_related(self.relationships(story), kind::SETTINGS),
                 Package::first_related(self.relationships(story), kind::WEB_SETTINGS),
             ];
@@ -393,15 +398,20 @@ impl<'a> Document<'a> {
     /// `handleDocumentPart`.
     fn write_document_part(&self, story: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let relationships = self.relationships(story);
+        let numbering = match Package::first_related(relationships, kind::NUMBERING) {
+            Some(part) => self.read_quietly(part, Numbering::default())?,
+            None => None,
+        };
+        let mut lists = ListManager::new(numbering);
         let styles = match Package::first_related(relationships, kind::STYLES) {
             Some(part) => Some(self.read_part(part, Styles::default())?),
             None => None,
         };
-        self.write_part(story, styles.as_ref(), xhtml)?;
+        self.write_part(story, styles.as_ref(), &mut lists, xhtml)?;
         let mut trailing = Package::related(relationships, kind::DIAGRAM_DATA);
         trailing.extend(Package::related(relationships, kind::CHART));
         for part in trailing {
-            self.write_part(part, styles.as_ref(), xhtml)?;
+            self.write_part(part, styles.as_ref(), &mut lists, xhtml)?;
         }
         Ok(())
     }
@@ -424,6 +434,7 @@ impl<'a> Document<'a> {
         &self,
         part: usize,
         styles: Option<&Styles>,
+        lists: &mut ListManager,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
         let relationships = self.linked_relationships(part);
@@ -431,6 +442,7 @@ impl<'a> Document<'a> {
             xhtml,
             Context {
                 styles,
+                lists,
                 records_metadata: true,
             },
         );
@@ -590,9 +602,7 @@ impl SaxHandler for Ignore {
 }
 
 /// The elements of the features this port leaves to Tika for now, with the feature of each.
-const LEFT_FOR_NOW: [(&str, &str); 9] = [
-    ("tbl", "tables"),
-    ("numPr", "lists"),
+const LEFT_FOR_NOW: [(&str, &str); 7] = [
     ("footnoteReference", "notes"),
     ("endnoteReference", "notes"),
     ("commentReference", "comments"),
