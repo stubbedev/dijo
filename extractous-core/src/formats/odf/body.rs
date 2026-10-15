@@ -4,10 +4,12 @@
 //! underlined text styles become `b`, `i` and `u`, and templates, style definitions, covered
 //! table cells and, unless deleted content is asked for, tracked changes are left out.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS};
-use crate::formats::xhtml::Xhtml;
+use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
 
@@ -84,10 +86,24 @@ enum ListTag {
     Styled(ListStyleId),
 }
 
-/// The state of Tika's `OpenDocumentBodyHandler` over one XML part.
+/// Which namespaces the handler sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Namespaces {
+    /// Those of OpenOffice.org 1 elements mapped to OpenDocument's, as behind Tika's
+    /// `NSNormalizerContentHandler` in the parts of an archive.
+    Normalized,
+    /// As written, as in a flat document, where Tika normalizes only what the handler writes.
+    AsWritten,
+}
+
+/// The state of Tika's `OpenDocumentBodyHandler` over one XML part, which also keeps the
+/// elements it has open, as the `XHTMLBalancingHandler` behind it in a flat document does.
 pub(super) struct Body<'a, 'x> {
     xhtml: &'a mut Xhtml<'x>,
     include_deleted_content: bool,
+    namespaces: Namespaces,
+    open: Vec<&'static str>,
+    unchecked_failure: bool,
     text_nodes: Vec<bool>,
     completely_filtered: usize,
     heading_stack: Vec<&'static str>,
@@ -110,10 +126,17 @@ pub(super) struct Body<'a, 'x> {
 }
 
 impl<'a, 'x> Body<'a, 'x> {
-    pub(super) fn new(xhtml: &'a mut Xhtml<'x>, include_deleted_content: bool) -> Self {
+    pub(super) fn new(
+        xhtml: &'a mut Xhtml<'x>,
+        include_deleted_content: bool,
+        namespaces: Namespaces,
+    ) -> Self {
         Self {
             xhtml,
             include_deleted_content,
+            namespaces,
+            open: Vec::new(),
+            unchecked_failure: false,
             text_nodes: Vec::new(),
             completely_filtered: 0,
             heading_stack: Vec::new(),
@@ -134,6 +157,50 @@ impl<'a, 'x> Body<'a, 'x> {
             paragraph_depth: 0,
             anchor_depth: 0,
         }
+    }
+
+    /// The document's metadata.
+    pub(super) fn metadata_mut(&mut self) -> &mut TikaMetadata {
+        self.xhtml.metadata_mut()
+    }
+
+    /// Whether the handler failed as with one of Java's unchecked exceptions, on a number that
+    /// does not parse, rather than with a `SAXException`.
+    pub(super) fn failed_unchecked(&self) -> bool {
+        self.unchecked_failure
+    }
+
+    /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements still open.
+    pub(super) fn drain_open_elements(&mut self) -> Result<(), Stop> {
+        while let Some(name) = self.open.pop() {
+            self.xhtml.end_element(name)?;
+        }
+        Ok(())
+    }
+
+    fn start(&mut self, name: &'static str, attributes: &[(&str, &str)]) -> Result<(), Failure> {
+        self.open.push(name);
+        self.xhtml.start_element_with(name, attributes)?;
+        Ok(())
+    }
+
+    fn end_in(&mut self, namespace: &str, name: &'static str) -> Result<(), Failure> {
+        self.open.pop();
+        self.xhtml.end_element_in(namespace, name)?;
+        Ok(())
+    }
+
+    fn namespace<'n>(&self, namespace: &'n str) -> Cow<'n, str> {
+        match self.namespaces {
+            Namespaces::Normalized => normalized_namespace(namespace),
+            Namespaces::AsWritten => Cow::Borrowed(namespace),
+        }
+    }
+
+    /// Notes when `result` failed as Java's unchecked exceptions fail.
+    fn unchecked<T>(&mut self, result: Result<T, Failure>) -> Result<T, Failure> {
+        self.unchecked_failure |= result.is_err();
+        result
     }
 
     /// The `needsCompleteFiltering` of extractous's substitution: elements whose whole content
@@ -160,7 +227,7 @@ impl<'a, 'x> Body<'a, 'x> {
         };
         let element = self.list_tag(tag);
         self.list_style_stack.push(tag);
-        self.xhtml.start_element(element)?;
+        self.start(element, &[])?;
         Ok(())
     }
 
@@ -176,7 +243,7 @@ impl<'a, 'x> Body<'a, 'x> {
             Some(tag) => self.list_tag(tag),
             None => "ul",
         };
-        self.xhtml.end_element(element)?;
+        self.end_in(XHTML_NAMESPACE, element)?;
         Ok(())
     }
 
@@ -190,7 +257,7 @@ impl<'a, 'x> Body<'a, 'x> {
 
     fn start_paragraph(&mut self, style_name: Option<&str>) -> Result<(), Failure> {
         if self.paragraph_depth == 0 {
-            self.xhtml.start_element("p")?;
+            self.start("p", &[])?;
             if let Some(name) = style_name {
                 self.current_text_style = self.paragraph_text_style_names.get(name).copied();
             }
@@ -205,7 +272,7 @@ impl<'a, 'x> Body<'a, 'x> {
     fn end_paragraph(&mut self) -> Result<(), Failure> {
         self.close_style_tags()?;
         if self.paragraph_depth == 1 {
-            self.xhtml.end_element("p")?;
+            self.end_in(XHTML_NAMESPACE, "p")?;
         } else {
             self.xhtml.characters(SPACE)?;
         }
@@ -222,37 +289,37 @@ impl<'a, 'x> Body<'a, 'x> {
         };
         if style.bold != self.bold {
             if self.underlined {
-                self.xhtml.end_element("u")?;
+                self.end_in(XHTML_NAMESPACE, "u")?;
                 self.underlined = false;
             }
             if self.italic {
-                self.xhtml.end_element("i")?;
+                self.end_in(XHTML_NAMESPACE, "i")?;
                 self.italic = false;
             }
             if style.bold {
-                self.xhtml.start_element("b")?;
+                self.start("b", &[])?;
             } else {
-                self.xhtml.end_element("b")?;
+                self.end_in(XHTML_NAMESPACE, "b")?;
             }
             self.bold = style.bold;
         }
         if style.italic != self.italic {
             if self.underlined {
-                self.xhtml.end_element("u")?;
+                self.end_in(XHTML_NAMESPACE, "u")?;
                 self.underlined = false;
             }
             if style.italic {
-                self.xhtml.start_element("i")?;
+                self.start("i", &[])?;
             } else {
-                self.xhtml.end_element("i")?;
+                self.end_in(XHTML_NAMESPACE, "i")?;
             }
             self.italic = style.italic;
         }
         if style.underlined != self.underlined {
             if style.underlined {
-                self.xhtml.start_element("u")?;
+                self.start("u", &[])?;
             } else {
-                self.xhtml.end_element("u")?;
+                self.end_in(XHTML_NAMESPACE, "u")?;
             }
             self.underlined = style.underlined;
         }
@@ -264,15 +331,15 @@ impl<'a, 'x> Body<'a, 'x> {
             return Ok(());
         }
         if self.underlined {
-            self.xhtml.end_element("u")?;
+            self.end_in(XHTML_NAMESPACE, "u")?;
             self.underlined = false;
         }
         if self.italic {
-            self.xhtml.end_element("i")?;
+            self.end_in(XHTML_NAMESPACE, "i")?;
             self.italic = false;
         }
         if self.bold {
-            self.xhtml.end_element("b")?;
+            self.end_in(XHTML_NAMESPACE, "b")?;
             self.bold = false;
         }
         self.current_text_style = None;
@@ -301,13 +368,13 @@ impl<'a, 'x> Body<'a, 'x> {
                     .map(|(_, _, name)| (*name, attribute.value.as_ref()))
             })
             .collect();
-        self.xhtml.start_element_with(element, &mapped)?;
+        self.start(element, &mapped)?;
         Ok(())
     }
 
     fn end_mapped(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
         if let Some((element, _)) = mapping(namespace, local_name) {
-            self.xhtml.end_element(element)?;
+            self.end_in(XHTML_NAMESPACE, element)?;
         }
         Ok(())
     }
@@ -348,7 +415,8 @@ impl<'a, 'x> Body<'a, 'x> {
                 self.text_styles[style].italic = true;
             }
             if let Some(weight) = attribute(attributes, FORMATTING_OBJECTS_NS, "font-weight") {
-                if is_bold(weight)? {
+                let bold = is_bold(weight);
+                if self.unchecked(bold)? {
                     self.text_styles[style].bold = true;
                 }
             }
@@ -487,7 +555,7 @@ impl SaxHandler for Body<'_, '_> {
         local_name: &str,
         attributes: &[Attribute<'_>],
     ) -> Result<(), Failure> {
-        let namespace = normalized_namespace(namespace);
+        let namespace = self.namespace(namespace);
         let namespace = namespace.as_ref();
         if namespace == DRAW_NS && local_name == "image" {
             self.close_style_tags()?;
@@ -495,10 +563,10 @@ impl SaxHandler for Body<'_, '_> {
                 .filter(|link| !link.is_empty())
                 .map(|link| format!("embedded:{link}"));
             match &source {
-                Some(source) => self.xhtml.start_element_with("img", &[("src", source)])?,
-                None => self.xhtml.start_element("img")?,
+                Some(source) => self.start("img", &[("src", source)])?,
+                None => self.start("img", &[])?,
             }
-            self.xhtml.end_element("img")?;
+            self.end_in(XHTML_NAMESPACE, "img")?;
         }
         if local_name == BINARY_DATA_ELEMENT {
             return Err(Failure::Malformed(
@@ -515,9 +583,10 @@ impl SaxHandler for Body<'_, '_> {
         }
         match (namespace, local_name) {
             (TEXT_NS, "h") => {
-                let element = heading(attributes)?;
+                let element = heading(attributes);
+                let element = self.unchecked(element)?;
                 self.heading_stack.push(element);
-                self.xhtml.start_element(element)?;
+                self.start(element, &[])?;
             }
             (TEXT_NS, "list") => self.start_list(attribute(attributes, TEXT_NS, "style-name"))?,
             (TEXT_NS, "span") => self.start_span(attribute(attributes, TEXT_NS, "style-name")),
@@ -543,7 +612,7 @@ impl SaxHandler for Body<'_, '_> {
     }
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        let namespace = normalized_namespace(namespace);
+        let namespace = self.namespace(namespace);
         let namespace = namespace.as_ref();
         self.end_style_definition(namespace, local_name);
         if self.completely_filtered == 0 {
@@ -554,7 +623,7 @@ impl SaxHandler for Body<'_, '_> {
                         .pop()
                         .expect("a heading ends after it started");
                     self.close_style_tags()?;
-                    self.xhtml.end_element_in(namespace, element)?;
+                    self.end_in(namespace, element)?;
                 }
                 (TEXT_NS, "list") => self.end_list()?,
                 (TEXT_NS, "span") => {
@@ -564,7 +633,7 @@ impl SaxHandler for Body<'_, '_> {
                 (TEXT_NS, "p") => self.end_paragraph()?,
                 (_, "annotation" | "note" | "notes") => {
                     self.close_style_tags()?;
-                    self.xhtml.end_element_in(namespace, "p")?;
+                    self.end_in(namespace, "p")?;
                 }
                 (_, "a") => {
                     self.close_style_tags()?;
