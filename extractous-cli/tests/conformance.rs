@@ -20,8 +20,9 @@ const TIMEOUT_SECONDS: &str = "60";
 /// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers), so their
 /// text is not compared with Tika's: tests of their own check it. The native port of one counts
 /// as it does.
-const OWN_PARSERS: [&str; 9] = [
+const OWN_PARSERS: [&str; 10] = [
     "ai.yobix.IworkArchiveParser",
+    "extractous::IworkArchiveParser",
     "ai.yobix.SubtitleParser",
     "extractous::SubtitleParser",
     "ai.yobix.NotebookParser",

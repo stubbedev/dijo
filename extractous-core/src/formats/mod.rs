@@ -13,6 +13,7 @@ mod epub;
 mod fiction_book;
 pub(crate) mod handlers;
 mod html;
+mod iwork;
 pub(crate) mod java;
 pub(crate) mod java_time;
 mod mail;
@@ -126,6 +127,7 @@ static PARSERS: &[&dyn Parser] = &[
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
+    &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,

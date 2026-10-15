@@ -8,7 +8,7 @@ use super::package::{
     Package, Relationship, Unported, HYPERLINK_RELATIONSHIP, RELATIONSHIPS_CONTENT_TYPE,
 };
 use crate::config::OfficeParserConfig;
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{self, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{Attribute, SaxHandler};
@@ -267,7 +267,7 @@ fn embedded_file_metadata(
 ) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
     metadata.set(
-        "tk:embedded-relationship-id",
+        embedded::RELATIONSHIP_ID,
         format!(
             "{}{}",
             source_description(package.name(source)),

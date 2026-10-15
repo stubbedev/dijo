@@ -16,7 +16,7 @@
 
 mod archive;
 mod detectors;
-mod java;
+pub(crate) mod java;
 mod java_regex;
 mod magic;
 mod media_type;

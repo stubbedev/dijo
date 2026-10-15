@@ -13,6 +13,7 @@ use crate::formats::Failure;
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
 pub(crate) const RESOURCE_NAME: &str = "tk:resource-name";
 pub(crate) const INTERNAL_PATH: &str = "tk:internal-path";
+pub(crate) const RELATIONSHIP_ID: &str = "tk:embedded-relationship-id";
 pub(crate) const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 pub(crate) const THUMBNAIL: &str = "THUMBNAIL";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
