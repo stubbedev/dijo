@@ -5,9 +5,13 @@
 //! decoder answers with all of it or with why commons-compress would not give all of it:
 //! [`Undecoded`].
 
+pub(crate) mod ar;
+pub(crate) mod archiver;
 pub(crate) mod bzip2;
+pub(crate) mod cpio;
 pub(crate) mod gzip;
 pub(crate) mod lzw;
+pub(crate) mod tar;
 pub(crate) mod zip;
 pub(crate) mod zlib;
 
@@ -36,6 +40,35 @@ impl fmt::Display for Undecoded {
 
 fn throws(reason: impl Into<String>) -> Undecoded {
     Undecoded::Throws(reason.into())
+}
+
+/// Bytes decoded as US-ASCII, as `ArchiveUtils.toAsciiString` decodes them: each byte beyond
+/// ASCII replaced by U+FFFD.
+fn ascii(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&b| {
+            if b.is_ascii() {
+                char::from(b)
+            } else {
+                '\u{FFFD}'
+            }
+        })
+        .collect()
+}
+
+/// `String.trim`: without the characters up to the space at either end.
+fn java_trim(text: &str) -> &str {
+    text.trim_matches(|c: char| c <= ' ')
+}
+
+/// `Long.parseLong(text, radix)` of a text of ASCII characters: a sign and at least one digit.
+fn parse_long(text: &str, radix: u32) -> Option<i64> {
+    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    i64::from_str_radix(text, radix).ok()
 }
 
 /// The CRC-32 of `bytes`.

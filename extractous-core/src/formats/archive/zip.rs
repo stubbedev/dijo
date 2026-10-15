@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use super::write_entry_div;
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::stream::ZipStream;
@@ -304,16 +305,6 @@ fn decode_name(raw: &[u8], charset: Charset) -> Option<String> {
 fn record_unread(xhtml: &mut Xhtml, name: &str, exception: &str) -> Result<(), Failure> {
     record_stream_exception(xhtml.metadata_mut(), exception);
     xhtml.element("p", name)?;
-    Ok(())
-}
-
-/// `writeEntryXhtml`: an empty `div` of class `embedded` identified by the entry's name.
-fn write_entry_div(xhtml: &mut Xhtml, name: &str) -> Result<(), Failure> {
-    if name.is_empty() {
-        return Ok(());
-    }
-    xhtml.start_element_with("div", &[("class", "embedded"), ("id", name)])?;
-    xhtml.end_element("div")?;
     Ok(())
 }
 

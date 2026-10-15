@@ -4,9 +4,12 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::compress::ar::tests::ar;
 use crate::compress::bzip2::tests::bzip2;
+use crate::compress::cpio::tests::cpio;
 use crate::compress::gzip::tests::gzip;
 use crate::compress::lzw::tests::encode as compress;
+use crate::compress::tar::tests::{pax, tar};
 use crate::compress::zip::file::tests::zip;
 use crate::compress::zlib::tests::zlib;
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
@@ -15,6 +18,7 @@ use crate::formats::Parser;
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 const ZIP_PARSER: &str = "org.apache.tika.parser.pkg.ZipParser";
 const COMPRESSOR_PARSER: &str = "org.apache.tika.parser.pkg.CompressorParser";
+const PACKAGE_PARSER: &str = "org.apache.tika.parser.pkg.PackageParser";
 
 /// Why the native path extracts a document of Tika's tests differently until the framework
 /// carries what Tika's top-level handlers know into the embedded parses it hands to Tika.
@@ -173,4 +177,53 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &[("quine.gz", NESTED_TOO_DEEP)],
     );
     assert_eq!(deferred, ["testZ_oom.Z"]);
+}
+
+#[test]
+fn extracts_tar_ar_and_cpio_archives_as_tikas_path_does() {
+    let text = "Archived text, caf\u{e9}.\nSecond line.\n".as_bytes();
+    let html = b"<html><head><title>Inner</title></head><body><p>Inner page</p></body></html>";
+    let long = format!("{}long.txt\0", "folder/".repeat(20));
+    let pax_path = pax(&[("path", "/caf\u{e9}/pax.txt"), ("mtime", "1700000000.75")]);
+    assert_synthetic_parity(
+        "archive-packages",
+        &PackageParser,
+        PACKAGE_PARSER,
+        &[
+            (
+                "files.tar",
+                tar(&[
+                    (b"dir/", b'5', b""),
+                    (b"dir/a.txt", b'0', text),
+                    (b"page.html", b'0', html),
+                    (b"././@PaxHeader", b'x', &pax_path),
+                    (b"pax", b'0', text),
+                    (b"././@LongLink", b'L', long.as_bytes()),
+                    (b"cut", b'0', html),
+                    (b"back\\slash.txt", b'0', text),
+                    (b"link", b'2', b""),
+                ]),
+            ),
+            (
+                "files.a",
+                ar(&[("a.txt", text), ("a-rather-long-file-name.html", html)]),
+            ),
+            (
+                "files.cpio",
+                cpio(&[("dir/", b""), ("dir/a.txt", text), ("page.html", html)]),
+            ),
+        ],
+    );
+}
+
+#[test]
+#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
+    let deferred = assert_parity(
+        &PackageParser,
+        PACKAGE_PARSER,
+        &[&conformance_corpus()],
+        &[],
+    );
+    assert_eq!(deferred, Vec::<String>::new());
 }
