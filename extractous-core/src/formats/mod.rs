@@ -54,6 +54,13 @@ pub(crate) trait Parser: Sync {
     /// The media types it parses, without parameters, as Tika's detection names them.
     fn media_types(&self) -> &'static [&'static str];
 
+    /// Why Tika's path should extract `input` rather than this parser, if it should: a feature
+    /// of this document the parser does not handle yet, such as embedded documents, which Tika
+    /// parses recursively. Decided before any output is written.
+    fn defers(&self, _input: &[u8]) -> Option<&'static str> {
+        None
+    }
+
     /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
     /// it replaces does. The document is started before and ended after it.
     fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure>;
@@ -84,27 +91,37 @@ pub(crate) struct Detected {
 }
 
 /// A document a native parser reads, and what its detection found.
-pub(crate) struct Routed {
+pub(crate) struct Routed<'a> {
     pub(crate) parser: &'static dyn Parser,
     pub(crate) detected: Detected,
+    pub(crate) input: Cow<'a, [u8]>,
 }
 
-/// Routes a document to its native parser, if its format has one, detecting it with Tika's
-/// detector until the detection is ported (#41). Documents read from a URL, and those whose
-/// embedded documents are spooled, stay with Tika.
-pub(crate) fn route(source: Source, spooling: bool) -> ExtractResult<Option<Routed>> {
+/// Routes a document to its native parser, if its format has one and the parser does not defer
+/// this document to Tika, detecting it with Tika's detector until the detection is ported
+/// (#41). Documents read from a URL, and those whose embedded documents are spooled, stay with
+/// Tika.
+pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<Routed<'_>>> {
     if spooling || matches!(source, Source::Url(_)) || !any_parsers() {
         return Ok(None);
     }
     let (media_type, metadata) = tika::detect_with_metadata(isolate()?, source)?;
-    Ok(parser_for(&media_type).map(|parser| Routed {
+    let Some(parser) = parser_for(&media_type) else {
+        return Ok(None);
+    };
+    let input = input(source)?;
+    if parser.defers(&input).is_some() {
+        return Ok(None);
+    }
+    Ok(Some(Routed {
         parser,
         detected: Detected::from_tika(media_type, metadata),
+        input,
     }))
 }
 
 /// The bytes of a document read from a file or memory.
-pub(crate) fn input(source: Source<'_>) -> ExtractResult<Cow<'_, [u8]>> {
+fn input(source: Source<'_>) -> ExtractResult<Cow<'_, [u8]>> {
     match source {
         Source::File(path) => fs::read(path)
             .map(Cow::Owned)

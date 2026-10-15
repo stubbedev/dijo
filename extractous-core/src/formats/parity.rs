@@ -66,22 +66,26 @@ fn tika_string(path: &str, output: Output) -> Extracted {
     }
 }
 
-fn routed(path: &str) -> Routed {
+fn routed(path: &str) -> Routed<'_> {
     formats::route(Source::File(path), false)
         .unwrap()
-        .unwrap_or_else(|| panic!("{path} has no native parser"))
+        .unwrap_or_else(|| panic!("{path} has no native parser, or its parser defers it to Tika"))
 }
 
 fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
     let routed = routed(path);
-    let input = formats::input(Source::File(path)).unwrap().into_owned();
     let options = StreamOptions {
         char_set,
         output,
         timeout: None,
     };
-    let mut stream =
-        formats::parse_to_stream(routed.parser, input, routed.detected, options).unwrap();
+    let mut stream = formats::parse_to_stream(
+        routed.parser,
+        routed.input.into_owned(),
+        routed.detected,
+        options,
+    )
+    .unwrap();
     let mut text = Vec::new();
     stream.read_to_end(&mut text).unwrap();
     Extracted {
@@ -92,10 +96,14 @@ fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
 
 fn native_string(path: &str, output: Output) -> Extracted {
     let routed = routed(path);
-    let input = formats::input(Source::File(path)).unwrap();
-    let (text, metadata) =
-        formats::parse_to_string(routed.parser, &input, &routed.detected, SMALL_LIMIT, output)
-            .unwrap();
+    let (text, metadata) = formats::parse_to_string(
+        routed.parser,
+        &routed.input,
+        &routed.detected,
+        SMALL_LIMIT,
+        output,
+    )
+    .unwrap();
     Extracted {
         text: text.into_bytes(),
         metadata: sorted(metadata),
