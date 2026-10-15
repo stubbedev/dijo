@@ -1,6 +1,7 @@
 use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
 use crate::errors::ExtractResult;
+use crate::formats::{self, NativeStream, Output};
 use crate::isolate::isolate;
 use crate::tika;
 use crate::tika::JInputStream;
@@ -63,27 +64,42 @@ impl std::fmt::Display for MediaType {
 /// ```
 ///
 pub struct StreamReader {
-    pub(crate) inner: JInputStream,
+    pub(crate) inner: Stream,
+}
+
+/// Where a stream's text comes from: Tika's parse in the isolate, or a native parser.
+pub(crate) enum Stream {
+    Tika(JInputStream),
+    Native(NativeStream),
 }
 
 impl StreamReader {
-    /// The document's metadata as Tika left it after parsing, which includes everything the
-    /// parser found while producing the text. Available once the stream has been read to the end.
+    /// The document's metadata as the parser left it, which includes everything it found while
+    /// producing the text. Available once the stream has been read to the end.
     pub fn metadata(&self) -> ExtractResult<Metadata> {
-        self.inner.metadata()
+        match &self.inner {
+            Stream::Tika(stream) => stream.metadata(),
+            Stream::Native(stream) => stream.metadata(),
+        }
     }
 
     /// The embedded documents copied to the spool given to
     /// [`Extractor::extract_file_spooling_embedded`], in the order they appear. Available once
     /// the stream has been read to the end.
     pub fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
-        self.inner.embedded()
+        match &self.inner {
+            Stream::Tika(stream) => stream.embedded(),
+            Stream::Native(stream) => stream.metadata().map(|_| Vec::new()),
+        }
     }
 }
 
 impl std::io::Read for StreamReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.inner.read(buf)
+        match &mut self.inner {
+            Stream::Tika(stream) => stream.read(buf),
+            Stream::Native(stream) => stream.read(buf),
+        }
     }
 }
 
@@ -285,11 +301,39 @@ impl Extractor {
             .ok_or(encrypted)
     }
 
+    fn output(&self) -> Output {
+        if self.xml_output {
+            Output::Xml
+        } else {
+            Output::Text
+        }
+    }
+
     fn extract_to_stream(
         &self,
         source: Source,
         embedded: Option<&EmbeddedSpool>,
     ) -> ExtractResult<(StreamReader, Metadata)> {
+        if let Some(routed) = formats::route(source, embedded.is_some())? {
+            let metadata = routed.detected.metadata.to_map();
+            let options = formats::StreamOptions {
+                char_set: self.encoding,
+                output: self.output(),
+                timeout: self.timeout,
+            };
+            let stream = formats::parse_to_stream(
+                routed.parser,
+                routed.input.into_owned(),
+                routed.detected,
+                options,
+            )?;
+            return Ok((
+                StreamReader {
+                    inner: Stream::Native(stream),
+                },
+                metadata,
+            ));
+        }
         let isolate = isolate()?;
         let options = StreamOptions {
             char_set: self.encoding,
@@ -303,6 +347,21 @@ impl Extractor {
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
+        if let Some(routed) = formats::route(source, false)? {
+            let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
+                Error::ParseError(format!(
+                    "The maximum string length must not be negative: {}",
+                    self.extract_string_max_length
+                ))
+            })?;
+            return formats::parse_to_string(
+                routed.parser,
+                &routed.input,
+                &routed.detected,
+                max_length,
+                self.output(),
+            );
+        }
         let isolate = isolate()?;
         self.with_passwords(|password| {
             tika::parse_to_string(

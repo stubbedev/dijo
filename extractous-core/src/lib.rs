@@ -23,6 +23,7 @@ pub use ocr::tesseract_version;
 mod licenses;
 pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
+mod formats;
 pub mod text;
 pub mod unicode;
 

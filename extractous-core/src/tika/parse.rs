@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::config::{ParserConfigs, Password};
 use crate::embedded::{EmbeddedExtractResult, EmbeddedSpool};
 use crate::errors::{Error, ExtractResult};
+use crate::extractor::Stream;
 use crate::isolate::Isolate;
 use crate::tika::jni_utils::*;
 use crate::tika::wrappers::*;
@@ -158,7 +159,12 @@ pub(crate) fn parse_to_stream(
         Ok::<_, Error>((env.new_global_ref(stream)?, metadata))
     })?;
     let inner = JInputStream::new(isolate, stream);
-    Ok((StreamReader { inner }, metadata))
+    Ok((
+        StreamReader {
+            inner: Stream::Tika(inner),
+        },
+        metadata,
+    ))
 }
 
 /// Parses a document into a string of at most `max_length` characters.
@@ -213,6 +219,15 @@ pub(crate) fn extract_embedded(
 
 /// Detects the media type of a document with Tika's default detector.
 pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String> {
+    detect_with_metadata(isolate, source).map(|(media_type, _)| media_type)
+}
+
+/// Detects the media type of a document with Tika's default detector, with the metadata opening
+/// the input and detecting it set: the resource name, the length and what the detectors record.
+pub(crate) fn detect_with_metadata(
+    isolate: &Isolate,
+    source: Source,
+) -> ExtractResult<(String, Metadata)> {
     isolate.with_env(|env| {
         let source_obj = source.into_java(env)?;
         let result = jni_call_static_method(
@@ -224,8 +239,7 @@ pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String>
             &[JValue::Object(&source_obj)],
         )?
         .l()?;
-        let (media_type, _) = string_result(env, &result)?;
-        Ok(media_type)
+        string_result(env, &result)
     })
 }
 

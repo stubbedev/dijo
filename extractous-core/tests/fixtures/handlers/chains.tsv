@@ -1,0 +1,78 @@
+paragraphs	stream-text	false	The Lighthouse Keeper's Ledger\n\nEvery evening at dusk the keeper climbed.\n\nSecond paragraph.\n\n
+paragraphs	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="tk:resource-name" content="prose.rtf" />\n<meta name="dcterms:created" content="2026-01-01T00:00:00Z" />\n<meta name="Content-Length" content="5470" />\n<meta name="tk:parsed-by" content="org.apache.tika.parser.microsoft.rtf.RTFParser" />\n<meta name="Content-Type" content="application/rtf" />\n<title></title>\n</head>\n<body><p><b /><b>The Lighthouse Keeper's Ledger</b></p>\n<p>Every evening at dusk the keeper climbed.</p>\n<p>Second paragraph.</p>\n</body></html>
+paragraphs	string-text-1000000	false	The Lighthouse Keeper's Ledger\n\nEvery evening at dusk the keeper climbed.\n\nSecond paragraph.\n\n
+paragraphs	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="tk:resource-name" content="prose.rtf" />\n<meta name="dcterms:created" content="2026-01-01T00:00:00Z" />\n<meta name="Content-Length" content="5470" />\n<meta name="tk:parsed-by" content="org.apache.tika.parser.microsoft.rtf.RTFParser" />\n<meta name="Content-Type" content="application/rtf" />\n<title></title>\n</head>\n<body><p><b /><b>The Lighthouse Keeper's Ledger</b></p>\n<p>Every evening at dusk the keeper climbed.</p>\n<p>Second paragraph.</p>\n</body></html>
+paragraphs	string-text-40	true	The Lighthouse Keeper's Ledger\n\nEvery ev
+paragraphs	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="tk:resource-name" content="prose.rtf" />\n<meta name="dcterms:created" content="2026-01-01T00:00:00Z" />\n<meta name="Content-Length" content="5470" />\n<meta name="tk:parsed-by" content="org.apache.tika.parser.microsoft.rtf.RTFParser" />\n<meta name="Content-Type" content="application/rtf" />\n<title></title>\n</head>\n<body><p><b /><b>The Lighthouse Keeper's Ledger</b></p>\n<p>
+title-language-and-many-values	stream-text	false	Overskrift\n\nBrødtekst med æøå.\n\n
+title-language-and-many-values	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html lang="da" xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="dc:title" content="A &lt;Title&gt; &amp; &quot;more&quot;" />\n<meta name="dc:creator" content="First" />\n<meta name="dc:creator" content="Second" />\n<meta name="tk:parsed-by" content="a" />\n<meta name="tk:parsed-by" content="b" />\n<meta name="Content-Language" content="da" />\n<title>A &lt;Title&gt; &amp; "more"</title>\n</head>\n<body><h1>Overskrift</h1>\n<p>Brødtekst med æøå.</p>\n</body></html>
+title-language-and-many-values	string-text-1000000	false	Overskrift\n\nBrødtekst med æøå.\n\n
+title-language-and-many-values	string-xml-1000000	false	<html lang="da" xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="dc:title" content="A &lt;Title&gt; &amp; &quot;more&quot;" />\n<meta name="dc:creator" content="First" />\n<meta name="dc:creator" content="Second" />\n<meta name="tk:parsed-by" content="a" />\n<meta name="tk:parsed-by" content="b" />\n<meta name="Content-Language" content="da" />\n<title>A &lt;Title&gt; &amp; "more"</title>\n</head>\n<body><h1>Overskrift</h1>\n<p>Brødtekst med æøå.</p>\n</body></html>
+title-language-and-many-values	string-text-40	false	Overskrift\n\nBrødtekst med æøå.\n\n
+title-language-and-many-values	string-xml-40	true	<html lang="da" xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="dc:title" content="A &lt;Title&gt; &amp; &quot;more&quot;" />\n<meta name="dc:creator" content="First" />\n<meta name="dc:creator" content="Second" />\n<meta name="tk:parsed-by" content="a" />\n<meta name="tk:parsed-by" content="b" />\n<meta name="Content-Language" content="da" />\n<title>A &lt;Title&gt; &amp; "more"</title>\n</head>\n<body><h1>Overskrift</h1>\n<p>B
+escaping-and-invalid-characters	stream-text	false	1 < 2 & 3 > 2 "quoted" 'single'controls ����� kept \t and \rc1 ��� nonchar �� endastral 😀 ok\n\n
+escaping-and-invalid-characters	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p class="a &quot;quoted&quot; &lt;value&gt; &amp; more" data-x="bell�here">1 &lt; 2 &amp; 3 &gt; 2 "quoted" 'single'controls ����� kept \t and \rc1 ��� nonchar �� endastral 😀 ok</p>\n</body></html>
+escaping-and-invalid-characters	string-text-1000000	false	1 < 2 & 3 > 2 "quoted" 'single'controls ����� kept \t and \rc1 ��� nonchar �� endastral 😀 ok\n\n
+escaping-and-invalid-characters	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p class="a &quot;quoted&quot; &lt;value&gt; &amp; more" data-x="bell�here">1 &lt; 2 &amp; 3 &gt; 2 "quoted" 'single'controls ����� kept \t and \rc1 ��� nonchar �� endastral 😀 ok</p>\n</body></html>
+escaping-and-invalid-characters	string-text-40	true	1 < 2 & 3 > 2 "quoted" 'single'controls 
+escaping-and-invalid-characters	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p class="a &quot;quoted&quot; &lt;value&gt; &amp; more" data-x="bell�here">1 &lt; 2 &amp; 3 &gt; 2 "quoted" 'single'contr
+empty-elements-and-whitespace	stream-text	false	\n   \n\n\n\n\ttail
+empty-elements-and-whitespace	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><div />\n<p>   </p>\n<br />\n\n\ttail</body></html>
+empty-elements-and-whitespace	string-text-1000000	false	\n   \n\n\n\n\ttail
+empty-elements-and-whitespace	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><div />\n<p>   </p>\n<br />\n\n\ttail</body></html>
+empty-elements-and-whitespace	string-text-40	false	\n   \n\n\n\n\ttail
+empty-elements-and-whitespace	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><div />\n<p>   </p>\n<br />\n\n\ttail</body></html>
+table-cells-with-paragraphs	stream-text	false	\tYear\n1888\tShips\t\n\n\tHeader\tdirect\nthen paragraph\nagain\n\n\nafter the table\n\n
+table-cells-with-paragraphs	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><table><tr>\t<td><p>Year</p>\n<p>1888</p>\n</td>\t<td><p>Ships</p>\n</td>\t<td> </td></tr>\n<tr>\t<th>Header</th>\t<td>direct<p>then paragraph</p>\n <p>again</p>\n</td></tr>\n</table>\n<p>after the table</p>\n</body></html>
+table-cells-with-paragraphs	string-text-1000000	false	\tYear\n1888\tShips\t\n\n\tHeader\tdirect\nthen paragraph\nagain\n\n\nafter the table\n\n
+table-cells-with-paragraphs	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><table><tr>\t<td><p>Year</p>\n<p>1888</p>\n</td>\t<td><p>Ships</p>\n</td>\t<td> </td></tr>\n<tr>\t<th>Header</th>\t<td>direct<p>then paragraph</p>\n <p>again</p>\n</td></tr>\n</table>\n<p>after the table</p>\n</body></html>
+table-cells-with-paragraphs	string-text-40	true	\tYear\n1888\tShips\t\n\n\tHeader\tdirect\nthen p
+table-cells-with-paragraphs	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><table><tr>\t<td><p>Year</p>\n<p>1888</p>\n</td>\t<td><p>Ships</p>\n</td>\t<td> </td></tr>\n<tr>\t<th>Header</th>\t<td>direct<p>t
+lists-and-definitions	stream-text	false	\tone\n\n\ttwo\n\n\n\tterm\n\n\tdefinition\n\n\n\tin item\n\n\n\n
+lists-and-definitions	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><ul>\t<li>one</li>\n\t<li>two</li>\n</ul>\n<dl>\t<dt>term</dt>\n\t<dd>definition</dd>\n</dl>\n<ol>\t<li><p>in item</p>\n</li>\n</ol>\n</body></html>
+lists-and-definitions	string-text-1000000	false	\tone\n\n\ttwo\n\n\n\tterm\n\n\tdefinition\n\n\n\tin item\n\n\n\n
+lists-and-definitions	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><ul>\t<li>one</li>\n\t<li>two</li>\n</ul>\n<dl>\t<dt>term</dt>\n\t<dd>definition</dd>\n</dl>\n<ol>\t<li><p>in item</p>\n</li>\n</ol>\n</body></html>
+lists-and-definitions	string-text-40	true	\tone\n\n\ttwo\n\n\n\tterm\n\n\tdefinition\n\n\n\tin it
+lists-and-definitions	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><ul>\t<li>one</li>\n\t<li>two</li>\n</ul>\n<dl>\t<dt>term</dt>\n\t<dd>definition</dd>\n</dl>\n<ol>\t<li><p>in it
+anchored-block-in-paragraph	stream-text	false	The sentence begins and ends here.\nA comment anchored here.\n\n\n\nA block before any text stays.\n\nText after it.\n\nFootnote reference.\n\n\n\n
+anchored-block-in-paragraph	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>The sentence begins and ends here.</p><div class="annotation"><p>A comment anchored here.</p>\n</div>\n\n<p><div class="before-text">A block before any text stays.</div>\nText after it.</p>\n<p>Footnote reference.</p><p />\n\n\n</body></html>
+anchored-block-in-paragraph	string-text-1000000	false	The sentence beginsA comment anchored here.\n\n\n and ends here.\n\nA block before any text stays.\n\nText after it.\n\nFootnote\n\n\n reference.\n\n
+anchored-block-in-paragraph	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>The sentence begins<div class="annotation"><p>A comment anchored here.</p>\n</div>\n and ends here.</p>\n<p><div class="before-text">A block before any text stays.</div>\nText after it.</p>\n<p>Footnote<p />\n\n reference.</p>\n</body></html>
+anchored-block-in-paragraph	string-text-40	true	The sentence beginsA comment anchored he
+anchored-block-in-paragraph	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>The sentence begins<div class="annotation"><p>A comment anchore
+unbalanced-end-tags	stream-text	false	open span\n\nunclosed paragraph
+unbalanced-end-tags	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><div><span>open span</span></div>\n<p>unclosed paragraph</p></body></html>
+unbalanced-end-tags	string-text-1000000	false	open span\n\nunclosed paragraph
+unbalanced-end-tags	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><div><span>open span</span></div>\n<p>unclosed paragraph</p></body></html>
+unbalanced-end-tags	string-text-40	false	open span\n\nunclosed paragraph
+unbalanced-end-tags	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><div><span>open span</span></div>\n<p>unclosed paragraph</p></body></html>
+style-and-script	stream-text	false	visible\n text\n\n
+style-and-script	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><style>p { color: red }</style><p>visible<script>alert(1)</script>\n<SCRIPT>upper</SCRIPT> text</p>\n</body></html>
+style-and-script	string-text-1000000	false	visible\n text\n\n
+style-and-script	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><style>p { color: red }</style><p>visible<script>alert(1)</script>\n<SCRIPT>upper</SCRIPT> text</p>\n</body></html>
+style-and-script	string-text-40	true	visible\n te
+style-and-script	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><style>p { color: red }</style><p>visible<script>alert(1)</script>\n<SCRIPT>uppe
+head-elements-and-auto	stream-text	false	
+head-elements-and-auto	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="description" content="Explicit" /><link rel="stylesheet" />\n<title><title></title>\n</title></head>\n<body>Explicit title element<p>Body text.</p>\n</body></html>
+head-elements-and-auto	string-text-1000000	false	
+head-elements-and-auto	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="description" content="Explicit" /><link rel="stylesheet" />\n<title><title></title>\n</title></head>\n<body>Explicit title element<p>Body text.</p>\n</body></html>
+head-elements-and-auto	string-text-40	false	
+head-elements-and-auto	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="description" content="Explicit" /><link rel="stylesheet" />\n<title><title></title>\n</title></head>\n<body>Explicit title element<p>Body text.</p>\n</body></html>
+frameset	stream-text	false	
+frameset	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="dc:title" content="Frames" />\n<title>Frames</title>\n</head>\n<frameset>\t<frame src="a.html" /></frameset></html>
+frameset	string-text-1000000	false	
+frameset	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="dc:title" content="Frames" />\n<title>Frames</title>\n</head>\n<frameset>\t<frame src="a.html" /></frameset></html>
+frameset	string-text-40	false	
+frameset	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="dc:title" content="Frames" />\n<title>Frames</title>\n</head>\n<frameset>\t<frame src="a.html" /></frameset></html>
+no-content	stream-text	false	
+no-content	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="Content-Type" content="text/plain" />\n<title></title>\n</head>\n<body /></html>
+no-content	string-text-1000000	false	
+no-content	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="Content-Type" content="text/plain" />\n<title></title>\n</head>\n<body /></html>
+no-content	string-text-40	false	
+no-content	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<meta name="Content-Type" content="text/plain" />\n<title></title>\n</head>\n<body /></html>
+write-limit	stream-text	false	Ninety characters of text so that the small write limit cuts it in the middle of a word.\n\nStraddling astral 😀😀 characters at the limit.\n\nNever written under the small limit.\n\n
+write-limit	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Ninety characters of text so that the small write limit cuts it in the middle of a word.</p>\n<p>Straddling astral 😀😀 characters at the limit.</p>\n<p>Never written under the small limit.</p>\n</body></html>
+write-limit	string-text-1000000	false	Ninety characters of text so that the small write limit cuts it in the middle of a word.\n\nStraddling astral 😀😀 characters at the limit.\n\nNever written under the small limit.\n\n
+write-limit	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Ninety characters of text so that the small write limit cuts it in the middle of a word.</p>\n<p>Straddling astral 😀😀 characters at the limit.</p>\n<p>Never written under the small limit.</p>\n</body></html>
+write-limit	string-text-40	true	Ninety characters of text so that the sm
+write-limit	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Ninety characters of text so that th
