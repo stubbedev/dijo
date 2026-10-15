@@ -10,4 +10,4 @@ mod property_set;
 mod reader;
 mod summary;
 
-pub(crate) use summary::add_multi;
+pub(crate) use summary::{add_multi, parse_summaries};

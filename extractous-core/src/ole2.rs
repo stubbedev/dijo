@@ -496,6 +496,24 @@ fn streamed(data: &[u8], block_size: usize, bat_count: i32) -> Result<&[u8]> {
     Ok(data)
 }
 
+/// `ClassID.toString()`: 16 bytes as a stream holds a class id, written as a UUID in braces and
+/// upper case, the first three fields read little-endian.
+pub(crate) fn class_id_string(raw: &[u8; 16]) -> String {
+    let mut bytes = *raw;
+    bytes[..4].reverse();
+    bytes[4..6].reverse();
+    bytes[6..8].reverse();
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
+    format!(
+        "{{{}-{}-{}-{}-{}}}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
 /// Whether a document starts with the OLE2 signature.
 pub(crate) fn is_ole(data: &[u8]) -> bool {
     data.starts_with(&SIGNATURE)
@@ -587,6 +605,18 @@ pub(crate) mod tests {
         assert_eq!(file.kind(one), EntryKind::Document);
         assert_eq!(file.read(one).unwrap(), b"content");
         assert!(file.child(file.root(), "one").is_none());
+    }
+
+    #[test]
+    fn writes_class_ids_as_poi_does() {
+        let raw = [
+            0xE0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B,
+            0xA9, 0x0B,
+        ];
+        assert_eq!(
+            class_id_string(&raw),
+            "{79EAC9E0-BAF9-11CE-8C82-00AA004BA90B}"
+        );
     }
 
     #[test]

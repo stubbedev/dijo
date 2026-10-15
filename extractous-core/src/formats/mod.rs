@@ -27,6 +27,7 @@ mod rtf;
 mod subtitle;
 mod text;
 pub(crate) mod xhtml;
+mod xls;
 mod xlsx;
 pub(crate) mod xml;
 mod zip_file;
@@ -118,6 +119,7 @@ static PARSERS: &[&dyn Parser] = &[
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &xls::XlsParser,
     &xlsx::XlsxParser,
 ];
 

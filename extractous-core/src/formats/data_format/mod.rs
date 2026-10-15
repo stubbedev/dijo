@@ -26,7 +26,8 @@ use crate::formats::java::{self, trim};
 use crate::formats::java_time::TimeZone;
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
-use date_format::{is_a_date_format, is_valid_excel_date, java_date, ExcelStyleDateFormatter};
+pub(crate) use date_format::is_a_date_format;
+use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter};
 use decimal::{BigDecimal, Rounding};
 use decimal_format::DecimalFormat;
 pub(crate) use dtoa::java_double_to_string;
@@ -106,6 +107,15 @@ pub(crate) fn builtin_format(index: i32) -> Option<&'static str> {
     usize::try_from(index)
         .ok()
         .and_then(|index| BUILTIN_FORMATS.get(index).copied())
+}
+
+/// `NumberFormat.getInstance(Locale.US).format(value)`: grouped, with up to three fraction
+/// digits, rounded half even.
+pub(crate) fn default_number_format(value: f64) -> String {
+    static FORMAT: LazyLock<DecimalFormat> = LazyLock::new(|| {
+        DecimalFormat::new("#,##0.###", Rounding::HalfEven).expect("a valid pattern")
+    });
+    FORMAT.format_f64(value)
 }
 
 /// The format strings `updateLocale` gives their special formats.
@@ -530,7 +540,8 @@ enum Chosen {
     None,
 }
 
-/// `TikaExcelDataFormatter` for one document, with the formats it has made.
+/// `TikaExcelDataFormatter`, or POI's own `DataFormatter`, for one document, with the formats it
+/// has made.
 pub(crate) struct DataFormatter {
     zone: &'static TimeZone,
     formats: HashMap<String, Format>,
@@ -538,8 +549,19 @@ pub(crate) struct DataFormatter {
 }
 
 impl DataFormatter {
-    /// A formatter writing dates in `zone`, Java's default time zone.
+    /// `TikaExcelDataFormatter`, writing dates in `zone`, Java's default time zone.
     pub(crate) fn new(zone: &'static TimeZone) -> Self {
+        let mut formatter = Self::poi(zone);
+        for format in TIKA_GENERAL_FORMATS {
+            formatter
+                .formats
+                .insert(format.to_owned(), Format::General(General::Tika));
+        }
+        formatter
+    }
+
+    /// POI's `DataFormatter`, as `HSSFDataFormatter` makes it, writing dates in `zone`.
+    pub(crate) fn poi(zone: &'static TimeZone) -> Self {
         let mut formats = HashMap::new();
         for format in ZIP_FORMATS {
             formats.insert(format.to_owned(), Format::ZipPlusFour);
@@ -549,9 +571,6 @@ impl DataFormatter {
         }
         for format in SSN_FORMATS {
             formats.insert(format.to_owned(), Format::SocialSecurityNumber);
-        }
-        for format in TIKA_GENERAL_FORMATS {
-            formats.insert(format.to_owned(), Format::General(General::Tika));
         }
         Self {
             zone,
