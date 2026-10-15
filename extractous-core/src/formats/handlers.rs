@@ -666,6 +666,7 @@ pub(crate) fn utf16_length(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::ParserConfigs;
     use crate::formats::metadata::TikaMetadata;
     use crate::formats::xhtml::{Stop, Xhtml};
     use crate::formats::{Chain, Output, StringOut};
@@ -733,9 +734,10 @@ mod tests {
         let (first, last) = (calls.first().unwrap(), calls.last().unwrap());
         assert!(first[0] == "start-document" && last[0] == "end-document");
         let body = &calls[1..calls.len() - 1];
+        let configs = ParserConfigs::default();
         let mut out = StringOut::default();
         let (_, result) = chain.write_to(&mut out, |handler| {
-            Xhtml::write(handler, metadata, |xhtml| {
+            Xhtml::write(handler, metadata, &configs, |xhtml| {
                 for call in body {
                     let field = |index: usize| call.get(index).map_or("", String::as_str);
                     match field(0) {

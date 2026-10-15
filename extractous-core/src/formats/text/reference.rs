@@ -164,8 +164,9 @@ fn parses_as_tika_does() {
         let mut recorder = Recorder::default();
         let mut given = TikaMetadata::new();
         given.set("Content-Type", case.content_type.clone());
-        let (metadata, result) = Xhtml::write(&mut recorder, given, |xhtml| {
-            TextAndCsvParser.parse(&case.input, &ParserConfigs::default(), xhtml)
+        let configs = ParserConfigs::default();
+        let (metadata, result) = Xhtml::write(&mut recorder, given, &configs, |xhtml| {
+            TextAndCsvParser.parse(&case.input, &configs, xhtml)
         });
         result.unwrap_or_else(|e: Failure| panic!("{}: {e:?}", case.label));
         let metadata: BTreeMap<String, String> = metadata

@@ -1,5 +1,11 @@
 [
   {
+    "name": "ai.yobix.EmbeddedEvents",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "ai.yobix.EmbeddedExtractResult",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,

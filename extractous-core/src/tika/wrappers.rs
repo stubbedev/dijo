@@ -160,6 +160,41 @@ pub(crate) fn reader_result<'local>(
     Ok((reader, java_result_metadata(env, result)?))
 }
 
+/// What Tika made of a document embedded in one a native parser reads: the SAX events of its
+/// body as `ai.yobix.EventRecorder` encodes them, and how its parse ended.
+pub(crate) struct EmbeddedEvents {
+    pub(crate) events: Vec<u8>,
+    pub(crate) outcome: EmbeddedOutcome,
+}
+
+/// How the parse of an embedded document ended.
+pub(crate) enum EmbeddedOutcome {
+    /// It ended, with the document's metadata and, if its parser failed in a way Tika records
+    /// in the embedding document's metadata, that failure as Tika formats it there.
+    Parsed {
+        metadata: Metadata,
+        recorded_exception: Option<String>,
+    },
+    /// It failed in a way that fails the embedding document too, after writing the events.
+    Failed(Error),
+}
+
+/// Converts an `ai.yobix.EmbeddedEvents` into [`EmbeddedEvents`].
+pub(crate) fn embedded_events(
+    env: &mut Env<'_>,
+    result: &JObject,
+) -> ExtractResult<EmbeddedEvents> {
+    let events = jni_call_byte_array_method(env, result, "getEvents")?;
+    let outcome = match java_result_error(env, result)? {
+        Some(error) => EmbeddedOutcome::Failed(error),
+        None => EmbeddedOutcome::Parsed {
+            metadata: java_result_metadata(env, result)?,
+            recorded_exception: optional_string(env, result, "getRecordedException")?,
+        },
+    };
+    Ok(EmbeddedEvents { events, outcome })
+}
+
 /// Converts an `ai.yobix.EmbeddedExtractResult` into an [`EmbeddedExtractResult`].
 pub(crate) fn embedded_result(
     env: &mut Env<'_>,

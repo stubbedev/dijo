@@ -46,7 +46,8 @@ impl Parser for RtfParser {
         if !read_ahead {
             return None;
         }
-        let (_, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), |xhtml| {
+        let configs = ParserConfigs::default();
+        let (_, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &configs, |xhtml| {
             extractor::extract(input, xhtml)
         });
         match result {

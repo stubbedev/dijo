@@ -90,6 +90,19 @@ impl TikaMetadata {
         order.into_iter().map(|entry| entry.name.as_str())
     }
 
+    /// Every name with each of its values, in the order the names were first set.
+    pub(crate) fn pairs(&self) -> Vec<(&str, &str)> {
+        self.entries
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .values
+                    .iter()
+                    .map(move |value| (entry.name.as_str(), value.as_str()))
+            })
+            .collect()
+    }
+
     /// The metadata as the crate's public [`Metadata`] map.
     pub(crate) fn to_map(&self) -> Metadata {
         self.entries

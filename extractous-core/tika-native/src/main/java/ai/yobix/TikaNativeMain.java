@@ -4,6 +4,7 @@ import org.apache.commons.io.IOUtils;
 import org.apache.tika.config.ServiceLoader;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
+import org.apache.tika.exception.CorruptedFileException;
 import org.apache.tika.exception.EncryptedDocumentException;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.exception.WriteLimitReachedException;
@@ -32,15 +33,19 @@ import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
+import org.apache.tika.sax.EmbeddedContentHandler;
 import org.apache.tika.sax.RecursiveParserWrapperHandler;
 import org.apache.tika.sax.ToXMLContentHandler;
 import org.apache.tika.sax.WriteOutContentHandler;
+import org.apache.tika.utils.ExceptionUtils;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -48,6 +53,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,6 +62,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The entry points the Rust crate calls through JNI. Every operation exists for a file path, a
@@ -370,6 +377,70 @@ public class TikaNativeMain {
         } catch (IOException e) {
             return new ReaderResult(parseFailureStatus(e), parseFailed(e));
         }
+    }
+
+    /**
+     * Parses a document embedded in one a native parser reads, as Tika's
+     * ParsingEmbeddedDocumentExtractor parses an embedded document: with the parser and settings
+     * of the embedding document's extraction, into the body content an EmbeddedContentHandler
+     * over a BodyContentHandler passes on, which {@link EventRecorder} records. The metadata the
+     * embedding parser gives the embedded document comes as names and values, alternately, each
+     * encoded as EventRecorder encodes a string, a name once per value. A failure Tika records in the embedding document's metadata, rather than failing
+     * it, is returned as Tika formats it there; any other failure fails the embedding document.
+     * The parse runs on a parse thread, as every other parse does, whatever thread calls this.
+     */
+    public static EmbeddedEvents parseEmbeddedBytes(
+            ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, byte[] embeddedMetadata) {
+        final CompletableFuture<EmbeddedEvents> result = new CompletableFuture<>();
+        ParseThreads.run(() -> {
+            try {
+                result.complete(parseEmbedded(data, pdfConfig, officeConfig, tesseractConfig,
+                        password, embeddedMetadata));
+            } catch (Throwable t) {
+                result.completeExceptionally(t);
+            }
+        }, () -> {
+        });
+        return result.join();
+    }
+
+    /** A string as EventRecorder encodes one: its length in UTF-8 bytes as an int, then those. */
+    private static String utf8(DataInputStream in) throws IOException {
+        final byte[] bytes = new byte[in.readInt()];
+        in.readFully(bytes);
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    /** Parses an embedded document on a parse thread, whose stack a deep parse needs. */
+    private static EmbeddedEvents parseEmbedded(
+            ByteBuffer data, PDFParserConfig pdfConfig, OfficeParserConfig officeConfig,
+            TesseractOCRConfig tesseractConfig, String password, byte[] embeddedMetadata)
+            throws IOException {
+        final Metadata metadata = new Metadata();
+        final DataInputStream pairs = new DataInputStream(new ByteArrayInputStream(embeddedMetadata));
+        while (pairs.available() > 0) {
+            metadata.addTrusted(utf8(pairs), utf8(pairs));
+        }
+        final ParseContext context = parseContext(pdfConfig, officeConfig, tesseractConfig, password);
+        final EventRecorder recorder = new EventRecorder();
+        String recorded = null;
+        try (TikaInputStream stream = TikaInputStream.get(
+                new ByteBufferInputStream(data), new TemporaryResources(), metadata)) {
+            try {
+                parser(password).parse(stream,
+                        new EmbeddedContentHandler(new BodyContentHandler(recorder)), metadata, context);
+            } catch (CorruptedFileException e) {
+                return EmbeddedEvents.failed(PARSE_FAILED, parseFailed(e), recorder.events());
+            } catch (TikaException e) {
+                recorded = ExceptionUtils.format(e, context);
+            }
+        } catch (IOException e) {
+            return EmbeddedEvents.failed(COULD_NOT_OPEN, couldNotOpen(e), recorder.events());
+        } catch (SAXException e) {
+            return EmbeddedEvents.failed(PARSE_FAILED, parseFailed(e), recorder.events());
+        }
+        return EmbeddedEvents.parsed(recorder.events(), metadata, recorded);
     }
 
     public static EmbeddedExtractResult extractEmbeddedFile(

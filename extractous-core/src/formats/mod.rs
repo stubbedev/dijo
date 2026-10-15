@@ -4,6 +4,7 @@
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
 mod auto_detect_reader;
+pub(crate) mod embedded;
 mod fiction_book;
 pub(crate) mod handlers;
 mod java_time;
@@ -46,6 +47,8 @@ pub(crate) enum Failure {
     Stopped(Stop),
     /// The document is not well-formed in its format, with what was wrong where.
     Malformed(String),
+    /// An extraction the document depends on failed, such as that of a document embedded in it.
+    Extraction(Error),
 }
 
 impl From<Stop> for Failure {
@@ -181,12 +184,6 @@ impl Detected {
     }
 }
 
-/// The metadata Tika's `CompositeParser` sets once its parser has returned.
-fn finish_metadata(metadata: &mut TikaMetadata) {
-    let parsers = metadata.values("tk:parsed-by").to_vec();
-    metadata.set_values("tk:parsed-by-full-set", parsers);
-}
-
 fn run(
     parser: &dyn Parser,
     input: &[u8],
@@ -194,11 +191,9 @@ fn run(
     configs: &ParserConfigs,
     handler: &mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    let (mut metadata, result) = Xhtml::write(handler, detected.metadata_for(parser), |xhtml| {
+    Xhtml::write(handler, detected.metadata_for(parser), configs, |xhtml| {
         parser.parse(input, configs, xhtml)
-    });
-    finish_metadata(&mut metadata);
-    (metadata, result)
+    })
 }
 
 fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
@@ -211,6 +206,7 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
             "{} stopped writing the document: {stop:?}",
             parser.name()
         )),
+        Failure::Extraction(error) => error,
     }
 }
 

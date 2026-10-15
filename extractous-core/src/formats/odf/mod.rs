@@ -17,6 +17,8 @@ use std::io::{Cursor, Read};
 use zip::{CompressionMethod, ZipArchive};
 
 use crate::config::ParserConfigs;
+use crate::formats::embedded::Wrapping;
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
@@ -263,13 +265,24 @@ impl SaxHandler for ElementFinder {
 
 const UNREADABLE_ARCHIVE: &str = "its archive is not one the zip crate reads";
 const DUPLICATES: &str = "its archive has entries the zip crate does not list, such as duplicates";
-const PICTURES: &str =
-    "it holds pictures or object thumbnails, which Tika parses as embedded documents";
 const UNREADABLE_MANIFEST: &str = "its manifest cannot be read";
 const ENCRYPTED: &str = "it is encrypted";
 const NO_BODY: &str = "it has no content.xml or styles.xml, so Tika leaves its XHTML unfinished";
 const UNREADABLE_ENTRY: &str = "an entry it reads cannot be read by the zip crate";
 const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded documents";
+
+/// The metadata Tika's `OpenDocumentParser` gives a picture or an object's thumbnail it hands to
+/// the embedded document extractor. It also sets the type its detector finds and the pages a
+/// picture is drawn on, which change nothing the embedded document's parse writes.
+fn embedded_metadata(name: &str) -> TikaMetadata {
+    let mut metadata = TikaMetadata::new();
+    metadata.set("tk:internal-path", name);
+    metadata.set("tk:resource-name", name);
+    if name.contains("Pictures/") {
+        metadata.set("tk:embedded-resource-type", "INLINE");
+    }
+    metadata
+}
 
 /// Why Tika's path should read the document in `input` rather than this parser, if it should.
 fn deferral(input: &[u8]) -> Option<&'static str> {
@@ -278,9 +291,6 @@ fn deferral(input: &[u8]) -> Option<&'static str> {
     };
     if !archive.has_every_record(input) {
         return Some(DUPLICATES);
-    }
-    if archive.of_kind(EntryKind::Embedded).next().is_some() {
-        return Some(PICTURES);
     }
     let manifests: Vec<Entry> = archive.of_kind(EntryKind::Manifest).cloned().collect();
     for manifest in &manifests {
@@ -370,10 +380,12 @@ impl Parser for OpenDocumentParser {
                     xml::parse_sax(&text, &entry.name, &mut body)?;
                 }
                 EntryKind::Embedded => {
-                    return Err(Failure::Malformed(format!(
-                        "{} is an embedded document, which only Tika's path parses",
-                        entry.name
-                    )));
+                    let bytes = archive.read(entry)?;
+                    xhtml.parse_embedded(
+                        &bytes,
+                        &embedded_metadata(&entry.name),
+                        Wrapping::Bare,
+                    )?;
                 }
                 EntryKind::Directory
                 | EntryKind::Manifest
@@ -423,7 +435,7 @@ mod tests {
 
     /// Tika's own test documents of this format, as `(directory, name)` in the directory
     /// `CONFORMANCE_CORPUS` names, which `just conformance` prepares.
-    const CONFORMANCE: [(&str, &str); 21] = [
+    const CONFORMANCE: [(&str, &str); 27] = [
         (INTEGRATION, "test-columnar.ods"),
         (INTEGRATION, "testPhoneNumberExtractor.odt"),
         (INTEGRATION, "testStarOffice-6.0-writer.sxw"),
@@ -435,6 +447,12 @@ mod tests {
         (MISC_OFFICE, "testODFwithOOo3.odt"),
         (MISC_OFFICE, "testODPMacro.odp"),
         (MISC_OFFICE, "testODTNoMeta.odt"),
+        (MISC_OFFICE, "testODP_NPE.odp"),
+        (MISC_OFFICE, "testODSMacro.ods"),
+        (MISC_OFFICE, "testODTEmbeddedImageLink.odt"),
+        (MISC_OFFICE, "testODTEmbedded.odt"),
+        (MISC_OFFICE, "testODTMacro.odt"),
+        (MISC_OFFICE, "testODT-TIKA-6000.odt"),
         (MISC_OFFICE, "testODTStyles2.odt"),
         (MISC_OFFICE, "testODTStyles3.odt"),
         (MISC_OFFICE, "testODT_svgTitleInStyledSpan.odt"),
@@ -448,15 +466,8 @@ mod tests {
     ];
 
     /// Tika's own test documents of this format that Tika's path keeps, and why.
-    const CONFORMANCE_DEFERRED: [(&str, &str, &str); 7] = [
-        (MISC_OFFICE, "testODP_NPE.odp", PICTURES),
-        (MISC_OFFICE, "testODSMacro.ods", PICTURES),
-        (MISC_OFFICE, "testODTEmbeddedImageLink.odt", PICTURES),
-        (MISC_OFFICE, "testODTEmbedded.odt", PICTURES),
-        (MISC_OFFICE, "testODTMacro.odt", PICTURES),
-        (MISC_OFFICE, "testODT-TIKA-6000.odt", PICTURES),
-        (MISC_OFFICE, "testODTEncrypted.odt", ENCRYPTED),
-    ];
+    const CONFORMANCE_DEFERRED: [(&str, &str, &str); 1] =
+        [(MISC_OFFICE, "testODTEncrypted.odt", ENCRYPTED)];
 
     #[test]
     #[ignore]
@@ -649,15 +660,15 @@ mod tests {
     }
 
     #[test]
-    fn leaves_documents_with_embedded_documents_to_tika() {
+    fn leaves_documents_with_binary_data_to_tika_and_reads_those_with_pictures() {
         let text = content("<office:text><text:p>x</text:p></office:text>");
         let picture = document(TEXT, &[("content.xml", &text), ("Pictures/a.png", "png")]);
-        assert_eq!(OpenDocumentParser.defers(&picture), Some(PICTURES));
+        assert_eq!(OpenDocumentParser.defers(&picture), None);
         let object_thumbnail = document(
             TEXT,
             &[("content.xml", &text), ("Object 1/Thumbnails/a.png", "png")],
         );
-        assert_eq!(OpenDocumentParser.defers(&object_thumbnail), Some(PICTURES));
+        assert_eq!(OpenDocumentParser.defers(&object_thumbnail), None);
         let binary = document(
             TEXT,
             &[(

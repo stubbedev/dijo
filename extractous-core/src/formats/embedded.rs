@@ -1,0 +1,243 @@
+//! Documents embedded in one a native parser reads, parsed as Tika's
+//! `ParsingEmbeddedDocumentExtractor` parses them under our Java `ContentEmbeddedDocumentExtractor`:
+//! every one but a thumbnail, by the extraction's own parser and settings, OCR included, its body
+//! written into the embedding document, in a `package-entry` div headed by its name when the
+//! parser asks for one. Until every format has a native parser, Tika parses them, through
+//! `TikaNativeMain.parseEmbeddedBytes`, and its events are replayed here.
+
+use crate::config::ParserConfigs;
+use crate::formats::metadata::TikaMetadata;
+use crate::formats::Failure;
+
+/// The class of the div an embedded document is written in.
+pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
+const RESOURCE_NAME: &str = "tk:resource-name";
+const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
+const THUMBNAIL: &str = "THUMBNAIL";
+const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
+const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
+
+/// What the embedded documents of a document are parsed with, and what they leave for its
+/// metadata: the parsers that read them and the failures Tika records.
+#[derive(Debug)]
+pub(crate) struct Embedding<'c> {
+    configs: &'c ParserConfigs,
+    parsers: Vec<String>,
+    exceptions: Vec<String>,
+}
+
+impl<'c> Embedding<'c> {
+    pub(crate) fn new(configs: &'c ParserConfigs) -> Self {
+        Self {
+            configs,
+            parsers: Vec::new(),
+            exceptions: Vec::new(),
+        }
+    }
+
+    pub(crate) fn configs(&self) -> &'c ParserConfigs {
+        self.configs
+    }
+
+    /// Takes in the parsers an embedded document's parse used, as Tika's shared `ParseRecord`
+    /// records each when it starts, before any of the document's content is written.
+    pub(crate) fn absorb_parsers(&mut self, metadata: &crate::Metadata) {
+        for parser in metadata.get(PARSED_BY_FULL_SET).into_iter().flatten() {
+            if !self.parsers.contains(parser) {
+                self.parsers.push(parser.clone());
+            }
+        }
+    }
+
+    /// Takes in the failures an embedded document's parse recorded: those of the documents
+    /// embedded in it, then its own `recorded` failure, in the order Tika's shared `ParseRecord`
+    /// records them, once the content has been written.
+    pub(crate) fn absorb_failures(&mut self, metadata: &crate::Metadata, recorded: Option<String>) {
+        self.exceptions.extend(
+            metadata
+                .get(EMBEDDED_EXCEPTION)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        self.exceptions.extend(recorded);
+    }
+
+    /// Adds to `metadata` what Tika's `CompositeParser` adds once the document's parser has
+    /// returned: every parser that read it or a document embedded in it, and the failures of its
+    /// embedded documents.
+    pub(crate) fn finish(self, metadata: &mut TikaMetadata) {
+        let mut parsers = metadata.values("tk:parsed-by").to_vec();
+        for parser in self.parsers {
+            if !parsers.contains(&parser) {
+                parsers.push(parser);
+            }
+        }
+        if !parsers.is_empty() {
+            metadata.set_values(PARSED_BY_FULL_SET, parsers);
+        }
+        for exception in self.exceptions {
+            metadata.add(EMBEDDED_EXCEPTION, exception);
+        }
+    }
+}
+
+/// Whether the embedded document is written in a `package-entry` div headed by its name, as
+/// `parseEmbedded`'s `outputHtml` asks, or bare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Wrapping {
+    PackageEntry,
+    Bare,
+}
+
+/// Whether Tika parses a document embedded with `metadata`: every one but a thumbnail, which
+/// would only add a garbled copy of the front page's text.
+pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
+    metadata.get(RESOURCE_TYPE) != Some(THUMBNAIL)
+}
+
+/// The name a `package-entry` div is headed with, if the document has one.
+pub(crate) fn heading(metadata: &TikaMetadata) -> Option<&str> {
+    metadata.get(RESOURCE_NAME).filter(|name| !name.is_empty())
+}
+
+/// One SAX event of an embedded document's body, as `EventRecorder` encodes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Event {
+    Start {
+        name: String,
+        attributes: Vec<(String, String)>,
+    },
+    End(String),
+    Characters(String),
+    IgnorableWhitespace(String),
+}
+
+/// The events `EventRecorder` encoded in `bytes`.
+pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<Event>, Failure> {
+    let mut reader = Reader { bytes, at: 0 };
+    let mut events = Vec::new();
+    while let Some(&tag) = reader.bytes.get(reader.at) {
+        reader.at += 1;
+        events.push(match tag {
+            b'S' => {
+                let name = reader.string()?;
+                let count = reader.int()?;
+                let attributes = (0..count)
+                    .map(|_| Ok((reader.string()?, reader.string()?)))
+                    .collect::<Result<_, Failure>>()?;
+                Event::Start { name, attributes }
+            }
+            b'E' => Event::End(reader.string()?),
+            b'C' => Event::Characters(reader.string()?),
+            b'W' => Event::IgnorableWhitespace(reader.string()?),
+            other => return Err(corrupt(format!("an unknown event tag {other:#04x}"))),
+        });
+    }
+    Ok(events)
+}
+
+fn corrupt(what: String) -> Failure {
+    Failure::Malformed(format!(
+        "The events Tika recorded for an embedded document hold {what}"
+    ))
+}
+
+struct Reader<'b> {
+    bytes: &'b [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn take(&mut self, length: usize) -> Result<&[u8], Failure> {
+        let end = self
+            .at
+            .checked_add(length)
+            .filter(|end| *end <= self.bytes.len())
+            .ok_or_else(|| corrupt(format!("a field of {length} bytes past their end")))?;
+        let taken = &self.bytes[self.at..end];
+        self.at = end;
+        Ok(taken)
+    }
+
+    fn int(&mut self) -> Result<usize, Failure> {
+        let bytes: [u8; 4] = self.take(4)?.try_into().expect("four bytes were taken");
+        usize::try_from(i32::from_be_bytes(bytes))
+            .map_err(|_| corrupt("a negative length".to_owned()))
+    }
+
+    fn string(&mut self) -> Result<String, Failure> {
+        let length = self.int()?;
+        let bytes = self.take(length)?;
+        String::from_utf8(bytes.to_vec())
+            .map_err(|e| corrupt(format!("text that is not UTF-8: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn string(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&i32::try_from(text.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+
+    #[test]
+    fn decodes_what_the_event_recorder_encodes() {
+        let mut bytes = vec![b'S'];
+        string(&mut bytes, "p");
+        bytes.extend_from_slice(&1i32.to_be_bytes());
+        string(&mut bytes, "class");
+        string(&mut bytes, "ø");
+        bytes.push(b'C');
+        string(&mut bytes, "Hej 😀");
+        bytes.push(b'W');
+        string(&mut bytes, "\n");
+        bytes.push(b'E');
+        string(&mut bytes, "p");
+        assert_eq!(
+            decode(&bytes).unwrap(),
+            [
+                Event::Start {
+                    name: "p".to_owned(),
+                    attributes: vec![("class".to_owned(), "ø".to_owned())]
+                },
+                Event::Characters("Hej 😀".to_owned()),
+                Event::IgnorableWhitespace("\n".to_owned()),
+                Event::End("p".to_owned()),
+            ]
+        );
+        assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+        assert!(decode(b"X").is_err());
+    }
+
+    #[test]
+    fn records_parsers_once_and_failures_in_order() {
+        let configs = ParserConfigs::default();
+        let mut embedding = Embedding::new(&configs);
+        let mut first = crate::Metadata::new();
+        first.insert(
+            PARSED_BY_FULL_SET.to_owned(),
+            vec!["a".to_owned(), "b".to_owned()],
+        );
+        first.insert(EMBEDDED_EXCEPTION.to_owned(), vec!["nested".to_owned()]);
+        embedding.absorb_parsers(&first);
+        embedding.absorb_failures(&first, Some("own".to_owned()));
+        let mut second = crate::Metadata::new();
+        second.insert(
+            PARSED_BY_FULL_SET.to_owned(),
+            vec!["b".to_owned(), "c".to_owned()],
+        );
+        embedding.absorb_parsers(&second);
+        embedding.absorb_failures(&second, None);
+        let mut metadata = TikaMetadata::new();
+        metadata.add("tk:parsed-by", "native");
+        embedding.finish(&mut metadata);
+        assert_eq!(
+            metadata.values(PARSED_BY_FULL_SET),
+            ["native", "a", "b", "c"]
+        );
+        assert_eq!(metadata.values(EMBEDDED_EXCEPTION), ["nested", "own"]);
+    }
+}

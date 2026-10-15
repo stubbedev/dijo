@@ -39,6 +39,11 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "ai.yobix.EmbeddedEvents",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "ai.yobix.EmbeddedExtractResult",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true

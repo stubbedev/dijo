@@ -3,7 +3,12 @@
 //! first body content, indents table cells and list items with a tab, ends block elements with a
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
+use crate::config::ParserConfigs;
+use crate::formats::embedded::{self, Embedding, Event, Wrapping, PACKAGE_ENTRY};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::Failure;
+use crate::isolate::isolate;
+use crate::tika::{self, EmbeddedOutcome};
 
 /// The XHTML namespace, which every element a native parser writes is in.
 pub(crate) const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
@@ -103,15 +108,19 @@ pub(crate) struct Xhtml<'h> {
     metadata: TikaMetadata,
     head: Head,
     ended: bool,
+    embedding: Embedding<'h>,
 }
 
 impl<'h> Xhtml<'h> {
     /// Writes a document to `handler`: starts it, has `body` write its content, and ends it when
     /// `body` succeeds. A failed document stays unfinished, as a Tika parser that throws leaves
-    /// it. Returns the metadata as `body` left it.
+    /// it. Documents embedded in it are parsed under `configs`. Returns the metadata as `body`
+    /// left it, with what Tika's `CompositeParser` adds once a parser has returned, whether or
+    /// not it failed.
     pub(crate) fn write<E: From<Stop>>(
         handler: &'h mut dyn ContentHandler,
         metadata: TikaMetadata,
+        configs: &'h ParserConfigs,
         body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
     ) -> (TikaMetadata, Result<(), E>) {
         let mut xhtml = Self {
@@ -119,6 +128,7 @@ impl<'h> Xhtml<'h> {
             metadata,
             head: Head::NotStarted,
             ended: false,
+            embedding: Embedding::new(configs),
         };
         let result = xhtml
             .handler
@@ -126,7 +136,13 @@ impl<'h> Xhtml<'h> {
             .map_err(E::from)
             .and_then(|()| body(&mut xhtml))
             .and_then(|()| xhtml.end_document().map_err(E::from));
-        (xhtml.metadata, result)
+        let Xhtml {
+            mut metadata,
+            embedding,
+            ..
+        } = xhtml;
+        embedding.finish(&mut metadata);
+        (metadata, result)
     }
 
     /// The metadata, which the head shows as it stands when the first body content is written.
@@ -182,6 +198,11 @@ impl<'h> Xhtml<'h> {
         if text.is_empty() {
             return Ok(());
         }
+        self.characters_chunk(text)
+    }
+
+    /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
+    fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.safe_text(text, Text::Characters)
@@ -209,7 +230,6 @@ impl<'h> Xhtml<'h> {
         self.handler.characters(&run)
     }
 
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
         self.safe_text(text, Text::IgnorableWhitespace)
     }
@@ -242,6 +262,86 @@ impl<'h> Xhtml<'h> {
             .end_element(if frameset { "frameset" } else { "body" })?;
         self.handler.end_element("html")?;
         self.handler.end_document()
+    }
+
+    /// Parses a document embedded in this one, given `data` and the `metadata` the parser gives
+    /// it, as Tika's `ParsingEmbeddedDocumentExtractor` does when a parser hands it this
+    /// `XHTMLContentHandler`: unless it is a thumbnail, its body is written here, in a
+    /// `package-entry` div headed by its name when `wrapping` asks for one, with the elements a
+    /// failed parse left open closed before the div ends. Tika records the failures it can in
+    /// this document's metadata; any other fails this document, after the content written
+    /// before it.
+    pub(crate) fn parse_embedded(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
+        if !embedded::is_parsed(metadata) {
+            return Ok(());
+        }
+        if wrapping == Wrapping::PackageEntry {
+            self.start_element_with("div", &[("class", PACKAGE_ENTRY)])?;
+            if let Some(name) = embedded::heading(metadata) {
+                self.start_element("h1")?;
+                self.characters_chunk(name)?;
+                self.end_element("h1")?;
+            }
+        }
+        let parsed = isolate()
+            .and_then(|isolate| {
+                tika::parse_embedded(
+                    isolate,
+                    data,
+                    &metadata.pairs(),
+                    self.embedding.configs(),
+                    None,
+                )
+            })
+            .map_err(Failure::Extraction)?;
+        if let EmbeddedOutcome::Parsed { metadata, .. } = &parsed.outcome {
+            self.embedding.absorb_parsers(metadata);
+        }
+        let mut open = Vec::new();
+        for event in embedded::decode(&parsed.events)? {
+            match event {
+                Event::Start { name, attributes } => {
+                    let borrowed: Vec<(&str, &str)> = attributes
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_str()))
+                        .collect();
+                    self.start_element_with(&name, &borrowed)?;
+                    open.push(name);
+                }
+                Event::End(name) => {
+                    open.pop();
+                    self.end_element(&name)?;
+                }
+                Event::Characters(text) => self.characters_chunk(&text)?,
+                Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
+            }
+        }
+        let (clean, failure) = match parsed.outcome {
+            EmbeddedOutcome::Parsed {
+                metadata,
+                recorded_exception,
+            } => {
+                let clean = recorded_exception.is_none();
+                self.embedding
+                    .absorb_failures(&metadata, recorded_exception);
+                (clean, None)
+            }
+            EmbeddedOutcome::Failed(error) => (false, Some(error)),
+        };
+        if wrapping == Wrapping::PackageEntry {
+            if !clean {
+                while let Some(name) = open.pop() {
+                    self.end_element(&name)?;
+                }
+            }
+            self.end_element("div")?;
+        }
+        failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
     }
 
     fn frameset(&self) -> bool {

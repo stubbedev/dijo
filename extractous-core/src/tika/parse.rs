@@ -243,6 +243,47 @@ pub(crate) fn detect_with_metadata(
     })
 }
 
+/// Parses a document embedded in one a native parser reads, as Tika parses an embedded document:
+/// with the embedding extraction's settings, given the metadata the embedding parser gives it as
+/// names with their values, in order, which go to Java as `EventRecorder` encodes strings.
+pub(crate) fn parse_embedded(
+    isolate: &Isolate,
+    data: &[u8],
+    metadata: &[(&str, &str)],
+    configs: &ParserConfigs,
+    password: Option<&Password>,
+) -> ExtractResult<EmbeddedEvents> {
+    let mut pairs = Vec::new();
+    for (name, value) in metadata {
+        for text in [name, value] {
+            let length = i32::try_from(text.len()).map_err(|_| {
+                Error::ParseError(format!(
+                    "An embedded document's metadata holds {} bytes, more than Java can",
+                    text.len()
+                ))
+            })?;
+            pairs.extend_from_slice(&length.to_be_bytes());
+            pairs.extend_from_slice(text.as_bytes());
+        }
+    }
+    isolate.with_env(|env| {
+        let pairs = env.byte_array_from_slice(&pairs)?;
+        let result = call_tika(
+            env,
+            Source::Bytes(data),
+            TikaMethod {
+                name: "parseEmbeddedBytes".to_owned(),
+                params: "[B",
+                returns: "Lai/yobix/EmbeddedEvents;",
+            },
+            configs,
+            password,
+            &[JValue::Object(&pairs)],
+        )?;
+        embedded_events(env, &result)
+    })
+}
+
 /// Waits for every parse in the isolate to end, cancelled ones included, for at most `timeout`.
 /// Returns whether they all did.
 pub(crate) fn await_idle_parses(isolate: &Isolate, timeout: Duration) -> ExtractResult<bool> {
