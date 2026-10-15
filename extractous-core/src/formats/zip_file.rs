@@ -98,21 +98,24 @@ impl<'a> ZipFile<'a> {
     /// Whether every record of the central directory is an entry: the zip crate keeps one of
     /// several entries of the same name, where commons-compress keeps them all.
     pub(crate) fn has_every_record(&self, input: &[u8]) -> bool {
-        let Ok(mut position) = usize::try_from(self.zip.central_directory_start()) else {
-            return false;
-        };
-        let mut records = 0;
-        while input.get(position..position + CENTRAL_DIRECTORY_SIGNATURE.len())
-            == Some(CENTRAL_DIRECTORY_SIGNATURE)
-        {
-            let Some(header) = input.get(position..position + CENTRAL_DIRECTORY_HEADER_LENGTH)
-            else {
-                return false;
-            };
-            let length = |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
-            position += CENTRAL_DIRECTORY_HEADER_LENGTH + length(28) + length(30) + length(32);
-            records += 1;
-        }
-        records == self.entries.len()
+        central_directory_records(input, self.zip.central_directory_start())
+            == Some(self.entries.len())
     }
+}
+
+/// How many records the central directory starting at `start` in `input` holds, or `None` where
+/// one is cut short. The zip crate lists one entry for several records of one name, which this
+/// count tells apart.
+pub(crate) fn central_directory_records(input: &[u8], start: u64) -> Option<usize> {
+    let mut position = usize::try_from(start).ok()?;
+    let mut records = 0;
+    while input.get(position..position + CENTRAL_DIRECTORY_SIGNATURE.len())
+        == Some(CENTRAL_DIRECTORY_SIGNATURE)
+    {
+        let header = input.get(position..position + CENTRAL_DIRECTORY_HEADER_LENGTH)?;
+        let length = |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
+        position += CENTRAL_DIRECTORY_HEADER_LENGTH + length(28) + length(30) + length(32);
+        records += 1;
+    }
+    Some(records)
 }
