@@ -13,6 +13,7 @@ use lopdf::{Dictionary, Object, Stream};
 use super::afm::{FontMetrics, Standard14};
 use super::cff::{self, Cff};
 use super::cmap::{self, CMap, CMapError};
+use super::content::{Lexer, Token};
 use super::cos::{as_dict, float_value, int_value, name_string, Identity, Pdf};
 use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
 use super::jfloat;
@@ -286,7 +287,80 @@ enum SimpleKind {
     Type3 {
         matrix: Matrix,
         bbox: Option<[f32; 4]>,
+        /// The glyph procedures of `CharProcs`, if the font has that dictionary.
+        procs: Option<Vec<CharProc>>,
     },
+}
+
+/// A Type 3 glyph procedure, as far as PDFBox reads one without running it: its stream's
+/// `Length`, and its first operator with the operands before it, if it has one.
+#[derive(Debug)]
+struct CharProc {
+    name: String,
+    length: i32,
+    first: Result<Option<(String, Vec<Object>)>, Unported>,
+}
+
+impl CharProc {
+    fn read(pdf: &Pdf, name: &[u8], stream: &Stream) -> Self {
+        Self {
+            name: name_string(name),
+            length: pdf.int(&stream.dict, b"Length", 0),
+            first: first_operation(pdf, stream),
+        }
+    }
+
+    /// `PDType3CharProc.getWidth`: the advance `d0` or `d1` gives first.
+    fn width(&self) -> Result<f32, Unported> {
+        let unported = |why: &str| {
+            Unported(format!(
+                "a Type 3 glyph procedure {why}, which PDFBox fails to measure"
+            ))
+        };
+        match self.first.as_ref().map_err(Clone::clone)? {
+            None => Err(unported("without an operator")),
+            Some((operator, operands)) if operator == "d0" || operator == "d1" => operands
+                .first()
+                .and_then(float_value)
+                .ok_or_else(|| unported("whose d0 or d1 has no number first")),
+            Some(_) => Err(unported("not starting with d0 or d1")),
+        }
+    }
+
+    /// `PDType3CharProc.getGlyphBBox`: the box a `d1` of six numbers gives first, its upper
+    /// corner reached by adding the box's size in `float` as `PDRectangle` does.
+    fn glyph_bbox(&self) -> Result<Option<[f32; 4]>, Unported> {
+        let Some((operator, operands)) = self.first.as_ref().map_err(Clone::clone)? else {
+            return Ok(None);
+        };
+        if operator != "d1" || operands.len() != 6 {
+            return Ok(None);
+        }
+        let Some(values) = operands
+            .iter()
+            .map(float_value)
+            .collect::<Option<Vec<f32>>>()
+        else {
+            return Ok(None);
+        };
+        let (x, y) = (values[2], values[3]);
+        Ok(Some([x, y, x + (values[4] - x), y + (values[5] - y)]))
+    }
+}
+
+/// The first operator of a stream and the operands before it, as `PDFStreamParser` reads them;
+/// nothing if the stream has no operator.
+fn first_operation(pdf: &Pdf, stream: &Stream) -> Result<Option<(String, Vec<Object>)>, Unported> {
+    let data = pdf.decode(stream)?;
+    let mut lexer = Lexer::new(&data);
+    let mut operands = Vec::new();
+    while let Some(token) = lexer.next_token()? {
+        match token {
+            Token::Operator(name) => return Ok(Some((name, operands))),
+            Token::Operand(object) => operands.push(object),
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Debug)]
@@ -572,8 +646,21 @@ impl Font {
         let bbox = pdf
             .array(dict, b"FontBBox")
             .map(|array| rectangle(pdf, array));
+        let procs = pdf.dict(dict, b"CharProcs").map(|procs| {
+            procs
+                .iter()
+                .filter_map(|(name, value)| match pdf.resolve(value) {
+                    Some(Object::Stream(stream)) => Some(CharProc::read(pdf, name, stream)),
+                    _ => None,
+                })
+                .collect()
+        });
         font.kind = FontKind::Simple(SimpleFont {
-            kind: SimpleKind::Type3 { matrix, bbox },
+            kind: SimpleKind::Type3 {
+                matrix,
+                bbox,
+                procs,
+            },
             encoding: encoding.map(Box::new),
             zapf_dingbats: false,
             symbolic: false,
@@ -1171,11 +1258,16 @@ impl Font {
                     let [a, _, _, _, e, _] = generic.font_matrix()?;
                     Ok((f64::from(width) * (f64::from(a) * 1000.0) + f64::from(e)) as f32)
                 }
-                SimpleKind::Type3 { .. } => Err(Unported(
-                    "a Type 3 glyph measured from its glyph procedure, which the port does not \
-                     read"
-                        .to_owned(),
-                )),
+                SimpleKind::Type3 { procs, .. } => {
+                    let (Some(encoding), Some(procs)) = (simple.encoding.as_deref(), procs) else {
+                        return Ok(0.0);
+                    };
+                    let name = encoding.name(code as i32);
+                    match procs.iter().find(|proc| proc.name == name) {
+                        Some(proc) if proc.length != 0 => proc.width(),
+                        _ => Ok(0.0),
+                    }
+                }
             },
             FontKind::Type0(type0) => match &type0.descendant.kind {
                 CidKind::TrueType(program) => {
@@ -1284,14 +1376,23 @@ impl Font {
                         _ => generic.font_bbox(),
                     }
                 }
-                SimpleKind::Type3 { bbox, .. } => match bbox {
+                SimpleKind::Type3 { bbox, procs, .. } => match bbox {
                     None => Ok([0.0; 4]),
                     Some(bbox) if nonzero(bbox) => Ok(*bbox),
-                    Some(_) => Err(Unported(
-                        "a Type 3 font with an empty bounding box, which PDFBox measures from its \
-                         glyph procedures"
-                            .to_owned(),
-                    )),
+                    Some(bbox) => {
+                        let mut rect = *bbox;
+                        for proc in procs.iter().flatten() {
+                            if let Some(glyph) = proc.glyph_bbox()? {
+                                rect = [
+                                    jfloat::min(rect[0], glyph[0]),
+                                    jfloat::min(rect[1], glyph[1]),
+                                    jfloat::max(rect[2], glyph[2]),
+                                    jfloat::max(rect[3], glyph[3]),
+                                ];
+                            }
+                        }
+                        Ok(rect)
+                    }
                 },
             },
             FontKind::Type0(type0) => {

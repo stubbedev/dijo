@@ -529,6 +529,32 @@ mod tests {
     }
 
     #[test]
+    fn measures_type3_glyphs_from_their_procedures_as_tikas_path_does() {
+        let content = format!(
+            "{TEXT} BT /F2 12 Tf 72 600 Td (abba abab baba) Tj 0 -14 Td (ab ba ab ba) Tj ET"
+        );
+        let mut objects = page_objects(&content);
+        objects[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+                      /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>"
+            .to_owned();
+        let procedure =
+            |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
+        objects.extend([
+            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 0 0] \
+             /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a 7 0 R /b 8 0 R /space 9 0 R >> \
+             /Encoding << /Type /Encoding /Differences [32 /space 97 /a /b] >> >>"
+                .to_owned(),
+            procedure("520 0 -10 -200 480 700 d1 0 0 450 700 re f"),
+            procedure("610 0 d0 0 0 500 650 re f"),
+            procedure("250 0 0 0 0 0 d1"),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let scratch = Scratch::new("pdf-type3");
+        let type3 = scratch.write("type3.pdf", &document(&objects, b"", &[]));
+        assert_same_as_tika_delegating(&[&type3], tika_name(), &DELEGATES);
+    }
+
+    #[test]
     fn defers_a_needed_object_lopdf_cannot_read() {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
