@@ -54,12 +54,62 @@ const LATIN_SBCS: [&str; 27] = [
     "x-MacIceland",
 ];
 
-/// The charset the arbitration picks among the detectors' reports for a probe, or `None` when
-/// it abstains and the first report stands.
-pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Option<Charset> {
+/// How the arbitration among the detectors' reports for a probe ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Arbitration {
+    /// Nothing to arbitrate, or fewer than two candidates decode the probe to text: the first
+    /// report stands, and Tika notes nothing.
+    Abstained,
+    /// The probe is empty: the first report stands.
+    EmptyStream,
+    /// Every candidate decodes the probe to the same text: the first report stands.
+    IdenticalDecodings,
+    /// A structural proof overrides a declaration that decodes as another candidate does.
+    PreferStructural(Charset),
+    /// A declaration that decodes as another candidate does.
+    PreferDeclarative(Charset),
+    /// A declaration or structural proof, when the statistics had nothing confident to say.
+    DeferNoInfo(Charset),
+    /// The candidate that reads most like text.
+    Selected(Charset),
+}
+
+impl Arbitration {
+    /// The charset the arbitration picked, or `None` when the first report stands.
+    pub(super) fn winner(self) -> Option<Charset> {
+        match self {
+            Arbitration::Abstained | Arbitration::EmptyStream | Arbitration::IdenticalDecodings => {
+                None
+            }
+            Arbitration::PreferStructural(charset)
+            | Arbitration::PreferDeclarative(charset)
+            | Arbitration::DeferNoInfo(charset)
+            | Arbitration::Selected(charset) => Some(charset),
+        }
+    }
+
+    /// How Tika's encoding detection trace notes the arbitration.
+    pub(super) fn note(self) -> Option<&'static str> {
+        Some(match self {
+            Arbitration::Abstained => return None,
+            Arbitration::EmptyStream => "junk-filter-empty-stream",
+            Arbitration::IdenticalDecodings => "junk-filter-identical-decodings",
+            Arbitration::PreferStructural(_) => "junk-filter-prefer-structural",
+            Arbitration::PreferDeclarative(_) => "junk-filter-prefer-declarative",
+            Arbitration::DeferNoInfo(_) => "junk-filter-defer-no-info",
+            Arbitration::Selected(_) => "junk-filter-selected",
+        })
+    }
+}
+
+/// The arbitration among the detectors' reports for a probe.
+pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
     let unique = unique_charsets(reports);
-    if unique.len() <= 1 || probe.is_empty() {
-        return None;
+    if unique.len() <= 1 {
+        return Arbitration::Abstained;
+    }
+    if probe.is_empty() {
+        return Arbitration::EmptyStream;
     }
     let bytes = &probe[bom_length(probe)..];
     let mut candidates: Vec<(Charset, String)> = Vec::new();
@@ -80,18 +130,18 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Option<Charset> {
         }
     }
     if candidates.len() <= 1 {
-        return None;
+        return Arbitration::Abstained;
     }
     if let Some(declared) = declared_with_equivalent_decode(reports, &candidates) {
-        return Some(
-            match conflicting_structural(reports, &candidates, declared) {
-                Some(structural) if overrides_declared(structural, declared, bytes) => structural,
-                _ => declared,
-            },
-        );
+        return match conflicting_structural(reports, &candidates, declared) {
+            Some(structural) if overrides_declared(structural, declared, bytes) => {
+                Arbitration::PreferStructural(structural)
+            }
+            _ => Arbitration::PreferDeclarative(declared),
+        };
     }
     if candidates.iter().all(|(_, text)| *text == candidates[0].1) {
-        return None;
+        return Arbitration::IdenticalDecodings;
     }
 
     let mut scores_by_text: HashMap<&str, f64> = HashMap::new();
@@ -140,10 +190,10 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Option<Charset> {
     champion = latin_letter_gate(bytes, champion, &candidates);
     if let Some(anchor) = best_anchor(reports, &scores) {
         if anchor != champion && !has_confident_non_declarative(reports) {
-            return Some(anchor);
+            return Arbitration::DeferNoInfo(anchor);
         }
     }
-    Some(champion)
+    Arbitration::Selected(champion)
 }
 
 fn unique_charsets(reports: &[Report]) -> Vec<Charset> {
