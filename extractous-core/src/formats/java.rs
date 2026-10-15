@@ -129,6 +129,20 @@ fn spread(hash: u32) -> u32 {
     hash ^ (hash >> 16)
 }
 
+/// `Character.digit(c, 10)` on a `char`: the value of a decimal digit of any script in the Basic
+/// Multilingual Plane. A digit beyond it is two `char`s to Java, neither of them a digit.
+pub(crate) fn digit(character: char) -> Option<u32> {
+    if character >= '\u{10000}' {
+        return None;
+    }
+    decimal_digit(character)
+}
+
+/// `Character.isDigit` on a `char`.
+pub(crate) fn is_digit(character: char) -> bool {
+    digit(character).is_some()
+}
+
 /// `Integer.parseInt(text)`: an optional sign and decimal digits of any script, in range.
 pub(crate) fn parse_int(text: &str) -> Option<i32> {
     parse_long(text).and_then(|value| i32::try_from(value).ok())
@@ -146,7 +160,7 @@ pub(crate) fn parse_long(text: &str) -> Option<i64> {
     }
     let mut magnitude: i128 = 0;
     for character in digits.chars() {
-        magnitude = magnitude * 10 + i128::from(decimal_digit(character)?);
+        magnitude = magnitude * 10 + i128::from(digit(character)?);
         if magnitude > i128::from(i64::MAX) + 1 {
             return None;
         }
@@ -193,7 +207,7 @@ mod tests {
         assert_eq!(parse_int("-2147483648"), Some(i32::MIN));
         assert_eq!(parse_int("2147483648"), None);
         assert_eq!(parse_int("٣"), Some(3));
-        assert_eq!(parse_int("𝟗"), Some(9));
+        assert_eq!(parse_int("𝟗"), None);
         assert_eq!(parse_int(" 1"), None);
         assert_eq!(parse_int("-"), None);
         assert_eq!(parse_long("9223372036854775807"), Some(i64::MAX));
