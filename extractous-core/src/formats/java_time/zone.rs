@@ -25,13 +25,16 @@ const UTC_2100: i64 = 4_133_980_799;
 const LAST_YEAR: i64 = 2037;
 const SECONDS_PER_DAY: i64 = 86_400;
 const SECONDS_PER_HOUR: i64 = 3_600;
+#[cfg(unix)]
 const ZONEINFO_DIRECTORIES: [&str; 4] = [
     "/usr/share/zoneinfo",
     "/etc/zoneinfo",
     "/usr/lib/zoneinfo",
     "/usr/share/lib/zoneinfo",
 ];
+#[cfg(unix)]
 const LOCALTIME: &str = "/etc/localtime";
+#[cfg(unix)]
 const ETC_TIMEZONE: &str = "/etc/timezone";
 const GMT: &str = "GMT";
 
