@@ -17,6 +17,7 @@ mod document;
 mod encoding;
 mod engine;
 mod font;
+mod form;
 mod jfloat;
 mod matrix;
 mod metadata;
@@ -41,7 +42,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
 
-use cos::{as_dict, Pdf};
+use cos::Pdf;
 use structure::StructureIndex;
 use tagged::Tagged;
 use writer::{DocumentWriter, PageLayer, WriteFailure};
@@ -291,21 +292,10 @@ fn extract(
     }
     let encrypted = loaded.access != Access::Unencrypted;
     metadata.set("pdf:encrypted", encrypted.to_string());
-    let has_fields = acro_form
-        .and_then(|form| pdf.array(form, b"Fields"))
-        .is_some_and(|fields| {
-            fields
-                .iter()
-                .any(|field| pdf.resolve(field).and_then(as_dict).is_some())
-        });
-    if has_fields {
-        return Err(Unported(
-            "form fields, whose values and signatures the port does not read".to_owned(),
-        )
-        .into());
-    }
+    let has_fields = form::has_fields(pdf)?;
     let version = metadata::header_version(input)?;
     metadata::document(pdf, metadata, version, has_fields)?;
+    form::signatures(pdf, metadata)?;
     if is_illustrator(pdf)? {
         metadata.set("Content-Type", "application/illustrator");
     }
@@ -456,6 +446,38 @@ mod tests {
         let plain = scratch.write("plain.pdf", &document(&objects, b"", &[]));
         let marked = scratch.write("marked.pdf", &document(&objects, b"\xef\xbb\xbf", &[]));
         assert_same_as_tika_delegating(&[&plain, &marked], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn extracts_form_fields_and_signatures_as_tikas_path_does() {
+        let mut objects = page_objects(TEXT);
+        objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
+        objects.extend(
+            [
+                "<< /Fields [7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 15 0 R 17 0 R 18 0 R] \
+                 /DA (/Helv 0 Tf 0 g) >>",
+                "<< /FT /Tx /T (name) /TU (Your name) /V (Kari Nordmann) >>",
+                "<< /FT /Btn /T (agree) /V /1 /Opt [(no) (yes)] >>",
+                "<< /FT /Btn /Ff 65536 /T (send) /TU (Send the form) >>",
+                "<< /FT /Ch /T (colours) /V [(red) (bl\\345)] >>",
+                "<< /T (address) /V /Home /Kids [13 0 R 14 0 R] >>",
+                "<< /T (orphan) /V (no type) >>",
+                "<< /FT /Tx /Parent 11 0 R /T (street) /V (Storgata 1) >>",
+                "<< /Parent 11 0 R /T (city) /FT /Tx >>",
+                "<< /FT /Sig /T (signature) /V 16 0 R >>",
+                "<< /Type /Sig /Filter /Adobe.PPKLite /Name (Ola Nordmann) \
+                 /M (D:20240102030405+01'30') /Reason (Approval) /Location () \
+                 /ContactInfo ( ) >>",
+                "<< /FT /Sig /T (unsigned) >>",
+                "<< /FT /Btn /Ff 32768 /T (size) /V /2 /Kids [19 0 R] >>",
+                "<< /Parent 18 0 R /Subtype /Widget /Rect [0 0 1 1] >>",
+            ]
+            .map(str::to_owned),
+        );
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let scratch = Scratch::new("pdf-form");
+        let form = scratch.write("form.pdf", &document(&objects, b"", &[]));
+        assert_same_as_tika_delegating(&[&form], tika_name(), &DELEGATES);
     }
 
     #[test]

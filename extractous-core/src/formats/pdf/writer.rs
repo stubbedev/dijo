@@ -9,6 +9,7 @@ use lopdf::{Dictionary, Object};
 use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
+use super::form;
 use super::position::TextPosition;
 use super::reading_order;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
@@ -644,22 +645,53 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         Ok(())
     }
 
-    /// `extractAcroForm` of a form without fields (a document with fields is left to Tika): an
-    /// empty ordered list.
+    /// `extractAcroForm`: the form's fields, as nested ordered lists.
     fn acro_form(&mut self) -> Result<(), WriteFailure> {
         let pdf = self.pdf;
-        let Some(form) = pdf
+        if let Some(form) = pdf
             .catalog()
             .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
-        else {
+        {
+            if pdf.get(form, b"XFA").is_some() {
+                return Err(Unported("an XFA form".to_owned()).into());
+            }
+        }
+        let Some(lines) = form::lines(pdf, self.page.xhtml.metadata_mut())? else {
             return Ok(());
         };
-        if form.has(b"XFA") && pdf.get(form, b"XFA").is_some() {
-            return Err(Unported("an XFA form".to_owned()).into());
-        }
         let xhtml = &mut self.page.xhtml;
         xhtml.start_element_with("div", &[("class", "acroform")])?;
         xhtml.start_element("ol")?;
+        for line in lines {
+            match line {
+                form::Line::Field { alternate, text } => {
+                    let attributes: Vec<(&str, &str)> = alternate
+                        .iter()
+                        .map(|name| ("altName", name.as_str()))
+                        .collect();
+                    xhtml.start_element_with("li", &attributes)?;
+                    xhtml.characters(&text)?;
+                    xhtml.end_element("li")?;
+                }
+                form::Line::Signature { alternate, data } => {
+                    let attributes: Vec<(&str, &str)> = alternate
+                        .iter()
+                        .map(|name| ("altName", name.as_str()))
+                        .collect();
+                    xhtml.start_element_with("li", &attributes)?;
+                    xhtml.start_element_with("ol", &[("type", "signaturedata")])?;
+                    for (key, value) in data {
+                        xhtml.start_element_with("li", &[("signdata", key)])?;
+                        xhtml.characters(&value)?;
+                        xhtml.end_element("li")?;
+                    }
+                    xhtml.end_element("ol")?;
+                    xhtml.end_element("li")?;
+                }
+                form::Line::StartList => xhtml.start_element("ol")?,
+                form::Line::EndList => xhtml.end_element("ol")?,
+            }
+        }
         xhtml.end_element("ol")?;
         xhtml.end_element("div")?;
         Ok(())

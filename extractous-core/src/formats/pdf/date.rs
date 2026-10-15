@@ -83,9 +83,21 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+/// A date PDFBox reads: its instant, and the offset of the zone its calendar is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Zoned {
+    pub(super) millis: i64,
+    pub(super) offset: i64,
+}
+
 /// `DateConverter.toCalendar(String)`: the date's instant in milliseconds, or `None` where
 /// PDFBox reads no date.
 pub(super) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
+    Ok(to_zoned(text)?.map(|date| date.millis))
+}
+
+/// [`to_calendar`], with the offset of the zone the date gives, UTC where it gives none.
+pub(super) fn to_zoned(text: &str) -> Result<Option<Zoned>, Unported> {
     if crate::formats::java::trim(text).is_empty() {
         return Ok(None);
     }
@@ -103,17 +115,20 @@ pub(super) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
     let Some(millis) = big_endian(&mut cursor)? else {
         return Err(simple_date_formats(text));
     };
-    let mut millis = millis;
+    let mut date = Zoned { millis, offset: 0 };
     if cursor.index != chars.len() {
         match time_zone(&mut cursor)? {
-            Some(offset) => millis -= offset,
+            Some(offset) => {
+                date.millis -= offset;
+                date.offset = offset;
+            }
             None => return Err(simple_date_formats(text)),
         }
     }
     if cursor.index != chars.len() {
         return Err(simple_date_formats(text));
     }
-    Ok(Some(millis))
+    Ok(Some(date))
 }
 
 fn simple_date_formats(text: &str) -> Unported {
