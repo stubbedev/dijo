@@ -5,6 +5,8 @@
 //! which Java's decoders for those charsets keep as a character; Java's `UTF-16` decoder, named
 //! only by a declared charset, drops a byte order mark itself, so a second one goes too.
 
+use std::ops::Range;
+
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
 use crate::text::charset::{self, Detection};
@@ -54,21 +56,30 @@ pub(crate) fn set_metadata(detection: &Detection, metadata: &mut TikaMetadata) {
 /// The lines Java's `BufferedReader.readLine` returns: split at a line feed, a carriage return,
 /// or both in that order, the last line returned only when it holds characters.
 pub(crate) fn lines(text: &str) -> impl Iterator<Item = &str> {
-    let mut rest = text;
+    line_ranges(text.as_bytes()).map(|range| &text[range])
+}
+
+/// Where the lines of [`lines`] lie in `bytes`, for text in a charset that encodes the line
+/// feed and the carriage return as those single bytes and no other character with them.
+pub(crate) fn line_ranges(bytes: &[u8]) -> impl Iterator<Item = Range<usize>> + '_ {
+    let mut start = 0;
     std::iter::from_fn(move || {
-        if rest.is_empty() {
+        if start == bytes.len() {
             return None;
         }
-        let Some(end) = rest.find(['\n', '\r']) else {
-            return Some(std::mem::take(&mut rest));
+        let rest = &bytes[start..];
+        let Some(end) = rest.iter().position(|&byte| byte == b'\n' || byte == b'\r') else {
+            let line = start..bytes.len();
+            start = bytes.len();
+            return Some(line);
         };
-        let line = &rest[..end];
-        let terminator = if rest[end..].starts_with("\r\n") {
+        let terminator = if rest[end..].starts_with(b"\r\n") {
             2
         } else {
             1
         };
-        rest = &rest[end + terminator..];
+        let line = start..start + end;
+        start += end + terminator;
         Some(line)
     })
 }

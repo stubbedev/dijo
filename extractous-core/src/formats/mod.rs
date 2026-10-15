@@ -129,6 +129,7 @@ static PARSERS: &[&dyn Parser] = &[
     &html::JSoupParser,
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
+    &mail::MboxParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,

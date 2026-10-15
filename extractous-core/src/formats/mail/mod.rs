@@ -20,6 +20,7 @@ mod codec;
 mod date;
 mod field;
 mod handler;
+mod mbox;
 #[cfg(test)]
 mod reference;
 mod stream;
@@ -28,6 +29,7 @@ mod structured;
 mod synthetic;
 
 use handler::{read, Inline, Item, Problem};
+pub(crate) use mbox::MboxParser;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
