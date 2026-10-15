@@ -11,6 +11,7 @@ pub(crate) mod handlers;
 mod html;
 pub(crate) mod java;
 mod java_time;
+mod mail;
 pub(crate) mod metadata;
 mod odf;
 mod ooxml;
@@ -99,8 +100,10 @@ static PARSERS: &[&dyn Parser] = &[
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
+    &mail::EmlxParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
+    &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,

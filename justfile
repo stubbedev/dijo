@@ -131,6 +131,21 @@ html-reference:
         "$tests/tree-construction" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
+# Regenerate what mime4j and Tika's mail commons make of the email header values of the corpora and of
+# synthetic ones, which the Rust port of Tika's RFC822Parser is tested against.
+[unix]
+mail-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    mkdir -p extractous-core/tests/fixtures/mail
+    java -cp "$jars/*:extractous-core/tika-native/src/main/resources" \
+        extractous-core/tests/fixtures/formats/MailReference.java \
+        extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
+        corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
+
 # Regenerate what Apache Tika's RTFParser makes of the code pages RTF names and of the dates in its
 # info group, which the Rust port is tested against, after refreshing the fixture zoneinfo files the
 # dates are computed with from the system's.
