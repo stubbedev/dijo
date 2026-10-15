@@ -25,6 +25,7 @@ mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
+pub(crate) mod plist;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -136,6 +137,7 @@ static PARSERS: &[&dyn Parser] = &[
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
     &open_pgp::OpenPgpParser,
+    &plist::PListParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,

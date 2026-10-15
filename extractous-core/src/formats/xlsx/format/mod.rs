@@ -9,10 +9,10 @@
 
 mod bigint;
 mod cell_format;
-mod date_format;
+pub(crate) mod date_format;
 mod decimal;
 mod decimal_format;
-mod dtoa;
+pub(crate) mod dtoa;
 mod fraction;
 mod number_text;
 mod printf;
