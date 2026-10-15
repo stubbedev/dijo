@@ -97,7 +97,7 @@ impl Sections {
 }
 
 /// The flat media type the outermost document's `mimetype` attribute names, if any.
-fn flat_type(attributes: &[Attribute<'_>]) -> Option<&'static str> {
+fn flat_type(attributes: &[Attribute]) -> Option<&'static str> {
     let mimetype = attributes
         .iter()
         .find(|attribute| attribute.local_name == "mimetype")?;
@@ -120,7 +120,7 @@ impl SaxHandler for Flat<'_, '_> {
         &mut self,
         namespace: &str,
         local_name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
     ) -> Result<(), Failure> {
         if self.sections.start(local_name) {
             if let Some(detected) = flat_type(attributes) {
@@ -174,7 +174,7 @@ impl SaxHandler for BinaryDataFinder {
         &mut self,
         _namespace: &str,
         local_name: &str,
-        _attributes: &[Attribute<'_>],
+        _attributes: &[Attribute],
     ) -> Result<(), Failure> {
         self.sections.start(local_name);
         if self.sections.current == Section::Body && local_name == BINARY_DATA_ELEMENT {
@@ -211,15 +211,11 @@ impl Parser for FlatOpenDocumentParser {
     }
 
     fn defers(&self, input: &[u8]) -> Option<&'static str> {
-        let text = xml::decode(input, WHAT).ok()?;
-        if !text.contains(BINARY_DATA_ELEMENT) {
-            return None;
-        }
         let mut finder = BinaryDataFinder {
             sections: Sections::new(),
             found: false,
         };
-        let stopped = xml::parse_sax(&text, WHAT, &mut finder).is_err();
+        let stopped = xml::parse_sax(input, WHAT, &mut finder).is_err();
         (stopped && finder.found).then_some(BINARY_DATA)
     }
 
@@ -241,8 +237,7 @@ impl Parser for FlatOpenDocumentParser {
             meta: MetaHandlers::new(),
             detected: None,
         };
-        let outcome =
-            xml::decode(input, WHAT).and_then(|text| xml::parse_sax(&text, WHAT, &mut flat));
+        let outcome = xml::parse_sax(input, WHAT, &mut flat);
         let mut failure = match outcome {
             Ok(()) => {
                 if let Some(detected) = flat.detected {

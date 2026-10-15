@@ -8,12 +8,12 @@ use std::sync::OnceLock;
 
 use super::java::{self, JavaString};
 use super::java_regex::{Anchor, JavaRegex};
-use super::magic::{Clause, MagicMatch, MatchAttributes};
+use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
 use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
 use super::uri;
-use super::xml::{self, Attribute, Event, Flow, XmlError};
+use crate::xml::{self, Attribute, Event, Flow, XmlError};
 
 const TIKA_MIMETYPES: &str = include_str!("../../models/tika-mimetypes.xml");
 const CUSTOM_MIMETYPES: &str =
@@ -93,7 +93,7 @@ enum Pending {
 fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
     attributes
         .iter()
-        .find(|a| a.qname == name)
+        .find(|a| a.qualified_name == name)
         .map(|a| a.value.as_str())
 }
 
@@ -154,10 +154,10 @@ impl MimeTypes {
             let result = xml::parse(document.as_bytes(), &mut |event| {
                 let outcome = match event {
                     Event::Start(name, attributes) => {
-                        types.start(&mut reading, &name.qname, attributes)
+                        types.start(&mut reading, &name.qualified_name, attributes)
                     }
-                    Event::End(name) => types.end(&mut reading, &name.qname),
-                    Event::Text(_) => Ok(()),
+                    Event::End(name) => types.end(&mut reading, &name.qualified_name),
+                    Event::Text(..) => Ok(()),
                 };
                 match outcome {
                     Ok(()) => Flow::Continue,
@@ -358,13 +358,14 @@ impl MimeTypes {
         if data.is_empty() {
             return vec![self.octet_stream];
         }
+        let haystack = Haystack::new(data);
         let mut result = Vec::new();
         let mut current_priority = -1;
         for magic in &self.magics {
             if current_priority > 0 && current_priority > magic.priority {
                 break;
             }
-            if magic.clause.eval(data) {
+            if magic.clause.eval(&haystack) {
                 result.push(magic.type_id);
                 current_priority = magic.priority;
             }
@@ -397,7 +398,7 @@ impl MimeTypes {
                         .magics
                         .iter()
                         .filter(|m| m.type_id == self.text_html)
-                        .any(|m| m.clause.eval(data));
+                        .any(|m| m.clause.eval(&haystack));
                     *slot = if html {
                         self.text_html
                     } else {
@@ -457,7 +458,7 @@ fn root_element(data: &[u8]) -> Option<(String, String)> {
         let mut root = None;
         let result = xml::parse(data, &mut |event| {
             if let Event::Start(name, _) = event {
-                root = Some((name.uri.clone(), name.local.clone()));
+                root = Some((name.namespace.clone(), name.local_name.clone()));
                 return Flow::Stop;
             }
             Flow::Continue

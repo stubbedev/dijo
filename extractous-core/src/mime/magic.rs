@@ -1,6 +1,7 @@
 //! The magic of `tika-mimetypes.xml`: Tika's `MagicMatch` clauses, combined into `and`, `or`
 //! and `minShouldMatch` clauses, each evaluated as Tika's `MagicDetector` evaluates it.
 
+use std::cell::OnceCell;
 use std::fmt;
 
 use super::java_regex::{Anchor, JavaRegex};
@@ -8,6 +9,41 @@ use super::media_type::MediaType;
 
 /// How far a regex clause reads past the start of each offset it tries.
 const REGEX_WINDOW: usize = 8 * 1024;
+
+/// The bytes clauses are evaluated over, and the same bytes as ISO-8859-1 text, decoded once for
+/// every regex clause that reads them.
+pub(crate) struct Haystack<'a> {
+    bytes: &'a [u8],
+    latin1: OnceCell<Latin1>,
+}
+
+/// Bytes as the characters U+0000 to U+00FF, with where each byte's character starts in the text
+/// and, last, the text's length.
+struct Latin1 {
+    text: String,
+    offsets: Vec<usize>,
+}
+
+impl<'a> Haystack<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Haystack {
+            bytes,
+            latin1: OnceCell::new(),
+        }
+    }
+
+    /// The bytes from `start` to `end` as ISO-8859-1 text.
+    fn text(&self, start: usize, end: usize) -> &str {
+        let latin1 = self.latin1.get_or_init(|| {
+            let text: String = self.bytes.iter().map(|&b| char::from(b)).collect();
+            let mut offsets = Vec::with_capacity(self.bytes.len() + 1);
+            offsets.extend(text.char_indices().map(|(offset, _)| offset));
+            offsets.push(text.len());
+            Latin1 { text, offsets }
+        });
+        &latin1.text[latin1.offsets[start]..latin1.offsets[end]]
+    }
+}
 
 /// One `<match>`: a pattern, under a mask, at an offset or in a range of offsets.
 #[derive(Debug)]
@@ -229,7 +265,8 @@ impl MagicMatch {
     }
 
     /// `MagicDetector.matches`.
-    pub(crate) fn matches(&self, data: &[u8]) -> bool {
+    pub(crate) fn matches(&self, haystack: &Haystack) -> bool {
+        let data = haystack.bytes;
         match &self.kind {
             Kind::Regex(regex) => {
                 if data.len() <= self.begin {
@@ -237,15 +274,10 @@ impl MagicMatch {
                 }
                 let last = self.end.min(data.len() - 1);
                 let span = last - self.begin;
-                let buffer = &data
-                    [self.begin..self.begin + (data.len() - self.begin).min(REGEX_WINDOW + span)];
-                let text: String = buffer.iter().map(|&b| char::from(b)).collect();
-                let mut offsets = Vec::with_capacity(buffer.len() + 1);
-                offsets.extend(text.char_indices().map(|(offset, _)| offset));
-                offsets.push(text.len());
-                (0..=span).any(|i| {
-                    let region_end = (REGEX_WINDOW + i).min(buffer.len());
-                    i < region_end && regex.is_match(&text[offsets[i]..offsets[region_end]])
+                let buffer_end = self.begin + (data.len() - self.begin).min(REGEX_WINDOW + span);
+                (self.begin..=last).any(|start| {
+                    let region_end = (start + REGEX_WINDOW).min(buffer_end);
+                    start < region_end && regex.is_match(haystack.text(start, region_end))
                 })
             }
             Kind::Bytes | Kind::IgnoreCase => {
@@ -291,13 +323,18 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
-    pub(crate) fn eval(&self, data: &[u8]) -> bool {
+    pub(crate) fn eval(&self, haystack: &Haystack) -> bool {
         match self {
-            Clause::Match(m) => m.matches(data),
-            Clause::And(clauses) => clauses.iter().all(|c| c.eval(data)),
-            Clause::Or(clauses) => clauses.iter().any(|c| c.eval(data)),
+            Clause::Match(m) => m.matches(haystack),
+            Clause::And(clauses) => clauses.iter().all(|c| c.eval(haystack)),
+            Clause::Or(clauses) => clauses.iter().any(|c| c.eval(haystack)),
             Clause::MinShouldMatch(min, clauses) => {
-                clauses.iter().filter(|c| c.eval(data)).take(*min).count() >= *min
+                clauses
+                    .iter()
+                    .filter(|c| c.eval(haystack))
+                    .take(*min)
+                    .count()
+                    >= *min
             }
         }
     }
@@ -385,25 +422,25 @@ mod tests {
     #[test]
     fn matches_at_any_offset_of_a_range() {
         let m = clause("string", "0:4", "PK", None);
-        assert!(m.matches(b"xxxPKyy"));
-        assert!(!m.matches(b"xxxxxPK"));
-        assert!(!m.matches(b"P"));
+        assert!(m.matches(&Haystack::new(b"xxxPKyy")));
+        assert!(!m.matches(&Haystack::new(b"xxxxxPK")));
+        assert!(!m.matches(&Haystack::new(b"P")));
     }
 
     #[test]
     fn applies_masks_and_case() {
         let m = clause("string", "0", "!BDN....SO", Some("0xFFFFFFFF00000000FFFF"));
-        assert!(m.matches(b"!BDNabcdSO"));
+        assert!(m.matches(&Haystack::new(b"!BDNabcdSO")));
         let m = clause("stringignorecase", "0", "<HTML", None);
-        assert!(m.matches(b"<hTmL"));
-        assert!(!m.matches(b"<htm"));
+        assert!(m.matches(&Haystack::new(b"<hTmL")));
+        assert!(!m.matches(&Haystack::new(b"<htm")));
     }
 
     #[test]
     fn matches_regexes_at_each_offset() {
         let m = clause("regex", "0:3", "BZh[1-9]", None);
-        assert!(m.matches(b"..BZh9"));
-        assert!(!m.matches(b"....BZh9"));
+        assert!(m.matches(&Haystack::new(b"..BZh9")));
+        assert!(!m.matches(&Haystack::new(b"....BZh9")));
         assert_eq!(m.size(), 8);
     }
 

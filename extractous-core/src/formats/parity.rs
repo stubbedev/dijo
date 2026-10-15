@@ -247,7 +247,7 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
-/// The non-empty files under `roots` that Tika's detection gives a type `parser` reads, split into
+/// The non-empty files under `roots` whose detected type `parser` reads, split into
 /// those it parses and those it defers to Tika.
 pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: Vec<PathBuf> = Vec::new();
@@ -265,8 +265,8 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, 
     let (mut parsed, mut deferred) = (Vec::new(), Vec::new());
     for file in files {
         let path = file.to_str().unwrap();
-        let (media_type, _) = tika::detect_with_metadata(isolate().unwrap(), Source::File(path))
-            .unwrap_or_else(|e| panic!("Tika could not detect {path}: {e}"));
+        let media_type = crate::formats::detect(Source::File(path))
+            .unwrap_or_else(|e| panic!("{path} is not detected: {e}"));
         if !parser.media_types().contains(&media_type.as_str()) {
             continue;
         }

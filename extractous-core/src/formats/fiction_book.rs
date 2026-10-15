@@ -3,14 +3,12 @@
 //! paragraphs, and no embedded binaries. Tika reads FB2 as generic XML, running paragraphs
 //! together and keeping the names of embedded images and the language code in the text.
 
-use quick_xml::events::Event;
-use quick_xml::Reader;
-
 use crate::config::ParserConfigs;
 use crate::formats::handlers::is_java_whitespace;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{xml, Failure, Parser};
+use crate::formats::xml::{self, Attribute, SaxHandler};
+use crate::formats::{Failure, Parser};
 
 const MAX_HEADING_LEVEL: usize = 6;
 const PARAGRAPHS: [&str; 4] = ["p", "v", "text-author", "subtitle"];
@@ -149,37 +147,41 @@ fn collapse_whitespace(text: &str) -> String {
 
 const WHAT: &str = "The FictionBook XML";
 
-fn malformed(error: impl std::fmt::Display) -> Failure {
-    Failure::Malformed(format!("{WHAT} is malformed: {error}"))
+/// The book being read and the metadata it fills, as the SAX handler of its XML.
+struct Reading<'m> {
+    book: Book,
+    metadata: &'m mut TikaMetadata,
+}
+
+impl SaxHandler for Reading<'_> {
+    fn start_element(
+        &mut self,
+        _namespace: &str,
+        local_name: &str,
+        _attributes: &[Attribute],
+    ) -> Result<(), Failure> {
+        self.book.start(local_name);
+        Ok(())
+    }
+
+    fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
+        self.book.end(local_name, self.metadata);
+        Ok(())
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Failure> {
+        self.book.text(text);
+        Ok(())
+    }
 }
 
 fn read_book(input: &[u8], metadata: &mut TikaMetadata) -> Result<Vec<Block>, Failure> {
-    let text = xml::decode(input, WHAT)?;
-    let mut reader = Reader::from_str(&text);
-    let mut book = Book::default();
-    loop {
-        match reader.read_event().map_err(malformed)? {
-            Event::Start(start) => book.start(start.local_name().as_ref()),
-            Event::Empty(start) => {
-                let element = start.local_name();
-                book.start(element.as_ref());
-                book.end(element.as_ref(), metadata);
-            }
-            Event::End(end) => book.end(end.local_name().as_ref(), metadata),
-            Event::Text(text) => book.text(&text.xml10_content()),
-            Event::CData(data) => book.text(&data.xml10_content()),
-            Event::GeneralRef(reference) => book.text(&xml::resolve_reference(&reference, WHAT)?),
-            Event::Eof => break,
-            Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
-        }
-    }
-    if !book.open.is_empty() {
-        return Err(malformed(format!(
-            "<{}> is never closed",
-            book.open.join("> <")
-        )));
-    }
-    Ok(book.blocks)
+    let mut reading = Reading {
+        book: Book::default(),
+        metadata,
+    };
+    xml::parse_sax(input, WHAT, &mut reading)?;
+    Ok(reading.book.blocks)
 }
 
 #[cfg(test)]

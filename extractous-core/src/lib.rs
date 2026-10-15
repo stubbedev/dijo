@@ -24,16 +24,10 @@ mod licenses;
 pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
 mod formats;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the formats route by it once Tika's detection is replaced"
-    )
-)]
 mod mime;
 pub mod text;
 pub mod unicode;
+mod xml;
 
 mod isolate;
 pub use isolate::{

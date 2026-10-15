@@ -352,7 +352,7 @@ impl<'a, 'x> Body<'a, 'x> {
         &mut self,
         namespace: &str,
         local_name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
     ) -> Result<(), Failure> {
         let Some((element, mapping)) = mapping(namespace, local_name) else {
             return Ok(());
@@ -365,7 +365,7 @@ impl<'a, 'x> Body<'a, 'x> {
                     .find(|(ns, local, _)| {
                         *ns == attribute.namespace && *local == attribute.local_name
                     })
-                    .map(|(_, _, name)| (*name, attribute.value.as_ref()))
+                    .map(|(_, _, name)| (*name, attribute.value.as_str()))
             })
             .collect();
         self.start(element, &mapped)?;
@@ -383,7 +383,7 @@ impl<'a, 'x> Body<'a, 'x> {
         &mut self,
         namespace: &str,
         local_name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
     ) -> Result<(), Failure> {
         if namespace == STYLE_NS && local_name == "style" {
             match attribute(attributes, STYLE_NS, "family") {
@@ -481,7 +481,7 @@ fn is_bold(weight: &str) -> Result<bool, Failure> {
 }
 
 /// The heading element of a `text:h`, from its outline level.
-fn heading(attributes: &[Attribute<'_>]) -> Result<&'static str, Failure> {
+fn heading(attributes: &[Attribute]) -> Result<&'static str, Failure> {
     const HEADINGS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"];
     let Some(level) = attribute(attributes, TEXT_NS, "outline-level") else {
         return Ok(HEADINGS[0]);
@@ -553,7 +553,7 @@ impl SaxHandler for Body<'_, '_> {
         &mut self,
         namespace: &str,
         local_name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
     ) -> Result<(), Failure> {
         let namespace = self.namespace(namespace);
         let namespace = namespace.as_ref();
@@ -690,9 +690,9 @@ mod tests {
         assert!(is_bold("").is_err());
         let level = |value: &'static str| {
             heading(&[Attribute {
-                namespace: TEXT_NS,
-                local_name: "outline-level",
-                qualified_name: "text:outline-level",
+                namespace: TEXT_NS.to_owned(),
+                local_name: "outline-level".to_owned(),
+                qualified_name: "text:outline-level".to_owned(),
                 value: value.into(),
             }])
         };
