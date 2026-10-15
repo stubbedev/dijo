@@ -21,7 +21,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS OFF)
-foreach(option BUILD_TRAINING_TOOLS INSTALL_CONFIGS ENABLE_CCACHE ENABLE_PRECOMPILED_HEADERS)
+foreach(option BUILD_TRAINING_TOOLS INSTALL_CONFIGS ENABLE_CCACHE)
   set(${option} OFF CACHE BOOL "" FORCE)
 endforeach()
 foreach(option DISABLE_ARCHIVE DISABLE_CURL GRAPHICS_DISABLED)
@@ -34,7 +34,8 @@ find_path(LEPTONICA_HEADERS allheaders.h PATH_SUFFIXES leptonica REQUIRED)
 add_library(extractous_tesseract SHARED "${SHIM}/tesseract.cc")
 target_include_directories(extractous_tesseract PRIVATE
   "${JAVA_HOME}/include" "${JAVA_HOME}/include/${JNI_PLATFORM}"
-  "${CMAKE_CURRENT_BINARY_DIR}/tesseract" "${LEPTONICA_HEADERS}")
+  "${CMAKE_CURRENT_BINARY_DIR}/tesseract" "${CMAKE_CURRENT_BINARY_DIR}/tesseract/include"
+  "${LEPTONICA_HEADERS}")
 target_compile_definitions(extractous_tesseract PRIVATE HAVE_CONFIG_H)
 target_link_libraries(extractous_tesseract PRIVATE libtesseract)
 set_target_properties(extractous_tesseract PROPERTIES
