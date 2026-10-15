@@ -737,6 +737,39 @@ impl<W: Write> ContentHandler for ToXml<W> {
     }
 }
 
+/// Takes a document's XHTML and drops it, for reading a document ahead.
+pub(crate) struct Discard;
+
+impl ContentHandler for Discard {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_element(&mut self, _name: &str, _attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn end_element(&mut self, _name: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn characters(&mut self, _text: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn ignorable_whitespace(&mut self, _text: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+}
+
 /// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
 pub(crate) fn is_blank(text: &str) -> bool {
     text.chars().all(is_java_whitespace)
