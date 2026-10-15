@@ -1,0 +1,1370 @@
+//! A namespace-aware, non-validating XML parser that fails where the JDK's built-in Xerces, as
+//! Tika configures it (no external DTD, no external entities), raises a fatal error, and reads
+//! the bytes as Xerces reads them: the byte order mark and first bytes pick the encoding, the
+//! first 64 bytes are decoded before the declaration can switch it, and a malformed UTF-8 or
+//! UTF-16 sequence fails the parse when the scanner reaches it, as Xerces' own readers do. Tika's
+//! detectors only ever look at start and end tags, which is all it reports.
+//!
+//! What it does not reproduce: the IANA-to-Java encoding table of Xerces (a declared encoding is
+//! looked up as Java's `Charset.forName` looks it up), the replacement text of parameter
+//! entities (a reference to one is noted, not expanded), and general entities whose replacement
+//! text holds markup.
+
+use std::collections::HashMap;
+
+use crate::text::charset::Charset;
+
+const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
+
+/// Why a parse stopped short.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum XmlError {
+    /// A byte sequence the encoding's reader rejects: Java's `CharConversionException`.
+    CharConversion,
+    /// A fatal well-formedness error, such as a `SAXParseException`.
+    Malformed(String),
+}
+
+type Result<T> = std::result::Result<T, XmlError>;
+
+fn malformed<T>(what: impl Into<String>) -> Result<T> {
+    Err(XmlError::Malformed(what.into()))
+}
+
+/// The namespace of `xmlns` attributes, which SAX leaves out of an element's attributes.
+pub(crate) const XMLNS: &str = XMLNS_NAMESPACE;
+
+/// An attribute of a start tag, its namespace resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Attribute {
+    pub(crate) qname: String,
+    pub(crate) uri: String,
+    pub(crate) local: String,
+    pub(crate) value: String,
+}
+
+/// An element's name, its namespace resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Name {
+    pub(crate) qname: String,
+    pub(crate) uri: String,
+    pub(crate) local: String,
+}
+
+/// What the parser reports.
+pub(crate) enum Event<'a> {
+    Start(&'a Name, &'a [Attribute]),
+    End(&'a Name),
+    /// Character data between tags, its references replaced.
+    Text(&'a str),
+}
+
+/// Whether the handler wants the parse to go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flow {
+    Continue,
+    Stop,
+}
+
+/// Parses `bytes` as one XML document, handing each start and end tag to `handler` until it
+/// asks to stop. An error is what Xerces would throw before the handler stopped it.
+pub(crate) fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) -> Result<()> {
+    let Some((detected, reader, start)) = detect_encoding(bytes) else {
+        return malformed("UCS-4 in an unusual byte order is unsupported");
+    };
+    let mut parser = Parser {
+        text: Text::new(bytes, detected, reader, start),
+        position: 0,
+        entities: HashMap::new(),
+        defaults: HashMap::new(),
+        external_subset: false,
+        parameter_references: false,
+        standalone: false,
+    };
+    match parser.document(handler) {
+        Ok(()) | Err(Stop::Handler) => Ok(()),
+        Err(Stop::Error(error)) => Err(error),
+    }
+}
+
+/// How a parse ends early: an error, or the handler asking.
+enum Stop {
+    Error(XmlError),
+    Handler,
+}
+
+fn fatal<T>(what: impl Into<String>) -> std::result::Result<T, Stop> {
+    Err(Stop::Error(XmlError::Malformed(what.into())))
+}
+
+impl From<XmlError> for Stop {
+    fn from(error: XmlError) -> Self {
+        Stop::Error(error)
+    }
+}
+
+/// The encodings Xerces reads with its own readers, and the Java decoders it reads the rest
+/// with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    Utf8,
+    Utf16 { big_endian: bool },
+    Ucs4 { big_endian: bool },
+    Java(Charset),
+}
+
+/// The document's characters, decoded as Xerces decodes them, line ends normalized, up to the
+/// first character its reader cannot deliver.
+struct Text {
+    chars: Vec<char>,
+    /// The byte offset after each character.
+    ends: Vec<usize>,
+    /// Whether the characters stop at a malformed sequence rather than at the end.
+    malformed: bool,
+    bytes: Vec<u8>,
+    start: usize,
+    /// Where the first read, made before the declaration is scanned, ends.
+    first_read_end: usize,
+    /// The encoding name Xerces records for the document before its declaration.
+    detected: &'static str,
+}
+
+/// Decoded characters with the byte offset after each.
+struct Decoded {
+    chars: Vec<(char, usize)>,
+    malformed: bool,
+}
+
+impl Text {
+    fn new(bytes: &[u8], detected: &'static str, reader: Reader, start: usize) -> Text {
+        let first_read = match reader {
+            Reader::Utf8 => 64,
+            Reader::Utf16 { .. } => 128,
+            Reader::Ucs4 { .. } => 256,
+            Reader::Java(_) => bytes.len(),
+        };
+        let mut text = Text {
+            chars: Vec::new(),
+            ends: Vec::new(),
+            malformed: false,
+            bytes: bytes.to_vec(),
+            start,
+            first_read_end: (start + first_read).min(bytes.len()),
+            detected,
+        };
+        text.append(decode(reader, bytes, start));
+        text
+    }
+
+    /// Appends decoded characters, normalizing line ends: `\r\n` and a lone `\r` both become
+    /// `\n`.
+    fn append(&mut self, decoded: Decoded) {
+        let mut after_cr = false;
+        for (c, end) in decoded.chars {
+            if after_cr && c == '\n' {
+                after_cr = false;
+                *self.ends.last_mut().expect("a carriage return precedes") = end;
+                continue;
+            }
+            after_cr = c == '\r';
+            self.chars.push(if c == '\r' { '\n' } else { c });
+            self.ends.push(end);
+        }
+        self.malformed = decoded.malformed;
+    }
+
+    /// Switches to the declared encoding, as `XMLEntityScanner.setEncoding` does: the
+    /// characters of the first read stay as the first reader decoded them, and a new reader
+    /// takes over where the first stopped reading bytes, which loses what a malformed sequence
+    /// left unread in the first.
+    fn switch(&mut self, declared: &str, declaration_end: usize) -> Result<()> {
+        if declared == self.detected {
+            return Ok(());
+        }
+        let upper = declared.to_ascii_uppercase();
+        if self.detected.starts_with("UTF-16") && upper == "UTF-16" {
+            return Ok(());
+        }
+        let reader = match upper.as_str() {
+            "UTF-8" => Reader::Utf8,
+            "UTF-16BE" => Reader::Utf16 { big_endian: true },
+            "UTF-16LE" => Reader::Utf16 { big_endian: false },
+            "ISO-10646-UCS-4" | "ISO-10646-UCS-2" => {
+                return malformed(format!("the byte order of {declared} is unknown"))
+            }
+            _ => match Charset::for_name(declared) {
+                Some(charset) if charset.decode(b"").is_some() => Reader::Java(charset),
+                _ => return malformed(format!("the encoding {declared} is unsupported")),
+            },
+        };
+        let mut first_read = 0;
+        let mut previous_end = self.start;
+        for &end in &self.ends {
+            if previous_end >= self.first_read_end {
+                break;
+            }
+            first_read += 1;
+            previous_end = end;
+        }
+        let (kept, resume) = if declaration_end > first_read {
+            (declaration_end, self.ends[declaration_end - 1])
+        } else if first_read == self.chars.len() && self.malformed {
+            (first_read, self.first_read_end)
+        } else {
+            (first_read, previous_end.max(self.first_read_end))
+        };
+        self.chars.truncate(kept);
+        self.ends.truncate(kept);
+        let bytes = std::mem::take(&mut self.bytes);
+        self.append(decode(reader, &bytes, resume));
+        self.bytes = bytes;
+        Ok(())
+    }
+}
+
+/// `XMLEntityManager.getEncodingInfo`: the encoding the first four bytes imply, its reader, and
+/// how many bytes of byte order mark to skip.
+fn detect_encoding(bytes: &[u8]) -> Option<(&'static str, Reader, usize)> {
+    Some(match bytes {
+        [0xFE, 0xFF, ..] => ("UTF-16BE", Reader::Utf16 { big_endian: true }, 2),
+        [0xFF, 0xFE, ..] => ("UTF-16LE", Reader::Utf16 { big_endian: false }, 2),
+        [0xEF, 0xBB, 0xBF, ..] => ("UTF-8", Reader::Utf8, 3),
+        [0x00, 0x00, 0x00, 0x3C, ..] => ("UCS-4", Reader::Ucs4 { big_endian: true }, 0),
+        [0x3C, 0x00, 0x00, 0x00, ..] => ("UCS-4", Reader::Ucs4 { big_endian: false }, 0),
+        [0x00, 0x00, 0x3C, 0x00, ..] | [0x00, 0x3C, 0x00, 0x00, ..] => return None,
+        [0x00, 0x3C, 0x00, 0x3F, ..] => ("UTF-16BE", Reader::Utf16 { big_endian: true }, 0),
+        [0x3C, 0x00, 0x3F, 0x00, ..] => ("UTF-16LE", Reader::Utf16 { big_endian: false }, 0),
+        [0x4C, 0x6F, 0xA7, 0x94, ..] => ("CP037", Reader::Java(Charset::named("IBM037")), 0),
+        _ => ("UTF-8", Reader::Utf8, 0),
+    })
+}
+
+/// Decodes from `start` until the reader fails or the bytes end.
+fn decode(reader: Reader, bytes: &[u8], start: usize) -> Decoded {
+    let body = &bytes[start.min(bytes.len())..];
+    let mut chars = Vec::with_capacity(body.len());
+    let mut malformed = false;
+    match reader {
+        Reader::Utf8 => {
+            let valid = match std::str::from_utf8(body) {
+                Ok(text) => text,
+                Err(error) => {
+                    malformed = true;
+                    std::str::from_utf8(&body[..error.valid_up_to()])
+                        .expect("the prefix up to the error is valid UTF-8")
+                }
+            };
+            for (offset, c) in valid.char_indices() {
+                chars.push((c, start + offset + c.len_utf8()));
+            }
+        }
+        Reader::Utf16 { big_endian } => {
+            let units = body.len() / 2;
+            let mut index = 0;
+            while index < units {
+                let unit = |i: usize| {
+                    let pair = [body[2 * i], body[2 * i + 1]];
+                    if big_endian {
+                        u16::from_be_bytes(pair)
+                    } else {
+                        u16::from_le_bytes(pair)
+                    }
+                };
+                let first = unit(index);
+                let (c, used) = match first {
+                    0xD800..=0xDBFF if index + 1 < units => {
+                        let second = unit(index + 1);
+                        if (0xDC00..=0xDFFF).contains(&second) {
+                            let code = 0x10000
+                                + ((u32::from(first) - 0xD800) << 10)
+                                + (u32::from(second) - 0xDC00);
+                            (char::from_u32(code).unwrap_or('\u{FFFE}'), 2)
+                        } else {
+                            ('\u{FFFE}', 1)
+                        }
+                    }
+                    0xD800..=0xDFFF => ('\u{FFFE}', 1),
+                    _ => (char::from_u32(u32::from(first)).unwrap_or('\u{FFFE}'), 1),
+                };
+                index += used;
+                chars.push((c, start + 2 * index));
+            }
+            if body.len() % 2 == 1 {
+                let last_chunk = utf16_last_chunk_start(body.len());
+                chars.retain(|&(_, end)| end - start <= last_chunk);
+                malformed = true;
+            }
+        }
+        Reader::Ucs4 { big_endian } => {
+            for (index, quad) in body.as_chunks::<4>().0.iter().enumerate() {
+                let quad = *quad;
+                let code = if big_endian {
+                    u32::from_be_bytes(quad)
+                } else {
+                    u32::from_le_bytes(quad)
+                };
+                chars.push((
+                    char::from_u32(code).unwrap_or('\u{FFFE}'),
+                    start + 4 * (index + 1),
+                ));
+            }
+        }
+        Reader::Java(charset) => {
+            let text = charset
+                .decode(body)
+                .expect("the reader is only chosen for a charset that decodes");
+            let end = bytes.len();
+            chars.extend(text.chars().map(|c| (c, end)));
+        }
+    }
+    Decoded { chars, malformed }
+}
+
+/// Where the read that meets an odd final byte of UTF-16 starts: Xerces reads 128 bytes before
+/// the declaration is scanned and 8192 at a time after.
+fn utf16_last_chunk_start(length: usize) -> usize {
+    if length <= 128 {
+        return 0;
+    }
+    128 + (length - 1 - 128) / 8192 * 8192
+}
+
+/// Whether `c` is an XML 1.0 `Char`.
+fn is_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..)
+}
+
+fn is_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r')
+}
+
+fn is_name_start(c: char) -> bool {
+    c == ':' || c == '_' || c.is_ascii_alphabetic() || (!c.is_ascii() && is_unicode_name(c))
+}
+
+fn is_name_char(c: char) -> bool {
+    is_name_start(c)
+        || c == '-'
+        || c == '.'
+        || c.is_ascii_digit()
+        || c == '\u{B7}'
+        || (!c.is_ascii() && (c.is_alphanumeric() || is_unicode_name(c)))
+}
+
+fn is_unicode_name(c: char) -> bool {
+    matches!(c,
+        '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}' | '\u{370}'..='\u{37D}'
+        | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}'
+        | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}'
+        | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+}
+
+/// A general entity of the internal subset.
+enum Entity {
+    Internal(String),
+    External,
+}
+
+/// A default value an `ATTLIST` declaration gives an attribute.
+struct Default {
+    name: String,
+    value: String,
+}
+
+struct Parser {
+    text: Text,
+    position: usize,
+    entities: HashMap<String, Entity>,
+    defaults: HashMap<String, Vec<Default>>,
+    external_subset: bool,
+    parameter_references: bool,
+    standalone: bool,
+}
+
+/// The namespace scopes of the open elements.
+struct Scopes {
+    bindings: Vec<(String, String)>,
+    marks: Vec<usize>,
+}
+
+impl Scopes {
+    fn new() -> Scopes {
+        Scopes {
+            bindings: vec![("xml".to_owned(), XML_NAMESPACE.to_owned())],
+            marks: Vec::new(),
+        }
+    }
+
+    fn resolve(&self, prefix: &str) -> Option<&str> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(p, _)| p == prefix)
+            .map(|(_, uri)| uri.as_str())
+    }
+}
+
+impl Parser {
+    fn peek_at(&self, offset: usize) -> Result<Option<char>> {
+        let index = self.position + offset;
+        if index < self.text.chars.len() {
+            return Ok(Some(self.text.chars[index]));
+        }
+        if self.text.malformed {
+            return Err(XmlError::CharConversion);
+        }
+        Ok(None)
+    }
+
+    fn peek(&self) -> Result<Option<char>> {
+        self.peek_at(0)
+    }
+
+    fn next(&mut self) -> Result<Option<char>> {
+        let c = self.peek()?;
+        if c.is_some() {
+            self.position += 1;
+        }
+        Ok(c)
+    }
+
+    fn expect_char(&mut self, what: &str) -> Result<char> {
+        match self.next()? {
+            Some(c) if is_char(c) => Ok(c),
+            Some(c) => malformed(format!("invalid character U+{:04X} in {what}", c as u32)),
+            None => malformed(format!("the document ends in {what}")),
+        }
+    }
+
+    fn starts_with(&self, literal: &str) -> Result<bool> {
+        for (offset, expected) in literal.chars().enumerate() {
+            if self.peek_at(offset)? != Some(expected) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn skip(&mut self, literal: &str) -> Result<bool> {
+        if self.starts_with(literal)? {
+            self.position += literal.chars().count();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn require(&mut self, literal: &str, what: &str) -> Result<()> {
+        if self.skip(literal)? {
+            Ok(())
+        } else {
+            malformed(format!("{what} expected"))
+        }
+    }
+
+    fn skip_spaces(&mut self) -> Result<bool> {
+        let mut skipped = false;
+        while let Some(c) = self.peek()? {
+            if !is_space(c) {
+                break;
+            }
+            self.position += 1;
+            skipped = true;
+        }
+        Ok(skipped)
+    }
+
+    fn require_spaces(&mut self, what: &str) -> Result<()> {
+        if self.skip_spaces()? {
+            Ok(())
+        } else {
+            malformed(format!("white space required {what}"))
+        }
+    }
+
+    fn name(&mut self, what: &str) -> Result<String> {
+        match self.peek()? {
+            Some(c) if is_name_start(c) => {}
+            _ => return malformed(format!("a name expected for {what}")),
+        }
+        let mut name = String::new();
+        while let Some(c) = self.peek()? {
+            if !is_name_char(c) {
+                break;
+            }
+            name.push(c);
+            self.position += 1;
+        }
+        Ok(name)
+    }
+
+    fn document(
+        &mut self,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(), Stop> {
+        if self.starts_with("<?xml")? && self.peek_at(5)?.is_some_and(is_space) {
+            self.position += 5;
+            self.declaration()?;
+        }
+        let mut seen_doctype = false;
+        loop {
+            self.skip_spaces()?;
+            match self.peek()? {
+                None => return fatal("the document has no root element"),
+                Some('<') => {}
+                Some(_) => return fatal("content is not allowed in prolog"),
+            }
+            if self.skip("<!--")? {
+                self.comment()?;
+            } else if self.skip("<?")? {
+                self.processing_instruction()?;
+            } else if self.skip("<!DOCTYPE")? {
+                if seen_doctype {
+                    return fatal("a second DOCTYPE");
+                }
+                seen_doctype = true;
+                self.doctype()?;
+            } else if self.peek_at(1)?.is_some_and(is_name_start) {
+                break;
+            } else {
+                return fatal("markup not recognized in prolog");
+            }
+        }
+        let mut scopes = Scopes::new();
+        self.element(&mut scopes, handler)?;
+        loop {
+            self.skip_spaces()?;
+            match self.peek()? {
+                None => return Ok(()),
+                Some('<') => {}
+                Some(_) => return fatal("content after the root element"),
+            }
+            if self.skip("<!--")? {
+                self.comment()?;
+            } else if self.skip("<?")? {
+                self.processing_instruction()?;
+            } else {
+                return fatal("markup after the root element");
+            }
+        }
+    }
+
+    fn declaration(&mut self) -> Result<()> {
+        let mut saw_space = self.skip_spaces()?;
+        let mut state = 0;
+        let mut encoding = None;
+        let mut found = false;
+        while self.peek()? != Some('?') {
+            found = true;
+            let name = if self.skip("version")? {
+                "version"
+            } else if self.skip("encoding")? {
+                "encoding"
+            } else if self.skip("standalone")? {
+                "standalone"
+            } else {
+                return malformed("a pseudo attribute expected in the XML declaration");
+            };
+            self.skip_spaces()?;
+            self.require("=", "= in the XML declaration")?;
+            self.skip_spaces()?;
+            let quote = match self.next()? {
+                Some(q @ ('"' | '\'')) => q,
+                _ => return malformed("a quote expected in the XML declaration"),
+            };
+            let mut value = String::new();
+            loop {
+                match self.next()? {
+                    Some(c) if c == quote => break,
+                    Some(c) if is_char(c) => value.push(c),
+                    Some(_) => return malformed("invalid character in the XML declaration"),
+                    None => return malformed("the XML declaration is unterminated"),
+                }
+            }
+            if !saw_space {
+                return malformed("white space required in the XML declaration");
+            }
+            match (state, name) {
+                (0, "version") => {
+                    if value != "1.0" && value != "1.1" {
+                        return malformed(format!("XML version {value} unsupported"));
+                    }
+                    state = 1;
+                }
+                (1, "encoding") => {
+                    encoding = Some(value);
+                    state = 2;
+                }
+                (1 | 2, "standalone") => {
+                    if value != "yes" && value != "no" {
+                        return malformed("standalone must be yes or no");
+                    }
+                    self.standalone = value == "yes";
+                    state = 3;
+                }
+                _ => return malformed("the XML declaration's pseudo attributes are out of order"),
+            }
+            saw_space = self.skip_spaces()?;
+        }
+        if !found || state == 0 {
+            return malformed("the XML declaration has no version");
+        }
+        self.require("?>", "the end of the XML declaration")?;
+        if let Some(encoding) = encoding {
+            if !is_encoding_name(&encoding) {
+                return malformed(format!("invalid encoding name {encoding}"));
+            }
+            self.text.switch(&encoding, self.position)?;
+        }
+        Ok(())
+    }
+
+    fn comment(&mut self) -> Result<()> {
+        loop {
+            if self.skip("--")? {
+                if self.skip(">")? {
+                    return Ok(());
+                }
+                return malformed("-- inside a comment");
+            }
+            self.expect_char("a comment")?;
+        }
+    }
+
+    fn processing_instruction(&mut self) -> Result<()> {
+        let target = self.name("a processing instruction")?;
+        if target.eq_ignore_ascii_case("xml") {
+            return malformed("the processing instruction target xml is reserved");
+        }
+        if target.contains(':') {
+            return malformed("a colon in a processing instruction target");
+        }
+        if self.skip("?>")? {
+            return Ok(());
+        }
+        self.require_spaces("after a processing instruction target")?;
+        loop {
+            if self.skip("?>")? {
+                return Ok(());
+            }
+            self.expect_char("a processing instruction")?;
+        }
+    }
+
+    fn quoted(&mut self, what: &str) -> Result<String> {
+        let quote = match self.next()? {
+            Some(q @ ('"' | '\'')) => q,
+            _ => return malformed(format!("a quoted {what} expected")),
+        };
+        let mut value = String::new();
+        loop {
+            let c = self.expect_char(what)?;
+            if c == quote {
+                return Ok(value);
+            }
+            value.push(c);
+        }
+    }
+
+    fn external_id(&mut self, system_required: bool) -> Result<bool> {
+        if self.skip("SYSTEM")? {
+            self.require_spaces("after SYSTEM")?;
+            self.quoted("system literal")?;
+            return Ok(true);
+        }
+        if self.skip("PUBLIC")? {
+            self.require_spaces("after PUBLIC")?;
+            let public = self.quoted("public identifier")?;
+            if !public
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || " \r\n-'()+,./:=?;!*#@$_%".contains(c))
+            {
+                return malformed("invalid character in a public identifier");
+            }
+            let spaced = self.skip_spaces()?;
+            if matches!(self.peek()?, Some('"' | '\'')) {
+                if !spaced {
+                    return malformed("white space required before a system literal");
+                }
+                self.quoted("system literal")?;
+            } else if system_required {
+                return malformed("a system literal expected");
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn doctype(&mut self) -> Result<()> {
+        self.require_spaces("after DOCTYPE")?;
+        self.name("the document type")?;
+        let spaced = self.skip_spaces()?;
+        if matches!(self.peek()?, Some('S' | 'P')) {
+            if !spaced {
+                return malformed("white space required before an external identifier");
+            }
+            self.external_subset = self.external_id(true)?;
+            self.skip_spaces()?;
+        }
+        if self.skip("[")? {
+            self.internal_subset()?;
+            self.skip_spaces()?;
+        }
+        self.require(">", "the end of the DOCTYPE")
+    }
+
+    fn internal_subset(&mut self) -> Result<()> {
+        loop {
+            self.skip_spaces()?;
+            if self.skip("]")? {
+                return Ok(());
+            }
+            if self.skip("%")? {
+                self.name("a parameter entity reference")?;
+                self.require(";", "; after a parameter entity reference")?;
+                self.parameter_references = true;
+            } else if self.skip("<!--")? {
+                self.comment()?;
+            } else if self.skip("<?")? {
+                self.processing_instruction()?;
+            } else if self.skip("<!ENTITY")? {
+                self.entity_declaration()?;
+            } else if self.skip("<!ATTLIST")? {
+                self.attlist_declaration()?;
+            } else if self.skip("<!ELEMENT")? || self.skip("<!NOTATION")? {
+                self.require_spaces("in a declaration")?;
+                self.name("a declaration")?;
+                loop {
+                    match self.expect_char("a declaration")? {
+                        '>' => break,
+                        '"' | '\'' => {
+                            self.position -= 1;
+                            self.quoted("literal")?;
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                return malformed("markup not recognized in the internal subset");
+            }
+        }
+    }
+
+    fn entity_declaration(&mut self) -> Result<()> {
+        self.require_spaces("after ENTITY")?;
+        let parameter = self.skip("%")?;
+        if parameter {
+            self.require_spaces("after %")?;
+        }
+        let name = self.name("an entity")?;
+        self.require_spaces("after an entity name")?;
+        let entity = if matches!(self.peek()?, Some('"' | '\'')) {
+            let value = self.quoted("entity value")?;
+            if value.contains('%') {
+                self.parameter_references = true;
+            }
+            Entity::Internal(value)
+        } else {
+            if !self.external_id(true)? {
+                return malformed("an entity value or external identifier expected");
+            }
+            let spaced = self.skip_spaces()?;
+            if self.starts_with("NDATA")? {
+                if !spaced || parameter {
+                    return malformed("NDATA misplaced");
+                }
+                self.position += 5;
+                self.require_spaces("after NDATA")?;
+                self.name("a notation")?;
+            }
+            Entity::External
+        };
+        self.skip_spaces()?;
+        self.require(">", "the end of an entity declaration")?;
+        if !parameter {
+            self.entities.entry(name).or_insert(entity);
+        }
+        Ok(())
+    }
+
+    fn attlist_declaration(&mut self) -> Result<()> {
+        self.require_spaces("after ATTLIST")?;
+        let element = self.name("an attribute list")?;
+        loop {
+            let spaced = self.skip_spaces()?;
+            if self.skip(">")? {
+                return Ok(());
+            }
+            if !spaced {
+                return malformed("white space required in an attribute list");
+            }
+            let name = self.name("an attribute definition")?;
+            self.require_spaces("after an attribute name")?;
+            if self.skip("(")? {
+                self.enumeration()?;
+            } else {
+                let kind = self.name("an attribute type")?;
+                match kind.as_str() {
+                    "CDATA" | "ID" | "IDREF" | "IDREFS" | "ENTITY" | "ENTITIES" | "NMTOKEN"
+                    | "NMTOKENS" => {}
+                    "NOTATION" => {
+                        self.require_spaces("after NOTATION")?;
+                        self.require("(", "a notation list")?;
+                        self.enumeration()?;
+                    }
+                    _ => return malformed(format!("invalid attribute type {kind}")),
+                }
+            }
+            self.require_spaces("before an attribute default")?;
+            let value = if self.skip("#REQUIRED")? || self.skip("#IMPLIED")? {
+                None
+            } else {
+                if self.skip("#FIXED")? {
+                    self.require_spaces("after #FIXED")?;
+                }
+                Some(self.attribute_value()?)
+            };
+            if let Some(value) = value {
+                let defaults = self.defaults.entry(element.clone()).or_default();
+                if !defaults.iter().any(|d| d.name == name) {
+                    defaults.push(Default { name, value });
+                }
+            }
+        }
+    }
+
+    fn enumeration(&mut self) -> Result<()> {
+        loop {
+            self.skip_spaces()?;
+            while self.peek()?.is_some_and(is_name_char) {
+                self.position += 1;
+            }
+            self.skip_spaces()?;
+            match self.next()? {
+                Some('|') => {}
+                Some(')') => return Ok(()),
+                _ => return malformed("an enumeration is unterminated"),
+            }
+        }
+    }
+
+    /// An attribute value, its references replaced and its white space normalized.
+    fn attribute_value(&mut self) -> Result<String> {
+        let quote = match self.next()? {
+            Some(q @ ('"' | '\'')) => q,
+            _ => return malformed("a quoted attribute value expected"),
+        };
+        let mut value = String::new();
+        loop {
+            let c = self.expect_char("an attribute value")?;
+            match c {
+                c if c == quote => return Ok(value),
+                '<' => return malformed("< in an attribute value"),
+                '&' => {
+                    let reference = self.reference()?;
+                    self.expand_in_attribute(reference, &mut value, 0)?;
+                }
+                c if is_space(c) => value.push(' '),
+                c => value.push(c),
+            }
+        }
+    }
+
+    fn reference(&mut self) -> Result<Reference> {
+        if self.skip("#")? {
+            let hex = self.skip("x")?;
+            let mut digits = String::new();
+            while let Some(c) = self.peek()? {
+                if c == ';' {
+                    break;
+                }
+                let valid = if hex {
+                    c.is_ascii_hexdigit()
+                } else {
+                    c.is_ascii_digit()
+                };
+                if !valid {
+                    return malformed("an invalid character reference");
+                }
+                digits.push(c);
+                self.position += 1;
+            }
+            self.require(";", "; after a character reference")?;
+            let code = u32::from_str_radix(&digits, if hex { 16 } else { 10 })
+                .ok()
+                .and_then(char::from_u32)
+                .filter(|&c| is_char(c));
+            return match code {
+                Some(c) if !digits.is_empty() => Ok(Reference::Char(c)),
+                _ => malformed("a character reference to an invalid character"),
+            };
+        }
+        let name = self.name("an entity reference")?;
+        self.require(";", "; after an entity reference")?;
+        Ok(Reference::Entity(name))
+    }
+
+    fn predefined(name: &str) -> Option<char> {
+        match name {
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "amp" => Some('&'),
+            "apos" => Some('\''),
+            "quot" => Some('"'),
+            _ => None,
+        }
+    }
+
+    /// Whether an undeclared entity is a fatal error: only when every declaration it could
+    /// have was read.
+    fn undeclared(&self, name: &str) -> Result<()> {
+        if (self.external_subset || self.parameter_references) && !self.standalone {
+            Ok(())
+        } else {
+            malformed(format!("the entity {name} is not declared"))
+        }
+    }
+
+    fn expand_in_attribute(
+        &self,
+        reference: Reference,
+        value: &mut String,
+        depth: usize,
+    ) -> Result<()> {
+        let name = match reference {
+            Reference::Char(c) => {
+                value.push(c);
+                return Ok(());
+            }
+            Reference::Entity(name) => name,
+        };
+        if let Some(c) = Self::predefined(&name) {
+            value.push(c);
+            return Ok(());
+        }
+        match self.entities.get(&name) {
+            None => self.undeclared(&name),
+            Some(Entity::External) => malformed(format!(
+                "a reference to the external entity {name} in an attribute"
+            )),
+            Some(Entity::Internal(text)) => {
+                if depth > 64 {
+                    return malformed(format!("the entity {name} refers to itself"));
+                }
+                let mut chars = text.chars().peekable();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '<' => return malformed("< in an attribute value"),
+                        '&' => {
+                            let mut inner = String::new();
+                            for c in chars.by_ref() {
+                                if c == ';' {
+                                    break;
+                                }
+                                inner.push(c);
+                            }
+                            let reference = match inner.strip_prefix('#') {
+                                Some(code) => {
+                                    let parsed = match code.strip_prefix('x') {
+                                        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                                        None => code.parse().ok(),
+                                    };
+                                    match parsed.and_then(char::from_u32).filter(|&c| is_char(c)) {
+                                        Some(c) => Reference::Char(c),
+                                        None => return malformed("an invalid character reference"),
+                                    }
+                                }
+                                None => Reference::Entity(inner),
+                            };
+                            self.expand_in_attribute(reference, value, depth + 1)?;
+                        }
+                        c if is_space(c) => value.push(' '),
+                        c => value.push(c),
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn qname(&mut self, what: &str) -> Result<(String, Option<String>, String)> {
+        let name = self.name(what)?;
+        match name.split_once(':') {
+            None => Ok((name.clone(), None, name)),
+            Some((prefix, local))
+                if !prefix.is_empty() && !local.is_empty() && !local.contains(':') =>
+            {
+                let (prefix, local) = (prefix.to_owned(), local.to_owned());
+                Ok((name, Some(prefix), local))
+            }
+            Some(_) => malformed(format!("{name} is not a qualified name")),
+        }
+    }
+
+    fn element(
+        &mut self,
+        scopes: &mut Scopes,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(), Stop> {
+        let mut open: Vec<Name> = Vec::new();
+        loop {
+            self.require("<", "a start tag")?;
+            let (name, empty) = self.start_tag(scopes, handler)?;
+            if !empty {
+                open.push(name);
+            } else {
+                Self::end(&name, scopes, handler)?;
+            }
+            loop {
+                if open.is_empty() {
+                    return Ok(());
+                }
+                let text = self.content()?;
+                if !text.is_empty() && handler(Event::Text(&text)) == Flow::Stop {
+                    return Err(Stop::Handler);
+                }
+                if self.skip("</")? {
+                    let (qname, _, _) = self.qname("an end tag")?;
+                    self.skip_spaces()?;
+                    self.require(">", "the end of an end tag")?;
+                    let name = open.pop().expect("an element is open");
+                    if name.qname != qname {
+                        return fatal(format!(
+                            "the element {} must end with </{}>",
+                            name.qname, name.qname
+                        ));
+                    }
+                    Self::end(&name, scopes, handler)?;
+                } else if self.peek()?.is_none() {
+                    return fatal("the document ends inside an element");
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn end(
+        name: &Name,
+        scopes: &mut Scopes,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(), Stop> {
+        let flow = handler(Event::End(name));
+        let mark = scopes.marks.pop().expect("a scope is open");
+        scopes.bindings.truncate(mark);
+        match flow {
+            Flow::Continue => Ok(()),
+            Flow::Stop => Err(Stop::Handler),
+        }
+    }
+
+    /// Character data, references, comments, processing instructions and CDATA sections, up
+    /// to the next start or end tag: the text they hold.
+    fn content(&mut self) -> Result<String> {
+        let mut text = String::new();
+        loop {
+            match self.peek()? {
+                None => return Ok(text),
+                Some('<') => {
+                    if self.skip("<!--")? {
+                        self.comment()?;
+                    } else if self.skip("<![CDATA[")? {
+                        loop {
+                            if self.skip("]]>")? {
+                                break;
+                            }
+                            text.push(self.expect_char("a CDATA section")?);
+                        }
+                    } else if self.skip("<?")? {
+                        self.processing_instruction()?;
+                    } else if self.peek_at(1)? == Some('/')
+                        || self.peek_at(1)?.is_some_and(is_name_start)
+                    {
+                        return Ok(text);
+                    } else {
+                        return malformed("markup not recognized in content");
+                    }
+                }
+                Some('&') => {
+                    self.position += 1;
+                    let reference = self.reference()?;
+                    self.expand_in_content(reference, &mut text, 0)?;
+                }
+                Some(_) => {
+                    if self.starts_with("]]>")? {
+                        return malformed("]]> in content");
+                    }
+                    text.push(self.expect_char("content")?);
+                }
+            }
+        }
+    }
+
+    fn expand_in_content(
+        &self,
+        reference: Reference,
+        text: &mut String,
+        depth: usize,
+    ) -> Result<()> {
+        let name = match reference {
+            Reference::Char(c) => {
+                text.push(c);
+                return Ok(());
+            }
+            Reference::Entity(name) => name,
+        };
+        if let Some(c) = Self::predefined(&name) {
+            text.push(c);
+            return Ok(());
+        }
+        match self.entities.get(&name) {
+            None => self.undeclared(&name),
+            Some(Entity::External) => Ok(()),
+            Some(Entity::Internal(replacement)) => {
+                if replacement.contains('<') {
+                    return malformed(format!(
+                        "the entity {name} holds markup, which this parser does not expand"
+                    ));
+                }
+                if depth > 64 {
+                    return malformed(format!("the entity {name} refers to itself"));
+                }
+                let mut rest = replacement.as_str();
+                while let Some(start) = rest.find('&') {
+                    text.push_str(&rest[..start]);
+                    let end = rest[start..]
+                        .find(';')
+                        .map(|e| start + e)
+                        .ok_or_else(|| XmlError::Malformed("an unterminated reference".into()))?;
+                    let inner = &rest[start + 1..end];
+                    let reference = match inner.strip_prefix('#') {
+                        Some(code) => {
+                            let parsed = match code.strip_prefix('x') {
+                                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                                None => code.parse().ok(),
+                            };
+                            match parsed.and_then(char::from_u32).filter(|&c| is_char(c)) {
+                                Some(c) => Reference::Char(c),
+                                None => return malformed("an invalid character reference"),
+                            }
+                        }
+                        None => Reference::Entity(inner.to_owned()),
+                    };
+                    self.expand_in_content(reference, text, depth + 1)?;
+                    rest = &rest[end + 1..];
+                }
+                text.push_str(rest);
+                Ok(())
+            }
+        }
+    }
+
+    /// A start tag after its `<`: the element's name and whether it is empty.
+    fn start_tag(
+        &mut self,
+        scopes: &mut Scopes,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(Name, bool), Stop> {
+        let (qname, prefix, local) = self.qname("an element")?;
+        let mut raw: Vec<(String, Option<String>, String, String)> = Vec::new();
+        let empty = loop {
+            let spaced = self.skip_spaces()?;
+            if self.skip("/>")? {
+                break true;
+            }
+            if self.skip(">")? {
+                break false;
+            }
+            if !spaced {
+                return fatal(format!("the element {qname} is unterminated"));
+            }
+            let (name, attribute_prefix, attribute_local) = self.qname("an attribute")?;
+            self.skip_spaces()?;
+            self.require("=", "= after an attribute name")?;
+            self.skip_spaces()?;
+            let value = self.attribute_value()?;
+            if raw.iter().any(|(q, ..)| *q == name) {
+                return fatal(format!("the attribute {name} appears twice"));
+            }
+            raw.push((name, attribute_prefix, attribute_local, value));
+        };
+        if let Some(defaults) = self.defaults.get(&qname) {
+            for default in defaults {
+                if !raw.iter().any(|(q, ..)| *q == default.name) {
+                    let (prefix, local) = match default.name.split_once(':') {
+                        Some((p, l)) => (Some(p.to_owned()), l.to_owned()),
+                        None => (None, default.name.clone()),
+                    };
+                    raw.push((default.name.clone(), prefix, local, default.value.clone()));
+                }
+            }
+        }
+        scopes.marks.push(scopes.bindings.len());
+        for (name, attribute_prefix, attribute_local, value) in &raw {
+            let declared = match (attribute_prefix.as_deref(), name.as_str()) {
+                (None, "xmlns") => Some(String::new()),
+                (Some("xmlns"), _) => Some(attribute_local.clone()),
+                _ => None,
+            };
+            let Some(declared) = declared else {
+                continue;
+            };
+            if declared == "xmlns" {
+                return fatal("the prefix xmlns cannot be declared");
+            }
+            if (declared == "xml") != (value == XML_NAMESPACE) {
+                return fatal("the xml prefix is bound to its namespace only");
+            }
+            if value == XMLNS_NAMESPACE {
+                return fatal("the xmlns namespace cannot be bound");
+            }
+            if !declared.is_empty() && value.is_empty() {
+                return fatal(format!("the prefix {declared} cannot be unbound"));
+            }
+            scopes.bindings.push((declared, value.clone()));
+        }
+        let uri = match prefix.as_deref() {
+            None => scopes.resolve("").unwrap_or("").to_owned(),
+            Some(prefix) => match scopes.resolve(prefix) {
+                Some(uri) if !uri.is_empty() => uri.to_owned(),
+                _ => return fatal(format!("the prefix {prefix} of {qname} is not bound")),
+            },
+        };
+        let mut attributes: Vec<Attribute> = Vec::with_capacity(raw.len());
+        for (name, attribute_prefix, attribute_local, value) in raw {
+            let uri = match attribute_prefix.as_deref() {
+                None if name == "xmlns" => XMLNS_NAMESPACE.to_owned(),
+                None => String::new(),
+                Some("xmlns") => XMLNS_NAMESPACE.to_owned(),
+                Some(p) => match scopes.resolve(p) {
+                    Some(uri) if !uri.is_empty() => uri.to_owned(),
+                    _ => return fatal(format!("the prefix {p} of {name} is not bound")),
+                },
+            };
+            if !uri.is_empty()
+                && attributes
+                    .iter()
+                    .any(|a| a.uri == uri && a.local == attribute_local)
+            {
+                return fatal(format!("the attribute {name} appears twice"));
+            }
+            attributes.push(Attribute {
+                qname: name,
+                uri,
+                local: attribute_local,
+                value,
+            });
+        }
+        let name = Name { qname, uri, local };
+        match handler(Event::Start(&name, &attributes)) {
+            Flow::Continue => Ok((name, empty)),
+            Flow::Stop => Err(Stop::Handler),
+        }
+    }
+}
+
+enum Reference {
+    Char(char),
+    Entity(String),
+}
+
+/// Whether `name` is a valid encoding name: `[A-Za-z] ([A-Za-z0-9._] | '-')*`.
+fn is_encoding_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root(bytes: &[u8]) -> std::result::Result<Option<(String, String)>, XmlError> {
+        let mut found = None;
+        parse(bytes, &mut |event| {
+            if let Event::Start(name, _) = event {
+                found = Some((name.uri.clone(), name.local.clone()));
+                return Flow::Stop;
+            }
+            Flow::Continue
+        })?;
+        Ok(found)
+    }
+
+    fn malformed_root(bytes: &[u8]) -> bool {
+        matches!(root(bytes), Err(XmlError::Malformed(_)))
+    }
+
+    #[test]
+    fn finds_the_root_and_its_namespace() {
+        assert_eq!(
+            root(b"<?xml version=\"1.0\"?>\n<!-- c --><a:svg xmlns:a='urn:x' b='1'>"),
+            Ok(Some(("urn:x".into(), "svg".into())))
+        );
+        assert_eq!(
+            root(b"\xEF\xBB\xBF<html xmlns=\"http://www.w3.org/1999/xhtml\">"),
+            Ok(Some(("http://www.w3.org/1999/xhtml".into(), "html".into())))
+        );
+    }
+
+    #[test]
+    fn rejects_what_xerces_rejects() {
+        assert!(malformed_root(b"text<a/>"));
+        assert!(malformed_root(b"<a:b/>"));
+        assert!(malformed_root(b"<a x='1' x='2'/>"));
+        assert!(malformed_root(b"<a x=1/>"));
+        assert!(malformed_root(b"<!-- a -- b --><a/>"));
+        assert!(malformed_root(b" <?xml version='1.0'?><a/>"));
+        assert!(malformed_root(b"<?xml encoding='UTF-8'?><a/>"));
+        assert!(malformed_root(b"<a x='&nbsp;'/>"));
+        assert!(malformed_root(b""));
+    }
+
+    #[test]
+    fn tolerates_entities_an_external_subset_may_declare() {
+        assert_eq!(
+            root(
+                b"<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0//EN\" \"x.dtd\"><html t='&nbsp;'>"
+            ),
+            Ok(Some((String::new(), "html".into())))
+        );
+        assert_eq!(
+            root(
+                b"<!DOCTYPE a [<!ENTITY e 'v'><!ATTLIST a xmlns CDATA #FIXED 'urn:d'>]><a t='&e;'>"
+            ),
+            Ok(Some(("urn:d".into(), "a".into())))
+        );
+    }
+
+    #[test]
+    fn fails_on_malformed_utf8_only_where_it_is_read() {
+        assert_eq!(root(b"<a>\xE9</a>"), Ok(Some((String::new(), "a".into()))));
+        assert_eq!(root(b"<!-- \xE9 --><a/>"), Err(XmlError::CharConversion));
+    }
+
+    #[test]
+    fn reads_utf16() {
+        let doc: Vec<u8> = "\u{FEFF}<?xml version=\"1.0\" encoding=\"UTF-16\"?><r/>"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(root(&doc), Ok(Some((String::new(), "r".into()))));
+    }
+
+    #[test]
+    fn checks_the_whole_document() {
+        let mut ends = 0;
+        let result = parse(b"<a><b>x</b><c/></a><!-- tail -->", &mut |event| {
+            if let Event::End(_) = event {
+                ends += 1;
+            }
+            Flow::Continue
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(ends, 3);
+        assert!(parse(b"<a><b></a>", &mut |_| Flow::Continue).is_err());
+        assert!(parse(b"<a/><b/>", &mut |_| Flow::Continue).is_err());
+        assert!(parse(b"<a>]]></a>", &mut |_| Flow::Continue).is_err());
+    }
+}

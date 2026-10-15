@@ -512,6 +512,7 @@ dependencies = [
  "bytemuck",
  "criterion",
  "encoding_rs",
+ "fancy-regex",
  "flate2",
  "jni",
  "libc",
