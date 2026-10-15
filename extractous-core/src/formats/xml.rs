@@ -5,8 +5,9 @@
 
 use std::borrow::Cow;
 
+use crate::errors::Error;
 use crate::formats::Failure;
-use crate::xml::{self, Event, Flow, TextKind, XmlError};
+use crate::xml::{self, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
 
 pub(crate) use crate::xml::{Attribute, XMLNS};
 
@@ -118,13 +119,14 @@ pub(crate) fn parse_sax(
     if let Some(failure) = failure {
         return Err(failure);
     }
-    result.map_err(|error| {
-        Failure::Malformed(match error {
-            XmlError::CharConversion => {
-                format!("{what} is malformed: a byte sequence its encoding does not allow")
-            }
-            XmlError::Malformed(reason) => format!("{what} is malformed: {reason}"),
-        })
+    result.map_err(|error| match error {
+        XmlError::CharConversion => Failure::Malformed(format!(
+            "{what} is malformed: a byte sequence its encoding does not allow"
+        )),
+        XmlError::Malformed(reason) => Failure::Malformed(format!("{what} is malformed: {reason}")),
+        XmlError::EntityExpansionLimit => Failure::Extraction(Error::LimitExceeded(format!(
+            "{what} expands more than {ENTITY_EXPANSION_LIMIT} entities"
+        ))),
     })
 }
 

@@ -17,6 +17,9 @@ pub enum Error {
     Encrypted(String),
 
     #[error("{0}")]
+    LimitExceeded(String),
+
+    #[error("{0}")]
     Utf8Error(#[from] Utf8Error),
 
     #[error("{0}")]
