@@ -24,26 +24,19 @@ use text::{TextHandler, TextOptions};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ooxml::{
-    self, Package, Relationship, Unported, HYPERLINK_RELATIONSHIP, RELATIONSHIPS_CONTENT_TYPE,
-};
-use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::ooxml::extractor::{self, Ignore};
+use crate::formats::ooxml::{self, Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};
+use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
 
 /// The WordprocessingML namespace.
 const W_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-/// Relationship types, as POI's `XWPFRelation`, `PackageRelationshipTypes` and Tika name them.
+/// Relationship types of Word documents, as POI's `XWPFRelation` names them.
 mod kind {
-    pub(super) const OFFICE_DOCUMENT: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
-    pub(super) const STRICT_OFFICE_DOCUMENT: &str =
-        "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument";
-    pub(super) const SIGNATURE: &str =
-        "http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin";
-    pub(super) const THUMBNAIL: &str =
-        "http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail";
+    pub(super) use crate::formats::ooxml::extractor::kind::*;
+
     pub(super) const HEADER: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
     pub(super) const FOOTER: &str =
@@ -52,14 +45,6 @@ mod kind {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
     pub(super) const ENDNOTES: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
-    pub(super) const COMMENTS: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
-    pub(super) const DIAGRAM_DATA: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData";
-    pub(super) const CHART: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
-    pub(super) const STYLES: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
     pub(super) const NUMBERING: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
     pub(super) const SETTINGS: &str =
@@ -70,21 +55,6 @@ mod kind {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate";
     pub(super) const SUBDOCUMENT: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/subDocument";
-    pub(super) const IMAGE: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
-    pub(super) const AUDIO: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio";
-    pub(super) const VIDEO: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/video";
-    pub(super) const MEDIA: &str = "http://schemas.microsoft.com/office/2007/relationships/media";
-    pub(super) const PACKAGE: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package";
-    pub(super) const OLE_OBJECT: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject";
-    pub(super) const ALTERNATE_FORMAT_CHUNK: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk";
-    pub(super) const VBA_PROJECT: &str =
-        "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 }
 
 /// The content types of a main document part, as `XWPFWordExtractor.SUPPORTED_TYPES` and
@@ -97,9 +67,6 @@ const MAIN_DOCUMENT_TYPES: [&str; 4] = [
 ];
 const GLOSSARY_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.glossary+xml";
-const OLE_OBJECT_TYPE: &str = "application/vnd.openxmlformats-officedocument.oleObject";
-/// The smallest OLE object Tika opens: three blocks of a compound file.
-const SMALLEST_OLE_OBJECT: u64 = 512 * 3;
 /// The kinds of relationships whose targets `loadLinkedRelationships` names by file.
 const EMBEDDED_KINDS: [&str; 5] = [
     kind::AUDIO,
@@ -120,19 +87,14 @@ const MAIN_PART_KINDS: [&str; 6] = [
 
 /// Metadata names this parser sets.
 mod name {
-    pub(super) const PARSED_BY: &str = "tk:parsed-by";
-    pub(super) const HAS_SIGNATURE: &str = "tk:has-signature";
-    pub(super) const HAS_UNREFERENCED_PARTS: &str = "msoffice:has-unreferenced-parts";
-    pub(super) const UNREFERENCED_PART_NAMES: &str = "msoffice:unreferenced-part-names";
-    pub(super) const HAS_COMMENTS: &str = "msoffice:has-comments";
+    pub(super) use crate::formats::ooxml::extractor::name::*;
+
     pub(super) const HAS_HIDDEN_TEXT: &str = "msoffice:doc:has-hidden-text";
     pub(super) const HAS_TRACK_CHANGES: &str = "msoffice:has-track-changes";
-    pub(super) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
     pub(super) const HAS_ATTACHED_TEMPLATE: &str = "msoffice:doc:has-attached-template";
     pub(super) const HAS_SUBDOCUMENTS: &str = "msoffice:doc:has-subdocuments";
     pub(super) const HAS_MAIL_MERGE: &str = "msoffice:doc:has-mail-merge";
     pub(super) const HAS_FRAMESETS: &str = "msoffice:doc:has-framesets";
-    pub(super) const HAS_EXTERNAL_OLE_OBJECTS: &str = "msoffice:has-external-ole-objects";
 }
 
 /// The extractor Tika records having used.
@@ -273,7 +235,7 @@ impl<'a> Document<'a> {
     fn check(&self) -> Result<(), Unported> {
         for &source in &self.main_parts() {
             for relationship in self.relationships(source) {
-                self.check_embedded(source, relationship)?;
+                extractor::check_embedded(&self.package, self.config, source, relationship, true)?;
             }
         }
         let mut stories = self.stories.clone();
@@ -300,43 +262,6 @@ impl<'a> Document<'a> {
         ooxml::extract_properties(&self.package, &mut metadata)
     }
 
-    /// What `handleEmbeddedPart` does with one relationship: an embedded document Tika parses
-    /// is [`Unported`].
-    fn check_embedded(&self, source: usize, relationship: &Relationship) -> Result<(), Unported> {
-        if !relationship.is_internal() {
-            return Ok(());
-        }
-        let Some(target) = relationship.part else {
-            return Ok(());
-        };
-        let embedded = || {
-            Err(Unported(format!(
-                "{} embeds {} ({}), which Tika parses",
-                self.package.name(source),
-                self.package.name(target),
-                relationship.kind
-            )))
-        };
-        let target_part = &self.package.parts[target];
-        match relationship.kind.as_str() {
-            kind::OLE_OBJECT
-                if target_part.content_type == OLE_OBJECT_TYPE
-                    && self.package.size(target) < SMALLEST_OLE_OBJECT =>
-            {
-                Ok(())
-            }
-            kind::OLE_OBJECT
-            | kind::IMAGE
-            | kind::MEDIA
-            | kind::VIDEO
-            | kind::AUDIO
-            | kind::PACKAGE
-            | kind::ALTERNATE_FORMAT_CHUNK => embedded(),
-            kind::VBA_PROJECT if self.config.extracts_macros() => embedded(),
-            _ => Ok(()),
-        }
-    }
-
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         self.write_package_metadata(xhtml.metadata_mut());
         ooxml::extract_properties(&self.package, xhtml.metadata_mut())
@@ -354,47 +279,14 @@ impl<'a> Document<'a> {
         if let Some(&story) = self.stories.first() {
             self.write_security_features(story, xhtml)?;
         }
-        self.write_external_references(xhtml)?;
-        self.write_thumbnails(xhtml)?;
+        extractor::write_embedded_parts(&self.package, &self.main_parts(), xhtml, &|_, _| {})?;
+        extractor::write_thumbnails(&self.package, xhtml)?;
         Ok(())
     }
 
     /// What `OOXMLExtractorFactory` records before the extractor runs.
     fn write_package_metadata(&self, metadata: &mut TikaMetadata) {
-        let package = &self.package;
-        if Package::relationships_of(&package.relationships, kind::SIGNATURE)
-            .next()
-            .is_some()
-        {
-            metadata.set(name::HAS_SIGNATURE, "true");
-        }
-        let mut reachable = vec![false; package.parts.len()];
-        let mut queue = std::collections::VecDeque::new();
-        for relationship in &package.relationships {
-            if !relationship.is_internal() {
-                continue;
-            }
-            if let Some(part) = package.package_part(relationship) {
-                if !std::mem::replace(&mut reachable[part], true) {
-                    queue.push_back(part);
-                }
-            }
-        }
-        while let Some(source) = queue.pop_front() {
-            for relationship in &package.parts[source].relationships {
-                if let (true, Some(part)) = (relationship.is_internal(), relationship.part) {
-                    if !std::mem::replace(&mut reachable[part], true) {
-                        queue.push_back(part);
-                    }
-                }
-            }
-        }
-        for (part, reached) in package.parts.iter().zip(&reachable) {
-            if part.content_type != RELATIONSHIPS_CONTENT_TYPE && !reached {
-                metadata.set(name::HAS_UNREFERENCED_PARTS, "true");
-                metadata.add(name::UNREFERENCED_PART_NAMES, part.name.clone());
-            }
-        }
+        extractor::write_package_metadata(&self.package, metadata);
         metadata.add(name::PARSED_BY, WORD_EXTRACTOR);
     }
 
@@ -550,7 +442,7 @@ impl<'a> Document<'a> {
                 xhtml.metadata_mut().set(flag, "true");
             }
             for relationship in found.filter(|relationship| !relationship.is_internal()) {
-                external_reference(xhtml, class, relationship.target_uri())?;
+                extractor::external_reference(xhtml, class, relationship.target_uri())?;
             }
         }
         let settings = match Package::first_related(relationships, kind::SETTINGS) {
@@ -573,55 +465,6 @@ impl<'a> Document<'a> {
         }
         Ok(())
     }
-
-    /// The links `handleEmbeddedParts` writes for the relationships of the main parts that
-    /// lead out of the package.
-    fn write_external_references(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        for source in self.main_parts() {
-            for relationship in self.relationships(source) {
-                if relationship.is_internal() {
-                    continue;
-                }
-                let class = match relationship.kind.as_str() {
-                    kind::OLE_OBJECT => "externalOleObject",
-                    kind::IMAGE => "externalImage",
-                    _ => "externalResource",
-                };
-                external_reference(xhtml, class, relationship.target_uri())?;
-                if relationship.kind == kind::OLE_OBJECT {
-                    xhtml
-                        .metadata_mut()
-                        .set(name::HAS_EXTERNAL_OLE_OBJECTS, "true");
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// `handleThumbnail`: a marker for each thumbnail, which extractous does not parse.
-    fn write_thumbnails(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        for relationship in Package::relationships_of(&self.package.relationships, kind::THUMBNAIL)
-        {
-            if let Some(part) = self.package.package_part(relationship) {
-                xhtml.start_element_with(
-                    "div",
-                    &[("class", "embedded"), ("id", self.package.name(part))],
-                )?;
-                xhtml.end_element("div")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// `emitExternalRef`: an empty link of class `external-ref-…`, unless the URL is empty.
-fn external_reference(xhtml: &mut Xhtml, class: &str, url: &str) -> Result<(), Stop> {
-    if url.is_empty() {
-        return Ok(());
-    }
-    let class = format!("external-ref-{class}");
-    xhtml.start_element_with("a", &[("class", &class), ("href", url)])?;
-    xhtml.end_element("a")
 }
 
 /// `FileHelper.getFilename(new File(uri))`: the last segment of the path `File` makes of it.
@@ -630,28 +473,6 @@ fn file_name(uri: &str) -> String {
     path.rfind('/')
         .map_or(path, |index| &path[index + 1..])
         .to_owned()
-}
-
-/// A handler that only lets the XML be read.
-struct Ignore;
-
-impl SaxHandler for Ignore {
-    fn start_element(
-        &mut self,
-        _namespace: &str,
-        _local_name: &str,
-        _attributes: &[Attribute],
-    ) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    fn characters(&mut self, _text: &str) -> Result<(), Failure> {
-        Ok(())
-    }
 }
 
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.

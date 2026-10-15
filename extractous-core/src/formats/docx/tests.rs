@@ -5,6 +5,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use super::*;
+use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::parity::{self, assert_same_as_tika_with};
 use crate::formats::{Chain, Output, StringOut};
 
