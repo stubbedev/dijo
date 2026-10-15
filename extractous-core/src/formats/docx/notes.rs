@@ -12,7 +12,7 @@ use crate::formats::Failure;
 
 /// The notes and comments of a document, and the relationships of the parts holding them.
 #[derive(Debug, Default)]
-pub(super) struct InlineParts {
+pub(crate) struct InlineParts {
     pub(super) footnotes: HashMap<String, Vec<Recorded>>,
     pub(super) endnotes: HashMap<String, Vec<Recorded>>,
     /// The comments in the order of a `java.util.HashMap`, which is the order Tika writes the

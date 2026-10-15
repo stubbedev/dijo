@@ -254,7 +254,7 @@ impl Numbering {
 
 /// `XWPFListManager`: counts the numbered paragraphs of a document in order.
 #[derive(Debug, Default)]
-pub(super) struct ListManager {
+pub(crate) struct ListManager {
     numbering: Option<Numbering>,
     counters: HashMap<i32, LevelCounter>,
     override_tuples: HashMap<i32, Option<Vec<LevelTuple>>>,

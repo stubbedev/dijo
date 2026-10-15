@@ -1,10 +1,10 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::ZipWriter;
 
 use super::*;
+use crate::formats::ooxml::testing::relationship;
 use crate::formats::parity::{self, assert_same_as_tika_with};
 use crate::formats::{Chain, Output, StringOut};
 
@@ -190,42 +190,14 @@ const W: &str = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/20
 
 /// A Word package of `parts`, each a name, a content type and the content.
 fn package(parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
-    let mut types = String::from(
-        "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
-         <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>",
-    );
-    for (name, content_type, _) in parts {
-        types.push_str(&format!(
-            "<Override PartName=\"/{name}\" ContentType=\"{content_type}\"/>"
-        ));
-    }
-    types.push_str("</Types>");
-    let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    let mut add = |name: &str, content: &[u8]| {
-        writer.start_file(name, options).unwrap();
-        writer.write_all(content).unwrap();
-    };
-    add("[Content_Types].xml", types.as_bytes());
-    add(
-        "_rels/.rels",
-        b"<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
-          <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>\
-          </Relationships>",
-    );
-    for (name, _, content) in parts {
-        add(name, content);
-    }
-    writer.finish().unwrap().into_inner()
+    ooxml::testing::package("word/document.xml", parts)
 }
 
 /// A package with a main document holding `body` and relationships `relationships`, besides
 /// the further `parts`.
 fn document(body: &str, relationships: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
     let document = format!("<w:document {W}><w:body>{body}</w:body></w:document>");
-    let rels = format!(
-        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{relationships}</Relationships>"
-    );
+    let rels = ooxml::testing::relationships(relationships);
     let mut all: Vec<(&str, &str, &[u8])> = vec![
         ("word/document.xml", MAIN, document.as_bytes()),
         (
@@ -236,10 +208,6 @@ fn document(body: &str, relationships: &str, parts: &[(&str, &str, &[u8])]) -> V
     ];
     all.extend_from_slice(parts);
     package(&all)
-}
-
-fn relationship(id: &str, kind: &str, target: &str) -> String {
-    format!("<Relationship Id=\"{id}\" Type=\"{kind}\" Target=\"{target}\"/>")
 }
 
 fn defers(input: &[u8]) -> Option<String> {
@@ -271,10 +239,10 @@ fn reads_a_plain_document() {
 #[test]
 fn defers_pictures_attachments_and_chunks_tika_parses() {
     for (kind, target) in [
-        (kind::IMAGE, "media/image1.png"),
-        (kind::PACKAGE, "embeddings/a.xlsx"),
-        (kind::ALTERNATE_FORMAT_CHUNK, "chunk.html"),
-        (kind::AUDIO, "media/a.wav"),
+        (ooxml::kind::IMAGE, "media/image1.png"),
+        (ooxml::kind::PACKAGE, "embeddings/a.xlsx"),
+        (ooxml::kind::ALTERNATE_FORMAT_CHUNK, "chunk.html"),
+        (ooxml::kind::AUDIO, "media/a.wav"),
     ] {
         let input = document(
             "<w:p/>",
@@ -294,8 +262,12 @@ fn defers_ole_objects_tika_opens_only() {
         let content = vec![0u8; size];
         document(
             "<w:p/>",
-            &relationship("rId9", kind::OLE_OBJECT, "embeddings/oleObject1.bin"),
-            &[("word/embeddings/oleObject1.bin", OLE_OBJECT_TYPE, &content)],
+            &relationship("rId9", ooxml::kind::OLE_OBJECT, "embeddings/oleObject1.bin"),
+            &[(
+                "word/embeddings/oleObject1.bin",
+                ooxml::OLE_OBJECT_TYPE,
+                &content,
+            )],
         )
     };
     assert_eq!(defers(&ole(1535)), None);
@@ -306,7 +278,7 @@ fn defers_ole_objects_tika_opens_only() {
 fn defers_macros_only_when_they_are_extracted() {
     let input = document(
         "<w:p/>",
-        &relationship("rId9", kind::VBA_PROJECT, "vbaProject.bin"),
+        &relationship("rId9", ooxml::kind::VBA_PROJECT, "vbaProject.bin"),
         &[(
             "word/vbaProject.bin",
             "application/vnd.ms-office.vbaProject",

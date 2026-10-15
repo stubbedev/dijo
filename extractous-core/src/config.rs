@@ -219,6 +219,17 @@ impl OfficeParserConfig {
     pub(crate) fn concatenates_phonetic_runs(&self) -> bool {
         self.concatenate_phonetic_runs.unwrap_or(true)
     }
+
+    /// Whether the notes of slides are extracted, as Tika does unless told not to.
+    pub(crate) fn includes_slide_notes(&self) -> bool {
+        self.include_slide_notes.unwrap_or(true)
+    }
+
+    /// Whether the text of slide masters and layouts is extracted, as Tika does unless told not
+    /// to.
+    pub(crate) fn includes_slide_master_content(&self) -> bool {
+        self.include_slide_master_content.unwrap_or(true)
+    }
 }
 
 tika_config! {

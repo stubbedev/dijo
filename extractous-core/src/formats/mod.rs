@@ -16,9 +16,11 @@ mod java_time;
 mod mail;
 pub(crate) mod metadata;
 mod odf;
+mod ole10_native;
 mod ooxml;
 #[cfg(test)]
 pub(crate) mod parity;
+mod pptx;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -107,6 +109,7 @@ static PARSERS: &[&dyn Parser] = &[
     &mail::EmlxParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
+    &pptx::PptxParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
