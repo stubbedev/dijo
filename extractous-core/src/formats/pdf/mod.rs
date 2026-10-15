@@ -177,6 +177,28 @@ fn ocr_deferral(page: usize, layer: &PageLayer) -> Result<(), Unported> {
     Ok(())
 }
 
+/// Whether the cross-reference table puts the object `id` where it is: at an offset where its
+/// number and generation start an `obj`, after any whitespace.
+fn listed_where_it_is(doc: &Document, input: &[u8], (number, generation): lopdf::ObjectId) -> bool {
+    let offset = match doc.reference_table.entries.get(&number) {
+        Some(lopdf::xref::XrefEntry::Normal { offset, .. }) => offset,
+        Some(lopdf::xref::XrefEntry::Compressed { .. }) => return true,
+        _ => return false,
+    };
+    let Some(at) = input.get(*offset as usize..) else {
+        return false;
+    };
+    let words: Vec<&[u8]> = at
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|word| !word.is_empty())
+        .take(3)
+        .collect();
+    words.len() == 3
+        && words[0] == number.to_string().as_bytes()
+        && words[1] == generation.to_string().as_bytes()
+        && words[2].starts_with(b"obj")
+}
+
 /// A document's objects, as `lopdf` reads them, and what the empty password opens it with.
 struct Loaded {
     pdf: Pdf,
@@ -189,10 +211,19 @@ struct Loaded {
 fn load(input: &[u8]) -> Result<Loaded, Unported> {
     let mut doc = Document::load_mem(input)
         .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?;
-    if doc.trailer.has(b"Encrypt") {
+    if let Ok(encrypt) = doc.trailer.get(b"Encrypt") {
+        let misplaced = match encrypt {
+            lopdf::Object::Reference(id) => !listed_where_it_is(&doc, input, *id),
+            _ => false,
+        };
         return Err(Unported(
-            "encryption the empty password does not open, which Tika asks a password for"
-                .to_owned(),
+            if misplaced {
+                "an encryption dictionary the cross-reference table misplaces, which lopdf \
+                 cannot read and PDFBox may recover"
+            } else {
+                "encryption the empty password does not open, which Tika asks a password for"
+            }
+            .to_owned(),
         ));
     }
     let access = match doc.encryption_state.clone() {
@@ -594,6 +625,17 @@ mod tests {
                 .as_deref(),
             Some("object 4, which lopdf cannot read and PDFBox may recover")
         );
+    }
+
+    #[test]
+    fn tells_objects_the_table_misplaces() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[(4, 2)]);
+        let doc = Document::load_mem(&input).unwrap();
+        assert!(listed_where_it_is(&doc, &input, (3, 0)));
+        assert!(!listed_where_it_is(&doc, &input, (4, 0)));
+        assert!(!listed_where_it_is(&doc, &input, (9, 0)));
     }
 
     #[test]
