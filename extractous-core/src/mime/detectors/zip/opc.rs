@@ -9,7 +9,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::file::{Content, ZipEntry, ZipFile};
+use crate::compress::zip::file::{ZipEntry, ZipFile};
+use crate::compress::zip::Content;
 use crate::mime::java::{self, JavaString};
 use crate::mime::media_type::MediaType;
 use crate::mime::uri;
@@ -333,8 +334,8 @@ fn parse_relationships(content: &[u8]) -> Option<BTreeMap<JavaString, Relationsh
             Event::Start(name, attributes) => {
                 depth += 1;
                 if depth > 1
-                    && name.namespace == RELATIONSHIPS_NAMESPACE
-                    && name.local_name == "Relationship"
+                    && name.namespace() == RELATIONSHIPS_NAMESPACE
+                    && name.local_name() == "Relationship"
                 {
                     let attribute = |qname: &str| {
                         attributes
@@ -434,13 +435,13 @@ fn parse_content_types(content: &[u8]) -> Result<ContentTypes, Invalid> {
                         .find(|a| a.qualified_name == qname)
                         .map_or(String::new(), |a| a.value.clone())
                 };
-                if depth > 1 && name.namespace == TYPES_NAMESPACE {
-                    if name.local_name == "Default" {
+                if depth > 1 && name.namespace() == TYPES_NAMESPACE {
+                    if name.local_name() == "Default" {
                         types.defaults.insert(
                             java::to_lower_case(&attribute("Extension")),
                             attribute("ContentType"),
                         );
-                    } else if name.local_name == "Override" {
+                    } else if name.local_name() == "Override" {
                         match part_name(&attribute("PartName")) {
                             Some(part) => {
                                 types.overrides.insert(part.key(), attribute("ContentType"));
@@ -503,7 +504,7 @@ fn open(zip: &ZipFile<'_>, content_types_entry: &ZipEntry) -> Result<Package, In
             if let Some(relationships) = relationship_part_name(part) {
                 if let Some((_, _, relationships_entry)) = parts.get(&relationships.key()) {
                     let content = read_entry(zip, relationships_entry).ok_or(Invalid)?;
-                    if matches!(content, Content::Truncated(_)) {
+                    if matches!(content, Content::Truncated(_) | Content::Oversized(_)) {
                         return Err(Invalid);
                     }
                     parse_relationships(content.bytes()).ok_or(Invalid)?;
@@ -549,16 +550,16 @@ fn check_core_properties(content: &[u8]) -> Result<(), Invalid> {
                         invalid = true;
                     }
                 }
-                if name.namespace == DCTERMS {
+                if name.namespace() == DCTERMS {
                     let prefix = name
-                        .qualified_name
+                        .qualified_name()
                         .split_once(':')
                         .map_or("null", |(p, _)| p);
                     let typed = attributes
                         .iter()
                         .find(|a| a.namespace == XSI && a.local_name == "type")
                         .is_some_and(|a| a.value == format!("{prefix}:W3CDTF"));
-                    if !matches!(name.local_name.as_str(), "created" | "modified") || !typed {
+                    if !matches!(name.local_name(), "created" | "modified") || !typed {
                         invalid = true;
                     }
                 }
@@ -570,8 +571,8 @@ fn check_core_properties(content: &[u8]) -> Result<(), Invalid> {
                 }
                 open.push(elements.len());
                 elements.push((
-                    name.namespace.clone(),
-                    name.local_name.clone(),
+                    name.namespace().to_owned(),
+                    name.local_name().to_owned(),
                     String::new(),
                 ));
             }

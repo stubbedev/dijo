@@ -24,6 +24,10 @@ pub(crate) const CORE_PROPERTIES_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-package.core-properties+xml";
 const CORE_PROPERTIES_RELATIONSHIP: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
+/// The package's relationship to custom XML, which Tika never resolves but in its search for
+/// unreferenced parts, where it passes over a target POI cannot name.
+const CUSTOM_XML_RELATIONSHIP: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml";
 pub(crate) const HYPERLINK_RELATIONSHIP: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 /// POI's `ZipSecureFile` limit on the entries of an archive, as Tika raises it.
@@ -59,6 +63,12 @@ impl Relationship {
     /// Whether the target is in the package, as opposed to a URL or file elsewhere.
     pub(crate) fn is_internal(&self) -> bool {
         self.mode == TargetMode::Internal
+    }
+
+    /// Whether POI makes a part name of the target, as `getRelatedPart` does, which throws for
+    /// one it cannot: an internal link to an anchor or a relative path, say.
+    pub(crate) fn names_a_part(&self) -> bool {
+        self.resolved.is_some() || uri::is_valid_part_name(&self.target)
     }
 }
 
@@ -266,6 +276,9 @@ impl<'a> Package<'a> {
             let resolved = if mode == TargetMode::Internal && found.kind != HYPERLINK_RELATIONSHIP {
                 match uri::resolve(source, target.as_deref()) {
                     Resolution::Name(name) => Some(name),
+                    Resolution::Fails if source == "/" && found.kind == CUSTOM_XML_RELATIONSHIP => {
+                        None
+                    }
                     Resolution::Fails | Resolution::Unported => {
                         return Err(Unported(format!(
                             "the relationship {id} of {source} has the target {:?}, which this \

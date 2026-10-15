@@ -224,7 +224,7 @@ const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded 
 /// picture is drawn on, which change nothing the embedded document's parse writes.
 fn embedded_metadata(name: &str) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
-    metadata.set("tk:internal-path", name);
+    metadata.set(embedded::INTERNAL_PATH, name);
     metadata.set(embedded::RESOURCE_NAME, name);
     if name.contains("Pictures/") {
         metadata.set(embedded::RESOURCE_TYPE, "INLINE");

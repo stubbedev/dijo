@@ -3,11 +3,14 @@
 //!
 //! A stored entry with a data descriptor is found by scanning for the next signature, as
 //! `readStoredEntry` does, without its 512-byte buffering. Entries are read stored or deflated
-//! only, as by [`super::file`].
+//! only, as by [`super::file`]. Names come from the Unicode path extra field where its CRC
+//! matches, as `useUnicodeExtraFields` asks.
 
-use super::file::{
-    decode_name, extra_fields, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATED, LFH_SIG, STORED,
-};
+use std::ops::Range;
+
+use super::extra::{self, ExtraFields, Times};
+use super::file::{entry_name, unicode_text};
+use super::{decode_name, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATED, LFH_SIG, STORED};
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
 const DD_SIG: [u8; 4] = *b"PK\x07\x08";
@@ -29,11 +32,9 @@ pub(crate) enum Failure {
     Io,
 }
 
-/// An entry as the stream reads it.
+/// An entry as the stream reads it, its data read by [`ZipStream::content`] before the next.
 pub(crate) struct StreamEntry {
     pub(crate) name: String,
-    /// What reading the entry's data gives.
-    pub(crate) data: Result<Content, Failure>,
 }
 
 /// The local header of the entry the stream is in.
@@ -111,15 +112,21 @@ impl<'a> ZipStream<'a> {
             }
             return Err(Failure::Io);
         }
+        let version = u16_at(header, 4);
         let flags = u16_at(header, 6);
         let name_length = usize::from(u16_at(header, 26));
         let extra_length = usize::from(u16_at(header, 28));
-        let name = decode_name(self.bytes(header_at + 30, name_length)?);
+        let raw_name = self.bytes(header_at + 30, name_length)?;
         let extra = self.bytes(header_at + 30 + name_length, extra_length)?;
-        let zip64 = extra_fields(extra)
-            .into_iter()
-            .find(|(id, _)| *id == 0x0001)
-            .map(|(_, field)| field);
+        let fields =
+            ExtraFields::from_central(extra, &mut Times::default()).map_err(|_| Failure::Io)?;
+        let mut name = entry_name(decode_name(raw_name), version);
+        if flags & 0x0800 == 0 {
+            if let Some(unicode) = unicode_text(&fields, extra::UNICODE_PATH, raw_name) {
+                name = entry_name(unicode, version);
+            }
+        }
+        let zip64 = super::file::zip64_field(extra);
         let mut current = Current {
             flags,
             method: u16_at(header, 8),
@@ -150,9 +157,8 @@ impl<'a> ZipStream<'a> {
                 return Err(Failure::Io);
             }
         }
-        let data = self.read(&current).map(|(content, _)| content);
         self.current = Some(current);
-        Ok(Some(StreamEntry { name, data }))
+        Ok(Some(StreamEntry { name }))
     }
 
     /// `readFirstLocalFileHeader`: where the first local header starts, `None` for an empty
@@ -176,8 +182,9 @@ impl<'a> ZipStream<'a> {
         Err(Failure::Io)
     }
 
-    /// The entry's data, read to its end, and where the entry, data descriptor included, ends.
-    fn read(&self, current: &Current) -> Result<(Content, usize), Failure> {
+    /// `readFirstLocalFileHeader`'s and `read`'s refusals: an encrypted entry, and one with a
+    /// data descriptor its method cannot be read past with.
+    fn check(&self, current: &Current) -> Result<(), Failure> {
         if current.flags & 0x0001 != 0 {
             return Err(Failure::Io);
         }
@@ -191,31 +198,66 @@ impl<'a> ZipStream<'a> {
         {
             return Err(Failure::DataDescriptor);
         }
-        match method {
-            STORED if current.has_data_descriptor() => self.read_stored_with_descriptor(current),
+        Ok(())
+    }
+
+    /// The data of the entry the stream is in, read to its end.
+    pub(crate) fn content(&self) -> Result<Content, Failure> {
+        let current = self.current.as_ref().ok_or(Failure::Io)?;
+        self.check(current)?;
+        match current.method {
+            STORED if current.has_data_descriptor() => {
+                let (data, _) = self.read_stored_with_descriptor(current)?;
+                Ok(Content::Complete(self.data[data].to_vec()))
+            }
             STORED => {
                 let size = usize::try_from(current.size).map_err(|_| Failure::Io)?;
-                match self.bytes(current.data_start, size) {
-                    Ok(bytes) => Ok((Content::Complete(bytes.to_vec()), current.data_start + size)),
-                    Err(_) => {
-                        let partial = self.data.get(current.data_start..).unwrap_or_default();
-                        Ok((Content::Truncated(partial.to_vec()), TRUNCATED))
-                    }
-                }
+                Ok(match self.bytes(current.data_start, size) {
+                    Ok(bytes) => Content::Complete(bytes.to_vec()),
+                    Err(_) => Content::Truncated(
+                        self.data
+                            .get(current.data_start..)
+                            .unwrap_or_default()
+                            .to_vec(),
+                    ),
+                })
             }
             DEFLATED => {
                 let raw = self.data.get(current.data_start..).unwrap_or_default();
-                let bytes = match inflate(raw) {
-                    Content::Complete(bytes) => bytes,
-                    truncated => return Ok((truncated, TRUNCATED)),
-                };
-                let end = current.data_start + deflate_length(raw);
-                let end = if current.has_data_descriptor() {
-                    self.data_descriptor_end(end)?
-                } else {
-                    end
-                };
-                Ok((Content::Complete(bytes), end))
+                let content = inflate(raw);
+                if current.has_data_descriptor() && matches!(content, Content::Complete(_)) {
+                    self.end(current)?;
+                }
+                Ok(content)
+            }
+            _ => Err(Failure::Io),
+        }
+    }
+
+    /// Where the entry, data descriptor included, ends: [`TRUNCATED`] when the input cuts its
+    /// data short.
+    fn end(&self, current: &Current) -> Result<usize, Failure> {
+        self.check(current)?;
+        match current.method {
+            STORED if current.has_data_descriptor() => self
+                .read_stored_with_descriptor(current)
+                .map(|(_, end)| end),
+            STORED => {
+                let size = usize::try_from(current.size).map_err(|_| Failure::Io)?;
+                Ok(match self.bytes(current.data_start, size) {
+                    Ok(_) => current.data_start + size,
+                    Err(_) => TRUNCATED,
+                })
+            }
+            DEFLATED => {
+                let raw = self.data.get(current.data_start..).unwrap_or_default();
+                match deflate_length(raw) {
+                    Some(length) if current.has_data_descriptor() => {
+                        self.data_descriptor_end(current.data_start + length)
+                    }
+                    Some(length) => Ok(current.data_start + length),
+                    None => Ok(TRUNCATED),
+                }
             }
             _ => Err(Failure::Io),
         }
@@ -237,9 +279,12 @@ impl<'a> ZipStream<'a> {
         }
     }
 
-    /// `readStoredEntry`: the data up to the next signature, checked against the sizes its data
-    /// descriptor gives.
-    fn read_stored_with_descriptor(&self, current: &Current) -> Result<(Content, usize), Failure> {
+    /// `readStoredEntry`: where the data up to the next signature lies, checked against the
+    /// sizes its data descriptor gives, and where the descriptor ends.
+    fn read_stored_with_descriptor(
+        &self,
+        current: &Current,
+    ) -> Result<(Range<usize>, usize), Failure> {
         let descriptor_length = if current.zip64 { 20 } else { 12 };
         let start = current.data_start;
         let mut at = start;
@@ -271,11 +316,13 @@ impl<'a> ZipStream<'a> {
                 |at: usize| i64::from_le_bytes(sizes[at..at + 8].try_into().expect("eight bytes"));
             (eight(0), eight(8))
         };
-        let content = self.data.get(start..descriptor).ok_or(Failure::Io)?;
-        if compressed != size || content.len() as i64 != size {
+        if start > descriptor {
             return Err(Failure::Io);
         }
-        Ok((Content::Complete(content.to_vec()), end))
+        if compressed != size || (descriptor - start) as i64 != size {
+            return Err(Failure::Io);
+        }
+        Ok((start..descriptor, end))
     }
 
     /// `closeEntry`: where the next local header starts.
@@ -288,27 +335,33 @@ impl<'a> ZipStream<'a> {
                 Ok(end as usize)
             };
         }
-        match self.read(current)? {
-            (_, TRUNCATED) => Err(Failure::Io),
-            (_, end) => Ok(end),
+        match self.end(current)? {
+            TRUNCATED => Err(Failure::Io),
+            end => Ok(end),
         }
     }
 }
 
-/// The length of the complete deflate stream at the start of `raw`.
-fn deflate_length(raw: &[u8]) -> usize {
+/// The length of the deflate stream at the start of `raw`, if it ends there.
+fn deflate_length(raw: &[u8]) -> Option<usize> {
     let mut inflater = flate2::Decompress::new(false);
     let mut sink = vec![0u8; 64 * 1024];
     loop {
-        let before = inflater.total_in();
-        let consumed = usize::try_from(before)
+        let (before_in, before_out) = (inflater.total_in(), inflater.total_out());
+        let consumed = usize::try_from(before_in)
             .expect("the input fits in memory")
             .min(raw.len());
         match inflater.decompress(&raw[consumed..], &mut sink, flate2::FlushDecompress::None) {
-            Ok(flate2::Status::StreamEnd) | Err(_) => break,
-            Ok(_) if inflater.total_in() == before && consumed == raw.len() => break,
+            Ok(flate2::Status::StreamEnd) => {
+                return Some(
+                    usize::try_from(inflater.total_in()).expect("the input fits in memory"),
+                )
+            }
+            Err(_) => return None,
+            Ok(_) if inflater.total_in() == before_in && inflater.total_out() == before_out => {
+                return None
+            }
             Ok(_) => {}
         }
     }
-    usize::try_from(inflater.total_in()).expect("the input fits in memory")
 }

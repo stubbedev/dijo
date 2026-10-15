@@ -391,6 +391,27 @@ impl<'a> Ole2<'a> {
             .last()
     }
 
+    /// `DirectoryNode.hasEntry` on the root: whether it has an entry of exactly this name.
+    pub(crate) fn has_root_entry(&self, name: &str) -> bool {
+        self.child(self.root(), name).is_some()
+    }
+
+    /// `createDocumentInputStream(name)` on the root, read whole: the document found ignoring
+    /// case, or why POI cannot read it.
+    pub(crate) fn root_document(&self, name: &str) -> std::result::Result<Vec<u8>, String> {
+        let entry = self
+            .child_ignoring_case(self.root(), name)
+            .ok_or_else(|| format!("the compound document has no entry {name:?}"))?;
+        if self.kind(entry) != EntryKind::Document {
+            return Err(format!(
+                "the compound document's entry {name:?} is not a document"
+            ));
+        }
+        self.read(entry).map_err(|Unreadable(reason)| {
+            format!("the compound document's entry {name:?} is unreadable: {reason}")
+        })
+    }
+
     /// An entry's name, as a Java string decoded, unpaired surrogates replaced.
     pub(crate) fn name(&self, id: EntryId) -> String {
         String::from_utf16_lossy(&self.entry(id).name)

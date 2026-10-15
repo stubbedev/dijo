@@ -10,6 +10,8 @@
 pub(crate) mod extractor;
 mod package;
 mod properties;
+#[cfg(test)]
+pub(crate) mod testing;
 mod uri;
 
 pub(crate) use package::{Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};

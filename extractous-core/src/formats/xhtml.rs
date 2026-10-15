@@ -321,29 +321,12 @@ impl<'h> Xhtml<'h> {
             self.embedding.absorb_parsers(metadata);
         }
         let mut open = Vec::new();
-        for event in embedded::decode(&parsed.events)? {
-            match event {
-                Event::Start { name, attributes } => {
-                    let borrowed: Vec<(&str, &str)> = attributes
-                        .iter()
-                        .map(|(name, value)| (name.as_str(), value.as_str()))
-                        .collect();
-                    self.start_element_with(&name, &borrowed)?;
-                    open.push(name);
-                }
-                Event::End(name) => {
-                    open.pop();
-                    self.end_element(&name)?;
-                }
-                Event::Characters(text) => {
-                    let written = self.characters_chunk(&text);
-                    self.close_cut(written, &mut open, wrapping)?;
-                }
-                Event::IgnorableWhitespace(text) => {
-                    let written = self.ignorable_whitespace(&text);
-                    self.close_cut(written, &mut open, wrapping)?;
-                }
+        if let Err(stop) = self.replay(embedded::decode(&parsed.events)?, &mut open) {
+            if wrapping == Wrapping::PackageEntry {
+                self.end_open(&mut open)?;
+                self.end_element("div")?;
             }
+            return Err(stop.into());
         }
         let (clean, failure) = match parsed.outcome {
             EmbeddedOutcome::Parsed {
@@ -359,34 +342,44 @@ impl<'h> Xhtml<'h> {
         };
         if wrapping == Wrapping::PackageEntry {
             if !clean {
-                while let Some(name) = open.pop() {
-                    self.end_element(&name)?;
-                }
+                self.end_open(&mut open)?;
             }
             self.end_element("div")?;
         }
         failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
     }
 
-    /// Where the text of an embedded document reaches the length limit, Tika's parser of it
-    /// and `parseEmbedded` still close the elements they opened as the limit's exception passes
-    /// through them: the elements of the document still open, then its `package-entry` div.
-    fn close_cut(
-        &mut self,
-        written: Result<(), Stop>,
-        open: &mut Vec<String>,
-        wrapping: Wrapping,
-    ) -> Result<(), Stop> {
-        let Err(Stop::LimitReached) = written else {
-            return written;
-        };
+    /// Writes the events of an embedded document, keeping the names of the elements left open
+    /// in `open`, until the output stops taking them.
+    fn replay(&mut self, events: Vec<Event>, open: &mut Vec<String>) -> Result<(), Stop> {
+        for event in events {
+            match event {
+                Event::Start { name, attributes } => {
+                    let borrowed: Vec<(&str, &str)> = attributes
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_str()))
+                        .collect();
+                    self.start_element_with(&name, &borrowed)?;
+                    open.push(name);
+                }
+                Event::End(name) => {
+                    open.pop();
+                    self.end_element(&name)?;
+                }
+                Event::Characters(text) => self.characters_chunk(&text)?,
+                Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements an aborted embedded parse
+    /// left open, innermost first.
+    fn end_open(&mut self, open: &mut Vec<String>) -> Result<(), Stop> {
         while let Some(name) = open.pop() {
             self.end_element(&name)?;
         }
-        if wrapping == Wrapping::PackageEntry {
-            self.end_element("div")?;
-        }
-        Err(Stop::LimitReached)
+        Ok(())
     }
 
     fn frameset(&self) -> bool {
@@ -507,4 +500,31 @@ fn replace_invalid(text: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::formats::{Chain, Output, StringOut};
+
+    #[test]
+    fn closes_an_embedded_document_the_output_stops_in() {
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "lines.txt");
+        let text = "A line of text the write limit cuts short.\n".repeat(4);
+        let mut out = StringOut::default();
+        let chain = Chain::String {
+            output: Output::Xml,
+            max_length: 100,
+        };
+        let result = chain.write_to(&mut out, |handler| {
+            Xhtml::write(handler, TikaMetadata::new(), &configs, |xhtml| {
+                xhtml.parse_embedded(text.as_bytes(), &entry, Wrapping::PackageEntry)
+            })
+            .2
+        });
+        assert!(matches!(result, Err(Failure::Stopped(_))));
+        assert!(out.0.ends_with("</p></div>"), "{}", out.0);
+    }
 }

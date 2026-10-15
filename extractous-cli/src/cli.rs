@@ -184,7 +184,8 @@ pub struct RuntimeArgs {
     /// limit-exceeded error, and the next one runs normally. GraalVM raises a cap below the
     /// least heap the runtime starts with, a few tens of MiB. By default the heap may grow to a
     /// large share of physical memory, and is sized to at least 512 MiB (or the cap, when lower)
-    /// so that the collector runs less often.
+    /// so that the collector runs less often. While a cap is set, every document is extracted
+    /// through Tika, where the cap applies, rather than by the native parsers.
     #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_HEAP_BYTES")]
     pub max_heap_bytes: Option<NonZeroU64>,
 

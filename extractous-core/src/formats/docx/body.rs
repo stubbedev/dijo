@@ -57,7 +57,7 @@ impl ParagraphProperties {
 
 /// What a body handler writes besides the text itself, which the handlers of inlined notes and
 /// comments do without.
-pub(super) struct Context<'c> {
+pub(crate) struct Context<'c> {
     pub(super) styles: Option<&'c Styles>,
     pub(super) lists: &'c mut ListManager,
     pub(super) inline: &'c InlineParts,
@@ -67,8 +67,27 @@ pub(super) struct Context<'c> {
     pub(super) include_move_from: bool,
 }
 
+impl<'c> Context<'c> {
+    /// What `new OOXMLTikaBodyPartHandler(xhtml)` writes with, or with `(xhtml, metadata)` when
+    /// it `records_metadata`: no styles, list numbers or notes, and no deleted or moved text.
+    pub(crate) fn plain(
+        lists: &'c mut ListManager,
+        inline: &'c InlineParts,
+        records_metadata: bool,
+    ) -> Self {
+        Self {
+            styles: None,
+            lists,
+            inline,
+            records_metadata,
+            include_deleted: false,
+            include_move_from: false,
+        }
+    }
+}
+
 /// `OOXMLTikaBodyPartHandler`.
-pub(super) struct Body<'x, 'h, 'c> {
+pub(crate) struct Body<'x, 'h, 'c> {
     xhtml: &'x mut Xhtml<'h>,
     context: Context<'c>,
     formatting: Formatting,
@@ -84,7 +103,7 @@ pub(super) struct Body<'x, 'h, 'c> {
 }
 
 impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
-    pub(super) fn new(xhtml: &'x mut Xhtml<'h>, context: Context<'c>) -> Self {
+    pub(crate) fn new(xhtml: &'x mut Xhtml<'h>, context: Context<'c>) -> Self {
         Self {
             xhtml,
             context,
@@ -416,17 +435,7 @@ fn play_note(
 ) -> Result<Played, Failure> {
     let mut lists = ListManager::new(None);
     let empty = InlineParts::default();
-    let body = Body::new(
-        xhtml,
-        Context {
-            styles: None,
-            lists: &mut lists,
-            inline: &empty,
-            records_metadata: false,
-            include_deleted: false,
-            include_move_from: false,
-        },
-    );
+    let body = Body::new(xhtml, Context::plain(&mut lists, &empty, false));
     let mut handler = TextHandler::new(body, &inline.relationships, TextOptions::default());
     match events.iter().try_for_each(|event| event.play(&mut handler)) {
         Ok(()) => Ok(Played::Done),

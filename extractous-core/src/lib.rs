@@ -5,6 +5,8 @@
 mod errors;
 pub use errors::*;
 
+mod compress;
+
 // config module
 mod config;
 pub use config::*;

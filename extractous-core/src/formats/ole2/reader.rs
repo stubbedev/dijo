@@ -42,11 +42,6 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// `limit`: reads end `size` bytes into the data, or at its end.
-    pub(super) fn limit(&mut self, size: i64) {
-        self.count = size.min(self.data.len() as i64);
-    }
-
     /// `readFully`: the next `length` bytes, failing where fewer are left.
     pub(super) fn take(&mut self, length: usize) -> Result<&'a [u8], Thrown> {
         if length as i64 > self.count - self.position {

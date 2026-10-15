@@ -8,7 +8,11 @@
 //! they can be: the parsers that read them, each once as Tika's record keeps it, once the native
 //! parser goes by Tika's name; and the stack traces of their failures without the Java frames
 //! below the embedded document's parse, the embedding parser's in Tika's path and the native
-//! bridge's in the other, which no native parser runs.
+//! bridge's in the other, which no native parser runs, and with the random numbers of Tika's
+//! temporary files masked. A failure the parser records itself (`embedded-stream-exception`) is
+//! compared without its frames, all of them the Java parser's. In a string extraction, the
+//! native path, which parses an embedded document whole, may go on to more parsers and failures
+//! than Tika's, which stops at the length limit; Tika's must lead the native ones.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -161,6 +165,7 @@ fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: Char
 
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
+const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 /// The first frame below an embedded document's parse in Tika's path, where the embedding
 /// parser hands it to the embedded document extractor.
 const TIKA_EMBEDDING_FRAME: &str = "\tat org.apache.tika.parser.DelegatingParser.parse(";
@@ -181,11 +186,61 @@ fn comparable(mut extracted: Extracted) -> Extracted {
             *values = once;
         } else if name == EMBEDDED_EXCEPTION {
             for value in values.iter_mut() {
-                *value = without_embedding_frames(value);
+                *value = without_temporary_names(&without_embedding_frames(value));
+            }
+        } else if name == EMBEDDED_STREAM_EXCEPTION {
+            for value in values.iter_mut() {
+                *value = value
+                    .split_inclusive('\n')
+                    .filter(|line| !line.starts_with('\t'))
+                    .collect();
             }
         }
     }
     extracted
+}
+
+/// A string extraction's native result with the embedded documents' parsers and failures that
+/// follow Tika's left out: the native path parses an embedded document whole, while Tika's stops
+/// at the length limit, before the parsers and failures of what comes after it.
+fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
+    for (name, values) in &mut native.metadata {
+        if ![
+            PARSED_BY_FULL_SET,
+            EMBEDDED_EXCEPTION,
+            EMBEDDED_STREAM_EXCEPTION,
+        ]
+        .contains(&name.as_str())
+        {
+            continue;
+        }
+        let expected = tika
+            .metadata
+            .iter()
+            .find(|(tika_name, _)| tika_name == name)
+            .map_or(&[][..], |(_, values)| values.as_slice());
+        if values.starts_with(expected) {
+            values.truncate(expected.len());
+        }
+    }
+    native.metadata.retain(|(_, values)| !values.is_empty());
+    native
+}
+
+/// The text with the random number of each of Tika's temporary files, `apache-tika-<digits>`,
+/// masked.
+fn without_temporary_names(text: &str) -> String {
+    const PREFIX: &str = "apache-tika-";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(PREFIX) {
+        out.push_str(&rest[..at + PREFIX.len()]);
+        rest =
+            rest[at + PREFIX.len()..].trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
+        out.push('N');
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A Java stack trace without, in each of its exceptions, the frames from the last one that
@@ -293,8 +348,14 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
                     (Expected::Same(tika_name), Ok(tika), Ok(native)) => {
-                        comparable(tika.clone())
-                            == comparable(as_tika(native.clone(), native_name, tika_name, char_set))
+                        let tika = comparable(tika.clone());
+                        let native =
+                            comparable(as_tika(native.clone(), native_name, tika_name, char_set));
+                        if entry == "string" {
+                            tika == cut_to(native, &tika)
+                        } else {
+                            tika == native
+                        }
                     }
                     (Expected::Failure, Err(_), Err(_)) => true,
                     _ => false,
@@ -369,13 +430,16 @@ pub(crate) fn conformance_corpus() -> PathBuf {
     ))
 }
 
-/// A directory for the documents a test writes, removed with it.
+/// A directory for the documents a test writes, removed with it. Each is a directory of its
+/// own, so tests running at once never share one.
 pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
     pub(crate) fn new(test: &str) -> Self {
+        static CREATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let number = CREATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let directory =
-            std::env::temp_dir().join(format!("extractous-{test}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("extractous-{test}-{}-{number}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         Self(directory)
     }

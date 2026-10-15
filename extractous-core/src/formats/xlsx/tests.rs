@@ -86,8 +86,10 @@ fn extracts_what_tikas_path_extracts_from_many_shared_strings() {
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let documents = workbooks(&[&parity::conformance_corpus()]);
     let defaults = ParserConfigs::default();
-    let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert_same_as_tika(&ported, &defaults);
+    assert_same_as_tika(
+        &ported(&documents, &DEFERRED_CONFORMANCE, &defaults),
+        &defaults,
+    );
 }
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";

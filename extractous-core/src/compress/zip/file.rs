@@ -1,13 +1,16 @@
 //! ZIP archives as commons-compress's `ZipFile` opens them: by the central directory, each
-//! entry's data located through its local header, failing where `ZipFile` fails.
-//!
-//! Entries stored or deflated are read; an entry compressed another way (BZIP2, Deflate64, XZ,
-//! Zstandard, shrinking or imploding), which commons-compress also reads, is read as unreadable.
+//! entry's data located through its local header, failing where `ZipFile` fails. Entries keep
+//! what `ZipArchiveEntry` reports of them: names and comments with their Unicode extra fields,
+//! sizes, CRC, attributes and times.
 
-use flate2::{Decompress, FlushDecompress, Status};
+use super::extra::{self, ExtraFields, Field, Instant, Times};
+use super::{
+    decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG, DEFLATED, LFH_SIG,
+    STORED,
+};
+use crate::compress::crc32;
+use crate::formats::java_time::{CalendarFields, TimeZone};
 
-pub(crate) const LFH_SIG: [u8; 4] = *b"PK\x03\x04";
-pub(crate) const CFH_SIG: [u8; 4] = *b"PK\x01\x02";
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const ZIP64_EOCD_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";
 const ZIP64_EOCD_SIG: [u8; 4] = *b"PK\x06\x06";
@@ -15,25 +18,44 @@ const MIN_EOCD_SIZE: usize = 22;
 const MAX_EOCD_SIZE: usize = MIN_EOCD_SIZE + 0xFFFF;
 const ZIP64_MAGIC: i64 = 0xFFFF_FFFF;
 const ZIP64_MAGIC_SHORT: i64 = 0xFFFF;
-const UNICODE_PATH_ID: u16 = 0x7075;
-const ZIP64_ID: u16 = 0x0001;
-pub(crate) const STORED: u16 = 0;
-pub(crate) const DEFLATED: u16 = 8;
-
-/// Why `ZipFile` cannot open an archive, or an entry cannot be read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Corrupt;
+const UNSHRINKING: u16 = 1;
+const IMPLODING: u16 = 6;
+const ENHANCED_DEFLATED: u16 = 9;
+const BZIP2: u16 = 12;
+const ZSTD: [u16; 2] = [93, 20];
+const XZ: u16 = 95;
+const PLATFORM_FAT: u16 = 0;
+const PLATFORM_UNIX: u16 = 3;
 
 type Result<T> = std::result::Result<T, Corrupt>;
 
-/// An entry of the central directory.
+/// Where an entry's name comes from, `ZipArchiveEntry.NameSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameSource {
+    /// The name's bytes, decoded as UTF-8 though nothing declares them so.
+    Name,
+    /// The name's bytes, which the language encoding flag declares UTF-8.
+    NameWithEfsFlag,
+    /// A Unicode path extra field whose CRC matches the name's bytes.
+    UnicodeExtraField,
+}
+
+/// An entry of the central directory, as `ZipArchiveEntry`.
 #[derive(Debug, Clone)]
 pub(crate) struct ZipEntry {
     pub(crate) name: String,
+    pub(crate) raw_name: Vec<u8>,
+    pub(crate) name_source: NameSource,
+    pub(crate) comment: String,
+    pub(crate) version_made_by: u16,
     flags: u16,
-    method: u16,
-    compressed_size: i64,
+    pub(crate) method: u16,
+    dos_time: i64,
+    pub(crate) crc: i64,
+    pub(crate) compressed_size: i64,
     pub(crate) size: i64,
+    external_attributes: i64,
+    times: Times,
     data_offset: i64,
 }
 
@@ -41,20 +63,56 @@ impl ZipEntry {
     pub(crate) fn is_directory(&self) -> bool {
         self.name.ends_with('/')
     }
-}
 
-/// An entry's content: all of it, or what was read before the data failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Content {
-    Complete(Vec<u8>),
-    Truncated(Vec<u8>),
-}
+    /// `getGeneralPurposeBit().usesEncryption()`.
+    pub(crate) fn uses_encryption(&self) -> bool {
+        self.flags & 0x0001 != 0
+    }
 
-impl Content {
-    pub(crate) fn bytes(&self) -> &[u8] {
-        match self {
-            Content::Complete(bytes) | Content::Truncated(bytes) => bytes,
+    /// `ZipUtil.canHandleEntryData`: not encrypted, and compressed a way commons-compress reads.
+    pub(crate) fn can_read(&self) -> bool {
+        !self.uses_encryption()
+            && (matches!(
+                self.method,
+                STORED | UNSHRINKING | IMPLODING | DEFLATED | ENHANCED_DEFLATED | BZIP2 | XZ
+            ) || ZSTD.contains(&self.method))
+    }
+
+    /// `getPlatform`: the high byte of the version made by.
+    pub(crate) fn platform(&self) -> u16 {
+        self.version_made_by >> 8 & 0x0F
+    }
+
+    /// `getUnixMode`: the high half of the external attributes on Unix, 0 elsewhere.
+    pub(crate) fn unix_mode(&self) -> i64 {
+        if self.platform() == PLATFORM_UNIX {
+            self.external_attributes >> 16 & 0xFFFF
+        } else {
+            0
         }
+    }
+
+    /// `getLastModifiedTime`: from the extra fields, or else the DOS time in the JVM's time zone,
+    /// as a lenient `Calendar` sets its fields.
+    pub(crate) fn modified(&self, zone: &TimeZone) -> Instant {
+        self.times.modified.unwrap_or_else(|| {
+            let dos = self.dos_time;
+            let fields = CalendarFields {
+                year: (dos >> 25 & 0x7F) as i32 + 1980,
+                month: (dos >> 21 & 0x0F) as i32 - 1,
+                day: (dos >> 16 & 0x1F) as i32,
+                hour: (dos >> 11 & 0x1F) as i32,
+                minute: (dos >> 5 & 0x3F) as i32,
+                second: (dos << 1 & 0x3E) as i32,
+                millisecond: 0,
+            };
+            Instant::from_millis(fields.epoch_millis(zone))
+        })
+    }
+
+    /// `getCreationTime`.
+    pub(crate) fn created(&self) -> Option<Instant> {
+        self.times.created
     }
 }
 
@@ -62,36 +120,6 @@ impl Content {
 pub(crate) struct ZipFile<'a> {
     data: &'a [u8],
     entries: Vec<ZipEntry>,
-}
-
-/// Bytes decoded as UTF-8, a malformed sequence replaced by `?`, as commons-compress decodes
-/// entry names.
-pub(crate) fn decode_name(bytes: &[u8]) -> String {
-    let mut name = String::with_capacity(bytes.len());
-    for chunk in bytes.utf8_chunks() {
-        name.push_str(chunk.valid());
-        if !chunk.invalid().is_empty() {
-            name.push('?');
-        }
-    }
-    name
-}
-
-pub(crate) fn u16_at(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([data[offset], data[offset + 1]])
-}
-
-pub(crate) fn u32_at(data: &[u8], offset: usize) -> i64 {
-    i64::from(u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ]))
-}
-
-fn u64_at(data: &[u8], offset: usize) -> i64 {
-    i64::from_le_bytes(data[offset..offset + 8].try_into().expect("eight bytes"))
 }
 
 /// A read position over the archive, failing as a channel read past the end fails.
@@ -123,43 +151,19 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// The extra fields `ExtraFieldUtils.parse` splits out, by header id; trailing bytes that do
-/// not form a field are kept apart and play no part here.
-pub(crate) fn extra_fields(extra: &[u8]) -> Vec<(u16, &[u8])> {
-    let mut fields = Vec::new();
+/// The raw data of each field of an extra field block, for the ZIP64 field the sizes come from.
+pub(super) fn zip64_field(extra: &[u8]) -> Option<&[u8]> {
     let mut start = 0;
     while start + 4 <= extra.len() {
         let id = u16_at(extra, start);
         let length = usize::from(u16_at(extra, start + 2));
-        let Some(data) = extra.get(start + 4..start + 4 + length) else {
-            break;
-        };
-        fields.push((id, data));
+        let field = extra.get(start + 4..start + 4 + length)?;
+        if id == extra::ZIP64 {
+            return Some(field);
+        }
         start += 4 + length;
     }
-    fields
-}
-
-/// A Unicode path extra field: the CRC-32 of the name it replaces and the name in UTF-8, or
-/// `None` where commons-compress keeps it as an unrecognized field.
-fn unicode_path(data: &[u8]) -> Option<(u32, &[u8])> {
-    (data.len() >= 5 && data[0] == 1).then(|| {
-        let crc = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-        (crc, &data[5..])
-    })
-}
-
-/// The Unicode path field of an entry's central directory record.
-enum CentralPath<'a> {
-    Absent,
-    Valid(u32, &'a [u8]),
-    Invalid,
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = flate2::Crc::new();
-    crc.update(bytes);
-    crc.sum()
+    None
 }
 
 /// `tryToLocateSignature`: the end of central directory record, searched backwards from the
@@ -173,10 +177,9 @@ fn locate_eocd(data: &[u8]) -> Option<usize> {
 /// A central directory record before its local header is resolved.
 struct Central<'a> {
     entry: ZipEntry,
-    raw_name: &'a [u8],
-    utf8: bool,
+    fields: ExtraFields,
+    raw_comment: &'a [u8],
     local_header_offset: i64,
-    path: CentralPath<'a>,
 }
 
 impl<'a> ZipFile<'a> {
@@ -228,19 +231,24 @@ impl<'a> ZipFile<'a> {
         cd_start: i64,
     ) -> Result<Central<'a>> {
         let header = cursor.read(42)?;
+        let version_made_by = u16_at(header, 0);
         let flags = u16_at(header, 4);
         let method = u16_at(header, 6);
+        let dos_time = u32_at(header, 8);
+        let crc = u32_at(header, 12);
         let mut compressed_size = u32_at(header, 16);
         let mut size = u32_at(header, 20);
         let name_length = usize::from(u16_at(header, 24));
         let extra_length = usize::from(u16_at(header, 26));
         let comment_length = usize::from(u16_at(header, 28));
         let mut disk_start = i64::from(u16_at(header, 30));
+        let external_attributes = u32_at(header, 34);
         let mut local_header_offset = u32_at(header, 38) + first_lfh_offset;
         let raw_name = cursor.read(name_length)?;
         let extra = cursor.read(extra_length)?;
-        let fields = extra_fields(extra);
-        if let Some(&(_, z64)) = fields.iter().find(|(id, _)| *id == ZIP64_ID) {
+        let mut times = Times::default();
+        let fields = ExtraFields::from_central(extra, &mut times)?;
+        if let Some(z64) = zip64_field(extra) {
             let wanted = [
                 size == ZIP64_MAGIC,
                 compressed_size == ZIP64_MAGIC,
@@ -276,59 +284,66 @@ impl<'a> ZipFile<'a> {
         if disk_start < 0 || local_header_offset < 0 || local_header_offset > cd_start {
             return Err(Corrupt);
         }
-        cursor.read(comment_length)?;
-        let path = match fields.iter().find(|(id, _)| *id == UNICODE_PATH_ID) {
-            None => CentralPath::Absent,
-            Some(&(_, field)) => match unicode_path(field) {
-                Some((crc, name)) => CentralPath::Valid(crc, name),
-                None => CentralPath::Invalid,
-            },
-        };
+        let raw_comment = cursor.read(comment_length)?;
+        let utf8 = flags & 0x0800 != 0;
         Ok(Central {
             entry: ZipEntry {
-                name: decode_name(raw_name),
+                name: entry_name(decode_name(raw_name), version_made_by),
+                raw_name: raw_name.to_vec(),
+                name_source: if utf8 {
+                    NameSource::NameWithEfsFlag
+                } else {
+                    NameSource::Name
+                },
+                comment: decode_name(raw_comment),
+                version_made_by,
                 flags,
                 method,
+                dos_time,
+                crc,
                 compressed_size,
                 size,
+                external_attributes,
+                times,
                 data_offset: 0,
             },
-            raw_name,
-            utf8: flags & 0x0800 != 0,
+            fields,
+            raw_comment,
             local_header_offset,
-            path,
         })
     }
 
-    /// `resolveLocalFileHeaderData` for one entry: where its data starts, and its name from a
-    /// Unicode path field, the local header's replacing the central directory's.
+    /// `resolveLocalFileHeaderData` for one entry: where its data starts, the local header's
+    /// extra fields merged in, and its name and comment from the Unicode extra fields when the
+    /// entry does not declare UTF-8.
     fn resolve(data: &'a [u8], record: Central<'a>, cd_start: i64) -> Result<ZipEntry> {
-        let mut entry = record.entry;
-        let mut local = Cursor::at(data, record.local_header_offset + 26);
+        let Central {
+            mut entry,
+            mut fields,
+            raw_comment,
+            local_header_offset,
+        } = record;
+        let mut local = Cursor::at(data, local_header_offset + 26);
         let lengths = local.read(4)?;
         let (name_length, extra_length) = (u16_at(lengths, 0), u16_at(lengths, 2));
         entry.data_offset =
-            record.local_header_offset + 30 + i64::from(name_length) + i64::from(extra_length);
+            local_header_offset + 30 + i64::from(name_length) + i64::from(extra_length);
         if entry.data_offset + entry.compressed_size > cd_start {
             return Err(Corrupt);
         }
         local.skip(i64::from(name_length))?;
         let local_extra = local.read(usize::from(extra_length))?;
-        if record.utf8 {
+        fields.merge_local(local_extra, &mut entry.times)?;
+        if entry.name_source == NameSource::NameWithEfsFlag {
             return Ok(entry);
         }
-        let local_path = extra_fields(local_extra)
-            .into_iter()
-            .find(|(id, _)| *id == UNICODE_PATH_ID)
-            .map(|(_, field)| unicode_path(field));
-        let path = match (record.path, local_path) {
-            (CentralPath::Invalid, _) | (CentralPath::Absent, None) => None,
-            (_, Some(local)) => local,
-            (CentralPath::Valid(crc, name), None) => Some((crc, name)),
-        };
-        if let Some((crc, unicode)) = path {
-            if crc32(record.raw_name) == crc {
-                entry.name = decode_name(unicode);
+        if let Some(name) = unicode_text(&fields, extra::UNICODE_PATH, &entry.raw_name) {
+            entry.name = entry_name(name, entry.version_made_by);
+            entry.name_source = NameSource::UnicodeExtraField;
+        }
+        if !raw_comment.is_empty() {
+            if let Some(comment) = unicode_text(&fields, extra::UNICODE_COMMENT, raw_comment) {
+                entry.comment = comment;
             }
         }
         Ok(entry)
@@ -344,9 +359,10 @@ impl<'a> ZipFile<'a> {
         self.entries.iter().find(|entry| entry.name == name)
     }
 
-    /// `getInputStream(entry)` read to its end; `None` where it throws at once.
+    /// `getInputStream(entry)` read to its end, `None` for an entry encrypted or compressed a
+    /// way the port does not decompress.
     pub(crate) fn read(&self, entry: &ZipEntry) -> Option<Content> {
-        if entry.flags & 0x0001 != 0 {
+        if entry.uses_encryption() {
             return None;
         }
         let start = usize::try_from(entry.data_offset).ok()?;
@@ -365,33 +381,27 @@ impl<'a> ZipFile<'a> {
     }
 }
 
-/// Raw deflate data inflated as `InflaterInputStream` inflates it: to the end of the deflate
-/// stream, or as far as it goes before the input runs out or turns out corrupt.
-pub(crate) fn inflate(raw: &[u8]) -> Content {
-    let mut inflater = Decompress::new(false);
-    let mut out = Vec::new();
-    loop {
-        let (before_in, before_out) = (inflater.total_in(), out.len());
-        out.reserve(64 * 1024);
-        let consumed = usize::try_from(before_in).expect("the input fits in memory");
-        let input: &[u8] = match consumed.cmp(&raw.len()) {
-            std::cmp::Ordering::Less => &raw[consumed..],
-            std::cmp::Ordering::Equal => &[0],
-            std::cmp::Ordering::Greater => return Content::Truncated(out),
-        };
-        match inflater.decompress_vec(input, &mut out, FlushDecompress::None) {
-            Ok(Status::StreamEnd) => return Content::Complete(out),
-            Err(_) => return Content::Truncated(out),
-            Ok(_) if inflater.total_in() == before_in && out.len() == before_out => {
-                return Content::Truncated(out)
-            }
-            Ok(_) => {}
-        }
+/// `ZipArchiveEntry.setName`: a name without a slash, of an entry made on FAT, with its
+/// backslashes turned into slashes.
+pub(super) fn entry_name(name: String, version_made_by: u16) -> String {
+    if version_made_by >> 8 & 0x0F == PLATFORM_FAT && !name.contains('/') {
+        name.replace('\\', "/")
+    } else {
+        name
+    }
+}
+
+/// `getUnicodeStringIfOriginalMatches`: the text of a Unicode extra field of `id` whose CRC is
+/// that of the original bytes.
+pub(super) fn unicode_text(fields: &ExtraFields, id: u16, original: &[u8]) -> Option<String> {
+    match fields.get(id)? {
+        Field::Unicode { crc, text, .. } if *crc == crc32(original) => Some(decode_name(text)),
+        _ => None,
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::Write;
 
     use super::*;
@@ -418,6 +428,9 @@ mod tests {
         assert_eq!(names, ["mimetype", "a/b.xml"]);
         let entry = file.entry("a/b.xml").unwrap();
         assert_eq!(file.read(entry), Some(Content::Complete(b"<a/>".to_vec())));
+        assert_eq!(entry.size, 4);
+        assert_eq!(entry.method, DEFLATED);
+        assert!(entry.can_read());
     }
 
     #[test]
@@ -429,12 +442,6 @@ mod tests {
         let cd = lying.len() - 22 - 47;
         lying[cd + 42..cd + 46].copy_from_slice(&1000u32.to_le_bytes());
         assert!(ZipFile::open(&lying).is_err());
-    }
-
-    #[test]
-    fn decodes_names_as_commons_compress_does() {
-        assert_eq!(decode_name(b"caf\xC3\xA9"), "caf\u{E9}");
-        assert_eq!(decode_name(b"caf\xE9"), "caf?");
     }
 
     #[test]

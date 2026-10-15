@@ -548,6 +548,29 @@ mod tests {
     }
 
     #[test]
+    fn closes_the_embedded_document_the_write_limit_stops_in() {
+        let scratch = Scratch::new("epub-limit");
+        let opf = package(
+            "2.0",
+            "<dc:title>Lang</dc:title>",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="notes" href="notes.txt" media-type="text/plain"/>"#,
+            r#"<itemref idref="a"/>"#,
+        );
+        let notes = "Noter til fyret, som lyser hver nat. ".repeat(10);
+        let document = scratch.write(
+            "long-notes.epub",
+            &book(&[
+                MIMETYPE_ENTRY,
+                CONTAINER_ENTRY,
+                ("OEBPS/content.opf", &opf),
+                ("OEBPS/a.xhtml", &chapter("<p>Kort</p>")),
+                ("OEBPS/notes.txt", &notes),
+            ]),
+        );
+        assert_same_as_tika(&[document.as_path()], TIKA_NAME);
+    }
+
+    #[test]
     fn fails_where_tikas_path_fails() {
         let scratch = Scratch::new("epub-failures");
         let manifest = r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/>"#;
