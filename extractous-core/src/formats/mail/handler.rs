@@ -1,0 +1,483 @@
+//! Tika's `MailContentHandler`, which turns the parts mime4j reports into the message's metadata
+//! and body: the headers of the message itself into metadata, text and HTML parts at the top
+//! level and the best alternative of a `multipart/alternative` parsed inline, each part of a
+//! multipart in a `div` of class `email-entry`, and every other part handed to the embedded
+//! document extractor.
+
+use super::address::{flatten, parse_address_list};
+use super::codec::decode_encoded_words;
+use super::date::parse_date_lenient;
+use super::stream::{events, BodyDescriptor, Event, MimeError};
+use super::Unported;
+use crate::formats::java_time::format_instant;
+use crate::formats::metadata::TikaMetadata;
+use crate::mime::MediaType;
+
+const MULTIPART_ALTERNATIVE: &str = "multipart/alternative";
+const RAW_HEADER_PREFIX: &str = "message:raw-header:";
+/// The longest name `Metadata.add(KeyPrefix, name, value)` accepts.
+const MAX_PREFIXED_NAME_LENGTH: usize = 1024;
+pub(super) const EMBEDDED_RESOURCE_TYPE: &str = "tk:embedded-resource-type";
+const ATTACHMENT: &str = "ATTACHMENT";
+const INLINE: &str = "INLINE";
+
+/// What the body of a message holds, in order.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Item {
+    /// `<div class="email-entry"><p>`, which starts a part of a multipart.
+    StartEntry,
+    /// `</p></div>`.
+    EndEntry,
+    /// A part parsed inline, as part of the message's own text.
+    Inline(Inline),
+    /// A part handed to the embedded document extractor, with the metadata it is given.
+    Embedded(Vec<u8>, TikaMetadata),
+}
+
+/// A text or HTML part, which Tika parses with its text or HTML parser into the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Inline {
+    Text(Vec<u8>),
+    Html(Vec<u8>),
+}
+
+/// Why the message cannot be read: mime4j's failure, which Tika reports, or something the port
+/// leaves to Tika.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Problem {
+    Malformed(String),
+    Unported(Unported),
+}
+
+impl From<Unported> for Problem {
+    fn from(unported: Unported) -> Self {
+        Problem::Unported(unported)
+    }
+}
+
+impl From<MimeError> for Problem {
+    fn from(error: MimeError) -> Self {
+        Problem::Malformed(error.0)
+    }
+}
+
+/// A part of a `multipart/alternative`, kept until the alternative ends.
+#[derive(Debug, Clone)]
+enum Part {
+    Multipart {
+        mime_type: String,
+        children: Vec<usize>,
+    },
+    Body(TikaMetadata, Vec<u8>),
+}
+
+/// Reads a message: its header fields into `metadata` as Tika sets them, and its body.
+pub(super) fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<Vec<Item>, Problem> {
+    let mut handler = Handler {
+        metadata,
+        items: Vec::new(),
+        parts: Vec::new(),
+        arena: Vec::new(),
+        alternatives: Vec::new(),
+    };
+    for event in events(input)? {
+        match event {
+            Event::Field(field) => {
+                if handler.parts.is_empty() {
+                    handler.field(field.name(), &field.body())?;
+                }
+            }
+            Event::StartMultipart(body) => handler.start_multipart(body),
+            Event::EndMultipart => handler.end_multipart(),
+            Event::StartBodyPart => {
+                if handler.alternatives.is_empty() {
+                    handler.items.push(Item::StartEntry);
+                }
+            }
+            Event::EndBodyPart => {
+                if handler.alternatives.is_empty() {
+                    handler.items.push(Item::EndEntry);
+                }
+            }
+            Event::Body(body, content) => handler.body(&body, content)?,
+        }
+    }
+    Ok(handler.items)
+}
+
+struct Handler<'a> {
+    metadata: &'a mut TikaMetadata,
+    items: Vec<Item>,
+    /// The descriptors of the multiparts the stream is in.
+    parts: Vec<BodyDescriptor>,
+    arena: Vec<Part>,
+    /// The parts of the `multipart/alternative` being read, innermost last.
+    alternatives: Vec<usize>,
+}
+
+impl Handler<'_> {
+    /// `field`: a header of the message itself.
+    fn field(&mut self, name: &str, body: &str) -> Result<(), Unported> {
+        let lower = name.to_ascii_lowercase();
+        match lower.as_str() {
+            "from" => {
+                for address in flatten(parse_address_list(body)?) {
+                    let from = address.display()?;
+                    set_person_and_email(&from, self.metadata);
+                    self.metadata.add("message:from", from.clone());
+                    self.metadata.add("dc:creator", from);
+                }
+            }
+            "subject" => {
+                let subject = decode_encoded_words(body)?;
+                self.metadata.set("dc:title", subject.clone());
+                self.metadata.set("dc:subject", subject.clone());
+                self.metadata
+                    .set("tk:resource-name", format!("{subject}.eml"));
+            }
+            "to" | "cc" | "bcc" => {
+                let property = format!("message:{lower}");
+                for address in parse_address_list(body)? {
+                    self.metadata.add(&property, address.display()?);
+                }
+            }
+            "content-type" => {
+                let Some(content_type) = MediaType::parse(body) else {
+                    return Ok(());
+                };
+                if content_type.kind() == "multipart" {
+                    self.metadata
+                        .set("multipart:subtype", content_type.subtype().to_owned());
+                    match content_type.parameter("boundary") {
+                        Some(boundary) => {
+                            self.metadata.set("multipart:boundary", boundary.to_owned())
+                        }
+                        None => self.metadata.remove("multipart:boundary"),
+                    }
+                } else {
+                    self.add_raw_header(name, body);
+                }
+            }
+            "date" => match parse_date_lenient(body)? {
+                Some(millis) => self.metadata.set("dcterms:created", format_instant(millis)),
+                None => self.metadata.remove("dcterms:created"),
+            },
+            _ => self.add_raw_header(name, body),
+        }
+        Ok(())
+    }
+
+    fn add_raw_header(&mut self, name: &str, body: &str) {
+        if name.encode_utf16().count() > MAX_PREFIXED_NAME_LENGTH {
+            return;
+        }
+        self.metadata
+            .add(&format!("{RAW_HEADER_PREFIX}{name}"), body.to_owned());
+    }
+
+    fn start_multipart(&mut self, body: BodyDescriptor) {
+        let alternative = body.mime_type.eq_ignore_ascii_case(MULTIPART_ALTERNATIVE);
+        let node = || Part::Multipart {
+            mime_type: body.mime_type.clone(),
+            children: Vec::new(),
+        };
+        if self.alternatives.is_empty() && alternative {
+            self.arena.push(node());
+            self.alternatives.push(self.arena.len() - 1);
+        } else if let Some(&parent) = self.alternatives.last() {
+            self.arena.push(node());
+            let index = self.arena.len() - 1;
+            self.alternatives.push(index);
+            if let Part::Multipart { children, .. } = &mut self.arena[parent] {
+                children.push(index);
+            }
+        }
+        self.parts.push(body);
+    }
+
+    fn end_multipart(&mut self) {
+        match self.alternatives.len() {
+            1 => {
+                let root = self.alternatives.pop().expect("one alternative is open");
+                self.handle_best_parts(Some(root));
+            }
+            0 => {}
+            _ => {
+                self.alternatives.pop();
+            }
+        }
+        self.parts.pop();
+    }
+
+    /// `body`: a leaf part, kept while an alternative is open, parsed inline at the top level
+    /// when it is text, and handed on otherwise.
+    fn body(&mut self, body: &BodyDescriptor, content: Vec<u8>) -> Result<(), Unported> {
+        let metadata = self.part_metadata(body)?;
+        if let Some(&open) = self.alternatives.last() {
+            self.arena.push(Part::Body(metadata, content));
+            let index = self.arena.len() - 1;
+            if let Part::Multipart { children, .. } = &mut self.arena[open] {
+                children.push(index);
+            }
+        } else if self.parts.len() < 2 && is_inline_text(&metadata) {
+            self.handle_inline(metadata, content);
+        } else {
+            self.handle_embedded(metadata, content);
+        }
+        Ok(())
+    }
+
+    /// The metadata `body` gives a part: its type, charset, the multipart it is in, and what
+    /// its `Content-Disposition` says.
+    fn part_metadata(&self, body: &BodyDescriptor) -> Result<TikaMetadata, Unported> {
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", body.mime_type.clone());
+        if let Some(charset) = &body.charset {
+            metadata.set("Content-Encoding", charset.clone());
+        }
+        if let Some(parent) = self.parts.last() {
+            metadata.set("multipart:subtype", parent.subtype.clone());
+            match &parent.boundary {
+                Some(boundary) => metadata.set("multipart:boundary", boundary.clone()),
+                None => metadata.remove("multipart:boundary"),
+            }
+        }
+        let Some(disposition) = body.disposition()? else {
+            return Ok(metadata);
+        };
+        if disposition.kind.is_empty() {
+            return Ok(metadata);
+        }
+        let mut description = disposition.kind.clone();
+        if disposition.kind.eq_ignore_ascii_case("attachment") {
+            metadata.set(EMBEDDED_RESOURCE_TYPE, ATTACHMENT);
+        } else if disposition.kind.eq_ignore_ascii_case("inline") {
+            metadata.set(EMBEDDED_RESOURCE_TYPE, INLINE);
+        }
+        for (name, value) in disposition.parameters.iter() {
+            description.push_str(&format!("; {name}=\"{value}\""));
+            let property = if name.eq_ignore_ascii_case("creation-date") {
+                Some("dcterms:created")
+            } else if name.eq_ignore_ascii_case("modification-date") {
+                Some("dcterms:modified")
+            } else {
+                None
+            };
+            if let Some(property) = property {
+                if let Some(millis) = parse_date_lenient(value)? {
+                    metadata.set(property, format_instant(millis));
+                }
+            }
+        }
+        if let Some(name) = body
+            .content_type_parameter("name")
+            .filter(|name| !is_blank(name))
+        {
+            metadata.set("tk:resource-name", name.to_owned());
+        }
+        if let Some(filename) = disposition.filename().filter(|name| !is_blank(name)) {
+            metadata.set("tk:resource-name", filename.to_owned());
+        }
+        metadata.set("Content-Disposition", description);
+        Ok(metadata)
+    }
+
+    fn handle_best_parts(&mut self, part: Option<usize>) {
+        let Some(part) = part else {
+            return;
+        };
+        match self.arena[part].clone() {
+            Part::Body(metadata, content) => self.handle_inline(metadata, content),
+            Part::Multipart {
+                mime_type,
+                children,
+            } => {
+                if mime_type.eq_ignore_ascii_case(MULTIPART_ALTERNATIVE) {
+                    let mut best = None;
+                    let mut best_score = -1;
+                    for child in children {
+                        let score = self.score(child);
+                        if score > best_score {
+                            best = Some(child);
+                            best_score = score;
+                        }
+                    }
+                    self.handle_best_parts(best);
+                } else {
+                    for child in children {
+                        self.handle_best_parts(Some(child));
+                    }
+                }
+            }
+        }
+    }
+
+    /// `score`: how good an alternative is, text the worst and HTML the best of the bodies, and
+    /// any other body or a multipart better still.
+    fn score(&self, part: usize) -> i32 {
+        match &self.arena[part] {
+            Part::Body(metadata, _) => match metadata.get("Content-Type") {
+                None => 0,
+                Some(kind) if kind.eq_ignore_ascii_case("text/plain") => 1,
+                Some(kind) if kind.eq_ignore_ascii_case("application/rtf") => 2,
+                Some(kind) if kind.eq_ignore_ascii_case("text/html") => 3,
+                Some(_) => 4,
+            },
+            Part::Multipart { .. } => 4,
+        }
+    }
+
+    /// `handleInlineBodyPart`: HTML and plain text parsed inline, anything else handed on.
+    fn handle_inline(&mut self, metadata: TikaMetadata, content: Vec<u8>) {
+        let kind = metadata.get("Content-Type").unwrap_or_default();
+        if kind.eq_ignore_ascii_case("text/html") {
+            self.items.push(Item::Inline(Inline::Html(content)));
+        } else if kind.eq_ignore_ascii_case("text/plain") {
+            self.items.push(Item::Inline(Inline::Text(content)));
+        } else {
+            self.handle_embedded(metadata, content);
+        }
+    }
+
+    /// `handleEmbedded`: a part handed to the embedded document extractor, an attachment unless
+    /// its disposition says otherwise.
+    fn handle_embedded(&mut self, mut metadata: TikaMetadata, content: Vec<u8>) {
+        if metadata.get(EMBEDDED_RESOURCE_TYPE).is_none() {
+            metadata.set(EMBEDDED_RESOURCE_TYPE, ATTACHMENT);
+        }
+        self.items.push(Item::Embedded(content, metadata));
+    }
+}
+
+/// `detectInlineTextOrHtml` for a part whose type is known: text that is not an attachment.
+fn is_inline_text(metadata: &TikaMetadata) -> bool {
+    metadata.get(EMBEDDED_RESOURCE_TYPE) != Some(ATTACHMENT)
+        && metadata
+            .get("Content-Type")
+            .is_some_and(|kind| kind.starts_with("text"))
+}
+
+/// Tika's `StringUtils.isBlank`: empty or only white space.
+fn is_blank(text: &str) -> bool {
+    text.chars().all(char::is_whitespace)
+}
+
+/// `MailUtil.setPersonAndEmail` for the sender: the person and the email address of `text`,
+/// each set when not empty.
+fn set_person_and_email(text: &str, metadata: &mut TikaMetadata) {
+    let (person, email) = person_and_email(text);
+    if let Some(person) = person {
+        metadata.set("message:from-name", person);
+    }
+    if let Some(email) = email {
+        metadata.set("message:from-email", email);
+    }
+}
+
+/// What `MailUtil` makes of a sender: the last address `[^<@\s]+@[^@> ]+` in the text is the
+/// email, and what is left of the text, without angle brackets and quotes, the person; either
+/// `None` when empty.
+pub(super) fn person_and_email(text: &str) -> (Option<String>, Option<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let is_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\u{B}' | '\u{C}' | '\r');
+    let mut rest = String::new();
+    let mut email = String::new();
+    let mut copied = 0;
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at] != '@' {
+            at += 1;
+            continue;
+        }
+        let mut start = at;
+        while start > copied
+            && !matches!(chars[start - 1], '<' | '@')
+            && !is_space(chars[start - 1])
+        {
+            start -= 1;
+        }
+        let mut end = at + 1;
+        while end < chars.len() && !matches!(chars[end], '@' | '>' | ' ') {
+            end += 1;
+        }
+        if start == at || end == at + 1 {
+            at += 1;
+            continue;
+        }
+        rest.extend(&chars[copied..start]);
+        email = chars[start..end].iter().collect();
+        copied = end;
+        at = end;
+    }
+    rest.extend(&chars[copied..]);
+    let person: String = rest
+        .chars()
+        .map(|c| if matches!(c, '<' | '>' | '"') { ' ' } else { c })
+        .collect();
+    let person = person.trim_matches(|c: char| c <= ' ');
+    (
+        (!person.is_empty()).then(|| person.to_owned()),
+        (!email.is_empty()).then_some(email),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_a_sender_as_mail_util_does() {
+        let split = |text: &str| {
+            let mut metadata = TikaMetadata::new();
+            set_person_and_email(text, &mut metadata);
+            (
+                metadata.get("message:from-name").map(str::to_owned),
+                metadata.get("message:from-email").map(str::to_owned),
+            )
+        };
+        assert_eq!(
+            split("Ada Lovelace <ada@example.org>"),
+            (Some("Ada Lovelace".into()), Some("ada@example.org".into()))
+        );
+        assert_eq!(
+            split("ada@example.org"),
+            (None, Some("ada@example.org".into()))
+        );
+        assert_eq!(split("\"Name\""), (Some("Name".into()), None));
+        assert_eq!(split("a@b c@d"), (None, Some("c@d".into())));
+    }
+
+    #[test]
+    fn reads_headers_and_parts_as_mail_content_handler_does() {
+        let message = b"From: Ada <ada@example.org>\r\nSubject: =?utf-8?q?Caf=C3=A9?=\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\nX-Mailer: test\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b\r\nContent-Type: application/pdf; name=a.pdf\r\nContent-Disposition: attachment; filename=\"b.pdf\"\r\n\r\n%PDF\r\n--b--\r\n";
+        let mut metadata = TikaMetadata::new();
+        let items = read(message, &mut metadata).unwrap();
+        assert_eq!(metadata.get("dc:title"), Some("Café"));
+        assert_eq!(metadata.get("tk:resource-name"), Some("Café.eml"));
+        assert_eq!(
+            metadata.get("dcterms:created"),
+            Some("2024-03-05T13:30:00Z")
+        );
+        assert_eq!(metadata.get("message:raw-header:X-Mailer"), Some("test"));
+        assert_eq!(metadata.get("multipart:subtype"), Some("mixed"));
+        assert_eq!(items.len(), 6);
+        assert_eq!(items[1], Item::Inline(Inline::Text(b"hello".to_vec())));
+        let Item::Embedded(content, embedded) = &items[4] else {
+            panic!("the attachment is embedded: {items:?}");
+        };
+        assert_eq!(content, b"%PDF");
+        assert_eq!(embedded.get("tk:resource-name"), Some("b.pdf"));
+        assert_eq!(
+            embedded.get("Content-Disposition"),
+            Some("attachment; filename=\"b.pdf\"")
+        );
+        assert_eq!(embedded.get(EMBEDDED_RESOURCE_TYPE), Some(ATTACHMENT));
+    }
+
+    #[test]
+    fn keeps_the_best_alternative() {
+        let message = b"Content-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n--b--\r\n";
+        let items = read(message, &mut TikaMetadata::new()).unwrap();
+        assert_eq!(items, [Item::Inline(Inline::Html(b"<p>html</p>".to_vec()))]);
+    }
+}

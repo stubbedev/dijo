@@ -194,6 +194,17 @@ impl Charset {
         })
     }
 
+    /// The text `new String(bytes, charset)` gives, as [`Charset::decode`], or `None` also where
+    /// the port's decoding may differ from the JDK's: malformed input of a charset decoded with
+    /// `encoding_rs`, which replaces it differently.
+    pub(crate) fn decode_exactly(self, bytes: &[u8]) -> Option<String> {
+        if let Decoding::Whatwg(encoding) = self.decoding() {
+            let (text, malformed) = encoding.decode_without_bom_handling(bytes);
+            return (!malformed).then(|| text.into_owned());
+        }
+        self.decode(bytes)
+    }
+
     /// Whether the JDK's strict decoder, given `window` as the whole input and room for one
     /// UTF-16 unit, reports an error, and otherwise how many bytes it consumed: none for a
     /// character that needs two units. `None` for a charset other than the East Asian multi-byte

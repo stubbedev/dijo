@@ -106,12 +106,8 @@ impl Parser for TextAndCsvParser {
         _configs: &ParserConfigs,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        let content_type = xhtml
-            .metadata_mut()
-            .get("Content-Type")
-            .ok_or_else(|| Failure::Malformed("the document has no Content-Type".into()))?
-            .to_owned();
-        read(input, &content_type)?.write(xhtml)
+        let content_type = xhtml.metadata_mut().get("Content-Type").map(str::to_owned);
+        read(input, content_type.as_deref())?.write(xhtml)
     }
 }
 
@@ -189,33 +185,41 @@ fn text_type(subtype: &str) -> MediaType {
     MediaType::named(&format!("text/{subtype}"))
 }
 
-/// What TextAndCSVParser makes of `input` when the metadata's `Content-Type` is `content_type`.
-fn read(input: &[u8], content_type: &str) -> Result<Document, Failure> {
-    let given = MediaType::parse(content_type).ok_or_else(|| {
-        Failure::Malformed(format!(
-            "Tika's MediaType does not parse the content type {content_type:?}"
-        ))
-    })?;
+/// What TextAndCSVParser makes of `input` when the metadata's `Content-Type` is `content_type`:
+/// without one, as for a part of an email Tika parses inline, it sniffs the text for a table.
+fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
+    let given = content_type
+        .map(|content_type| {
+            MediaType::parse(content_type).ok_or_else(|| {
+                Failure::Malformed(format!(
+                    "Tika's MediaType does not parse the content type {content_type:?}"
+                ))
+            })
+        })
+        .transpose()?;
     let AutoDetectReader { detection, text } = AutoDetectReader::read(input, content_type)?;
     let text = text.as_str();
     let charset = detection.decode_as;
-    let sniffed =
-        [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base_type());
-    let (content_type, body) = match sniffed.then(|| sniffer::sniff(text)) {
-        None => (given, Body::Paragraph(chunks(text))),
-        Some(None) => (text_type("plain"), Body::Paragraph(chunks(text))),
-        Some(Some(delimiter)) => {
-            let table = text_type(if delimiter == Delimiter::Tab {
-                "tsv"
-            } else {
-                "csv"
-            });
-            let body = Body::Table {
-                delimiter,
-                records: csv::records(text, delimiter.char()),
-            };
-            (table.with_parameter("delimiter", delimiter.name()), body)
-        }
+    let sniffable = |given: &MediaType| {
+        [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base_type())
+    };
+    let (content_type, body) = match given {
+        Some(given) if !sniffable(&given) => (given, Body::Paragraph(chunks(text))),
+        _ => match sniffer::sniff(text) {
+            None => (text_type("plain"), Body::Paragraph(chunks(text))),
+            Some(delimiter) => {
+                let table = text_type(if delimiter == Delimiter::Tab {
+                    "tsv"
+                } else {
+                    "csv"
+                });
+                let body = Body::Table {
+                    delimiter,
+                    records: csv::records(text, delimiter.char()),
+                };
+                (table.with_parameter("delimiter", delimiter.name()), body)
+            }
+        },
     };
     Ok(Document {
         content_type: content_type.with_parameter("charset", charset.name()),

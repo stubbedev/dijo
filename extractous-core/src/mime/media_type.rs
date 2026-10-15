@@ -200,6 +200,14 @@ impl MediaType {
         &self.string[self.slash + 1..self.semicolon]
     }
 
+    /// The value of a parameter by its lower-case name, as `getParameters().get(name)`.
+    pub(crate) fn parameter(&self, name: &str) -> Option<&str> {
+        self.parameters
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
     pub(crate) fn has_parameters(&self) -> bool {
         self.semicolon < self.string.len()
     }

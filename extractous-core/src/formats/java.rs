@@ -15,7 +15,10 @@ const MIN_TREEIFY_CAPACITY: usize = 64;
 pub(crate) struct JavaHashMap<V> {
     entries: Vec<Entry<V>>,
     index: HashMap<String, usize>,
+    /// The table size, 0 until the first entry allocates the table.
     capacity: usize,
+    /// The table size the first entry allocates.
+    initial_capacity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,11 +34,49 @@ impl<V> Default for JavaHashMap<V> {
             entries: Vec::new(),
             index: HashMap::new(),
             capacity: 0,
+            initial_capacity: INITIAL_CAPACITY,
         }
     }
 }
 
 impl<V> JavaHashMap<V> {
+    /// An empty map whose table `putAll` of a map of `size` entries sizes, as
+    /// `HashMap.putMapEntries` does for a map without a table yet.
+    pub(crate) fn sized_for_put_all(size: usize) -> Self {
+        let mut map = Self::default();
+        if size > 0 {
+            map.initial_capacity = (size * 4).div_ceil(3).next_power_of_two();
+        }
+        map
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn contains_key(&self, key: &str) -> bool {
+        self.index.contains_key(key)
+    }
+
+    /// `putIfAbsent`.
+    pub(crate) fn insert_if_absent(&mut self, key: &str, value: V) {
+        if !self.contains_key(key) {
+            self.insert_new(key, value);
+        }
+    }
+
+    /// A copy of the map as `new HashMap<>()` followed by `putAll(this)` builds it.
+    pub(crate) fn copied(&self) -> Self
+    where
+        V: Clone,
+    {
+        let mut copy = Self::sized_for_put_all(self.len());
+        for (key, value) in self.iter() {
+            copy.insert(key, value.clone());
+        }
+        copy
+    }
+
     pub(crate) fn get(&self, key: &str) -> Option<&V> {
         self.index.get(key).map(|&index| &self.entries[index].value)
     }
@@ -93,7 +134,7 @@ impl<V> JavaHashMap<V> {
 
     fn insert_new(&mut self, key: &str, value: V) {
         if self.capacity == 0 {
-            self.capacity = INITIAL_CAPACITY;
+            self.capacity = self.initial_capacity;
         }
         let hash = spread(string_hash(key));
         let bucket = hash as usize & (self.capacity - 1);
@@ -111,7 +152,7 @@ impl<V> JavaHashMap<V> {
         if in_bucket > TREEIFY_THRESHOLD && self.capacity < MIN_TREEIFY_CAPACITY {
             self.capacity *= 2;
         }
-        if self.entries.len() > self.capacity / 4 * 3 {
+        if self.entries.len() > self.capacity * 3 / 4 {
             self.capacity *= 2;
         }
     }
@@ -268,6 +309,14 @@ mod tests {
         assert_eq!(string_hash(""), 0);
         assert_eq!(string_hash("Content-Type") as i32, 949_037_134);
         assert_eq!(string_hash("é😀") as i32, 1_996_812);
+    }
+
+    #[test]
+    fn sizes_a_put_all_table_as_java_does() {
+        let capacities: Vec<usize> = (1..=13)
+            .map(|size| JavaHashMap::<()>::sized_for_put_all(size).initial_capacity)
+            .collect();
+        assert_eq!(capacities, [2, 4, 4, 8, 8, 8, 16, 16, 16, 16, 16, 16, 32]);
     }
 
     #[test]

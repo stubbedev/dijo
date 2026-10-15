@@ -3,6 +3,12 @@
 //! cut by a small length limit. The only difference allowed is the parser's name in
 //! `tk:parsed-by`, which the native output is compared under Tika's. Documents Tika's path fails
 //! on are compared on their outcome alone: the native parser must fail too.
+//!
+//! Two things of a document's embedded documents, which Tika parses either way, are compared as
+//! they can be: the parsers that read them, each once as Tika's record keeps it, once the native
+//! parser goes by Tika's name; and the stack traces of their failures without the Java frames
+//! below the embedded document's parse, the embedding parser's in Tika's path and the native
+//! bridge's in the other, which no native parser runs.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -153,6 +159,64 @@ fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: Char
     }
 }
 
+const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
+const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
+/// The first frame below an embedded document's parse in Tika's path, where the embedding
+/// parser hands it to the embedded document extractor.
+const TIKA_EMBEDDING_FRAME: &str = "\tat org.apache.tika.parser.DelegatingParser.parse(";
+/// The first frame below an embedded document's parse in the native path.
+const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded(";
+
+/// An extraction as the two paths are compared on it: each parser of the full set once, and
+/// the failures of embedded documents without the frames that embedded them.
+fn comparable(mut extracted: Extracted) -> Extracted {
+    for (name, values) in &mut extracted.metadata {
+        if name == PARSED_BY_FULL_SET {
+            let mut once: Vec<String> = Vec::with_capacity(values.len());
+            for value in values.drain(..) {
+                if !once.contains(&value) {
+                    once.push(value);
+                }
+            }
+            *values = once;
+        } else if name == EMBEDDED_EXCEPTION {
+            for value in values.iter_mut() {
+                *value = without_embedding_frames(value);
+            }
+        }
+    }
+    extracted
+}
+
+/// A Java stack trace without, in each of its exceptions, the frames from the last one that
+/// embedded the document on, and without the counts of frames a cause shares with its effect.
+fn without_embedding_frames(trace: &str) -> String {
+    let lines: Vec<&str> = trace.split_inclusive('\n').collect();
+    let mut kept = String::with_capacity(trace.len());
+    let mut block_start = 0;
+    while block_start < lines.len() {
+        let mut block_end = block_start + 1;
+        while block_end < lines.len() && lines[block_end].starts_with('\t') {
+            block_end += 1;
+        }
+        let block = &lines[block_start..block_end];
+        let cut = block
+            .iter()
+            .rposition(|line| {
+                line.starts_with(TIKA_EMBEDDING_FRAME) || line.starts_with(NATIVE_EMBEDDING_FRAME)
+            })
+            .unwrap_or(block.len());
+        for line in &block[..cut] {
+            let shared = line.starts_with("\t... ") && line.trim_end().ends_with(" more");
+            if !shared {
+                kept.push_str(line);
+            }
+        }
+        block_start = block_end;
+    }
+    kept
+}
+
 fn replace_bytes(haystack: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let mut replaced = Vec::with_capacity(haystack.len());
     let mut rest = haystack;
@@ -229,7 +293,8 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
                     (Expected::Same(tika_name), Ok(tika), Ok(native)) => {
-                        *tika == as_tika(native.clone(), native_name, tika_name, char_set)
+                        comparable(tika.clone())
+                            == comparable(as_tika(native.clone(), native_name, tika_name, char_set))
                     }
                     (Expected::Failure, Err(_), Err(_)) => true,
                     _ => false,
@@ -315,6 +380,11 @@ impl Scratch {
         Self(directory)
     }
 
+    /// The directory the documents are written in.
+    pub(crate) fn directory(&self) -> &Path {
+        &self.0
+    }
+
     /// Writes `bytes` as the document `name`, returning its path.
     pub(crate) fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
         let path = self.0.join(name);
@@ -328,5 +398,23 @@ impl Drop for Scratch {
         if !std::thread::panicking() {
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compares_embedded_failures_without_the_embedding_frames() {
+        let tika = "E: no\n\tat P.parse(P.java:1)\n\tat org.apache.tika.parser.AutoDetectParser.parse(A.java:2)\n\tat org.apache.tika.parser.DelegatingParser.parse(D.java:71)\n\tat M.handle(M.java:3)\nCaused by: C: why\n\tat Q.q(Q.java:4)\n\t... 6 more\n";
+        let native = "E: no\n\tat P.parse(P.java:1)\n\tat org.apache.tika.parser.AutoDetectParser.parse(A.java:2)\n\tat ai.yobix.TikaNativeMain.parseEmbedded(T.java:431)\n\tat W.run(W.java:79)\nCaused by: C: why\n\tat Q.q(Q.java:4)\n\t... 3 more\n";
+        assert_eq!(
+            without_embedding_frames(tika),
+            without_embedding_frames(native)
+        );
+        assert_eq!(
+            without_embedding_frames(native),
+            "E: no\n\tat P.parse(P.java:1)\n\tat org.apache.tika.parser.AutoDetectParser.parse(A.java:2)\nCaused by: C: why\n\tat Q.q(Q.java:4)\n"
+        );
     }
 }

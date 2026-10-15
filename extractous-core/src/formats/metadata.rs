@@ -50,6 +50,11 @@ impl TikaMetadata {
         }
     }
 
+    /// Removes `name`, as Tika's `Metadata.set` with a null value does.
+    pub(crate) fn remove(&mut self, name: &str) {
+        self.entries.remove(name);
+    }
+
     /// Appends `value` to the values of `name`, as Tika's `Metadata.add`.
     pub(crate) fn add(&mut self, name: &str, value: impl Into<String>) {
         let value = value.into();
