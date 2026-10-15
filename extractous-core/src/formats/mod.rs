@@ -660,7 +660,7 @@ impl NativeStream {
     pub(crate) fn metadata(&self) -> ExtractResult<Metadata> {
         match &self.outcome {
             Some(Ok(metadata)) => Ok(metadata.clone()),
-            Some(Err(error)) => Err(Error::ParseError(error.to_string())),
+            Some(Err(error)) => Err(reported(error)),
             None => Err(Error::StreamNotFinished),
         }
     }
@@ -695,13 +695,25 @@ impl NativeStream {
     }
 }
 
+/// The error a streamed parse ended with, once more for each time it is asked for: of the same
+/// kind where the kind decides how it is handled, and a parse error otherwise.
+fn reported(error: &Error) -> Error {
+    match error {
+        Error::IoError(message) => Error::IoError(message.clone()),
+        Error::Encrypted(message) => Error::Encrypted(message.clone()),
+        Error::LimitExceeded(message) => Error::LimitExceeded(message.clone()),
+        Error::Timeout => Error::Timeout,
+        other => Error::ParseError(other.to_string()),
+    }
+}
+
 impl Read for NativeStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         while self.position == self.chunk.len() {
             if let Some(outcome) = &self.outcome {
                 return match outcome {
                     Ok(_) => Ok(0),
-                    Err(error) => Err(io::Error::other(Error::ParseError(error.to_string()))),
+                    Err(error) => Err(io::Error::other(reported(error))),
                 };
             }
             let message = self.next_message().map_err(io::Error::other)?;

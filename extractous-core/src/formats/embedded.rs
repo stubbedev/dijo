@@ -8,6 +8,7 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
+use crate::java::LINE_SEPARATOR;
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -125,7 +126,10 @@ pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
 /// `class: message`: the first line of the stack trace Tika records, without the frames of the
 /// Java parser, which the native one replaces.
 pub(crate) fn record_stream_exception(metadata: &mut TikaMetadata, exception: &str) {
-    metadata.add(EMBEDDED_STREAM_EXCEPTION, format!("{exception}\n"));
+    metadata.add(
+        EMBEDDED_STREAM_EXCEPTION,
+        format!("{exception}{LINE_SEPARATOR}"),
+    );
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.

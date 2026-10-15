@@ -1,9 +1,10 @@
 //! What ports of Java code need from Java itself to give Java's results: the iteration order of
 //! a `java.util.HashMap` and `HashSet` with string keys, string comparison, hashing, lengths,
 //! trimming and case mapping, `Character.isWhitespace` and the regex classes `\s` and `.`,
-//! `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble` and `Math.round`; with
-//! `Double.toString` ([`dtoa`]) and the `BigInteger` arithmetic it needs ([`bigint`]),
-//! `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and `TimeZone` ([`time`]).
+//! `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble`, `Math.round` and
+//! `System.lineSeparator`; with `Double.toString` ([`dtoa`]) and the `BigInteger` arithmetic it
+//! needs ([`bigint`]), `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and
+//! `TimeZone` ([`time`]).
 
 pub(crate) mod bigint;
 pub(crate) mod dtoa;
@@ -14,6 +15,9 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::unicode::decimal_digit;
+
+/// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
+pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
