@@ -43,7 +43,8 @@ pub struct IsolateSettings {
     /// The most memory the Java heap may take. Beyond it an extraction fails with an
     /// OutOfMemoryError, and the isolate stays usable for the next one. By default the heap may
     /// grow to a large share of physical memory. The heap is sized to at least 512 MiB, or the
-    /// cap when it is lower.
+    /// cap when it is lower. While a cap is set, every document is extracted on Tika's path,
+    /// where it applies: native parsers have no memory budget yet (#98).
     pub max_heap_bytes: Option<NonZeroU64>,
     /// The processors this process may use, when it shares the machine with other extracting
     /// processes: OCR divides them among the readings running at once. All of the machine's by
@@ -76,6 +77,14 @@ pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
         })
         .as_ref()
         .map_err(|message| Error::NativeLibrary(message.clone()))
+}
+
+/// Whether the Java heap is capped. Native parsers have no memory budget yet (#98), so while
+/// it is, every document is extracted on Tika's path, where the cap bounds it.
+pub(crate) fn heap_capped() -> bool {
+    SETTINGS
+        .get()
+        .is_some_and(|settings| settings.max_heap_bytes.is_some())
 }
 
 /// Whether the process has created its isolate, which nothing but Tika's path needs.
