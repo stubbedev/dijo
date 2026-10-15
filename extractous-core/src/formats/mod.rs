@@ -5,6 +5,7 @@
 
 mod archive;
 mod auto_detect_reader;
+mod dc_xml;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
@@ -106,6 +107,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::PackageParser,
     &archive::SevenZParser,
     &archive::ZipParser,
+    &dc_xml::DcXmlParser,
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,

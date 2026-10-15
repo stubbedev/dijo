@@ -132,6 +132,58 @@ impl ElementMetadata {
     }
 }
 
+/// The Dublin Core elements Tika's `DcXMLParser` reads, as `(element, name, values)`, in the
+/// order of its handlers.
+const DC_XML_ELEMENTS: [(&str, &str, Values); 13] = [
+    ("title", "dc:title", Values::Bag),
+    ("subject", "dc:subject", Values::Bag),
+    ("creator", "dc:creator", Values::Bag),
+    ("description", "dc:description", Values::Bag),
+    ("publisher", "dc:publisher", Values::Bag),
+    ("contributor", "dc:contributor", Values::Bag),
+    ("date", "dcterms:created", Values::Single),
+    ("type", "dc:type", Values::Bag),
+    ("format", "dc:format", Values::Single),
+    ("identifier", "dc:identifier", Values::Bag),
+    ("language", "dc:language", Values::Bag),
+    ("source", "dc:source", Values::Bag),
+    ("rights", "dc:rights", Values::Bag),
+];
+
+/// The handlers `DcXMLParser` tees an XML document's events to, one for each Dublin Core
+/// element it reads.
+#[derive(Debug)]
+pub(crate) struct DublinCore(Vec<ElementMetadata>);
+
+impl DublinCore {
+    pub(crate) fn new() -> Self {
+        Self(
+            DC_XML_ELEMENTS
+                .iter()
+                .map(|&(element, name, values)| ElementMetadata::dublin_core(element, name, values))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn start(&mut self, namespace: &str, local_name: &str) {
+        for element in &mut self.0 {
+            element.start(namespace, local_name);
+        }
+    }
+
+    pub(crate) fn end(&mut self, namespace: &str, local_name: &str, metadata: &mut TikaMetadata) {
+        for element in &mut self.0 {
+            element.end(namespace, local_name, metadata);
+        }
+    }
+
+    pub(crate) fn characters(&mut self, text: &str) {
+        for element in &mut self.0 {
+            element.characters(text);
+        }
+    }
+}
+
 /// Tika's `AbstractMetadataHandler.addMetadata` for a name that takes one value.
 pub(crate) fn set_unless_equal(name: &str, value: String, metadata: &mut TikaMetadata) {
     if metadata.get(name) != Some(value.as_str()) {
