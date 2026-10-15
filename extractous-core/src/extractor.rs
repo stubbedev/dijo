@@ -315,13 +315,12 @@ impl Extractor {
         embedded: Option<&EmbeddedSpool>,
     ) -> ExtractResult<(StreamReader, Metadata)> {
         if let Some(routed) = formats::route(source, embedded.is_some())? {
-            let metadata = routed.detected.metadata.to_map();
             let options = formats::StreamOptions {
                 char_set: self.encoding,
                 output: self.output(),
                 timeout: self.timeout,
             };
-            let stream = formats::parse_to_stream(
+            let (stream, metadata) = formats::parse_to_stream(
                 routed.parser,
                 routed.input.into_owned(),
                 routed.detected,

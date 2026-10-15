@@ -79,7 +79,7 @@ fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
         output,
         timeout: None,
     };
-    let mut stream = formats::parse_to_stream(
+    let (mut stream, _) = formats::parse_to_stream(
         routed.parser,
         routed.input.into_owned(),
         routed.detected,
