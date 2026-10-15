@@ -22,11 +22,8 @@ const ZIP_PARSER: &str = "org.apache.tika.parser.pkg.ZipParser";
 const COMPRESSOR_PARSER: &str = "org.apache.tika.parser.pkg.CompressorParser";
 const PACKAGE_PARSER: &str = "org.apache.tika.parser.pkg.PackageParser";
 
-/// Why the native path extracts a document of Tika's tests differently until the framework
-/// carries what Tika's top-level handlers know into the embedded parses it hands to Tika.
-const NESTED_TOO_DEEP: &str = "nests documents deeper than SecureContentHandler's ten package \
-                               entries, which Tika counts from the top-level document and the \
-                               embedded parse from its own start";
+/// Why the native path extracts a document of Tika's tests differently until `EventRecorder`
+/// records the namespaces of the elements of the embedded parses it hands to Tika.
 const FOREIGN_PARAGRAPHS: &str = "holds a document whose parser ends paragraphs outside the \
                                   XHTML namespace, which EventRecorder drops, so their replay \
                                   ends each with a line break";
@@ -120,14 +117,12 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
         &ZipParser,
         ZIP_PARSER,
         &[&conformance_corpus()],
-        &[
-            ("droste.zip", NESTED_TOO_DEEP),
-            ("testOpenOfficeInAZip.zip", FOREIGN_PARAGRAPHS),
-        ],
+        &[("testOpenOfficeInAZip.zip", FOREIGN_PARAGRAPHS)],
     );
     assert_eq!(
         deferred,
         [
+            "droste.zip",
             "moby.zip",
             "test-documents-spanned.z01",
             "test-documents-spanned.zip",
@@ -178,9 +173,9 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &CompressorParser,
         COMPRESSOR_PARSER,
         &[&conformance_corpus()],
-        &[("quine.gz", NESTED_TOO_DEEP)],
+        &[],
     );
-    assert_eq!(deferred, ["testZ_oom.Z"]);
+    assert_eq!(deferred, ["quine.gz", "testZ_oom.Z"]);
 }
 
 #[test]

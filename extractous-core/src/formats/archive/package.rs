@@ -2,6 +2,7 @@
 //! `ArchiveStreamFactory` recognizes: each entry but a directory handed to the embedded document
 //! extractor with the metadata `handleEntryMetadata` gives it, in archive order.
 
+use super::nesting::{Nesting, TOO_DEEP_REASON};
 use super::write_entry_div;
 use crate::compress::ar::ArStream;
 use crate::compress::archiver::Archiver;
@@ -151,9 +152,14 @@ impl Parser for PackageParser {
             Ok((_, archive)) => archive,
             Err(reason) => return Some(reason),
         };
+        let mut nesting = Nesting::new();
         loop {
             match archive.next() {
-                Ok(Some(_)) => {}
+                Ok(Some(entry)) => {
+                    if !entry.directory && nesting.too_deep(entry.content) {
+                        return Some(TOO_DEEP_REASON.to_owned());
+                    }
+                }
                 Ok(None) => return None,
                 Err(reason) => return Some(reason),
             }

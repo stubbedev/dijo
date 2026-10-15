@@ -8,6 +8,7 @@
 pub(crate) mod ar;
 pub(crate) mod archiver;
 pub(crate) mod bzip2;
+pub(crate) mod compressor;
 pub(crate) mod cpio;
 pub(crate) mod gzip;
 pub(crate) mod lz4;
@@ -29,6 +30,8 @@ pub(crate) enum Undecoded {
     Throws(String),
     /// It decodes into more than [`MAX_DECODED`] bytes.
     TooLarge,
+    /// The port does not decode its format.
+    Unported,
 }
 
 impl fmt::Display for Undecoded {
@@ -36,6 +39,7 @@ impl fmt::Display for Undecoded {
         match self {
             Undecoded::Throws(reason) => write!(f, "commons-compress throws on it: {reason}"),
             Undecoded::TooLarge => write!(f, "it decodes into more than {MAX_DECODED} bytes"),
+            Undecoded::Unported => write!(f, "the port does not decode its format"),
         }
     }
 }

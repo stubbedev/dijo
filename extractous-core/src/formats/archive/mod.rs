@@ -4,6 +4,7 @@
 //! ([`package`]).
 
 mod compressor;
+mod nesting;
 mod package;
 mod zip;
 

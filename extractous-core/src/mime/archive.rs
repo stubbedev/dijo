@@ -3,6 +3,7 @@
 //! Tika's ZIP container detector asks before it looks inside a ZIP file.
 
 use crate::compress::archiver::Archiver;
+use crate::compress::compressor::Compressor;
 
 /// What `ArchiveStreamFactory.detect` and Tika's TIFF exception make of a document's first
 /// bytes.
@@ -30,37 +31,7 @@ pub(crate) fn archive(prefix: &[u8]) -> Option<Archive> {
 /// `CompressorStreamFactory.detect`: the media type Tika gives the compression format the first
 /// bytes announce.
 pub(crate) fn compressor(prefix: &[u8]) -> Option<&'static str> {
-    let length = prefix.len().min(12);
-    let mut signature = [0u8; 12];
-    signature[..length].copy_from_slice(&prefix[..length]);
-    let s = &signature;
-    let found = if length >= 3 && s.starts_with(b"BZh") {
-        "application/x-bzip2"
-    } else if length >= 2 && s.starts_with(&[0x1F, 0x8B]) {
-        "application/gzip"
-    } else if length >= 4 && s.starts_with(&[0xCA, 0xFE, 0xD0, 0x0D]) {
-        "application/x-java-pack200"
-    } else if length >= 10 && s.starts_with(b"\xFF\x06\x00\x00sNaPpY") {
-        "application/x-snappy"
-    } else if length > 3 && s.starts_with(&[0x1F, 0x9D]) {
-        "application/x-compress"
-    } else if length > 3 && s[0] == 0x78 && matches!(s[1], 0x01 | 0x5E | 0x9C | 0xDA) {
-        "application/zlib"
-    } else if length >= 6 && s.starts_with(b"\xFD7zXZ\x00") {
-        "application/x-xz"
-    } else if length >= 3 && s.starts_with(&[0x5D, 0, 0]) {
-        "application/x-lzma"
-    } else if length >= 4 && s.starts_with(&[0x04, 0x22, 0x4D, 0x18]) {
-        "application/x-lz4"
-    } else if length >= 4
-        && (s.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
-            || (s[0] & 0xF0 == 0x50 && s[1..4] == [0x2A, 0x4D, 0x18]))
-    {
-        "application/zstd"
-    } else {
-        return None;
-    };
-    Some(found)
+    Compressor::detect(prefix).map(Compressor::media_type)
 }
 
 #[cfg(test)]

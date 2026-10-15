@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use super::nesting::{Nesting, TOO_DEEP_REASON};
 use super::write_entry_div;
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{NameSource, ZipEntry, ZipFile};
@@ -146,6 +147,7 @@ impl Parser for ZipParser {
                 "the JVM's default time zone, which entry times are read in, is unknown".to_owned(),
             );
         }
+        let mut nesting = Nesting::new();
         for entry in zip.entries() {
             if entry.is_directory() || !entry.can_read() {
                 continue;
@@ -158,7 +160,11 @@ impl Parser for ZipParser {
                 ));
             }
             match zip.read(entry) {
-                Some(Content::Complete(_)) => {}
+                Some(Content::Complete(content)) => {
+                    if nesting.too_deep(&content) {
+                        return Some(TOO_DEEP_REASON.to_owned());
+                    }
+                }
                 Some(Content::Truncated(_)) => {
                     return Some(format!(
                         "the data of the entry {} is cut short or corrupt, which Tika's embedded \
@@ -427,6 +433,17 @@ mod tests {
         data[cd + 10..cd + 12].copy_from_slice(&6u16.to_le_bytes());
         let reason = defers(&data).unwrap();
         assert!(reason.contains("method 6"), "{reason}");
+    }
+
+    #[test]
+    fn defers_archives_nested_ten_deep() {
+        let mut nested = zip(&[("level.txt", b"text")]);
+        for _ in 1..9 {
+            nested = zip(&[("level.txt", b"text"), ("inner.zip", &nested)]);
+        }
+        assert_eq!(defers(&nested), None);
+        let reason = defers(&zip(&[("inner.zip", &nested)])).unwrap();
+        assert!(reason.contains("nine deep"), "{reason}");
     }
 
     #[test]
