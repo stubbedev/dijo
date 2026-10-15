@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The tesseract the macOS and Windows builds load into their process: a library of the JNI
+# The tesseract the builds other than the static executable load into their process: a library of the JNI
 # functions LinkedTesseract calls (extractous-core/tika-native/src/static/tesseract.cc), linked
 # with tesseract built from its pinned source, patched as the Linux builds patch it
 # (ci/tesseract.nix), and with Leptonica and the image libraries vcpkg builds statically at a
-# pinned commit (ci/tesseract-jni); on Windows heif-png (ci/heif-png) to decode HEIC, HEIF and
-# AVIF, which macOS decodes with its own sips; and the license files of everything linked into
-# them.
+# pinned commit (ci/tesseract-jni); on Linux and Windows heif-png (ci/heif-png) to decode HEIC,
+# HEIF and AVIF, which macOS decodes with its own sips; and the license files of everything linked
+# into them. On Linux it builds against the system's C library, which the glibc release binary
+# then needs, as it does.
 
 if [ "$#" -ne 1 ]; then
     echo "usage: $0 <output directory>" >&2
@@ -21,6 +22,17 @@ output=$1
 source "$here/vcpkg.env"
 
 case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64 | Linux-aarch64)
+        if [ "$(uname -m)" = x86_64 ]; then
+            triplet=x64-linux
+        else
+            triplet=arm64-linux
+            export VCPKG_FORCE_SYSTEM_BINARIES=1
+        fi
+        library=libextractous_tesseract.so bootstrap=(./bootstrap-vcpkg.sh) heif=heif-png
+        sha512=(sha512sum)
+        native() { printf '%s\n' "$1"; }
+        ;;
     Darwin-arm64 | Darwin-x86_64)
         if [ "$(uname -m)" = arm64 ]; then triplet=arm64-osx; else triplet=x64-osx; fi
         library=libextractous_tesseract.dylib bootstrap=(./bootstrap-vcpkg.sh) heif=
@@ -64,7 +76,8 @@ cmake --build "$(native "$root/tesseract-jni")" --config Release --target extrac
 
 if [ -n "$heif" ]; then
     "$root/vcpkg" install --triplet "$triplet" --clean-after-build "libheif[core,aom]"
-    cmake -S "$(native "$here/heif-png")" -B "$(native "$root/heif-png")" "${toolchain[@]}"
+    cmake -S "$(native "$here/heif-png")" -B "$(native "$root/heif-png")" "${toolchain[@]}" \
+        -DCMAKE_BUILD_TYPE=Release
     cmake --build "$(native "$root/heif-png")" --config Release
 fi
 
@@ -75,7 +88,7 @@ mkdir -p "$staging/licenses/tesseract"
 cp "$root/tesseract-jni/out/$library" "$staging/$library"
 cp "$root/tesseract/LICENSE" "$staging/licenses/tesseract/LICENSE"
 if [ -n "$heif" ]; then
-    cp "$root/heif-png/Release/$heif" "$staging/$heif"
+    cp "$root/heif-png/out/$heif" "$staging/$heif"
 fi
 for list in "$installed/vcpkg/info/"*"_$triplet.list"; do
     if grep -Eq "^$triplet/lib/[^/]+\.(a|lib)$" "$list"; then

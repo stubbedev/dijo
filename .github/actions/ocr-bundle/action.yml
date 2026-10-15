@@ -1,7 +1,12 @@
 name: OCR bundle
 description: >
-  Assembles ci/ocr-bundle.sh's statically linked tesseract, heif-png, the language data and their licences,
-  keeping vcpkg's binary cache between runs on macOS and Windows. Linux needs nix installed first.
+  Assembles ci/ocr-bundle.sh's OCR bundle: the tesseract library vcpkg's libraries are linked into, heif-png
+  except on macOS, the language data and their licences, keeping vcpkg's binary cache between runs; or, with
+  linked, the language data and the licences of what the static executable links, which needs nix.
+inputs:
+  linked:
+    description: Assemble the bundle of the static executable, which links tesseract itself
+    default: "false"
 outputs:
   dir:
     description: The bundle's directory
@@ -11,24 +16,28 @@ runs:
   steps:
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       id: vcpkg-cache
-      if: runner.os != 'Linux'
+      if: inputs.linked != 'true'
       with:
         path: ${{ runner.temp }}/vcpkg-cache
         key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/vcpkg.env', 'ci/ocr-vcpkg.sh') }}
         restore-keys: vcpkg-${{ runner.os }}-${{ runner.arch }}-
     - id: bundle
       shell: bash
+      env:
+        LINKED: ${{ inputs.linked }}
       run: |
         temp=$RUNNER_TEMP
         if [ "$RUNNER_OS" = Windows ]; then temp=$(cygpath --unix "$RUNNER_TEMP"); fi
-        if [ "$RUNNER_OS" != Linux ]; then
+        if [ "$LINKED" = true ]; then
+          ci/ocr-bundle.sh --linked "$temp/ocr-bundle"
+        else
           export VCPKG_DEFAULT_BINARY_CACHE="$RUNNER_TEMP/vcpkg-cache"
           mkdir -p "$temp/vcpkg-cache"
+          ci/ocr-bundle.sh "$temp/ocr-bundle"
         fi
-        ci/ocr-bundle.sh "$temp/ocr-bundle"
         echo "dir=$RUNNER_TEMP/ocr-bundle" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      if: always() && runner.os != 'Linux' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+      if: always() && inputs.linked != 'true' && steps.vcpkg-cache.outputs.cache-hit != 'true'
       with:
         path: ${{ runner.temp }}/vcpkg-cache
         key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}

@@ -15,13 +15,12 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Tesseract run as a program for every image, reading the language data in a directory, or its
- * own when none is named.
+ * The tesseract on the PATH, run as a program for every image with its own language data, for a
+ * build that bundles no tesseract.
  */
 final class TesseractProgram implements Tesseract {
 
     private static final long CHECK_TIMEOUT_MILLIS = 60_000;
-    private static final String TESSDATA_PREFIX = "TESSDATA_PREFIX";
     private static final String OMP_NUM_THREADS = "OMP_NUM_THREADS";
     private static final String OSD_PAGE_SEG_MODE = "0";
     private static final String TEXT_EXTENSION = ".txt";
@@ -30,22 +29,16 @@ final class TesseractProgram implements Tesseract {
     private static final int TSV_CONFIDENCE = 10;
 
     private final String program;
-    private final String tessdata;
     private Set<String> languages;
 
-    /**
-     * @param program  the executable
-     * @param tessdata the language data, or null for the program's own
-     */
-    TesseractProgram(String program, String tessdata) {
+    private TesseractProgram(String program) {
         this.program = program;
-        this.tessdata = tessdata;
     }
 
     /** The tesseract on the PATH. */
     static TesseractProgram onPath() {
         return new TesseractProgram(System.getProperty("os.name").startsWith("Windows")
-                ? "tesseract.exe" : "tesseract", null);
+                ? "tesseract.exe" : "tesseract");
     }
 
     /** Whether the program starts and runs, which it does not when it is not installed. */
@@ -153,17 +146,12 @@ final class TesseractProgram implements Tesseract {
         return languages;
     }
 
-    /** Runs the program with its language data and further environment variables. */
+    /** Runs the program with further environment variables. */
     private Programs.Outcome run(long timeoutMillis, Map<String, String> variables,
                                  String... arguments) throws IOException {
         final String[] command = new String[arguments.length + 1];
         command[0] = program;
         System.arraycopy(arguments, 0, command, 1, arguments.length);
-        return Programs.run(timeoutMillis, environment -> {
-            if (tessdata != null) {
-                environment.put(TESSDATA_PREFIX, tessdata);
-            }
-            environment.putAll(variables);
-        }, command);
+        return Programs.run(timeoutMillis, environment -> environment.putAll(variables), command);
     }
 }

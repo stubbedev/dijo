@@ -27,8 +27,8 @@ fn unpacked() -> Result<&'static Path, String> {
 }
 
 /// The system properties Tika is started with: its temporary directory, headless AWT, the
-/// processors OCR may use, the bundled tesseract's language data, the bundled tesseract program or
-/// library unless the static build links it, and the bundled heif-png.
+/// processors OCR may use, the bundled tesseract's language data, the bundled tesseract library
+/// unless the static build links it, and the bundled heif-png.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -42,12 +42,6 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
     }
     if !OCR_FILES.is_empty() {
         let dir = unpacked()?;
-        if let Some(program) = OCR_TESSERACT_PROGRAM {
-            properties.push((
-                "extractous.ocr.tesseract",
-                dir.join(program).display().to_string(),
-            ));
-        }
         if let Some(library) = OCR_TESSERACT_LIBRARY {
             properties.push((
                 "extractous.ocr.library",
@@ -369,9 +363,9 @@ fn unpack(staging: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether an embedded file is a program the build runs: the bundled tesseract or heif-png.
+/// Whether an embedded file is a program the build runs: the bundled heif-png.
 fn is_program(name: &str) -> bool {
-    OCR_TESSERACT_PROGRAM == Some(name) || OCR_HEIF_DECODER == Some(name)
+    OCR_HEIF_DECODER == Some(name)
 }
 
 #[cfg(unix)]
@@ -385,15 +379,12 @@ fn make_executable(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The version of the tesseract the build runs: the bundled library or program, or without a
-/// bundle the program on the PATH.
+/// The version of the tesseract the build runs: the bundled library, or without a bundle the
+/// program on the PATH.
 #[cfg(not(feature = "static-image"))]
 pub(crate) fn tesseract_version() -> Result<String, String> {
-    if let Some(library) = OCR_TESSERACT_LIBRARY {
-        return library_version(&unpacked()?.join(library));
-    }
-    match OCR_TESSERACT_PROGRAM {
-        Some(program) => program_version(&unpacked()?.join(program)),
+    match OCR_TESSERACT_LIBRARY {
+        Some(library) => library_version(&unpacked()?.join(library)),
         None => program_version(Path::new("tesseract")),
     }
 }

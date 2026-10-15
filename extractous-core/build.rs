@@ -16,7 +16,6 @@ const DT_RUNPATH: i64 = 29;
 const ELF64_DYN_SIZE: usize = 16;
 const TIKA_LIBRARY_STEM: &str = "libtika_native";
 const OCR_BUNDLE_VARIABLE: &str = "EXTRACTOUS_OCR_BUNDLE";
-const OCR_TESSERACT_STEM: &str = "tesseract";
 const OCR_TESSERACT_LIBRARY_STEM: &str = "extractous_tesseract";
 const OCR_HEIF_DECODER_STEM: &str = "heif-png";
 const OCR_MODELS: &str = "tessdata";
@@ -89,9 +88,9 @@ fn main() {
 }
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `EXTRACTOUS_OCR_BUNDLE` names: tesseract as
-/// an executable or as a library of LinkedTesseract's JNI functions, heif-png on the platforms
-/// that need it, the language data and the licenses of what they link, compressed beside the
-/// native libraries.
+/// a library of LinkedTesseract's JNI functions unless the static executable links it, heif-png
+/// on the platforms that need it, the language data and the licenses of what they link,
+/// compressed beside the native libraries.
 struct OcrBundle {
     /// How the built program runs the bundled tesseract.
     tesseract: Tesseract,
@@ -107,8 +106,6 @@ struct OcrBundle {
 /// How the built program runs tesseract, which decides what it embeds of the OCR bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tesseract {
-    /// The bundled executable of this name, unpacked and run for every image.
-    Program(String),
     /// The bundled library of LinkedTesseract's JNI functions of this name, unpacked and loaded
     /// into the process.
     Library(String),
@@ -117,27 +114,11 @@ enum Tesseract {
 }
 
 impl Tesseract {
-    /// The file of the OCR bundle tesseract is in, if any.
-    fn file(&self) -> Option<&str> {
-        match self {
-            Tesseract::Program(file) | Tesseract::Library(file) => Some(file),
-            Tesseract::Linked => None,
-        }
-    }
-
-    /// The bundled program, if tesseract is one.
-    fn program(&self) -> Option<&str> {
-        match self {
-            Tesseract::Program(file) => Some(file),
-            Tesseract::Library(_) | Tesseract::Linked => None,
-        }
-    }
-
-    /// The bundled library, if tesseract is one.
+    /// The bundled library, unless tesseract is linked into the static executable.
     fn library(&self) -> Option<&str> {
         match self {
             Tesseract::Library(file) => Some(file),
-            Tesseract::Program(_) | Tesseract::Linked => None,
+            Tesseract::Linked => None,
         }
     }
 }
@@ -161,7 +142,7 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> Optio
     let heif_decoder = (tesseract != Tesseract::Linked && platform.heif_decoder_bundled())
         .then(|| platform.executable(OCR_HEIF_DECODER_STEM));
     let named = tesseract
-        .file()
+        .library()
         .map(str::to_string)
         .into_iter()
         .chain(heif_decoder.clone())
@@ -249,16 +230,10 @@ impl Platform {
         }
     }
 
-    /// How a build that is not the static executable runs the bundled tesseract: the glibc Linux
-    /// build runs the static nix executable (ci/ocr-static.nix), and macOS and Windows load the
-    /// library ci/ocr-vcpkg.sh builds.
+    /// The bundled tesseract of a build that is not the static executable: the library
+    /// ci/ocr-vcpkg.sh builds, which the process loads.
     fn bundled_tesseract(self) -> Tesseract {
-        match self {
-            Platform::OtherUnix => Tesseract::Program(self.executable(OCR_TESSERACT_STEM)),
-            Platform::MacOs | Platform::Windows => {
-                Tesseract::Library(self.dynamic_library(OCR_TESSERACT_LIBRARY_STEM))
-            }
-        }
+        Tesseract::Library(self.dynamic_library(OCR_TESSERACT_LIBRARY_STEM))
     }
 
     /// Whether the OCR bundle carries heif-png (ci/heif-png): everywhere but macOS, whose own
@@ -624,12 +599,10 @@ fn ocr_items(ocr: Option<&OcrBundle>) -> String {
         Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
         None => "None".to_string(),
     };
-    let program = ocr.and_then(|ocr| ocr.tesseract.program());
     let library = ocr.and_then(|ocr| ocr.tesseract.library());
     let heif_decoder = ocr.and_then(|ocr| ocr.heif_decoder.as_deref());
     format!(
-        "pub(crate) const OCR_TESSERACT_PROGRAM: Option<&str> = {program:?};\n\
-         pub(crate) const OCR_TESSERACT_LIBRARY: Option<&str> = {library:?};\n\
+        "pub(crate) const OCR_TESSERACT_LIBRARY: Option<&str> = {library:?};\n\
          pub(crate) const OCR_HEIF_DECODER: Option<&str> = {heif_decoder:?};\n\
          pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
          pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\

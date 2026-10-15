@@ -51,10 +51,9 @@ aarch64 build links those against musl, with the few glibc-only functions they c
 `__xstat64` and the like) forwarded to musl's (`glibc_compat.c`). `just static` builds it on Linux into
 `target/static-image/extractous`, with nix providing the musl toolchain.
 
-OCR runs tesseract in the process: linked into the static build, and on macOS and Windows loaded from a library the
-binary carries. The other Linux binary runs the `tesseract` executable it carries for each image. Each carries its
-tesseract with its libraries linked statically (built with nix on Linux, and on macOS and Windows from tesseract's
-pinned source with vcpkg's libraries at a pinned commit), with the language
+OCR runs tesseract in the process: linked into the static build, and loaded by every other release binary from a
+library it carries, built from tesseract's pinned source with vcpkg's libraries at a pinned commit and linked
+statically (the static build's comes from nix), with the language
 data the automatic language needs (orientation and script detection, tesseract's `script/Latin`, `script/Greek` and
 `script/Cyrillic` models, which read every language of those scripts with its letters and diacritics, and a fast model
 for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the system's C library: a binary built with
@@ -391,7 +390,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace, compiling Tika on first run |
-| `just ocr-bundle [dir]` | Assemble a statically linked tesseract, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` |
+| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
 | `just static` | Build the statically linked Linux executable with tesseract and libheif linked in, into `target/static-image/extractous` (uses nix) |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |

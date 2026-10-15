@@ -52,8 +52,9 @@ jobs:
           echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Install Ninja and NASM, which vcpkg builds with on Linux
         if: runner.os == 'Linux'
+        run: sudo apt-get update --quiet && sudo apt-get install --yes --no-install-recommends ninja-build nasm
       - uses: ./.github/actions/ocr-bundle
         id: ocr
       - name: Embed the OCR bundle
@@ -159,6 +160,8 @@ jobs:
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
       - uses: ./.github/actions/ocr-bundle
         id: ocr
+        with:
+          linked: "true"
       - name: Embed the OCR bundle
         env:
           BUNDLE: ${{ steps.ocr.outputs.dir }}

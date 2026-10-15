@@ -37,7 +37,7 @@ if [ ! -d "$jdk_static/musl" ]; then
 fi
 
 if [ -z "${EXTRACTOUS_OCR_BUNDLE:-}" ]; then
-    "$here/ocr-bundle.sh" "$work/ocr-bundle"
+    "$here/ocr-bundle.sh" --linked "$work/ocr-bundle"
     export EXTRACTOUS_OCR_BUNDLE="$work/ocr-bundle"
 fi
 

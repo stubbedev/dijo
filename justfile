@@ -29,8 +29,9 @@ test-large:
 test-fuzz:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test fuzz
 
-# Assemble a statically linked tesseract, its language data and their licenses, for a build that
-# carries its own OCR: EXTRACTOUS_OCR_BUNDLE=<dir> cargo build --release.
+# Assemble the tesseract library a build loads into its process (built with vcpkg, ci/ocr-vcpkg.sh), its
+# language data and their licenses, for a build that carries its own OCR:
+# EXTRACTOUS_OCR_BUNDLE=<dir> cargo build --release.
 [unix]
 ocr-bundle dir="target/ocr-bundle":
     ci/ocr-bundle.sh {{dir}}

@@ -13,6 +13,11 @@ import java.nio.file.Path;
 final class HeifDecoder {
 
     private static final String PROGRAM = "heif-dec";
+    /**
+     * Where libheif loads decoder plugins from, which the bundled heif-png, linked statically with
+     * its own decoders, must not load: a plugin built for another libheif and C library.
+     */
+    private static final String PLUGIN_PATH = "LIBHEIF_PLUGIN_PATH";
     private static final String MAC_OS_PROGRAM = "/usr/bin/sips";
     private static final boolean MAC_OS = System.getProperty("os.name").startsWith("Mac");
 
@@ -37,7 +42,8 @@ final class HeifDecoder {
         }
         final Path bundled = OcrBundle.heifDecoder();
         if (bundled != null) {
-            return decoded(Programs.run(timeoutMillis, environment -> { }, bundled.toString(),
+            return decoded(Programs.run(timeoutMillis,
+                    environment -> environment.remove(PLUGIN_PATH), bundled.toString(),
                     image.toString(), png.toString()), png);
         }
         final Programs.Outcome decoding;

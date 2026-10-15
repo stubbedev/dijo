@@ -39,6 +39,12 @@ target_include_directories(extractous_tesseract PRIVATE
 get_directory_property(TESSERACT_DEFINITIONS DIRECTORY "${TESSERACT_SOURCE}" COMPILE_DEFINITIONS)
 target_compile_definitions(extractous_tesseract PRIVATE ${TESSERACT_DEFINITIONS})
 target_link_libraries(extractous_tesseract PRIVATE libtesseract)
+if(UNIX AND NOT APPLE)
+  target_link_options(extractous_tesseract PRIVATE -static-libstdc++ -static-libgcc -Wl,-Bsymbolic
+    -Wl,--exclude-libs,ALL)
+endif()
 set_target_properties(extractous_tesseract PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
   LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/out>"
   RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/out>")
