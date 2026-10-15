@@ -215,6 +215,12 @@ impl OfficeParserConfig {
         self.include_headers_and_footers.unwrap_or(true)
     }
 
+    /// Whether the rows a sparse table leaves out are written empty, which Tika does not do
+    /// unless asked.
+    pub(crate) fn includes_missing_rows(&self) -> bool {
+        self.include_missing_rows.unwrap_or(false)
+    }
+
     /// Whether phonetic guides follow the text they annotate, as Tika has them unless told not to.
     pub(crate) fn concatenates_phonetic_runs(&self) -> bool {
         self.concatenate_phonetic_runs.unwrap_or(true)

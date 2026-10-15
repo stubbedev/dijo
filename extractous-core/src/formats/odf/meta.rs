@@ -5,16 +5,14 @@
 
 use std::borrow::Cow;
 
+use crate::formats::element_metadata::{set_unless_equal, ElementMetadata, Values};
 use crate::formats::handlers::{is_java_whitespace, utf16_length};
+use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::odf::{java_trim, normalized_namespace, META_NS, OFFICE_NS};
+use crate::formats::odf::{normalized_namespace, META_NS, OFFICE_NS};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
 
-const DC_NS: &str = "http://purl.org/dc/elements/1.1/";
-const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-const RDF_BAG: &str = "Bag";
-const RDF_LI: &str = "li";
 const SUBJECT: &str = "dc:subject";
 const DESCRIPTION: &str = "dc:description";
 const KEYWORD: &str = "meta:keyword";
@@ -22,117 +20,6 @@ const USER_DEFINED_PREFIX: &str = "custom:";
 const USER_DEFINED_NAME: &str = "meta:name";
 const MAX_USER_DEFINED_NAME_LENGTH: usize = 1024;
 const MAX_USER_DEFINED_NAMES: usize = 10_000;
-
-/// How a handler stores a value under a name that already has one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Values {
-    /// A bag of distinct values: a new one is added.
-    Bag,
-    /// One value: a new one replaces it.
-    Single,
-}
-
-/// Tika's `ElementMetadataHandler`: the text of an element, or of the `rdf:li`s of an `rdf:Bag`
-/// in it, trimmed, under a name.
-struct ElementValue {
-    local_name: &'static str,
-    name: &'static str,
-    values: Values,
-    match_level: usize,
-    parent_match_level: usize,
-    bagged: String,
-    bagless: String,
-    is_bagless: bool,
-}
-
-impl ElementValue {
-    fn new(local_name: &'static str, name: &'static str, values: Values) -> Self {
-        Self {
-            local_name,
-            name,
-            values,
-            match_level: 0,
-            parent_match_level: 0,
-            bagged: String::new(),
-            bagless: String::new(),
-            is_bagless: true,
-        }
-    }
-
-    fn is_parent(&self, namespace: &str, local_name: &str) -> bool {
-        namespace == DC_NS && local_name == self.local_name
-    }
-
-    fn is_matching(&self, namespace: &str, local_name: &str) -> bool {
-        self.is_parent(namespace, local_name)
-            || (self.parent_match_level > 0
-                && namespace == RDF_NS
-                && (local_name == RDF_BAG || local_name == RDF_LI))
-    }
-
-    fn start(&mut self, namespace: &str, local_name: &str) {
-        if self.is_matching(namespace, local_name) {
-            self.match_level += 1;
-        }
-        if self.is_parent(namespace, local_name) {
-            self.parent_match_level += 1;
-        }
-    }
-
-    fn end(&mut self, namespace: &str, local_name: &str, metadata: &mut TikaMetadata) {
-        if self.is_parent(namespace, local_name) {
-            self.parent_match_level -= 1;
-        }
-        if !self.is_matching(namespace, local_name) {
-            return;
-        }
-        self.match_level -= 1;
-        if self.match_level == 2 {
-            let value = java_trim(&self.bagged).to_owned();
-            self.add(value, metadata);
-            self.bagged.clear();
-            self.is_bagless = false;
-        }
-        if self.match_level == 0 && self.is_bagless {
-            if !self.bagless.is_empty() && !self.bagless.contains(RDF_BAG) {
-                let value = java_trim(&self.bagless).to_owned();
-                self.add(value, metadata);
-                self.bagless.clear();
-            }
-            self.is_bagless = true;
-        }
-    }
-
-    fn characters(&mut self, text: &str) {
-        if self.parent_match_level > 0 && self.match_level > 2 {
-            self.bagged.push_str(text);
-        }
-        if self.parent_match_level > 0 && self.match_level > 0 {
-            self.bagless.push_str(text);
-        }
-    }
-
-    fn add(&self, value: String, metadata: &mut TikaMetadata) {
-        if value.is_empty() {
-            return;
-        }
-        match self.values {
-            Values::Bag => {
-                if !metadata.values(self.name).contains(&value) {
-                    metadata.add(self.name, value);
-                }
-            }
-            Values::Single => set_unless_equal(self.name, value, metadata),
-        }
-    }
-}
-
-/// Tika's `AbstractMetadataHandler.addMetadata` for a name that takes one value.
-fn set_unless_equal(name: &str, value: String, metadata: &mut TikaMetadata) {
-    if metadata.get(name) != Some(value.as_str()) {
-        metadata.set(name, value);
-    }
-}
 
 /// Tika's `MetadataHandler` behind a match of `//meta:<element>` and the text within: each such
 /// element's text, joined to the value already there by `, `.
@@ -268,10 +155,10 @@ const STATISTICS: [(&str, &str); 8] = [
 /// their order, behind its `NSNormalizerContentHandler`.
 pub(super) struct MetaHandlers {
     depth: usize,
-    dublin_core: [ElementValue; 10],
+    dublin_core: [ElementMetadata; 10],
     created: MetaValue,
-    modified: ElementValue,
-    subject: ElementValue,
+    modified: ElementMetadata,
+    subject: ElementMetadata,
     meta: [MetaValue; 5],
     user_defined: UserDefined,
 }
@@ -281,20 +168,20 @@ impl MetaHandlers {
         Self {
             depth: 0,
             dublin_core: [
-                ElementValue::new("title", "dc:title", Values::Bag),
-                ElementValue::new("creator", "dc:creator", Values::Bag),
-                ElementValue::new("description", DESCRIPTION, Values::Bag),
-                ElementValue::new("publisher", "dc:publisher", Values::Bag),
-                ElementValue::new("contributor", "dc:contributor", Values::Bag),
-                ElementValue::new("type", "dc:type", Values::Bag),
-                ElementValue::new("format", "dc:format", Values::Single),
-                ElementValue::new("identifier", "dc:identifier", Values::Bag),
-                ElementValue::new("language", "dc:language", Values::Bag),
-                ElementValue::new("rights", "dc:rights", Values::Bag),
+                ElementMetadata::dublin_core("title", "dc:title", Values::Bag),
+                ElementMetadata::dublin_core("creator", "dc:creator", Values::Bag),
+                ElementMetadata::dublin_core("description", DESCRIPTION, Values::Bag),
+                ElementMetadata::dublin_core("publisher", "dc:publisher", Values::Bag),
+                ElementMetadata::dublin_core("contributor", "dc:contributor", Values::Bag),
+                ElementMetadata::dublin_core("type", "dc:type", Values::Bag),
+                ElementMetadata::dublin_core("format", "dc:format", Values::Single),
+                ElementMetadata::dublin_core("identifier", "dc:identifier", Values::Bag),
+                ElementMetadata::dublin_core("language", "dc:language", Values::Bag),
+                ElementMetadata::dublin_core("rights", "dc:rights", Values::Bag),
             ],
             created: MetaValue::new("creation-date", "dcterms:created"),
-            modified: ElementValue::new("date", "dcterms:modified", Values::Single),
-            subject: ElementValue::new("subject", SUBJECT, Values::Bag),
+            modified: ElementMetadata::dublin_core("date", "dcterms:modified", Values::Single),
+            subject: ElementMetadata::dublin_core("subject", SUBJECT, Values::Bag),
             meta: [
                 MetaValue::new("keyword", KEYWORD),
                 MetaValue::new("editing-duration", "extended-properties:TotalTime"),
@@ -375,7 +262,7 @@ fn attribute_value(
 ) {
     for attribute in attributes {
         if attribute.namespace == namespace && attribute.local_name == local_name {
-            let value = java_trim(&attribute.value);
+            let value = java::trim(&attribute.value);
             if !value.is_empty() {
                 set_unless_equal(name, value.to_owned(), metadata);
             }

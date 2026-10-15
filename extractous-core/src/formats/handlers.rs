@@ -4,6 +4,7 @@
 //! (`WriteOutContentHandler`'s limit), and the writers [`ToText`] (`ToTextContentHandler`) and
 //! [`ToXml`] (`ToXMLContentHandler`).
 
+use crate::formats::java::JavaHashMap;
 use crate::formats::xhtml::{ContentHandler, Stop, XHTML_NAMESPACE};
 
 /// The block elements [`BlockBreaks`] ends with a line break and [`AnchoredBlocks`] holds back.
@@ -67,6 +68,10 @@ impl<H: ContentHandler> Body<H> {
 impl<H: ContentHandler> ContentHandler for Body<H> {
     fn start_document(&mut self) -> Result<(), Stop> {
         self.next.start_document()
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.next.start_prefix_mapping(prefix, uri)
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
@@ -169,6 +174,10 @@ impl<H: ContentHandler> AnchoredBlocks<H> {
 impl<H: ContentHandler> ContentHandler for AnchoredBlocks<H> {
     fn start_document(&mut self) -> Result<(), Stop> {
         self.next.start_document()
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.next.start_prefix_mapping(prefix, uri)
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
@@ -308,6 +317,10 @@ impl<H: ContentHandler> ContentHandler for BlockBreaks<H> {
         self.next.start_document()
     }
 
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.next.start_prefix_mapping(prefix, uri)
+    }
+
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         self.next.start_element(name, attributes)?;
         if CELLS.contains(&name) {
@@ -379,6 +392,10 @@ impl<H: ContentHandler> WellFormed<H> {
 impl<H: ContentHandler> ContentHandler for WellFormed<H> {
     fn start_document(&mut self) -> Result<(), Stop> {
         self.next.start_document()
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.next.start_prefix_mapping(prefix, uri)
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
@@ -469,6 +486,10 @@ impl<H: ContentHandler> ContentHandler for WriteLimit<H> {
         self.next.start_document()
     }
 
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.next.start_prefix_mapping(prefix, uri)
+    }
+
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         self.next.start_element(name, attributes)
     }
@@ -525,6 +546,10 @@ impl<W: Write> ContentHandler for ToText<W> {
         Ok(())
     }
 
+    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
     fn start_element(&mut self, name: &str, _attributes: &[(&str, &str)]) -> Result<(), Stop> {
         if is_hidden(name) {
             self.hidden_depth += 1;
@@ -556,13 +581,16 @@ impl<W: Write> ContentHandler for ToText<W> {
 }
 
 /// Serialises the events as XML, as Tika's `ToXMLContentHandler`: an empty element is written
-/// `<name />`, and the first element after the document starts declares the XHTML namespace
-/// after its attributes.
+/// `<name />`, and a start tag declares, after its attributes, the namespace prefixes mapped
+/// since the previous tag that the elements around it do not declare already.
 pub(crate) struct ToXml<W> {
     out: W,
     prolog: Option<&'static str>,
     in_start_element: bool,
-    namespace_pending: bool,
+    /// The prefixes mapped since the last tag, by namespace, as Java's `HashMap` orders them.
+    pending: JavaHashMap<String>,
+    /// For each open element, the prefixes its start tag declared, by namespace.
+    declared: Vec<Vec<(String, String)>>,
 }
 
 impl<W: Write> ToXml<W> {
@@ -572,8 +600,24 @@ impl<W: Write> ToXml<W> {
             out,
             prolog: encoding,
             in_start_element: false,
-            namespace_pending: false,
+            pending: JavaHashMap::default(),
+            declared: Vec::new(),
         }
+    }
+
+    /// `ElementInfo.getPrefix`: the prefix the innermost open element that declares `uri` gives
+    /// it, the empty prefix for no namespace, or none when `uri` is not declared.
+    fn prefix(&self, uri: &str) -> Option<&str> {
+        self.declared
+            .iter()
+            .rev()
+            .find_map(|declarations| {
+                declarations
+                    .iter()
+                    .find(|(declared, _)| declared == uri)
+                    .map(|(_, prefix)| prefix.as_str())
+            })
+            .or_else(|| uri.is_empty().then_some(""))
     }
 
     fn close_start_element(&mut self) -> Result<(), Stop> {
@@ -604,18 +648,46 @@ impl<W: Write> ToXml<W> {
 
 impl<W: Write> ContentHandler for ToXml<W> {
     fn start_document(&mut self) -> Result<(), Stop> {
-        self.namespace_pending = true;
         if let Some(encoding) = self.prolog {
             self.out.write("<?xml version=\"1.0\" encoding=\"")?;
             self.out.write(encoding)?;
             self.out.write("\"?>\n")?;
         }
+        self.declared.clear();
+        self.pending.clear();
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        if !self.declared.is_empty() && self.prefix(uri) == Some(prefix) {
+            return Ok(());
+        }
+        self.pending.insert(uri, prefix.to_owned());
         Ok(())
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         self.close_start_element()?;
+        let declarations: Vec<(String, String)> = self
+            .pending
+            .iter()
+            .map(|(uri, prefix)| (uri.to_owned(), prefix.clone()))
+            .collect();
+        self.declared.push(declarations);
+        let prefix = self
+            .prefix(XHTML_NAMESPACE)
+            .expect("the document's first element declares the XHTML namespace")
+            .to_owned();
+        let declarations = self
+            .declared
+            .last()
+            .expect("the element was just opened")
+            .clone();
         self.out.write("<")?;
+        if !prefix.is_empty() {
+            self.out.write(&prefix)?;
+            self.out.write(":")?;
+        }
         self.out.write(name)?;
         for (attribute, value) in attributes {
             self.out.write(" ")?;
@@ -624,17 +696,24 @@ impl<W: Write> ContentHandler for ToXml<W> {
             self.write_escaped(value, true)?;
             self.out.write("\"")?;
         }
-        if self.namespace_pending {
-            self.namespace_pending = false;
-            self.out.write(" xmlns=\"")?;
-            self.out.write(XHTML_NAMESPACE)?;
+        for (uri, prefix) in &declarations {
+            self.out.write(" xmlns")?;
+            if !prefix.is_empty() {
+                self.out.write(":")?;
+                self.out.write(prefix)?;
+            }
+            self.out.write("=\"")?;
+            self.write_escaped(uri, true)?;
             self.out.write("\"")?;
         }
+        self.pending.clear();
         self.in_start_element = true;
         Ok(())
     }
 
     fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.pending.clear();
+        self.declared.pop();
         if self.in_start_element {
             self.in_start_element = false;
             return self.out.write(" />");
@@ -763,6 +842,7 @@ mod tests {
                         "chars" => xhtml.characters(field(1))?,
                         "ws" => xhtml.ignorable_whitespace(field(1))?,
                         "newline" => xhtml.newline()?,
+                        "prefix" => xhtml.start_prefix_mapping(field(1), field(2))?,
                         "element" => xhtml.element(field(1), field(2))?,
                         other => panic!("Unknown call {other}"),
                     }

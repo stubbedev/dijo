@@ -27,6 +27,7 @@ pub(crate) struct CalendarFields {
     pub(crate) hour: i32,
     pub(crate) minute: i32,
     pub(crate) second: i32,
+    pub(crate) millisecond: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,12 +38,12 @@ enum CalendarSystem {
 
 impl CalendarFields {
     /// The milliseconds since the epoch `GregorianCalendar.getTimeInMillis()` gives for these
-    /// fields in `zone`, its milliseconds field zero. Java's `long` arithmetic wraps, and so does
-    /// this.
+    /// fields in `zone`. Java's `long` arithmetic wraps, and so does this.
     pub(crate) fn epoch_millis(self, zone: &TimeZone) -> i64 {
         let time_of_day = ((i64::from(self.hour) * 60 + i64::from(self.minute)) * 60
             + i64::from(self.second))
-            * 1000;
+            * 1000
+            + i64::from(self.millisecond);
         let mut fixed_date = time_of_day / MILLIS_PER_DAY;
         let mut time_of_day = time_of_day % MILLIS_PER_DAY;
         while time_of_day < 0 {
@@ -119,6 +120,149 @@ fn julian_fixed_date(year: i32, month: i32) -> i64 {
         days -= if year.rem_euclid(4) == 0 { 1 } else { 2 };
     }
     days
+}
+
+/// The calendar fields `GregorianCalendar.computeFields` gives an instant in a zone, with the
+/// first day of the week Sunday and one day enough for a first week, as in `en_US`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LocalFields {
+    /// Whether the year is before Christ.
+    pub(crate) before_christ: bool,
+    /// The year of the era, from 1.
+    pub(crate) year: i64,
+    /// The month, from 0.
+    pub(crate) month: i64,
+    pub(crate) day: i64,
+    /// The day of the week, from 1 for Sunday.
+    pub(crate) day_of_week: i64,
+    pub(crate) day_of_year: i64,
+    pub(crate) day_of_week_in_month: i64,
+    pub(crate) week_of_year: i64,
+    pub(crate) week_of_month: i64,
+    /// The year the week of the year belongs to, numbered as astronomers do.
+    pub(crate) week_year: i64,
+    pub(crate) hour: i64,
+    pub(crate) minute: i64,
+    pub(crate) second: i64,
+    pub(crate) millisecond: i64,
+    /// The zone's offset at the instant, in milliseconds.
+    pub(crate) offset: i64,
+}
+
+const FIRST_DAY_OF_WEEK: i64 = 1;
+const MINIMAL_DAYS_IN_FIRST_WEEK: i64 = 1;
+
+/// `BaseCalendar.getDayOfWeekDateOnOrBefore`: the fixed date of the `day_of_week` on or before
+/// `fixed_date`.
+fn day_of_week_on_or_before(fixed_date: i64, day_of_week: i64) -> i64 {
+    let fixed = fixed_date - (day_of_week - 1);
+    fixed - fixed.rem_euclid(7)
+}
+
+/// `getWeekNumber`: the week of `fixed_date` in the period that starts on `fixed_day1`.
+fn week_number(fixed_day1: i64, fixed_date: i64) -> i64 {
+    let mut first = day_of_week_on_or_before(fixed_day1 + 6, FIRST_DAY_OF_WEEK);
+    if first - fixed_day1 >= MINIMAL_DAYS_IN_FIRST_WEEK {
+        first -= 7;
+    }
+    (fixed_date - first).div_euclid(7) + 1
+}
+
+/// The year, month from 1 and day of a fixed date, in the Gregorian calendar from the cutover
+/// and the Julian calendar before it, the year numbered as astronomers do.
+fn date_of_fixed(fixed_date: i64) -> (i64, i64, i64, CalendarSystem) {
+    if fixed_date >= CUTOVER_FIXED_DATE {
+        let (year, month, day) = civil::civil_from_days(fixed_date - EPOCH_FIXED_DATE);
+        return (year, month, day, CalendarSystem::Gregorian);
+    }
+    let fd = 4 * (fixed_date - JULIAN_EPOCH) + 1464;
+    let year = fd.div_euclid(1461);
+    let year32 = year as i32;
+    let jan1 = julian_fixed_date(year32, 1);
+    let mut prior_days = fixed_date - jan1;
+    if fixed_date >= julian_fixed_date(year32, 3) {
+        prior_days += if year.rem_euclid(4) == 0 { 1 } else { 2 };
+    }
+    let month = (12 * prior_days + 373).div_euclid(367);
+    let day = fixed_date - julian_fixed_date(year32, month as i32) + 1;
+    (year, month, day, CalendarSystem::Julian)
+}
+
+fn fixed_of(year: i64, month: i64, system: CalendarSystem) -> i64 {
+    match system {
+        CalendarSystem::Gregorian => gregorian_fixed_date(year as i32, month as i32),
+        CalendarSystem::Julian => julian_fixed_date(year as i32, month as i32),
+    }
+}
+
+fn is_leap(year: i64, system: CalendarSystem) -> bool {
+    match system {
+        CalendarSystem::Gregorian => civil::is_leap_year(year),
+        CalendarSystem::Julian => year.rem_euclid(4) == 0,
+    }
+}
+
+/// The calendar fields of the instant `epoch_millis` in `zone`.
+pub(crate) fn local_fields(epoch_millis: i64, zone: &TimeZone) -> LocalFields {
+    let offset = zone.offset_at_utc(epoch_millis);
+    let mut fixed_date = offset / MILLIS_PER_DAY + epoch_millis / MILLIS_PER_DAY;
+    let mut time_of_day = offset % MILLIS_PER_DAY + epoch_millis % MILLIS_PER_DAY;
+    if time_of_day >= MILLIS_PER_DAY {
+        time_of_day -= MILLIS_PER_DAY;
+        fixed_date += 1;
+    } else {
+        while time_of_day < 0 {
+            time_of_day += MILLIS_PER_DAY;
+            fixed_date -= 1;
+        }
+    }
+    fixed_date += EPOCH_FIXED_DATE;
+    let (normalized_year, month, day, system) = date_of_fixed(fixed_date);
+    let jan1 = fixed_of(normalized_year, 1, system);
+    let day_of_year = fixed_date - jan1 + 1;
+    let mut week_year = normalized_year;
+    let mut week_of_year = week_number(jan1, fixed_date);
+    if week_of_year == 0 {
+        let previous = normalized_year - 1;
+        let previous_jan1 = jan1 - if is_leap(previous, system) { 366 } else { 365 };
+        week_of_year = week_number(previous_jan1, jan1 - 1);
+        week_year = previous;
+    } else if week_of_year >= 52 {
+        let next_jan1 = jan1
+            + if is_leap(normalized_year, system) {
+                366
+            } else {
+                365
+            };
+        let next_first = day_of_week_on_or_before(next_jan1 + 6, FIRST_DAY_OF_WEEK);
+        if next_first - next_jan1 >= MINIMAL_DAYS_IN_FIRST_WEEK && fixed_date >= next_first - 7 {
+            week_of_year = 1;
+            week_year = normalized_year + 1;
+        }
+    }
+    let month1 = fixed_date - day + 1;
+    let (before_christ, year) = if normalized_year <= 0 {
+        (true, 1 - normalized_year)
+    } else {
+        (false, normalized_year)
+    };
+    LocalFields {
+        before_christ,
+        year,
+        month: month - 1,
+        day,
+        day_of_week: fixed_date.rem_euclid(7) + 1,
+        day_of_year,
+        day_of_week_in_month: (day - 1) / 7 + 1,
+        week_of_year,
+        week_of_month: week_number(month1, fixed_date),
+        week_year,
+        hour: time_of_day / 3_600_000,
+        minute: time_of_day / 60_000 % 60,
+        second: time_of_day / 1000 % 60,
+        millisecond: time_of_day % 1000,
+        offset,
+    }
 }
 
 /// What `DateUtils.formatDate` makes of a `Date`: its instant truncated to the second, as
@@ -234,7 +378,7 @@ pub(crate) mod civil {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Read;
     use std::path::PathBuf;
@@ -242,7 +386,7 @@ pub(super) mod tests {
     const DATES: &[u8] = include_bytes!("../../../tests/fixtures/rtf/dates.tsv.gz");
 
     /// A zone of the zoneinfo files the reference dates were made with.
-    pub(super) fn zone(id: &str) -> TimeZone {
+    pub(crate) fn zone(id: &str) -> TimeZone {
         let directory =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rtf/zoneinfo");
         TimeZone::by_id(id, &[directory])
@@ -272,6 +416,7 @@ pub(super) mod tests {
                         hour: hour.parse().unwrap(),
                         minute: minute.parse().unwrap(),
                         second: 0,
+                        millisecond: 0,
                     };
                     (fields.epoch_millis(zone), *expected)
                 }

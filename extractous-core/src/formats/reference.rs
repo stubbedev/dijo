@@ -170,6 +170,10 @@ impl ContentHandler for Recorder {
         Ok(())
     }
 
+    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         if name == "body" {
             self.in_body = true;

@@ -104,6 +104,7 @@ impl ZipEntry {
                 hour: (dos >> 11 & 0x1F) as i32,
                 minute: (dos >> 5 & 0x3F) as i32,
                 second: (dos << 1 & 0x3E) as i32,
+                millisecond: 0,
             };
             Instant::from_millis(fields.epoch_millis(zone))
         })

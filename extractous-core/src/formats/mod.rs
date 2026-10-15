@@ -6,7 +6,9 @@
 mod archive;
 mod auto_detect_reader;
 mod docx;
+mod element_metadata;
 pub(crate) mod embedded;
+mod epub;
 mod fiction_book;
 pub(crate) mod handlers;
 mod html;
@@ -24,7 +26,9 @@ mod rtf;
 mod subtitle;
 mod text;
 pub(crate) mod xhtml;
+mod xlsx;
 pub(crate) mod xml;
+mod zip_file;
 
 use std::borrow::Cow;
 use std::fs;
@@ -105,12 +109,14 @@ static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
     &mail::EmlxParser,
+    &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &xlsx::XlsxParser,
 ];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
