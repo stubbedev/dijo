@@ -11,4 +11,7 @@ org/apache/tika/tika-ml-core/4.1.0/tika-ml-core-4.1.0.jar	0a6359a48e653eb85df842
 org/apache/tika/tika-ml-junkdetect/4.1.0/tika-ml-junkdetect-4.1.0.jar	b4d5f1311708ca6dcdf395e6913202c1565282b249b45e33ea32b1edf4c2cd10
 org/apache/tika/tika-encoding-detector-mojibuster/4.1.0/tika-encoding-detector-mojibuster-4.1.0.jar	3e993c6eaed7a79fd4cf1e8f712eaf802dbf5f4b1d555c20d7616b55240d3d0e
 org/apache/tika/tika-encoding-detector-html/4.1.0/tika-encoding-detector-html-4.1.0.jar	9d97da89b5f96df1ab85f01a1e67780cae1c0f3fc66eacdb942e9b51789e56ae
+org/apache/tika/tika-parser-text-module/4.1.0/tika-parser-text-module-4.1.0.jar	4e63c65fee7bd57ee57e7df0328c187757396607cc6bc2d300bd4683a97c8770
+org/apache/commons/commons-csv/1.14.1/commons-csv-1.14.1.jar	32be0e1e76673092f5d12cb790bd2acb6c2ab04c4ea6efc69ea5ee17911c24fe
+commons-codec/commons-codec/1.22.1/commons-codec-1.22.1.jar	78a5d732fbd715e2d10bd7150d2f8030bae57267f8aacc5c88f642cb6c2e5d3f
 org/apache/tika/tika-encoding-detector-mojibuster/4.1.0/tika-encoding-detector-mojibuster-4.1.0-sources.jar	117ea867accc2c6541842494f35b121dd8da8a4e5c93f22930f12a6f22c16cc4

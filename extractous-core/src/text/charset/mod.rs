@@ -215,6 +215,25 @@ pub fn detect(input: &[u8], content_type: Option<&str>) -> Detection {
     }
 }
 
+/// A charset that a detector may report for `input` and that this port does not decode, which
+/// leaves what Tika makes of the input unknown: one an HTML declaration names, or an ISO-2022
+/// charset other than ISO-2022-JP that a 7-bit input's escapes designate. Every charset the
+/// statistical models name decodes.
+pub fn undecodable(input: &[u8]) -> Option<Charset> {
+    let declared = html::detect(input);
+    let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
+    let seven_bit = probe.iter().all(|&b| b != 0 && b < 0x80);
+    let designated = seven_bit
+        .then(|| structural::iso2022(probe))
+        .flatten()
+        .map(Charset::named);
+    [declared, designated]
+        .into_iter()
+        .flatten()
+        .map(mojibuster::superset)
+        .find(|charset| charset.decode(b"").is_none())
+}
+
 /// The Unicode charset a byte order mark starts the input with.
 fn byte_order_mark(input: &[u8]) -> Option<Charset> {
     let name = match input {

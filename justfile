@@ -88,6 +88,21 @@ handler-reference:
     cp "$fixtures/HandlerChainReference.java" "$sources/"
     java -cp "$jars/*" "$sources/HandlerChainReference.java" "$fixtures/scripts.txt" "$fixtures/chains.tsv"
 
+# Regenerate what Apache Tika's TextAndCSVParser makes of the plain text, CSV and TSV inputs of the corpora,
+# which the Rust port of its decisions is tested against.
+[unix]
+text-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    fixtures=extractous-core/tests/fixtures/text
+    rules=$(just native-image-rules)
+    java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" "$fixtures/TextReference.java" \
+        "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
+        truth=quality/truth tika="$CONFORMANCE_CORPUS"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]

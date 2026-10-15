@@ -8,6 +8,7 @@ pub(crate) mod handlers;
 pub(crate) mod metadata;
 #[cfg(test)]
 pub(crate) mod parity;
+mod text;
 pub(crate) mod xhtml;
 pub(crate) mod xml;
 
@@ -66,7 +67,7 @@ pub(crate) trait Parser: Sync {
     fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure>;
 }
 
-static PARSERS: &[&dyn Parser] = &[&fiction_book::FictionBookParser];
+static PARSERS: &[&dyn Parser] = &[&fiction_book::FictionBookParser, &text::TextAndCsvParser];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
 fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {

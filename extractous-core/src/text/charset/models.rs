@@ -552,3 +552,22 @@ impl BigramCounts {
             .map(|(&key, &count)| (key, count))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::charset::mojibuster::superset;
+
+    #[test]
+    fn every_charset_the_models_name_decodes() {
+        let undecodable: Vec<&str> = NAIVE_BAYES
+            .charsets
+            .iter()
+            .chain(&UTF16.charsets)
+            .map(|&charset| superset(charset))
+            .filter(|charset| charset.decode(b"text").is_none())
+            .map(|charset| charset.name())
+            .collect();
+        assert!(undecodable.is_empty(), "{undecodable:?}");
+    }
+}
