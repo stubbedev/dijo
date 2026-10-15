@@ -27,6 +27,7 @@ mod rtf;
 mod subtitle;
 mod text;
 pub(crate) mod xhtml;
+mod xlsx;
 pub(crate) mod xml;
 mod zip_file;
 
@@ -105,8 +106,8 @@ static PARSERS: &[&dyn Parser] = &[
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
-    &epub::EpubParser,
     &mail::EmlxParser,
+    &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
     &pptx::PptxParser,
@@ -114,6 +115,7 @@ static PARSERS: &[&dyn Parser] = &[
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &xlsx::XlsxParser,
 ];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.

@@ -1118,6 +1118,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
                 hour: self.date.hour,
                 minute: self.date.minute,
                 second: 0,
+                millisecond: 0,
             };
             let created = java_time::format_instant(fields.epoch_millis(zone));
             self.metadata().set("dcterms:created", created);

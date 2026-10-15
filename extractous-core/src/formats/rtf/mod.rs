@@ -245,26 +245,39 @@ mod tests {
         paths.iter().map(PathBuf::as_path).collect()
     }
 
+    /// The documents of `paths` the native parser reads, after asserting that it defers the
+    /// others only for a creation date where Java's default time zone is unknown, as on
+    /// Windows, whose registry lookup is not ported.
+    fn read_natively<'p>(paths: &[&'p Path]) -> Vec<&'p Path> {
+        let zone_unknown = TimeZone::java_default().is_err();
+        let mut read = Vec::new();
+        for path in paths {
+            let input = std::fs::read(path).unwrap();
+            match RtfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default()) {
+                None => read.push(*path),
+                Some(reason) if zone_unknown && reason == embedded::Deferral::TimeZone.reason() => {
+                }
+                Some(reason) => panic!("{} defers: {reason}", path.display()),
+            }
+        }
+        read
+    }
+
     #[test]
     fn extracts_what_tikas_path_extracts() {
-        assert_same_as_tika(&[Path::new("../quality/corpus/prose.rtf")], TIKA_PARSER);
+        let documents = read_natively(&[Path::new("../quality/corpus/prose.rtf")]);
+        assert_same_as_tika(&documents, TIKA_PARSER);
     }
 
     #[test]
     fn extracts_snippets_as_tikas_path_does() {
         let snippets = SnippetFiles::new("same", SNIPPETS);
-        for file in &snippets.files {
-            let input = std::fs::read(file).unwrap();
-            assert_eq!(
-                RtfParser
-                    .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                    .as_deref(),
-                None,
-                "{}",
-                file.display()
-            );
+        let paths = snippets.paths();
+        let documents = read_natively(&paths);
+        if TimeZone::java_default().is_ok() {
+            assert_eq!(documents.len(), paths.len());
         }
-        assert_same_as_tika(&snippets.paths(), TIKA_PARSER);
+        assert_same_as_tika(&documents, TIKA_PARSER);
     }
 
     #[test]

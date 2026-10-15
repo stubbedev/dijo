@@ -280,18 +280,14 @@ fn rich_presentation() -> Vec<u8> {
         .map(|(name, _)| format!("../embeddings/{name}"))
         .collect();
     for ((id, target), (name, content)) in ids.iter().zip(&targets).zip(&objects) {
-        slide_relationships.push((id.as_str(), ooxml::kind::OLE_OBJECT, target.as_str()));
+        slide_relationships.push((id.as_str(), kind::OLE_OBJECT, target.as_str()));
         built.binary(
             &format!("ppt/embeddings/{name}"),
-            ooxml::OLE_OBJECT_TYPE,
+            extractor::OLE_OBJECT_TYPE,
             content,
         );
     }
-    slide_relationships.push((
-        "rId9",
-        ooxml::kind::OLE_OBJECT,
-        "https://example.com/linked.xlsx",
-    ));
+    slide_relationships.push(("rId9", kind::OLE_OBJECT, "https://example.com/linked.xlsx"));
     built
         .part(
             "ppt/slides/slide2.xml",
@@ -345,15 +341,11 @@ fn defers_ole_objects_tika_fails_to_read() {
         )
         .relationships(
             "ppt/slides/slide1.xml",
-            &[(
-                "rId1",
-                ooxml::kind::OLE_OBJECT,
-                "../embeddings/oleObject1.bin",
-            )],
+            &[("rId1", kind::OLE_OBJECT, "../embeddings/oleObject1.bin")],
         )
         .binary(
             "ppt/embeddings/oleObject1.bin",
-            ooxml::OLE_OBJECT_TYPE,
+            extractor::OLE_OBJECT_TYPE,
             &[0; 2048],
         );
     assert!(defers(&built.bytes())
@@ -377,14 +369,12 @@ fn defers_internal_links_tika_fails_to_resolve() {
                 "#anchor",
             )],
         );
-    assert!(
-        defers(&built.bytes()).is_some_and(|reason| reason.contains("failing to find the part"))
-    );
+    assert!(defers(&built.bytes()).is_some_and(|reason| reason.contains("names no part for")));
 }
 
 #[test]
 fn defers_macros_only_when_they_are_extracted() {
-    let mut built = Built::new(&[("rId1", ooxml::kind::VBA_PROJECT, "vbaProject.bin")]);
+    let mut built = Built::new(&[("rId1", kind::VBA_PROJECT, "vbaProject.bin")]);
     built.binary(
         "ppt/vbaProject.bin",
         "application/vnd.ms-office.vbaProject",
@@ -395,7 +385,7 @@ fn defers_macros_only_when_they_are_extracted() {
     let macros = office(OfficeParserConfig::new().set_extract_macros(true));
     assert!(PptxParser
         .defers(&input, &TikaMetadata::new(), &macros)
-        .is_some_and(|reason| reason.contains("macros")));
+        .is_some_and(|reason| reason.contains("vbaProject.bin")));
 }
 
 #[test]

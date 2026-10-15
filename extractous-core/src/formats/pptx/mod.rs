@@ -15,9 +15,11 @@ use crate::formats::docx::body::{Body, Context};
 use crate::formats::docx::notes::InlineParts;
 use crate::formats::docx::numbering::ListManager;
 use crate::formats::docx::text::{TextHandler, TextOptions};
+use crate::formats::docx::write_general_text_parts;
 use crate::formats::handlers::is_blank;
 use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
@@ -25,10 +27,8 @@ use crate::formats::{Failure, Parser};
 
 /// Relationship types, as POI's `XSLFRelation` and Tika name them.
 mod kind {
-    pub(super) const OFFICE_DOCUMENT: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
-    pub(super) const STRICT_OFFICE_DOCUMENT: &str =
-        "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument";
+    pub(super) use crate::formats::ooxml::extractor::kind::*;
+
     pub(super) const SLIDE: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
     pub(super) const SLIDE_LAYOUT: &str =
@@ -41,12 +41,8 @@ mod kind {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide";
     pub(super) const NOTES_MASTER: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster";
-    pub(super) const COMMENTS: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
     pub(super) const COMMENT_AUTHORS: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/commentAuthors";
-    pub(super) const CHART: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
     pub(super) const VML_DRAWING: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
     pub(super) const DIAGRAM_DRAWING: &str =
@@ -89,10 +85,13 @@ const SLIDE_PART_KINDS: [&str; 6] = [
 
 /// Metadata names this parser sets.
 mod name {
-    pub(super) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
+    pub(super) use crate::formats::ooxml::extractor::name::*;
+
     pub(super) const HAS_HIDDEN_SLIDES: &str = "msoffice:ppt:has-hidden-slides";
     pub(super) const NUM_HIDDEN_SLIDES: &str = "msoffice:ppt:num-hidden-slides";
     pub(super) const HAS_ANIMATIONS: &str = "msoffice:ppt:has-animations";
+    pub(super) const PAGE_NUMBER: &str = "tk:page:number";
+    pub(super) const PAGE_NUMBERS: &str = "tk:page:numbers";
 }
 
 /// The extractor Tika records having used.
@@ -210,7 +209,7 @@ impl<'a> Presentation<'a> {
                 parts.extend(self.related(slide, kind::NOTES_MASTER));
             }
         }
-        for kind in [kind::COMMENTS, ooxml::kind::DIAGRAM_DATA, kind::CHART] {
+        for kind in [kind::COMMENTS, kind::DIAGRAM_DATA, kind::CHART] {
             parts.extend(self.related(slide, kind));
         }
         parts
@@ -231,7 +230,7 @@ impl<'a> Presentation<'a> {
             parts.extend(self.related(self.main, kind::HANDOUT_MASTER));
         }
         for part in parts {
-            if ooxml::read_quietly(&self.package, part, ooxml::Ignore)?.is_none() {
+            if ooxml::read_quietly(&self.package, part, Ignore)?.is_none() {
                 return Err(Unported(format!(
                     "Tika records a failure on {}",
                     self.package.name(part)
@@ -239,9 +238,7 @@ impl<'a> Presentation<'a> {
             }
         }
         for &slide in &slides {
-            for relationship in
-                Package::relationships_of(self.relationships(slide), ooxml::kind::IMAGE)
-            {
+            for relationship in Package::relationships_of(self.relationships(slide), kind::IMAGE) {
                 if relationship.is_internal() && relationship.part.is_none() {
                     return Err(Unported(format!(
                         "the picture {} of {} is missing, which Tika records",
@@ -253,43 +250,11 @@ impl<'a> Presentation<'a> {
         }
         for source in self.embedding_parts() {
             for relationship in self.relationships(source) {
-                self.check_embedded(source, relationship)?;
+                extractor::check_embedded(&self.package, self.config, source, relationship, false)?;
             }
         }
         let mut metadata = TikaMetadata::new();
         ooxml::extract_properties(&self.package, &mut metadata)
-    }
-
-    /// What `handleEmbeddedPart` does with one relationship that this port does not: record
-    /// failing to find its part or to read the OLE object it names, or extract macros.
-    fn check_embedded(&self, source: usize, relationship: &Relationship) -> Result<(), Unported> {
-        if !relationship.is_internal() {
-            return Ok(());
-        }
-        if !relationship.names_a_part() {
-            return Err(Unported(format!(
-                "Tika records failing to find the part of the relationship {} of {}, {:?}",
-                relationship.id,
-                self.package.name(source),
-                relationship.target_uri()
-            )));
-        }
-        let Some(target) = relationship.part else {
-            return Ok(());
-        };
-        match relationship.kind.as_str() {
-            ooxml::kind::OLE_OBJECT
-                if self.package.parts[target].content_type == ooxml::OLE_OBJECT_TYPE =>
-            {
-                ooxml::read_ole_object(&self.package, target).map(|_| ())
-            }
-            ooxml::kind::VBA_PROJECT if self.config.extracts_macros() => Err(Unported(format!(
-                "{} has macros, which Tika extracts when asked to: {}",
-                self.package.name(source),
-                self.package.name(target)
-            ))),
-            _ => Ok(()),
-        }
     }
 
     /// `getMainDocumentParts`: each slide after the parts of it that may embed documents, then
@@ -322,9 +287,7 @@ impl<'a> Presentation<'a> {
             let Some(slide) = slide.part else {
                 continue;
             };
-            for relationship in
-                Package::relationships_of(self.relationships(slide), ooxml::kind::IMAGE)
-            {
+            for relationship in Package::relationships_of(self.relationships(slide), kind::IMAGE) {
                 if let (true, Some(picture)) = (relationship.is_internal(), relationship.part) {
                     let on = pages.entry(picture).or_default();
                     if !on.contains(&number) {
@@ -337,7 +300,10 @@ impl<'a> Presentation<'a> {
     }
 
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        ooxml::write_factory_metadata(&self.package, POWERPOINT_EXTRACTOR, xhtml.metadata_mut());
+        extractor::write_package_metadata(&self.package, xhtml.metadata_mut());
+        xhtml
+            .metadata_mut()
+            .add(name::PARSED_BY, POWERPOINT_EXTRACTOR);
         ooxml::extract_properties(&self.package, xhtml.metadata_mut())
             .map_err(|Unported(reason)| Failure::Malformed(reason))?;
         let authors = self.comment_authors()?;
@@ -378,13 +344,18 @@ impl<'a> Presentation<'a> {
                 xhtml,
             )?;
         }
-        ooxml::write_embedded_parts(
+        let pages = self.picture_pages();
+        extractor::write_embedded_parts(
             &self.package,
             &self.embedding_parts(),
-            &self.picture_pages(),
             xhtml,
+            &|part, metadata| {
+                if let Some(pages) = pages.get(&part) {
+                    apply_page_numbers(metadata, pages);
+                }
+            },
         )?;
-        ooxml::write_thumbnails(&self.package, xhtml)?;
+        extractor::write_thumbnails(&self.package, xhtml)?;
         Ok(())
     }
 
@@ -411,7 +382,7 @@ impl<'a> Presentation<'a> {
         authors: &CommentAuthors,
         xhtml: &mut Xhtml,
     ) -> Result<bool, Failure> {
-        let links = ooxml::linked_relationships(self.relationships(slide), false);
+        let links = extractor::linked_relationships(self.relationships(slide), false);
         xhtml.start_element_with("div", &[("class", "slide-content")])?;
         let mut lists = ListManager::default();
         let inline = InlineParts::default();
@@ -453,9 +424,15 @@ impl<'a> Presentation<'a> {
             }
         }
         let mut comments = Comments::new(xhtml, authors);
-        self.write_general(kind::COMMENTS, None, slide, &mut comments)?;
+        extractor::write_general_text_parts(
+            &self.package,
+            slide,
+            kind::COMMENTS,
+            "",
+            &mut comments,
+        )?;
         self.write_text_part(
-            ooxml::kind::DIAGRAM_DATA,
+            kind::DIAGRAM_DATA,
             "diagram-data",
             slide,
             &links,
@@ -477,60 +454,18 @@ impl<'a> Presentation<'a> {
         skip_placeholders: bool,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
+        if !skip_placeholders {
+            return write_general_text_parts(&self.package, parent, kind, label, links, xhtml);
+        }
         let mut lists = ListManager::default();
         let inline = InlineParts::default();
         let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
         let mut handler = TextHandler::new(body, links, TextOptions::default());
-        if skip_placeholders {
-            self.write_general(
-                kind,
-                Some(label),
-                parent,
-                &mut PlaceHolderSkipper {
-                    inner: &mut handler,
-                    in_placeholder: false,
-                },
-            )
-        } else {
-            self.write_general(kind, Some(label), parent, &mut handler)
-        }
-    }
-
-    /// `handleGeneralTextContainingPart`: hands `handler` a `div` of class `label` around the
-    /// parts `parent`'s relationships of `kind` lead to, each read behind an
-    /// `XHTMLBalancingHandler`. The handler is no XHTML handler, so the div is never written.
-    fn write_general<H: SaxHandler>(
-        &self,
-        kind: &str,
-        label: Option<&str>,
-        parent: usize,
-        handler: &mut H,
-    ) -> Result<(), Failure> {
-        let mut relationships = Package::relationships_of(self.relationships(parent), kind)
-            .map(|relationship| relationship.part)
-            .peekable();
-        if relationships.peek().is_none() {
-            return Ok(());
-        }
-        let class = Attribute {
-            qualified_name: "class".to_owned(),
-            namespace: String::new(),
-            local_name: "class".to_owned(),
-            value: label.unwrap_or_default().to_owned(),
+        let mut skipper = PlaceHolderSkipper {
+            inner: &mut handler,
+            in_placeholder: false,
         };
-        handler.start_element("", "div", &[class])?;
-        for part in relationships.flatten() {
-            let mut balancer = Balancer {
-                inner: &mut *handler,
-                open: Vec::new(),
-            };
-            let bytes = self.package.read(part)?;
-            if let Err(failure) = xml::parse_sax(&bytes, self.package.name(part), &mut balancer) {
-                balancer.drain()?;
-                return Err(failure);
-            }
-        }
-        handler.end_element("", "div")
+        extractor::write_general_text_parts(&self.package, parent, kind, label, &mut skipper)
     }
 }
 
@@ -688,41 +623,21 @@ impl<H: SaxHandler> SaxHandler for PlaceHolderSkipper<'_, H> {
     }
 }
 
-/// `XHTMLBalancingHandler` over the events of one part: what it opened, to end on a failure.
-struct Balancer<'h, H> {
-    inner: &'h mut H,
-    open: Vec<(String, String)>,
-}
-
-impl<H: SaxHandler> Balancer<'_, H> {
-    /// `drainOpenElements`.
-    fn drain(&mut self) -> Result<(), Failure> {
-        while let Some((namespace, local_name)) = self.open.pop() {
-            self.inner.end_element(&namespace, &local_name)?;
+/// `PageAnchoring.applyPageMetadata`: the slides a picture is on in order, and the slide when
+/// there is one.
+fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
+    let mut sorted = pages.to_vec();
+    sorted.sort_unstable();
+    if sorted.is_empty() {
+        sorted.push(-1);
+    }
+    for page in &sorted {
+        metadata.add(name::PAGE_NUMBERS, page.to_string());
+    }
+    if let [page] = sorted[..] {
+        if page != -1 {
+            metadata.set(name::PAGE_NUMBER, page.to_string());
         }
-        Ok(())
-    }
-}
-
-impl<H: SaxHandler> SaxHandler for Balancer<'_, H> {
-    fn start_element(
-        &mut self,
-        namespace: &str,
-        local_name: &str,
-        attributes: &[Attribute],
-    ) -> Result<(), Failure> {
-        self.open
-            .push((namespace.to_owned(), local_name.to_owned()));
-        self.inner.start_element(namespace, local_name, attributes)
-    }
-
-    fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        self.open.pop();
-        self.inner.end_element(namespace, local_name)
-    }
-
-    fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        self.inner.characters(text)
     }
 }
 

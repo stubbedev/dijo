@@ -134,57 +134,39 @@ enum Reader {
 const FIRST_READS: usize = 4 + 28;
 
 /// The document's characters, decoded as Xerces decodes them, line ends normalized, up to the
-/// first character its reader cannot deliver.
-struct Text {
+/// first character its reader cannot deliver. Only the characters are kept, four bytes each: the
+/// byte offsets the switch to a declared encoding needs are decoded again for the few characters
+/// of the declaration.
+struct Text<'a> {
     chars: Vec<char>,
-    /// The byte offset after each character.
-    ends: Vec<usize>,
     /// Whether the characters stop at a malformed sequence rather than at the end.
     malformed: bool,
-    bytes: Vec<u8>,
+    bytes: &'a [u8],
     start: usize,
+    /// The reader the characters were decoded with.
+    reader: Reader,
     /// Where the reads in chunks made before the declaration is scanned end.
     first_read_end: usize,
     /// The encoding name Xerces records for the document before its declaration.
     detected: &'static str,
 }
 
-/// Decoded characters with the byte offset after each.
-struct Decoded {
-    chars: Vec<(char, usize)>,
-    malformed: bool,
-}
-
-impl Text {
-    fn new(bytes: &[u8], detected: &'static str, reader: Reader, start: usize) -> Text {
-        let mut text = Text {
-            chars: Vec::new(),
-            ends: Vec::new(),
-            malformed: false,
-            bytes: bytes.to_vec(),
+impl<'a> Text<'a> {
+    fn new(bytes: &'a [u8], detected: &'static str, reader: Reader, start: usize) -> Text<'a> {
+        let mut chars = Vec::with_capacity(bytes.len().saturating_sub(start));
+        let malformed = decode_normalized(reader, bytes, start, |c, _| {
+            chars.push(c);
+            true
+        });
+        Text {
+            chars,
+            malformed,
+            bytes,
             start,
+            reader,
             first_read_end: FIRST_READS.min(bytes.len()),
             detected,
-        };
-        text.append(decode(reader, bytes, start));
-        text
-    }
-
-    /// Appends decoded characters, normalizing line ends: `\r\n` and a lone `\r` both become
-    /// `\n`.
-    fn append(&mut self, decoded: Decoded) {
-        let mut after_cr = false;
-        for (c, end) in decoded.chars {
-            if after_cr && c == '\n' {
-                after_cr = false;
-                *self.ends.last_mut().expect("a carriage return precedes") = end;
-                continue;
-            }
-            after_cr = c == '\r';
-            self.chars.push(if c == '\r' { '\n' } else { c });
-            self.ends.push(end);
         }
-        self.malformed = decoded.malformed;
     }
 
     /// Switches to the declared encoding, as `XMLEntityScanner.setEncoding` does: the
@@ -210,9 +192,15 @@ impl Text {
                 _ => return malformed(format!("the encoding {declared} is unsupported")),
             },
         };
+        let mut ends = Vec::new();
+        decode_normalized(self.reader, self.bytes, self.start, |_, end| {
+            let previous_end = ends.last().copied().unwrap_or(self.start);
+            ends.push(end);
+            ends.len() < declaration_end || previous_end < self.first_read_end
+        });
         let mut first_read = 0;
         let mut previous_end = self.start;
-        for &end in &self.ends {
+        for &end in &ends {
             if previous_end >= self.first_read_end {
                 break;
             }
@@ -220,17 +208,19 @@ impl Text {
             previous_end = end;
         }
         let (kept, resume) = if declaration_end > first_read {
-            (declaration_end, self.ends[declaration_end - 1])
+            (declaration_end, ends[declaration_end - 1])
         } else if first_read == self.chars.len() && self.malformed {
             (first_read, self.first_read_end)
         } else {
             (first_read, previous_end.max(self.first_read_end))
         };
         self.chars.truncate(kept);
-        self.ends.truncate(kept);
-        let bytes = std::mem::take(&mut self.bytes);
-        self.append(decode(reader, &bytes, resume));
-        self.bytes = bytes;
+        self.reader = reader;
+        let chars = &mut self.chars;
+        self.malformed = decode_normalized(reader, self.bytes, resume, |c, _| {
+            chars.push(c);
+            true
+        });
         Ok(())
     }
 }
@@ -252,27 +242,72 @@ fn detect_encoding(bytes: &[u8]) -> Option<(&'static str, Reader, usize)> {
     })
 }
 
-/// Decodes from `start` until the reader fails or the bytes end.
-fn decode(reader: Reader, bytes: &[u8], start: usize) -> Decoded {
+/// Decodes from `start` as [`decode`] does, normalizing line ends: `\r\n` and a lone `\r` both
+/// become `\n`, which ends where the last of them ends. Returns whether a malformed sequence
+/// stopped the reader.
+fn decode_normalized(
+    reader: Reader,
+    bytes: &[u8],
+    start: usize,
+    mut sink: impl FnMut(char, usize) -> bool,
+) -> bool {
+    let mut carriage_return: Option<usize> = None;
+    let mut going = true;
+    let malformed = decode(reader, bytes, start, |c, end| {
+        if let Some(return_end) = carriage_return.take() {
+            if c == '\n' {
+                going = sink('\n', end);
+                return going;
+            }
+            going = sink('\n', return_end);
+            if !going {
+                return false;
+            }
+        }
+        if c == '\r' {
+            carriage_return = Some(end);
+            return true;
+        }
+        going = sink(c, end);
+        going
+    });
+    if let (true, Some(return_end)) = (going, carriage_return) {
+        sink('\n', return_end);
+    }
+    malformed
+}
+
+/// Decodes from `start` until the reader fails, the bytes end or `sink` asks to stop, handing
+/// `sink` each character with the byte offset after it. Returns whether a malformed sequence
+/// stopped the reader.
+fn decode(
+    reader: Reader,
+    bytes: &[u8],
+    start: usize,
+    mut sink: impl FnMut(char, usize) -> bool,
+) -> bool {
     let body = &bytes[start.min(bytes.len())..];
-    let mut chars = Vec::with_capacity(body.len());
-    let mut malformed = false;
     match reader {
         Reader::Utf8 => {
-            let valid = match std::str::from_utf8(body) {
-                Ok(text) => text,
-                Err(error) => {
-                    malformed = true;
+            let (valid, malformed) = match std::str::from_utf8(body) {
+                Ok(text) => (text, false),
+                Err(error) => (
                     std::str::from_utf8(&body[..error.valid_up_to()])
-                        .expect("the prefix up to the error is valid UTF-8")
-                }
+                        .expect("the prefix up to the error is valid UTF-8"),
+                    true,
+                ),
             };
             for (offset, c) in valid.char_indices() {
-                chars.push((c, start + offset + c.len_utf8()));
+                if !sink(c, start + offset + c.len_utf8()) {
+                    return false;
+                }
             }
+            malformed
         }
         Reader::Utf16 { big_endian } => {
             let units = body.len() / 2;
+            let odd = body.len() % 2 == 1;
+            let last_chunk = utf16_last_chunk_start(body.len());
             let mut index = 0;
             while index < units {
                 let unit = |i: usize| {
@@ -300,13 +335,14 @@ fn decode(reader: Reader, bytes: &[u8], start: usize) -> Decoded {
                     _ => (char::from_u32(u32::from(first)).unwrap_or('\u{FFFE}'), 1),
                 };
                 index += used;
-                chars.push((c, start + 2 * index));
+                if odd && 2 * index > last_chunk {
+                    break;
+                }
+                if !sink(c, start + 2 * index) {
+                    return false;
+                }
             }
-            if body.len() % 2 == 1 {
-                let last_chunk = utf16_last_chunk_start(body.len());
-                chars.retain(|&(_, end)| end - start <= last_chunk);
-                malformed = true;
-            }
+            odd
         }
         Reader::Ucs4 { big_endian } => {
             for (index, quad) in body.as_chunks::<4>().0.iter().enumerate() {
@@ -316,21 +352,28 @@ fn decode(reader: Reader, bytes: &[u8], start: usize) -> Decoded {
                 } else {
                     u32::from_le_bytes(quad)
                 };
-                chars.push((
+                if !sink(
                     char::from_u32(code).unwrap_or('\u{FFFE}'),
                     start + 4 * (index + 1),
-                ));
+                ) {
+                    return false;
+                }
             }
+            false
         }
         Reader::Java(charset) => {
             let text = charset
                 .decode(body)
                 .expect("the reader is only chosen for a charset that decodes");
             let end = bytes.len();
-            chars.extend(text.chars().map(|c| (c, end)));
+            for c in text.chars() {
+                if !sink(c, end) {
+                    return false;
+                }
+            }
+            false
         }
     }
-    Decoded { chars, malformed }
 }
 
 /// Where the read that meets an odd final byte of UTF-16 starts: Xerces reads 128 bytes before
@@ -384,8 +427,8 @@ struct Default {
     value: String,
 }
 
-struct Parser {
-    text: Text,
+struct Parser<'a> {
+    text: Text<'a>,
     position: usize,
     entities: HashMap<String, Entity>,
     defaults: HashMap<String, Vec<Default>>,
@@ -417,7 +460,7 @@ impl Scopes {
     }
 }
 
-impl Parser {
+impl Parser<'_> {
     fn peek_at(&self, offset: usize) -> Result<Option<char>> {
         let index = self.position + offset;
         if index < self.text.chars.len() {

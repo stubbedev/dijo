@@ -4,6 +4,7 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::*;
+use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
 use crate::formats::parity::{self, assert_same_as_tika_with};
 use crate::formats::{Chain, Output, StringOut};
@@ -239,10 +240,10 @@ fn reads_a_plain_document() {
 #[test]
 fn defers_pictures_attachments_and_chunks_tika_parses() {
     for (kind, target) in [
-        (ooxml::kind::IMAGE, "media/image1.png"),
-        (ooxml::kind::PACKAGE, "embeddings/a.xlsx"),
-        (ooxml::kind::ALTERNATE_FORMAT_CHUNK, "chunk.html"),
-        (ooxml::kind::AUDIO, "media/a.wav"),
+        (kind::IMAGE, "media/image1.png"),
+        (kind::PACKAGE, "embeddings/a.xlsx"),
+        (kind::ALTERNATE_FORMAT_CHUNK, "chunk.html"),
+        (kind::AUDIO, "media/a.wav"),
     ] {
         let input = document(
             "<w:p/>",
@@ -262,12 +263,8 @@ fn defers_ole_objects_tika_opens_only() {
         let content = vec![0u8; size];
         document(
             "<w:p/>",
-            &relationship("rId9", ooxml::kind::OLE_OBJECT, "embeddings/oleObject1.bin"),
-            &[(
-                "word/embeddings/oleObject1.bin",
-                ooxml::OLE_OBJECT_TYPE,
-                &content,
-            )],
+            &relationship("rId9", kind::OLE_OBJECT, "embeddings/oleObject1.bin"),
+            &[("word/embeddings/oleObject1.bin", OLE_OBJECT_TYPE, &content)],
         )
     };
     assert_eq!(defers(&ole(1535)), None);
@@ -278,7 +275,7 @@ fn defers_ole_objects_tika_opens_only() {
 fn defers_macros_only_when_they_are_extracted() {
     let input = document(
         "<w:p/>",
-        &relationship("rId9", ooxml::kind::VBA_PROJECT, "vbaProject.bin"),
+        &relationship("rId9", kind::VBA_PROJECT, "vbaProject.bin"),
         &[(
             "word/vbaProject.bin",
             "application/vnd.ms-office.vbaProject",

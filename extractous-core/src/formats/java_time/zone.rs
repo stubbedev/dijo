@@ -84,7 +84,9 @@ impl TimeZone {
         DEFAULT.as_ref().map_err(Clone::clone)
     }
 
-    fn fixed(offset: i64) -> Self {
+    /// A zone always `offset` seconds east of UTC, such as UTC itself or the offset a parsed
+    /// date names.
+    pub(crate) fn fixed(offset: i64) -> Self {
         Self {
             raw_offset: offset,
             transitions: Vec::new(),
@@ -229,15 +231,41 @@ impl TimeZone {
         seconds * 1000
     }
 
+    /// The offset, in milliseconds, at the instant `utc` (milliseconds since the epoch), as
+    /// `ZoneInfo.getOffsets` gives it for UTC time.
+    pub(crate) fn offset_at_utc(&self, utc: i64) -> i64 {
+        let utc = utc.div_euclid(1000);
+        let seconds = if self.transitions.is_empty() {
+            self.raw_offset
+        } else {
+            match self.transition_index_by(utc, |transition| transition.at) {
+                None => self.raw_offset,
+                Some(index) if index < self.transitions.len() => {
+                    self.transitions[index].offset_after
+                }
+                Some(_) => match self.rule {
+                    Some(rule) => rule.offset_at(utc),
+                    None => self.transitions[self.transitions.len() - 1].offset_after,
+                },
+            }
+        };
+        seconds * 1000
+    }
+
     /// `ZoneInfo.getTransitionIndex` for a wall time: the transition in effect, `None` before
     /// the first, and the transitions' length past the last.
     fn transition_index(&self, wall: i64) -> Option<usize> {
+        self.transition_index_by(wall, |transition| transition.at + transition.offset_after)
+    }
+
+    fn transition_index_by(&self, time: i64, key: impl Fn(&Transition) -> i64) -> Option<usize> {
+        let wall = time;
         let mut low: isize = 0;
         let mut high: isize = self.transitions.len() as isize - 1;
         while low <= high {
             let mid = (low + high) / 2;
             let transition = self.transitions[mid as usize];
-            let at = transition.at + transition.offset_after;
+            let at = key(&transition);
             if at < wall {
                 low = mid + 1;
             } else if at > wall {

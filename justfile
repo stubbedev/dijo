@@ -163,6 +163,18 @@ rtf-reference:
     done
     java -cp "$jars/*" "$fixtures/RtfReference.java" "$fixtures"
 
+# Regenerate what POI's DataFormatter, as Tika's Excel extractor formats cells with it, makes of
+# numbers in the built-in, corpus (formats.txt) and further number formats, which the Rust port is
+# tested against, in the locale of the native image and the time zone of the test's zoneinfo file.
+xlsx-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/xlsx
+    java -Duser.language=en -Duser.country=US -Duser.timezone=Europe/Copenhagen \
+        -cp "$jars/mime/*" "$fixtures/FormatReference.java" "$fixtures"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]

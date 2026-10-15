@@ -24,6 +24,7 @@ use text::{TextHandler, TextOptions};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
@@ -32,10 +33,10 @@ use crate::formats::{Failure, Parser};
 /// The WordprocessingML namespace.
 const W_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-/// Relationship types, as POI's `XWPFRelation`, `PackageRelationshipTypes` and Tika name them.
+/// Relationship types of Word documents, as POI's `XWPFRelation` names them.
 mod kind {
-    pub(super) const STRICT_OFFICE_DOCUMENT: &str =
-        "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument";
+    pub(super) use crate::formats::ooxml::extractor::kind::*;
+
     pub(super) const HEADER: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
     pub(super) const FOOTER: &str =
@@ -44,12 +45,6 @@ mod kind {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
     pub(super) const ENDNOTES: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
-    pub(super) const COMMENTS: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
-    pub(super) const CHART: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
-    pub(super) const STYLES: &str =
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
     pub(super) const NUMBERING: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
     pub(super) const SETTINGS: &str =
@@ -79,15 +74,15 @@ const MAIN_PART_KINDS: [&str; 6] = [
     kind::FOOTNOTES,
     kind::ENDNOTES,
     kind::COMMENTS,
-    ooxml::kind::DIAGRAM_DATA,
+    kind::DIAGRAM_DATA,
 ];
 
 /// Metadata names this parser sets.
 mod name {
-    pub(super) const HAS_COMMENTS: &str = "msoffice:has-comments";
+    pub(super) use crate::formats::ooxml::extractor::name::*;
+
     pub(super) const HAS_HIDDEN_TEXT: &str = "msoffice:doc:has-hidden-text";
     pub(super) const HAS_TRACK_CHANGES: &str = "msoffice:has-track-changes";
-    pub(super) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
     pub(super) const HAS_ATTACHED_TEMPLATE: &str = "msoffice:doc:has-attached-template";
     pub(super) const HAS_SUBDOCUMENTS: &str = "msoffice:doc:has-subdocuments";
     pub(super) const HAS_MAIL_MERGE: &str = "msoffice:doc:has-mail-merge";
@@ -153,7 +148,7 @@ struct Document<'a> {
 impl<'a> Document<'a> {
     fn open(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Self, Unported> {
         let package = Package::open(input)?;
-        let core = [ooxml::kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
+        let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()
             .find_map(|kind| Package::relationships_of(&package.relationships, kind).next())
             .and_then(|relationship| package.package_part(relationship))
@@ -218,7 +213,7 @@ impl<'a> Document<'a> {
             parts.extend(Package::related(relationships, kind));
         }
         parts.push(story);
-        parts.extend(Package::related(relationships, ooxml::kind::DIAGRAM_DATA));
+        parts.extend(Package::related(relationships, kind::DIAGRAM_DATA));
         parts.extend(Package::related(relationships, kind::CHART));
         if footers_too {
             parts.extend(Package::related(relationships, kind::FOOTER));
@@ -232,14 +227,14 @@ impl<'a> Document<'a> {
     fn check(&self) -> Result<(), Unported> {
         for &source in &self.main_parts() {
             for relationship in self.relationships(source) {
-                self.check_embedded(source, relationship)?;
+                extractor::check_embedded(&self.package, self.config, source, relationship, true)?;
             }
         }
         let mut stories = self.stories.clone();
         stories.extend(&self.glossaries);
         for story in stories {
             for part in self.text_parts(story) {
-                if ooxml::read_quietly(&self.package, part, ooxml::Ignore)?.is_none() {
+                if ooxml::read_quietly(&self.package, part, Ignore)?.is_none() {
                     return Err(Unported(format!(
                         "Tika records a failure on {}",
                         self.package.name(part)
@@ -252,52 +247,15 @@ impl<'a> Document<'a> {
                 Package::first_related(self.relationships(story), kind::WEB_SETTINGS),
             ];
             for part in quietly_read.into_iter().flatten() {
-                ooxml::read_quietly(&self.package, part, ooxml::Ignore)?;
+                ooxml::read_quietly(&self.package, part, Ignore)?;
             }
         }
         let mut metadata = TikaMetadata::new();
         ooxml::extract_properties(&self.package, &mut metadata)
     }
 
-    /// What `handleEmbeddedPart` does with one relationship: an embedded document Tika parses
-    /// is [`Unported`].
-    fn check_embedded(&self, source: usize, relationship: &Relationship) -> Result<(), Unported> {
-        if !relationship.is_internal() {
-            return Ok(());
-        }
-        let Some(target) = relationship.part else {
-            return Ok(());
-        };
-        let embedded = || {
-            Err(Unported(format!(
-                "{} embeds {} ({}), which Tika parses",
-                self.package.name(source),
-                self.package.name(target),
-                relationship.kind
-            )))
-        };
-        let target_part = &self.package.parts[target];
-        match relationship.kind.as_str() {
-            ooxml::kind::OLE_OBJECT
-                if target_part.content_type == ooxml::OLE_OBJECT_TYPE
-                    && self.package.size(target) < ooxml::SMALLEST_OLE_OBJECT =>
-            {
-                Ok(())
-            }
-            ooxml::kind::OLE_OBJECT
-            | ooxml::kind::IMAGE
-            | ooxml::kind::MEDIA
-            | ooxml::kind::VIDEO
-            | ooxml::kind::AUDIO
-            | ooxml::kind::PACKAGE
-            | ooxml::kind::ALTERNATE_FORMAT_CHUNK => embedded(),
-            ooxml::kind::VBA_PROJECT if self.config.extracts_macros() => embedded(),
-            _ => Ok(()),
-        }
-    }
-
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        ooxml::write_factory_metadata(&self.package, WORD_EXTRACTOR, xhtml.metadata_mut());
+        self.write_package_metadata(xhtml.metadata_mut());
         ooxml::extract_properties(&self.package, xhtml.metadata_mut())
             .map_err(|Unported(reason)| Failure::Malformed(reason))?;
         for &story in &self.stories {
@@ -313,9 +271,15 @@ impl<'a> Document<'a> {
         if let Some(&story) = self.stories.first() {
             self.write_security_features(story, xhtml)?;
         }
-        ooxml::write_embedded_parts(&self.package, &self.main_parts(), &HashMap::new(), xhtml)?;
-        ooxml::write_thumbnails(&self.package, xhtml)?;
+        extractor::write_embedded_parts(&self.package, &self.main_parts(), xhtml, &|_, _| {})?;
+        extractor::write_thumbnails(&self.package, xhtml)?;
         Ok(())
+    }
+
+    /// What `OOXMLExtractorFactory` records before the extractor runs.
+    fn write_package_metadata(&self, metadata: &mut TikaMetadata) {
+        extractor::write_package_metadata(&self.package, metadata);
+        metadata.add(name::PARSED_BY, WORD_EXTRACTOR);
     }
 
     /// `handleDocumentPart`.
@@ -339,7 +303,7 @@ impl<'a> Document<'a> {
         }
         let inline = self.inline_parts(story)?;
         let emitted = self.write_part(story, styles.as_ref(), &mut lists, &inline, xhtml)?;
-        let mut trailing = Package::related(relationships, ooxml::kind::DIAGRAM_DATA);
+        let mut trailing = Package::related(relationships, kind::DIAGRAM_DATA);
         trailing.extend(Package::related(relationships, kind::CHART));
         if footers_too {
             trailing.extend(Package::related(relationships, kind::FOOTER));
@@ -377,7 +341,7 @@ impl<'a> Document<'a> {
         inline: &InlineParts,
         xhtml: &mut Xhtml,
     ) -> Result<HashSet<String>, Failure> {
-        let relationships = ooxml::linked_relationships(self.relationships(part), true);
+        let relationships = self.linked_relationships(part);
         let body = Body::new(
             xhtml,
             Context {
@@ -400,6 +364,12 @@ impl<'a> Document<'a> {
         Ok(handler.into_body().into_emitted_comments())
     }
 
+    /// `loadLinkedRelationships`: the targets of a part's links by id, and the file names of
+    /// what it embeds.
+    fn linked_relationships(&self, part: usize) -> HashMap<String, String> {
+        extractor::linked_relationships(self.relationships(part), true)
+    }
+
     /// `collectInlineParts`: the footnotes, endnotes and comments of a main document.
     fn inline_parts(&self, story: usize) -> Result<InlineParts, Failure> {
         let mut inline = InlineParts::default();
@@ -411,9 +381,7 @@ impl<'a> Document<'a> {
         for (index, (kind, wrapper, skipped)) in sources.into_iter().enumerate() {
             let mut collector = Collector::new(wrapper, skipped);
             for part in Package::related(self.relationships(story), kind) {
-                inline
-                    .relationships
-                    .extend(ooxml::linked_relationships(self.relationships(part), true));
+                inline.relationships.extend(self.linked_relationships(part));
                 collector = self.read_part(part, collector)?;
             }
             for (id, events) in collector.into_notes() {
@@ -450,7 +418,7 @@ impl<'a> Document<'a> {
                 xhtml.metadata_mut().set(flag, "true");
             }
             for relationship in found.filter(|relationship| !relationship.is_internal()) {
-                ooxml::external_reference(xhtml, class, relationship.target_uri())?;
+                extractor::external_reference(xhtml, class, relationship.target_uri())?;
             }
         }
         let settings = match Package::first_related(relationships, kind::SETTINGS) {
@@ -473,6 +441,25 @@ impl<'a> Document<'a> {
         }
         Ok(())
     }
+}
+
+/// What `handleGeneralTextContainingPart` writes for the parts `parent`'s relationships of
+/// `kind` lead to, read by one of Tika's text handlers at its defaults, `new
+/// OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml), links)`, without
+/// styles, lists, notes or metadata.
+pub(crate) fn write_general_text_parts(
+    package: &Package,
+    parent: usize,
+    kind: &str,
+    class: &str,
+    links: &HashMap<String, String>,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
+    let mut lists = ListManager::new(None);
+    let inline = InlineParts::default();
+    let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
+    let mut handler = TextHandler::new(body, links, TextOptions::default());
+    extractor::write_general_text_parts(package, parent, kind, class, &mut handler)
 }
 
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.
