@@ -211,3 +211,28 @@ fn entry_metadata(entry: &PackageEntry, xhtml: &mut Xhtml) -> Result<TikaMetadat
     }
     Ok(metadata)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compress::tar::tests::tar;
+    use crate::compress::zip::file::tests::zip;
+
+    fn defers(input: &[u8]) -> Option<String> {
+        PackageParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+    }
+
+    #[test]
+    fn defers_what_the_port_does_not_read_as_commons_compress_does() {
+        assert_eq!(defers(&tar(&[(b"a.txt", b'0', b"text")])), None);
+        let sparse = defers(&tar(&[(b"sparse", b'S', b"")])).unwrap();
+        assert!(sparse.contains("sparse"), "{sparse}");
+        let data = tar(&[(b"a.txt", b'0', b"text")]);
+        let cut = defers(&data[..515]).unwrap();
+        assert!(cut.contains("Truncated"), "{cut}");
+        let zip = defers(&zip(&[("a", b"text")])).unwrap();
+        assert!(zip.contains("Zip"), "{zip}");
+        let none = defers(b"plain text").unwrap();
+        assert!(none.contains("no archive"), "{none}");
+    }
+}
