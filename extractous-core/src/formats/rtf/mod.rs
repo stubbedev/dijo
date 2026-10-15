@@ -89,6 +89,10 @@ impl ContentHandler for Discard {
         Ok(())
     }
 
+    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
     fn start_element(&mut self, _name: &str, _attributes: &[(&str, &str)]) -> Result<(), Stop> {
         Ok(())
     }

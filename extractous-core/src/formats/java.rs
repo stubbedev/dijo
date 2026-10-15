@@ -10,7 +10,7 @@ const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
 const MIN_TREEIFY_CAPACITY: usize = 64;
 
-/// A `java.util.HashMap<String, V>` that is only ever added to, iterated in Java's order.
+/// A `java.util.HashMap<String, V>`, iterated in Java's order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct JavaHashMap<V> {
     entries: Vec<Entry<V>>,
@@ -64,6 +64,12 @@ impl<V> JavaHashMap<V> {
                 }
             }
         }
+    }
+
+    /// `clear`: every entry goes; the table keeps its size, as Java's does.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.index.clear();
     }
 
     /// The entries in insertion order.

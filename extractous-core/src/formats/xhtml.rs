@@ -59,9 +59,12 @@ pub(crate) enum Stop {
 }
 
 /// Where the XHTML of a document goes: the SAX events Tika's handlers receive, all in the XHTML
-/// namespace and named by their local name.
+/// namespace and named by their local name, and the namespace prefixes a parser maps.
 pub(crate) trait ContentHandler {
     fn start_document(&mut self) -> Result<(), Stop>;
+    /// SAX's `startPrefixMapping`: `prefix`, empty for the default namespace, stands for `uri`
+    /// from the next element on.
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop>;
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop>;
     fn end_element(&mut self, name: &str) -> Result<(), Stop>;
     fn characters(&mut self, text: &str) -> Result<(), Stop>;
@@ -72,6 +75,10 @@ pub(crate) trait ContentHandler {
 impl<H: ContentHandler + ?Sized> ContentHandler for &mut H {
     fn start_document(&mut self) -> Result<(), Stop> {
         (**self).start_document()
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        (**self).start_prefix_mapping(prefix, uri)
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
@@ -131,12 +138,25 @@ impl<'h> Xhtml<'h> {
             embedding: Embedding::new(configs),
         };
         let result = xhtml
-            .handler
             .start_document()
             .map_err(E::from)
             .and_then(|()| body(&mut xhtml))
             .and_then(|()| xhtml.end_document().map_err(E::from));
         (xhtml.metadata, xhtml.embedding.into_record(), result)
+    }
+
+    /// `XHTMLContentHandler.startDocument`: the document starts, in the XHTML namespace.
+    fn start_document(&mut self) -> Result<(), Stop> {
+        self.handler.start_document()?;
+        self.handler.start_prefix_mapping("", XHTML_NAMESPACE)
+    }
+
+    /// Maps `prefix`, empty for the default namespace, to `uri`, as a parser does that hands
+    /// Tika's handler the prefix mappings of the XML it reads: XML output declares the mapping on
+    /// the next element it writes, unless the elements around that one declare it already.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.handler.start_prefix_mapping(prefix, uri)
     }
 
     /// The metadata, which the head shows as it stands when the first body content is written.

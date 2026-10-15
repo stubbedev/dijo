@@ -7,6 +7,7 @@
 #   start-document           end-document
 #   start NAME [ATTR VALUE]...
 #   end NAME                 chars TEXT    ws TEXT    newline    element NAME VALUE
+#   prefix PREFIX URI        startPrefixMapping; an empty PREFIX maps the default namespace
 
 == paragraphs
 meta	Content-Type	application/rtf
@@ -212,4 +213,67 @@ start	p
 chars	Straddling astral \U0001F600\U0001F600 characters at the limit.
 end	p
 element	p	Never written under the small limit.
+end-document
+
+== prefix-mappings-before-the-first-element
+start-document
+prefix		http://www.w3.org/1999/xhtml
+prefix	epub	http://www.idpf.org/2007/ops
+start	section	type	chapter
+element	h1	Ledger
+prefix		http://www.w3.org/1999/xhtml
+prefix	epub	http://www.idpf.org/2007/ops
+start	p
+chars	Declared once.
+end	p
+end	section
+end-document
+
+== prefix-mappings-in-the-body
+start-document
+element	p	Before.
+prefix	b	urn:b
+prefix	a	urn:a
+prefix	ibooks	http://www.apple.com/2011/iBooks
+prefix	xlink	http://www.w3.org/1999/xlink
+prefix	a	urn:a2
+start	div
+prefix	b	urn:b
+prefix	c	urn:c
+start	p
+chars	Inner.
+end	p
+end	div
+start	p
+prefix	lost	urn:lost
+end	p
+start	p
+prefix		
+chars	After.
+end	p
+end-document
+
+== xhtml-under-a-prefix
+start-document
+element	p	Plain.
+prefix	h	http://www.w3.org/1999/xhtml
+start	div
+element	p	Prefixed.
+end	div
+element	p	Plain again.
+end-document
+
+== prefix-mapping-while-a-block-is-held
+start-document
+start	p
+chars	Anchored before
+start	p	class	note
+prefix	m	urn:m
+chars	the note
+end	p
+chars	 and after.
+end	p
+start	p
+chars	Next.
+end	p
 end-document
