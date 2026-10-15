@@ -1,6 +1,7 @@
 package ai.yobix;
 
 import org.apache.commons.io.IOUtils;
+import org.apache.tika.config.ServiceLoader;
 import org.apache.tika.detect.DefaultDetector;
 import org.apache.tika.detect.Detector;
 import org.apache.tika.exception.EncryptedDocumentException;
@@ -27,6 +28,7 @@ import org.apache.tika.parser.enricher.CompositeContentEnricher;
 import org.apache.tika.parser.enricher.EnrichingParser;
 import org.apache.tika.parser.microsoft.OfficeParserConfig;
 import org.apache.tika.parser.ocr.TesseractOCRConfig;
+import org.apache.tika.parser.ocr.TesseractOCRParser;
 import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.sax.BasicContentHandlerFactory;
 import org.apache.tika.sax.BodyContentHandler;
@@ -85,10 +87,13 @@ public class TikaNativeMain {
      * messages, iWork 2013+ and HWPX documents, the text layers of DjVu documents and Kindle books
      * are read for their text; and when
      * tesseract is installed, images are turned upright before OCR and PDF pages are OCRed when
-     * their text layer is missing or garbage.
+     * their text layer is missing or garbage. Tika's own tesseract parser is left out: its
+     * TesseractParser replacement reads images, and constructing it starts a tesseract from the
+     * PATH to see whether one runs.
      */
     private static Parser createParser() {
-        final DefaultParser defaults = new DefaultParser();
+        final DefaultParser defaults = new DefaultParser(MediaTypeRegistry.getDefaultRegistry(),
+                new ServiceLoader(), Set.of(TesseractOCRParser.class));
         final AutoDetectParser parser = new AutoDetectParser(DETECTOR, defaults);
         final Map<MediaType, Parser> parsers = new HashMap<>(defaults.getParsers());
         final List<Parser> replacements = new ArrayList<>(List.of(new CmsParser(), new OpenPgpParser(),
