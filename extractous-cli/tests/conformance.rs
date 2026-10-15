@@ -18,10 +18,12 @@ const TIMEOUT_SECONDS: &str = "60";
 
 /// The parsers of ours that read a format differently from Tika on purpose (iWork text Tika
 /// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers), so their
-/// text is not compared with Tika's: tests of their own check it.
-const OWN_PARSERS: [&str; 5] = [
+/// text is not compared with Tika's: tests of their own check it. The native port of one counts
+/// as it does.
+const OWN_PARSERS: [&str; 6] = [
     "ai.yobix.IworkArchiveParser",
     "ai.yobix.SubtitleParser",
+    "extractous::SubtitleParser",
     "ai.yobix.NotebookParser",
     "ai.yobix.FictionBookParser",
     "ai.yobix.EmlxParser",
