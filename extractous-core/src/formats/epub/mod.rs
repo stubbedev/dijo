@@ -75,7 +75,10 @@ fn is_fallback_document(name: &str) -> bool {
 /// How Tika's `EpubParser` reads a book, decided by its package document.
 enum Reading {
     /// Through the package document `root`, with the manifest and spine it lists.
-    Package { root: ZipEntry, contents: Contents },
+    Package {
+        root: ZipEntry,
+        contents: Box<Contents>,
+    },
     /// Every HTML and XML entry, without a package document to follow, which ends in a failure.
     Fallback(&'static str),
 }
@@ -147,7 +150,10 @@ impl<'a> Book<'a> {
                 "OPF declared no spine items in (possibly truncated) container",
             ));
         }
-        Ok(Reading::Package { root, contents })
+        Ok(Reading::Package {
+            root,
+            contents: Box::new(contents),
+        })
     }
 
     /// `extractMetadata`: the media type the `mimetype` entry names, and `metadata.xml`.
