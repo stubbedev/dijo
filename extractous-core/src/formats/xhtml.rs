@@ -321,23 +321,15 @@ impl<'h> Xhtml<'h> {
             self.embedding.absorb_parsers(metadata);
         }
         let mut open = Vec::new();
-        for event in embedded::decode(&parsed.events)? {
-            match event {
-                Event::Start { name, attributes } => {
-                    let borrowed: Vec<(&str, &str)> = attributes
-                        .iter()
-                        .map(|(name, value)| (name.as_str(), value.as_str()))
-                        .collect();
-                    self.start_element_with(&name, &borrowed)?;
-                    open.push(name);
-                }
-                Event::End(name) => {
-                    open.pop();
+        let replayed = self.replay(embedded::decode(&parsed.events)?, &mut open);
+        if let Err(stop) = replayed {
+            if wrapping == Wrapping::PackageEntry {
+                while let Some(name) = open.pop() {
                     self.end_element(&name)?;
                 }
-                Event::Characters(text) => self.characters_chunk(&text)?,
-                Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
+                self.end_element("div")?;
             }
+            return Err(stop.into());
         }
         let (clean, failure) = match parsed.outcome {
             EmbeddedOutcome::Parsed {
@@ -360,6 +352,31 @@ impl<'h> Xhtml<'h> {
             self.end_element("div")?;
         }
         failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
+    }
+
+    /// Writes the events of an embedded document's body, keeping the elements open in `open`, so
+    /// that where the output stops, as when it reaches the limit of a string extraction, the
+    /// `package-entry` div can be closed as `parseEmbedded` closes it in its `finally` block.
+    fn replay(&mut self, events: Vec<Event>, open: &mut Vec<String>) -> Result<(), Stop> {
+        for event in events {
+            match event {
+                Event::Start { name, attributes } => {
+                    let borrowed: Vec<(&str, &str)> = attributes
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_str()))
+                        .collect();
+                    self.start_element_with(&name, &borrowed)?;
+                    open.push(name);
+                }
+                Event::End(name) => {
+                    open.pop();
+                    self.end_element(&name)?;
+                }
+                Event::Characters(text) => self.characters_chunk(&text)?,
+                Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
+            }
+        }
+        Ok(())
     }
 
     fn frameset(&self) -> bool {
