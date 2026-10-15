@@ -1621,6 +1621,24 @@ fn each_ocred_image_reports_how_it_was_read() {
 }
 
 #[test]
+fn scripts_detection_confuses_are_read_in_their_own() {
+    let objects = json_objects(&[
+        "../quality/corpus/georgian-scan.png",
+        &document("malayalam-scan.png"),
+    ]);
+    for (object, script, opening) in [
+        (&objects[0], "Georgian", "ადამიანთა უფლებების"),
+        (&objects[1], "Malayalam", "മനുഷ്യരെല്ലാവരും"),
+    ] {
+        assert_eq!(object["metadata"]["ocr"][0]["script"], script, "{object}");
+        assert!(
+            object["text"].as_str().unwrap().starts_with(opening),
+            "{object}"
+        );
+    }
+}
+
+#[test]
 fn a_clean_pdf_text_layer_is_kept() {
     let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
     for document in &objects {

@@ -82,6 +82,12 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
      * for Malayalam), tried in turn when no reading of an image with plenty of text is confident.
      */
     private static final List<String> OVERLOOKED_SCRIPTS = List.of("Armenian", "Georgian");
+    /**
+     * Scripts detection reports for pages in another script, which is read first in its place:
+     * Georgian pages are reported as Malayalam. The reported script is then the first of the
+     * overlooked ones tried.
+     */
+    private static final Map<String, String> REPORTED_FOR = Map.of("Malayalam", "Georgian");
     private static final int MIN_WORDS_TO_RETRY = 20;
     /**
      * The first words of a reading in the assumed script that show the page is in another one:
@@ -314,9 +320,10 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         }
         final ScriptDetection.Result detected = ScriptDetection.detect(tesseract,
                 first.image() != null ? first.image() : file, config.getTimeoutMillis());
+        final String reported = detected.script();
         final String script = auto == null ? null
-                : detected.script() == null && optimistic.isEmpty() ? first.script()
-                : detected.script();
+                : reported == null ? optimistic.isEmpty() ? first.script() : null
+                : REPORTED_FOR.getOrDefault(reported, reported);
         final String language = language(script, auto);
         String learned = auto != null ? script : null;
         Attempt best = new Attempt(first, optimistic.orElse(null));
@@ -333,7 +340,12 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
         }
         if (auto != null && !best.confident()
                 && (best.reading() == null || best.words() >= MIN_WORDS_TO_RETRY)) {
-            best = readOverlooked(best, file, image, oriented, config);
+            final List<String> tried = Stream.of(first, fallback)
+                    .filter(read -> read.quarterTurns() == 0 && read.script() != null)
+                    .map(Prepared::script)
+                    .toList();
+            best = readOverlooked(best, overlooked(reported, tried), file, image, oriented,
+                    config);
             if (best.prepared().script() != null) {
                 learned = best.prepared().script();
             }
@@ -345,15 +357,28 @@ final class PreparingOcrParser implements Parser, TextRecognizer {
     }
 
     /**
-     * Reads an image in the scripts detection overlooks, until one reads it confidently, giving
-     * up each reading that goes poorly: the best reading, whose script the rest of the
-     * extraction then assumes.
+     * The scripts to try when no reading is confident: the one detection reported, when another
+     * was read in its place, then those detection overlooks, except the scripts already read
+     * upright.
      */
-    private Attempt readOverlooked(Attempt best, OcrImage file, BufferedImage image,
-                                   Oriented oriented, TesseractOCRConfig config)
+    private static List<String> overlooked(String reported, List<String> tried) {
+        return Stream.concat(Stream.ofNullable(reported), OVERLOOKED_SCRIPTS.stream())
+                .filter(script -> !tried.contains(script))
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * Reads an image in the given scripts in turn, until one reads it confidently, giving up
+     * each reading that goes poorly: the best reading, whose script the rest of the extraction
+     * then assumes.
+     */
+    private Attempt readOverlooked(Attempt best, List<String> scripts, OcrImage file,
+                                   BufferedImage image, Oriented oriented,
+                                   TesseractOCRConfig config)
             throws IOException, TikaException {
         Attempt overlooked = best;
-        for (final String script : OVERLOOKED_SCRIPTS) {
+        for (final String script : scripts) {
             final String model = ScriptDetection.installedLanguage(tesseract, script);
             if (model == null || overlooked.confident()) {
                 continue;
