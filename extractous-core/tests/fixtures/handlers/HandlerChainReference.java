@@ -117,6 +117,7 @@ public final class HandlerChainReference {
                     case "chars" -> xhtml.characters(fields[1]);
                     case "ws" -> xhtml.ignorableWhitespace(fields[1].toCharArray(), 0, fields[1].length());
                     case "newline" -> xhtml.newline();
+                    case "prefix" -> xhtml.startPrefixMapping(fields[1], fields[2]);
                     case "element" -> xhtml.element(fields[1], fields.length > 2 ? fields[2] : "");
                     default -> throw new IllegalArgumentException("Unknown call " + fields[0]);
                 }

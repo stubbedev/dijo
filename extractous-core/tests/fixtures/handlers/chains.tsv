@@ -76,3 +76,27 @@ write-limit	string-text-1000000	false	Ninety characters of text so that the smal
 write-limit	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Ninety characters of text so that the small write limit cuts it in the middle of a word.</p>\n<p>Straddling astral 😀😀 characters at the limit.</p>\n<p>Never written under the small limit.</p>\n</body></html>
 write-limit	string-text-40	true	Ninety characters of text so that the sm
 write-limit	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Ninety characters of text so that th
+prefix-mappings-before-the-first-element	stream-text	false	Ledger\n\nDeclared once.\n\n
+prefix-mappings-before-the-first-element	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n<head>\n<title></title>\n</head>\n<body><section type="chapter"><h1>Ledger</h1>\n<p>Declared once.</p>\n</section></body></html>
+prefix-mappings-before-the-first-element	string-text-1000000	false	Ledger\n\nDeclared once.\n\n
+prefix-mappings-before-the-first-element	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n<head>\n<title></title>\n</head>\n<body><section type="chapter"><h1>Ledger</h1>\n<p>Declared once.</p>\n</section></body></html>
+prefix-mappings-before-the-first-element	string-text-40	false	Ledger\n\nDeclared once.\n\n
+prefix-mappings-before-the-first-element	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n<head>\n<title></title>\n</head>\n<body><section type="chapter"><h1>Ledger</h1>\n<p>Declared once.</p>\n</section></body></html>
+prefix-mappings-in-the-body	stream-text	false	Before.\n\nInner.\n\n\n\nAfter.\n\n
+prefix-mappings-in-the-body	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Before.</p>\n<div xmlns:ibooks="http://www.apple.com/2011/iBooks" xmlns:a="urn:a2" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:a="urn:a" xmlns:b="urn:b"><p xmlns:c="urn:c">Inner.</p>\n</div>\n<p />\n<p>After.</p>\n</body></html>
+prefix-mappings-in-the-body	string-text-1000000	false	Before.\n\nInner.\n\n\n\nAfter.\n\n
+prefix-mappings-in-the-body	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Before.</p>\n<div xmlns:ibooks="http://www.apple.com/2011/iBooks" xmlns:a="urn:a2" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:a="urn:a" xmlns:b="urn:b"><p xmlns:c="urn:c">Inner.</p>\n</div>\n<p />\n<p>After.</p>\n</body></html>
+prefix-mappings-in-the-body	string-text-40	false	Before.\n\nInner.\n\n\n\nAfter.\n\n
+prefix-mappings-in-the-body	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Before.</p>\n<div xmlns:ibooks="http://www.apple.com/2011/iBooks" xmlns:a="urn:a2" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:a="urn:a" xmlns:b="urn:b"><p xmlns:c="urn:c">Inner.</p>\n</div>\n<p />\n<p>After.</p>\n</body></html>
+xhtml-under-a-prefix	stream-text	false	Plain.\n\nPrefixed.\n\n\nPlain again.\n\n
+xhtml-under-a-prefix	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Plain.</p>\n<h:div xmlns:h="http://www.w3.org/1999/xhtml"><h:p>Prefixed.</p>\n</div>\n<p>Plain again.</p>\n</body></html>
+xhtml-under-a-prefix	string-text-1000000	false	Plain.\n\nPrefixed.\n\n\nPlain again.\n\n
+xhtml-under-a-prefix	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Plain.</p>\n<h:div xmlns:h="http://www.w3.org/1999/xhtml"><h:p>Prefixed.</p>\n</div>\n<p>Plain again.</p>\n</body></html>
+xhtml-under-a-prefix	string-text-40	false	Plain.\n\nPrefixed.\n\n\nPlain again.\n\n
+xhtml-under-a-prefix	string-xml-40	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Plain.</p>\n<h:div xmlns:h="http://www.w3.org/1999/xhtml"><h:p>Prefixed.</p>\n</div>\n<p>Plain again.</p>\n</body></html>
+prefix-mapping-while-a-block-is-held	stream-text	false	Anchored before and after.\nthe note\n\n\nNext.\n\n
+prefix-mapping-while-a-block-is-held	stream-xml	false	<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Anchored before and after.</p><p class="note">the note</p>\n\n<p>Next.</p>\n</body></html>
+prefix-mapping-while-a-block-is-held	string-text-1000000	false	Anchored beforethe note\n\n and after.\n\nNext.\n\n
+prefix-mapping-while-a-block-is-held	string-xml-1000000	false	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Anchored before<p class="note">the note</p>\n and after.</p>\n<p>Next.</p>\n</body></html>
+prefix-mapping-while-a-block-is-held	string-text-40	true	Anchored beforethe note\n\n and after.\n\nNe
+prefix-mapping-while-a-block-is-held	string-xml-40	true	<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n<title></title>\n</head>\n<body><p>Anchored before<p class="note">the note</p>\n and after.</p>\n<p>

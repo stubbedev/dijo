@@ -292,6 +292,10 @@ impl ContentHandler for Forward<'_, '_> {
         Ok(())
     }
 
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.outer.start_prefix_mapping(prefix, uri)
+    }
+
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         self.outer.start_element_with(name, attributes)
     }

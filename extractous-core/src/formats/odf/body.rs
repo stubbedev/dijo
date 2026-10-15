@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS};
 use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
@@ -472,10 +473,10 @@ fn is_bold(weight: &str) -> Result<bool, Failure> {
     let Some(first) = weight.chars().next() else {
         return Err(Failure::Malformed("A font weight is empty".to_owned()));
     };
-    if !is_java_digit(first) {
+    if !java::is_digit(first) {
         return Ok(false);
     }
-    let value = parse_java_int(weight)
+    let value = java::parse_int(weight)
         .ok_or_else(|| Failure::Malformed(format!("The font weight {weight:?} is not a number")))?;
     Ok(value > MIN_BOLD_WEIGHT)
 }
@@ -486,51 +487,10 @@ fn heading(attributes: &[Attribute]) -> Result<&'static str, Failure> {
     let Some(level) = attribute(attributes, TEXT_NS, "outline-level") else {
         return Ok(HEADINGS[0]);
     };
-    let level = parse_java_int(level).ok_or_else(|| {
+    let level = java::parse_int(level).ok_or_else(|| {
         Failure::Malformed(format!("The outline level {level:?} is not a number"))
     })?;
     Ok(HEADINGS[usize::try_from(level.clamp(1, 6) - 1).expect("a clamped level is positive")])
-}
-
-/// Java's `Character.isDigit` on a `char`: a decimal digit of the Basic Multilingual Plane.
-fn is_java_digit(character: char) -> bool {
-    java_digit(character).is_some()
-}
-
-/// The value of a decimal digit as Java's `Character.digit(char, 10)` reads it: a character of
-/// the Basic Multilingual Plane in the category Nd, whose digits come in runs from 0 to 9.
-fn java_digit(character: char) -> Option<u32> {
-    use unicode_general_category::{get_general_category, GeneralCategory};
-    let is_digit = |character: char| {
-        character < '\u{10000}' && get_general_category(character) == GeneralCategory::DecimalNumber
-    };
-    if !is_digit(character) {
-        return None;
-    }
-    let mut zero = u32::from(character);
-    while zero > 0 && char::from_u32(zero - 1).is_some_and(is_digit) {
-        zero -= 1;
-    }
-    Some((u32::from(character) - zero) % 10)
-}
-
-/// Java's `Integer.parseInt(text)`: an optional sign and decimal digits that fit an `int`.
-fn parse_java_int(text: &str) -> Option<i32> {
-    let (negative, digits) = match text.strip_prefix('-') {
-        Some(digits) => (true, digits),
-        None => (false, text.strip_prefix('+').unwrap_or(text)),
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let mut value: i64 = 0;
-    for character in digits.chars() {
-        value = value * 10 + i64::from(java_digit(character)?);
-        if value > i64::from(i32::MAX) + 1 {
-            return None;
-        }
-    }
-    i32::try_from(if negative { -value } else { value }).ok()
 }
 
 fn is_text_node(namespace: &str, local_name: &str) -> bool {
@@ -667,18 +627,6 @@ impl SaxHandler for Body<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_ints_as_java_does() {
-        assert_eq!(parse_java_int("700"), Some(700));
-        assert_eq!(parse_java_int("+7"), Some(7));
-        assert_eq!(parse_java_int("-2147483648"), Some(i32::MIN));
-        assert_eq!(parse_java_int("2147483648"), None);
-        assert_eq!(parse_java_int("٧٠٠"), Some(700));
-        assert_eq!(parse_java_int("7.5"), None);
-        assert_eq!(parse_java_int(""), None);
-        assert_eq!(parse_java_int("-"), None);
-    }
 
     #[test]
     fn decides_boldness_and_headings_as_tika_does() {

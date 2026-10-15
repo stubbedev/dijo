@@ -12,15 +12,13 @@ pub(crate) use flat::FlatOpenDocumentParser;
 mod meta;
 
 use std::borrow::Cow;
-use std::io::{Cursor, Read};
-
-use zip::{CompressionMethod, ZipArchive};
 
 use crate::config::ParserConfigs;
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{self, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
+use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Failure, Parser};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -31,8 +29,6 @@ const OLD_NS: &str = "http://openoffice.org/2000/";
 const NEW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:";
 const META_NAME: &[u8] = b"meta.xml";
 const MIMETYPE_NAME: &[u8] = b"mimetype";
-const CENTRAL_DIRECTORY_SIGNATURE: &[u8] = b"PK\x01\x02";
-const CENTRAL_DIRECTORY_HEADER_LENGTH: usize = 46;
 
 /// The media types Tika parses with its `OpenDocumentParser`: those it names, and the StarOffice
 /// Writer template, which Tika's registry makes a kind of StarOffice Writer file.
@@ -82,11 +78,6 @@ pub(crate) fn normalized_namespace(namespace: &str) -> Cow<'_, str> {
     }
 }
 
-/// Java's `String.trim`: without the characters up to U+0020 at either end.
-pub(crate) fn java_trim(text: &str) -> &str {
-    text.trim_matches(|character| character <= ' ')
-}
-
 /// What Tika's `OpenDocumentParser` does with an entry of the archive, by its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
@@ -134,37 +125,33 @@ impl EntryKind {
 /// An entry of the archive, in the order of its central directory.
 #[derive(Debug, Clone)]
 struct Entry {
-    index: usize,
-    name: String,
+    entry: ZipEntry,
     kind: EntryKind,
+}
+
+impl Entry {
+    fn name(&self) -> &str {
+        &self.entry.name
+    }
 }
 
 /// A document's ZIP archive and its entries.
 struct Archive<'a> {
-    zip: ZipArchive<Cursor<&'a [u8]>>,
+    zip: ZipFile<'a>,
     entries: Vec<Entry>,
 }
 
 impl<'a> Archive<'a> {
     fn open(input: &'a [u8]) -> Result<Self, Failure> {
-        let zip = ZipArchive::new(Cursor::new(input)).map_err(|e| {
-            Failure::Malformed(format!("The OpenDocument archive cannot be read: {e}"))
-        })?;
-        let entries = (0..zip.len())
-            .map(|index| {
-                let entry = zip.by_index_data(index).map_err(|e| {
-                    Failure::Malformed(format!(
-                        "Entry {index} of the OpenDocument archive cannot be read: {e}"
-                    ))
-                })?;
-                let name = entry.name_raw();
-                Ok(Entry {
-                    index,
-                    name: String::from_utf8_lossy(name).into_owned(),
-                    kind: EntryKind::of(name),
-                })
+        let zip = ZipFile::open(input, "OpenDocument")?;
+        let entries = zip
+            .entries()
+            .iter()
+            .map(|entry| Entry {
+                kind: EntryKind::of(&entry.raw_name),
+                entry: entry.clone(),
             })
-            .collect::<Result<_, Failure>>()?;
+            .collect();
         Ok(Self { zip, entries })
     }
 
@@ -172,51 +159,12 @@ impl<'a> Archive<'a> {
         self.entries.iter().filter(move |entry| entry.kind == kind)
     }
 
-    /// The first entry named `name`, as commons-compress's `ZipFile.getEntry` finds it.
-    fn named(&self, name: &[u8]) -> Option<&Entry> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name.as_bytes() == name)
-    }
-
     fn read(&mut self, entry: &Entry) -> Result<Vec<u8>, Failure> {
-        let unreadable = |e: &dyn std::fmt::Display| {
-            Failure::Malformed(format!("{} cannot be read: {e}", entry.name))
-        };
-        let mut file = self.zip.by_index(entry.index).map_err(|e| unreadable(&e))?;
-        if !matches!(
-            file.compression(),
-            CompressionMethod::Stored | CompressionMethod::Deflated
-        ) {
-            return Err(unreadable(&format!(
-                "it is compressed with {:?}",
-                file.compression()
-            )));
-        }
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(|e| unreadable(&e))?;
-        Ok(bytes)
+        self.zip.read(&entry.entry)
     }
 
-    /// Whether every record of the central directory is an entry: the zip crate keeps one of
-    /// several entries of the same name, where commons-compress keeps them all.
     fn has_every_record(&self, input: &[u8]) -> bool {
-        let Ok(mut position) = usize::try_from(self.zip.central_directory_start()) else {
-            return false;
-        };
-        let mut records = 0;
-        while input.get(position..position + CENTRAL_DIRECTORY_SIGNATURE.len())
-            == Some(CENTRAL_DIRECTORY_SIGNATURE)
-        {
-            let Some(header) = input.get(position..position + CENTRAL_DIRECTORY_HEADER_LENGTH)
-            else {
-                return false;
-            };
-            let length = |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
-            position += CENTRAL_DIRECTORY_HEADER_LENGTH + length(28) + length(30) + length(32);
-            records += 1;
-        }
-        records == self.entries.len()
+        self.zip.has_every_record(input)
     }
 }
 
@@ -277,9 +225,9 @@ const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded 
 fn embedded_metadata(name: &str) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
     metadata.set("tk:internal-path", name);
-    metadata.set("tk:resource-name", name);
+    metadata.set(embedded::RESOURCE_NAME, name);
     if name.contains("Pictures/") {
-        metadata.set("tk:embedded-resource-type", "INLINE");
+        metadata.set(embedded::RESOURCE_TYPE, "INLINE");
     }
     metadata
 }
@@ -297,7 +245,7 @@ fn deferral(input: &[u8]) -> Option<&'static str> {
         let Ok(bytes) = archive.read(manifest) else {
             return Some(UNREADABLE_MANIFEST);
         };
-        if ElementFinder::finds("encryption-data", &bytes, &manifest.name) {
+        if ElementFinder::finds("encryption-data", &bytes, manifest.name()) {
             return Some(ENCRYPTED);
         }
     }
@@ -321,7 +269,7 @@ fn deferral(input: &[u8]) -> Option<&'static str> {
         let named = bytes
             .windows(BINARY_DATA_ELEMENT.len())
             .any(|window| window == BINARY_DATA_ELEMENT.as_bytes());
-        if named && ElementFinder::finds(BINARY_DATA_ELEMENT, &bytes, &body.name) {
+        if named && ElementFinder::finds(BINARY_DATA_ELEMENT, &bytes, body.name()) {
             return Some(BINARY_DATA);
         }
     }
@@ -355,7 +303,8 @@ impl Parser for OpenDocumentParser {
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
         let mut archive = Archive::open(input)?;
-        if let Some(entry) = archive.named(META_NAME).cloned() {
+        let meta = archive.of_kind(EntryKind::Meta).next().cloned();
+        if let Some(entry) = meta {
             let bytes = archive.read(&entry)?;
             meta::read_meta(&bytes, xhtml.metadata_mut())?;
         }
@@ -375,13 +324,13 @@ impl Parser for OpenDocumentParser {
                         configs.office.includes_deleted_content(),
                         body::Namespaces::Normalized,
                     );
-                    xml::parse_sax(&bytes, &entry.name, &mut body)?;
+                    xml::parse_sax(&bytes, entry.name(), &mut body)?;
                 }
                 EntryKind::Embedded => {
                     let bytes = archive.read(entry)?;
                     xhtml.parse_embedded(
                         &bytes,
-                        &embedded_metadata(&entry.name),
+                        &embedded_metadata(entry.name()),
                         Wrapping::Bare,
                     )?;
                 }
@@ -404,7 +353,9 @@ mod tests {
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_with, conformance_corpus,
         Scratch,
     };
+    use std::io::Cursor;
     use std::path::{Path, PathBuf};
+    use zip::CompressionMethod;
 
     const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
     const DOCUMENTS: [&str; 4] = [

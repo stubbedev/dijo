@@ -19,3 +19,7 @@ test-group = 'ocr'
 [[profile.default.overrides]]
 filter = 'binary(fuzz) | binary(bench) | binary(conformance) | binary(soak) | binary(server_compare)'
 slow-timeout = { period = "60s", terminate-after = 60 }
+
+[[profile.default.overrides]]
+filter = 'test(/tikas_(test_)?documents|conformance_documents/)'
+slow-timeout = { period = "60s", terminate-after = 40 }
