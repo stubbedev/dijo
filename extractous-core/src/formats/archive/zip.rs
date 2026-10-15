@@ -118,6 +118,11 @@ impl Parser for ZipParser {
         "extractous::ZipParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.pkg.ZipParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             ZIP,

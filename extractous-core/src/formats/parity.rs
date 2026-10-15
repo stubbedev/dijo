@@ -151,10 +151,12 @@ fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: Char
                     .into_iter()
                     .map(|value| {
                         if value == native_name {
-                            tika_name.to_owned()
-                        } else {
-                            value
+                            return tika_name.to_owned();
                         }
+                        formats::PARSERS
+                            .iter()
+                            .find(|parser| parser.name() == value)
+                            .map_or(value, |parser| parser.tika_name().to_owned())
                     })
                     .collect();
                 (name, values)
@@ -302,11 +304,6 @@ enum Expected<'a> {
     Same(&'a str),
     /// Both fail on it.
     Failure,
-    /// Both extract it identically but for the XML string cut at the write limit inside an HTML
-    /// part of an embedded message: there Tika's path also writes the `</body>` that the HTML
-    /// parse it aborts leaks through the body filter, which the native replay of the embedded
-    /// document, parsed whole without the limit, never sees.
-    LeaksBodyEndAtLimit(&'a str),
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -328,20 +325,6 @@ pub(crate) fn assert_same_as_tika_with(
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
 pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
     compare(documents, &ParserConfigs::default(), Expected::Failure);
-}
-
-/// Asserts what [`assert_same_as_tika`] does, but that Tika's XML string, cut at the write limit
-/// inside an HTML part of an embedded message, ends in the `</body>` its aborted HTML parse leaks
-/// ([`Expected::LeaksBodyEndAtLimit`]).
-pub(crate) fn assert_same_as_tika_but_body_end_leaked_at_limit(
-    documents: &[&Path],
-    tika_name: &str,
-) {
-    compare(
-        documents,
-        &ParserConfigs::default(),
-        Expected::LeaksBodyEndAtLimit(tika_name),
-    );
 }
 
 fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
@@ -366,20 +349,10 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             }
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
-                    (
-                        Expected::Same(tika_name) | Expected::LeaksBodyEndAtLimit(tika_name),
-                        Ok(tika),
-                        Ok(native),
-                    ) => {
+                    (Expected::Same(tika_name), Ok(tika), Ok(native)) => {
                         let tika = comparable(tika.clone());
-                        let mut native =
+                        let native =
                             comparable(as_tika(native.clone(), native_name, tika_name, char_set));
-                        if matches!(expected, Expected::LeaksBodyEndAtLimit(_))
-                            && entry == "string"
-                            && output == Output::Xml
-                        {
-                            native.text.extend_from_slice(b"</body>");
-                        }
                         if entry == "string" {
                             tika == cut_to(native, &tika)
                         } else {

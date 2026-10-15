@@ -21,6 +21,11 @@ impl Parser for FictionBookParser {
         "extractous::FictionBookParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.FictionBookParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/x-fictionbook+xml"]
     }

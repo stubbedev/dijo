@@ -45,6 +45,11 @@ impl Parser for CompressorParser {
         "extractous::CompressorParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.pkg.CompressorParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &MEDIA_TYPES
     }

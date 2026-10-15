@@ -431,6 +431,11 @@ impl Parser for IworkArchiveParser {
         "extractous::IworkArchiveParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.IworkArchiveParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &TYPES
     }

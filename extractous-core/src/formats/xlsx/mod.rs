@@ -109,6 +109,11 @@ impl Parser for XlsxParser {
         "extractous::OOXMLParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

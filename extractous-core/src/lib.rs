@@ -43,5 +43,5 @@ mod tika {
     mod parse;
     mod wrappers;
     pub(crate) use parse::*;
-    pub(crate) use wrappers::{EmbeddedOutcome, JInputStream};
+    pub(crate) use wrappers::{EmbeddedEvents, EmbeddedOutcome, JInputStream};
 }

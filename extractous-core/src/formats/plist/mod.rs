@@ -229,6 +229,11 @@ impl Parser for PListParser {
         "extractous::PListParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.apple.PListParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &MEDIA_TYPES
     }

@@ -26,6 +26,11 @@ impl Parser for RtfParser {
         "extractous::RTFParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.rtf.RTFParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[MEDIA_TYPE]
     }

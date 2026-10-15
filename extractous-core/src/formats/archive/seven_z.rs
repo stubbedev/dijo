@@ -20,6 +20,11 @@ impl Parser for SevenZParser {
         "extractous::SevenZParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.pkg.SevenZParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[SEVEN_Z]
     }

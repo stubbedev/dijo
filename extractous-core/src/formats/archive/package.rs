@@ -42,6 +42,11 @@ impl Parser for PackageParser {
         "extractous::PackageParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.pkg.PackageParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/x-tar",

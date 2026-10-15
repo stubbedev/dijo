@@ -380,6 +380,11 @@ impl Parser for EpubParser {
         "extractous::EpubParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.epub.EpubParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/epub+zip", "application/x-ibooks+zip"]
     }

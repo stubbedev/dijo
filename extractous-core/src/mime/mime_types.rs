@@ -421,30 +421,45 @@ impl MimeTypes {
     }
 
     /// `MimeTypes.detect`: the magic of `prefix`, the first [`MIN_LENGTH`] bytes of a
-    /// document, refined by the type its resource name implies.
-    pub(crate) fn detect(&self, prefix: &[u8], resource_name: Option<&str>) -> MediaType {
-        let mut possible = self.by_magic(prefix);
+    /// document, refined by the type its resource name implies, then by the `Content-Type` its
+    /// metadata names.
+    pub(crate) fn detect(
+        &self,
+        prefix: &[u8],
+        resource_name: Option<&str>,
+        content_type: Option<&str>,
+    ) -> MediaType {
+        let mut possible: Vec<MediaType> = self
+            .by_magic(prefix)
+            .into_iter()
+            .map(|id| self.media_type(id).clone())
+            .collect();
         if let Some(hint) = resource_name.and_then(uri::name_hint) {
             let hinted = self.by_name(&hint.name);
             if !(hint.http && self.types[hinted].interpreted) {
-                possible = self.apply_hint(possible, hinted);
+                possible = self.apply_hint(possible, self.media_type(hinted));
             }
         }
-        self.media_type(possible[0]).clone()
+        if let Some(hint) = content_type.and_then(MediaType::parse) {
+            let known = self.by_type.get(&self.registry.normalize(&hint));
+            let hint = known.map_or(hint, |&id| self.media_type(id).clone());
+            possible = self.apply_hint(possible, &hint);
+        }
+        possible.swap_remove(0)
     }
 
-    fn apply_hint(&self, possible: Vec<TypeId>, hint: TypeId) -> Vec<TypeId> {
+    /// `applyHint`: the hint alone when it is, or specializes, one of the possible types (a
+    /// text-based message never specializing plain text), else the possible types.
+    fn apply_hint(&self, possible: Vec<MediaType>, hint: &MediaType) -> Vec<MediaType> {
         let message = MediaType::named("text/x-tika-text-based-message");
-        let hint_type = self.media_type(hint);
-        for &id in &possible {
-            let kind = self.media_type(id);
-            if hint == id
-                || (self.registry.is_specialization_of(hint_type, kind)
+        let specializes = |kind: &MediaType| {
+            hint == kind
+                || (self.registry.is_specialization_of(hint, kind)
                     && !(kind.as_str() == "text/plain"
-                        && self.registry.is_specialization_of(hint_type, &message)))
-            {
-                return vec![hint];
-            }
+                        && self.registry.is_specialization_of(hint, &message)))
+        };
+        if possible.iter().any(specializes) {
+            return vec![hint.clone()];
         }
         possible
     }
@@ -649,7 +664,7 @@ mod tests {
     use super::*;
 
     fn detect(data: &[u8], name: Option<&str>) -> String {
-        mime_types().detect(data, name).to_string()
+        mime_types().detect(data, name, None).to_string()
     }
 
     #[test]

@@ -322,7 +322,7 @@ fn describe(failure: &Failure) -> String {
     match failure {
         Failure::Malformed(reason) => reason.clone(),
         Failure::Stopped(stop) => format!("{stop:?}"),
-        Failure::Extraction(error) => error.to_string(),
+        Failure::Extraction(error) | Failure::Embedded(error) => error.to_string(),
     }
 }
 

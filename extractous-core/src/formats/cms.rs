@@ -240,6 +240,11 @@ impl Parser for CmsParser {
         "extractous::CmsParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.CmsParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/pkcs7-mime", SIGNATURE]
     }

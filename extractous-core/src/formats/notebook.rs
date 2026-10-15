@@ -253,6 +253,11 @@ impl Parser for NotebookParser {
         "extractous::NotebookParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.NotebookParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/x-ipynb+json"]
     }

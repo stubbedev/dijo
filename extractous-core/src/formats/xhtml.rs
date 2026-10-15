@@ -4,9 +4,11 @@
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
 use crate::config::ParserConfigs;
+use crate::errors::Error;
 use crate::formats::embedded::{self, EmbeddedRecord, Embedding, Event, Wrapping, PACKAGE_ENTRY};
+use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::Failure;
+use crate::formats::{self, Failure, Parser};
 use crate::isolate::isolate;
 use crate::tika::{self, EmbeddedOutcome};
 
@@ -99,6 +101,58 @@ impl<H: ContentHandler + ?Sized> ContentHandler for &mut H {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         (**self).end_document()
+    }
+}
+
+/// How the parse of an embedded document ended, for the `package-entry` div around it and the
+/// embedding document.
+enum Ended {
+    Clean,
+    /// Tika recorded a failure in the embedding document's metadata, which goes on.
+    Recorded,
+    Stopped(Stop),
+    /// A failure that fails the embedding document too.
+    Failed(Failure),
+}
+
+/// Tika's `EmbeddedContentHandler`, which drops the start and end of an embedded document,
+/// passing the rest on to the embedding document's `XHTMLContentHandler`, and the
+/// `XHTMLBalancingHandler` around it, which keeps the names of the elements left open in `open`.
+pub(crate) struct Embedded<'a, 'h> {
+    pub(crate) outer: &'a mut Xhtml<'h>,
+    pub(crate) open: &'a mut Vec<String>,
+}
+
+impl ContentHandler for Embedded<'_, '_> {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.outer.start_prefix_mapping(prefix, uri)
+    }
+
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        self.outer.start_element_with(name, attributes)?;
+        self.open.push(name.to_owned());
+        Ok(())
+    }
+
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.open.pop();
+        self.outer.end_element(name)
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        self.outer.characters_chunk(text)
+    }
+
+    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        self.outer.ignorable_whitespace(text)
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
     }
 }
 
@@ -303,6 +357,11 @@ impl<'h> Xhtml<'h> {
     /// failed parse left open closed before the div ends. Tika records the failures it can in
     /// this document's metadata; any other fails this document, after the content written
     /// before it.
+    ///
+    /// A document a native parser takes ([`formats::route_embedded`]) is parsed here, its
+    /// events passed on as they come, through an `EmbeddedContentHandler` over a
+    /// `BodyContentHandler`, so the output stops it where it stops Tika's. Any other is parsed
+    /// by Tika's path and its events replayed.
     pub(crate) fn parse_embedded(
         &mut self,
         data: &[u8],
@@ -320,7 +379,73 @@ impl<'h> Xhtml<'h> {
                 self.end_element("h1")?;
             }
         }
-        let parsed = isolate()
+        let mut open = Vec::new();
+        let ended = match formats::route_embedded(data, metadata, self.embedding.configs()) {
+            Some((parser, start)) => self.parse_natively(parser, data, start, metadata, &mut open),
+            None => self.parse_with_tika(data, metadata, &mut open),
+        };
+        let (clean, failure) = match ended {
+            Ended::Clean => (true, None),
+            Ended::Recorded => (false, None),
+            Ended::Stopped(stop) => (false, Some(Failure::Stopped(stop))),
+            Ended::Failed(failure) => (false, Some(failure)),
+        };
+        if wrapping == Wrapping::PackageEntry {
+            if !clean {
+                self.end_open(&mut open)?;
+            }
+            self.end_element("div")?;
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Parses an embedded document with Tika's path and replays its events.
+    fn parse_with_tika(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        open: &mut Vec<String>,
+    ) -> Ended {
+        let parsed = match self.parse_with_tika_quietly(data, metadata) {
+            Ok(parsed) => parsed,
+            Err(failure) => return Ended::Failed(failure),
+        };
+        if let EmbeddedOutcome::Parsed { metadata, .. } = &parsed.outcome {
+            self.embedding.absorb_parsers(metadata);
+        }
+        let events = match embedded::decode(&parsed.events) {
+            Ok(events) => events,
+            Err(failure) => return Ended::Failed(failure),
+        };
+        if let Err(stop) = self.replay(events, open) {
+            return Ended::Stopped(stop);
+        }
+        match parsed.outcome {
+            EmbeddedOutcome::Parsed {
+                metadata,
+                recorded_exception,
+            } => {
+                let clean = recorded_exception.is_none();
+                self.embedding
+                    .absorb_failures(&metadata, recorded_exception);
+                if clean {
+                    Ended::Clean
+                } else {
+                    Ended::Recorded
+                }
+            }
+            EmbeddedOutcome::Failed(error) => Ended::Failed(Failure::Embedded(error)),
+        }
+    }
+
+    /// Tika's path's parse of an embedded document, its events and how it ended, which this
+    /// document has not taken in yet.
+    fn parse_with_tika_quietly(
+        &self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+    ) -> Result<tika::EmbeddedEvents, Failure> {
+        isolate()
             .and_then(|isolate| {
                 tika::parse_embedded(
                     isolate,
@@ -330,37 +455,63 @@ impl<'h> Xhtml<'h> {
                     None,
                 )
             })
-            .map_err(Failure::Extraction)?;
-        if let EmbeddedOutcome::Parsed { metadata, .. } = &parsed.outcome {
-            self.embedding.absorb_parsers(metadata);
-        }
-        let mut open = Vec::new();
-        if let Err(stop) = self.replay(embedded::decode(&parsed.events)?, &mut open) {
-            if wrapping == Wrapping::PackageEntry {
-                self.end_open(&mut open)?;
-                self.end_element("div")?;
-            }
-            return Err(stop.into());
-        }
-        let (clean, failure) = match parsed.outcome {
-            EmbeddedOutcome::Parsed {
-                metadata,
-                recorded_exception,
-            } => {
-                let clean = recorded_exception.is_none();
-                self.embedding
-                    .absorb_failures(&metadata, recorded_exception);
-                (clean, None)
-            }
-            EmbeddedOutcome::Failed(error) => (false, Some(error)),
+            .map_err(Failure::Embedded)
+    }
+
+    /// Parses an embedded document with the native `parser`, from the metadata `start` it
+    /// starts from, its events passed on to this document as they come. Where the parser fails
+    /// as Tika's would throw, Tika records the exception its own parser throws, which only its
+    /// path can tell: that path parses the document again, for the exception alone.
+    fn parse_natively(
+        &mut self,
+        parser: &dyn Parser,
+        data: &[u8],
+        start: TikaMetadata,
+        metadata: &TikaMetadata,
+        open: &mut Vec<String>,
+    ) -> Ended {
+        let configs = self.embedding.configs();
+        let (mut parsed, record, result) = {
+            let mut forward = Embedded { outer: self, open };
+            let mut body = Body::new(&mut forward);
+            Xhtml::write(&mut body, start, configs, |inner| {
+                parser.parse(data, configs, inner)
+            })
         };
-        if wrapping == Wrapping::PackageEntry {
-            if !clean {
-                self.end_open(&mut open)?;
+        record.finish(&mut parsed, parser.name());
+        let parsed = parsed.to_map();
+        self.embedding.absorb_parsers(&parsed);
+        let reason = match result {
+            Ok(()) => {
+                self.embedding.absorb_failures(&parsed, None);
+                return Ended::Clean;
             }
-            self.end_element("div")?;
+            Err(Failure::Stopped(stop)) => return Ended::Stopped(stop),
+            Err(failure @ Failure::Embedded(_)) => return Ended::Failed(failure),
+            Err(Failure::Malformed(reason)) => reason,
+            Err(Failure::Extraction(error)) => error.to_string(),
+        };
+        let tika = match self.parse_with_tika_quietly(data, metadata) {
+            Ok(tika) => tika,
+            Err(failure) => return Ended::Failed(failure),
+        };
+        match tika.outcome {
+            EmbeddedOutcome::Parsed {
+                recorded_exception: Some(exception),
+                ..
+            } => {
+                self.embedding.absorb_failures(&parsed, Some(exception));
+                Ended::Recorded
+            }
+            EmbeddedOutcome::Parsed {
+                recorded_exception: None,
+                ..
+            } => Ended::Failed(Failure::Extraction(Error::ParseError(format!(
+                "{} failed on an embedded document Tika's path parses: {reason}",
+                parser.name()
+            )))),
+            EmbeddedOutcome::Failed(error) => Ended::Failed(Failure::Embedded(error)),
         }
-        failure.map_or(Ok(()), |error| Err(Failure::Extraction(error)))
     }
 
     /// Writes the events of an embedded document, keeping the names of the elements left open

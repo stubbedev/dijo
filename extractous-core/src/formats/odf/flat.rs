@@ -202,6 +202,11 @@ impl Parser for FlatOpenDocumentParser {
         "extractous::FlatOpenDocumentParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.odf.FlatOpenDocumentParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.oasis.opendocument.tika.flat.document",

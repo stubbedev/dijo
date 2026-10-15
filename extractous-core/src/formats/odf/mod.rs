@@ -283,6 +283,11 @@ impl Parser for OpenDocumentParser {
         "extractous::OpenDocumentParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.odf.OpenDocumentParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &MEDIA_TYPES
     }

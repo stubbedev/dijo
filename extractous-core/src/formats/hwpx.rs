@@ -323,6 +323,11 @@ impl Parser for HwpxParser {
         "extractous::HwpxParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.HwpxParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/hwp+zip"]
     }

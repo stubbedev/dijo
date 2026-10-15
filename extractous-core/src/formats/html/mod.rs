@@ -54,6 +54,11 @@ impl Parser for JSoupParser {
         "extractous::JSoupParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.html.JSoupParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &TYPES
     }

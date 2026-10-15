@@ -217,6 +217,11 @@ impl Parser for MboxParser {
         "extractous::MboxParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.mbox.MboxParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/mbox"]
     }
@@ -258,10 +263,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{
-        assert_same_as_tika, assert_same_as_tika_but_body_end_leaked_at_limit, conformance_corpus,
-        documents, Scratch,
-    };
+    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
     const TIKA_NAME: &str = "org.apache.tika.parser.mbox.MboxParser";
 
@@ -360,14 +362,11 @@ Body.";
         let scratch = Scratch::new("mbox-limit");
         let (plain, html) = past_the_limit(&scratch);
         assert_same_as_tika(&[&plain], TIKA_NAME);
-        assert_same_as_tika_but_body_end_leaked_at_limit(
+        assert_same_as_tika(
             &html.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
         );
     }
-
-    /// A mailbox whose first message's HTML part passes the write limit.
-    const HTML_PAST_THE_LIMIT: &str = "testMBOX_complex.mbox";
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
@@ -375,12 +374,7 @@ Body.";
         let (parsed, deferred) = documents(&MboxParser, &[&conformance_corpus()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 7);
-        let (html, rest): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| path.ends_with(HTML_PAST_THE_LIMIT));
-        assert_eq!(html.len(), 1);
-        assert_same_as_tika(&rest, TIKA_NAME);
-        assert_same_as_tika_but_body_end_leaked_at_limit(&html, TIKA_NAME);
+        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

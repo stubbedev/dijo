@@ -38,7 +38,7 @@ use crate::formats::html::JSoupParser;
 use crate::formats::java::parse_long;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text::TextAndCsvParser;
-use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
+use crate::formats::xhtml::{Embedded, Xhtml};
 use crate::formats::{Failure, Parser};
 
 /// What the port leaves to Tika.
@@ -74,6 +74,11 @@ impl Parser for Rfc822Parser {
         "extractous::RFC822Parser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.mail.RFC822Parser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["message/rfc822"]
     }
@@ -100,6 +105,11 @@ impl Parser for Rfc822Parser {
 impl Parser for EmlxParser {
     fn name(&self) -> &'static str {
         "extractous::EmlxParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.EmlxParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -275,48 +285,16 @@ fn parse_inline(
     configs: &ParserConfigs,
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
-    let mut forward = Forward { outer: xhtml };
+    let mut open = Vec::new();
+    let mut forward = Embedded {
+        outer: xhtml,
+        open: &mut open,
+    };
     let mut body = Body::new(&mut forward);
     let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), configs, |inner| {
         parser.parse(content, configs, inner)
     });
     result
-}
-
-/// The events of a part parsed inline, passed on to the message's own `XHTMLContentHandler`,
-/// without the start and end of the part's document.
-struct Forward<'a, 'h> {
-    outer: &'a mut Xhtml<'h>,
-}
-
-impl ContentHandler for Forward<'_, '_> {
-    fn start_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
-        self.outer.start_prefix_mapping(prefix, uri)
-    }
-
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        self.outer.start_element_with(name, attributes)
-    }
-
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.outer.end_element(name)
-    }
-
-    fn characters(&mut self, text: &str) -> Result<(), Stop> {
-        self.outer.characters(text)
-    }
-
-    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
-        self.outer.ignorable_whitespace(text)
-    }
-
-    fn end_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

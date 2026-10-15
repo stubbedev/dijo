@@ -15,6 +15,11 @@ impl Parser for OpenPgpParser {
         "extractous::OpenPgpParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.OpenPgpParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/pgp-encrypted"]
     }

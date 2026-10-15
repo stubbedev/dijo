@@ -41,6 +41,12 @@ pub(crate) enum Origin<'a> {
     /// Bytes streamed without a name, whose length the metadata learns only if a detector reads
     /// them all.
     Bytes,
+    /// An embedded document, streamed as bytes are, with the resource name and `Content-Type`
+    /// its embedding parser gave it, which hint at its type.
+    Embedded {
+        name: Option<&'a str>,
+        content_type: Option<&'a str>,
+    },
 }
 
 /// A metadata key the detection writes.
@@ -115,7 +121,7 @@ impl Written {
 
     /// A detector read the stream to its end: a stream of bytes learns its length.
     fn spool(&mut self, origin: Origin<'_>) {
-        if origin == Origin::Bytes && !self.spooled {
+        if !matches!(origin, Origin::File { .. }) && !self.spooled {
             self.spooled = true;
             self.set(Key::ContentLength, self.length.to_string());
         }
@@ -126,11 +132,12 @@ impl Written {
 pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     let types = mime_types();
     let registry = types.registry();
-    let name = match origin {
-        Origin::File { name } => Some(name),
-        Origin::Bytes => None,
+    let (name, content_type) = match origin {
+        Origin::File { name } => (Some(name), None),
+        Origin::Bytes => (None, None),
+        Origin::Embedded { name, content_type } => (name, content_type),
     };
-    let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name);
+    let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name, content_type);
     let mut written = Written {
         entries: Vec::new(),
         spooled: false,

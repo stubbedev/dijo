@@ -318,6 +318,11 @@ impl Parser for MobiParser {
         "extractous::MobiParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.MobiParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["application/x-mobipocket-ebook"]
     }
