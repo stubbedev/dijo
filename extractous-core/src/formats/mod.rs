@@ -6,6 +6,7 @@
 mod fiction_book;
 pub(crate) mod handlers;
 pub(crate) mod metadata;
+mod odf;
 #[cfg(test)]
 pub(crate) mod parity;
 pub(crate) mod xhtml;
@@ -73,7 +74,7 @@ pub(crate) trait Parser: Sync {
     ) -> Result<(), Failure>;
 }
 
-static PARSERS: &[&dyn Parser] = &[&fiction_book::FictionBookParser];
+static PARSERS: &[&dyn Parser] = &[&fiction_book::FictionBookParser, &odf::OpenDocumentParser];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
 fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {

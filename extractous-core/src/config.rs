@@ -188,6 +188,13 @@ tika_config! {
     }
 }
 
+impl OfficeParserConfig {
+    /// Whether deleted content is extracted, which Tika leaves out unless asked.
+    pub(crate) fn includes_deleted_content(&self) -> bool {
+        self.include_deleted_content.unwrap_or(false)
+    }
+}
+
 tika_config! {
     /// Tesseract OCR configuration settings
     TesseractOcrConfig => "ai/yobix/OcrConfig" {
