@@ -66,14 +66,18 @@ in that reading is 80 or less (upright Latin pages read at 90 or more; other scr
 less) does tesseract's orientation and script detection run (the `osd` data, which distribution packages install with
 tesseract), stopping once it is sure of ten characters rather than fifty, and finding nothing when no script is likelier
 than another: the image is turned upright and read again with the installed model for its script, such as
-`script/Arabic`, then `ara`, falling back to `eng`. Detection takes upright Armenian for upside-down Latin and Georgian
-for Malayalam, so when no reading of a page with text is confident, those two are tried as well and the most confident
-reading is kept. Where tesseract runs in the process, each of these readings is a guess that tesseract gives up once the mean
+`script/Arabic`, then `ara`, falling back to `eng`. Detection reports Georgian pages as Malayalam, so after a Malayalam
+report the page is read as Georgian first. It also takes upright Armenian for upside-down Latin, so when no reading of a
+page with text is confident, Armenian, Georgian and the reported script are tried as well (each at most once) and the
+most confident reading is kept. Where tesseract runs in the process, each of these readings is a guess that tesseract gives up once the mean
 confidence of its first 20 words is below 70 (the Latin model reads the first words of a Cyrillic, Greek, Armenian or
 Georgian page at 55 or less, and of a Latin page at 88 or more), so a page in another script costs little more than
 one reading in the right one; when every guess is given up, the page is read to the end as detection found it. With `--ocr-lang`, a page is read in that language, and detection runs only to turn a page
 tesseract was not confident of. Tesseract segments pages without its own detection (page
-segmentation mode 3, where Tika runs mode 1), since pages reach it upright.
+segmentation mode 3, where Tika runs mode 1), since pages reach it upright. The pages of a multi-page image or scanned
+PDF are read side by side, on as many threads as the process has processors. Each later page is read in the script the
+first page settles on, and read again only when that differs from the script assumed when it started. So a page reads
+the same whichever finishes first, and a two-page scan takes about one page's time.
 
 Under `--ocr auto`, each PDF page's text layer is checked before it is used. A page with next to no text is OCRed
 as a scan. A page whose text layer is garbage is OCRed and its text replaced. Garbage here means private-use or
