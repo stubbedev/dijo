@@ -8,6 +8,7 @@ mod docx;
 pub(crate) mod embedded;
 mod fiction_book;
 pub(crate) mod handlers;
+mod html;
 pub(crate) mod java;
 mod java_time;
 pub(crate) mod metadata;
@@ -15,6 +16,8 @@ mod odf;
 mod ooxml;
 #[cfg(test)]
 pub(crate) mod parity;
+#[cfg(test)]
+pub(crate) mod reference;
 mod rtf;
 mod subtitle;
 mod text;
@@ -69,16 +72,16 @@ pub(crate) trait Parser: Sync {
     fn media_types(&self) -> &'static [&'static str];
 
     /// Why Tika's path should extract `input` rather than this parser, if it should: a feature
-    /// of this document the parser does not handle yet, such as embedded documents, which Tika
-    /// parses recursively. Decided before any output is written.
-    fn defers(&self, _input: &[u8]) -> Option<&'static str> {
+    /// of this document the parser does not handle yet, decided before any output is written,
+    /// from the document, the `metadata` Tika's parser starts from and the parser settings
+    /// `configs` the extraction was given.
+    fn defers(
+        &self,
+        _input: &[u8],
+        _metadata: &TikaMetadata,
+        _configs: &ParserConfigs,
+    ) -> Option<String> {
         None
-    }
-
-    /// [`Parser::defers`] for a document extracted under the parser settings `configs`, with the
-    /// reason in full, for a parser whose deferrals depend on the settings or the document.
-    fn defers_with(&self, input: &[u8], _configs: &ParserConfigs) -> Option<String> {
-        self.defers(input).map(str::to_owned)
     }
 
     /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
@@ -95,6 +98,7 @@ pub(crate) trait Parser: Sync {
 static PARSERS: &[&dyn Parser] = &[
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
+    &html::JSoupParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
     &rtf::RtfParser,
@@ -155,7 +159,10 @@ pub(crate) fn route<'a>(
     let Some(parser) = parser_for(&detected.media_type) else {
         return Ok(None);
     };
-    if parser.defers_with(&input, configs).is_some() {
+    if parser
+        .defers(&input, &detected.metadata_for(parser), configs)
+        .is_some()
+    {
         return Ok(None);
     }
     Ok(Some(Routed {
@@ -213,7 +220,7 @@ impl Detected {
     /// Detects `input`, read from `source`, with the metadata `TikaNativeMain.detect` holds after
     /// Tika's detection: for a file, the resource name and length `TikaInputStream.get(Path,
     /// metadata)` writes, then what the detectors write, in the order they write it.
-    fn detect(source: Source<'_>, input: &[u8]) -> Result<Self, mime::DetectionError> {
+    pub(crate) fn detect(source: Source<'_>, input: &[u8]) -> Result<Self, mime::DetectionError> {
         let mut metadata = TikaMetadata::new();
         let origin = match source {
             Source::File(path) => {
@@ -239,7 +246,7 @@ impl Detected {
 
     /// The metadata a parser starts from, as Tika's `AutoDetectParser` and `CompositeParser`
     /// leave it: the detected `Content-Type` and the parser in `tk:parsed-by`.
-    fn metadata_for(&self, parser: &dyn Parser) -> TikaMetadata {
+    pub(crate) fn metadata_for(&self, parser: &dyn Parser) -> TikaMetadata {
         let mut metadata = self.metadata.clone();
         metadata.set("Content-Type", self.media_type.clone());
         metadata.add("tk:parsed-by", parser.name());

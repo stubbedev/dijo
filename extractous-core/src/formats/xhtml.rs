@@ -228,6 +228,11 @@ impl<'h> Xhtml<'h> {
         self.safe_text(text, Text::IgnorableWhitespace)
     }
 
+    /// Whether `name` is a block element a line break ends (`XHTMLContentHandler.ENDLINE`).
+    pub(crate) fn is_endline(name: &str) -> bool {
+        ENDLINE.contains(&name)
+    }
+
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
         self.handler.ignorable_whitespace("\n")
     }

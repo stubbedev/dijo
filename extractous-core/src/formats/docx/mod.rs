@@ -158,7 +158,12 @@ impl Parser for DocxParser {
     /// Defers documents with pictures, embedded objects or attachments Tika parses, macros it
     /// extracts when asked to, parts whose XML Tika reports failing on, and packages POI does
     /// not open as this port does.
-    fn defers_with(&self, input: &[u8], configs: &ParserConfigs) -> Option<String> {
+    fn defers(
+        &self,
+        input: &[u8],
+        _metadata: &TikaMetadata,
+        configs: &ParserConfigs,
+    ) -> Option<String> {
         Document::open(input, &configs.office)
             .and_then(|document| document.check())
             .err()

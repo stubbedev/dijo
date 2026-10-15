@@ -339,8 +339,13 @@ impl Parser for OpenDocumentParser {
         &MEDIA_TYPES
     }
 
-    fn defers(&self, input: &[u8]) -> Option<&'static str> {
-        deferral(input)
+    fn defers(
+        &self,
+        input: &[u8],
+        _metadata: &TikaMetadata,
+        _configs: &ParserConfigs,
+    ) -> Option<String> {
+        deferral(input).map(str::to_owned)
     }
 
     fn parse(
@@ -480,7 +485,13 @@ mod tests {
         let corpus = conformance_corpus();
         for (directory, name, reason) in CONFORMANCE_DEFERRED {
             let input = std::fs::read(corpus.join(directory).join(name)).unwrap();
-            assert_eq!(OpenDocumentParser.defers(&input), Some(reason), "{name}");
+            assert_eq!(
+                OpenDocumentParser
+                    .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+                    .as_deref(),
+                Some(reason),
+                "{name}"
+            );
         }
     }
 
@@ -656,12 +667,26 @@ mod tests {
     fn leaves_documents_with_binary_data_to_tika_and_reads_those_with_pictures() {
         let text = content("<office:text><text:p>x</text:p></office:text>");
         let picture = document(TEXT, &[("content.xml", &text), ("Pictures/a.png", "png")]);
-        assert_eq!(OpenDocumentParser.defers(&picture), None);
+        assert_eq!(
+            OpenDocumentParser
+                .defers(&picture, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            None
+        );
         let object_thumbnail = document(
             TEXT,
             &[("content.xml", &text), ("Object 1/Thumbnails/a.png", "png")],
         );
-        assert_eq!(OpenDocumentParser.defers(&object_thumbnail), None);
+        assert_eq!(
+            OpenDocumentParser
+                .defers(
+                    &object_thumbnail,
+                    &TikaMetadata::new(),
+                    &ParserConfigs::default()
+                )
+                .as_deref(),
+            None
+        );
         let binary = document(
             TEXT,
             &[(
@@ -671,7 +696,12 @@ mod tests {
                 ),
             )],
         );
-        assert_eq!(OpenDocumentParser.defers(&binary), Some(BINARY_DATA));
+        assert_eq!(
+            OpenDocumentParser
+                .defers(&binary, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some(BINARY_DATA)
+        );
         let mentioned = document(
             TEXT,
             &[(
@@ -679,26 +709,56 @@ mod tests {
                 &content("<office:text><text:p>binary-data</text:p></office:text>"),
             )],
         );
-        assert_eq!(OpenDocumentParser.defers(&mentioned), None);
+        assert_eq!(
+            OpenDocumentParser
+                .defers(&mentioned, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            None
+        );
         let thumbnail = document(
             TEXT,
             &[("content.xml", &text), ("Thumbnails/thumbnail.png", "png")],
         );
-        assert_eq!(OpenDocumentParser.defers(&thumbnail), None);
+        assert_eq!(
+            OpenDocumentParser
+                .defers(&thumbnail, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            None
+        );
     }
 
     #[test]
     fn leaves_odd_archives_to_tika() {
         let text = content("<office:text><text:p>x</text:p></office:text>");
         assert_eq!(
-            OpenDocumentParser.defers(b"not a zip"),
+            OpenDocumentParser
+                .defers(
+                    b"not a zip",
+                    &TikaMetadata::new(),
+                    &ParserConfigs::default()
+                )
+                .as_deref(),
             Some(UNREADABLE_ARCHIVE)
         );
         let without_content = document(TEXT, &[MANIFEST]);
-        assert_eq!(OpenDocumentParser.defers(&without_content), Some(NO_BODY));
+        assert_eq!(
+            OpenDocumentParser
+                .defers(
+                    &without_content,
+                    &TikaMetadata::new(),
+                    &ParserConfigs::default()
+                )
+                .as_deref(),
+            Some(NO_BODY)
+        );
         let duplicated = document(TEXT, &[("content.xml", &text), ("content.xmm", &text)]);
         let duplicated = replace_all(&duplicated, b"content.xmm", b"content.xml");
-        assert_eq!(OpenDocumentParser.defers(&duplicated), Some(DUPLICATES));
+        assert_eq!(
+            OpenDocumentParser
+                .defers(&duplicated, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some(DUPLICATES)
+        );
     }
 
     fn replace_all(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
@@ -717,7 +777,12 @@ mod tests {
     #[test]
     fn leaves_encrypted_documents_to_tika() {
         let input = std::fs::read("../test_files/documents/encrypted/undecryptable.odt").unwrap();
-        assert_eq!(OpenDocumentParser.defers(&input), Some(ENCRYPTED));
+        assert_eq!(
+            OpenDocumentParser
+                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some(ENCRYPTED)
+        );
     }
 
     #[test]

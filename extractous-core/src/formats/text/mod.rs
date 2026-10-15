@@ -69,6 +69,7 @@ use sniffer::Delimiter;
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
 use crate::mime::MediaType;
@@ -90,8 +91,13 @@ impl Parser for TextAndCsvParser {
         &["text/plain", "text/csv", "text/tab-separated-values"]
     }
 
-    fn defers(&self, input: &[u8]) -> Option<&'static str> {
-        AutoDetectReader::defers(input)
+    fn defers(
+        &self,
+        input: &[u8],
+        _metadata: &TikaMetadata,
+        _configs: &ParserConfigs,
+    ) -> Option<String> {
+        AutoDetectReader::defers(input).map(str::to_owned)
     }
 
     fn parse(
@@ -283,7 +289,9 @@ mod tests {
 
     #[test]
     fn defers_charsets_it_cannot_decode() {
-        let reason = |input: &[u8]| TextAndCsvParser.defers(input);
+        let reason = |input: &[u8]| {
+            TextAndCsvParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+        };
         assert_eq!(reason(b"plain text, nothing declared"), None);
         assert_eq!(reason(b"<meta charset=\"utf-8\"> text"), None);
         assert!(reason(b"<meta charset=\"x-IBM930\"> text").is_some());

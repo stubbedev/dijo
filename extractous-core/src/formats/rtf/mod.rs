@@ -35,7 +35,12 @@ impl Parser for RtfParser {
     /// this port does not, ISCII (`\ansicpg57002`); or with a creation date when Java's default
     /// time zone cannot be read. Only a document that names `\pict`, `\objdata`,
     /// `\ansicpg57002` or `\creatim` can, and only such a document is read ahead to find out.
-    fn defers(&self, input: &[u8]) -> Option<&'static str> {
+    fn defers(
+        &self,
+        input: &[u8],
+        _metadata: &TikaMetadata,
+        configs: &ParserConfigs,
+    ) -> Option<String> {
         let undated = TimeZone::java_default().is_err();
         let read_ahead = input.iter().enumerate().any(|(at, &byte)| {
             let rest = &input[at + 1..];
@@ -46,12 +51,11 @@ impl Parser for RtfParser {
         if !read_ahead {
             return None;
         }
-        let configs = ParserConfigs::default();
-        let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &configs, |xhtml| {
+        let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), configs, |xhtml| {
             extractor::extract(input, xhtml)
         });
         match result {
-            Err(Interrupt::Deferred(deferral)) => Some(deferral.reason()),
+            Err(Interrupt::Deferred(deferral)) => Some(deferral.reason().to_owned()),
             Ok(()) | Err(Interrupt::Failed(_) | Interrupt::Unchecked(_)) => None,
         }
     }
@@ -247,7 +251,14 @@ mod tests {
         let snippets = SnippetFiles::new("same", SNIPPETS);
         for file in &snippets.files {
             let input = std::fs::read(file).unwrap();
-            assert_eq!(RtfParser.defers(&input), None, "{}", file.display());
+            assert_eq!(
+                RtfParser
+                    .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+                    .as_deref(),
+                None,
+                "{}",
+                file.display()
+            );
         }
         assert_same_as_tika(&snippets.paths(), TIKA_PARSER);
     }
@@ -260,10 +271,29 @@ mod tests {
     #[test]
     fn defers_pictures_objects_and_iscii() {
         for snippet in DEFERRED_SNIPPETS {
-            assert!(RtfParser.defers(snippet.as_bytes()).is_some(), "{snippet}");
+            assert!(
+                RtfParser
+                    .defers(
+                        snippet.as_bytes(),
+                        &TikaMetadata::new(),
+                        &ParserConfigs::default()
+                    )
+                    .as_deref()
+                    .is_some(),
+                "{snippet}"
+            );
         }
         let unfinished = r"{\rtf1\ansi x{\pict\pngblip 89504e47";
-        assert_eq!(RtfParser.defers(unfinished.as_bytes()), None);
+        assert_eq!(
+            RtfParser
+                .defers(
+                    unfinished.as_bytes(),
+                    &TikaMetadata::new(),
+                    &ParserConfigs::default()
+                )
+                .as_deref(),
+            None
+        );
     }
 
     #[test]

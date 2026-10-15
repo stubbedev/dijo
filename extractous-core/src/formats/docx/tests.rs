@@ -107,7 +107,7 @@ fn file_name(path: &Path) -> String {
 
 fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
     let input = std::fs::read(path).unwrap();
-    DocxParser.defers_with(&input, configs)
+    DocxParser.defers(&input, &TikaMetadata::new(), configs)
 }
 
 /// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
@@ -243,7 +243,7 @@ fn relationship(id: &str, kind: &str, target: &str) -> String {
 }
 
 fn defers(input: &[u8]) -> Option<String> {
-    DocxParser.defers_with(input, &ParserConfigs::default())
+    DocxParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
 }
 
 fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
@@ -315,7 +315,9 @@ fn defers_macros_only_when_they_are_extracted() {
     );
     assert_eq!(defers(&input), None);
     let macros = office(OfficeParserConfig::new().set_extract_macros(true));
-    assert!(DocxParser.defers_with(&input, &macros).is_some());
+    assert!(DocxParser
+        .defers(&input, &TikaMetadata::new(), &macros)
+        .is_some());
 }
 
 #[test]

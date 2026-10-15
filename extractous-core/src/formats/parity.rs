@@ -265,17 +265,27 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, 
     let (mut parsed, mut deferred) = (Vec::new(), Vec::new());
     for file in files {
         let path = file.to_str().unwrap();
-        let media_type = crate::formats::detect(Source::File(path))
-            .unwrap_or_else(|e| panic!("{path} is not detected: {e}"));
-        if !parser.media_types().contains(&media_type.as_str()) {
-            continue;
-        }
         let input = std::fs::read(&file).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
         if input.is_empty() {
             continue;
         }
+        let detected = formats::Detected::detect(Source::File(path), &input)
+            .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
+        let base = detected
+            .media_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if !parser.media_types().contains(&base) {
+            continue;
+        }
         if parser
-            .defers_with(&input, &ParserConfigs::default())
+            .defers(
+                &input,
+                &detected.metadata_for(parser),
+                &ParserConfigs::default(),
+            )
             .is_some()
         {
             deferred.push(file);

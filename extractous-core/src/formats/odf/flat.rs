@@ -5,6 +5,7 @@
 //! default leaves them. Documents with embedded binary data are left to Tika.
 
 use crate::config::ParserConfigs;
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::body::{Body, Namespaces};
 use crate::formats::odf::meta::MetaHandlers;
 use crate::formats::odf::BINARY_DATA_ELEMENT;
@@ -210,13 +211,18 @@ impl Parser for FlatOpenDocumentParser {
         ]
     }
 
-    fn defers(&self, input: &[u8]) -> Option<&'static str> {
+    fn defers(
+        &self,
+        input: &[u8],
+        _metadata: &TikaMetadata,
+        _configs: &ParserConfigs,
+    ) -> Option<String> {
         let mut finder = BinaryDataFinder {
             sections: Sections::new(),
             found: false,
         };
         let stopped = xml::parse_sax(input, WHAT, &mut finder).is_err();
-        (stopped && finder.found).then_some(BINARY_DATA)
+        (stopped && finder.found).then(|| BINARY_DATA.to_owned())
     }
 
     /// Parses as `FlatOpenDocumentParser.parse`, which ends the document even when the parse
@@ -366,17 +372,32 @@ mod tests {
             TEXT,
             r#"<office:body><office:text><text:p><draw:frame><draw:image><office:binary-data>AAAA</office:binary-data></draw:image></draw:frame></text:p></office:text></office:body>"#,
         );
-        assert_eq!(FlatOpenDocumentParser.defers(&in_body), Some(BINARY_DATA));
+        assert_eq!(
+            FlatOpenDocumentParser
+                .defers(&in_body, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some(BINARY_DATA)
+        );
         let in_styles = flat(
             TEXT,
             r#"<office:styles><office:binary-data>AAAA</office:binary-data></office:styles><office:body><office:text><text:p>x</text:p></office:text></office:body>"#,
         );
-        assert_eq!(FlatOpenDocumentParser.defers(&in_styles), None);
+        assert_eq!(
+            FlatOpenDocumentParser
+                .defers(&in_styles, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            None
+        );
         let mentioned = flat(
             TEXT,
             "<office:body><office:text><text:p>binary-data</text:p></office:text></office:body>",
         );
-        assert_eq!(FlatOpenDocumentParser.defers(&mentioned), None);
+        assert_eq!(
+            FlatOpenDocumentParser
+                .defers(&mentioned, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            None
+        );
     }
 
     #[test]

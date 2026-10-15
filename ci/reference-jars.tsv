@@ -18,6 +18,9 @@ org/apache/tika/tika-parser-text-module/4.1.0/tika-parser-text-module-4.1.0.jar	
 org/apache/commons/commons-csv/1.14.1/commons-csv-1.14.1.jar	32be0e1e76673092f5d12cb790bd2acb6c2ab04c4ea6efc69ea5ee17911c24fe
 commons-codec/commons-codec/1.22.1/commons-codec-1.22.1.jar	78a5d732fbd715e2d10bd7150d2f8030bae57267f8aacc5c88f642cb6c2e5d3f
 org/apache/tika/tika-encoding-detector-mojibuster/4.1.0/tika-encoding-detector-mojibuster-4.1.0-sources.jar	117ea867accc2c6541842494f35b121dd8da8a4e5c93f22930f12a6f22c16cc4
+org/apache/tika/tika-parser-html-module/4.1.0/tika-parser-html-module-4.1.0.jar	62c69e41774c26e9e8f26330d3987e820bbf1747deb778f781f08c20c8cd69f4
+org/apache/tika/tika-parser-datauri-commons/4.1.0/tika-parser-datauri-commons-4.1.0.jar	e79b99bffe67743ee94a92af8b9a47fd077faa58a9e203ae786338673a0b10aa
+org/jsoup/jsoup/1.23.2/jsoup-1.23.2.jar	e9d8c856856680427f096d156f02a414289985c930998fcb519ce5be39b42003
 org/slf4j/slf4j-nop/2.0.20/slf4j-nop-2.0.20.jar	6522080396fb339e99bae40d329a06d18d3190dc864020ac4ca943519d0fd85b	mime
 org/apache/logging/log4j/log4j-to-slf4j/2.26.1/log4j-to-slf4j-2.26.1.jar	6b10bc838a3c773b3fd02979c7ef4e7a443371fa89bda4415d89099bbee224df	mime
 org/apache/tika/tika-parser-microsoft-module/4.1.0/tika-parser-microsoft-module-4.1.0.jar	cab52e39586cc8fac30522f506cb3431bbca2dca8ae852ffe3600e5720b4694c	mime
