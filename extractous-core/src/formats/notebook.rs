@@ -9,7 +9,8 @@ use serde_json::Value;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::handlers::{is_blank, is_java_whitespace, utf16_length};
+use crate::formats::handlers::{is_blank, utf16_length};
+use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
@@ -94,11 +95,6 @@ fn text(value: Option<&Value>) -> Result<String, Unread> {
         Some(Value::Array(lines)) => lines.iter().map(as_text).collect(),
         Some(value) => as_text(value),
     }
-}
-
-/// `String.strip`, by `Character.isWhitespace`.
-fn strip(text: &str) -> &str {
-    text.trim_matches(is_java_whitespace)
 }
 
 /// `clean`: without the terminal codes `ESC [ digits-and-semicolons letter`, stripped.

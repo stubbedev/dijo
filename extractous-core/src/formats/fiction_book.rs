@@ -4,7 +4,7 @@
 //! together and keeping the names of embedded images and the language code in the text.
 
 use crate::config::ParserConfigs;
-use crate::formats::handlers::is_java_whitespace;
+use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
@@ -142,7 +142,7 @@ fn collapse_whitespace(text: &str) -> String {
             in_run = false;
         }
     }
-    collapsed.trim_matches(is_java_whitespace).to_owned()
+    strip(&collapsed).to_owned()
 }
 
 const WHAT: &str = "The FictionBook XML";
