@@ -93,7 +93,8 @@ fn check(corpora: &[(&str, PathBuf)]) -> usize {
     matched
 }
 
-/// The files under `root`, by their path relative to it, as `Files.walk` finds them.
+/// The files under `root`, by their path relative to it, as `Files.walk` finds them, with `/`
+/// between the names on every platform, as the reference writes them.
 fn files(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
     let mut directories = vec![root.to_path_buf()];
@@ -106,7 +107,11 @@ fn files(root: &Path) -> Vec<String> {
                 directories.push(path);
             } else {
                 let relative = path.strip_prefix(root).expect("under the root");
-                found.push(relative.to_str().expect("a UTF-8 name").to_owned());
+                let names: Vec<&str> = relative
+                    .components()
+                    .map(|name| name.as_os_str().to_str().expect("a UTF-8 name"))
+                    .collect();
+                found.push(names.join("/"));
             }
         }
     }
