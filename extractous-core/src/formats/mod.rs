@@ -6,6 +6,7 @@
 mod auto_detect_reader;
 mod fiction_book;
 pub(crate) mod handlers;
+pub(crate) mod java;
 mod java_time;
 mod media_type;
 pub(crate) mod metadata;
@@ -69,6 +70,12 @@ pub(crate) trait Parser: Sync {
         None
     }
 
+    /// [`Parser::defers`] for a document extracted under the parser settings `configs`, with the
+    /// reason in full, for a parser whose deferrals depend on the settings or the document.
+    fn defers_with(&self, input: &[u8], _configs: &ParserConfigs) -> Option<String> {
+        self.defers(input).map(str::to_owned)
+    }
+
     /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
     /// it replaces does, under the parser settings `configs` the extraction was given. The
     /// document is started before and ended after it.
@@ -121,7 +128,11 @@ pub(crate) struct Routed<'a> {
 /// this document to Tika, detecting it with Tika's detector until the detection is ported
 /// (#41). Documents read from a URL, and those whose embedded documents are spooled, stay with
 /// Tika.
-pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<Routed<'_>>> {
+pub(crate) fn route<'a>(
+    source: Source<'a>,
+    spooling: bool,
+    configs: &ParserConfigs,
+) -> ExtractResult<Option<Routed<'a>>> {
     if spooling || matches!(source, Source::Url(_)) || !any_parsers() {
         return Ok(None);
     }
@@ -130,7 +141,7 @@ pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<
         return Ok(None);
     };
     let input = input(source)?;
-    if parser.defers(&input).is_some() {
+    if parser.defers_with(&input, configs).is_some() {
         return Ok(None);
     }
     Ok(Some(Routed {
@@ -181,9 +192,9 @@ impl Detected {
 }
 
 /// The metadata Tika's `CompositeParser` sets once its parser has returned.
-fn finish_metadata(metadata: &mut TikaMetadata) {
-    let parsers = metadata.values("tk:parsed-by").to_vec();
-    metadata.set_values("tk:parsed-by-full-set", parsers);
+/// It lists the parsers it dispatched to, not those a parser records itself.
+fn finish_metadata(metadata: &mut TikaMetadata, parser: &dyn Parser) {
+    metadata.set_values("tk:parsed-by-full-set", vec![parser.name().to_owned()]);
 }
 
 fn run(
@@ -196,7 +207,7 @@ fn run(
     let (mut metadata, result) = Xhtml::write(handler, detected.metadata_for(parser), |xhtml| {
         parser.parse(input, configs, xhtml)
     });
-    finish_metadata(&mut metadata);
+    finish_metadata(&mut metadata, parser);
     (metadata, result)
 }
 
