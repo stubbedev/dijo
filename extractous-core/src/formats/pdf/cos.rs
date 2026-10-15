@@ -38,10 +38,13 @@ pub(super) struct Pdf {
     lost: BTreeSet<u32>,
     /// The first of them the extraction asked for, if it asked for one.
     lost_needed: Cell<Option<u32>>,
+    /// Whether the document's bytes spell `Filespec`, as a file specification outside an
+    /// object stream must.
+    pub(super) spells_filespec: bool,
 }
 
 impl Pdf {
-    pub(super) fn new(doc: Document) -> Self {
+    pub(super) fn new(doc: Document, input: &[u8]) -> Self {
         let present: BTreeSet<u32> = doc.objects.keys().map(|&(number, _)| number).collect();
         let lost = doc
             .reference_table
@@ -60,7 +63,13 @@ impl Pdf {
             doc,
             lost,
             lost_needed: Cell::new(None),
+            spells_filespec: input.windows(8).any(|window| window == b"Filespec"),
         }
+    }
+
+    /// Whether `lopdf` could not read the object `number` the cross-reference table lists.
+    pub(super) fn is_lost(&self, number: u32) -> bool {
+        self.lost.contains(&number)
     }
 
     /// The first object the extraction needed that `lopdf` could not read, if there was one:

@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use lopdf::{Dictionary, Object};
 
+use super::attachment::{self, EmbeddedFile, FileSpec, SpecKey, Written};
 use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
@@ -15,6 +16,7 @@ use super::reading_order;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::{jfloat, Unported};
+use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::is_blank;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
@@ -25,13 +27,22 @@ const MAX_ANNOTATION_TYPES: usize = 100;
 const MAX_BOOKMARK_ITEMS: usize = 100_000;
 /// `AbstractPDF2XHTML.MAX_BOOKMARK_DEPTH`.
 const MAX_BOOKMARK_DEPTH: usize = 50;
-/// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
-const MAX_RECURSION_DEPTH: usize = 100;
 
 /// Why writing the document stopped.
 pub(super) enum WriteFailure {
     Stop(Stop),
     Unported(Unported),
+    /// Parsing a document embedded in it failed in a way that fails the document.
+    Embedded(Failure),
+}
+
+impl From<Failure> for WriteFailure {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Stopped(stop) => Self::Stop(stop),
+            other => Self::Embedded(other),
+        }
+    }
 }
 
 impl From<Stop> for WriteFailure {
@@ -63,6 +74,7 @@ impl From<WriteFailure> for Failure {
                 "the document needs what the port does not do, though it was not deferred: {}",
                 unported.0
             )),
+            WriteFailure::Embedded(failure) => failure,
         }
     }
 }
@@ -86,6 +98,7 @@ enum Held {
     End(String),
     Characters(String),
     Newline,
+    Embedded(EmbeddedFile),
 }
 
 /// The stripper's callbacks as `PDF2XHTML` and, for a tagged document,
@@ -168,23 +181,33 @@ impl PageWriter<'_, '_, '_> {
         }
     }
 
+    /// Parses a file the page's annotations embed, in what the page's `div` holds when it is
+    /// held back.
+    fn embedded(&mut self, file: EmbeddedFile) -> Result<(), WriteFailure> {
+        match self.held.as_mut() {
+            Some(held) => {
+                held.push(Held::Embedded(file));
+                Ok(())
+            }
+            None => parse_embedded(self.xhtml, &file),
+        }
+    }
+
     /// Writes what the page's `div` holds, when it was held back.
-    fn release(&mut self) -> Result<(), Stop> {
+    fn release(&mut self) -> Result<(), WriteFailure> {
         let Some(held) = self.held.as_mut() else {
             return Ok(());
         };
         for item in std::mem::take(held) {
             match item {
                 Held::Start { name, attributes } => {
-                    let borrowed: Vec<(&str, &str)> = attributes
-                        .iter()
-                        .map(|(name, value)| (name.as_str(), value.as_str()))
-                        .collect();
-                    self.xhtml.start_element_with(&name, &borrowed)?;
+                    self.xhtml
+                        .start_element_with(&name, &borrowed(&attributes))?;
                 }
                 Held::End(name) => self.xhtml.end_element(&name)?,
                 Held::Characters(text) => self.xhtml.characters(&text)?,
                 Held::Newline => self.xhtml.newline()?,
+                Held::Embedded(file) => parse_embedded(self.xhtml, &file)?,
             }
         }
         Ok(())
@@ -282,6 +305,11 @@ pub(super) struct DocumentWriter<'p, 'x, 'h> {
     annotation_subtypes: BTreeSet<String>,
     total_glyphs: i64,
     total_unmapped: i64,
+    /// Tika's `extractedFiles`: the file specifications annotations led to.
+    extracted: HashSet<SpecKey>,
+    /// Whether the document is written only to decide whether it is deferred, its embedded
+    /// files not parsed and the text layer of each page recorded.
+    dry_run: bool,
     /// The text layer of each page, when recorded.
     pub(super) layers: Option<Vec<PageLayer>>,
 }
@@ -293,7 +321,7 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         tagged: Option<Tagged<'p>>,
         reading_order: bool,
         hold_pages: bool,
-        record_layers: bool,
+        dry_run: bool,
     ) -> Self {
         let labels = tagged.as_ref().is_some_and(Tagged::has_index);
         if let Some(reason) = tagged.as_ref().and_then(|tagged| tagged.document_rejection) {
@@ -317,7 +345,9 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
             annotation_subtypes: BTreeSet::new(),
             total_glyphs: 0,
             total_unmapped: 0,
-            layers: record_layers.then(Vec::new),
+            extracted: HashSet::new(),
+            dry_run,
+            layers: dry_run.then(Vec::new),
         }
     }
 
@@ -436,11 +466,9 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         }
         match subtype.as_deref() {
             Some("FileAttachment") => {
-                return Err(Unported(
-                    "a file attachment annotation, whose file Tika parses as an embedded document"
-                        .to_owned(),
-                )
-                .into())
+                let source = "annotationFileAttachment";
+                let spec = attachment::file_spec(pdf.get(annotation, b"FS"))?;
+                self.annotation_file(source, spec)?;
             }
             Some("Widget") => {}
             _ => {
@@ -451,14 +479,9 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                     )
                     .into());
                 }
-                let holder = Object::Dictionary(annotation.clone());
-                if has_file_spec(pdf, &holder, 0, &mut HashSet::new()) {
-                    return Err(Unported(
-                        "an annotation holding a file specification, whose file Tika parses as \
-                         an embedded document"
-                            .to_owned(),
-                    )
-                    .into());
+                let source = subtype.as_deref().unwrap_or("unknown");
+                for spec in attachment::find_file_specs(pdf, annotation) {
+                    self.annotation_file(source, Some(FileSpec::Complex(spec)))?;
                 }
             }
         }
@@ -625,22 +648,71 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         Ok(())
     }
 
-    /// `extractEmbeddedDocuments`: files embedded in the document, which Tika parses.
+    /// `processDocOnAction` for the file specification of an annotation: its files, written
+    /// in the page's `div` unless an annotation led to the specification before.
+    fn annotation_file(
+        &mut self,
+        source: &str,
+        spec: Option<FileSpec<'p>>,
+    ) -> Result<(), WriteFailure> {
+        let Some(spec) = spec else {
+            return Ok(());
+        };
+        let key = spec.key();
+        if !self.extracted.contains(&key) {
+            let attributes = vec![("source".to_owned(), source.to_owned())];
+            for written in attachment::written(self.pdf, "", source, spec, attributes)? {
+                match written {
+                    Written::Link(attributes) => {
+                        self.page.start("div", &borrowed(&attributes))?;
+                        self.page.end("div")?;
+                    }
+                    Written::Embedded { attributes, file } => {
+                        self.page.start("div", &borrowed(&attributes))?;
+                        self.page.end("div")?;
+                        if !self.dry_run {
+                            self.page.embedded(file)?;
+                        } else if self.page.held.is_some() {
+                            return Err(Unported(
+                                "a file an annotation embeds, whose text our \
+                                 TextLayerCheckingPdfParser weighs with the page's"
+                                    .to_owned(),
+                            )
+                            .into());
+                        }
+                    }
+                }
+            }
+        }
+        self.extracted.insert(key);
+        Ok(())
+    }
+
+    /// `extractEmbeddedDocuments`: the files of the document's file specifications that no
+    /// annotation led to, each parsed as an embedded document.
     fn embedded_documents(&mut self) -> Result<(), WriteFailure> {
         let pdf = self.pdf;
-        let has_file_specs = pdf.doc.objects.values().any(|object| {
-            as_dict(object).is_some_and(|dict| pdf.name(dict, b"Type") == Some(b"Filespec"))
-        });
-        let has_embedded_files = pdf
-            .catalog()
-            .and_then(|catalog| pdf.dict(catalog, b"Names"))
-            .and_then(|names| pdf.dict(names, b"EmbeddedFiles"))
-            .is_some();
-        if has_file_specs || has_embedded_files {
-            return Err(Unported(
-                "file specifications, whose files Tika parses as embedded documents".to_owned(),
-            )
-            .into());
+        for (name, spec) in attachment::document_specs(pdf)? {
+            let spec = FileSpec::Complex(spec);
+            if self.extracted.contains(&spec.key()) {
+                continue;
+            }
+            for written in attachment::written(pdf, &name, "", spec, Vec::new())? {
+                let xhtml = &mut *self.page.xhtml;
+                match written {
+                    Written::Link(attributes) => {
+                        xhtml.start_element_with("div", &borrowed(&attributes))?;
+                        xhtml.end_element("div")?;
+                    }
+                    Written::Embedded { attributes, file } => {
+                        xhtml.start_element_with("div", &borrowed(&attributes))?;
+                        xhtml.end_element("div")?;
+                        if !self.dry_run {
+                            parse_embedded(xhtml, &file)?;
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -662,27 +734,19 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         let xhtml = &mut self.page.xhtml;
         xhtml.start_element_with("div", &[("class", "acroform")])?;
         xhtml.start_element("ol")?;
-        for line in lines {
+        for line in &lines {
             match line {
                 form::Line::Field { alternate, text } => {
-                    let attributes: Vec<(&str, &str)> = alternate
-                        .iter()
-                        .map(|name| ("altName", name.as_str()))
-                        .collect();
-                    xhtml.start_element_with("li", &attributes)?;
-                    xhtml.characters(&text)?;
+                    xhtml.start_element_with("li", &alternate_name(alternate))?;
+                    xhtml.characters(text)?;
                     xhtml.end_element("li")?;
                 }
                 form::Line::Signature { alternate, data } => {
-                    let attributes: Vec<(&str, &str)> = alternate
-                        .iter()
-                        .map(|name| ("altName", name.as_str()))
-                        .collect();
-                    xhtml.start_element_with("li", &attributes)?;
+                    xhtml.start_element_with("li", &alternate_name(alternate))?;
                     xhtml.start_element_with("ol", &[("type", "signaturedata")])?;
                     for (key, value) in data {
                         xhtml.start_element_with("li", &[("signdata", key)])?;
-                        xhtml.characters(&value)?;
+                        xhtml.characters(value)?;
                         xhtml.end_element("li")?;
                     }
                     xhtml.end_element("ol")?;
@@ -738,35 +802,26 @@ fn action_uri(pdf: &Pdf, annotation: &Dictionary) -> Option<String> {
     }
 }
 
-/// `PDFDOMUtil.findType` for file specifications: whether a dictionary within `object`, itself
-/// included, has the type `Filespec`, not descending into pages and parents.
-fn has_file_spec(pdf: &Pdf, object: &Object, depth: usize, seen: &mut HashSet<Identity>) -> bool {
-    let identity = match object {
-        Object::Reference(id) => Identity::Indirect(*id),
-        other => Identity::Direct(std::ptr::from_ref(other) as usize),
-    };
-    if seen.contains(&identity) || depth >= MAX_RECURSION_DEPTH {
-        return false;
-    }
-    seen.insert(identity);
-    match object {
-        Object::Reference(id) => pdf
-            .indirect(*id)
-            .is_some_and(|target| has_file_spec(pdf, target, depth + 1, seen)),
-        Object::Array(items) => items
-            .iter()
-            .any(|item| has_file_spec(pdf, item, depth + 1, seen)),
-        other => {
-            let Some(dict) = as_dict(other) else {
-                return false;
-            };
-            match pdf.name(dict, b"Type") {
-                Some(b"Filespec") => true,
-                Some(b"P" | b"Page" | b"Parent") => false,
-                _ => dict
-                    .iter()
-                    .any(|(_, value)| has_file_spec(pdf, value, depth + 1, seen)),
-            }
-        }
-    }
+/// The attributes of a form field's item: its alternate name, if it has one.
+fn alternate_name(alternate: &Option<String>) -> Vec<(&str, &str)> {
+    alternate
+        .iter()
+        .map(|name| ("altName", name.as_str()))
+        .collect()
+}
+
+/// Attributes as the XHTML writer takes them.
+fn borrowed(attributes: &[(String, String)]) -> Vec<(&str, &str)> {
+    attributes
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect()
+}
+
+/// `parseEmbedded` of a file the document embeds, which Tika writes without a `package-entry`
+/// div of its own.
+fn parse_embedded(xhtml: &mut Xhtml, file: &EmbeddedFile) -> Result<(), WriteFailure> {
+    xhtml
+        .parse_embedded(&file.data, &file.metadata, Wrapping::Bare)
+        .map_err(WriteFailure::from)
 }

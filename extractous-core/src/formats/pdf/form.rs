@@ -8,13 +8,11 @@ use lopdf::{Dictionary, Object};
 
 use super::cos::{as_dict, name_string, text_string, Identity, Pdf};
 use super::date::{self, Zoned};
-use super::Unported;
+use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::handlers::is_blank;
 use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
 
-/// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
-const MAX_RECURSION_DEPTH: usize = 100;
 /// How deep the port follows a field tree for its signatures, where PDFBox recurses without
 /// bound.
 const MAX_TREE_DEPTH: usize = 512;

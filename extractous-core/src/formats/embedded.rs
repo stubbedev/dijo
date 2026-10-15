@@ -14,6 +14,7 @@ pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
 pub(crate) const RESOURCE_NAME: &str = "tk:resource-name";
 pub(crate) const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 pub(crate) const THUMBNAIL: &str = "THUMBNAIL";
+pub(crate) const ATTACHMENT: &str = "ATTACHMENT";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 

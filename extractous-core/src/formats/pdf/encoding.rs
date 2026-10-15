@@ -327,6 +327,13 @@ pub(super) fn java_integer_map_order<V>(entries: &[(i32, V)]) -> Vec<(i32, &V)> 
     java_integer_map_order_from(entries, 16)
 }
 
+/// The bucket a key of hash code `hash` falls in, in a Java `HashMap` of `capacity` buckets, a
+/// power of two.
+pub(super) fn java_bucket(hash: i32, capacity: usize) -> usize {
+    let hash = hash as u32;
+    ((hash ^ (hash >> 16)) as usize) & (capacity - 1)
+}
+
 /// [`java_integer_map_order`] of a map whose table starts at `table` buckets, a power of two.
 pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize) -> Vec<(i32, &V)> {
     let mut unique: Vec<(i32, &V)> = Vec::with_capacity(entries.len());
@@ -344,10 +351,7 @@ pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize)
     while unique.len() * 4 > capacity * 3 {
         capacity *= 2;
     }
-    let bucket = |key: i32| {
-        let hash = key as u32;
-        ((hash ^ (hash >> 16)) as usize) & (capacity - 1)
-    };
+    let bucket = |key: i32| java_bucket(key, capacity);
     let mut ordered: Vec<(usize, usize, (i32, &V))> = unique
         .into_iter()
         .enumerate()

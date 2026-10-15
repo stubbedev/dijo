@@ -3,11 +3,13 @@
 //! then the metadata `PDFParser` collects, and the text of each page as PDFBox's
 //! `PDFTextStripper` assembles it from the glyphs its content stream shows, written by
 //! `PDF2XHTML` in our reading order, or for a tagged document by `PDFMarkedContent2XHTML`
-//! through its structure tree. Documents with a page Tika would OCR, and documents with what the
-//! port does not do yet (encryption, form fields, embedded files and fonts it cannot measure,
-//! among others), are left to Tika.
+//! through its structure tree, then the bookmarks, the files the document embeds, parsed as
+//! embedded documents, and the form. Documents with a page Tika would OCR, and documents with
+//! what the port does not do (encryption the empty password does not open, XFA forms and fonts
+//! it cannot measure, among others), are left to Tika.
 
 mod afm;
+mod attachment;
 mod cff;
 mod cmap;
 mod content;
@@ -54,6 +56,8 @@ const PDF_PARSER: &str = "extractous::PDFParser";
 const OCR_MAX_GLYPHS: i32 = 10;
 /// ...and so is one with more glyphs than this that map to no character.
 const OCR_UNMAPPED_LIMIT: f32 = 10.0;
+/// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
+const MAX_RECURSION_DEPTH: usize = 100;
 
 /// Why the port leaves a document to Tika: something in it the port does not do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +138,9 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Result<(), Unported> {
         Err(WriteFailure::Stop(stop)) => {
             unreachable!("a discarded document stopped being written: {stop:?}")
         }
+        Err(WriteFailure::Embedded(failure)) => {
+            unreachable!("a dry run parsed an embedded document: {failure:?}")
+        }
     }
     for (index, layer) in layers.iter().enumerate() {
         ocr_deferral(index + 1, layer)?;
@@ -192,7 +199,7 @@ fn load(input: &[u8]) -> Result<Loaded, Unported> {
         Some(state) => Access::of(&mut doc, &state)?,
     };
     Ok(Loaded {
-        pdf: Pdf::new(doc),
+        pdf: Pdf::new(doc, input),
         access,
     })
 }
@@ -246,14 +253,15 @@ impl Access {
 }
 
 /// `PDFParser.parse` from the cross-reference scan on: the metadata, then the pages and the
-/// end of the document, written by the tagged writer for a document with marked content. Each
-/// page's text layer is returned when `record_layers` asks for it.
+/// end of the document, written by the tagged writer for a document with marked content. A
+/// dry run, which decides whether the document is deferred, parses no embedded file and
+/// returns each page's text layer.
 fn extract(
     loaded: &Loaded,
     input: &[u8],
     configs: &ParserConfigs,
     xhtml: &mut Xhtml,
-    record_layers: bool,
+    dry_run: bool,
 ) -> Result<Vec<PageLayer>, WriteFailure> {
     let pdf = &loaded.pdf;
     let metadata = xhtml.metadata_mut();
@@ -301,8 +309,7 @@ fn extract(
     }
     let reading_order = configs.pdf.reads_in_reading_order();
     let tagged = has_marked_content.then(|| Tagged::new(pdf, reading_order));
-    let mut writer =
-        DocumentWriter::new(pdf, xhtml, tagged, reading_order, ocr_runs(), record_layers);
+    let mut writer = DocumentWriter::new(pdf, xhtml, tagged, reading_order, ocr_runs(), dry_run);
     let written = writer.write();
     let layers = writer.layers.take().unwrap_or_default();
     xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
@@ -478,6 +485,47 @@ mod tests {
         let scratch = Scratch::new("pdf-form");
         let form = scratch.write("form.pdf", &document(&objects, b"", &[]));
         assert_same_as_tika_delegating(&[&form], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn parses_embedded_files_as_tikas_path_does() {
+        let hello = "Hej verden, her er en fil.";
+        let second = "Anden fil, ogs\u{e5} med.";
+        let third = "Tredje fil.";
+        let stream = |dict: &str, text: &str| {
+            format!(
+                "<< {dict} /Length {} >>\nstream\n{text}\nendstream",
+                text.len()
+            )
+        };
+        let mut objects = page_objects(TEXT);
+        objects[0] =
+            "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 9 0 R >> >>".to_owned();
+        objects[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+                      /Resources << /Font << /F1 5 0 R >> >> /Annots [8 0 R] >>"
+            .to_owned();
+        objects.extend([
+            "<< /Type /Filespec /F (hello.txt) /UF (hello.txt) /Desc (A greeting) \
+             /AFRelationship /Data /EF << /F 7 0 R >> >>"
+                .to_owned(),
+            stream(
+                &format!("/Type /EmbeddedFile /Subtype /text#2Fplain /Params << /Size {} >>", hello.len()),
+                hello,
+            ),
+            "<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] /FS (note.txt) \
+             /Contents (A note) >>"
+                .to_owned(),
+            "<< /Names [(second.txt) << /F (  ) /UF (second.txt) /EF << /F 10 0 R /Mac 10 0 R >> >> \
+             (hello) 6 0 R] >>"
+                .to_owned(),
+            stream("", second),
+            "<< /Type /Filespec /F (third.txt) /EF << /F 12 0 R >> >>".to_owned(),
+            stream("", third),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let scratch = Scratch::new("pdf-embedded");
+        let embedding = scratch.write("embedding.pdf", &document(&objects, b"", &[]));
+        assert_same_as_tika_delegating(&[&embedding], tika_name(), &DELEGATES);
     }
 
     #[test]
