@@ -7,15 +7,11 @@
 //! format made for one value is the one later values of that string get, and a date format
 //! keeps the last cell value it was given.
 
-mod bigint;
 mod cell_format;
 mod date_format;
-mod decimal;
-mod decimal_format;
-mod dtoa;
+
 mod fraction;
 mod number_text;
-mod printf;
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -23,13 +19,13 @@ use std::sync::LazyLock;
 use regex::{Captures, Regex};
 
 use crate::formats::java::trim;
+use crate::formats::java_text::decimal::{BigDecimal, Rounding};
+use crate::formats::java_text::decimal_format::DecimalFormat;
+use crate::formats::java_text::dtoa::java_double_to_string;
 use crate::formats::java_time::TimeZone;
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 use date_format::{is_a_date_format, is_valid_excel_date, java_date, ExcelStyleDateFormatter};
-use decimal::{BigDecimal, Rounding};
-use decimal_format::DecimalFormat;
-use dtoa::java_double_to_string;
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.

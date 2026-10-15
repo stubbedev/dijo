@@ -13,6 +13,7 @@ mod fiction_book;
 pub(crate) mod handlers;
 mod html;
 pub(crate) mod java;
+pub(crate) mod java_text;
 pub(crate) mod java_time;
 mod mail;
 pub(crate) mod metadata;
