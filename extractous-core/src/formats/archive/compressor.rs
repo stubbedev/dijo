@@ -192,7 +192,7 @@ mod tests {
         assert!(reason.contains("names no compressor"), "{reason}");
         let data = gzip(b"text", None);
         let reason = defers(&data[..data.len() - 3], "application/gzip", None).unwrap();
-        assert!(reason.contains("commons-compress throws"), "{reason}");
+        assert!(reason.contains("reading it fails"), "{reason}");
         let reason = defers(&data, "application/gzip", Some("\u{130}.Z")).unwrap();
         assert!(reason.contains("lower-casing"), "{reason}");
         assert_eq!(

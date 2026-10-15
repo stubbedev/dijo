@@ -54,6 +54,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
+sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["bzip2", "deflate", "compress"] }
 textdistance = "1.1.1"
 test-case = "3.3.1"
 criterion = "0.8.0"

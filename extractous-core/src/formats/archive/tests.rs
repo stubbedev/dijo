@@ -10,8 +10,9 @@ use crate::compress::cpio::tests::cpio;
 use crate::compress::gzip::tests::gzip;
 use crate::compress::lz4::tests::lz4;
 use crate::compress::lzw::tests::encode as compress;
+use crate::compress::seven_z::tests::seven_z;
 use crate::compress::snappy::tests::snappy;
-use crate::compress::tar::tests::{pax, tar};
+use crate::compress::tar_header::tests::{pax, tar};
 use crate::compress::xz::tests::{lzma, xz};
 use crate::compress::zip::file::tests::zip;
 use crate::compress::zlib::tests::zlib;
@@ -23,6 +24,7 @@ const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 const ZIP_PARSER: &str = "org.apache.tika.parser.pkg.ZipParser";
 const COMPRESSOR_PARSER: &str = "org.apache.tika.parser.pkg.CompressorParser";
 const PACKAGE_PARSER: &str = "org.apache.tika.parser.pkg.PackageParser";
+const SEVEN_Z_PARSER: &str = "org.apache.tika.parser.pkg.SevenZParser";
 
 /// Why the native path extracts a document of Tika's tests differently until `EventRecorder`
 /// records the namespaces of the elements of the embedded parses it hands to Tika.
@@ -253,5 +255,42 @@ fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[],
     );
-    assert_eq!(deferred, Vec::<String>::new());
+    assert_eq!(
+        deferred,
+        ["test-documents.cpio"],
+        "an old binary cpio archive"
+    );
+}
+
+#[test]
+fn extracts_7z_archives_as_tikas_path_does() {
+    let text = "Archived text, caf\u{e9}.\nSecond line.\n".as_bytes();
+    let html = b"<html><head><title>Inner</title></head><body><p>Inner page</p></body></html>";
+    let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
+    let deferred = assert_parity(&SevenZParser, SEVEN_Z_PARSER, &roots, &[]);
+    assert_eq!(deferred, ["password.7z"]);
+    assert_synthetic_parity(
+        "archive-7z",
+        &SevenZParser,
+        SEVEN_Z_PARSER,
+        &[(
+            "files.7z",
+            seven_z(&[
+                ("dir/", b""),
+                ("dir/a.txt", text),
+                ("empty.txt", b""),
+                ("page.html", html),
+            ]),
+        )],
+    );
+}
+
+#[test]
+#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+fn extracts_tikas_test_7z_archives_as_tikas_path_does() {
+    let deferred = assert_parity(&SevenZParser, SEVEN_Z_PARSER, &[&conformance_corpus()], &[]);
+    assert_eq!(
+        deferred,
+        ["full_encrypted.7z", "test7Z_protected_passTika.7z"]
+    );
 }

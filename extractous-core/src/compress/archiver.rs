@@ -1,7 +1,7 @@
 //! The archive formats commons-compress's `ArchiveStreamFactory.detect` recognizes by their first
 //! bytes.
 
-use super::tar;
+use super::tar_header;
 
 /// An archive format `ArchiveStreamFactory.detect` recognizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,9 @@ impl Archiver {
             return Some(Archiver::Dump);
         }
         let header = &prefix[..prefix.len().min(512)];
-        if tar::matches(header) || (header.len() == 512 && tar::is_tar_by_entries(header)) {
+        if tar_header::matches(header)
+            || (header.len() == 512 && tar_header::is_tar_by_entries(header))
+        {
             return Some(Archiver::Tar);
         }
         None

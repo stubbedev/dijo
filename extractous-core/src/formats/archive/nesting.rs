@@ -12,14 +12,12 @@
 //! and compressed files the port reads; what other formats' parsers write for the documents
 //! embedded in them is not counted.
 
-use crate::compress::ar::ArStream;
 use crate::compress::archiver::Archiver;
 use crate::compress::compressor::Compressor;
-use crate::compress::cpio::CpioStream;
-use crate::compress::tar::TarStream;
 use crate::compress::zip::file::ZipFile;
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
+use crate::compress::{ar, cpio, seven_z, tar, ArchiveFile};
 
 /// The nesting below an entry at which Tika's count reaches its limit of ten package entries.
 const TOO_DEEP: usize = 9;
@@ -55,6 +53,16 @@ impl Scan {
              SecureContentHandler, which counts the native parser's level too, stops the parse"
                 .to_owned()
         })
+    }
+
+    /// Why the native path's output for the document of `length` bytes, whose archive holds
+    /// `files`, cannot match Tika's, if it cannot.
+    pub(super) fn files(mut self, length: usize, files: &[ArchiveFile]) -> Option<String> {
+        files
+            .iter()
+            .filter(|file| !file.directory)
+            .find_map(|file| self.entry(&file.content))
+            .or_else(|| self.document(length))
     }
 
     /// Why the native path's output for the document of `length` bytes cannot match Tika's
@@ -97,41 +105,29 @@ impl Scan {
                 Err(_) => 1,
             };
         }
-        let deepest = match Archiver::detect(data) {
-            Some(Archiver::Zip) => self.zip_depth(data, limit - 1),
-            Some(Archiver::Tar) => {
-                let mut stream = TarStream::new(data);
-                let mut deepest = 0;
-                while let Ok(Some(entry)) = stream.next_entry() {
-                    if let Ok(content) = stream.content(&entry) {
-                        deepest = deepest.max(self.depth(content, limit - 1));
-                    }
-                }
-                deepest
-            }
-            Some(Archiver::Ar) => {
-                let mut stream = ArStream::new(data);
-                let mut deepest = 0;
-                while let Ok(Some(entry)) = stream.next_entry() {
-                    deepest = deepest.max(self.depth(stream.content(&entry), limit - 1));
-                }
-                deepest
-            }
-            Some(Archiver::Cpio) => {
-                let mut stream = CpioStream::new(data);
-                let mut deepest = 0;
-                while let Ok(Some(entry)) = stream.next_entry() {
-                    if let Ok(content) = stream.content(&entry) {
-                        deepest = deepest.max(self.depth(content, limit - 1));
-                    }
-                }
-                deepest
-            }
-            Some(Archiver::Arj | Archiver::SevenZ | Archiver::Dump) | None => {
+        let files = match Archiver::detect(data) {
+            Some(Archiver::Zip) => return (1 + self.zip_depth(data, limit - 1)).min(limit),
+            Some(Archiver::Tar) => tar::files(data),
+            Some(Archiver::Ar) => ar::files(data),
+            Some(Archiver::Cpio) => cpio::files(data),
+            Some(Archiver::SevenZ) => seven_z::files(data),
+            Some(Archiver::Arj | Archiver::Dump) | None => {
                 self.documents = self.documents.saturating_add(data.len());
                 return 0;
             }
         };
+        let Ok(files) = files else {
+            return 1;
+        };
+        if !self.spend(files.iter().map(|file| file.content.len()).sum()) {
+            return limit;
+        }
+        let deepest = files
+            .iter()
+            .filter(|file| !file.directory)
+            .map(|file| self.depth(&file.content, limit - 1))
+            .max()
+            .unwrap_or(0);
         (1 + deepest).min(limit)
     }
 
@@ -162,7 +158,7 @@ impl Scan {
 mod tests {
     use super::*;
     use crate::compress::gzip::tests::gzip;
-    use crate::compress::tar::tests::tar;
+    use crate::compress::tar_header::tests::tar;
     use crate::compress::zip::file::tests::zip;
 
     #[test]

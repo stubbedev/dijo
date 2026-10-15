@@ -13,8 +13,10 @@ pub(crate) mod cpio;
 pub(crate) mod gzip;
 pub(crate) mod lz4;
 pub(crate) mod lzw;
+pub(crate) mod seven_z;
 pub(crate) mod snappy;
 pub(crate) mod tar;
+pub(crate) mod tar_header;
 pub(crate) mod xz;
 pub(crate) mod zip;
 pub(crate) mod zlib;
@@ -30,29 +32,43 @@ pub(crate) const MEMORY_LIMIT_KIB: u32 = 100_000;
 /// The most bytes a stream is decoded into: Tika's path, which streams them, reads more.
 pub(crate) const MAX_DECODED: usize = 256 * 1024 * 1024;
 
-/// Why a compressed stream is not decoded natively.
+/// Why a compressed stream or an archive is not read natively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Undecoded {
-    /// commons-compress throws on it, for this reason.
-    Throws(String),
+    /// Reading it fails, for this reason, as reading it fails on Tika's path.
+    Fails(String),
     /// It decodes into more than [`MAX_DECODED`] bytes.
     TooLarge,
-    /// The port does not decode its format.
-    Unported,
+    /// It holds what the native readers do not read the way Tika's path does.
+    Unported(&'static str),
 }
 
 impl fmt::Display for Undecoded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Undecoded::Throws(reason) => write!(f, "commons-compress throws on it: {reason}"),
+            Undecoded::Fails(reason) => write!(f, "reading it fails: {reason}"),
             Undecoded::TooLarge => write!(f, "it decodes into more than {MAX_DECODED} bytes"),
-            Undecoded::Unported => write!(f, "the port does not decode its format"),
+            Undecoded::Unported(what) => write!(f, "the native readers do not read {what}"),
         }
     }
 }
 
 fn throws(reason: impl Into<String>) -> Undecoded {
-    Undecoded::Throws(reason.into())
+    Undecoded::Fails(reason.into())
+}
+
+/// A file of an archive, as the archive readers give it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArchiveFile {
+    pub(crate) name: String,
+    pub(crate) size: u64,
+    /// The modification time in milliseconds since the epoch, if the archive records one.
+    pub(crate) modified_millis: Option<i64>,
+    /// The creation time in milliseconds since the epoch, if the archive records one.
+    pub(crate) created_millis: Option<i64>,
+    pub(crate) directory: bool,
+    /// The data, none for a directory.
+    pub(crate) content: Vec<u8>,
 }
 
 /// Bytes decoded as US-ASCII, as `ArchiveUtils.toAsciiString` decodes them: each byte beyond
@@ -68,20 +84,6 @@ fn ascii(bytes: &[u8]) -> String {
             }
         })
         .collect()
-}
-
-/// `String.trim`: without the characters up to the space at either end.
-fn java_trim(text: &str) -> &str {
-    text.trim_matches(|c: char| c <= ' ')
-}
-
-/// `Long.parseLong(text, radix)` of a text of ASCII characters: a sign and at least one digit.
-fn parse_long(text: &str, radix: u32) -> Option<i64> {
-    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
-    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
-        return None;
-    }
-    i64::from_str_radix(text, radix).ok()
 }
 
 /// The CRC-32 of `bytes`.

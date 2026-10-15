@@ -117,7 +117,7 @@ impl Compressor {
             Compressor::Xz => xz::decode_xz(data).map(content),
             Compressor::Lzma => xz::decode_lzma(data).map(content),
             Compressor::Zstd => zstd::decode(data).map(content),
-            Compressor::Pack200 => Err(Undecoded::Unported),
+            Compressor::Pack200 => Err(Undecoded::Unported("Pack200")),
         }
     }
 }
