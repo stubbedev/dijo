@@ -13,7 +13,7 @@ use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
 use super::uri;
-use super::xml::{self, Attribute, Event, Flow, XmlError};
+use crate::xml::{self, Attribute, Event, Flow, XmlError};
 
 const TIKA_MIMETYPES: &str = include_str!("../../models/tika-mimetypes.xml");
 const CUSTOM_MIMETYPES: &str =
@@ -93,7 +93,7 @@ enum Pending {
 fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
     attributes
         .iter()
-        .find(|a| a.qname == name)
+        .find(|a| a.qualified_name == name)
         .map(|a| a.value.as_str())
 }
 
@@ -154,10 +154,10 @@ impl MimeTypes {
             let result = xml::parse(document.as_bytes(), &mut |event| {
                 let outcome = match event {
                     Event::Start(name, attributes) => {
-                        types.start(&mut reading, &name.qname, attributes)
+                        types.start(&mut reading, &name.qualified_name, attributes)
                     }
-                    Event::End(name) => types.end(&mut reading, &name.qname),
-                    Event::Text(_) => Ok(()),
+                    Event::End(name) => types.end(&mut reading, &name.qualified_name),
+                    Event::Text(..) => Ok(()),
                 };
                 match outcome {
                     Ok(()) => Flow::Continue,
@@ -458,7 +458,7 @@ fn root_element(data: &[u8]) -> Option<(String, String)> {
         let mut root = None;
         let result = xml::parse(data, &mut |event| {
             if let Event::Start(name, _) = event {
-                root = Some((name.uri.clone(), name.local.clone()));
+                root = Some((name.namespace.clone(), name.local_name.clone()));
                 return Flow::Stop;
             }
             Flow::Continue

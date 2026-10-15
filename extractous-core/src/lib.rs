@@ -34,6 +34,7 @@ mod formats;
 mod mime;
 pub mod text;
 pub mod unicode;
+mod xml;
 
 mod isolate;
 pub use isolate::{

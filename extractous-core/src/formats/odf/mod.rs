@@ -223,14 +223,14 @@ struct ElementFinder {
 }
 
 impl ElementFinder {
-    /// Whether `text` has an element named `local_name`, in any namespace, before the first
+    /// Whether `input` has an element named `local_name`, in any namespace, before the first
     /// point where Java's SAX parser would fail. The finder stops the parse where it finds one.
-    fn finds(local_name: &'static str, text: &str, what: &str) -> bool {
+    fn finds(local_name: &'static str, input: &[u8], what: &str) -> bool {
         let mut finder = Self {
             local_name,
             found: false,
         };
-        let stopped = xml::parse_sax(text, what, &mut finder).is_err();
+        let stopped = xml::parse_sax(input, what, &mut finder).is_err();
         stopped && finder.found
     }
 }
@@ -240,7 +240,7 @@ impl SaxHandler for ElementFinder {
         &mut self,
         _namespace: &str,
         local_name: &str,
-        _attributes: &[Attribute<'_>],
+        _attributes: &[Attribute],
     ) -> Result<(), Failure> {
         if local_name == self.local_name {
             self.found = true;
@@ -281,13 +281,10 @@ fn deferral(input: &[u8]) -> Option<&'static str> {
     }
     let manifests: Vec<Entry> = archive.of_kind(EntryKind::Manifest).cloned().collect();
     for manifest in &manifests {
-        let Ok(text) = archive
-            .read(manifest)
-            .and_then(|bytes| xml::decode(&bytes, &manifest.name))
-        else {
+        let Ok(bytes) = archive.read(manifest) else {
             return Some(UNREADABLE_MANIFEST);
         };
-        if ElementFinder::finds("encryption-data", &text, &manifest.name) {
+        if ElementFinder::finds("encryption-data", &bytes, &manifest.name) {
             return Some(ENCRYPTED);
         }
     }
@@ -308,12 +305,10 @@ fn deferral(input: &[u8]) -> Option<&'static str> {
         let Ok(bytes) = archive.read(body) else {
             return Some(UNREADABLE_ENTRY);
         };
-        let Ok(text) = xml::decode(&bytes, &body.name) else {
-            continue;
-        };
-        if text.contains(BINARY_DATA_ELEMENT)
-            && ElementFinder::finds(BINARY_DATA_ELEMENT, &text, &body.name)
-        {
+        let named = bytes
+            .windows(BINARY_DATA_ELEMENT.len())
+            .any(|window| window == BINARY_DATA_ELEMENT.as_bytes());
+        if named && ElementFinder::finds(BINARY_DATA_ELEMENT, &bytes, &body.name) {
             return Some(BINARY_DATA);
         }
     }
@@ -344,8 +339,7 @@ impl Parser for OpenDocumentParser {
         let mut archive = Archive::open(input)?;
         if let Some(entry) = archive.named(META_NAME).cloned() {
             let bytes = archive.read(&entry)?;
-            let text = xml::decode(&bytes, &entry.name)?;
-            meta::read_meta(&text, xhtml.metadata_mut())?;
+            meta::read_meta(&bytes, xhtml.metadata_mut())?;
         }
         let entries = archive.entries.clone();
         for entry in &entries {
@@ -358,10 +352,9 @@ impl Parser for OpenDocumentParser {
                 }
                 EntryKind::Body => {
                     let bytes = archive.read(entry)?;
-                    let text = xml::decode(&bytes, &entry.name)?;
                     let mut body =
                         body::Body::new(xhtml, configs.office.includes_deleted_content());
-                    xml::parse_sax(&text, &entry.name, &mut body)?;
+                    xml::parse_sax(&bytes, &entry.name, &mut body)?;
                 }
                 EntryKind::Embedded => {
                     return Err(Failure::Malformed(format!(

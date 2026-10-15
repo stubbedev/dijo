@@ -13,7 +13,7 @@ use super::file::{Content, ZipEntry, ZipFile};
 use crate::mime::java::{self, JavaString};
 use crate::mime::media_type::MediaType;
 use crate::mime::uri;
-use crate::mime::xml::{self, Event, Flow, XMLNS};
+use crate::xml::{self, Event, Flow, XMLNS};
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const TYPES_NAMESPACE: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
@@ -165,8 +165,8 @@ pub(crate) fn content_types_type(content: &[u8]) -> Option<MediaType> {
     let mut found = None;
     let _ = xml::parse(content, &mut |event| {
         if let Event::Start(_, attributes) = event {
-            for attribute in attributes.iter().filter(|a| a.uri != XMLNS) {
-                if attribute.local == "ContentType" {
+            for attribute in attributes.iter().filter(|a| a.namespace != XMLNS) {
+                if attribute.local_name == "ContentType" {
                     if let Some(kind) = ooxml_type(&attribute.value) {
                         found = Some(kind);
                         return Flow::Stop;
@@ -332,12 +332,14 @@ fn parse_relationships(content: &[u8]) -> Option<BTreeMap<JavaString, Relationsh
         match event {
             Event::Start(name, attributes) => {
                 depth += 1;
-                if depth > 1 && name.uri == RELATIONSHIPS_NAMESPACE && name.local == "Relationship"
+                if depth > 1
+                    && name.namespace == RELATIONSHIPS_NAMESPACE
+                    && name.local_name == "Relationship"
                 {
                     let attribute = |qname: &str| {
                         attributes
                             .iter()
-                            .find(|a| a.qname == qname)
+                            .find(|a| a.qualified_name == qname)
                             .map(|a| a.value.clone())
                     };
                     let kind = attribute("Type").unwrap_or_default();
@@ -363,7 +365,7 @@ fn parse_relationships(content: &[u8]) -> Option<BTreeMap<JavaString, Relationsh
                 }
             }
             Event::End(_) => depth -= 1,
-            Event::Text(_) => {}
+            Event::Text(..) => {}
         }
         Flow::Continue
     });
@@ -429,16 +431,16 @@ fn parse_content_types(content: &[u8]) -> Result<ContentTypes, Invalid> {
                 let attribute = |qname: &str| {
                     attributes
                         .iter()
-                        .find(|a| a.qname == qname)
+                        .find(|a| a.qualified_name == qname)
                         .map_or(String::new(), |a| a.value.clone())
                 };
-                if depth > 1 && name.uri == TYPES_NAMESPACE {
-                    if name.local == "Default" {
+                if depth > 1 && name.namespace == TYPES_NAMESPACE {
+                    if name.local_name == "Default" {
                         types.defaults.insert(
                             java::to_lower_case(&attribute("Extension")),
                             attribute("ContentType"),
                         );
-                    } else if name.local == "Override" {
+                    } else if name.local_name == "Override" {
                         match part_name(&attribute("PartName")) {
                             Some(part) => {
                                 types.overrides.insert(part.key(), attribute("ContentType"));
@@ -452,7 +454,7 @@ fn parse_content_types(content: &[u8]) -> Result<ContentTypes, Invalid> {
                 }
             }
             Event::End(_) => depth -= 1,
-            Event::Text(_) => {}
+            Event::Text(..) => {}
         }
         Flow::Continue
     });
@@ -541,32 +543,39 @@ fn check_core_properties(content: &[u8]) -> Result<(), Invalid> {
         match event {
             Event::Start(name, attributes) => {
                 let mut sorted: Vec<&xml::Attribute> = attributes.iter().collect();
-                sorted.sort_by(|a, b| java::compare(&a.qname, &b.qname));
+                sorted.sort_by(|a, b| java::compare(&a.qualified_name, &b.qualified_name));
                 if let Some(first) = sorted.first() {
-                    if first.uri == XMLNS && first.value == MARKUP_COMPATIBILITY {
+                    if first.namespace == XMLNS && first.value == MARKUP_COMPATIBILITY {
                         invalid = true;
                     }
                 }
-                if name.uri == DCTERMS {
-                    let prefix = name.qname.split_once(':').map_or("null", |(p, _)| p);
+                if name.namespace == DCTERMS {
+                    let prefix = name
+                        .qualified_name
+                        .split_once(':')
+                        .map_or("null", |(p, _)| p);
                     let typed = attributes
                         .iter()
-                        .find(|a| a.uri == XSI && a.local == "type")
+                        .find(|a| a.namespace == XSI && a.local_name == "type")
                         .is_some_and(|a| a.value == format!("{prefix}:W3CDTF"));
-                    if !matches!(name.local.as_str(), "created" | "modified") || !typed {
+                    if !matches!(name.local_name.as_str(), "created" | "modified") || !typed {
                         invalid = true;
                     }
                 }
                 if attributes
                     .iter()
-                    .any(|a| a.uri == XML_NAMESPACE && a.local == "lang")
+                    .any(|a| a.namespace == XML_NAMESPACE && a.local_name == "lang")
                 {
                     invalid = true;
                 }
                 open.push(elements.len());
-                elements.push((name.uri.clone(), name.local.clone(), String::new()));
+                elements.push((
+                    name.namespace.clone(),
+                    name.local_name.clone(),
+                    String::new(),
+                ));
             }
-            Event::Text(text) => {
+            Event::Text(text, _) => {
                 for &index in &open {
                     elements[index].2.push_str(text);
                 }

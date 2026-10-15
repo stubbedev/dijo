@@ -24,7 +24,6 @@ mod mime_types;
 mod registry;
 mod text;
 mod uri;
-mod xml;
 
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;

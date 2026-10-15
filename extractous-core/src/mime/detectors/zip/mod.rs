@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use crate::mime::archive::{self, Archive};
 use crate::mime::media_type::MediaType;
-use crate::mime::xml::{self, Event, Flow, XMLNS};
+use crate::xml::{self, Event, Flow, XMLNS};
 use file::{Content, ZipFile};
 use stream::{Failure, StreamEntry, ZipStream};
 
@@ -109,7 +109,7 @@ fn root_element(content: &[u8]) -> Option<(String, String)> {
     let mut root = None;
     let _ = xml::parse(content, &mut |event| {
         if let Event::Start(name, _) = event {
-            root = Some((name.uri.clone(), name.local.clone()));
+            root = Some((name.namespace.clone(), name.local_name.clone()));
             return Flow::Stop;
         }
         Flow::Continue
@@ -276,13 +276,13 @@ fn star_office_type(content: &[u8]) -> Option<MediaType> {
         let Event::Start(name, attributes) = event else {
             return Flow::Continue;
         };
-        if name.local != "file-entry" {
+        if name.local_name != "file-entry" {
             return Flow::Continue;
         }
         let mut media_type = None;
         let mut full_path = None;
-        for attribute in attributes.iter().filter(|a| a.uri != XMLNS) {
-            if attribute.local == "media-type" {
+        for attribute in attributes.iter().filter(|a| a.namespace != XMLNS) {
+            if attribute.local_name == "media-type" {
                 media_type = Some(attribute.value.as_str());
                 let kind = match attribute.value.as_str() {
                     "application/vnd.sun.xml.writer" => "application/vnd.sun.xml.writer",
@@ -296,7 +296,7 @@ fn star_office_type(content: &[u8]) -> Option<MediaType> {
                 };
                 found = Some(MediaType::named(kind));
                 return Flow::Stop;
-            } else if attribute.local == "full-path" {
+            } else if attribute.local_name == "full-path" {
                 full_path = Some(attribute.value.as_str());
             }
         }

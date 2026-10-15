@@ -1,115 +1,25 @@
-//! Reading XML documents as Java's SAX parser reads them: decoded in the charset their byte order
-//! mark or XML declaration names, by the JDK's own decoders, and failing on what it rejects;
-//! [`parse_sax`] reports them as the JDK's namespace-aware SAX parser does.
+//! XML documents as the native parsers see them through Java's namespace-aware SAX parser: the
+//! events of [`crate::xml`], which reads and fails as the JDK's Xerces does, handed to a
+//! [`SaxHandler`] without the `xmlns` attributes and with character data in the pieces Xerces
+//! reports it in.
 
 use std::borrow::Cow;
 
-use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::attributes::Attribute as QuickAttribute;
-use quick_xml::events::{BytesRef, BytesStart, Event};
-use quick_xml::name::{QName, ResolveResult};
-use quick_xml::reader::NsReader;
-use quick_xml::XmlVersion;
-
 use crate::formats::Failure;
-use crate::text::charset::Charset;
+use crate::xml::{self, Event, Flow, TextKind, XmlError, XMLNS};
 
-const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
-const UTF16_BE_BOM: &[u8] = &[0xFE, 0xFF];
-const UTF16_LE_BOM: &[u8] = &[0xFF, 0xFE];
-
-/// The text of an XML document: what follows its byte order mark, decoded in the charset the
-/// mark or the declaration names, else UTF-8. `what` names the document in errors.
-pub(crate) fn decode(input: &[u8], what: &str) -> Result<String, Failure> {
-    let malformed = |reason: String| Failure::Malformed(format!("{what} {reason}"));
-    if let Some(rest) = input.strip_prefix(UTF8_BOM) {
-        return utf8(rest).map_err(malformed);
-    }
-    for (bom, name) in [(UTF16_BE_BOM, "UTF-16BE"), (UTF16_LE_BOM, "UTF-16LE")] {
-        if let Some(rest) = input.strip_prefix(bom) {
-            return decode_in(Charset::named(name), rest).map_err(malformed);
-        }
-    }
-    match declared_encoding(input) {
-        None => utf8(input).map_err(malformed),
-        Some(label) => {
-            let charset = Charset::for_name(&label).ok_or_else(|| {
-                malformed(format!(
-                    "declares the encoding {label:?}, which Java does not know"
-                ))
-            })?;
-            decode_in(charset, input).map_err(malformed)
-        }
-    }
-}
-
-fn utf8(input: &[u8]) -> Result<String, String> {
-    String::from_utf8(input.to_vec()).map_err(|e| format!("is not valid UTF-8: {}", e.utf8_error()))
-}
-
-fn decode_in(charset: Charset, input: &[u8]) -> Result<String, String> {
-    if charset.name() == "UTF-8" {
-        return utf8(input);
-    }
-    charset
-        .decode(input)
-        .ok_or_else(|| format!("is in {}, which extractous cannot decode", charset.name()))
-}
-
-/// The `encoding` of an XML declaration at the very start of `input`, which an ASCII-compatible
-/// charset spells in ASCII.
-fn declared_encoding(input: &[u8]) -> Option<String> {
-    let declaration = input.strip_prefix(b"<?xml")?;
-    let end = declaration.windows(2).position(|pair| pair == b"?>")?;
-    let declaration = std::str::from_utf8(&declaration[..end]).ok()?;
-    let after = &declaration[declaration.find("encoding")? + "encoding".len()..];
-    let after = after.trim_start().strip_prefix('=')?.trim_start();
-    let quote = after
-        .chars()
-        .next()
-        .filter(|quote| matches!(quote, '"' | '\''))?;
-    let value = &after[1..];
-    Some(value[..value.find(quote)?].to_owned())
-}
-
-/// The text an entity or character reference stands for: a character reference or one of XML's
-/// five predefined entities. Any other entity was never declared, which Java's parser rejects.
-pub(crate) fn resolve_reference(reference: &BytesRef, what: &str) -> Result<String, Failure> {
-    let malformed = |reason: String| Failure::Malformed(format!("{what} {reason}"));
-    if let Some(character) = reference
-        .resolve_char_ref()
-        .map_err(|e| malformed(format!("has a bad character reference: {e}")))?
-    {
-        return Ok(character.to_string());
-    }
-    let name = reference.xml10_content();
-    resolve_predefined_entity(&name)
-        .map(str::to_owned)
-        .ok_or_else(|| malformed(format!("uses the entity &{name}; without declaring it")))
-}
-
-/// An attribute as Java's namespace-aware SAX parser reports it: in the namespace its prefix is
-/// bound to, if it has one, with its value normalized.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Attribute<'a> {
-    /// The namespace, or the empty string for an attribute without a prefix.
-    pub(crate) namespace: &'a str,
-    pub(crate) local_name: &'a str,
-    /// The name as written, with its prefix.
-    pub(crate) qualified_name: &'a str,
-    pub(crate) value: Cow<'a, str>,
-}
+pub(crate) use crate::xml::Attribute;
 
 /// The value of the attribute named `local_name` in `namespace`, as SAX's `getValue(uri, name)`.
 pub(crate) fn attribute<'a>(
-    attributes: &'a [Attribute<'_>],
+    attributes: &'a [Attribute],
     namespace: &str,
     local_name: &str,
 ) -> Option<&'a str> {
     attributes
         .iter()
         .find(|attribute| attribute.namespace == namespace && attribute.local_name == local_name)
-        .map(|attribute| attribute.value.as_ref())
+        .map(|attribute| attribute.value.as_str())
 }
 
 /// What receives the events of [`parse_sax`]: a port of a Java SAX `ContentHandler`. An element
@@ -119,194 +29,65 @@ pub(crate) trait SaxHandler {
         &mut self,
         namespace: &str,
         local_name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
     ) -> Result<(), Failure>;
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure>;
     fn characters(&mut self, text: &str) -> Result<(), Failure>;
 }
 
-/// Reads the XML document `text` as the JDK's namespace-aware SAX parser does, handing `handler`
+/// Reads the XML document `input` as the JDK's namespace-aware SAX parser does, handing `handler`
 /// its elements, without their `xmlns` attributes, and its character data in the pieces that
-/// parser hands it over in. `what` names the document in errors. Fails where that parser fails,
-/// after the events it would have reported before. A DTD is skipped, as Tika's parsers skip it,
-/// so an entity it declares counts as undeclared.
+/// parser hands it over in: a run of character data split as its scanner splits it, a CDATA
+/// section, or what a reference stands for. `what` names the document in errors. Fails where that
+/// parser fails, after the events it would have reported before.
 pub(crate) fn parse_sax(
-    text: &str,
+    input: &[u8],
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
-    let malformed = |reason: String| Failure::Malformed(format!("{what} is malformed: {reason}"));
-    let mut reader = NsReader::from_str(text);
-    let mut open: Vec<String> = Vec::new();
-    let mut had_root = false;
-    loop {
-        match reader.read_event().map_err(|e| malformed(e.to_string()))? {
-            Event::Start(start) | Event::Empty(start) if open.is_empty() && had_root => {
-                return Err(malformed(format!(
-                    "<{}> follows the root element",
-                    start.name().into_inner()
-                )));
+    let mut failure = None;
+    let result = xml::parse(input, &mut |event| {
+        let handled = match event {
+            Event::Start(name, attributes) => {
+                let attributes: Cow<'_, [Attribute]> =
+                    if attributes.iter().any(|a| a.namespace == XMLNS) {
+                        Cow::Owned(
+                            attributes
+                                .iter()
+                                .filter(|a| a.namespace != XMLNS)
+                                .cloned()
+                                .collect(),
+                        )
+                    } else {
+                        Cow::Borrowed(attributes)
+                    };
+                handler.start_element(&name.namespace, &name.local_name, &attributes)
             }
-            Event::Start(start) => {
-                start_element(&reader, &start, &malformed, handler)?;
-                open.push(start.name().into_inner().to_owned());
-                had_root = true;
+            Event::End(name) => handler.end_element(&name.namespace, &name.local_name),
+            Event::Text(text, TextKind::Data) => {
+                for_each_sax_piece(text, |piece| handler.characters(piece))
             }
-            Event::Empty(start) => {
-                let (namespace, local_name) = start_element(&reader, &start, &malformed, handler)?;
-                handler.end_element(&namespace, &local_name)?;
-                had_root = true;
+            Event::Text(text, TextKind::CData | TextKind::Reference) => handler.characters(text),
+        };
+        match handled {
+            Ok(()) => Flow::Continue,
+            Err(stopped) => {
+                failure = Some(stopped);
+                Flow::Stop
             }
-            Event::End(end) => {
-                let (namespace, local_name) = element_name(&reader, end.name(), &malformed)?;
-                handler.end_element(&namespace, local_name)?;
-                open.pop();
-            }
-            Event::Text(content) => {
-                let content = content.xml10_content();
-                if open.is_empty() {
-                    if !content.chars().all(is_xml_whitespace) {
-                        return Err(malformed("has text outside its root element".to_owned()));
-                    }
-                    continue;
-                }
-                if content.contains("]]>") {
-                    return Err(malformed("has ]]> in its character data".to_owned()));
-                }
-                check_characters(&content, &malformed)?;
-                for_each_sax_piece(&content, |piece| handler.characters(piece))?;
-            }
-            Event::CData(data) => {
-                if open.is_empty() {
-                    return Err(malformed("has CDATA outside its root element".to_owned()));
-                }
-                let content = data.xml10_content();
-                check_characters(&content, &malformed)?;
-                if !content.is_empty() {
-                    handler.characters(&content)?;
-                }
-            }
-            Event::GeneralRef(reference) => {
-                if open.is_empty() {
-                    return Err(malformed(
-                        "has a reference outside its root element".to_owned(),
-                    ));
-                }
-                let resolved = resolve_reference(&reference, what)?;
-                check_characters(&resolved, &malformed)?;
-                handler.characters(&resolved)?;
-            }
-            Event::Eof => break,
-            Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
         }
+    });
+    if let Some(failure) = failure {
+        return Err(failure);
     }
-    if let Some(element) = open.last() {
-        return Err(malformed(format!("<{element}> is never closed")));
-    }
-    if !had_root {
-        return Err(malformed("has no root element".to_owned()));
-    }
-    Ok(())
-}
-
-fn start_element(
-    reader: &NsReader<&[u8]>,
-    start: &BytesStart<'_>,
-    malformed: &impl Fn(String) -> Failure,
-    handler: &mut impl SaxHandler,
-) -> Result<(String, String), Failure> {
-    let (namespace, local_name) = element_name(reader, start.name(), malformed)?;
-    let mut attributes = Vec::new();
-    for attribute in start.attributes() {
-        let attribute = attribute.map_err(|e| malformed(e.to_string()))?;
-        if let Some(attribute) = sax_attribute(reader, attribute, malformed)? {
-            attributes.push(attribute);
-        }
-    }
-    handler.start_element(&namespace, local_name, &attributes)?;
-    Ok((namespace, local_name.to_owned()))
-}
-
-fn sax_attribute<'a>(
-    reader: &'a NsReader<&[u8]>,
-    attribute: QuickAttribute<'a>,
-    malformed: &impl Fn(String) -> Failure,
-) -> Result<Option<Attribute<'a>>, Failure> {
-    let key = attribute.key;
-    if key.as_namespace_binding().is_some() {
-        return Ok(None);
-    }
-    let qualified_name = key.into_inner();
-    if attribute.value.contains('<') {
-        return Err(malformed(format!(
-            "has a '<' in the value of its attribute {qualified_name}"
-        )));
-    }
-    let value = attribute
-        .normalized_value(XmlVersion::Implicit1_0)
-        .map_err(|e| {
-            malformed(format!(
-                "has a bad value of its attribute {qualified_name}: {e}"
-            ))
-        })?;
-    check_characters(&value, malformed)?;
-    let (resolved, local_name) = reader.resolver().resolve_attribute(key);
-    let namespace = match resolved {
-        ResolveResult::Unbound => "",
-        ResolveResult::Bound(namespace) => namespace.into_inner(),
-        ResolveResult::Unknown(prefix) => {
-            return Err(malformed(format!(
-                "binds no namespace to the prefix {} of its attribute {qualified_name}",
-                prefix
-            )))
-        }
-    };
-    Ok(Some(Attribute {
-        namespace,
-        local_name: local_name.into_inner(),
-        qualified_name,
-        value,
-    }))
-}
-
-fn element_name<'n>(
-    reader: &NsReader<&[u8]>,
-    name: QName<'n>,
-    malformed: &impl Fn(String) -> Failure,
-) -> Result<(String, &'n str), Failure> {
-    let (resolved, local_name) = reader.resolver().resolve_element(name);
-    let namespace = match resolved {
-        ResolveResult::Unbound => String::new(),
-        ResolveResult::Bound(namespace) => namespace.into_inner().to_owned(),
-        ResolveResult::Unknown(prefix) => {
-            return Err(malformed(format!(
-                "binds no namespace to the prefix {} of its element {}",
-                prefix,
-                name.into_inner()
-            )))
-        }
-    };
-    Ok((namespace, local_name.into_inner()))
-}
-
-fn is_xml_whitespace(character: char) -> bool {
-    matches!(character, ' ' | '\t' | '\n' | '\r')
-}
-
-/// Whether XML 1.0 allows `character` in a document.
-fn is_xml_char(character: char) -> bool {
-    matches!(character, '\t' | '\n' | '\r' | ' '..='\u{d7ff}' | '\u{e000}'..='\u{fffd}')
-        || character >= '\u{10000}'
-}
-
-fn check_characters(text: &str, malformed: &impl Fn(String) -> Failure) -> Result<(), Failure> {
-    match text.chars().find(|character| !is_xml_char(*character)) {
-        Some(character) => Err(malformed(format!(
-            "holds the character U+{:04X}, which XML does not allow",
-            u32::from(character)
-        ))),
-        None => Ok(()),
-    }
+    result.map_err(|error| {
+        Failure::Malformed(match error {
+            XmlError::CharConversion => {
+                format!("{what} is malformed: a byte sequence its encoding does not allow")
+            }
+            XmlError::Malformed(reason) => format!("{what} is malformed: {reason}"),
+        })
+    })
 }
 
 /// Whether the JDK's scanner reads on over `character` in a run of character data: anything but
@@ -390,7 +171,7 @@ mod tests {
             &mut self,
             namespace: &str,
             local_name: &str,
-            attributes: &[Attribute<'_>],
+            attributes: &[Attribute],
         ) -> Result<(), Failure> {
             let attributes: Vec<String> = attributes
                 .iter()
@@ -414,15 +195,15 @@ mod tests {
         }
     }
 
-    fn events(text: &str) -> Result<Vec<String>, Failure> {
+    fn events(document: &[u8]) -> Result<Vec<String>, Failure> {
         let mut events = Events::default();
-        parse_sax(text, "x", &mut events)?;
+        parse_sax(document, "x", &mut events)?;
         Ok(events.0)
     }
 
     #[test]
     fn reports_namespaces_attributes_and_references_as_sax_does() {
-        let document = "<?xml version=\"1.0\"?>\n<a xmlns=\"urn:a\" xmlns:b=\"urn:b\" \
+        let document = b"<?xml version=\"1.0\"?>\n<a xmlns=\"urn:a\" xmlns:b=\"urn:b\" \
                         b:c=\"x\r\n\ty&#10;&amp;\" d='e'><b:f/>1 &lt; 2<![CDATA[<]]></a>\n";
         assert_eq!(
             events(document).unwrap(),
@@ -457,7 +238,7 @@ mod tests {
             "<a x:b='1'/>",
             "<a>]]></a>",
         ] {
-            assert!(events(document).is_err(), "{document:?}");
+            assert!(events(document.as_bytes()).is_err(), "{document:?}");
         }
     }
 
@@ -465,19 +246,14 @@ mod tests {
     fn decodes_in_the_declared_charset() {
         let cyrillic = b"<?xml version=\"1.0\" encoding='windows-1251'?><a>\xcc\xe0\xff\xea</a>";
         assert_eq!(
-            decode(cyrillic, "x").unwrap(),
-            "<?xml version=\"1.0\" encoding='windows-1251'?><a>Маяк</a>"
+            events(cyrillic).unwrap(),
+            ["<{}a >", "\u{41c}\u{430}\u{44f}\u{43a}", "</{}a>"]
         );
-        let latin1 = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\x80";
-        assert!(decode(latin1, "x").unwrap().ends_with('\u{80}'));
-    }
-
-    #[test]
-    fn decodes_byte_order_marks_and_defaults_to_strict_utf8() {
-        assert_eq!(decode(b"\xef\xbb\xbf<a/>", "x").unwrap(), "<a/>");
-        assert_eq!(decode(b"\xff\xfe<\0a\0/\0>\0", "x").unwrap(), "<a/>");
-        assert_eq!(decode("<a>æ</a>".as_bytes(), "x").unwrap(), "<a>æ</a>");
-        assert!(decode(b"<a>\xe6</a>", "x").is_err());
-        assert!(decode(b"<?xml version=\"1.0\" encoding=\"no-such\"?><a/>", "x").is_err());
+        assert_eq!(
+            events(b"\xff\xfe<\0a\0/\0>\0").unwrap(),
+            ["<{}a >", "</{}a>"]
+        );
+        assert!(events(b"<a>\xe6</a>").is_err());
+        assert!(events(b"<?xml version=\"1.0\" encoding=\"no-such\"?><a/>").is_err());
     }
 }

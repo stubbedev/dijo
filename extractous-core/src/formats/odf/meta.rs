@@ -202,7 +202,7 @@ impl UserDefined {
         namespace == META_NS && local_name == "user-defined"
     }
 
-    fn start(&mut self, namespace: &str, local_name: &str, attributes: &[Attribute<'_>]) {
+    fn start(&mut self, namespace: &str, local_name: &str, attributes: &[Attribute]) {
         if !Self::matches(namespace, local_name) {
             return;
         }
@@ -310,7 +310,7 @@ impl<'m> MetaHandler<'m> {
     fn attribute_value(
         &mut self,
         name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
         namespace: &str,
         local_name: &str,
     ) {
@@ -350,7 +350,7 @@ impl SaxHandler for MetaHandler<'_> {
         &mut self,
         namespace: &str,
         local_name: &str,
-        attributes: &[Attribute<'_>],
+        attributes: &[Attribute],
     ) -> Result<(), Failure> {
         let namespace: Cow<str> = normalized_namespace(namespace);
         let root = self.depth == 0;
@@ -407,10 +407,10 @@ impl SaxHandler for MetaHandler<'_> {
     }
 }
 
-/// Reads the metadata of `meta.xml`, decoded as `text`, into `metadata`.
-pub(super) fn read_meta(text: &str, metadata: &mut TikaMetadata) -> Result<(), Failure> {
+/// Reads the metadata of `meta.xml`, given as its bytes, into `metadata`.
+pub(super) fn read_meta(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Failure> {
     let mut handler = MetaHandler::new(metadata);
-    xml::parse_sax(text, "meta.xml", &mut handler)?;
+    xml::parse_sax(input, "meta.xml", &mut handler)?;
     handler.finish();
     Ok(())
 }
@@ -421,7 +421,7 @@ mod tests {
 
     fn meta(xml: &str) -> TikaMetadata {
         let mut metadata = TikaMetadata::new();
-        read_meta(xml, &mut metadata).unwrap();
+        read_meta(xml.as_bytes(), &mut metadata).unwrap();
         metadata
     }
 
@@ -475,6 +475,6 @@ mod tests {
     #[test]
     fn fails_on_malformed_xml() {
         let mut metadata = TikaMetadata::new();
-        assert!(read_meta("<office:document-meta>", &mut metadata).is_err());
+        assert!(read_meta(b"<office:document-meta>", &mut metadata).is_err());
     }
 }

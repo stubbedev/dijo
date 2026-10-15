@@ -1,9 +1,11 @@
 //! A namespace-aware, non-validating XML parser that fails where the JDK's built-in Xerces, as
 //! Tika configures it (no external DTD, no external entities), raises a fatal error, and reads
 //! the bytes as Xerces reads them: the byte order mark and first bytes pick the encoding, the
-//! first 64 bytes are decoded before the declaration can switch it, and a malformed UTF-8 or
-//! UTF-16 sequence fails the parse when the scanner reaches it, as Xerces' own readers do. Tika's
-//! detectors only ever look at start and end tags, which is all it reports.
+//! bytes it reads before the declaration ends are decoded before the declaration can switch it,
+//! and a malformed UTF-8 or UTF-16 sequence fails the parse when the scanner reaches it, as
+//! Xerces' own readers do. It
+//! reports start and end tags and the text inside elements; `formats::xml` gives SAX's view of
+//! them to the native parsers.
 //!
 //! What it does not reproduce: the IANA-to-Java encoding table of Xerces (a declared encoding is
 //! looked up as Java's `Charset.forName` looks it up), the replacement text of parameter
@@ -35,29 +37,40 @@ fn malformed<T>(what: impl Into<String>) -> Result<T> {
 /// The namespace of `xmlns` attributes, which SAX leaves out of an element's attributes.
 pub(crate) const XMLNS: &str = XMLNS_NAMESPACE;
 
-/// An attribute of a start tag, its namespace resolved.
+/// An attribute of a start tag, its namespace resolved: the empty string for none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Attribute {
-    pub(crate) qname: String,
-    pub(crate) uri: String,
-    pub(crate) local: String,
+    pub(crate) qualified_name: String,
+    pub(crate) namespace: String,
+    pub(crate) local_name: String,
     pub(crate) value: String,
 }
 
-/// An element's name, its namespace resolved.
+/// An element's name, its namespace resolved: the empty string for none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Name {
-    pub(crate) qname: String,
-    pub(crate) uri: String,
-    pub(crate) local: String,
+    pub(crate) qualified_name: String,
+    pub(crate) namespace: String,
+    pub(crate) local_name: String,
+}
+
+/// Where text in an element comes from, which decides how Xerces hands it over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextKind {
+    /// A run of character data between markup and references, its line ends normalized.
+    Data,
+    /// The content of a CDATA section.
+    CData,
+    /// What a character or entity reference stands for.
+    Reference,
 }
 
 /// What the parser reports.
 pub(crate) enum Event<'a> {
     Start(&'a Name, &'a [Attribute]),
     End(&'a Name),
-    /// Character data between tags, its references replaced.
-    Text(&'a str),
+    /// Text inside an element, in the pieces of markup and references it comes in.
+    Text(&'a str, TextKind),
 }
 
 /// Whether the handler wants the parse to go on.
@@ -114,6 +127,10 @@ enum Reader {
     Java(Charset),
 }
 
+/// Where Xerces' reads in chunks end before the declaration is scanned: the four bytes it sniffed
+/// the encoding from, then a chunk of 28; it reads on byte by byte until the declaration ends.
+const FIRST_READS: usize = 4 + 28;
+
 /// The document's characters, decoded as Xerces decodes them, line ends normalized, up to the
 /// first character its reader cannot deliver.
 struct Text {
@@ -124,7 +141,7 @@ struct Text {
     malformed: bool,
     bytes: Vec<u8>,
     start: usize,
-    /// Where the first read, made before the declaration is scanned, ends.
+    /// Where the reads in chunks made before the declaration is scanned end.
     first_read_end: usize,
     /// The encoding name Xerces records for the document before its declaration.
     detected: &'static str,
@@ -138,19 +155,13 @@ struct Decoded {
 
 impl Text {
     fn new(bytes: &[u8], detected: &'static str, reader: Reader, start: usize) -> Text {
-        let first_read = match reader {
-            Reader::Utf8 => 64,
-            Reader::Utf16 { .. } => 128,
-            Reader::Ucs4 { .. } => 256,
-            Reader::Java(_) => bytes.len(),
-        };
         let mut text = Text {
             chars: Vec::new(),
             ends: Vec::new(),
             malformed: false,
             bytes: bytes.to_vec(),
             start,
-            first_read_end: (start + first_read).min(bytes.len()),
+            first_read_end: FIRST_READS.min(bytes.len()),
             detected,
         };
         text.append(decode(reader, bytes, start));
@@ -175,9 +186,8 @@ impl Text {
     }
 
     /// Switches to the declared encoding, as `XMLEntityScanner.setEncoding` does: the
-    /// characters of the first read stay as the first reader decoded them, and a new reader
-    /// takes over where the first stopped reading bytes, which loses what a malformed sequence
-    /// left unread in the first.
+    /// characters the first reader decoded stay, and a new reader takes over where the first
+    /// stopped reading bytes, which loses what a malformed sequence left unread in the first.
     fn switch(&mut self, declared: &str, declaration_end: usize) -> Result<()> {
         if declared == self.detected {
             return Ok(());
@@ -437,6 +447,7 @@ impl Parser {
         }
     }
 
+    /// Whether the text goes on with `literal`, read up to the first character that differs.
     fn starts_with(&self, literal: &str) -> Result<bool> {
         for (offset, expected) in literal.chars().enumerate() {
             if self.peek_at(offset)? != Some(expected) {
@@ -499,11 +510,19 @@ impl Parser {
         Ok(name)
     }
 
+    /// Whether an XML declaration starts the document. Xerces' `skipString` reads all five
+    /// characters of `<?xml` before it compares them, so a malformed sequence among them fails
+    /// the parse even when the document starts otherwise.
+    fn declaration_follows(&self) -> Result<bool> {
+        self.peek_at(4)?;
+        Ok(self.starts_with("<?xml")? && self.peek_at(5)?.is_some_and(is_space))
+    }
+
     fn document(
         &mut self,
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
-        if self.starts_with("<?xml")? && self.peek_at(5)?.is_some_and(is_space) {
+        if self.declaration_follows()? {
             self.position += 5;
             self.declaration()?;
         }
@@ -1020,19 +1039,16 @@ impl Parser {
                 if open.is_empty() {
                     return Ok(());
                 }
-                let text = self.content()?;
-                if !text.is_empty() && handler(Event::Text(&text)) == Flow::Stop {
-                    return Err(Stop::Handler);
-                }
+                self.content(handler)?;
                 if self.skip("</")? {
                     let (qname, _, _) = self.qname("an end tag")?;
                     self.skip_spaces()?;
                     self.require(">", "the end of an end tag")?;
                     let name = open.pop().expect("an element is open");
-                    if name.qname != qname {
+                    if name.qualified_name != qname {
                         return fatal(format!(
                             "the element {} must end with </{}>",
-                            name.qname, name.qname
+                            name.qualified_name, name.qualified_name
                         ));
                     }
                     Self::end(&name, scopes, handler)?;
@@ -1060,42 +1076,58 @@ impl Parser {
     }
 
     /// Character data, references, comments, processing instructions and CDATA sections, up
-    /// to the next start or end tag: the text they hold.
-    fn content(&mut self) -> Result<String> {
-        let mut text = String::new();
+    /// to the next start or end tag, their text handed over piece by piece.
+    fn content(
+        &mut self,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(), Stop> {
+        let mut emit = |text: &str, kind: TextKind| -> std::result::Result<(), Stop> {
+            if text.is_empty() || handler(Event::Text(text, kind)) == Flow::Continue {
+                Ok(())
+            } else {
+                Err(Stop::Handler)
+            }
+        };
+        let mut data = String::new();
         loop {
             match self.peek()? {
-                None => return Ok(text),
+                None => return emit(&data, TextKind::Data),
                 Some('<') => {
+                    emit(&std::mem::take(&mut data), TextKind::Data)?;
                     if self.skip("<!--")? {
                         self.comment()?;
                     } else if self.skip("<![CDATA[")? {
+                        let mut section = String::new();
                         loop {
                             if self.skip("]]>")? {
                                 break;
                             }
-                            text.push(self.expect_char("a CDATA section")?);
+                            section.push(self.expect_char("a CDATA section")?);
                         }
+                        emit(&section, TextKind::CData)?;
                     } else if self.skip("<?")? {
                         self.processing_instruction()?;
                     } else if self.peek_at(1)? == Some('/')
                         || self.peek_at(1)?.is_some_and(is_name_start)
                     {
-                        return Ok(text);
+                        return Ok(());
                     } else {
-                        return malformed("markup not recognized in content");
+                        return fatal("markup not recognized in content");
                     }
                 }
                 Some('&') => {
+                    emit(&std::mem::take(&mut data), TextKind::Data)?;
                     self.position += 1;
                     let reference = self.reference()?;
-                    self.expand_in_content(reference, &mut text, 0)?;
+                    let mut expansion = String::new();
+                    self.expand_in_content(reference, &mut expansion, 0)?;
+                    emit(&expansion, TextKind::Reference)?;
                 }
                 Some(_) => {
                     if self.starts_with("]]>")? {
-                        return malformed("]]> in content");
+                        return fatal("]]> in content");
                     }
-                    text.push(self.expect_char("content")?);
+                    data.push(self.expect_char("content")?);
                 }
             }
         }
@@ -1245,18 +1277,22 @@ impl Parser {
             if !uri.is_empty()
                 && attributes
                     .iter()
-                    .any(|a| a.uri == uri && a.local == attribute_local)
+                    .any(|a| a.namespace == uri && a.local_name == attribute_local)
             {
                 return fatal(format!("the attribute {name} appears twice"));
             }
             attributes.push(Attribute {
-                qname: name,
-                uri,
-                local: attribute_local,
+                qualified_name: name,
+                namespace: uri,
+                local_name: attribute_local,
                 value,
             });
         }
-        let name = Name { qname, uri, local };
+        let name = Name {
+            qualified_name: qname,
+            namespace: uri,
+            local_name: local,
+        };
         match handler(Event::Start(&name, &attributes)) {
             Flow::Continue => Ok((name, empty)),
             Flow::Stop => Err(Stop::Handler),
@@ -1284,7 +1320,7 @@ mod tests {
         let mut found = None;
         parse(bytes, &mut |event| {
             if let Event::Start(name, _) = event {
-                found = Some((name.uri.clone(), name.local.clone()));
+                found = Some((name.namespace.clone(), name.local_name.clone()));
                 return Flow::Stop;
             }
             Flow::Continue
@@ -1337,10 +1373,60 @@ mod tests {
         );
     }
 
+    /// The events of a parse and how it ended.
+    fn events(bytes: &[u8]) -> (Vec<String>, Result<()>) {
+        let mut events = Vec::new();
+        let result = parse(bytes, &mut |event| {
+            events.push(match event {
+                Event::Start(name, _) => format!("<{}>", name.local_name),
+                Event::End(name) => format!("</{}>", name.local_name),
+                Event::Text(text, _) => text.to_owned(),
+            });
+            Flow::Continue
+        });
+        (events, result)
+    }
+
+    /// What the JDK's SAX parser reports and throws for Latin-1 bytes read as UTF-8.
     #[test]
-    fn fails_on_malformed_utf8_only_where_it_is_read() {
-        assert_eq!(root(b"<a>\xE9</a>"), Ok(Some((String::new(), "a".into()))));
-        assert_eq!(root(b"<!-- \xE9 --><a/>"), Err(XmlError::CharConversion));
+    fn fails_on_malformed_utf8_where_the_jdk_does() {
+        let conversion = Err(XmlError::CharConversion);
+        let cases: [(&[u8], &[&str]); 6] = [
+            (b"<a b='c'>\xE9</a>", &["<a>"]),
+            (b"<a b='c'/>\xE9", &["<a>", "</a>"]),
+            (b"<?xml version=\"1.0\"?><a>x\xE9</a>", &["<a>"]),
+            (
+                b"<?xml version=\"1.0\"?><a><b/>\xE9</a>",
+                &["<a>", "<b>", "</b>"],
+            ),
+            (b"<!-- \xE9 --><a/>", &[]),
+            (b"<a>\xE9</a>", &[]),
+        ];
+        for (document, reported) in cases {
+            assert_eq!(
+                events(document),
+                (
+                    reported.iter().map(|e| e.to_string()).collect(),
+                    conversion.clone()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_what_follows_the_declaration_in_its_encoding() {
+        let short = b"<?xml version=\"1.0\" encoding='windows-1251'?><a>\xcc\xe0\xff\xea</a>";
+        assert_eq!(
+            events(short),
+            (
+                vec![
+                    "<a>".to_owned(),
+                    "\u{41c}\u{430}\u{44f}\u{43a}".to_owned(),
+                    "</a>".to_owned()
+                ],
+                Ok(())
+            )
+        );
     }
 
     #[test]
