@@ -154,7 +154,6 @@ impl<'h> Xhtml<'h> {
     /// Maps `prefix`, empty for the default namespace, to `uri`, as a parser does that hands
     /// Tika's handler the prefix mappings of the XML it reads: XML output declares the mapping on
     /// the next element it writes, unless the elements around that one declare it already.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
         self.handler.start_prefix_mapping(prefix, uri)
     }
