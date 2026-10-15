@@ -6,23 +6,18 @@
 //! document extractor.
 //!
 //! The Java parser opens the package with the JDK's `ZipFile` and an `Index.zip` with its
-//! `ZipInputStream`. The port opens the package with the port of commons-compress's `ZipFile`,
-//! failing where the JDK refuses to open it (encrypted entries, methods other than stored and
-//! deflated, names that are not UTF-8), and reads an `Index.zip` by its local headers as
-//! `ZipInputStream` does. What the JDK might read differently (duplicate names, ZIP64 sizes,
-//! data descriptors, CRCs or sizes that do not match, damaged data) and Snappy blocks the snap
-//! crate rejects, which commons-compress may still read, stay on Tika's path.
+//! `ZipInputStream`, which the port reads as [`jdk_zip`] does. Snappy blocks the snap crate
+//! rejects, which commons-compress may still read, stay on Tika's path.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 
-use crate::compress::crc32;
 use crate::compress::zip::file::{ZipEntry, ZipFile};
-use crate::compress::zip::{u16_at, u32_at, Content, DEFLATED, LFH_SIG, STORED};
+use crate::compress::zip::Content;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
 use crate::formats::handlers::is_blank;
 use crate::formats::java::{parse_long, strip};
+use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
@@ -51,21 +46,6 @@ const LINE_BREAKS: [char; 3] = ['\n', '\u{2028}', '\u{2029}'];
 const ARCHIVE: &str = ".iwa";
 const INDEX: &str = "Index.zip";
 const DATA: &str = "Data/";
-const LOCAL_HEADER_BYTES: usize = 30;
-const ENCRYPTED: u16 = 0x0001;
-const DATA_DESCRIPTOR: u16 = 0x0008;
-const ZIP64_SIZE: i64 = 0xFFFF_FFFF;
-
-/// Why the extraction stops: Tika's path is left to read the package, or the Java parser fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Stop {
-    Unread(&'static str),
-    Failed(String),
-}
-
-fn failed(reason: impl Into<String>) -> Stop {
-    Stop::Failed(reason.into())
-}
 
 /// What `IworkArchiveParser.parse` writes: the paragraphs, then the failure that ends it or
 /// the `Data` files it hands the extractor.
@@ -88,15 +68,15 @@ fn extract(input: &[u8]) -> Result<Extraction<'_>, &'static str> {
     let mut paragraphs = Vec::new();
     let end = match read_package(input, &mut paragraphs) {
         Ok(end) => end,
-        Err(Stop::Failed(reason)) => End::Failed(reason),
-        Err(Stop::Unread(why)) => return Err(why),
+        Err(Refusal::Failed(reason)) => End::Failed(reason),
+        Err(Refusal::Unread(why)) => return Err(why),
     };
     Ok(Extraction { paragraphs, end })
 }
 
 /// The package's paragraphs, added to `paragraphs` archive by archive, then its `Data` files.
-fn read_package<'a>(input: &'a [u8], paragraphs: &mut Vec<String>) -> Result<End<'a>, Stop> {
-    let zip = open(input)?;
+fn read_package<'a>(input: &'a [u8], paragraphs: &mut Vec<String>) -> Result<End<'a>, Refusal> {
+    let zip = jdk_zip::open(input)?;
     let mut budget = Budget(MAX_DECOMPRESSED_BYTES);
     let archives = archives(&zip, &mut budget)?;
     for (name, archive) in in_reading_order(archives)? {
@@ -114,7 +94,7 @@ fn read_package<'a>(input: &'a [u8], paragraphs: &mut Vec<String>) -> Result<End
 struct Budget(i64);
 
 impl Budget {
-    fn spend(&mut self, bytes: usize) -> Result<(), Stop> {
+    fn spend(&mut self, bytes: usize) -> Result<(), Refusal> {
         self.0 -= i64::try_from(bytes).unwrap_or(i64::MAX);
         if self.0 < 0 {
             return Err(failed(format!(
@@ -125,50 +105,22 @@ impl Budget {
     }
 }
 
-/// `new ZipFile(file)`: the package, failing where the JDK refuses to open it.
-fn open(input: &[u8]) -> Result<ZipFile<'_>, Stop> {
-    let zip = ZipFile::open(input).map_err(|_| failed("The package is not a ZIP archive"))?;
-    let mut names = std::collections::HashSet::new();
-    for entry in zip.entries() {
-        if entry.uses_encryption() {
-            return Err(failed("invalid CEN header (encrypted entry)"));
-        }
-        if entry.method != STORED && entry.method != DEFLATED {
-            return Err(failed(format!(
-                "invalid CEN header (bad compression method: {})",
-                entry.method
-            )));
-        }
-        if std::str::from_utf8(&entry.raw_name).is_err() {
-            return Err(failed("invalid CEN header (bad entry name or comment)"));
-        }
-        if entry.name.as_bytes() != entry.raw_name {
-            return Err(Stop::Unread("an entry name commons-compress changes"));
-        }
-        if entry.size >= ZIP64_SIZE || entry.compressed_size >= ZIP64_SIZE {
-            return Err(Stop::Unread("an entry with ZIP64 sizes"));
-        }
-        if !names.insert(entry.name.as_str()) {
-            return Err(Stop::Unread("several entries of one name"));
-        }
-    }
-    Ok(zip)
-}
-
-/// `zip.getInputStream(entry)` read to its end.
-fn content(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Stop> {
-    match zip.read(entry) {
-        Some(Content::Complete(bytes)) => Ok(bytes),
-        Some(Content::Oversized(_)) => Err(failed(format!(
+/// `zip.getInputStream(entry)` read to its end, an entry past the budget failing as it does.
+fn content(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusal> {
+    match jdk_zip::read(zip, entry)? {
+        Content::Complete(bytes) => Ok(bytes),
+        _ => Err(failed(format!(
             "The iWork archives decompress to more than {MAX_DECOMPRESSED_BYTES} bytes"
         ))),
-        Some(Content::Truncated(_)) | None => Err(Stop::Unread("a damaged entry")),
     }
 }
 
 /// `archives`: the `.iwa` archives of the package, stored directly or in an `Index.zip`, by
 /// name in Java's order, a later one of a name replacing an earlier.
-fn archives(zip: &ZipFile<'_>, budget: &mut Budget) -> Result<BTreeMap<JavaString, Vec<u8>>, Stop> {
+fn archives(
+    zip: &ZipFile<'_>,
+    budget: &mut Budget,
+) -> Result<BTreeMap<JavaString, Vec<u8>>, Refusal> {
     let mut archives = BTreeMap::new();
     for entry in zip.entries() {
         if entry.name.ends_with(ARCHIVE) {
@@ -176,7 +128,11 @@ fn archives(zip: &ZipFile<'_>, budget: &mut Budget) -> Result<BTreeMap<JavaStrin
             budget.spend(archive.len())?;
             archives.insert(JavaString(entry.name.clone()), archive);
         } else if entry.name.ends_with(INDEX) {
-            for (name, archive) in index_archives(&content(zip, entry)?)? {
+            let index = jdk_zip::local_entries(&content(zip, entry)?)?;
+            for (name, archive) in index
+                .into_iter()
+                .filter(|(name, _)| name.ends_with(ARCHIVE))
+            {
                 budget.spend(archive.len())?;
                 archives.insert(JavaString(format!("{}/{name}", entry.name)), archive);
             }
@@ -185,77 +141,13 @@ fn archives(zip: &ZipFile<'_>, budget: &mut Budget) -> Result<BTreeMap<JavaStrin
     Ok(archives)
 }
 
-/// The `.iwa` entries of an `Index.zip`, as `ZipInputStream` reads its entries front to back
-/// until a header that is not a local file header.
-fn index_archives(index: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Stop> {
-    let mut archives = Vec::new();
-    let mut at = 0;
-    while let Some(header) = index.get(at..at + LOCAL_HEADER_BYTES) {
-        if header[..4] != LFH_SIG {
-            break;
-        }
-        let flags = u16_at(header, 6);
-        let method = u16_at(header, 8);
-        let crc = u32_at(header, 14);
-        let compressed_size = u32_at(header, 18);
-        let size = u32_at(header, 22);
-        let name_length = usize::from(u16_at(header, 26));
-        let extra_length = usize::from(u16_at(header, 28));
-        if flags & (ENCRYPTED | DATA_DESCRIPTOR) != 0
-            || compressed_size == ZIP64_SIZE
-            || size == ZIP64_SIZE
-        {
-            return Err(Stop::Unread(
-                "an Index.zip entry encrypted, with a data descriptor or with ZIP64 sizes",
-            ));
-        }
-        let unread = || Stop::Unread("an Index.zip entry ZipInputStream may read otherwise");
-        let name_at = at + LOCAL_HEADER_BYTES;
-        let name = index
-            .get(name_at..name_at + name_length)
-            .and_then(|name| std::str::from_utf8(name).ok())
-            .ok_or_else(unread)?;
-        let data_at = name_at + name_length + extra_length;
-        let compressed_size = usize::try_from(compressed_size).map_err(|_| unread())?;
-        let raw = index
-            .get(data_at..data_at + compressed_size)
-            .ok_or_else(unread)?;
-        let data = match method {
-            STORED => raw.to_vec(),
-            DEFLATED => inflate_exactly(raw).ok_or_else(unread)?,
-            _ => return Err(unread()),
-        };
-        if i64::try_from(data.len()) != Ok(size) || i64::from(crc32(&data)) != crc {
-            return Err(unread());
-        }
-        if name.ends_with(ARCHIVE) {
-            archives.push((name.to_owned(), data));
-        }
-        at = data_at + compressed_size;
-    }
-    Ok(archives)
-}
-
-/// Raw deflate data that inflates to its end using every byte of it.
-fn inflate_exactly(raw: &[u8]) -> Option<Vec<u8>> {
-    let mut inflater = flate2::bufread::DeflateDecoder::new(raw);
-    let mut data = Vec::new();
-    inflater
-        .by_ref()
-        .take(MAX_DECOMPRESSED_BYTES as u64 + 1)
-        .read_to_end(&mut data)
-        .ok()?;
-    (inflater.total_in() == raw.len() as u64 && data.len() as i64 <= MAX_DECOMPRESSED_BYTES)
-        .then_some(data)
-}
-
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
 /// `readingOrder`: the document first, then the slides, then everything else (such as tables'
 /// lists), each group in the order of the archives' numbers.
-fn reading_order(name: &str) -> Result<String, Stop> {
+fn reading_order(name: &str) -> Result<String, Refusal> {
     if name == "Document.iwa" {
         return Ok("0".to_owned());
     }
@@ -281,7 +173,7 @@ fn numbered(name: &str) -> Option<(&str, &str)> {
 /// every key of two or more names, failing where one fails.
 fn in_reading_order(
     archives: BTreeMap<JavaString, Vec<u8>>,
-) -> Result<Vec<(String, Vec<u8>)>, Stop> {
+) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
     let mut keyed: Vec<(JavaString, String, Vec<u8>)> = Vec::with_capacity(archives.len());
     let several = archives.len() > 1;
     for (JavaString(name), archive) in archives {
@@ -301,7 +193,7 @@ fn in_reading_order(
 
 /// `decompress`: an archive's protobuf stream, chunks of a zero byte, a three-byte
 /// little-endian length and a raw Snappy block.
-fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Vec<u8>, Stop> {
+fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Vec<u8>, Refusal> {
     let mut stream = Vec::new();
     let mut offset = 0;
     while offset < archive.len() {
@@ -318,11 +210,11 @@ fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Vec<u8>, Stop> {
             .get(offset..offset + length)
             .ok_or_else(|| failed(format!("Truncated iWork archive chunk at byte {offset}")))?;
         let declared = snap::raw::decompress_len(block)
-            .map_err(|_| Stop::Unread("a Snappy block the snap crate rejects"))?;
+            .map_err(|_| Refusal::Unread("a Snappy block the snap crate rejects"))?;
         budget.spend(declared)?;
         let decoded = snap::raw::Decoder::new()
             .decompress_vec(block)
-            .map_err(|_| Stop::Unread("a Snappy block the snap crate rejects"))?;
+            .map_err(|_| Refusal::Unread("a Snappy block the snap crate rejects"))?;
         stream.extend_from_slice(&decoded);
         offset += length;
     }
@@ -330,7 +222,7 @@ fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Vec<u8>, Stop> {
 }
 
 /// `text`: the paragraphs of the text storages and string tables in an archive's messages.
-fn text(stream: &[u8]) -> Result<Vec<String>, Stop> {
+fn text(stream: &[u8]) -> Result<Vec<String>, Refusal> {
     let mut paragraphs = Vec::new();
     let mut reader = Protobuf::new(stream);
     while reader.has_more() {
@@ -367,7 +259,7 @@ fn text(stream: &[u8]) -> Result<Vec<String>, Stop> {
 }
 
 /// `storage`: the lines of a text storage, without attachment characters.
-fn storage(mut storage: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Stop> {
+fn storage(mut storage: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refusal> {
     while storage.has_more() {
         if storage.field()? != 3 {
             storage.skip()?;
@@ -384,7 +276,7 @@ fn storage(mut storage: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), St
 }
 
 /// `strings`: the strings of a table's string list, in the order of their keys.
-fn strings(mut list: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Stop> {
+fn strings(mut list: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refusal> {
     let mut list_type = -1;
     let mut strings = BTreeMap::new();
     while list.has_more() {
@@ -416,13 +308,13 @@ fn strings(mut list: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Stop>
 
 /// `embedded`'s entries: the files of the package's `Data` folders, in the order of the central
 /// directory, each read whole.
-fn data_files(zip: &ZipFile<'_>) -> Result<Vec<usize>, Stop> {
+fn data_files(zip: &ZipFile<'_>) -> Result<Vec<usize>, Refusal> {
     let mut files = Vec::new();
     for (index, entry) in zip.entries().iter().enumerate() {
         if entry.is_directory() || !entry.name.contains(DATA) {
             continue;
         }
-        content(zip, entry)?;
+        jdk_zip::read_whole(zip, entry)?;
         files.push(index);
     }
     Ok(files)
@@ -452,13 +344,13 @@ impl<'a> Protobuf<'a> {
     }
 
     /// The field number of the next key, as Java's `(int) (key >>> 3)` truncates it.
-    fn field(&mut self) -> Result<i32, Stop> {
+    fn field(&mut self) -> Result<i32, Refusal> {
         let key = self.varint()?;
         self.wire_type = key & 7;
         Ok(((key as u64) >> 3) as i32)
     }
 
-    fn varint(&mut self) -> Result<i64, Stop> {
+    fn varint(&mut self) -> Result<i64, Refusal> {
         let mut value: i64 = 0;
         for shift in (0..64).step_by(7) {
             if self.offset >= self.end {
@@ -484,7 +376,7 @@ impl<'a> Protobuf<'a> {
         })
     }
 
-    fn message(&mut self, length: i64) -> Result<Protobuf<'a>, Stop> {
+    fn message(&mut self, length: i64) -> Result<Protobuf<'a>, Refusal> {
         let start = self
             .take(length)
             .ok_or_else(|| failed("A message runs past the end of an iWork archive"))?;
@@ -497,17 +389,17 @@ impl<'a> Protobuf<'a> {
     }
 
     /// A string, decoded as Java's `new String(bytes, UTF_8)` decodes it.
-    fn string(&mut self) -> Result<String, Stop> {
+    fn string(&mut self) -> Result<String, Refusal> {
         let length = self.varint()?;
         let start = self
             .take(length)
             .ok_or_else(|| failed("A string runs past the end of an iWork archive"))?;
         Charset::named("UTF-8")
             .decode(&self.bytes[start..self.offset])
-            .ok_or(Stop::Unread("UTF-8 the native decoders do not decode"))
+            .ok_or(Refusal::Unread("UTF-8 the native decoders do not decode"))
     }
 
-    fn skip(&mut self) -> Result<(), Stop> {
+    fn skip(&mut self) -> Result<(), Refusal> {
         match self.wire_type {
             0 => {
                 self.varint()?;
@@ -570,7 +462,7 @@ impl Parser for IworkArchiveParser {
             let mut metadata = TikaMetadata::new();
             metadata.set(embedded::RESOURCE_NAME, file_name(&entry.name));
             metadata.set(embedded::RELATIONSHIP_ID, entry.name.as_str());
-            let data = content(&zip, entry)
+            let data = jdk_zip::read_whole(&zip, entry)
                 .map_err(|_| Failure::Malformed(format!("{} cannot be read again", entry.name)))?;
             xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)?;
         }
