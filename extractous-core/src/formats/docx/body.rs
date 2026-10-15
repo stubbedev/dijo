@@ -63,6 +63,8 @@ pub(super) struct Context<'c> {
     pub(super) inline: &'c InlineParts,
     /// Whether the handler records features of the document in its metadata.
     pub(super) records_metadata: bool,
+    pub(super) include_deleted: bool,
+    pub(super) include_move_from: bool,
 }
 
 /// `OOXMLTikaBodyPartHandler`.
@@ -101,6 +103,14 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
     /// The comments this handler inlined, by id.
     pub(super) fn into_emitted_comments(self) -> HashSet<String> {
         self.emitted_comments
+    }
+
+    pub(super) fn include_deleted(&self) -> bool {
+        self.context.include_deleted
+    }
+
+    pub(super) fn include_move_from(&self) -> bool {
+        self.context.include_move_from
     }
 
     pub(super) fn run(&mut self, properties: &RunProperties, text: &str) -> Result<(), Stop> {
@@ -413,6 +423,8 @@ fn play_note(
             lists: &mut lists,
             inline: &empty,
             records_metadata: false,
+            include_deleted: false,
+            include_move_from: false,
         },
     );
     let mut handler = TextHandler::new(body, &inline.relationships, TextOptions::default());

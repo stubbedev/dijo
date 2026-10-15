@@ -275,14 +275,10 @@ impl<'a> Document<'a> {
         stories.extend(&self.glossaries);
         for story in stories {
             for part in self.text_parts(story) {
-                let name = self.package.name(part);
-                let Some(scan) = ooxml::read_quietly(&self.package, part, LeftForNow::default())?
-                else {
-                    return Err(Unported(format!("Tika records a failure on {name}")));
-                };
-                if let Some(feature) = scan.found {
+                if ooxml::read_quietly(&self.package, part, Ignore)?.is_none() {
                     return Err(Unported(format!(
-                        "{name} uses {feature}, which this port leaves to Tika for now"
+                        "Tika records a failure on {}",
+                        self.package.name(part)
                     )));
                 }
             }
@@ -464,6 +460,8 @@ impl<'a> Document<'a> {
                 lists,
                 inline,
                 records_metadata: true,
+                include_deleted: self.config.includes_deleted_content(),
+                include_move_from: self.config.includes_move_from_content(),
             },
         );
         let options = TextOptions {
@@ -639,45 +637,6 @@ impl SaxHandler for Ignore {
         _local_name: &str,
         _attributes: &[Attribute<'_>],
     ) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    fn characters(&mut self, _text: &str) -> Result<(), Failure> {
-        Ok(())
-    }
-}
-
-/// The elements of the features this port leaves to Tika for now, with the feature of each.
-const LEFT_FOR_NOW: [(&str, &str); 4] = [
-    ("ins", "tracked changes"),
-    ("del", "tracked changes"),
-    ("moveFrom", "tracked changes"),
-    ("moveTo", "tracked changes"),
-];
-
-/// Finds the first element of a feature in [`LEFT_FOR_NOW`].
-#[derive(Default)]
-struct LeftForNow {
-    found: Option<&'static str>,
-}
-
-impl SaxHandler for LeftForNow {
-    fn start_element(
-        &mut self,
-        _namespace: &str,
-        local_name: &str,
-        _attributes: &[Attribute<'_>],
-    ) -> Result<(), Failure> {
-        if self.found.is_none() {
-            self.found = LEFT_FOR_NOW
-                .iter()
-                .find(|(element, _)| *element == local_name)
-                .map(|(_, feature)| *feature);
-        }
         Ok(())
     }
 

@@ -200,6 +200,11 @@ impl OfficeParserConfig {
         self.extract_macros.unwrap_or(false)
     }
 
+    /// Whether text moved away is extracted where it was too, which Tika leaves out unless asked.
+    pub(crate) fn includes_move_from_content(&self) -> bool {
+        self.include_move_from_content.unwrap_or(false)
+    }
+
     /// Whether the text of shapes such as text boxes is extracted, as Tika does unless told not to.
     pub(crate) fn includes_shape_based_content(&self) -> bool {
         self.include_shape_based_content.unwrap_or(true)

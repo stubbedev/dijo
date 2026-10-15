@@ -10,9 +10,6 @@ use crate::formats::{Chain, Output, StringOut};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
-/// How the parser defers a document using a feature it leaves to Tika for now.
-const LEFT_FOR_NOW: &str = "which this port leaves to Tika for now";
-
 /// The Word documents of the corpora in the repository that this port leaves to Tika, with why.
 const DEFERRED: [(&str, &str); 4] = [
     ("issue2-v2.docx", "embeds /word/media/image1.png"),
@@ -93,8 +90,10 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
 }
 
 /// Each setting of `OfficeParserConfig` the Word extractor reads, away from its default.
-fn other_settings() -> [ParserConfigs; 4] {
+fn other_settings() -> [ParserConfigs; 6] {
     [
+        office(OfficeParserConfig::new().set_include_deleted_content(true)),
+        office(OfficeParserConfig::new().set_include_move_from_content(true)),
         office(OfficeParserConfig::new().set_include_shape_based_content(false)),
         office(OfficeParserConfig::new().set_include_headers_and_footers(false)),
         office(OfficeParserConfig::new().set_concatenate_phonetic_runs(false)),
@@ -126,7 +125,6 @@ fn ported(
         match (deferral(document, configs), expected) {
             (None, None) => ported.push(document.clone()),
             (Some(reason), Some((_, why))) if reason.contains(why) => {}
-            (Some(reason), None) if reason.contains(LEFT_FOR_NOW) => {}
             (reason, expected) => {
                 unexpected.push(format!("{name}: {reason:?}, expected {expected:?}"))
             }
@@ -479,4 +477,20 @@ fn writes_notes_where_they_are_referenced_and_comments_after_their_paragraph() {
         text.contains("<div class=\"comment\"><p>Loose</p>"),
         "{text}"
     );
+}
+
+#[test]
+fn includes_deleted_and_moved_text_on_request() {
+    let input = document(
+        "<w:p><w:r><w:t>kept </w:t></w:r><w:del w:author=\"A\"><w:r><w:delText>gone</w:delText></w:r></w:del>\
+         <w:moveFrom w:author=\"B\"><w:r><w:t>moved</w:t></w:r></w:moveFrom></w:p>",
+        "",
+        &[],
+    );
+    let default = text_of(&input, &ParserConfigs::default());
+    assert!(default.contains("<p>kept </p>"), "{default}");
+    let deleted = office(OfficeParserConfig::new().set_include_deleted_content(true));
+    assert!(text_of(&input, &deleted).contains("<p>kept gone</p>"));
+    let moved = office(OfficeParserConfig::new().set_include_move_from_content(true));
+    assert!(text_of(&input, &moved).contains("<p>kept moved</p>"));
 }

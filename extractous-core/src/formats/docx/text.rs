@@ -1,6 +1,6 @@
 //! Tika's `OOXMLWordAndPowerPointTextHandler`: reads a part of a Word document element by
-//! element, by local name, and hands paragraphs, runs, tables, links, notes, fields and pictures
-//! to the [`Body`] that writes them.
+//! element, by local name, and hands paragraphs, runs, tables, links, notes, fields, pictures
+//! and tracked changes to the [`Body`] that writes them.
 
 use std::collections::HashMap;
 
@@ -54,6 +54,16 @@ impl Default for TextOptions {
     }
 }
 
+/// The kind of tracked change being read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edit {
+    None,
+    Insert,
+    Delete,
+    MoveTo,
+    MoveFrom,
+}
+
 /// `OOXMLPictureTracker`.
 #[derive(Debug, Default)]
 struct Picture {
@@ -86,6 +96,7 @@ pub(super) struct TextHandler<'x, 'h, 'c, 'r> {
     in_instruction: bool,
     in_field_hyperlink: bool,
     instruction: String,
+    edit: Edit,
     picture: Picture,
 }
 
@@ -119,6 +130,7 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
             in_instruction: false,
             in_field_hyperlink: false,
             instruction: String::new(),
+            edit: Edit::None,
             picture: Picture::default(),
         }
     }
@@ -183,6 +195,10 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
             .embedded_picture(file_name, picture.description.as_deref())?;
         self.picture.last_image_data = picture.last_image_data;
         Ok(())
+    }
+
+    fn start_edit(&mut self, edit: Edit) {
+        self.edit = edit;
     }
 
     fn field_character(&mut self, kind: Option<&str>) -> Result<(), Stop> {
@@ -346,6 +362,11 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
                 self.picture.description =
                     attribute(attributes, O_NAMESPACE, "title").map(str::to_owned);
             }
+            "ins" => self.start_edit(Edit::Insert),
+            "delText" => {}
+            "del" => self.start_edit(Edit::Delete),
+            "moveTo" => self.start_edit(Edit::MoveTo),
+            "moveFrom" => self.start_edit(Edit::MoveFrom),
             "OLEObject" => self.ole_object(attributes)?,
             "endnoteReference" => self.body.endnote_reference(w("id"))?,
             "commentReference" => self.body.comment_reference(w("id")),
@@ -412,6 +433,7 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
             "tc" => self.body.end_cell()?,
             "tr" => self.body.end_row()?,
             "tbl" => self.body.end_table()?,
+            "ins" | "del" | "moveTo" | "moveFrom" => self.edit = Edit::None,
             "hyperlink" => self.body.hyperlink_end()?,
             "pict" => self.end_picture()?,
             "v" if namespace == C_NAMESPACE => {
@@ -432,7 +454,11 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
         {
             return Ok(());
         }
-        if self.in_text {
+        if self.edit == Edit::MoveFrom && self.in_text {
+            if self.body.include_move_from() {
+                self.append(text);
+            }
+        } else if self.in_text || (self.body.include_deleted() && self.edit == Edit::Delete) {
             self.append(text);
         } else if self.in_chart_value {
             self.append(text);
