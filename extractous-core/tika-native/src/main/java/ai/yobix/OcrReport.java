@@ -6,9 +6,9 @@ import java.util.Locale;
  * What was done to an image before tesseract read it, and with which model, as one JSON object
  * per image or page under {@link #KEY}: the page, the model, the script orientation and script
  * detection found, the EXIF orientation applied, whether a page photographed at an angle was made
- * flat, the quarter turns and deskewing that made it
- * upright, the enlargement, whether it was thresholded for uneven lighting, and whether Java
- * could decode it to prepare it at all.
+ * flat, whether light text on a dark ground was inverted, the quarter turns and deskewing that
+ * made it upright, the enlargement, whether it was thresholded for uneven lighting, and whether
+ * Java could decode it to prepare it at all.
  */
 final class OcrReport {
 
@@ -36,10 +36,11 @@ final class OcrReport {
                 ? this : number("exif_orientation", Integer.parseInt(orientation.trim()));
     }
 
-    OcrReport prepared(boolean decoded, boolean flattened, int quarterTurns, double skewDegrees,
-                       double scale, boolean thresholded) {
+    OcrReport prepared(boolean decoded, boolean flattened, boolean inverted, int quarterTurns,
+                       double skewDegrees, double scale, boolean thresholded) {
         return bool("prepared", decoded)
                 .bool("flattened", flattened)
+                .bool("inverted", inverted)
                 .number("turned_degrees", quarterTurns * 90)
                 .decimal("deskewed_degrees", skewDegrees)
                 .decimal("scale", scale)

@@ -161,7 +161,7 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["language", "prepared", "flattened", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
+                "required": ["language", "prepared", "flattened", "inverted", "turned_degrees", "deskewed_degrees", "scale", "thresholded"],
                 "properties": {
                   "page": {
                     "type": "integer",
@@ -189,6 +189,10 @@
                   "flattened": {
                     "type": "boolean",
                     "description": "Whether a page photographed at an angle was found and mapped back to a rectangle."
+                  },
+                  "inverted": {
+                    "type": "boolean",
+                    "description": "Whether light text on a dark ground was inverted to dark text on a light one."
                   },
                   "turned_degrees": {
                     "enum": [0, 90, 180, 270],

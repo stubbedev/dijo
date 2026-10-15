@@ -289,6 +289,7 @@ pub struct OcrReport {
     pub exif_orientation: Option<u8>,
     pub prepared: bool,
     pub flattened: bool,
+    pub inverted: bool,
     pub turned_degrees: u16,
     pub deskewed_degrees: f64,
     pub scale: f64,

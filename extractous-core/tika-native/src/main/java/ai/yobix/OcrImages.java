@@ -34,6 +34,7 @@ final class OcrImages {
     private static final int LIGHTING_TILES = 8;
     private static final double BACKGROUND_PERCENTILE = 0.9;
     private static final int UNEVEN_BACKGROUND_LEVELS = 48;
+    private static final int MIN_INVERTED_DARK_PERCENT = 85;
 
     private OcrImages() {
     }
@@ -119,12 +120,10 @@ final class OcrImages {
      * onto the vertical axis at candidate angles: text lines give the sharpest profile when level.
      */
     static double skewDegrees(BufferedImage image) {
-        final double scale = Math.min(1.0,
-                (double) ANALYSIS_SIZE / Math.max(image.getWidth(), image.getHeight()));
-        final int width = Math.max(1, (int) Math.round(image.getWidth() * scale));
-        final int height = Math.max(1, (int) Math.round(image.getHeight() * scale));
-        final int[] gray = gray(image, width, height).getRaster()
-                .getPixels(0, 0, width, height, (int[]) null);
+        final Analysis analysis = Analysis.of(image, 1);
+        final int width = analysis.width();
+        final int height = analysis.height();
+        final int[] gray = analysis.gray();
         final int threshold = otsuThreshold(gray);
         int count = 0;
         for (final int value : gray) {
@@ -237,12 +236,10 @@ final class OcrImages {
      * reaches.
      */
     static boolean unevenLighting(BufferedImage image) {
-        final double scale = Math.min(1.0,
-                (double) ANALYSIS_SIZE / Math.max(image.getWidth(), image.getHeight()));
-        final int width = Math.max(LIGHTING_TILES, (int) Math.round(image.getWidth() * scale));
-        final int height = Math.max(LIGHTING_TILES, (int) Math.round(image.getHeight() * scale));
-        final int[] gray = gray(image, width, height).getRaster()
-                .getPixels(0, 0, width, height, (int[]) null);
+        final Analysis analysis = Analysis.of(image, LIGHTING_TILES);
+        final int width = analysis.width();
+        final int height = analysis.height();
+        final int[] gray = analysis.gray();
         int lightest = 0;
         int darkest = 255;
         for (int tileY = 0; tileY < LIGHTING_TILES; tileY++) {
@@ -361,6 +358,58 @@ final class OcrImages {
             }
             return 0;
         }
+    }
+
+    /** An image in grey at the size it is analysed at: its levels, row by row. */
+    private record Analysis(int width, int height, int[] gray) {
+
+        /**
+         * The image reduced to at most {@value #ANALYSIS_SIZE} pixels on its longer side, and to
+         * no fewer than minSide on either.
+         */
+        static Analysis of(BufferedImage image, int minSide) {
+            final double scale = Math.min(1.0,
+                    (double) ANALYSIS_SIZE / Math.max(image.getWidth(), image.getHeight()));
+            final int width = Math.max(minSide, (int) Math.round(image.getWidth() * scale));
+            final int height = Math.max(minSide, (int) Math.round(image.getHeight() * scale));
+            return new Analysis(width, height, OcrImages.gray(image, width, height).getRaster()
+                    .getPixels(0, 0, width, height, (int[]) null));
+        }
+    }
+
+    /**
+     * Whether the image is light text on a dark ground, as a negative or a slide is: whether
+     * more than {@value #MIN_INVERTED_DARK_PERCENT}% of it is darker than its Otsu threshold.
+     * Pages photographed on a dark table or lying in shadow are dark in part, up to about 70%.
+     */
+    static boolean inverted(BufferedImage image) {
+        final int[] gray = Analysis.of(image, 1).gray();
+        final int threshold = otsuThreshold(gray);
+        long dark = 0;
+        for (final int value : gray) {
+            if (value < threshold) {
+                dark++;
+            }
+        }
+        return dark * 100 > (long) gray.length * MIN_INVERTED_DARK_PERCENT;
+    }
+
+    /** The image in grey with every level inverted, dark for light. */
+    static BufferedImage invert(BufferedImage image) {
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        final BufferedImage gray = gray(image, width, height);
+        final BufferedImage inverted = new BufferedImage(width, height,
+                BufferedImage.TYPE_BYTE_GRAY);
+        final byte[] row = new byte[width];
+        for (int y = 0; y < height; y++) {
+            gray.getRaster().getDataElements(0, y, width, 1, row);
+            for (int x = 0; x < width; x++) {
+                row[x] = (byte) ~row[x];
+            }
+            inverted.getRaster().setDataElements(0, y, width, 1, row);
+        }
+        return inverted;
     }
 
     static BufferedImage gray(BufferedImage image, int width, int height) {
