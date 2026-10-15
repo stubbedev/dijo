@@ -34,12 +34,12 @@ pub(crate) use mbox::MboxParser;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::Body;
-use crate::formats::html::JSoupParser;
+use crate::formats::html;
 use crate::formats::java::parse_long;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::text::TextAndCsvParser;
+use crate::formats::text;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
 
 /// What the port leaves to Tika.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,22 +78,13 @@ impl Parser for Rfc822Parser {
         &["message/rfc822"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        deferral(input, metadata)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        parse_message(input, configs, xhtml)
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare_message(Ok(input), metadata).map_err(Declined::Deferred)
     }
 }
 
@@ -106,22 +97,13 @@ impl Parser for EmlxParser {
         &["message/x-emlx"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        deferral(emlx_message(input).ok()?, metadata)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        parse_message(emlx_message(input)?, configs, xhtml)
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare_message(emlx_message(input), metadata).map_err(Declined::Deferred)
     }
 }
 
@@ -205,81 +187,90 @@ fn strip_emlx_framing(input: &[u8]) -> &[u8] {
     }
 }
 
-/// Why `parse` would leave the message to Tika: something of it the port does not read, or a
-/// text or HTML part the native parser of its kind defers.
-fn deferral(input: &[u8], metadata: &TikaMetadata) -> Option<String> {
-    if input.is_empty() {
-        return None;
-    }
-    let items = match read(strip_emlx_framing(input), &mut metadata.clone()) {
-        Ok(items) => items,
-        Err(Problem::Unported(unported)) => return Some(unported.reason().to_owned()),
-        Err(Problem::Malformed(_)) => return None,
-    };
-    let configs = ParserConfigs::default();
-    items.iter().find_map(|item| match item {
-        Item::Inline(Inline::Text(content)) => TextAndCsvParser
-            .defers(content, &TikaMetadata::new(), &configs)
-            .map(|reason| format!("a text part defers: {reason}")),
-        Item::Inline(Inline::Html(content)) => JSoupParser
-            .defers(content, &TikaMetadata::new(), &configs)
-            .map(|reason| format!("an HTML part defers: {reason}")),
-        Item::StartEntry | Item::EndEntry | Item::Embedded(..) => None,
-    })
+/// A part of the message as writing it takes it.
+enum Part {
+    /// `<div class="email-entry"><p>`, which starts a part of a multipart.
+    StartEntry,
+    /// `</p></div>`.
+    EndEntry,
+    /// A text or HTML part its native parser prepared, to parse inline.
+    Inline(Prepared<'static>),
+    /// A part handed to the embedded document extractor, with the metadata it is given.
+    Embedded(Vec<u8>, TikaMetadata),
 }
 
-/// `RFC822Parser.parse` of a message.
-fn parse_message(input: &[u8], configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    if input.is_empty() {
-        return Err(Failure::Malformed("rfc822 parser found zero bytes".into()));
+/// `RFC822Parser.parse` of `message` prepared: the message read, with the metadata it adds to
+/// `metadata`, and its text and HTML parts prepared by their parsers; or why Tika's path should
+/// read it, something of it the port does not read or a part whose parser defers it.
+fn prepare_message(
+    message: Result<&[u8], Failure>,
+    metadata: &TikaMetadata,
+) -> Result<Prepared<'static>, Deferral> {
+    let failed = |failure: Failure| -> Prepared<'static> { Box::new(move |_| Err(failure)) };
+    let message = match message {
+        Ok(message) => message,
+        Err(failure) => return Ok(failed(failure)),
+    };
+    if message.is_empty() {
+        return Ok(failed(Failure::Malformed(
+            "rfc822 parser found zero bytes".into(),
+        )));
     }
-    let items =
-        read(strip_emlx_framing(input), xhtml.metadata_mut()).map_err(|problem| match problem {
-            Problem::Malformed(reason) => {
-                Failure::Malformed(format!("Failed to parse an email message: {reason}"))
-            }
-            Problem::Unported(unported) => Failure::Malformed(format!(
-                "the message was not deferred, but {}",
-                unported.reason()
-            )),
-        })?;
+    let mut metadata = metadata.clone();
+    let items = match read(strip_emlx_framing(message), &mut metadata) {
+        Ok(items) => items,
+        Err(Problem::Unported(unported)) => return Err(unported.reason().to_owned()),
+        Err(Problem::Malformed(reason)) => {
+            return Ok(failed(Failure::Malformed(format!(
+                "Failed to parse an email message: {reason}"
+            ))))
+        }
+    };
+    let mut parts = Vec::with_capacity(items.len());
     for item in items {
-        match item {
-            Item::StartEntry => {
-                xhtml.start_element_with("div", &[("class", "email-entry")])?;
-                xhtml.start_element("p")?;
-            }
-            Item::EndEntry => {
-                xhtml.end_element("p")?;
-                xhtml.end_element("div")?;
-            }
-            Item::Inline(Inline::Text(content)) => {
-                parse_inline(&TextAndCsvParser, &content, configs, xhtml)?;
-            }
-            Item::Inline(Inline::Html(content)) => {
-                parse_inline(&JSoupParser, &content, configs, xhtml)?;
-            }
-            Item::Embedded(content, metadata) => {
-                xhtml.parse_embedded(&content, &metadata, Wrapping::Bare)?;
+        parts.push(match item {
+            Item::StartEntry => Part::StartEntry,
+            Item::EndEntry => Part::EndEntry,
+            Item::Inline(Inline::Text(content)) => Part::Inline(
+                text::prepare(&content, &TikaMetadata::new())
+                    .map_err(|reason| format!("a text part defers: {reason}"))?,
+            ),
+            Item::Inline(Inline::Html(content)) => Part::Inline(
+                html::prepare(&content, &TikaMetadata::new())
+                    .map_err(|reason| format!("an HTML part defers: {reason}"))?,
+            ),
+            Item::Embedded(content, metadata) => Part::Embedded(content, metadata),
+        });
+    }
+    Ok(Box::new(move |xhtml| {
+        *xhtml.metadata_mut() = metadata;
+        for part in parts {
+            match part {
+                Part::StartEntry => {
+                    xhtml.start_element_with("div", &[("class", "email-entry")])?;
+                    xhtml.start_element("p")?;
+                }
+                Part::EndEntry => {
+                    xhtml.end_element("p")?;
+                    xhtml.end_element("div")?;
+                }
+                Part::Inline(prepared) => parse_inline(prepared, xhtml)?,
+                Part::Embedded(content, metadata) => {
+                    xhtml.parse_embedded(&content, &metadata, Wrapping::Bare)?;
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    }))
 }
 
-/// `handleInlineBodyPart`: a part parsed by `parser` from fresh metadata into the message's
-/// body, through an `EmbeddedContentHandler` and a `BodyContentHandler`.
-fn parse_inline(
-    parser: &dyn Parser,
-    content: &[u8],
-    configs: &ParserConfigs,
-    xhtml: &mut Xhtml,
-) -> Result<(), Failure> {
+/// `handleInlineBodyPart`: a part its parser `prepared` from fresh metadata, parsed into the
+/// message's body, through an `EmbeddedContentHandler` and a `BodyContentHandler`.
+fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let context = xhtml.context();
     let mut forward = Forward { outer: xhtml };
     let mut body = Body::new(&mut forward);
-    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), configs, |inner| {
-        parser.parse(content, configs, inner)
-    });
+    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);
     result
 }
 

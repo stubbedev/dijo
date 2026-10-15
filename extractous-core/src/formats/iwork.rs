@@ -19,8 +19,7 @@ use crate::formats::handlers::is_blank;
 use crate::formats::java::{parse_long, strip};
 use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::mime::java::{is_line_terminator, JavaString};
 use crate::text::charset::Charset;
 
@@ -435,38 +434,32 @@ impl Parser for IworkArchiveParser {
         &TYPES
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        extract(input).err().map(str::to_owned)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let extraction = extract(input).map_err(|why| Failure::Malformed(why.to_owned()))?;
-        for paragraph in &extraction.paragraphs {
-            xhtml.element("p", paragraph)?;
-        }
-        let (zip, files) = match extraction.end {
-            End::Failed(reason) => return Err(Failure::Malformed(reason)),
-            End::Embedded { zip, files } => (zip, files),
-        };
-        for entry in files.into_iter().map(|index| &zip.entries()[index]) {
-            let mut metadata = TikaMetadata::new();
-            metadata.set(embedded::RESOURCE_NAME, file_name(&entry.name));
-            metadata.set(embedded::RELATIONSHIP_ID, entry.name.as_str());
-            let data = jdk_zip::read_whole(&zip, entry)
-                .map_err(|_| Failure::Malformed(format!("{} cannot be read again", entry.name)))?;
-            xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)?;
-        }
-        Ok(())
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let extraction = extract(input).map_err(|why| Declined::Deferred(why.to_owned()))?;
+        Ok(Box::new(move |xhtml| {
+            for paragraph in &extraction.paragraphs {
+                xhtml.element("p", paragraph)?;
+            }
+            let (zip, files) = match extraction.end {
+                End::Failed(reason) => return Err(Failure::Malformed(reason)),
+                End::Embedded { zip, files } => (zip, files),
+            };
+            for entry in files.into_iter().map(|index| &zip.entries()[index]) {
+                let mut metadata = TikaMetadata::new();
+                metadata.set(embedded::RESOURCE_NAME, file_name(&entry.name));
+                metadata.set(embedded::RELATIONSHIP_ID, entry.name.as_str());
+                let data = jdk_zip::read_whole(&zip, entry).map_err(|_| {
+                    Failure::Malformed(format!("{} cannot be read again", entry.name))
+                })?;
+                xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)?;
+            }
+            Ok(())
+        }))
     }
 }
 

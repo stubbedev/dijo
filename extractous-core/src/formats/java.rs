@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use crate::formats::handlers::is_java_whitespace;
-use crate::unicode::decimal_digit;
+pub(crate) use crate::mime::java_trim as trim;
+use crate::unicode::{decimal_digit, is_whitespace};
 
 /// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
 pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
@@ -308,14 +308,9 @@ pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
             .all(|(x, y)| x == y || upper(x) == upper(y) || lower(upper(x)) == lower(upper(y)))
 }
 
-/// `String.trim()`: without the characters up to U+0020 at either end.
-pub(crate) fn trim(text: &str) -> &str {
-    text.trim_matches(|character| character <= ' ')
-}
-
 /// `String.strip()`: without the whitespace `Character.isWhitespace` sees at either end.
 pub(crate) fn strip(text: &str) -> &str {
-    text.trim_matches(is_java_whitespace)
+    text.trim_matches(is_whitespace)
 }
 
 /// The double `Double.parseDouble(text)` gives, or `None` where it throws.

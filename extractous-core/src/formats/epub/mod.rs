@@ -10,7 +10,7 @@
 mod content;
 mod package;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
@@ -20,7 +20,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
 
 use content::ContentDocument;
 use package::{Contents, Item, MetadataParser};
@@ -105,6 +105,8 @@ impl From<crate::formats::xhtml::Stop> for Thrown {
 /// An opened book.
 struct Book<'a> {
     zip: ZipFile<'a>,
+    /// The entries read ahead to check them, by name, each to be read once more.
+    read_ahead: HashMap<String, Vec<u8>>,
 }
 
 impl<'a> Book<'a> {
@@ -113,7 +115,10 @@ impl<'a> Book<'a> {
     }
 
     fn read(&mut self, entry: &ZipEntry) -> Result<Vec<u8>, Failure> {
-        self.zip.read(entry)
+        match self.read_ahead.remove(&entry.name) {
+            Some(bytes) => Ok(bytes),
+            None => self.zip.read(entry),
+        }
     }
 
     /// `getRoot`: the package document `container.xml` names, or without one, the first entry
@@ -316,23 +321,31 @@ fn read_fallback(book: &mut Book, reason: &str, xhtml: &mut Xhtml) -> Result<(),
     ))))
 }
 
-/// Why Tika's path should read the book in `input` rather than this parser, if it should.
-fn deferral(input: &[u8]) -> Option<String> {
+/// Reads the book in `input` as far as deciding whether this parser extracts it as Tika does:
+/// its package document, with the metadata it adds to `metadata`, and its content documents,
+/// which it keeps for writing; or why Tika's path should read it.
+fn prepare<'a>(
+    input: &'a [u8],
+    metadata: &mut TikaMetadata,
+) -> Result<(Book<'a>, Result<Reading, Failure>), Deferral> {
     let Ok(zip) = ZipFile::open(input, "EPUB") else {
-        return Some("its archive is not one the zip crate reads".to_owned());
+        return Err("its archive is not one the zip crate reads".to_owned());
     };
     if !zip.has_every_record(input) {
-        return Some(
+        return Err(
             "its archive has entries the zip crate does not list, such as duplicates".to_owned(),
         );
     }
     if !zip.reads_every_entry() {
-        return Some("its archive has entries the zip crate cannot decompress".to_owned());
+        return Err("its archive has entries the zip crate cannot decompress".to_owned());
     }
-    let mut book = Book { zip };
-    let mut metadata = TikaMetadata::new();
-    let documents: Vec<ZipEntry> = match book.reading(&mut metadata) {
-        Err(_) => return None,
+    let mut book = Book {
+        zip,
+        read_ahead: HashMap::new(),
+    };
+    let reading = book.reading(metadata);
+    let documents: Vec<ZipEntry> = match &reading {
+        Err(_) => Vec::new(),
         Ok(Reading::Fallback(_)) => book
             .zip
             .entries()
@@ -346,7 +359,7 @@ fn deferral(input: &[u8]) -> Option<String> {
                     .read(&encryption)
                     .and_then(|bytes| package::names_encrypted_items(&bytes));
                 if !matches!(names, Ok(false)) {
-                    return Some("its encryption.xml names encrypted items".to_owned());
+                    return Err("its encryption.xml names encrypted items".to_owned());
                 }
             }
             let relative = relative_path(&root.name).to_owned();
@@ -361,16 +374,17 @@ fn deferral(input: &[u8]) -> Option<String> {
     };
     for document in &documents {
         let Ok(bytes) = book.read(document) else {
-            return Some(format!("its entry {} cannot be read", document.name));
+            return Err(format!("its entry {} cannot be read", document.name));
         };
         if content::holds_foreign_elements(&bytes, &document.name) {
-            return Some(format!(
+            return Err(format!(
                 "its content document {} has elements outside XHTML in its body",
                 document.name
             ));
         }
+        book.read_ahead.insert(document.name.clone(), bytes);
     }
-    None
+    Ok((book, reading))
 }
 
 pub(crate) struct EpubParser;
@@ -384,40 +398,40 @@ impl Parser for EpubParser {
         &["application/epub+zip", "application/x-ibooks+zip"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        deferral(input)
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let mut metadata = metadata.clone();
+        let (mut book, reading) = prepare(input, &mut metadata)?;
+        Ok(Box::new(move |xhtml| {
+            *xhtml.metadata_mut() = metadata;
+            write(&mut book, reading, xhtml)
+        }))
     }
+}
 
-    /// Parses as `EpubParser.parse`, which ends the document after an `IOException` too.
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let read = ZipFile::open(input, "EPUB")
-            .map_err(Thrown::Io)
-            .and_then(|zip| {
-                let mut book = Book { zip };
-                match book.reading(xhtml.metadata_mut())? {
-                    Reading::Package { root, contents } => {
-                        read_package(&mut book, &root, &contents, xhtml)
-                    }
-                    Reading::Fallback(reason) => read_fallback(&mut book, reason, xhtml),
-                }
-            });
-        match read {
-            Ok(()) => Ok(()),
-            Err(Thrown::Other(failure)) => Err(failure),
-            Err(Thrown::Io(failure)) => {
-                xhtml.end_document()?;
-                Err(failure)
-            }
+/// Writes the book as `EpubParser.parse` does along the `reading` its preparation found, which
+/// ends the document after an `IOException` too.
+fn write(
+    book: &mut Book,
+    reading: Result<Reading, Failure>,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
+    let read = reading
+        .map_err(Thrown::from)
+        .and_then(|reading| match reading {
+            Reading::Package { root, contents } => read_package(book, &root, &contents, xhtml),
+            Reading::Fallback(reason) => read_fallback(book, reason, xhtml),
+        });
+    match read {
+        Ok(()) => Ok(()),
+        Err(Thrown::Other(failure)) => Err(failure),
+        Err(Thrown::Io(failure)) => {
+            xhtml.end_document()?;
+            Err(failure)
         }
     }
 }
@@ -425,6 +439,10 @@ impl Parser for EpubParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn deferral(input: &[u8]) -> Option<String> {
+        EpubParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+    }
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };

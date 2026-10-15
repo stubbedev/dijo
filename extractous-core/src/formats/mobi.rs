@@ -6,11 +6,10 @@
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::html::JSoupParser;
+use crate::formats::html;
 use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::text::charset::Charset;
 
 const PALM_DATABASE_HEADER: i32 = 78;
@@ -322,39 +321,22 @@ impl Parser for MobiParser {
         &["application/x-mobipocket-ebook"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        let markup = read(input).ok()?;
-        JSoupParser
-            .defers(&markup.html, &markup.metadata(), configs)
-            .map(|reason| format!("the book's HTML defers: {reason}"))
-    }
-
-    fn fails_before_starting(
-        &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        read(input).err()
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let markup = read(input).map_err(Failure::Extraction)?;
-        xhtml.with_metadata(markup.metadata(), |xhtml| {
-            JSoupParser.parse(&markup.html, configs, xhtml)?;
-            xhtml.end_document().map_err(Failure::from)
-        })?;
-        book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let markup = read(input).map_err(Declined::Fails)?;
+        let html = html::prepare(&markup.html, &markup.metadata())
+            .map_err(|reason| Declined::Deferred(format!("the book's HTML defers: {reason}")))?;
+        Ok(Box::new(move |xhtml| {
+            xhtml.with_metadata(markup.metadata(), |xhtml| {
+                html(xhtml)?;
+                xhtml.end_document().map_err(Failure::from)
+            })?;
+            book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)
+        }))
     }
 }
 

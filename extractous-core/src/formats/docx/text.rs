@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::body::{Body, ParagraphProperties};
 use super::W_NAMESPACE;
-use crate::formats::java::parse_int;
+use crate::formats::java::{parse_int, trim as java_trim};
 use crate::formats::xhtml::Stop;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -503,10 +503,6 @@ fn external_reference_of_field(instruction: &str) -> Option<(&'static str, &str)
         .into_iter()
         .find_map(|field| find_quoted_field(trimmed, field, false).map(|url| (field, url)))
         .or_else(|| find_quoted_field(trimmed, "LINK", true).map(|url| ("LINK", url)))
-}
-
-fn java_trim(text: &str) -> &str {
-    crate::formats::java::trim(text)
 }
 
 /// Java's `\s`.

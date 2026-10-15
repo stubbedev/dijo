@@ -14,6 +14,7 @@ use crate::compress::zip::Content;
 use crate::mime::java::{self, JavaString};
 use crate::mime::media_type::MediaType;
 use crate::mime::uri;
+use crate::unicode::is_whitespace;
 use crate::xml::{self, Event, Flow, XMLNS};
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
@@ -277,7 +278,7 @@ fn to_uri_text(value: &str) -> String {
     let encode = |text: &str| -> String {
         text.chars()
             .flat_map(|c| {
-                if u32::from(c) >= 0x80 || c == '|' || is_java_whitespace(c) {
+                if u32::from(c) >= 0x80 || c == '|' || is_whitespace(c) {
                     let mut buffer = [0u8; 4];
                     c.encode_utf8(&mut buffer)
                         .bytes()
@@ -293,7 +294,7 @@ fn to_uri_text(value: &str) -> String {
     if let Some(hash) = value.find('#') {
         value = format!("{}#{}", &value[..hash], encode(&value[hash + 1..]));
     }
-    let trimmed = value.trim_end_matches(|c: char| is_java_whitespace(c) || c == '\u{A0}');
+    let trimmed = value.trim_end_matches(|c: char| is_whitespace(c) || c == '\u{A0}');
     if trimmed.len() < value.len() {
         value = format!("{trimmed}{}", encode(&value[trimmed.len()..]));
     }
@@ -304,14 +305,6 @@ fn to_uri_text(value: &str) -> String {
         value.push('/');
     }
     value
-}
-
-/// `Character.isWhitespace`.
-fn is_java_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | '\u{1C}'..='\u{1F}'
-    ) || (c.is_whitespace() && !matches!(c, '\u{A0}' | '\u{2007}' | '\u{202F}'))
 }
 
 /// A relationship of the package or a part.

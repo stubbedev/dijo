@@ -15,7 +15,7 @@ pub(crate) mod testing;
 mod uri;
 
 pub(crate) use package::{Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};
-pub(crate) use properties::extract as extract_properties;
+pub(crate) use properties::Properties;
 
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;

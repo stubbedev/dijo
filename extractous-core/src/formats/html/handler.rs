@@ -11,6 +11,7 @@
 
 use super::dom::{Attribute, Dom, NodeData, NodeId, DOCUMENT};
 use crate::formats::handlers::is_blank;
+use crate::formats::java::trim as java_trim;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::mime::MediaType;
 
@@ -106,11 +107,6 @@ fn safe_attribute(element: &str, attribute: &str) -> bool {
 
 fn is_discarded(name: &str) -> bool {
     name == "STYLE" || name == "SCRIPT"
-}
-
-/// Java's `String.trim`.
-fn java_trim(text: &str) -> &str {
-    text.trim_matches(|c: char| c <= ' ')
 }
 
 /// Whether `text` starts with a URL scheme, which Java's `URL` might read as a protocol.

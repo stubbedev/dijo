@@ -40,10 +40,11 @@ use std::sync::OnceLock;
 use lopdf::Document;
 
 use crate::config::ParserConfigs;
+use crate::formats::embedded::ParseContext;
 use crate::formats::handlers::Discard;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Parser, Prepared};
 
 use cos::Pdf;
 use structure::StructureIndex;
@@ -86,37 +87,27 @@ impl Parser for PdfParser {
         &[MEDIA_TYPE]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        deferral(input, configs)
-            .err()
-            .map(|Unported(reason)| reason)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        if ocr_runs() {
-            xhtml.delegate_to(PDF_PARSER);
-        }
-        let loaded = load(input).map_err(|Unported(reason)| {
-            Failure::Malformed(format!("the PDF was not deferred, though {reason}"))
-        })?;
-        extract(&loaded, input, configs, xhtml, false)?;
-        Ok(())
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let loaded =
+            loaded(input, configs).map_err(|Unported(reason)| Declined::Deferred(reason))?;
+        Ok(Box::new(move |xhtml| {
+            if ocr_runs() {
+                xhtml.delegate_to(PDF_PARSER);
+            }
+            extract(&loaded, input, configs, xhtml, false)?;
+            Ok(())
+        }))
     }
 }
 
-/// Why the document is left to Tika, if it is: a setting the port does not read, something in
-/// the document it does not do, or a page Tika would OCR.
-fn deferral(input: &[u8], configs: &ParserConfigs) -> Result<(), Unported> {
+/// The document, loaded, unless it is left to Tika: for a setting the port does not read,
+/// something in the document it does not do, or a page Tika would OCR.
+fn loaded(input: &[u8], configs: &ParserConfigs) -> Result<Loaded, Unported> {
     if let Some(setting) = configs.pdf.unread_setting() {
         return Err(Unported(format!(
             "the PDF setting {setting}, which the port does not read"
@@ -124,7 +115,8 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Result<(), Unported> {
     }
     let loaded = load(input)?;
     let mut layers = Vec::new();
-    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), configs, |xhtml| {
+    let context = ParseContext::new(configs);
+    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &context, |xhtml| {
         layers = extract(&loaded, input, configs, xhtml, true)?;
         Ok(())
     });
@@ -146,7 +138,7 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Result<(), Unported> {
     for (index, layer) in layers.iter().enumerate() {
         ocr_deferral(index + 1, layer)?;
     }
-    Ok(())
+    Ok(loaded)
 }
 
 /// Why Tika would OCR a page, if it would: `AbstractPDF2XHTML.ocrWanted` under its automatic

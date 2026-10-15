@@ -15,7 +15,7 @@ use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const CONTAINER: &str = "META-INF/container.xml";
 const FURNITURE: [&str; 3] = ["header", "footer", "masterPage"];
@@ -327,66 +327,50 @@ impl Parser for HwpxParser {
         &["application/hwp+zip"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        let package = match package(input) {
-            Ok(package) => package,
-            Err(Refusal::Unread(why)) => return Some(why.to_owned()),
-            Err(Refusal::Failed(_)) => return None,
-        };
-        package
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let package = package(input).map_err(|refusal| match refusal {
+            Refusal::Unread(why) => Declined::Deferred(why.to_owned()),
+            Refusal::Failed(reason) => Declined::Fails(Error::ParseError(reason)),
+        })?;
+        let sections = package
             .spine
             .iter()
-            .find_map(|idref| match package.section(idref) {
-                Err(Refusal::Unread(why)) => Some(why.to_owned()),
-                _ => None,
-            })
-    }
-
-    fn fails_before_starting(
-        &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        match package(input) {
-            Err(Refusal::Failed(reason)) => Some(Error::ParseError(reason)),
+            .map(|idref| package.section(idref))
+            .collect::<Vec<_>>();
+        if let Some(why) = sections.iter().find_map(|section| match section {
+            Err(Refusal::Unread(why)) => Some((*why).to_owned()),
             _ => None,
+        }) {
+            return Err(Declined::Deferred(why));
         }
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let refused = |refusal: Refusal| Failure::Malformed(format!("{refusal:?}"));
-        let package = package(input).map_err(refused)?;
-        let metadata = xhtml.metadata_mut();
-        for change in &package.changes {
-            match change {
-                Change::Set(name, value) => metadata.set(name, value.as_str()),
-                Change::Add(name, value) => metadata.add(name, value.as_str()),
+        Ok(Box::new(move |xhtml| {
+            let metadata = xhtml.metadata_mut();
+            for change in &package.changes {
+                match change {
+                    Change::Set(name, value) => metadata.set(name, value.as_str()),
+                    Change::Add(name, value) => metadata.add(name, value.as_str()),
+                }
             }
-        }
-        for idref in &package.spine {
-            let section = package.section(idref).map_err(refused)?;
-            let mut handler = Section {
-                xhtml,
-                paragraphs: Vec::new(),
-                cells: Vec::new(),
-                text_depth: 0,
-                furniture_depth: 0,
-                in_section: false,
-            };
-            xml::parse_sax(&section, "an HWPX section", &mut handler)?;
-        }
-        Ok(())
+            for section in sections {
+                let section =
+                    section.map_err(|refusal| Failure::Malformed(format!("{refusal:?}")))?;
+                let mut handler = Section {
+                    xhtml,
+                    paragraphs: Vec::new(),
+                    cells: Vec::new(),
+                    text_depth: 0,
+                    furniture_depth: 0,
+                    in_section: false,
+                };
+                xml::parse_sax(&section, "an HWPX section", &mut handler)?;
+            }
+            Ok(())
+        }))
     }
 }
 

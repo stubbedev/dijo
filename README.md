@@ -114,7 +114,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size (also for `serve`) |
 | `--cache-partial` | Also cache partial results (never those cut short by a timeout) |
 | `--cache-trust-mtime` | Skip rehashing inputs whose path, size and modification time match the last run |
-| `--max-heap-bytes <BYTES>` | Cap Tika's Java heap; an extraction that needs more fails with `limit-exceeded` and the next one runs normally. GraalVM raises a cap below its least heap, a few tens of MiB |
+| `--max-heap-bytes <BYTES>` | Cap the memory of an extraction: Tika's Java heap, and what a native parser allocates; an extraction that needs more fails with `limit-exceeded` and the next one runs normally. GraalVM raises a heap cap below its least heap, a few tens of MiB |
 | `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
@@ -181,7 +181,7 @@ share one isolate, and more of them slow each other down). Uploads are spooled t
 it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
-come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java heap all workers share (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
+come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java heap all workers share and each native extraction's memory (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
 request (408 while uploading, 504 before extraction starts, a cut connection after). SIGTERM stops accepting and waits
 `--shutdown-grace` seconds for running requests.
 
@@ -201,7 +201,7 @@ Documents and requests are untrusted input. What the server defends against, and
 - **XML attacks.** No parser resolves external entities or loads external DTDs (XXE), and entity expansion is
   capped, so a billion-laughs document fails as `limit-exceeded`. Tests cover XML, SVG and DOCX.
 - **Resource exhaustion.** `--max-input-bytes` caps uploads, `--timeout` caps a request's time, `--max-heap-bytes`
-  caps the Java heap, and `--worker-max-rss-bytes` caps a worker process's memory. Embedded documents have depth,
+  caps the Java heap and each native extraction's memory, and `--worker-max-rss-bytes` caps a worker process's memory. Embedded documents have depth,
   count and expanded-size limits with `embedded=separate`; inline, Tika's zip-bomb guard applies.
 - **Slow and idle clients.** `--client-timeout` closes a connection whose headers arrive too slowly, and answers an
   upload that goes silent with 408.

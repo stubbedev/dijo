@@ -4,9 +4,10 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::element_metadata::DublinCore;
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 
 /// The XML types Tika's registry hands `DcXMLParser`, having no parser of their own.
 const MEDIA_TYPES: [&str; 8] = [
@@ -32,24 +33,28 @@ impl Parser for DcXmlParser {
         &MEDIA_TYPES
     }
 
-    fn parse(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        xhtml.start_element("p")?;
-        let mut handler = Handlers {
-            xhtml,
-            dublin_core: DublinCore::new(),
-        };
-        let parsed = xml::parse_sax(input, "the XML document", &mut handler);
-        xhtml.end_element("p")?;
-        xhtml.end_document()?;
-        parsed.map_err(|failure| match failure {
-            Failure::Malformed(reason) => Failure::Malformed(format!("XML parse error: {reason}")),
-            other => other,
-        })
+        input: &'a [u8],
+        _metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        Ok(Box::new(move |xhtml| {
+            xhtml.start_element("p")?;
+            let mut handler = Handlers {
+                xhtml,
+                dublin_core: DublinCore::new(),
+            };
+            let parsed = xml::parse_sax(input, "the XML document", &mut handler);
+            xhtml.end_element("p")?;
+            xhtml.end_document()?;
+            parsed.map_err(|failure| match failure {
+                Failure::Malformed(reason) => {
+                    Failure::Malformed(format!("XML parse error: {reason}"))
+                }
+                other => other,
+            })
+        }))
     }
 }
 

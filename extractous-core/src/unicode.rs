@@ -68,8 +68,8 @@ pub fn is_space_char(c: char) -> bool {
 /// controls tab to carriage return and the file, group, record and unit separators.
 pub fn is_whitespace(c: char) -> bool {
     match c {
-        '\u{9}'..='\u{D}' | '\u{1C}'..='\u{1F}' => true,
-        '\u{A0}' | '\u{2007}' | '\u{202F}' => false,
+        '\u{9}'..='\u{D}' | '\u{1C}'..='\u{20}' => true,
+        '\u{0}'..='\u{7F}' | '\u{A0}' | '\u{2007}' | '\u{202F}' => false,
         _ => is_space_char(c),
     }
 }

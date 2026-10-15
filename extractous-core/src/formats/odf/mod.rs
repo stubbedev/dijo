@@ -12,6 +12,7 @@ pub(crate) use flat::FlatOpenDocumentParser;
 mod meta;
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
@@ -19,7 +20,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::mime::{self, Origin};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 pub(crate) const META_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0";
@@ -139,6 +141,8 @@ impl Entry {
 struct Archive<'a> {
     zip: ZipFile<'a>,
     entries: Vec<Entry>,
+    /// The entries read ahead to check them, by name, each to be read once more.
+    read_ahead: HashMap<String, Vec<u8>>,
 }
 
 impl<'a> Archive<'a> {
@@ -152,7 +156,11 @@ impl<'a> Archive<'a> {
                 entry: entry.clone(),
             })
             .collect();
-        Ok(Self { zip, entries })
+        Ok(Self {
+            zip,
+            entries,
+            read_ahead: HashMap::new(),
+        })
     }
 
     fn of_kind(&self, kind: EntryKind) -> impl Iterator<Item = &Entry> {
@@ -160,7 +168,19 @@ impl<'a> Archive<'a> {
     }
 
     fn read(&mut self, entry: &Entry) -> Result<Vec<u8>, Failure> {
-        self.zip.read(&entry.entry)
+        match self.read_ahead.remove(entry.name()) {
+            Some(bytes) => Ok(bytes),
+            None => self.zip.read(&entry.entry),
+        }
+    }
+
+    /// Reads `entry` now, for the read that writes it.
+    fn read_now(&mut self, entry: &Entry) -> Result<&[u8], Failure> {
+        let bytes = self.read(entry)?;
+        Ok(self
+            .read_ahead
+            .entry(entry.name().to_owned())
+            .or_insert(bytes))
     }
 
     fn has_every_record(&self, input: &[u8]) -> bool {
@@ -219,39 +239,45 @@ const NO_BODY: &str = "it has no content.xml or styles.xml, so Tika leaves its X
 const UNREADABLE_ENTRY: &str = "an entry it reads cannot be read by the zip crate";
 const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded documents";
 
-/// The metadata Tika's `OpenDocumentParser` gives a picture or an object's thumbnail it hands to
-/// the embedded document extractor. It also sets the type its detector finds and the pages a
-/// picture is drawn on, which change nothing the embedded document's parse writes.
-fn embedded_metadata(name: &str) -> TikaMetadata {
+/// The metadata Tika's `OpenDocumentParser` gives the picture or object thumbnail `name` of
+/// `bytes` it hands to the embedded document extractor: a picture's type as its detector finds
+/// it. It also sets the pages a picture is drawn on, which change nothing of what is extracted
+/// or spooled.
+fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> {
     let mut metadata = TikaMetadata::new();
     metadata.set(embedded::INTERNAL_PATH, name);
     metadata.set(embedded::RESOURCE_NAME, name);
     if name.contains("Pictures/") {
         metadata.set(embedded::RESOURCE_TYPE, "INLINE");
+        let detection = mime::detect(bytes, Origin::File { name }).map_err(|error| {
+            Failure::Malformed(format!("Tika's detection throws on {name}: {error:?}"))
+        })?;
+        metadata.set("Content-Type", detection.media_type.to_string());
     }
-    metadata
+    Ok(metadata)
 }
 
-/// Why Tika's path should read the document in `input` rather than this parser, if it should.
-fn deferral(input: &[u8]) -> Option<&'static str> {
+/// The archive of the document in `input`, its metadata, type and bodies read ahead, or why
+/// Tika's path should read it rather than this parser.
+fn read_ahead(input: &[u8]) -> Result<Archive<'_>, &'static str> {
     let Ok(mut archive) = Archive::open(input) else {
-        return Some(UNREADABLE_ARCHIVE);
+        return Err(UNREADABLE_ARCHIVE);
     };
     if !archive.has_every_record(input) {
-        return Some(DUPLICATES);
+        return Err(DUPLICATES);
     }
     let manifests: Vec<Entry> = archive.of_kind(EntryKind::Manifest).cloned().collect();
     for manifest in &manifests {
         let Ok(bytes) = archive.read(manifest) else {
-            return Some(UNREADABLE_MANIFEST);
+            return Err(UNREADABLE_MANIFEST);
         };
         if ElementFinder::finds("encryption-data", &bytes, manifest.name()) {
-            return Some(ENCRYPTED);
+            return Err(ENCRYPTED);
         }
     }
     let bodies: Vec<Entry> = archive.of_kind(EntryKind::Body).cloned().collect();
     if bodies.is_empty() {
-        return Some(NO_BODY);
+        return Err(NO_BODY);
     }
     let read: Vec<Entry> = archive
         .entries
@@ -259,21 +285,21 @@ fn deferral(input: &[u8]) -> Option<&'static str> {
         .filter(|entry| matches!(entry.kind, EntryKind::Meta | EntryKind::Mimetype))
         .cloned()
         .collect();
-    if read.iter().any(|entry| archive.read(entry).is_err()) {
-        return Some(UNREADABLE_ENTRY);
+    for entry in &read {
+        archive.read_now(entry).map_err(|_| UNREADABLE_ENTRY)?;
     }
     for body in &bodies {
-        let Ok(bytes) = archive.read(body) else {
-            return Some(UNREADABLE_ENTRY);
+        let Ok(bytes) = archive.read_now(body) else {
+            return Err(UNREADABLE_ENTRY);
         };
         let named = bytes
             .windows(BINARY_DATA_ELEMENT.len())
             .any(|window| window == BINARY_DATA_ELEMENT.as_bytes());
-        if named && ElementFinder::finds(BINARY_DATA_ELEMENT, &bytes, body.name()) {
-            return Some(BINARY_DATA);
+        if named && ElementFinder::finds(BINARY_DATA_ELEMENT, bytes, body.name()) {
+            return Err(BINARY_DATA);
         }
     }
-    None
+    Ok(archive)
 }
 
 pub(crate) struct OpenDocumentParser;
@@ -287,62 +313,55 @@ impl Parser for OpenDocumentParser {
         &MEDIA_TYPES
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        deferral(input).map(str::to_owned)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let archive = read_ahead(input).map_err(str::to_owned)?;
+        Ok(Box::new(move |xhtml| write(archive, configs, xhtml)))
     }
+}
 
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let mut archive = Archive::open(input)?;
-        let meta = archive.of_kind(EntryKind::Meta).next().cloned();
-        if let Some(entry) = meta {
-            let bytes = archive.read(&entry)?;
-            meta::read_meta(&bytes, xhtml.metadata_mut())?;
-        }
-        let entries = archive.entries.clone();
-        for entry in &entries {
-            match entry.kind {
-                EntryKind::Mimetype => {
-                    let bytes = archive.read(entry)?;
-                    xhtml
-                        .metadata_mut()
-                        .set("Content-Type", String::from_utf8_lossy(&bytes));
-                }
-                EntryKind::Body => {
-                    let bytes = archive.read(entry)?;
-                    let mut body = body::Body::new(
-                        xhtml,
-                        configs.office.includes_deleted_content(),
-                        body::Namespaces::Normalized,
-                    );
-                    xml::parse_sax(&bytes, entry.name(), &mut body)?;
-                }
-                EntryKind::Embedded => {
-                    let bytes = archive.read(entry)?;
-                    xhtml.parse_embedded(
-                        &bytes,
-                        &embedded_metadata(entry.name()),
-                        Wrapping::Bare,
-                    )?;
-                }
-                EntryKind::Directory
-                | EntryKind::Manifest
-                | EntryKind::Meta
-                | EntryKind::Thumbnail
-                | EntryKind::Ignored => {}
-            }
-        }
-        Ok(())
+/// Writes the document in `archive` as `OpenDocumentParser.parse` does.
+fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let meta = archive.of_kind(EntryKind::Meta).next().cloned();
+    if let Some(entry) = meta {
+        let bytes = archive.read(&entry)?;
+        meta::read_meta(&bytes, xhtml.metadata_mut())?;
     }
+    let entries = archive.entries.clone();
+    for entry in &entries {
+        match entry.kind {
+            EntryKind::Mimetype => {
+                let bytes = archive.read(entry)?;
+                xhtml
+                    .metadata_mut()
+                    .set("Content-Type", String::from_utf8_lossy(&bytes));
+            }
+            EntryKind::Body => {
+                let bytes = archive.read(entry)?;
+                let mut body = body::Body::new(
+                    xhtml,
+                    configs.office.includes_deleted_content(),
+                    body::Namespaces::Normalized,
+                );
+                xml::parse_sax(&bytes, entry.name(), &mut body)?;
+            }
+            EntryKind::Embedded => {
+                let bytes = archive.read(entry)?;
+                let metadata = embedded_metadata(entry.name(), &bytes)?;
+                xhtml.parse_embedded(&bytes, &metadata, Wrapping::Bare)?;
+            }
+            EntryKind::Directory
+            | EntryKind::Manifest
+            | EntryKind::Meta
+            | EntryKind::Thumbnail
+            | EntryKind::Ignored => {}
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

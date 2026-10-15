@@ -227,6 +227,30 @@ fn a_heap_cap_fails_one_request_and_not_the_next() {
         .contains("These are a few of my favorite things"));
 }
 
+/// With embedded documents as separate records, a document that overruns the cap is a failed
+/// record of its own, not an empty response.
+#[test]
+fn a_heap_cap_fails_a_separate_request_and_not_the_next() {
+    let server = Server::start(&["--max-heap-bytes", "67108864", "--workers", "1"]);
+    let hungry = server.post_file(
+        "/extract?format=json&embedded=separate",
+        &[],
+        "many-shared-strings.xlsx",
+    );
+    assert_eq!(hungry.status, 200);
+    let records: Vec<serde_json::Value> = hungry
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["status"], "failed");
+    assert_eq!(records[0]["errors"][0]["category"], "limit-exceeded");
+    let next = server.post_file("/extract?format=json&embedded=separate", &[], "nested.zip");
+    assert_eq!(next.status, 200);
+    assert_eq!(next.text().lines().count(), 8);
+}
+
 #[test]
 fn the_cache_answers_repeated_uploads() {
     let scratch = Scratch::new("server-cache");
