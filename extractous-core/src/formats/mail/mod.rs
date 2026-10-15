@@ -35,11 +35,11 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::Body;
 use crate::formats::html::JSoupParser;
-use crate::formats::java::parse_long;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text::TextAndCsvParser;
 use crate::formats::xhtml::{Embedded, Xhtml};
 use crate::formats::{Failure, Parser};
+use crate::java::parse_long;
 
 /// What the port leaves to Tika.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

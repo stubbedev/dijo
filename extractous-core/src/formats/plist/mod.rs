@@ -15,11 +15,11 @@ use binary::{Key, Object, Value};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::xlsx::format::date_format::SimpleDateFormat;
 use crate::formats::{Failure, Parser};
+use crate::java::simple_date_format::SimpleDateFormat;
+use crate::java::time::TimeZone;
 
 const MEDIA_TYPES: [&str; 4] = [
     "application/x-bplist",

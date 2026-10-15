@@ -7,11 +7,11 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
-use crate::formats::handlers::is_blank;
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::java::is_blank;
+use crate::java::strip;
 use crate::mime::MediaType;
 
 const SUBSTATION_DIALOGUE: &str = "Dialogue:";

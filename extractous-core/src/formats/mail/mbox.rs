@@ -17,13 +17,13 @@ use super::Unported;
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::Wrapping;
-use crate::formats::handlers::{is_blank, utf16_length};
-use crate::formats::java::trim;
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
-use crate::mime::java::to_lower_case;
+use crate::java::time::format_instant;
+use crate::java::to_lower_case;
+use crate::java::trim;
+use crate::java::{is_blank, utf16_length};
 use crate::text::charset::Charset;
 
 const RECORD_DIVIDER: &[u8] = b"From ";

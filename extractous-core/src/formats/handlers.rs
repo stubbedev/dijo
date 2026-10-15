@@ -4,8 +4,9 @@
 //! (`WriteOutContentHandler`'s limit), and the writers [`ToText`] (`ToTextContentHandler`) and
 //! [`ToXml`] (`ToXMLContentHandler`).
 
-use crate::formats::java::JavaHashMap;
 use crate::formats::xhtml::{ContentHandler, Stop, XHTML_NAMESPACE};
+use crate::java::JavaHashMap;
+use crate::java::{is_blank, utf16_length};
 
 /// The block elements [`BlockBreaks`] ends with a line break and [`AnchoredBlocks`] holds back.
 const BLOCKS: [&str; 16] = [
@@ -735,23 +736,6 @@ impl<W: Write> ContentHandler for ToXml<W> {
     fn end_document(&mut self) -> Result<(), Stop> {
         self.out.finish()
     }
-}
-
-/// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
-pub(crate) fn is_blank(text: &str) -> bool {
-    text.chars().all(is_java_whitespace)
-}
-
-/// Java's `Character.isWhitespace`.
-pub(crate) fn is_java_whitespace(character: char) -> bool {
-    matches!(character, '\t'..='\r' | '\u{1c}'..='\u{1f}')
-        || (character.is_whitespace()
-            && !matches!(character, '\u{a0}' | '\u{2007}' | '\u{202f}' | '\u{85}'))
-}
-
-/// The length of `text` in UTF-16 code units, which is how Java counts characters.
-pub(crate) fn utf16_length(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
 }
 
 #[cfg(test)]

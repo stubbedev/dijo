@@ -12,6 +12,7 @@ use zip::ZipArchive;
 use super::uri::{self, Resolution};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java;
 
 /// Why this port leaves a package to Tika.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,7 +309,7 @@ impl<'a> Package<'a> {
                 None => by_id.push(relationship),
             }
         }
-        by_id.sort_by(|a, b| java_compare(&a.id, &b.id));
+        by_id.sort_by(|a, b| java::compare(&a.id, &b.id));
         Ok(by_id)
     }
 
@@ -442,11 +443,6 @@ fn compare_numbers(a: &[u8], b: &[u8]) -> Ordering {
     let strip = |digits: &[u8]| -> usize { digits.iter().take_while(|&&d| d == b'0').count() };
     let (a, b) = (&a[strip(a)..], &b[strip(b)..]);
     a.len().cmp(&b.len()).then_with(|| a.cmp(b))
-}
-
-/// `String.compareTo`: by UTF-16 code units.
-fn java_compare(a: &str, b: &str) -> Ordering {
-    a.encode_utf16().cmp(b.encode_utf16())
 }
 
 /// The content types of `[Content_Types].xml`.

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::compress::zip::Content;
-use crate::mime::java::{self, JavaString};
+use crate::java::{self, JavaString};
 use crate::mime::media_type::MediaType;
 use crate::mime::uri;
 use crate::xml::{self, Event, Flow, XMLNS};

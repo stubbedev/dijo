@@ -1,10 +1,18 @@
-//! What ports of Tika code need from Java itself to give Java's results: the iteration order of
-//! a `java.util.HashMap` with string keys, `Integer.parseInt`, `Long.parseLong`,
-//! `Double.parseDouble`, `Math.round`, `String.trim` and `String.strip`.
+//! What ports of Java code need from Java itself to give Java's results: the iteration order of
+//! a `java.util.HashMap` and `HashSet` with string keys, string comparison, hashing, lengths,
+//! trimming and case mapping, `Character.isWhitespace` and the regex classes `\s` and `.`,
+//! `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble` and `Math.round`; with
+//! `Double.toString` ([`dtoa`]) and the `BigInteger` arithmetic it needs ([`bigint`]),
+//! `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and `TimeZone` ([`time`]).
 
+pub(crate) mod bigint;
+pub(crate) mod dtoa;
+pub(crate) mod simple_date_format;
+pub(crate) mod time;
+
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::formats::handlers::is_java_whitespace;
 use crate::unicode::decimal_digit;
 
 const INITIAL_CAPACITY: usize = 16;
@@ -447,6 +455,82 @@ fn parse_hex_double(text: &str) -> Option<f64> {
     Some(value * 2f64.powi(i32::try_from(scale.clamp(-1100, 1100)).unwrap_or(0)))
 }
 
+/// Java's `String.compareTo`: UTF-16 code units compared in order.
+pub(crate) fn compare(a: &str, b: &str) -> Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
+/// A string ordered as Java orders strings, for sorted maps keyed as a `TreeMap<String, _>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JavaString(pub(crate) String);
+
+impl Ord for JavaString {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare(&self.0, &other.0)
+    }
+}
+
+impl PartialOrd for JavaString {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Java's `String.length()`: the number of UTF-16 code units.
+pub(crate) fn utf16_length(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// Java's `Character.isWhitespace`.
+pub(crate) fn is_java_whitespace(character: char) -> bool {
+    matches!(character, '\t'..='\r' | '\u{1c}'..='\u{1f}')
+        || (character.is_whitespace()
+            && !matches!(character, '\u{a0}' | '\u{2007}' | '\u{202f}' | '\u{85}'))
+}
+
+/// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
+pub(crate) fn is_blank(text: &str) -> bool {
+    text.chars().all(is_java_whitespace)
+}
+
+/// Whether Java's regex `\s` (without `UNICODE_CHARACTER_CLASS`) matches `c`.
+pub(crate) fn is_regex_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r')
+}
+
+/// Whether `c` ends a line for Java's regex `.` and `$`.
+pub(crate) fn is_line_terminator(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Java's `String.toLowerCase(Locale.ROOT)`, which `Locale.ENGLISH` matches.
+pub(crate) fn to_lower_case(text: &str) -> String {
+    text.to_lowercase()
+}
+
+/// Java's `String.toUpperCase(Locale.ROOT)`.
+pub(crate) fn to_upper_case(text: &str) -> String {
+    text.to_uppercase()
+}
+
+/// The order a `java.util.HashSet<String>` of the default capacity iterates `items` in, added
+/// in the given order: by bucket of the spread hash in the table the set has grown to, and in
+/// insertion order within a bucket. Equal items are kept once.
+pub(crate) fn hash_set_order<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut unique: Vec<&str> = Vec::new();
+    for item in items {
+        if !unique.contains(&item) {
+            unique.push(item);
+        }
+    }
+    let mut capacity = INITIAL_CAPACITY;
+    while unique.len() * 4 > capacity * 3 {
+        capacity *= 2;
+    }
+    unique.sort_by_key(|item| spread(string_hash(item)) as usize & (capacity - 1));
+    unique
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +629,20 @@ mod tests {
         assert_eq!(round(0.49999999999999994), 0);
         assert_eq!(round(f64::NAN), 0);
         assert_eq!(round(1e300), i64::MAX);
+    }
+
+    #[test]
+    fn orders_as_java_does() {
+        assert_eq!(compare("\u{FFFF}", "\u{1F600}"), Ordering::Greater);
+        assert_eq!(compare("a", "b"), Ordering::Less);
+        assert_eq!(utf16_length("a\u{1F600}"), 3);
+    }
+
+    #[test]
+    fn iterates_a_hash_set_as_java_does() {
+        assert_eq!(
+            hash_set_order(["presentation.apxl", "index.xml", "index.apxl"]),
+            ["index.apxl", "index.xml", "presentation.apxl"]
+        );
     }
 }

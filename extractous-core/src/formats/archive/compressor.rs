@@ -7,10 +7,10 @@ use crate::compress::compressor::Compressor;
 use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
-use crate::formats::handlers::is_blank;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::java::is_blank;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
 const NATIVE: [Compressor; 9] = [

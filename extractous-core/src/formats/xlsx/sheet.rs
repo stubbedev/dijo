@@ -9,10 +9,10 @@ use super::cell::{reference_column, CellAddress};
 use super::format::{DataFormatter, FormatError};
 use super::parts::{Comment, Comments, SharedStrings, Styles};
 use super::SPREADSHEETML_NS;
-use crate::formats::java::{parse_double, parse_int, trim};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute_named, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
+use crate::java::{parse_double, parse_int, trim};
 
 /// What a cell holds, by its `t` attribute and whether it has a formula.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

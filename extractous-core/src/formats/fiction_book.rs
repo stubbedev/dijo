@@ -4,11 +4,11 @@
 //! together and keeping the names of embedded images and the language code in the text.
 
 use crate::config::ParserConfigs;
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
+use crate::java::strip;
 
 const MAX_HEADING_LEVEL: usize = 6;
 const PARAGRAPHS: [&str; 4] = ["p", "v", "text-author", "subtitle"];

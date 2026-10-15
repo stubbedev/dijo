@@ -2,7 +2,7 @@
 //! `decompressConcatenated`: the first member only; and `GzipUtils`'s names of what they hold.
 
 use super::{read_whole, Undecoded};
-use crate::formats::handlers::utf16_length;
+use crate::java::utf16_length;
 
 /// `GzipUtils`'s suffixes of gzip file names, with what replaces each in the uncompressed name.
 const UNCOMPRESSED_SUFFIXES: [(&str, &str); 11] = [

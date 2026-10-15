@@ -6,9 +6,9 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use super::W_NAMESPACE;
-use crate::formats::java::parse_int;
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::parse_int;
 
 const BULLET: &str = "\u{b7}";
 /// A level not counted yet, as counts of decimal lists start at 0.

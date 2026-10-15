@@ -9,10 +9,10 @@ mod extractor;
 mod input;
 
 use crate::config::ParserConfigs;
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
 use crate::formats::{Failure, Parser};
+use crate::java::time::TimeZone;
 use extractor::Interrupt;
 
 const MEDIA_TYPE: &str = "application/rtf";

@@ -229,7 +229,7 @@ fn vendor_by_compression(compression: u64) -> Option<&'static str> {
 }
 
 fn vendor_by_make(make: &str) -> Option<&'static str> {
-    let make = make.trim_matches(|c: char| c <= ' ').to_ascii_uppercase();
+    let make = crate::java::trim(make).to_ascii_uppercase();
     if make.starts_with("NIKON") {
         Some(NIKON)
     } else if make.starts_with("PENTAX") || make.starts_with("RICOH") {

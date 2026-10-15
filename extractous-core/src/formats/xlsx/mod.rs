@@ -15,7 +15,7 @@
 //! [`XlsxParser::defers`].
 
 mod cell;
-pub(crate) mod format;
+mod format;
 mod handlers;
 mod header_footer;
 mod parts;
@@ -32,13 +32,13 @@ use sheet::{SheetOutput, SheetReader, SheetSettings};
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::docx;
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ignore};
 use crate::formats::ooxml::{self, Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
 use crate::formats::{Failure, Parser};
+use crate::java::time::TimeZone;
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =

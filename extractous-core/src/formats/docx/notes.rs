@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 
 use super::W_NAMESPACE;
-use crate::formats::java::JavaHashMap;
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::JavaHashMap;
 
 /// The notes and comments of a document, and the relationships of the parts holding them.
 #[derive(Debug, Default)]

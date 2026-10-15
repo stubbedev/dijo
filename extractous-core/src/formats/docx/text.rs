@@ -7,10 +7,10 @@ use std::collections::HashMap;
 
 use super::body::{Body, ParagraphProperties};
 use super::W_NAMESPACE;
-use crate::formats::java::parse_int;
 use crate::formats::xhtml::Stop;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::parse_int;
 
 const MC_NAMESPACE: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const O_NAMESPACE: &str = "urn:schemas-microsoft-com:office:office";
@@ -506,7 +506,7 @@ fn external_reference_of_field(instruction: &str) -> Option<(&'static str, &str)
 }
 
 fn java_trim(text: &str) -> &str {
-    crate::formats::java::trim(text)
+    crate::java::trim(text)
 }
 
 /// Java's `\s`.

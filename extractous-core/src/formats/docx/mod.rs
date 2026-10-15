@@ -22,13 +22,13 @@ use styles::Styles;
 use text::{TextHandler, TextOptions};
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
-use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
+use crate::java::JavaHashMap;
 
 /// The WordprocessingML namespace.
 const W_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -490,7 +490,7 @@ impl SaxHandler for Features {
                     .iter()
                     .find(|attribute| attribute.local_name == "author")
                     .map(|attribute| attribute.value.as_ref())
-                    .filter(|author| !crate::formats::handlers::is_blank(author))
+                    .filter(|author| !crate::java::is_blank(author))
                 {
                     self.authors.insert(author, ());
                 }

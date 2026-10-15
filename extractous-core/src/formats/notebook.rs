@@ -9,12 +9,12 @@ use serde_json::Value;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::handlers::{is_blank, utf16_length};
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
-use crate::mime::java::is_regex_space;
+use crate::java::is_regex_space;
+use crate::java::strip;
+use crate::java::{is_blank, utf16_length};
 
 const PLAIN_TEXT: &str = "text/plain";
 const MARKDOWN: &str = "text/markdown";

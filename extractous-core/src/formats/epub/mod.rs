@@ -14,13 +14,13 @@ use std::collections::HashSet;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
-use crate::formats::handlers::is_blank;
-use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Failure, Parser};
+use crate::java;
+use crate::java::is_blank;
 
 use content::ContentDocument;
 use package::{Contents, Item, MetadataParser};

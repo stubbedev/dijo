@@ -15,10 +15,10 @@ use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
-use crate::formats::java_time::{instant_string, TimeZone};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::java::time::{instant_string, TimeZone};
 use crate::mime::MediaType;
 use crate::text::charset::{self, Charset};
 

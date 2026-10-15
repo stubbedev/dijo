@@ -3,6 +3,7 @@
 //! from the HTML module, which `just html-reference` writes to `models/`), and the parser options
 //! of `HtmlTagOptions`. Tags the parse meets that the set lacks are added to the parse's copy.
 
+use crate::java;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -419,7 +420,7 @@ impl TagSet {
         preserve_case: bool,
     ) -> TagId {
         let name = if normal.is_none() {
-            java_trim_str(name)
+            java::trim(name)
         } else {
             name
         };
@@ -428,7 +429,7 @@ impl TagSet {
         }
         let normal = match normal {
             Some(normal) => normal.to_string(),
-            None => java_trim_str(&name.to_lowercase()).to_string(),
+            None => java::trim(&name.to_lowercase()).to_string(),
         };
         let name = if preserve_case { name } else { normal.as_str() };
         if let Some(id) = self.get(&normal, namespace) {
@@ -445,10 +446,6 @@ impl TagSet {
     pub(super) fn tag(&self, id: TagId) -> &Tag {
         &self.tags[id]
     }
-}
-
-fn java_trim_str(text: &str) -> &str {
-    text.trim_matches(|c: char| c <= ' ')
 }
 
 #[cfg(test)]

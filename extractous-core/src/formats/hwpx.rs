@@ -9,13 +9,13 @@ use std::collections::HashMap;
 use crate::compress::zip::file::ZipFile;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::handlers::is_blank;
-use crate::formats::java::strip;
 use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
+use crate::java::is_blank;
+use crate::java::strip;
 
 const CONTAINER: &str = "META-INF/container.xml";
 const FURNITURE: [&str; 3] = ["header", "footer", "masterPage"];

@@ -2,7 +2,7 @@
 //! The order its `names()` lists them in is visible in the XHTML head, so [`TikaMetadata::names`]
 //! reproduces that map's iteration order.
 
-use crate::formats::java::JavaHashMap;
+use crate::java::JavaHashMap;
 use crate::Metadata;
 
 /// A document's metadata, in the order Tika's `HashMap` holds it.

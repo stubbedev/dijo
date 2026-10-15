@@ -6,13 +6,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use super::java::{self, JavaString};
 use super::java_regex::{Anchor, JavaRegex};
 use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
 use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
 use super::uri;
+use crate::java::{self, JavaString};
 use crate::xml::{self, Attribute, Event, Flow, XmlError};
 
 const TIKA_MIMETYPES: &str = include_str!("../../models/tika-mimetypes.xml");
@@ -500,8 +500,8 @@ struct GlobKey(JavaString);
 
 impl Ord for GlobKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        java::utf16_len(&other.0 .0)
-            .cmp(&java::utf16_len(&self.0 .0))
+        java::utf16_length(&other.0 .0)
+            .cmp(&java::utf16_length(&self.0 .0))
             .then_with(|| self.0.cmp(&other.0))
     }
 }
@@ -586,7 +586,7 @@ impl Patterns {
                 pattern,
             )? {
                 self.extensions.insert(extension.to_owned(), id);
-                let length = java::utf16_len(extension);
+                let length = java::utf16_length(extension);
                 self.min_extension = self.min_extension.min(length);
                 self.max_extension = self.max_extension.max(length);
             }
@@ -624,7 +624,7 @@ impl Patterns {
                 units += c.len_utf16();
                 suffixes.push((units, &name[index..]));
             }
-            let longest = self.max_extension.min(java::utf16_len(name));
+            let longest = self.max_extension.min(java::utf16_length(name));
             for (length, suffix) in suffixes.into_iter().rev() {
                 if length > longest || length < self.min_extension {
                     continue;

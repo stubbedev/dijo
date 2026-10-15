@@ -7,10 +7,10 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::html::JSoupParser;
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::java::strip;
 use crate::text::charset::Charset;
 
 const PALM_DATABASE_HEADER: i32 = 78;

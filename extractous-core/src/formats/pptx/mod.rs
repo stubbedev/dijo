@@ -16,14 +16,14 @@ use crate::formats::docx::notes::InlineParts;
 use crate::formats::docx::numbering::ListManager;
 use crate::formats::docx::text::{TextHandler, TextOptions};
 use crate::formats::docx::write_general_text_parts;
-use crate::formats::handlers::is_blank;
-use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
+use crate::java::is_blank;
+use crate::java::JavaHashMap;
 
 /// Relationship types, as POI's `XSLFRelation` and Tika name them.
 mod kind {

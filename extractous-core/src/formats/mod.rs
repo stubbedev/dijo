@@ -16,8 +16,6 @@ pub(crate) mod handlers;
 mod html;
 mod hwpx;
 mod iwork;
-pub(crate) mod java;
-pub(crate) mod java_time;
 mod jdk_zip;
 mod mail;
 pub(crate) mod metadata;

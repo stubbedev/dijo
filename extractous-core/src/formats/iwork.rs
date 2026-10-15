@@ -15,13 +15,13 @@ use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::compress::zip::Content;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
-use crate::formats::handlers::is_blank;
-use crate::formats::java::{parse_long, strip};
 use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
-use crate::mime::java::{is_line_terminator, JavaString};
+use crate::java::is_blank;
+use crate::java::{is_line_terminator, JavaString};
+use crate::java::{parse_long, strip};
 use crate::text::charset::Charset;
 
 const TYPES: [&str; 7] = [

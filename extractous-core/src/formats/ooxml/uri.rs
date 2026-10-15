@@ -2,7 +2,7 @@
 //! the target, `java.net.URI` accepts or rejects it, and an internal target is resolved against
 //! the part that names it.
 
-use crate::formats::handlers::is_java_whitespace;
+use crate::java::is_java_whitespace;
 use crate::unicode::{is_iso_control, is_space_char};
 
 /// What POI uses for a target `java.net.URI` rejects.

@@ -36,6 +36,8 @@ pub use isolate::{
     configure_isolate, keep_current_thread_attached, wait_for_extractions, IsolateSettings,
 };
 
+mod java;
+
 // tika module, not exposed outside this crate
 mod tika {
     mod jni_utils;
