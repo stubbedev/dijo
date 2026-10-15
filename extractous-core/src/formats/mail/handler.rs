@@ -360,7 +360,7 @@ fn is_inline_text(metadata: &TikaMetadata) -> bool {
 
 /// `MailUtil.setPersonAndEmail` for the sender: the person and the email address of `text`,
 /// each set when not empty.
-fn set_person_and_email(text: &str, metadata: &mut TikaMetadata) {
+pub(super) fn set_person_and_email(text: &str, metadata: &mut TikaMetadata) {
     let (person, email) = person_and_email(text);
     if let Some(person) = person {
         metadata.set("message:from-name", person);

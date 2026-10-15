@@ -2,7 +2,7 @@
 //! `META-INF/container.xml` names, its Dublin Core metadata through Tika's `OPFParser` and
 //! `DcXMLParser`, and its manifest and spine through the `ContentOrderScraper`.
 
-use crate::formats::element_metadata::{ElementMetadata, Values};
+use crate::formats::element_metadata::DublinCore;
 use crate::formats::java::{self, JavaHashMap};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
@@ -56,24 +56,6 @@ pub(super) fn root(container: &[u8]) -> Result<Option<String>, Failure> {
     Ok(finder.0)
 }
 
-/// The Dublin Core elements Tika's `DcXMLParser` reads, as `(element, name, values)`, in the
-/// order of its handlers.
-const DUBLIN_CORE: [(&str, &str, Values); 13] = [
-    ("title", "dc:title", Values::Bag),
-    ("subject", "dc:subject", Values::Bag),
-    ("creator", "dc:creator", Values::Bag),
-    ("description", "dc:description", Values::Bag),
-    ("publisher", "dc:publisher", Values::Bag),
-    ("contributor", "dc:contributor", Values::Bag),
-    ("date", "dcterms:created", Values::Single),
-    ("type", "dc:type", Values::Bag),
-    ("format", "dc:format", Values::Single),
-    ("identifier", "dc:identifier", Values::Bag),
-    ("language", "dc:language", Values::Bag),
-    ("source", "dc:source", Values::Bag),
-    ("rights", "dc:rights", Values::Bag),
-];
-
 /// Tika's `OPFHandler`: the EPUB version, and whether the layout is pre-paginated.
 #[derive(Default)]
 struct Rendition {
@@ -126,22 +108,20 @@ impl Rendition {
 
 /// The handlers Tika's `DcXMLParser` tees an XML document's events to, and `OPFParser`'s
 /// `OPFHandler` after them for a package document.
-struct DublinCore<'m> {
+struct MetadataHandlers<'m> {
     metadata: &'m mut TikaMetadata,
-    elements: Vec<ElementMetadata>,
+    dublin_core: DublinCore,
     rendition: Option<Rendition>,
 }
 
-impl SaxHandler for DublinCore<'_> {
+impl SaxHandler for MetadataHandlers<'_> {
     fn start_element(
         &mut self,
         namespace: &str,
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        for element in &mut self.elements {
-            element.start(namespace, local_name);
-        }
+        self.dublin_core.start(namespace, local_name);
         if let Some(rendition) = &mut self.rendition {
             rendition.start(local_name, attributes, self.metadata);
         }
@@ -149,9 +129,7 @@ impl SaxHandler for DublinCore<'_> {
     }
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        for element in &mut self.elements {
-            element.end(namespace, local_name, self.metadata);
-        }
+        self.dublin_core.end(namespace, local_name, self.metadata);
         if let Some(rendition) = &mut self.rendition {
             rendition.end(local_name, self.metadata);
         }
@@ -159,9 +137,7 @@ impl SaxHandler for DublinCore<'_> {
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        for element in &mut self.elements {
-            element.characters(text);
-        }
+        self.dublin_core.characters(text);
         if let Some(rendition) = &mut self.rendition {
             rendition.characters(text);
         }
@@ -189,12 +165,9 @@ pub(super) fn read_metadata(
     if parser == MetadataParser::Package {
         metadata.set(RENDITION_LAYOUT, "reflowable");
     }
-    let mut handler = DublinCore {
+    let mut handler = MetadataHandlers {
         metadata,
-        elements: DUBLIN_CORE
-            .iter()
-            .map(|&(element, name, values)| ElementMetadata::dublin_core(element, name, values))
-            .collect(),
+        dublin_core: DublinCore::new(),
         rendition: (parser == MetadataParser::Package).then(Rendition::default),
     };
     xml::parse_sax(input, what, &mut handler).map_err(|failure| match failure {

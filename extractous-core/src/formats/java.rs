@@ -1,9 +1,10 @@
 //! What ports of Tika code need from Java itself to give Java's results: the iteration order of
 //! a `java.util.HashMap` with string keys, `Integer.parseInt`, `Long.parseLong`,
-//! `Double.parseDouble`, `Math.round` and `String.trim`.
+//! `Double.parseDouble`, `Math.round`, `String.trim` and `String.strip`.
 
 use std::collections::HashMap;
 
+use crate::formats::handlers::is_java_whitespace;
 use crate::unicode::decimal_digit;
 
 const INITIAL_CAPACITY: usize = 16;
@@ -311,6 +312,11 @@ pub(crate) fn split(text: &str, separator: char) -> Vec<&str> {
 /// `String.trim()`: without the characters up to U+0020 at either end.
 pub(crate) fn trim(text: &str) -> &str {
     text.trim_matches(|character| character <= ' ')
+}
+
+/// `String.strip()`: without the whitespace `Character.isWhitespace` sees at either end.
+pub(crate) fn strip(text: &str) -> &str {
+    text.trim_matches(is_java_whitespace)
 }
 
 /// The double `Double.parseDouble(text)` gives, or `None` where it throws.

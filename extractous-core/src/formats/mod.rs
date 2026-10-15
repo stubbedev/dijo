@@ -5,7 +5,9 @@
 
 mod archive;
 mod auto_detect_reader;
+mod cms;
 mod data_format;
+mod dc_xml;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
@@ -13,16 +15,23 @@ mod epub;
 mod fiction_book;
 pub(crate) mod handlers;
 mod html;
+mod hwpx;
+mod iwork;
 pub(crate) mod java;
 pub(crate) mod java_time;
+mod jdk_zip;
 mod mail;
 pub(crate) mod metadata;
+mod mobi;
+mod notebook;
 mod odf;
 mod ole10_native;
 mod ole2;
 mod ooxml;
+mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
+pub(crate) mod plist;
 mod pptx;
 #[cfg(test)]
 pub(crate) mod reference;
@@ -99,6 +108,18 @@ pub(crate) trait Parser: Sync {
         None
     }
 
+    /// The failure Tika's parser throws on `input` before it starts the document, if it throws
+    /// one: the extraction then fails at once, without output, as Tika's path does, which
+    /// reports a failure before any output when the extraction starts.
+    fn fails_before_starting(
+        &self,
+        _input: &[u8],
+        _metadata: &TikaMetadata,
+        _configs: &ParserConfigs,
+    ) -> Option<Error> {
+        None
+    }
+
     /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
     /// it replaces does, under the parser settings `configs` the extraction was given. The
     /// document is started before and ended after it.
@@ -115,13 +136,22 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::PackageParser,
     &archive::SevenZParser,
     &archive::ZipParser,
+    &cms::CmsParser,
+    &dc_xml::DcXmlParser,
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
+    &hwpx::HwpxParser,
+    &iwork::IworkArchiveParser,
     &mail::EmlxParser,
+    &mail::MboxParser,
+    &mobi::MobiParser,
+    &notebook::NotebookParser,
     &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
+    &open_pgp::OpenPgpParser,
+    &plist::PListParser,
     &pptx::PptxParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
@@ -392,6 +422,11 @@ pub(crate) fn parse_to_string(
     max_length: usize,
     output: Output,
 ) -> ExtractResult<(String, Metadata)> {
+    if let Some(error) =
+        parser.fails_before_starting(input, &detected.metadata_for(parser), configs)
+    {
+        return Err(error);
+    }
     let mut out = StringOut::default();
     let (metadata, result) = Chain::String { output, max_length }.write_to(&mut out, |handler| {
         run(parser, input, detected, configs, handler)
@@ -489,6 +524,11 @@ pub(crate) fn parse_to_stream(
     configs: ParserConfigs,
     options: StreamOptions,
 ) -> ExtractResult<(NativeStream, Metadata)> {
+    if let Some(error) =
+        parser.fails_before_starting(&input, &detected.metadata_for(parser), &configs)
+    {
+        return Err(error);
+    }
     let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
     let detected_metadata = detected.metadata.to_map();
     let (sender, receiver) = mpsc::sync_channel(CHUNKS_AHEAD);
