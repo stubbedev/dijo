@@ -48,8 +48,7 @@ mod excel {
     pub(super) const PROTECTED_WORKSHEET: &str = "msoffice:excel:protected-worksheet";
     pub(super) const HAS_HIDDEN_COLUMNS: &str = "msoffice:excel:has-hidden-cols";
     pub(super) const HAS_HIDDEN_ROWS: &str = "msoffice:excel:has-hidden-rows";
-    pub(super) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
-    pub(super) const HAS_COMMENTS: &str = "msoffice:has-comments";
+    pub(super) use crate::formats::metadata::office::{COMMENT_PERSONS, HAS_COMMENTS};
     pub(super) const HIDDEN_SHEET_NAMES: &str = "msoffice:excel:hidden-sheet-names";
     pub(super) const HAS_HIDDEN_SHEETS: &str = "msoffice:excel:has-hidden-sheets";
     pub(super) const VERY_HIDDEN_SHEET_NAMES: &str = "msoffice:excel:very-hidden-sheet-names";

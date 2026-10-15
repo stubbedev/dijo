@@ -61,10 +61,10 @@ pub(crate) mod name {
     pub(crate) const HAS_SIGNATURE: &str = "tk:has-signature";
     pub(crate) const HAS_UNREFERENCED_PARTS: &str = "msoffice:has-unreferenced-parts";
     pub(crate) const UNREFERENCED_PART_NAMES: &str = "msoffice:unreferenced-part-names";
-    pub(crate) const HAS_COMMENTS: &str = "msoffice:has-comments";
-    pub(crate) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
     pub(crate) const HAS_EXTERNAL_OLE_OBJECTS: &str = "msoffice:has-external-ole-objects";
-    pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+    pub(crate) use crate::formats::metadata::office::{
+        COMMENT_PERSONS, HAS_COMMENTS, ORIGINAL_RESOURCE_NAME,
+    };
 }
 
 pub(crate) const OLE_OBJECT_TYPE: &str = "application/vnd.openxmlformats-officedocument.oleObject";

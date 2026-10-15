@@ -8,6 +8,17 @@ use crate::Metadata;
 
 /// Office's `USER_DEFINED` key prefix, of a document's custom properties.
 pub(crate) const USER_DEFINED_PREFIX: &str = "custom:";
+
+/// The names of Tika's `Office` properties and the core properties the Office extractors of
+/// several formats set.
+pub(crate) mod office {
+    pub(crate) const HAS_COMMENTS: &str = "msoffice:has-comments";
+    pub(crate) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
+    pub(crate) const HAS_HIDDEN_TEXT: &str = "msoffice:doc:has-hidden-text";
+    pub(crate) const HAS_TRACK_CHANGES: &str = "msoffice:has-track-changes";
+    pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+}
+
 /// The longest name `Metadata.add(KeyPrefix, name, value)` takes, in UTF-16 units.
 const MAX_PREFIX_ROUTE_NAME_LENGTH: usize = 1024;
 /// The most names `Metadata.add(KeyPrefix, name, value)` adds to one metadata.
