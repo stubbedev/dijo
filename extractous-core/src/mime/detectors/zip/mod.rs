@@ -430,12 +430,15 @@ struct Streaming {
 
 impl Streaming {
     /// The detectors' `streamingDetectUpdate` for one entry, in order.
-    fn update(&mut self, entry: &StreamEntry) -> Result<Option<MediaType>, Failure> {
+    fn update(
+        &mut self,
+        entry: &StreamEntry,
+        stream: &ZipStream,
+    ) -> Result<Option<MediaType>, Failure> {
         let name = entry.name.as_str();
         if name == "[Content_Types].xml" {
-            let found = entry
-                .data
-                .as_ref()
+            let found = stream
+                .content()
                 .ok()
                 .and_then(|c| opc::content_types_type(c.bytes()));
             return Ok(Some(
@@ -449,7 +452,7 @@ impl Streaming {
             .get_or_insert_with(HashSet::new)
             .insert(name.to_owned());
         if IWORK_CONTENT_ENTRIES.contains(&name) {
-            if let Some(kind) = entry.data.as_ref().ok().and_then(|c| iwork_type(c.bytes())) {
+            if let Some(kind) = stream.content().ok().and_then(|c| iwork_type(c.bytes())) {
                 return Ok(Some(kind));
             }
         }
@@ -486,7 +489,8 @@ impl Streaming {
             *self.kml_count.get_or_insert(0) += 1;
         }
         if name == "mimetype" {
-            let content = bounded(&entry.data, 1024)?;
+            let data = stream.content();
+            let content = bounded(&data, 1024)?;
             if !content.is_empty() {
                 if let Some(kind) = MediaType::parse(&String::from_utf8_lossy(content)) {
                     return Ok(Some(kind));
@@ -494,7 +498,8 @@ impl Streaming {
             }
         }
         if name == "META-INF/manifest.xml" {
-            let content = bounded(&entry.data, 20 * 1024 * 1024)?;
+            let data = stream.content();
+            let content = bounded(&data, 20 * 1024 * 1024)?;
             if let Some(kind) = star_office_type(content) {
                 return Ok(Some(kind));
             }
@@ -543,7 +548,9 @@ impl Streaming {
 /// throws.
 fn bounded(data: &Result<Content, Failure>, limit: usize) -> Result<&[u8], Failure> {
     match data {
-        Ok(Content::Complete(bytes)) => Ok(&bytes[..bytes.len().min(limit)]),
+        Ok(Content::Complete(bytes)) => {
+            Ok(&bytes[..bytes.len().min(limit)])
+        }
         Ok(Content::Truncated(bytes)) if bytes.len() >= limit => Ok(&bytes[..limit]),
         Ok(Content::Truncated(_)) => Err(Failure::Io),
         Err(failure) => Err(*failure),
@@ -565,7 +572,7 @@ fn by_stream(data: &[u8], allow_stored_data_descriptor: bool) -> Streamed {
     loop {
         let step = stream.next_entry().and_then(|entry| match entry {
             None => Ok(None),
-            Some(entry) => context.update(&entry).map(Some),
+            Some(entry) => context.update(&entry, &stream).map(Some),
         });
         match step {
             Ok(None) => return Streamed::Found(context.finish()),
