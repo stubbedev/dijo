@@ -80,9 +80,9 @@ impl Parser for Rfc822Parser {
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
-        configs: &'a ParserConfigs,
+        _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Deferral> {
-        prepare_message(Ok(input), metadata, configs)
+        prepare_message(Ok(input), metadata)
     }
 }
 
@@ -99,9 +99,9 @@ impl Parser for EmlxParser {
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
-        configs: &'a ParserConfigs,
+        _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Deferral> {
-        prepare_message(emlx_message(input), metadata, configs)
+        prepare_message(emlx_message(input), metadata)
     }
 }
 
@@ -200,12 +200,11 @@ enum Part {
 /// `RFC822Parser.parse` of `message` prepared: the message read, with the metadata it adds to
 /// `metadata`, and its text and HTML parts prepared by their parsers; or why Tika's path should
 /// read it, something of it the port does not read or a part whose parser defers it.
-fn prepare_message<'a>(
+fn prepare_message(
     message: Result<&[u8], Failure>,
     metadata: &TikaMetadata,
-    configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Deferral> {
-    let failed = |failure: Failure| -> Prepared<'a> { Box::new(move |_| Err(failure)) };
+) -> Result<Prepared<'static>, Deferral> {
+    let failed = |failure: Failure| -> Prepared<'static> { Box::new(move |_| Err(failure)) };
     let message = match message {
         Ok(message) => message,
         Err(failure) => return Ok(failed(failure)),
@@ -253,7 +252,7 @@ fn prepare_message<'a>(
                     xhtml.end_element("p")?;
                     xhtml.end_element("div")?;
                 }
-                Part::Inline(prepared) => parse_inline(prepared, configs, xhtml)?,
+                Part::Inline(prepared) => parse_inline(prepared, xhtml)?,
                 Part::Embedded(content, metadata) => {
                     xhtml.parse_embedded(&content, &metadata, Wrapping::Bare)?;
                 }
@@ -265,14 +264,11 @@ fn prepare_message<'a>(
 
 /// `handleInlineBodyPart`: a part its parser `prepared` from fresh metadata, parsed into the
 /// message's body, through an `EmbeddedContentHandler` and a `BodyContentHandler`.
-fn parse_inline(
-    prepared: Prepared<'_>,
-    configs: &ParserConfigs,
-    xhtml: &mut Xhtml,
-) -> Result<(), Failure> {
+fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let context = xhtml.context();
     let mut forward = Forward { outer: xhtml };
     let mut body = Body::new(&mut forward);
-    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), configs, prepared);
+    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);
     result
 }
 

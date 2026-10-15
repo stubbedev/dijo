@@ -4,6 +4,7 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::*;
+use crate::formats::embedded::ParseContext;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
 use crate::formats::parity::{self, assert_same_as_tika_with};
@@ -225,7 +226,12 @@ fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
         .prepare(input, &TikaMetadata::new(), configs)
         .unwrap();
     let (_, _, result) = chain.write_to(&mut out, |handler| {
-        Xhtml::write(handler, TikaMetadata::new(), configs, prepared)
+        Xhtml::write(
+            handler,
+            TikaMetadata::new(),
+            &ParseContext::new(configs),
+            prepared,
+        )
     });
     result.unwrap();
     out.0

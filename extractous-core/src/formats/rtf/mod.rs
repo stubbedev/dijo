@@ -9,6 +9,7 @@ mod extractor;
 mod input;
 
 use crate::config::ParserConfigs;
+use crate::formats::embedded::ParseContext;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
@@ -61,7 +62,8 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
     if !read_ahead {
         return None;
     }
-    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), configs, |xhtml| {
+    let context = ParseContext::new(configs);
+    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &context, |xhtml| {
         extractor::extract(input, xhtml)
     });
     match result {

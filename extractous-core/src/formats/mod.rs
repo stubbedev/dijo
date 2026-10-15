@@ -40,11 +40,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::ParserConfigs;
+use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
 use crate::isolate::{heap_capped, isolate};
 use crate::mime::{self, Detection, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
+use embedded::ParseContext;
 use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Write, WriteLimit};
 use metadata::TikaMetadata;
 use xhtml::{ContentHandler, Stop, Xhtml};
@@ -162,15 +164,14 @@ pub(crate) struct Routed<'a> {
 
 /// Routes a document to its native parser, if its format has one. The document is detected in
 /// Rust, without the JVM, so a document a native parser reads never starts it. Documents read
-/// from a URL, those whose embedded documents are spooled, files too large to read whole for
-/// their detection, and every document while the Java heap is capped (native parsers have no
-/// memory budget yet, #98) stay with Tika. The parser itself may still leave the document to
+/// from a URL, files too large to read whole for their detection, and every document while the
+/// Java heap is capped (native parsers have no memory budget yet, #98) stay with Tika. The parser itself may still leave the document to
 /// Tika, when [`parse_to_string`] or [`parse_to_stream`] has it prepare the document.
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
-pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<Routed<'_>>> {
-    if spooling || matches!(source, Source::Url(_)) || !any_parsers() || heap_capped() {
+pub(crate) fn route(source: Source<'_>) -> ExtractResult<Option<Routed<'_>>> {
+    if matches!(source, Source::Url(_)) || !any_parsers() || heap_capped() {
         return Ok(None);
     }
     let Some(input) = detection_input(source)? else {
@@ -275,10 +276,10 @@ fn run(
     parser: &dyn Parser,
     prepared: Prepared<'_>,
     metadata: TikaMetadata,
-    configs: &ParserConfigs,
+    context: &ParseContext,
     handler: &mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    let (mut metadata, record, result) = Xhtml::write(handler, metadata, configs, prepared);
+    let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
     record.finish(&mut metadata, parser.name());
     (metadata, result)
 }
@@ -386,8 +387,9 @@ pub(crate) fn parse_to_string(
         return Ok(None);
     };
     let mut out = StringOut::default();
+    let context = ParseContext::new(configs);
     let (metadata, result) = Chain::String { output, max_length }.write_to(&mut out, |handler| {
-        run(parser, prepared, metadata, configs, handler)
+        run(parser, prepared, metadata, &context, handler)
     });
     match result {
         Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => Ok(Some((out.0, metadata.to_map()))),
@@ -398,10 +400,12 @@ pub(crate) fn parse_to_string(
 enum Message {
     /// A full chunk of output, written while the parse goes on.
     Chunk(Vec<u8>),
-    /// The output after the last full chunk, and how the parse ended.
+    /// The output after the last full chunk, how the parse ended, and the embedded documents
+    /// it spooled.
     Done {
         tail: Vec<u8>,
         outcome: ExtractResult<Metadata>,
+        spooled: Vec<SpooledEmbedded>,
     },
 }
 
@@ -464,11 +468,13 @@ fn char_set_name(char_set: CharSet) -> &'static str {
 }
 
 /// How a native parse is streamed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct StreamOptions {
     pub(crate) char_set: CharSet,
     pub(crate) output: Output,
     pub(crate) timeout: Option<Duration>,
+    /// Where embedded documents are copied instead of parsed, if anywhere.
+    pub(crate) spool: Option<EmbeddedSpool>,
 }
 
 /// Parses `input` on a thread of its own into a stream encoded with the options' charset,
@@ -505,8 +511,12 @@ pub(crate) fn parse_to_stream(
                 output: options.output,
                 encoding: char_set_name(options.char_set),
             };
+            let context = match &options.spool {
+                Some(spool) => ParseContext::spooling(&configs, spool),
+                None => ParseContext::new(&configs),
+            };
             let (metadata, result) = chain.write_to(&mut out, |handler| {
-                run(parser, prepared, metadata, &configs, handler)
+                run(parser, prepared, metadata, &context, handler)
             });
             let outcome = match result {
                 Ok(()) => Ok(metadata.to_map()),
@@ -514,7 +524,11 @@ pub(crate) fn parse_to_stream(
                 Err(failure) => Err(failure_error(parser, failure)),
             };
             let tail = std::mem::take(&mut out.buffer);
-            let _ = sender.send(Message::Done { tail, outcome });
+            let _ = sender.send(Message::Done {
+                tail,
+                outcome,
+                spooled: context.into_spooled(),
+            });
         })
         .map_err(|e| {
             Error::IoError(format!(
@@ -528,6 +542,7 @@ pub(crate) fn parse_to_stream(
         position: 0,
         deadline,
         outcome: None,
+        spooled: Vec::new(),
     };
     let prepared = receive(
         &decision,
@@ -553,6 +568,7 @@ pub(crate) struct NativeStream {
     position: usize,
     deadline: Option<Instant>,
     outcome: Option<ExtractResult<Metadata>>,
+    spooled: Vec<SpooledEmbedded>,
 }
 
 impl NativeStream {
@@ -565,12 +581,23 @@ impl NativeStream {
         }
     }
 
+    /// The embedded documents the parse copied to the spool, once the stream has been read to
+    /// its end.
+    pub(crate) fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
+        self.metadata().map(|_| self.spooled.clone())
+    }
+
     fn accept(&mut self, message: Message) {
         match message {
             Message::Chunk(chunk) => self.chunk = chunk,
-            Message::Done { tail, outcome } => {
+            Message::Done {
+                tail,
+                outcome,
+                spooled,
+            } => {
                 self.chunk = tail;
                 self.outcome = Some(outcome);
+                self.spooled = spooled;
             }
         }
         self.position = 0;
@@ -682,6 +709,51 @@ mod tests {
             "application/vnd.oasis.opendocument.text"
         );
         assert!(!crate::isolate::isolate_created());
+    }
+
+    /// Documents of native formats that embed documents spool them as Tika's path does, with a
+    /// budget that holds them all and one that runs out partway.
+    #[test]
+    fn spools_embedded_documents_as_tikas_path_does() {
+        for name in ["nested.zip", "science-exploration-1p.pptx", "vodafone.xlsx"] {
+            let path = std::path::PathBuf::from("../test_files/documents").join(name);
+            for budget in [u64::MAX, 3000] {
+                let spooled = crate::formats::parity::spools_as_tika(&path, budget);
+                assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
+            }
+        }
+    }
+
+    /// Every document of Tika's tests a native parser reads spools its embedded documents as
+    /// Tika's path does.
+    #[test]
+    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+    fn spools_tikas_documents_as_tikas_path_does() {
+        let corpus = crate::formats::parity::conformance_corpus();
+        let exceptions = [(
+            "testZSTD.zst",
+            crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
+        )];
+        let mut differences = Vec::new();
+        let mut spooling = 0;
+        for parser in PARSERS {
+            let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
+            for path in parsed {
+                let name = path.file_name().unwrap().to_string_lossy();
+                if exceptions.iter().any(|(exception, _)| *exception == name) {
+                    continue;
+                }
+                for budget in [u64::MAX, 3000] {
+                    match crate::formats::parity::spools_as_tika(&path, budget) {
+                        Ok(0) => {}
+                        Ok(_) => spooling += 1,
+                        Err(difference) => differences.push(difference),
+                    }
+                }
+            }
+        }
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
+        assert!(spooling > 0);
     }
 
     #[test]

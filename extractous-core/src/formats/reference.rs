@@ -9,6 +9,7 @@ use std::io::Read;
 use flate2::read::GzDecoder;
 
 use crate::config::ParserConfigs;
+use crate::formats::embedded::ParseContext;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
 use crate::formats::Parser;
@@ -99,7 +100,8 @@ pub(crate) fn difference(parser: &dyn Parser, case: &Case) -> Option<String> {
         Ok(prepared) => prepared,
         Err(reason) => return Some(format!("{}: deferred: {reason}", case.label)),
     };
-    let (metadata, _, result) = Xhtml::write(&mut recorder, given, &configs, prepared);
+    let context = ParseContext::new(&configs);
+    let (metadata, _, result) = Xhtml::write(&mut recorder, given, &context, prepared);
     if let Err(failure) = result {
         return Some(format!("{}: failed: {failure:?}", case.label));
     }

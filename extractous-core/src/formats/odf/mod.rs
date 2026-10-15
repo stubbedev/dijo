@@ -21,6 +21,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Deferral, Failure, Parser, Prepared};
+use crate::mime::{self, Origin};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 pub(crate) const META_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0";
@@ -238,17 +239,22 @@ const NO_BODY: &str = "it has no content.xml or styles.xml, so Tika leaves its X
 const UNREADABLE_ENTRY: &str = "an entry it reads cannot be read by the zip crate";
 const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded documents";
 
-/// The metadata Tika's `OpenDocumentParser` gives a picture or an object's thumbnail it hands to
-/// the embedded document extractor. It also sets the type its detector finds and the pages a
-/// picture is drawn on, which change nothing the embedded document's parse writes.
-fn embedded_metadata(name: &str) -> TikaMetadata {
+/// The metadata Tika's `OpenDocumentParser` gives the picture or object thumbnail `name` of
+/// `bytes` it hands to the embedded document extractor: a picture's type as its detector finds
+/// it. It also sets the pages a picture is drawn on, which change nothing of what is extracted
+/// or spooled.
+fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> {
     let mut metadata = TikaMetadata::new();
     metadata.set(embedded::INTERNAL_PATH, name);
     metadata.set(embedded::RESOURCE_NAME, name);
     if name.contains("Pictures/") {
         metadata.set(embedded::RESOURCE_TYPE, "INLINE");
+        let detection = mime::detect(bytes, Origin::File { name }).map_err(|error| {
+            Failure::Malformed(format!("Tika's detection throws on {name}: {error:?}"))
+        })?;
+        metadata.set("Content-Type", detection.media_type.to_string());
     }
-    metadata
+    Ok(metadata)
 }
 
 /// The archive of the document in `input`, its metadata, type and bodies read ahead, or why
@@ -345,7 +351,8 @@ fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Re
             }
             EntryKind::Embedded => {
                 let bytes = archive.read(entry)?;
-                xhtml.parse_embedded(&bytes, &embedded_metadata(entry.name()), Wrapping::Bare)?;
+                let metadata = embedded_metadata(entry.name(), &bytes)?;
+                xhtml.parse_embedded(&bytes, &metadata, Wrapping::Bare)?;
             }
             EntryKind::Directory
             | EntryKind::Manifest

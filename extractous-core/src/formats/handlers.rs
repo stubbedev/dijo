@@ -751,6 +751,7 @@ pub(crate) fn utf16_length(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::config::ParserConfigs;
+    use crate::formats::embedded::ParseContext;
     use crate::formats::metadata::TikaMetadata;
     use crate::formats::xhtml::{Stop, Xhtml};
     use crate::formats::{Chain, Output, StringOut};
@@ -821,7 +822,7 @@ mod tests {
         let configs = ParserConfigs::default();
         let mut out = StringOut::default();
         let (_, _, result) = chain.write_to(&mut out, |handler| {
-            Xhtml::write(handler, metadata, &configs, |xhtml| {
+            Xhtml::write(handler, metadata, &ParseContext::new(&configs), |xhtml| {
                 for call in body {
                     let field = |index: usize| call.get(index).map_or("", String::as_str);
                     match field(0) {

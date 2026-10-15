@@ -25,6 +25,12 @@ use crate::{CharSet, Metadata};
 
 const SMALL_LIMIT: usize = 100;
 
+/// Why the native path extracts Zstandard files Tika's path leaves empty: Tika's native image
+/// lacks zstd-jni, so its path parses them with `EmptyParser`.
+pub(crate) const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as \
+                                                its native image lacks zstd-jni; the native path \
+                                                decodes it";
+
 /// One extraction's result, as the two paths are compared on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Extracted {
@@ -83,7 +89,7 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
 }
 
 fn routed(path: &str) -> Routed<'_> {
-    formats::route(Source::File(path), false)
+    formats::route(Source::File(path))
         .unwrap()
         .unwrap_or_else(|| panic!("{path} has no native parser"))
 }
@@ -103,6 +109,7 @@ fn native_stream(
         char_set,
         output,
         timeout: None,
+        spool: None,
     };
     let (mut stream, _) = formats::parse_to_stream(
         routed.parser,
@@ -468,6 +475,162 @@ impl Drop for Scratch {
         if !std::thread::panicking() {
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+}
+
+/// A spooled embedded document as the two paths are compared on it: everything but where the
+/// spool is, and the bytes copied.
+#[derive(Debug, PartialEq, Eq)]
+struct Spooled {
+    name: String,
+    content_type: Option<String>,
+    file: String,
+    size: u64,
+    truncated: bool,
+    content: Vec<u8>,
+}
+
+fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> {
+    embedded
+        .into_iter()
+        .map(|document| Spooled {
+            name: document.name,
+            content_type: document.content_type,
+            file: document
+                .path
+                .strip_prefix(spool)
+                .unwrap_or_else(|_| panic!("{} is outside the spool", document.path.display()))
+                .display()
+                .to_string(),
+            size: document.size,
+            truncated: document.truncated,
+            content: std::fs::read(&document.path).unwrap(),
+        })
+        .collect()
+}
+
+/// How many embedded documents Tika's path spools from the document at `path` under a budget
+/// of `budget` bytes in all, once the native parser has spooled them alike: the same XHTML and
+/// metadata, and the same files, named, typed, numbered and cut alike. Where the two differ, or
+/// one path fails and the other does not, what differs.
+pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
+    let path = path.to_str().unwrap();
+    let configs = ParserConfigs::default();
+    let tika_spool = Scratch::new("spool-tika");
+    let tika_options = tika::StreamOptions {
+        char_set: CharSet::UTF_8,
+        as_xml: true,
+        timeout: None,
+        embedded: Some(&crate::EmbeddedSpool {
+            dir: tika_spool.directory().to_path_buf(),
+            byte_budget: budget,
+        }),
+    };
+    let tika = tika::parse_to_stream(
+        isolate().unwrap(),
+        Source::File(path),
+        &configs,
+        None,
+        &tika_options,
+    )
+    .and_then(|(mut reader, _)| {
+        let mut text = Vec::new();
+        reader
+            .read_to_end(&mut text)
+            .map_err(|e| crate::Error::IoError(e.to_string()))?;
+        let metadata = sorted(reader.metadata()?);
+        Ok((text, metadata, reader.embedded()?))
+    });
+
+    let native_spool = Scratch::new("spool-native");
+    let routed = routed(path);
+    let native_name = routed.parser.name();
+    let options = StreamOptions {
+        char_set: CharSet::UTF_8,
+        output: Output::Xml,
+        timeout: None,
+        spool: Some(crate::EmbeddedSpool {
+            dir: native_spool.directory().to_path_buf(),
+            byte_budget: budget,
+        }),
+    };
+    let native = formats::parse_to_stream(
+        routed.parser,
+        routed.input.into_owned(),
+        routed.detected,
+        configs.clone(),
+        options,
+    )
+    .map(|prepared| prepared.unwrap_or_else(|| panic!("{}", deferred(path))))
+    .and_then(|(mut stream, _)| {
+        let mut text = Vec::new();
+        stream
+            .read_to_end(&mut text)
+            .map_err(|e| crate::Error::IoError(e.to_string()))?;
+        let metadata = sorted(stream.metadata()?);
+        Ok((text, metadata, stream.embedded()?))
+    });
+
+    match (tika, native) {
+        (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
+            let tika_name = metadata
+                .iter()
+                .find(|(name, _)| name == "tk:parsed-by")
+                .and_then(|(_, values)| values.first())
+                .cloned()
+                .unwrap_or_default();
+            let tika = (
+                comparable(Extracted { text, metadata }),
+                spooled(embedded, tika_spool.directory()),
+            );
+            let native = (
+                comparable(as_tika(
+                    Extracted {
+                        text: native_text,
+                        metadata: native_metadata,
+                    },
+                    native_name,
+                    &tika_name,
+                    CharSet::UTF_8,
+                )),
+                spooled(native_embedded, native_spool.directory()),
+            );
+            if native == tika {
+                Ok(tika.1.len())
+            } else {
+                let show = |(extracted, spooled): &(Extracted, Vec<Spooled>)| {
+                    let files: Vec<_> = spooled
+                        .iter()
+                        .map(|file| {
+                            (
+                                &file.name,
+                                &file.content_type,
+                                &file.file,
+                                file.size,
+                                file.truncated,
+                                file.content.len(),
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "{}\n         {:?}\n         {files:?}",
+                        String::from_utf8_lossy(&extracted.text),
+                        extracted.metadata
+                    )
+                };
+                Err(format!(
+                    "{path} with a budget of {budget} bytes\n  tika   {}\n  native {}",
+                    show(&tika),
+                    show(&native)
+                ))
+            }
+        }
+        (Err(_), Err(_)) => Ok(0),
+        (tika, native) => Err(format!(
+            "{path} with a budget of {budget} bytes: tika {:?}, native {:?}",
+            tika.map(|_| ()),
+            native.map(|_| ())
+        )),
     }
 }
 
