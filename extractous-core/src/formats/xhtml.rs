@@ -163,6 +163,20 @@ impl<'h> Xhtml<'h> {
         &mut self.metadata
     }
 
+    /// Has `body` write the document with `metadata` in place of the document's, as a parser
+    /// does that hands Tika's handler to another parser with metadata of its own: the head shows
+    /// `metadata` as `body` leaves it, and the document's metadata is back once `body` returns.
+    pub(crate) fn with_metadata<T>(
+        &mut self,
+        metadata: TikaMetadata,
+        body: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let document = std::mem::replace(&mut self.metadata, metadata);
+        let result = body(self);
+        self.metadata = document;
+        result
+    }
+
     pub(crate) fn start_element(&mut self, name: &str) -> Result<(), Stop> {
         self.start_element_with(name, &[])
     }
