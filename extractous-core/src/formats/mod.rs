@@ -62,8 +62,10 @@ pub(crate) trait Parser: Sync {
 
     /// Why Tika's path should extract `input` rather than this parser, if it should: a feature
     /// of this document the parser does not handle yet, such as embedded documents, which Tika
-    /// parses recursively. Decided before any output is written.
-    fn defers(&self, _input: &[u8]) -> Option<&'static str> {
+    /// parses recursively. Decided before any output is written, from the input and what Tika
+    /// knows of it as its parser starts: the metadata of its input and detection, with the
+    /// detected `Content-Type`.
+    fn defers(&self, _input: &[u8], _metadata: &TikaMetadata) -> Option<&'static str> {
         None
     }
 
@@ -120,12 +122,16 @@ pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<
         return Ok(None);
     };
     let input = input(source)?;
-    if parser.defers(&input).is_some() {
+    let detected = Detected::from_tika(media_type, metadata);
+    if parser
+        .defers(&input, &detected.metadata_for(parser))
+        .is_some()
+    {
         return Ok(None);
     }
     Ok(Some(Routed {
         parser,
-        detected: Detected::from_tika(media_type, metadata),
+        detected,
         input,
     }))
 }

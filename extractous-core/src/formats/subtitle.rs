@@ -8,6 +8,7 @@
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
 use crate::formats::handlers::{is_blank, is_java_whitespace};
 use crate::formats::media_type::MediaType;
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
 
@@ -25,7 +26,7 @@ impl Parser for SubtitleParser {
         &["application/x-subrip", "text/vtt", "text/x-ssa"]
     }
 
-    fn defers(&self, input: &[u8]) -> Option<&'static str> {
+    fn defers(&self, input: &[u8], _metadata: &TikaMetadata) -> Option<&'static str> {
         AutoDetectReader::defers(input)
     }
 

@@ -168,8 +168,9 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&str]) -> (Vec<PathBuf>, V
     let (mut parsed, mut deferred) = (Vec::new(), Vec::new());
     for file in files {
         let path = file.to_str().unwrap();
-        let (media_type, _) = tika::detect_with_metadata(isolate().unwrap(), Source::File(path))
-            .unwrap_or_else(|e| panic!("Tika could not detect {path}: {e}"));
+        let (media_type, metadata) =
+            tika::detect_with_metadata(isolate().unwrap(), Source::File(path))
+                .unwrap_or_else(|e| panic!("Tika could not detect {path}: {e}"));
         if !parser.media_types().contains(&media_type.as_str()) {
             continue;
         }
@@ -177,7 +178,11 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&str]) -> (Vec<PathBuf>, V
         if input.is_empty() {
             continue;
         }
-        if parser.defers(&input).is_some() {
+        let detected = formats::Detected::from_tika(media_type, metadata);
+        if parser
+            .defers(&input, &detected.metadata_for(parser))
+            .is_some()
+        {
             deferred.push(file);
         } else {
             parsed.push(file);
