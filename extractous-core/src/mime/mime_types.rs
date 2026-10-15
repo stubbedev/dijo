@@ -29,6 +29,8 @@ struct MimeType {
     media_type: MediaType,
     interpreted: bool,
     root_xml: Vec<(String, String)>,
+    /// The extensions of its extension patterns, with their dots, in the order they were read.
+    extensions: Vec<String>,
 }
 
 impl MimeType {
@@ -124,6 +126,7 @@ impl MimeTypes {
             media_type,
             interpreted: false,
             root_xml: Vec::new(),
+            extensions: Vec::new(),
         });
         id
     }
@@ -232,8 +235,15 @@ impl MimeTypes {
             "glob" => {
                 if let Some(pattern) = attribute(attributes, "pattern") {
                     let regex = attribute(attributes, "isregex") == Some("true");
-                    self.patterns
-                        .add(pattern, regex, current, &self.types, &self.registry)?;
+                    let extension =
+                        self.patterns
+                            .add(pattern, regex, current, &self.types, &self.registry)?;
+                    if let Some(extension) = extension {
+                        let extensions = &mut self.types[current].extensions;
+                        if !extensions.iter().any(|known| known == extension) {
+                            extensions.push(extension.to_owned());
+                        }
+                    }
                 }
             }
             "root-XML" => {
@@ -346,6 +356,15 @@ impl MimeTypes {
 
     pub(crate) fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// `forName(type).getExtension()`: the first extension of the type a name normalizes to,
+    /// with its dot, or nothing for a type without one or one `forName` would make anew.
+    pub(crate) fn extension(&self, media_type: &MediaType) -> &str {
+        self.by_type
+            .get(&self.registry.normalize(media_type))
+            .and_then(|&id| self.types[id].extensions.first())
+            .map_or("", String::as_str)
     }
 
     fn media_type(&self, id: TypeId) -> &MediaType {
@@ -539,16 +558,18 @@ impl Patterns {
         }
     }
 
-    fn add(
+    /// `Patterns.add`: the extension of an extension pattern, which the type takes too.
+    fn add<'p>(
         &mut self,
-        pattern: &str,
+        pattern: &'p str,
         regex: bool,
         id: TypeId,
         types: &[MimeType],
         registry: &Registry,
-    ) -> Result<(), String> {
+    ) -> Result<Option<&'p str>, String> {
         if regex {
-            return self.add_glob(pattern.to_owned(), id, types, registry);
+            self.add_glob(pattern.to_owned(), id, types, registry)?;
+            return Ok(None);
         }
         let wild = |c: char| matches!(c, '*' | '?' | '[');
         if !pattern.contains(wild) {
@@ -575,10 +596,11 @@ impl Patterns {
                 self.min_extension = self.min_extension.min(length);
                 self.max_extension = self.max_extension.max(length);
             }
+            return Ok(Some(extension));
         } else {
             self.add_glob(compile_glob(pattern), id, types, registry)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn add_glob(
@@ -650,6 +672,24 @@ mod tests {
 
     fn detect(data: &[u8], name: Option<&str>) -> String {
         mime_types().detect(data, name).to_string()
+    }
+
+    #[test]
+    fn names_the_extension_of_a_type() {
+        let types = mime_types();
+        assert_eq!(
+            types.extension(&MediaType::named("application/pdf")),
+            ".pdf"
+        );
+        assert_eq!(
+            types.extension(&MediaType::named("application/msword")),
+            ".doc"
+        );
+        assert_eq!(types.extension(&MediaType::named("text/rtf")), ".rtf");
+        assert_eq!(
+            types.extension(&MediaType::named("application/x-unheard-of")),
+            ""
+        );
     }
 
     #[test]

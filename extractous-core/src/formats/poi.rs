@@ -28,10 +28,19 @@ fn slice(data: &[u8], at: usize, length: usize) -> Read<&[u8]> {
         })
 }
 
+pub(crate) fn u8_at(data: &[u8], at: usize) -> Read<u8> {
+    Ok(slice(data, at, 1)?[0])
+}
+
 /// `LittleEndian.getShort`.
 pub(crate) fn i16_at(data: &[u8], at: usize) -> Read<i16> {
     let bytes = slice(data, at, 2)?;
     Ok(i16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+/// `LittleEndian.getUShort`.
+pub(crate) fn u16_at(data: &[u8], at: usize) -> Read<u16> {
+    Ok(i16_at(data, at)? as u16)
 }
 
 /// `LittleEndian.getInt`.

@@ -8,6 +8,7 @@ mod auto_detect_reader;
 mod cms;
 mod data_format;
 mod dc_xml;
+mod doc;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
@@ -141,6 +142,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::ZipParser,
     &cms::CmsParser,
     &dc_xml::DcXmlParser,
+    &doc::DocParser,
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,

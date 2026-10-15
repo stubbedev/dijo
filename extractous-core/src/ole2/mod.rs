@@ -5,6 +5,12 @@
 
 use std::collections::HashSet;
 
+mod write;
+
+pub(crate) use write::write;
+#[cfg(test)]
+pub(crate) use write::{Node, Storage};
+
 /// The signature an OLE2 compound document starts with.
 pub(crate) const SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 const END_OF_CHAIN: i32 = -2;
@@ -44,6 +50,8 @@ struct Property {
     child: i32,
     start: i32,
     size: i32,
+    /// The storage class id, as the property holds it.
+    class_id: [u8; 16],
     /// The entries POI's property tree gives a directory, in its order.
     children: Vec<EntryId>,
     child_names: HashSet<Vec<u16>>,
@@ -300,6 +308,7 @@ impl<'a> Ole2<'a> {
                     child: int_at(raw, 0x4C),
                     start: int_at(raw, 0x74),
                     size: int_at(raw, 0x78),
+                    class_id: raw[0x50..0x60].try_into().expect("16 bytes"),
                     children: Vec::new(),
                     child_names: HashSet::new(),
                 }));
@@ -419,6 +428,16 @@ impl<'a> Ole2<'a> {
 
     pub(crate) fn kind(&self, id: EntryId) -> EntryKind {
         self.entry(id).kind
+    }
+
+    /// `getStorageClsid`: the class id of an entry, as its property holds it.
+    pub(crate) fn class_id(&self, id: EntryId) -> [u8; 16] {
+        self.entry(id).class_id
+    }
+
+    /// An entry's name as POI reads it, in UTF-16 units.
+    pub(crate) fn name_units(&self, id: EntryId) -> &[u16] {
+        &self.entry(id).name
     }
 
     /// The names of the root's entries.
@@ -544,76 +563,30 @@ pub(crate) fn is_ole(data: &[u8]) -> bool {
 pub(crate) mod tests {
     use super::*;
 
-    /// A compound document of 512-byte sectors whose root holds the named entries, each a
-    /// document of `content` in the mini stream, or a directory where the name ends in `/`.
+    /// A compound document whose root holds the named entries, each a document of `content`,
+    /// or an empty directory where the name ends in `/`.
     pub(crate) fn compound(names: &[&str], content: &[u8]) -> Vec<u8> {
-        let mut header = vec![0u8; 512];
-        header[..8].copy_from_slice(&SIGNATURE);
-        header[0x1A] = 3;
-        header[0x1C..0x1E].copy_from_slice(&0xFFFEu16.to_le_bytes());
-        header[30] = 9;
-        header[32] = 6;
-        header[0x2C..0x30].copy_from_slice(&1i32.to_le_bytes());
-        header[0x30..0x34].copy_from_slice(&1i32.to_le_bytes());
-        header[0x38..0x3C].copy_from_slice(&4096i32.to_le_bytes());
-        header[0x3C..0x40].copy_from_slice(&2i32.to_le_bytes());
-        header[0x40..0x44].copy_from_slice(&1i32.to_le_bytes());
-        header[0x44..0x48].copy_from_slice(&END_OF_CHAIN.to_le_bytes());
-        for i in 0..109 {
-            let value = if i == 0 { 0 } else { UNUSED_BLOCK };
-            header[0x4C + 4 * i..0x50 + 4 * i].copy_from_slice(&value.to_le_bytes());
-        }
-        let mut fat = vec![UNUSED_BLOCK; 128];
-        fat[0] = -3;
-        fat[1] = END_OF_CHAIN;
-        fat[2] = END_OF_CHAIN;
-        fat[3] = END_OF_CHAIN;
-        let mut directory = vec![0u8; 512];
-        let mut entry =
-            |slot: usize, name: &str, kind: u8, child: i32, next: i32, start: i32, size: i32| {
-                let raw = &mut directory[slot * 128..(slot + 1) * 128];
-                let units: Vec<u16> = name.encode_utf16().collect();
-                for (i, unit) in units.iter().enumerate() {
-                    raw[2 * i..2 * i + 2].copy_from_slice(&unit.to_le_bytes());
-                }
-                raw[0x40..0x42].copy_from_slice(&(((units.len() + 1) * 2) as u16).to_le_bytes());
-                raw[0x42] = kind;
-                raw[0x44..0x48].copy_from_slice(&NO_INDEX.to_le_bytes());
-                raw[0x48..0x4C].copy_from_slice(&next.to_le_bytes());
-                raw[0x4C..0x50].copy_from_slice(&child.to_le_bytes());
-                raw[0x74..0x78].copy_from_slice(&start.to_le_bytes());
-                raw[0x78..0x7C].copy_from_slice(&size.to_le_bytes());
-            };
-        entry(
-            0,
-            "Root Entry",
-            5,
-            if names.is_empty() { NO_INDEX } else { 1 },
-            NO_INDEX,
-            3,
-            64,
-        );
-        for (i, name) in names.iter().enumerate().take(3) {
-            let next = if i + 1 < names.len().min(3) {
-                i as i32 + 2
-            } else {
-                NO_INDEX
-            };
-            match name.strip_suffix('/') {
-                Some(directory) => entry(i + 1, directory, 1, NO_INDEX, next, 0, 0),
-                None => entry(i + 1, name, 2, NO_INDEX, next, 0, content.len() as i32),
-            }
-        }
-        let mut sbat = vec![UNUSED_BLOCK; 128];
-        sbat[0] = END_OF_CHAIN;
-        let mut mini = vec![0u8; 512];
-        mini[..content.len()].copy_from_slice(content);
-        let mut data = header;
-        data.extend(fat.iter().flat_map(|v| v.to_le_bytes()));
-        data.extend(directory);
-        data.extend(sbat.iter().flat_map(|v| v.to_le_bytes()));
-        data.extend(mini);
-        data
+        let entries = names
+            .iter()
+            .map(|name| match name.strip_suffix('/') {
+                Some(directory) => (
+                    directory.encode_utf16().collect(),
+                    Node::Storage(Storage {
+                        class_id: [0; 16],
+                        entries: Vec::new(),
+                    }),
+                ),
+                None => (
+                    name.encode_utf16().collect(),
+                    Node::Document(content.to_vec()),
+                ),
+            })
+            .collect();
+        write::write(&Storage {
+            class_id: [0; 16],
+            entries,
+        })
+        .expect("names that fit a property")
     }
 
     #[test]

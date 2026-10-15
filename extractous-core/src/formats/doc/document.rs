@@ -1,0 +1,405 @@
+//! POI's `HWPFDocument`: the streams of a Word 97–2003 document read into its text, its
+//! character, paragraph and section runs, its styles and lists, the tables Tika's extractor
+//! reads, and every other structure POI reads on opening the document, failing where it fails.
+
+use super::bins::{
+    character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs, PropertyRun,
+};
+use super::bytes::{index, safely_clone, utf16_units};
+use super::fib::{field, is_encrypted, Fib, Story};
+use super::fields::Fields;
+use super::lists::ListTables;
+use super::styles::StyleSheet;
+use super::text::{ComplexFileTable, Plex};
+use crate::formats::escher::{self, Escher};
+use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown};
+use crate::formats::Unported;
+use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
+
+const WORD_DOCUMENT: &str = "WordDocument";
+const TABLE_ZERO: &str = "0Table";
+const TABLE_ONE: &str = "1Table";
+const DATA: &str = "Data";
+const OBJECT_POOL: &str = "ObjectPool";
+/// The first `nFib` of Word 97, before which POI reads a document as `HWPFOldDocument`.
+const WORD_97: i16 = 106;
+/// `HWPFDocument.getMaxRecordLength`.
+const MAX_RECORD_LENGTH: i64 = 100_000;
+const DOP_SIZE: i32 = 500;
+const SED_SIZE: i32 = 12;
+const FSPA_SIZE: i32 = 26;
+const BKF_SIZE: i32 = 4;
+const FRD_SIZE: i32 = 2;
+const BSTORE_CONTAINER: u16 = 0xF001;
+const DG_CONTAINER: u16 = 0xF002;
+
+/// A document as Tika's extractor reads it.
+pub(super) struct Document {
+    pub(super) fib: Fib,
+    pub(super) main: Vec<u8>,
+    pub(super) data: Vec<u8>,
+    /// The text, in UTF-16 units, as POI indexes it.
+    pub(super) text: Vec<u16>,
+    pub(super) characters: Vec<PropertyRun>,
+    pub(super) paragraphs: Vec<PropertyRun>,
+    /// The character ranges of the sections, in the order of their starts.
+    pub(super) sections: Vec<(i32, i32)>,
+    pub(super) styles: StyleSheet,
+    pub(super) lists: Option<ListTables>,
+    /// The places the document was saved to, by `SavedByTable`.
+    pub(super) save_locations: Option<Vec<Option<String>>>,
+    /// The authors of its revisions, by `RevisionMarkAuthorTable`.
+    pub(super) revision_authors: Option<Vec<Option<String>>>,
+    pub(super) fields: Fields,
+    /// The stored pictures of the drawing group, `getBStoreContainer`.
+    pub(super) picture_store: Option<Escher>,
+    table: Vec<u8>,
+}
+
+/// Why the document is left to Tika rather than read.
+pub(super) fn unported(Thrown(reason): Thrown) -> Unported {
+    Unported(format!("POI throws reading the Word document: {reason}"))
+}
+
+impl Document {
+    /// `new HWPFDocument(directory)`: the document, or why it is left to Tika.
+    pub(super) fn read(file: &Ole2<'_>, root: EntryId) -> Result<Document, Unported> {
+        let main = document_bytes(file, root, WORD_DOCUMENT)?;
+        if is_encrypted(&main).map_err(unported)? {
+            return Err(Unported(
+                "the document is encrypted, which Tika decrypts with a password".to_owned(),
+            ));
+        }
+        let fib = Fib::read(&main).map_err(unported)?;
+        if let Some(pool) = file.child_ignoring_case(root, OBJECT_POOL) {
+            if file.kind(pool) == EntryKind::Document {
+                return Err(Unported(
+                    "the document's object pool is no directory, which POI throws on".to_owned(),
+                ));
+            }
+        }
+        if fib.n_fib < WORD_97 {
+            return Err(Unported(
+                "the document is from Word 95 or before, which Tika reads with POI's \
+                 Word6Extractor"
+                    .to_owned(),
+            ));
+        }
+        let table_name = if fib.uses_table_one() {
+            TABLE_ONE
+        } else {
+            TABLE_ZERO
+        };
+        if file.child_ignoring_case(root, table_name).is_none() {
+            return Err(Unported(format!(
+                "the document has no table stream {table_name}, which POI throws on"
+            )));
+        }
+        let table = document_bytes(file, root, table_name)?;
+        let data = match file.child_ignoring_case(root, DATA) {
+            Some(_) => document_bytes(file, root, DATA)?,
+            None => Vec::new(),
+        };
+        Self::from_streams(fib, main, table, data).map_err(unported)
+    }
+
+    fn from_streams(fib: Fib, main: Vec<u8>, table: Vec<u8>, data: Vec<u8>) -> Read<Document> {
+        fib.check_unread_fields(&table)?;
+        check_document_properties(&table, fib.offset(field::DOP)?, fib.size(field::DOP)?)?;
+        let clx = ComplexFileTable::read(&main, &table, fib.offset(field::CLX)?)?;
+        let characters = character_runs(
+            &main,
+            &table,
+            fib.offset(field::PLCFBTECHPX)?,
+            fib.size(field::PLCFBTECHPX)?,
+            &clx,
+        )?;
+        let paragraphs = paragraph_runs(
+            &main,
+            &table,
+            &data,
+            fib.offset(field::PLCFBTEPAPX)?,
+            fib.size(field::PLCFBTEPAPX)?,
+            &clx,
+        )?;
+        let text = clx.text()?;
+        let characters = rebuild_character_runs(characters, &clx)?;
+        let paragraphs = rebuild_paragraph_runs(paragraphs, &text, &clx)?;
+        for part in [field::PLCSPAHDR, field::PLCSPAMOM] {
+            Plex::read(&table, fib.offset(part)?, fib.size(part)?, FSPA_SIZE)?;
+        }
+        let picture_store = read_office_art(
+            &table,
+            fib.offset(field::DGGINFO)?,
+            fib.size(field::DGGINFO)?,
+        )?;
+        let sections = read_sections(&main, &table, &fib)?;
+        let styles = StyleSheet::read(&table, fib.offset(field::STSHF)?)?;
+        check_font_table(&table, fib.offset(field::STTBFFFN)?)?;
+        let lists = match (fib.offset(field::PLFLST)?, fib.size(field::PLFLST)?) {
+            (0, _) | (_, 0) => None,
+            (offset, _) => Some(ListTables::read(
+                &table,
+                offset,
+                fib.offset(field::PLFLFO)?,
+            )?),
+        };
+        let save_locations = read_string_table(&table, &fib, field::STTBSAVEDBY)?.map(|strings| {
+            strings
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[_, location]| location.clone())
+                .collect()
+        });
+        let revision_authors = read_string_table(&table, &fib, field::STTBFRMARK)?;
+        check_bookmarks(&table, &fib)?;
+        for (references, texts) in [
+            (field::PLCFENDREF, field::PLCFENDTXT),
+            (field::PLCFFNDREF, field::PLCFFNDTXT),
+        ] {
+            check_plex(&table, &fib, references, FRD_SIZE)?;
+            check_plex(&table, &fib, texts, 0)?;
+        }
+        let fields = Fields::read(&table, &fib)?;
+        Ok(Document {
+            fib,
+            main,
+            data,
+            text,
+            characters,
+            paragraphs,
+            sections,
+            styles,
+            lists,
+            save_locations,
+            revision_authors,
+            fields,
+            picture_store,
+            table,
+        })
+    }
+
+    /// The `PlcfHdd` `new HeaderStories(document)` reads where the header story is not empty.
+    pub(super) fn header_plex(&self) -> Read<Option<Plex>> {
+        if self.fib.story_length(Story::Header) == 0 {
+            return Ok(None);
+        }
+        let size = self.fib.size(field::PLCFHDD)?;
+        if size == 0 {
+            return Ok(None);
+        }
+        Plex::read(&self.table, self.fib.offset(field::PLCFHDD)?, size, 0).map(Some)
+    }
+
+    /// The character range of a story, as `HWPFDocument.getRange(SubdocumentType)` gives it.
+    pub(super) fn story(&self, story: Story) -> (i32, i32) {
+        let mut start: i32 = 0;
+        for known in Story::ORDERED {
+            let length = self.fib.story_length(known);
+            if known == story {
+                return (start, start.wrapping_add(length));
+            }
+            start = start.wrapping_add(length);
+        }
+        unreachable!("every story is ordered")
+    }
+}
+
+/// `getDocumentEntryBytes`: the stream named in any case, read whole.
+fn document_bytes(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unported> {
+    let entry = file
+        .child_ignoring_case(root, name)
+        .filter(|&entry| file.kind(entry) == EntryKind::Document)
+        .ok_or_else(|| {
+            Unported(format!(
+                "the document has no stream {name}, which POI throws on"
+            ))
+        })?;
+    file.read(entry).map_err(|Unreadable(reason)| {
+        Unported(format!(
+            "POI cannot read the document's stream {name}: {reason}"
+        ))
+    })
+}
+
+/// `new DocumentProperties(tableStream, fcDop, lcbDop)`: its fields, and the bytes past them.
+fn check_document_properties(table: &[u8], offset: i32, size: i32) -> Read<()> {
+    let at = index(offset)?;
+    i16_at(table, at + DOP_SIZE as usize - 2)?;
+    if size != DOP_SIZE {
+        safely_clone(
+            table,
+            offset.wrapping_add(DOP_SIZE),
+            size.wrapping_sub(DOP_SIZE),
+            MAX_RECORD_LENGTH,
+        )?;
+    }
+    Ok(())
+}
+
+/// `new OfficeArtContent(tableStream, fcDggInfo, lcbDggInfo)`: the drawing group's store of
+/// pictures, after its drawings are read as POI reads them.
+fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher>> {
+    if size == 0 {
+        return Ok(None);
+    }
+    let mut position = index(offset)?;
+    let (group, length) = escher::container_at(table, position)?;
+    position = advance(position, length)?;
+    let end = i64::from(offset) + i64::from(size);
+    while (position as i64) < end {
+        let label = u8_at(table, position)?;
+        if label > 1 {
+            return Err(Thrown(format!(
+                "Invalid dgglbl when filling Escher records: {}",
+                label as i8
+            )));
+        }
+        position += 1;
+        let (drawing, length) = escher::container_at(table, position)?;
+        position = advance(position, length)?;
+        if drawing.record_id != DG_CONTAINER {
+            return Err(Thrown(format!(
+                "Did have an invalid record-type: {} when filling Escher records",
+                drawing.record_id as i16
+            )));
+        }
+    }
+    if position as i64 != end {
+        return Err(Thrown(format!(
+            "Did not read all data when filling Escher records: pos: {position}, offset: \
+             {offset}, size: {size}"
+        )));
+    }
+    Ok(group.child(BSTORE_CONTAINER).cloned())
+}
+
+/// A position moved on by the length a record says it read.
+fn advance(position: usize, length: isize) -> Read<usize> {
+    position
+        .checked_add_signed(length)
+        .ok_or_else(|| Thrown::new("Escher records run back before the data"))
+}
+
+/// `new SectionTable(...)`: the sections' character ranges, sorted by their starts.
+fn read_sections(main: &[u8], table: &[u8], fib: &Fib) -> Read<Vec<(i32, i32)>> {
+    let plex = Plex::read(
+        table,
+        fib.offset(field::PLCFSED)?,
+        fib.size(field::PLCFSED)?,
+        SED_SIZE,
+    )?;
+    let mut sections = Vec::with_capacity(plex.entries.len());
+    for (start, end, descriptor) in &plex.entries {
+        i16_at(descriptor, 0)?;
+        let sepx = i32_at(descriptor, 2)?;
+        i16_at(descriptor, 6)?;
+        i32_at(descriptor, 8)?;
+        if sepx != -1 {
+            let size = i32::from(i16_at(main, index(sepx)?)?);
+            safely_clone(main, sepx.wrapping_add(2), size, MAX_RECORD_LENGTH)?;
+        }
+        sections.push((*start, *end));
+    }
+    sections.sort_by_key(|&(start, _)| start);
+    Ok(sections)
+}
+
+/// `new FontTable(tableStream, fcSttbfffn, lcbSttbfffn)`: its fonts read as POI reads them.
+fn check_font_table(table: &[u8], offset: i32) -> Read<()> {
+    const FIXED_SIZE: i32 = 40;
+    let at = index(offset)?;
+    let count = i32::from(i16_at(table, at)?);
+    i16_at(table, at + 2)?;
+    if count < 0 {
+        return Err(Thrown(format!("Cannot create an array of {count} fonts")));
+    }
+    let mut position = at + 4;
+    for _ in 0..count {
+        let size = i32::from(u8_at(table, position)?) + 1;
+        u8_at(table, position + 1)?;
+        i16_at(table, position + 2)?;
+        u8_at(table, position + 4)?;
+        u8_at(table, position + 5)?;
+        if position + FIXED_SIZE as usize > table.len() {
+            return Err(Thrown::new(
+                "a font's panose and signature run past the table",
+            ));
+        }
+        let name_length = (size - FIXED_SIZE) / 2;
+        if name_length < 0 {
+            return Err(Thrown(format!(
+                "Had invalid computed size: {name_length} with size {size} and offsetTmp: 40"
+            )));
+        }
+        utf16_units(table, position + FIXED_SIZE as usize, name_length as usize)?;
+        position += size as usize;
+    }
+    Ok(())
+}
+
+/// `Sttb` read where the FIB places one: the strings of extended characters, `None` for each
+/// of negative length, and no strings where the table is not of extended characters.
+fn read_string_table(table: &[u8], fib: &Fib, which: usize) -> Read<Option<Vec<Option<String>>>> {
+    let (offset, size) = (fib.offset(which)?, fib.size(which)?);
+    if offset == 0 || size == 0 {
+        return Ok(None);
+    }
+    read_sttb(table, offset).map(Some)
+}
+
+/// `new Sttb(2, buffer, startOffset)`.
+fn read_sttb(table: &[u8], offset: i32) -> Read<Vec<Option<String>>> {
+    let at = index(offset)?;
+    if i16_at(table, at)? != -1 {
+        return Ok(Vec::new());
+    }
+    let count = usize::from(u16_at(table, at + 2)?);
+    let extra = usize::from(u16_at(table, at + 4)?);
+    let mut position = at + 6;
+    let mut strings = Vec::with_capacity(count);
+    for _ in 0..count {
+        let length = i16_at(table, position)?;
+        position += 2;
+        let Ok(length) = usize::try_from(length) else {
+            strings.push(None);
+            continue;
+        };
+        if position >= table.len() {
+            return Err(Thrown(format!(
+                "Illegal offset {position} (String data is of length {})",
+                table.len()
+            )));
+        }
+        let units = utf16_units(table, position, length)?;
+        strings.push(Some(String::from_utf16_lossy(&units)));
+        position += length * 2;
+        if position > table.len() {
+            return Err(Thrown(format!(
+                "Index {position} out of bounds for length {}",
+                table.len()
+            )));
+        }
+        position += extra;
+    }
+    Ok(strings)
+}
+
+/// `new BookmarksTables(tableStream, fib)`.
+fn check_bookmarks(table: &[u8], fib: &Fib) -> Read<()> {
+    if fib.offset(field::STTBFBKMK)? != 0 && fib.size(field::STTBFBKMK)? != 0 {
+        read_sttb(table, fib.offset(field::STTBFBKMK)?)?;
+    }
+    check_plex(table, fib, field::PLCFBKF, BKF_SIZE)?;
+    check_plex(table, fib, field::PLCFBKL, 0)
+}
+
+/// A `PlexOfCps` read where the FIB places one.
+fn check_plex(table: &[u8], fib: &Fib, which: usize, struct_size: i32) -> Read<()> {
+    let (offset, size) = (fib.offset(which)?, fib.size(which)?);
+    if offset != 0 && size != 0 {
+        Plex::read(table, offset, size, struct_size)?;
+    }
+    Ok(())
+}

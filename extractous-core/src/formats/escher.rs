@@ -7,31 +7,31 @@ use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, Read, Thrown};
 
 /// Escher record types, as POI's `EscherRecordTypes` names them.
 pub(crate) mod kind {
-    pub(super) const DGG: u16 = 0xF006;
-    pub(super) const BSE: u16 = 0xF007;
-    pub(super) const DG: u16 = 0xF008;
-    pub(super) const SPGR: u16 = 0xF009;
-    pub(super) const SP: u16 = 0xF00A;
-    pub(super) const OPT: u16 = 0xF00B;
-    pub(super) const TEXTBOX: u16 = 0xF00C;
-    pub(super) const CLIENT_TEXTBOX: u16 = 0xF00D;
-    pub(super) const CHILD_ANCHOR: u16 = 0xF00F;
-    pub(super) const CLIENT_ANCHOR: u16 = 0xF010;
-    pub(super) const CLIENT_DATA: u16 = 0xF011;
-    pub(super) const BLIP_START: u16 = 0xF018;
-    pub(super) const BLIP_EMF: u16 = 0xF01A;
-    pub(super) const BLIP_WMF: u16 = 0xF01B;
-    pub(super) const BLIP_PICT: u16 = 0xF01C;
-    pub(super) const BLIP_JPEG: u16 = 0xF01D;
-    pub(super) const BLIP_PNG: u16 = 0xF01E;
-    pub(super) const BLIP_DIB: u16 = 0xF01F;
-    pub(super) const BLIP_TIFF: u16 = 0xF029;
-    pub(super) const BLIP_END: u16 = 0xF117;
-    pub(super) const SPLIT_MENU_COLORS: u16 = 0xF11E;
-    pub(super) const TERTIARY_OPT: u16 = 0xF122;
-    pub(super) const UNKNOWN: u16 = 0xFFFF;
+    pub(crate) const DGG: u16 = 0xF006;
+    pub(crate) const BSE: u16 = 0xF007;
+    pub(crate) const DG: u16 = 0xF008;
+    pub(crate) const SPGR: u16 = 0xF009;
+    pub(crate) const SP: u16 = 0xF00A;
+    pub(crate) const OPT: u16 = 0xF00B;
+    pub(crate) const TEXTBOX: u16 = 0xF00C;
+    pub(crate) const CLIENT_TEXTBOX: u16 = 0xF00D;
+    pub(crate) const CHILD_ANCHOR: u16 = 0xF00F;
+    pub(crate) const CLIENT_ANCHOR: u16 = 0xF010;
+    pub(crate) const CLIENT_DATA: u16 = 0xF011;
+    pub(crate) const BLIP_START: u16 = 0xF018;
+    pub(crate) const BLIP_EMF: u16 = 0xF01A;
+    pub(crate) const BLIP_WMF: u16 = 0xF01B;
+    pub(crate) const BLIP_PICT: u16 = 0xF01C;
+    pub(crate) const BLIP_JPEG: u16 = 0xF01D;
+    pub(crate) const BLIP_PNG: u16 = 0xF01E;
+    pub(crate) const BLIP_DIB: u16 = 0xF01F;
+    pub(crate) const BLIP_TIFF: u16 = 0xF029;
+    pub(crate) const BLIP_END: u16 = 0xF117;
+    pub(crate) const SPLIT_MENU_COLORS: u16 = 0xF11E;
+    pub(crate) const TERTIARY_OPT: u16 = 0xF122;
+    pub(crate) const UNKNOWN: u16 = 0xFFFF;
     /// The types `EscherRecordTypes` names without a class of their own.
-    pub(super) const WITHOUT_CLASS: [u16; 15] = [
+    pub(crate) const WITHOUT_CLASS: [u16; 15] = [
         0xF00E, 0xF012, 0xF013, 0xF014, 0xF015, 0xF016, 0xF017, 0xF018, 0xF117, 0xF118, 0xF119,
         0xF11A, 0xF11D, 0xF11F, 0xF120,
     ];
@@ -143,6 +143,12 @@ fn class_of(options: u16, record_id: u16) -> Class {
     Class::Unknown
 }
 
+/// The record id `createRecord` reads at `offset`, failing where its header ends early.
+pub(crate) fn record_id_at(data: &[u8], offset: usize) -> Read<u16> {
+    i16_at(data, offset)?;
+    Ok(i16_at(data, offset + 2)? as u16)
+}
+
 /// `createRecord` at `offset`.
 fn create(data: &[u8], offset: usize) -> Read<Class> {
     let options = i16_at(data, offset)? as u16;
@@ -153,6 +159,12 @@ fn create(data: &[u8], offset: usize) -> Read<Class> {
 /// `createRecord` and `fillFields` at `offset`: the record, and the length POI says it read.
 pub(crate) fn record_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
     fill(data, offset, create(data, offset)?, 0)
+}
+
+/// `new EscherContainerRecord().fillFields` at `offset`: the record read as a container
+/// whatever its type, and the length POI says it read.
+pub(crate) fn container_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
+    fill(data, offset, Class::Container, 0)
 }
 
 /// `AbstractEscherHolderRecord.decode`: the records of a drawing group's data.
@@ -176,6 +188,13 @@ impl Escher {
             content: Content::Other,
             children: Vec::new(),
         }
+    }
+
+    /// `getChildById`: the first child of the type.
+    pub(crate) fn child(&self, record_id: u16) -> Option<&Escher> {
+        self.children
+            .iter()
+            .find(|child| child.record_id == record_id)
     }
 }
 
@@ -665,6 +684,10 @@ pub(crate) mod tests {
             })
         };
         assert_eq!(stored, [&stored_jpeg(b"jpeg"), &stored_jpeg(b"two")]);
+        assert_eq!(
+            records[0].child(0xF001).map(|store| store.children.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -678,6 +701,22 @@ pub(crate) mod tests {
             records.children[0].children[0].content,
             Content::Options(vec![3])
         );
+    }
+
+    #[test]
+    fn reads_a_record_as_a_container_when_asked_to() {
+        let blip = record(0, kind::BLIP_PNG, &[0; 20]);
+        let (container, _) = container_at(&record(0, 0xF00B, &blip), 0).unwrap();
+        assert_eq!(container.record_id, 0xF00B);
+        assert!(matches!(
+            container.children[0].content,
+            Content::Picture(Blip {
+                record_id: kind::BLIP_PNG,
+                ..
+            })
+        ));
+        assert_eq!(record_id_at(&blip, 0), Ok(kind::BLIP_PNG));
+        assert!(record_id_at(&blip, 25).is_err());
     }
 
     #[test]

@@ -123,6 +123,21 @@ impl Written {
     }
 }
 
+/// `MimeTypes.forName(type).getExtension()` of the default types: the first extension of the
+/// type, with its dot, or nothing.
+pub(crate) fn extension(media_type: &MediaType) -> &'static str {
+    mime_types().extension(media_type)
+}
+
+/// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an
+/// archive or compression format by its first bytes, or `application/octet-stream`.
+pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
+    match zip::detect(data) {
+        zip::Detected::Zip(found) => found.media_type,
+        zip::Detected::Other(found) => found.unwrap_or_else(|| MediaType::named(OCTET_STREAM)),
+    }
+}
+
 /// `DefaultDetector.detect` on a document, as `TikaNativeMain.detect` runs it.
 pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     let types = mime_types();

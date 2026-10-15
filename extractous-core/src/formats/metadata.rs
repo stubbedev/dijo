@@ -16,7 +16,10 @@ pub(crate) mod office {
     pub(crate) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
     pub(crate) const HAS_HIDDEN_TEXT: &str = "msoffice:doc:has-hidden-text";
     pub(crate) const HAS_TRACK_CHANGES: &str = "msoffice:has-track-changes";
+    pub(crate) const EMBEDDED_STORAGE_CLASS_ID: &str = "msoffice:embedded-storage-class-id";
+    pub(crate) const OCX_NAME: &str = "msoffice:ocx-name";
     pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+    pub(crate) const RESOURCE_NAME_EXTENSION_INFERRED: &str = "tk:resource-name-extension-inferred";
 }
 
 /// The longest name `Metadata.add(KeyPrefix, name, value)` takes, in UTF-16 units.
