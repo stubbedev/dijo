@@ -83,6 +83,7 @@ fn native_stream(path: &str, output: Output, char_set: CharSet) -> Extracted {
         routed.parser,
         routed.input.into_owned(),
         routed.detected,
+        ParserConfigs::default(),
         options,
     )
     .unwrap();
@@ -100,6 +101,7 @@ fn native_string(path: &str, output: Output) -> Extracted {
         routed.parser,
         &routed.input,
         &routed.detected,
+        &ParserConfigs::default(),
         SMALL_LIMIT,
         output,
     )

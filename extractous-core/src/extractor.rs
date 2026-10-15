@@ -325,6 +325,7 @@ impl Extractor {
                 routed.parser,
                 routed.input.into_owned(),
                 routed.detected,
+                self.configs.clone(),
                 options,
             )?;
             return Ok((
@@ -358,6 +359,7 @@ impl Extractor {
                 routed.parser,
                 &routed.input,
                 &routed.detected,
+                &self.configs,
                 max_length,
                 self.output(),
             );
