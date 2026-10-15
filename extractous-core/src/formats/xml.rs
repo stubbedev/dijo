@@ -5,8 +5,9 @@
 
 use std::borrow::Cow;
 
+use crate::errors::Error;
 use crate::formats::Failure;
-use crate::xml::{self, Event, Flow, TextKind, XmlError};
+use crate::xml::{self, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
 
 pub(crate) use crate::xml::{Attribute, XMLNS};
 
@@ -118,14 +119,31 @@ pub(crate) fn parse_sax(
     if let Some(failure) = failure {
         return Err(failure);
     }
-    result.map_err(|error| {
-        Failure::Malformed(match error {
-            XmlError::CharConversion => {
-                format!("{what} is malformed: a byte sequence its encoding does not allow")
-            }
-            XmlError::Malformed(reason) => format!("{what} is malformed: {reason}"),
-        })
+    result.map_err(|error| match error {
+        XmlError::CharConversion => Failure::Malformed(format!(
+            "{what} is malformed: a byte sequence its encoding does not allow"
+        )),
+        XmlError::Malformed(reason) => Failure::Malformed(format!("{what} is malformed: {reason}")),
+        XmlError::EntityExpansionLimit => Failure::Extraction(Error::LimitExceeded(format!(
+            "{what} expands more than {ENTITY_EXPANSION_LIMIT} entities"
+        ))),
     })
+}
+
+/// Whether the XML document `input` may name an element or attribute `name`, which is ASCII:
+/// `false` only where its bytes never spell the name in an encoding that writes ASCII as ASCII,
+/// which a document that starts with neither a UTF-16 byte order mark nor the EBCDIC
+/// declaration and holds no NUL is in.
+pub(crate) fn may_name(input: &[u8], name: &str) -> bool {
+    debug_assert!(name.is_ascii());
+    let ascii_compatible = !input.starts_with(&[0xFE, 0xFF])
+        && !input.starts_with(&[0xFF, 0xFE])
+        && !input.starts_with(&[0x4C, 0x6F, 0xA7, 0x94])
+        && !input.contains(&0);
+    !ascii_compatible
+        || input
+            .windows(name.len())
+            .any(|window| window == name.as_bytes())
 }
 
 /// Whether the JDK's scanner reads on over `character` in a run of character data: anything but
@@ -278,6 +296,14 @@ mod tests {
         ] {
             assert!(events(document.as_bytes()).is_err(), "{document:?}");
         }
+    }
+
+    #[test]
+    fn rules_out_names_only_in_ascii_compatible_documents() {
+        assert!(may_name(b"<a><b-c/></a>", "b-c"));
+        assert!(!may_name(b"<a><b/></a>", "b-c"));
+        assert!(may_name(b"\xff\xfe<\0a\0/\0>\0", "b-c"));
+        assert!(may_name(b"<\0a\0/\0>\0", "b-c"));
     }
 
     #[test]

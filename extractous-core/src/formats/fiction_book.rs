@@ -4,11 +4,10 @@
 //! together and keeping the names of embedded images and the language code in the text.
 
 use crate::config::ParserConfigs;
-use crate::formats::handlers::is_java_whitespace;
+use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const MAX_HEADING_LEVEL: usize = 6;
 const PARAGRAPHS: [&str; 4] = ["p", "v", "text-author", "subtitle"];
@@ -25,17 +24,19 @@ impl Parser for FictionBookParser {
         &["application/x-fictionbook+xml"]
     }
 
-    fn parse(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let blocks = read_book(input, xhtml.metadata_mut())?;
-        for block in blocks {
-            xhtml.element(&block.element, &block.text)?;
-        }
-        Ok(())
+        input: &'a [u8],
+        _metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        Ok(Box::new(move |xhtml| {
+            let blocks = read_book(input, xhtml.metadata_mut())?;
+            for block in blocks {
+                xhtml.element(&block.element, &block.text)?;
+            }
+            Ok(())
+        }))
     }
 }
 
@@ -142,7 +143,7 @@ fn collapse_whitespace(text: &str) -> String {
             in_run = false;
         }
     }
-    collapsed.trim_matches(is_java_whitespace).to_owned()
+    strip(&collapsed).to_owned()
 }
 
 const WHAT: &str = "The FictionBook XML";

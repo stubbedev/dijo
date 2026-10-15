@@ -13,6 +13,7 @@
 //! text holds markup.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -28,7 +29,13 @@ pub(crate) enum XmlError {
     CharConversion,
     /// A fatal well-formedness error, such as a `SAXParseException`.
     Malformed(String),
+    /// More entity expansions than [`ENTITY_EXPANSION_LIMIT`]: the JDK's `JAXP00010001`.
+    EntityExpansionLimit,
 }
+
+/// The entity expansions Tika's `XMLReaderUtils` lets Xerces make in one document, which stops
+/// a billion-laughs bomb.
+pub(crate) const ENTITY_EXPANSION_LIMIT: usize = 20;
 
 type Result<T> = std::result::Result<T, XmlError>;
 
@@ -125,6 +132,7 @@ pub(crate) fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) ->
         text: Text::new(bytes, detected, reader, start),
         position: 0,
         entities: HashMap::new(),
+        expansions: Cell::new(0),
         defaults: HashMap::new(),
         external_subset: false,
         parameter_references: false,
@@ -510,6 +518,8 @@ struct Parser<'a> {
     text: Text<'a>,
     position: usize,
     entities: HashMap<String, Entity>,
+    /// The entities expanded so far, as Xerces counts them against its limit.
+    expansions: Cell<usize>,
     defaults: HashMap<String, Vec<Default>>,
     external_subset: bool,
     parameter_references: bool,
@@ -1204,6 +1214,7 @@ impl Parser<'_> {
                 "a reference to the external entity {name} in an attribute"
             )),
             Some(Entity::Internal(text)) => {
+                self.count_expansion()?;
                 if depth > 64 {
                     return malformed(format!("the entity {name} refers to itself"));
                 }
@@ -1357,8 +1368,9 @@ impl Parser<'_> {
                     self.position += 1;
                     let reference = self.reference()?;
                     let mut expansion = String::new();
-                    self.expand_in_content(reference, &mut expansion, 0)?;
+                    let expanded = self.expand_in_content(reference, &mut expansion, 0);
                     emit(&expansion, TextKind::Reference)?;
+                    expanded?;
                 }
                 Some(_) => unreachable!("character data runs up to markup or a reference"),
             }
@@ -1382,6 +1394,16 @@ impl Parser<'_> {
         }
     }
 
+    /// Counts the start of an entity's expansion, failing past the limit as Xerces does.
+    fn count_expansion(&self) -> Result<()> {
+        let expansions = self.expansions.get() + 1;
+        self.expansions.set(expansions);
+        if expansions > ENTITY_EXPANSION_LIMIT {
+            return Err(XmlError::EntityExpansionLimit);
+        }
+        Ok(())
+    }
+
     fn expand_in_content(
         &self,
         reference: Reference,
@@ -1401,8 +1423,9 @@ impl Parser<'_> {
         }
         match self.entities.get(&name) {
             None => self.undeclared(&name),
-            Some(Entity::External) => Ok(()),
+            Some(Entity::External) => self.count_expansion(),
             Some(Entity::Internal(replacement)) => {
+                self.count_expansion()?;
                 if replacement.contains('<') {
                     return malformed(format!(
                         "the entity {name} holds markup, which this parser does not expand"
@@ -1671,6 +1694,42 @@ mod tests {
         assert!(malformed_root(b"<?xml encoding='UTF-8'?><a/>"));
         assert!(malformed_root(b"<a x='&nbsp;'/>"));
         assert!(malformed_root(b""));
+    }
+
+    fn text(bytes: &[u8]) -> (String, Result<()>) {
+        let mut text = String::new();
+        let result = parse(bytes, &mut |event| {
+            if let Event::Text(piece, _) = event {
+                text.push_str(piece);
+            }
+            Flow::Continue
+        });
+        (text, result)
+    }
+
+    #[test]
+    fn stops_expanding_entities_past_xerces_limit_with_the_text_read_before() {
+        let mut bomb = String::from("<!DOCTYPE a [<!ENTITY e0 'lol'>");
+        for level in 1..10 {
+            bomb.push_str(&format!(
+                "<!ENTITY e{level} '{}'>",
+                format!("&e{};", level - 1).repeat(10)
+            ));
+        }
+        bomb.push_str("]><a>&e9;</a>");
+        assert_eq!(
+            text(bomb.as_bytes()),
+            ("lol".repeat(10), Err(XmlError::EntityExpansionLimit))
+        );
+
+        let twenty = "&e;".repeat(ENTITY_EXPANSION_LIMIT);
+        let within = format!("<!DOCTYPE a [<!ENTITY e 'x'>]><a b='&e;&amp;'>{twenty}&#65;&lt;</a>");
+        assert!(text(within.as_bytes()).1.is_err());
+        let within = format!("<!DOCTYPE a [<!ENTITY e 'x'>]><a>{twenty}&#65;&lt;</a>");
+        assert_eq!(
+            text(within.as_bytes()),
+            (format!("{}A<", "x".repeat(ENTITY_EXPANSION_LIMIT)), Ok(()))
+        );
     }
 
     #[test]

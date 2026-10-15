@@ -8,8 +8,7 @@
 //! keeps the last cell value it was given.
 
 mod cell_format;
-mod date_format;
-
+pub(crate) mod date_format;
 mod fraction;
 mod number_text;
 

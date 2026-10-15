@@ -63,7 +63,6 @@ pub(crate) mod name {
     pub(crate) const HAS_COMMENTS: &str = "msoffice:has-comments";
     pub(crate) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
     pub(crate) const HAS_EXTERNAL_OLE_OBJECTS: &str = "msoffice:has-external-ole-objects";
-    pub(crate) const RELATIONSHIP_ID: &str = "tk:embedded-relationship-id";
     pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
 }
 
@@ -395,7 +394,7 @@ fn write_embedded_file(
 /// What Tika's metadata names of every part it parses as an embedded document.
 fn part_metadata(id: &str, resource_type: &str, name: &str) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
-    metadata.set(name::RELATIONSHIP_ID, id);
+    metadata.set(embedded::RELATIONSHIP_ID, id);
     metadata.set(embedded::RESOURCE_TYPE, resource_type);
     metadata.set(embedded::INTERNAL_PATH, name);
     metadata

@@ -3,9 +3,18 @@
 //! every one but a thumbnail, by the extraction's own parser and settings, OCR included, its body
 //! written into the embedding document, in a `package-entry` div headed by its name when the
 //! parser asks for one. Until every format has a native parser, Tika parses them, through
-//! `TikaNativeMain.parseEmbeddedBytes`, and its events are replayed here.
+//! `TikaNativeMain.parseEmbeddedBytes`, and its events are replayed here. An extraction that
+//! spools its embedded documents copies each to a file of its own instead, as our Java
+//! `EmbeddedSpooler` does.
+
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::Write as _;
 
 use crate::config::ParserConfigs;
+use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
+use crate::errors::Error;
+use crate::formats::java::LINE_SEPARATOR;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
 
@@ -13,25 +22,40 @@ use crate::formats::Failure;
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
 pub(crate) const RESOURCE_NAME: &str = "tk:resource-name";
 pub(crate) const INTERNAL_PATH: &str = "tk:internal-path";
+pub(crate) const RELATIONSHIP_ID: &str = "tk:embedded-relationship-id";
 pub(crate) const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 pub(crate) const THUMBNAIL: &str = "THUMBNAIL";
+pub(crate) const ATTACHMENT: &str = "ATTACHMENT";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 
-/// What the embedded documents of a document are parsed with, and what they leave for its
-/// metadata.
+/// What the parses of one extraction share, as Tika's `ParseContext` does: the parser settings,
+/// and whether its embedded documents are parsed or spooled.
 #[derive(Debug)]
-pub(crate) struct Embedding<'c> {
+pub(crate) struct ParseContext<'c> {
     configs: &'c ParserConfigs,
-    record: EmbeddedRecord,
+    spooler: Option<RefCell<Spooler>>,
 }
 
-impl<'c> Embedding<'c> {
+impl<'c> ParseContext<'c> {
+    /// An extraction that parses its embedded documents under `configs`.
     pub(crate) fn new(configs: &'c ParserConfigs) -> Self {
         Self {
             configs,
-            record: EmbeddedRecord::default(),
+            spooler: None,
+        }
+    }
+
+    /// An extraction that copies its embedded documents to `spool`.
+    pub(crate) fn spooling(configs: &'c ParserConfigs, spool: &EmbeddedSpool) -> Self {
+        Self {
+            configs,
+            spooler: Some(RefCell::new(Spooler {
+                spool: spool.clone(),
+                budget: spool.byte_budget,
+                spooled: Vec::new(),
+            })),
         }
     }
 
@@ -39,13 +63,100 @@ impl<'c> Embedding<'c> {
         self.configs
     }
 
+    /// The embedded documents copied to the spool, in order.
+    pub(crate) fn into_spooled(self) -> Vec<SpooledEmbedded> {
+        self.spooler
+            .map_or_else(Vec::new, |spooler| spooler.into_inner().spooled)
+    }
+}
+
+/// Our Java `EmbeddedSpooler`: each document embedded directly in the extracted one copied to
+/// a file of the spool named by its number, the extraction's byte budget shared among them.
+#[derive(Debug)]
+struct Spooler {
+    spool: EmbeddedSpool,
+    budget: u64,
+    spooled: Vec<SpooledEmbedded>,
+}
+
+impl Spooler {
+    /// `parseEmbedded`: copies `data` to the next file, as much of it as the budget leaves,
+    /// named by the document's resource name or its number.
+    fn spool(&mut self, data: &[u8], metadata: &TikaMetadata) -> Result<(), Failure> {
+        let index = self.spooled.len();
+        let path = self.spool.dir.join(index.to_string());
+        let kept = data
+            .len()
+            .min(usize::try_from(self.budget).unwrap_or(usize::MAX));
+        let written = File::create_new(&path).and_then(|mut file| file.write_all(&data[..kept]));
+        written.map_err(|e| {
+            Failure::Extraction(Error::IoError(format!(
+                "Could not spool an embedded document to {}: {e}",
+                path.display()
+            )))
+        })?;
+        let size = kept as u64;
+        self.budget -= size;
+        self.spooled.push(SpooledEmbedded {
+            name: metadata
+                .get(RESOURCE_NAME)
+                .map_or_else(|| format!("embedded-{index}"), str::to_owned),
+            content_type: metadata.get("Content-Type").map(str::to_owned),
+            path,
+            size,
+            truncated: kept < data.len(),
+        });
+        Ok(())
+    }
+}
+
+/// What the embedded documents of a document are parsed with, and what they leave for its
+/// metadata.
+#[derive(Debug)]
+pub(crate) struct Embedding<'c> {
+    context: &'c ParseContext<'c>,
+    record: EmbeddedRecord,
+}
+
+impl<'c> Embedding<'c> {
+    pub(crate) fn new(context: &'c ParseContext<'c>) -> Self {
+        Self {
+            context,
+            record: EmbeddedRecord::default(),
+        }
+    }
+
+    pub(crate) fn context(&self) -> &'c ParseContext<'c> {
+        self.context
+    }
+
+    /// Copies an embedded document to the spool, when the extraction spools them: whether it
+    /// did.
+    pub(crate) fn spool(&self, data: &[u8], metadata: &TikaMetadata) -> Result<bool, Failure> {
+        let Some(spooler) = &self.context.spooler else {
+            return Ok(false);
+        };
+        spooler.borrow_mut().spool(data, metadata)?;
+        Ok(true)
+    }
+
     /// Takes in the parsers an embedded document's parse used, as Tika's shared `ParseRecord`
     /// records each when it starts, before any of the document's content is written.
     pub(crate) fn absorb_parsers(&mut self, metadata: &crate::Metadata) {
         for parser in metadata.get(PARSED_BY_FULL_SET).into_iter().flatten() {
-            if !self.record.parsers.contains(parser) {
-                self.record.parsers.push(parser.clone());
-            }
+            self.record_parser(parser);
+        }
+    }
+
+    /// Records a parser the extraction used, once.
+    pub(crate) fn record_parser(&mut self, parser: &str) {
+        if !self
+            .record
+            .parsers
+            .iter()
+            .any(|recorded| recorded == parser)
+        {
+            self.record.parsers.push(parser.to_owned());
         }
     }
 
@@ -113,7 +224,10 @@ pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
 /// `class: message`: the first line of the stack trace Tika records, without the frames of the
 /// Java parser, which the native one replaces.
 pub(crate) fn record_stream_exception(metadata: &mut TikaMetadata, exception: &str) {
-    metadata.add(EMBEDDED_STREAM_EXCEPTION, format!("{exception}\n"));
+    metadata.add(
+        EMBEDDED_STREAM_EXCEPTION,
+        format!("{exception}{LINE_SEPARATOR}"),
+    );
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.
@@ -235,7 +349,8 @@ mod tests {
     #[test]
     fn records_parsers_once_and_failures_in_order() {
         let configs = ParserConfigs::default();
-        let mut embedding = Embedding::new(&configs);
+        let context = ParseContext::new(&configs);
+        let mut embedding = Embedding::new(&context);
         let mut first = crate::Metadata::new();
         first.insert(
             PARSED_BY_FULL_SET.to_owned(),

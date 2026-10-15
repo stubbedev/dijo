@@ -3,12 +3,19 @@
 //! first body content, indents table cells and list items with a tab, ends block elements with a
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
-use crate::config::ParserConfigs;
-use crate::formats::embedded::{self, EmbeddedRecord, Embedding, Event, Wrapping, PACKAGE_ENTRY};
+use crate::formats::embedded::{
+    self, EmbeddedRecord, Embedding, Event, ParseContext, Wrapping, PACKAGE_ENTRY,
+};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
 use crate::isolate::isolate;
+use crate::memory;
 use crate::tika::{self, EmbeddedOutcome};
+
+/// Whether the extraction holds no more memory than its budget, which it checks as it writes.
+pub(crate) fn within_budget() -> Result<(), Stop> {
+    memory::overrun().map_or(Ok(()), |limit| Err(Stop::MemoryLimit(limit)))
+}
 
 /// The XHTML namespace, which every element a native parser writes is in.
 pub(crate) const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
@@ -56,6 +63,8 @@ pub(crate) enum Stop {
     LimitReached,
     /// Whoever was reading the output went away.
     ReaderGone,
+    /// The extraction holds more memory than its budget of this many bytes.
+    MemoryLimit(u64),
 }
 
 /// Where the XHTML of a document goes: the SAX events Tika's handlers receive, all in the XHTML
@@ -121,13 +130,14 @@ pub(crate) struct Xhtml<'h> {
 impl<'h> Xhtml<'h> {
     /// Writes a document to `handler`: starts it, has `body` write its content, and ends it when
     /// `body` succeeds. A failed document stays unfinished, as a Tika parser that throws leaves
-    /// it. Documents embedded in it are parsed under `configs`. Returns the metadata as `body`
-    /// left it, and what its embedded documents leave for it, which
-    /// [`EmbeddedRecord::finish`] adds as Tika's `CompositeParser` does once a parser has returned.
+    /// it. Documents embedded in it are parsed or spooled as the extraction's `context` says.
+    /// Returns the metadata as `body` left it, and what its embedded documents leave for it,
+    /// which [`EmbeddedRecord::finish`] adds as Tika's `CompositeParser` does once a parser has
+    /// returned.
     pub(crate) fn write<E: From<Stop>>(
         handler: &'h mut dyn ContentHandler,
         metadata: TikaMetadata,
-        configs: &'h ParserConfigs,
+        context: &'h ParseContext<'h>,
         body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
     ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
         let mut xhtml = Self {
@@ -135,7 +145,7 @@ impl<'h> Xhtml<'h> {
             metadata,
             head: Head::NotStarted,
             ended: false,
-            embedding: Embedding::new(configs),
+            embedding: Embedding::new(context),
         };
         let result = xhtml
             .start_document()
@@ -163,6 +173,28 @@ impl<'h> Xhtml<'h> {
         &mut self.metadata
     }
 
+    /// Has `body` write the document with `metadata` in place of the document's, as a parser
+    /// does that hands Tika's handler to another parser with metadata of its own: the head shows
+    /// `metadata` as `body` leaves it, and the document's metadata is back once `body` returns.
+    pub(crate) fn with_metadata<T>(
+        &mut self,
+        metadata: TikaMetadata,
+        body: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let document = std::mem::replace(&mut self.metadata, metadata);
+        let result = body(self);
+        self.metadata = document;
+        result
+    }
+
+    /// Records that the document's parser hands it to `parser`, as Tika's `CompositeParser`
+    /// records the parser it delegates to: in `tk:parsed-by`, and among the parsers the
+    /// extraction used.
+    pub(crate) fn delegate_to(&mut self, parser: &str) {
+        self.metadata.add("tk:parsed-by", parser);
+        self.embedding.record_parser(parser);
+    }
+
     pub(crate) fn start_element(&mut self, name: &str) -> Result<(), Stop> {
         self.start_element_with(name, &[])
     }
@@ -172,6 +204,7 @@ impl<'h> Xhtml<'h> {
         name: &str,
         attributes: &[(&str, &str)],
     ) -> Result<(), Stop> {
+        within_budget()?;
         if name == "frameset" {
             return self.end_head(true);
         }
@@ -196,6 +229,7 @@ impl<'h> Xhtml<'h> {
     /// Ends `name` as a parser that names it in `namespace` does: only an element ended in the
     /// XHTML namespace is followed by a line break.
     pub(crate) fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        within_budget()?;
         if AUTO.contains(&name) {
             return Ok(());
         }
@@ -216,6 +250,7 @@ impl<'h> Xhtml<'h> {
 
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
     fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.safe_text(text, Text::Characters)
@@ -224,6 +259,7 @@ impl<'h> Xhtml<'h> {
     /// Writes Java characters, as Tika's `characters(char[], int, int)`: a surrogate without its
     /// pair is invalid like the characters XML cannot hold, and each becomes U+FFFD.
     pub(crate) fn characters_utf16(&mut self, units: &[u16]) -> Result<(), Stop> {
+        within_budget()?;
         let frameset = self.frameset();
         self.end_head(frameset)?;
         let mut run = String::with_capacity(units.len());
@@ -244,12 +280,28 @@ impl<'h> Xhtml<'h> {
     }
 
     pub(crate) fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
         self.safe_text(text, Text::IgnorableWhitespace)
     }
 
     /// Whether `name` is a block element a line break ends (`XHTMLContentHandler.ENDLINE`).
     pub(crate) fn is_endline(name: &str) -> bool {
         ENDLINE.contains(&name)
+    }
+
+    /// Whether `name` is an element a tab starts (`XHTMLContentHandler.INDENT`).
+    pub(crate) fn is_indented(name: &str) -> bool {
+        INDENT.contains(&name)
+    }
+
+    /// The character Tika's safe content handler writes for `character`: U+FFFD for one XML
+    /// cannot hold.
+    pub(crate) fn safe_char(character: char) -> char {
+        if is_invalid(character) {
+            REPLACEMENT
+        } else {
+            character
+        }
     }
 
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
@@ -282,20 +334,27 @@ impl<'h> Xhtml<'h> {
         self.handler.end_document()
     }
 
+    /// What the parses of this extraction share, which a document parsed into this one shares.
+    pub(crate) fn context(&self) -> &'h ParseContext<'h> {
+        self.embedding.context()
+    }
+
     /// Parses a document embedded in this one, given `data` and the `metadata` the parser gives
     /// it, as Tika's `ParsingEmbeddedDocumentExtractor` does when a parser hands it this
     /// `XHTMLContentHandler`: unless it is a thumbnail, its body is written here, in a
     /// `package-entry` div headed by its name when `wrapping` asks for one, with the elements a
     /// failed parse left open closed before the div ends. Tika records the failures it can in
     /// this document's metadata; any other fails this document, after the content written
-    /// before it.
+    /// before it. An extraction that spools its embedded documents copies it to the spool and
+    /// writes nothing of it.
     pub(crate) fn parse_embedded(
         &mut self,
         data: &[u8],
         metadata: &TikaMetadata,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
-        if !embedded::is_parsed(metadata) {
+        within_budget()?;
+        if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
             return Ok(());
         }
         if wrapping == Wrapping::PackageEntry {
@@ -312,7 +371,7 @@ impl<'h> Xhtml<'h> {
                     isolate,
                     data,
                     &metadata.pairs(),
-                    self.embedding.configs(),
+                    self.embedding.context().configs(),
                     None,
                 )
             })
@@ -505,6 +564,7 @@ fn replace_invalid(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ParserConfigs;
     use crate::formats::{Chain, Output, StringOut};
 
     #[test]
@@ -519,9 +579,12 @@ mod tests {
             max_length: 100,
         };
         let result = chain.write_to(&mut out, |handler| {
-            Xhtml::write(handler, TikaMetadata::new(), &configs, |xhtml| {
-                xhtml.parse_embedded(text.as_bytes(), &entry, Wrapping::PackageEntry)
-            })
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &ParseContext::new(&configs),
+                |xhtml| xhtml.parse_embedded(text.as_bytes(), &entry, Wrapping::PackageEntry),
+            )
             .2
         });
         assert!(matches!(result, Err(Failure::Stopped(_))));

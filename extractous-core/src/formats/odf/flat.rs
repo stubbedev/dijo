@@ -11,7 +11,7 @@ use crate::formats::odf::meta::MetaHandlers;
 use crate::formats::odf::BINARY_DATA_ELEMENT;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const WHAT: &str = "The flat OpenDocument XML";
 const DOCUMENT: &str = "document";
@@ -211,59 +211,61 @@ impl Parser for FlatOpenDocumentParser {
         ]
     }
 
-    fn defers(
+    /// Defers a document embedding binary data in its body, which only a document whose bytes
+    /// may name the element is read ahead for.
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        let mut finder = BinaryDataFinder {
-            sections: Sections::new(),
-            found: false,
-        };
-        let stopped = xml::parse_sax(input, WHAT, &mut finder).is_err();
-        (stopped && finder.found).then(|| BINARY_DATA.to_owned())
-    }
-
-    /// Parses as `FlatOpenDocumentParser.parse`, which ends the document even when the parse
-    /// fails, after ending the elements left open, unless an unchecked exception skips that.
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let mut flat = Flat {
-            sections: Sections::new(),
-            body: Body::new(
-                xhtml,
-                configs.office.includes_deleted_content(),
-                Namespaces::AsWritten,
-            ),
-            meta: MetaHandlers::new(),
-            detected: None,
-        };
-        let outcome = xml::parse_sax(input, WHAT, &mut flat);
-        let mut failure = match outcome {
-            Ok(()) => {
-                if let Some(detected) = flat.detected {
-                    flat.body.metadata_mut().set("Content-Type", detected);
-                }
-                return Ok(());
-            }
-            Err(failure) => failure,
-        };
-        if !flat.body.failed_unchecked() {
-            if let Err(stop) = flat.body.drain_open_elements() {
-                failure = stop.into();
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        if xml::may_name(input, BINARY_DATA_ELEMENT) {
+            let mut finder = BinaryDataFinder {
+                sections: Sections::new(),
+                found: false,
+            };
+            let stopped = xml::parse_sax(input, WHAT, &mut finder).is_err();
+            if stopped && finder.found {
+                return Err(Declined::Deferred(BINARY_DATA.to_owned()));
             }
         }
-        drop(flat);
-        if let Err(stop) = xhtml.end_document() {
+        Ok(Box::new(move |xhtml| write(input, configs, xhtml)))
+    }
+}
+
+/// Parses as `FlatOpenDocumentParser.parse`, which ends the document even when the parse
+/// fails, after ending the elements left open, unless an unchecked exception skips that.
+fn write(input: &[u8], configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let mut flat = Flat {
+        sections: Sections::new(),
+        body: Body::new(
+            xhtml,
+            configs.office.includes_deleted_content(),
+            Namespaces::AsWritten,
+        ),
+        meta: MetaHandlers::new(),
+        detected: None,
+    };
+    let outcome = xml::parse_sax(input, WHAT, &mut flat);
+    let mut failure = match outcome {
+        Ok(()) => {
+            if let Some(detected) = flat.detected {
+                flat.body.metadata_mut().set("Content-Type", detected);
+            }
+            return Ok(());
+        }
+        Err(failure) => failure,
+    };
+    if !flat.body.failed_unchecked() {
+        if let Err(stop) = flat.body.drain_open_elements() {
             failure = stop.into();
         }
-        Err(failure)
     }
+    drop(flat);
+    if let Err(stop) = xhtml.end_document() {
+        failure = stop.into();
+    }
+    Err(failure)
 }
 
 #[cfg(test)]

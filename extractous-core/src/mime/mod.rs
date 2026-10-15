@@ -16,7 +16,7 @@
 
 mod archive;
 mod detectors;
-mod java;
+pub(crate) mod java;
 mod java_regex;
 mod magic;
 mod media_type;
@@ -29,6 +29,7 @@ mod uri;
 pub(crate) use detectors::ole::tests::compound as compound_document;
 pub(crate) use detectors::ole::{is_ole10_native, Lookup, OleFile};
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
+pub(crate) use java::trim as java_trim;
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 

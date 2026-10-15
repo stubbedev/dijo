@@ -76,10 +76,19 @@ pub extern "C" fn extractous_main(
 }
 
 /// musl's allocator, which the static executable would otherwise use, is slow under
-/// concurrent allocation.
+/// concurrent allocation. Each allocation is counted against the memory budget of the
+/// extraction that makes it, which `--max-heap-bytes` sets for native extractions.
 #[cfg(feature = "static-image")]
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: extractous_core::memory::CountingAllocator<mimalloc::MiMalloc> =
+    extractous_core::memory::CountingAllocator(mimalloc::MiMalloc);
+
+/// Each allocation is counted against the memory budget of the extraction that makes it, which
+/// `--max-heap-bytes` sets for native extractions.
+#[cfg(not(feature = "static-image"))]
+#[global_allocator]
+static ALLOCATOR: extractous_core::memory::CountingAllocator<std::alloc::System> =
+    extractous_core::memory::CountingAllocator(std::alloc::System);
 
 static ARGUMENTS: OnceLock<Vec<OsString>> = OnceLock::new();
 

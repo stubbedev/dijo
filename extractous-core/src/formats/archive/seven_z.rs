@@ -7,8 +7,7 @@ use super::write_files;
 use crate::compress::seven_z;
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Parser, Prepared};
 
 const SEVEN_Z: &str = "application/x-7z-compressed";
 
@@ -24,28 +23,22 @@ impl Parser for SevenZParser {
         &[SEVEN_Z]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        match seven_z::files(input) {
-            Ok(files) => Scan::new().files(input.len(), &files),
-            Err(undecoded) => Some(format!("the 7z archive: {undecoded}")),
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let files =
+            seven_z::files(input).map_err(|undecoded| format!("the 7z archive: {undecoded}"))?;
+        if let Some(reason) = Scan::new().files(input.len(), &files) {
+            return Err(Declined::Deferred(reason));
         }
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let files = seven_z::files(input).map_err(|e| Failure::Malformed(e.to_string()))?;
-        xhtml.metadata_mut().set("Content-Type", SEVEN_Z);
-        let written = write_files(&files, xhtml);
-        xhtml.end_document()?;
-        written
+        Ok(Box::new(move |xhtml| {
+            xhtml.metadata_mut().set("Content-Type", SEVEN_Z);
+            let written = write_files(&files, xhtml);
+            xhtml.end_document()?;
+            written
+        }))
     }
 }
