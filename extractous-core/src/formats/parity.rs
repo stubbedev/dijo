@@ -9,10 +9,11 @@
 //! parser goes by Tika's name; and the stack traces of their failures without the Java frames
 //! below the embedded document's parse, the embedding parser's in Tika's path and the native
 //! bridge's in the other, which no native parser runs, and with the random numbers of Tika's
-//! temporary files masked. A failure the parser records itself (`embedded-stream-exception`) is
-//! compared without its frames, all of them the Java parser's. In a string extraction, the
-//! native path, which parses an embedded document whole, may go on to more parsers and failures
-//! than Tika's, which stops at the length limit; Tika's must lead the native ones.
+//! temporary files, and the suffixes the native bridge gives them, masked. A failure the parser
+//! records itself (`embedded-stream-exception`) is compared without its frames, all of them the
+//! Java parser's. In a string extraction, the native path, which parses an embedded document
+//! whole, may go on to more parsers and failures than Tika's, which stops at the length limit;
+//! Tika's must lead the native ones.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -227,8 +228,10 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
-/// The text with the random number of each of Tika's temporary files, `apache-tika-<digits>`,
-/// masked.
+/// The text with the random number and the suffix of each of Tika's temporary files,
+/// `apache-tika-<digits>.<suffix>`, masked: the suffix is the extension of the name the
+/// embedded document's stream was made with, which the native bridge gives it and Tika's path,
+/// making the stream from bytes alone, does not.
 fn without_temporary_names(text: &str) -> String {
     const PREFIX: &str = "apache-tika-";
     let mut out = String::with_capacity(text.len());
@@ -237,6 +240,9 @@ fn without_temporary_names(text: &str) -> String {
         out.push_str(&rest[..at + PREFIX.len()]);
         rest =
             rest[at + PREFIX.len()..].trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
+        if let Some(suffix) = rest.strip_prefix('.') {
+            rest = suffix.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
+        }
         out.push('N');
     }
     out.push_str(rest);
@@ -508,6 +514,18 @@ mod tests {
         assert_eq!(
             without_embedding_frames(native),
             "E: no\n\tat P.parse(P.java:1)\n\tat org.apache.tika.parser.AutoDetectParser.parse(A.java:2)\nCaused by: C: why\n\tat Q.q(Q.java:4)\n"
+        );
+    }
+
+    #[test]
+    fn masks_the_numbers_and_suffixes_of_temporary_files() {
+        assert_eq!(
+            without_temporary_names("Reading /tmp/apache-tika-18224193047354770268.bmp failed"),
+            without_temporary_names("Reading /tmp/apache-tika-1899816013292051053.tmp failed"),
+        );
+        assert_eq!(
+            without_temporary_names("/tmp/apache-tika-12-34.pdf: x"),
+            "/tmp/apache-tika-N: x"
         );
     }
 }
