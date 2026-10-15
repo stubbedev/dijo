@@ -179,6 +179,28 @@ impl<'h> Xhtml<'h> {
         self.safe_text(text, Text::Characters)
     }
 
+    /// Writes Java characters, as Tika's `characters(char[], int, int)`: a surrogate without its
+    /// pair is invalid like the characters XML cannot hold, and each becomes U+FFFD.
+    pub(crate) fn characters_utf16(&mut self, units: &[u16]) -> Result<(), Stop> {
+        let frameset = self.frameset();
+        self.end_head(frameset)?;
+        let mut run = String::with_capacity(units.len());
+        for decoded in char::decode_utf16(units.iter().copied()) {
+            match decoded {
+                Ok(character) if !is_invalid(character) => run.push(character),
+                _ => {
+                    if !run.is_empty() {
+                        self.handler.characters(&run)?;
+                        run.clear();
+                    }
+                    self.handler
+                        .characters(REPLACEMENT.encode_utf8(&mut [0; 4]))?;
+                }
+            }
+        }
+        self.handler.characters(&run)
+    }
+
     #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
         self.safe_text(text, Text::IgnorableWhitespace)
@@ -198,7 +220,10 @@ impl<'h> Xhtml<'h> {
         self.end_element(name)
     }
 
-    fn end_document(&mut self) -> Result<(), Stop> {
+    /// Ends the document: the body and `html`. [`Xhtml::write`] ends a document whose parser
+    /// succeeds; a parser that ends its document even when it fails, as a Tika parser does in a
+    /// `finally` block, calls this before it returns its failure.
+    pub(crate) fn end_document(&mut self) -> Result<(), Stop> {
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.handler
