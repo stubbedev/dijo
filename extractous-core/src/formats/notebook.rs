@@ -14,6 +14,7 @@ use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::mime::java::is_regex_space;
 
 const PLAIN_TEXT: &str = "text/plain";
 const MARKDOWN: &str = "text/markdown";
@@ -132,7 +133,7 @@ fn paragraphs(text: &str) -> Vec<&str> {
         if bytes[at] == b'\n' {
             let run = bytes[at + 1..]
                 .iter()
-                .take_while(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0B' | b'\x0C' | b'\r'))
+                .take_while(|&&byte| is_regex_space(char::from(byte)))
                 .count();
             if let Some(last) = bytes[at + 1..at + 1 + run]
                 .iter()
