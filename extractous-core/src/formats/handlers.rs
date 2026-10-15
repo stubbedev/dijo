@@ -805,6 +805,15 @@ mod tests {
     }
 
     #[test]
+    fn judges_blank_text_as_java_does() {
+        assert!(super::is_blank(""));
+        assert!(super::is_blank(" \t\r\n\u{1c}\u{2003}\u{3000}"));
+        for not_whitespace in ['\u{a0}', '\u{2007}', '\u{202f}', '\u{85}'] {
+            assert!(!super::is_blank(&not_whitespace.to_string()));
+        }
+    }
+
+    #[test]
     fn write_what_tikas_handler_chains_write() {
         let scripts = scripts();
         let mut compared = 0;
