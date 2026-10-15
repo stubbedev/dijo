@@ -309,6 +309,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_writes_content_types_as_tika_does() {
+        let cases = [
+            ("Text/Plain", "text/plain"),
+            (" text / csv ;charset=UTF-8", "text/csv; charset=UTF-8"),
+            (
+                "text/csv; charset=\"utf-8\"; Header=present",
+                "text/csv; charset=utf-8; header=present",
+            ),
+            ("text/x-a; b=c;; ;d", "text/x-a; b=c; d="),
+            ("text/x-a; note=\"a b\"", "text/x-a; note=\"a b\""),
+            ("text/x-a; path='/x'", "text/x-a; path=\"\\/x\""),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(parse(input).as_deref(), Some(expected), "{input}");
+        }
+        for invalid in ["text", "/plain", "text/", "text/pl ain", "te(xt/plain"] {
+            assert_eq!(parse(invalid), None, "{invalid}");
+        }
+        let quoted = MediaType::named("text/x-a").with_parameter("q", "a=b\"c");
+        assert_eq!(quoted.to_string(), "text/x-a; q=\"a\\=b\\\"c\"");
+        let replaced = MediaType::named("text/csv; charset=a").with_parameter("charset", "b");
+        assert_eq!(replaced.to_string(), "text/csv; charset=b");
+    }
+
+    #[test]
     fn splits_the_parts() {
         let t = MediaType::named("image/vnd.dgn; version=8");
         assert_eq!((t.kind(), t.subtype()), ("image", "vnd.dgn"));

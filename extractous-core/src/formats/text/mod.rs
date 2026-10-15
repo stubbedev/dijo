@@ -69,9 +69,9 @@ use sniffer::Delimiter;
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
-use crate::formats::media_type::MediaType;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::mime::MediaType;
 use crate::text::charset::Detection;
 
 /// The UTF-16 units of each read of `handleText`'s buffer, each written as one `characters`
@@ -180,7 +180,7 @@ impl Document {
 
 /// A `text/` media type without parameters.
 fn text_type(subtype: &str) -> MediaType {
-    MediaType::new("text", subtype)
+    MediaType::named(&format!("text/{subtype}"))
 }
 
 /// What TextAndCSVParser makes of `input` when the metadata's `Content-Type` is `content_type`.
@@ -193,7 +193,8 @@ fn read(input: &[u8], content_type: &str) -> Result<Document, Failure> {
     let AutoDetectReader { detection, text } = AutoDetectReader::read(input, content_type)?;
     let text = text.as_str();
     let charset = detection.decode_as;
-    let sniffed = [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base());
+    let sniffed =
+        [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base_type());
     let (content_type, body) = match sniffed.then(|| sniffer::sniff(text)) {
         None => (given, Body::Paragraph(chunks(text))),
         Some(None) => (text_type("plain"), Body::Paragraph(chunks(text))),
@@ -207,11 +208,11 @@ fn read(input: &[u8], content_type: &str) -> Result<Document, Failure> {
                 delimiter,
                 records: csv::records(text, delimiter.char()),
             };
-            (table.with("delimiter", delimiter.name()), body)
+            (table.with_parameter("delimiter", delimiter.name()), body)
         }
     };
     Ok(Document {
-        content_type: content_type.with("charset", charset.name()),
+        content_type: content_type.with_parameter("charset", charset.name()),
         detection,
         body,
     })

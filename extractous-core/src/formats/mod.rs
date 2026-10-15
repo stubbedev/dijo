@@ -7,7 +7,6 @@ mod auto_detect_reader;
 mod fiction_book;
 pub(crate) mod handlers;
 mod java_time;
-mod media_type;
 pub(crate) mod metadata;
 mod odf;
 #[cfg(test)]

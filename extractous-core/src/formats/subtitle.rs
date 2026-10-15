@@ -8,9 +8,9 @@
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
 use crate::formats::handlers::{is_blank, is_java_whitespace};
-use crate::formats::media_type::MediaType;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
+use crate::mime::MediaType;
 
 const SUBSTATION_DIALOGUE: &str = "Dialogue:";
 const SUBSTATION_TEXT_FIELD: usize = 9;
@@ -42,7 +42,7 @@ impl Parser for SubtitleParser {
             .ok_or_else(|| Failure::Malformed("the document has no Content-Type".into()))?
             .to_owned();
         let substation = MediaType::parse(&content_type)
-            .is_some_and(|media_type| media_type.base() == MediaType::new("text", "x-ssa"));
+            .is_some_and(|media_type| media_type.base_type() == MediaType::named("text/x-ssa"));
         let reader = AutoDetectReader::read(input, &content_type)?;
         let metadata = xhtml.metadata_mut();
         auto_detect_reader::set_metadata(&reader.detection, metadata);
