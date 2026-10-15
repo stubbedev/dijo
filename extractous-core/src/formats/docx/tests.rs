@@ -221,10 +221,11 @@ fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
         output: Output::Xml,
         max_length: 100_000,
     };
+    let prepared = DocxParser
+        .prepare(input, &TikaMetadata::new(), configs)
+        .unwrap();
     let (_, _, result) = chain.write_to(&mut out, |handler| {
-        Xhtml::write(handler, TikaMetadata::new(), configs, |xhtml| {
-            DocxParser.parse(input, configs, xhtml)
-        })
+        Xhtml::write(handler, TikaMetadata::new(), configs, prepared)
     });
     result.unwrap();
     out.0

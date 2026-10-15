@@ -82,10 +82,14 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     })
 }
 
-fn routed<'a>(path: &'a str, configs: &ParserConfigs) -> Routed<'a> {
-    formats::route(Source::File(path), false, configs)
+fn routed(path: &str) -> Routed<'_> {
+    formats::route(Source::File(path), false)
         .unwrap()
-        .unwrap_or_else(|| panic!("{path} has no native parser, or its parser defers it to Tika"))
+        .unwrap_or_else(|| panic!("{path} has no native parser"))
+}
+
+fn deferred(path: &str) -> String {
+    format!("the native parser leaves {path} to Tika")
 }
 
 fn native_stream(
@@ -94,7 +98,7 @@ fn native_stream(
     output: Output,
     char_set: CharSet,
 ) -> Outcome {
-    let routed = routed(path, configs);
+    let routed = routed(path);
     let options = StreamOptions {
         char_set,
         output,
@@ -107,7 +111,8 @@ fn native_stream(
         configs.clone(),
         options,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|| panic!("{}", deferred(path)));
     let mut text = Vec::new();
     stream
         .read_to_end(&mut text)
@@ -119,7 +124,7 @@ fn native_stream(
 }
 
 fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
-    let routed = routed(path, configs);
+    let routed = routed(path);
     let (text, metadata) = formats::parse_to_string(
         routed.parser,
         &routed.input,
@@ -128,7 +133,8 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
         SMALL_LIMIT,
         output,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|| panic!("{}", deferred(path)));
     Ok(Extracted {
         text: text.into_bytes(),
         metadata: sorted(metadata),
@@ -329,7 +335,7 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     let mut differences = Vec::new();
     for document in documents {
         let path = document.to_str().unwrap();
-        let native_name = routed(path, configs).parser.name();
+        let native_name = routed(path).parser.name();
         for output in [Output::Text, Output::Xml] {
             let mut comparisons = vec![(
                 "string",

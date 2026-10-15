@@ -95,9 +95,11 @@ pub(crate) fn difference(parser: &dyn Parser, case: &Case) -> Option<String> {
     }
     given.set("Content-Type", case.content_type.clone());
     let configs = ParserConfigs::default();
-    let (metadata, _, result) = Xhtml::write(&mut recorder, given, &configs, |xhtml| {
-        parser.parse(&case.input, &configs, xhtml)
-    });
+    let prepared = match parser.prepare(&case.input, &given, &configs) {
+        Ok(prepared) => prepared,
+        Err(reason) => return Some(format!("{}: deferred: {reason}", case.label)),
+    };
+    let (metadata, _, result) = Xhtml::write(&mut recorder, given, &configs, prepared);
     if let Err(failure) = result {
         return Some(format!("{}: failed: {failure:?}", case.label));
     }

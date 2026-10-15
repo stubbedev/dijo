@@ -314,25 +314,27 @@ impl Extractor {
         source: Source,
         embedded: Option<&EmbeddedSpool>,
     ) -> ExtractResult<(StreamReader, Metadata)> {
-        if let Some(routed) = formats::route(source, embedded.is_some(), &self.configs)? {
+        if let Some(routed) = formats::route(source, embedded.is_some())? {
             let options = formats::StreamOptions {
                 char_set: self.encoding,
                 output: self.output(),
                 timeout: self.timeout,
             };
-            let (stream, metadata) = formats::parse_to_stream(
+            let parsed = formats::parse_to_stream(
                 routed.parser,
                 routed.input.into_owned(),
                 routed.detected,
                 self.configs.clone(),
                 options,
             )?;
-            return Ok((
-                StreamReader {
-                    inner: Stream::Native(stream),
-                },
-                metadata,
-            ));
+            if let Some((stream, metadata)) = parsed {
+                return Ok((
+                    StreamReader {
+                        inner: Stream::Native(stream),
+                    },
+                    metadata,
+                ));
+            }
         }
         let isolate = isolate()?;
         let options = StreamOptions {
@@ -347,21 +349,24 @@ impl Extractor {
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
-        if let Some(routed) = formats::route(source, false, &self.configs)? {
+        if let Some(routed) = formats::route(source, false)? {
             let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
                 Error::ParseError(format!(
                     "The maximum string length must not be negative: {}",
                     self.extract_string_max_length
                 ))
             })?;
-            return formats::parse_to_string(
+            let parsed = formats::parse_to_string(
                 routed.parser,
                 &routed.input,
                 &routed.detected,
                 &self.configs,
                 max_length,
                 self.output(),
-            );
+            )?;
+            if let Some(parsed) = parsed {
+                return Ok(parsed);
+            }
         }
         let isolate = isolate()?;
         self.with_passwords(|password| {

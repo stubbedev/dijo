@@ -20,10 +20,10 @@ use crate::formats::handlers::is_blank;
 use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
-use crate::formats::ooxml::{self, Package, Relationship, Unported};
+use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Deferral, Failure, Parser, Prepared};
 
 /// Relationship types, as POI's `XSLFRelation` and Tika name them.
 mod kind {
@@ -121,27 +121,16 @@ impl Parser for PptxParser {
 
     /// Defers presentations whose parts or OLE objects Tika records failing on, which hold
     /// macros Tika extracts when asked to, and packages POI does not open as this port does.
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        Presentation::open(input, &configs.office)
-            .and_then(|presentation| presentation.check())
-            .err()
-            .map(|Unported(reason)| reason)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let presentation = Presentation::open(input, &configs.office)
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        presentation.write(xhtml)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Deferral> {
+        let read = Presentation::open(input, &configs.office)
+            .and_then(Presentation::prepare)
+            .map_err(|Unported(reason)| reason)?;
+        Ok(Box::new(move |xhtml| read.write(xhtml)))
     }
 }
 
@@ -215,12 +204,22 @@ impl<'a> Presentation<'a> {
         parts
     }
 
-    /// Finds what this port leaves to Tika in a package it could open: parts whose XML Tika
+    /// Finds what this port leaves to Tika in a package it could open (parts whose XML Tika
     /// records failing on, pictures it cannot place, links and OLE objects it fails to read, and
-    /// macros to extract.
-    fn check(&self) -> Result<(), Unported> {
+    /// macros to extract), and reads what Tika reads whole: the properties and the comment
+    /// authors. The parts written as they are read are only checked here.
+    fn prepare(self) -> Result<Read<'a>, Unported> {
         let slides = self.related(self.main, kind::SLIDE);
-        let mut parts: Vec<usize> = self.related(self.main, kind::COMMENT_AUTHORS);
+        let mut authors = CommentAuthors::default();
+        for part in self.related(self.main, kind::COMMENT_AUTHORS) {
+            authors = ooxml::read_quietly(&self.package, part, authors)?.ok_or_else(|| {
+                Unported(format!(
+                    "Tika records a failure on {}",
+                    self.package.name(part)
+                ))
+            })?;
+        }
+        let mut parts: Vec<usize> = Vec::new();
         for &slide in &slides {
             parts.push(slide);
             parts.extend(self.slide_text_parts(slide));
@@ -253,8 +252,12 @@ impl<'a> Presentation<'a> {
                 extractor::check_embedded(&self.package, self.config, source, relationship, false)?;
             }
         }
-        let mut metadata = TikaMetadata::new();
-        ooxml::extract_properties(&self.package, &mut metadata)
+        let properties = Properties::read(&self.package)?;
+        Ok(Read {
+            presentation: self,
+            properties,
+            authors,
+        })
     }
 
     /// `getMainDocumentParts`: each slide after the parts of it that may embed documents, then
@@ -299,14 +302,17 @@ impl<'a> Presentation<'a> {
         pages
     }
 
-    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn write(
+        &self,
+        properties: &Properties,
+        authors: &CommentAuthors,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         extractor::write_package_metadata(&self.package, xhtml.metadata_mut());
         xhtml
             .metadata_mut()
             .add(name::PARSED_BY, POWERPOINT_EXTRACTOR);
-        ooxml::extract_properties(&self.package, xhtml.metadata_mut())
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        let authors = self.comment_authors()?;
+        properties.write(xhtml.metadata_mut());
         for name in authors.names.iter().map(|(_, name)| name) {
             if !is_blank(name) {
                 xhtml
@@ -316,7 +322,7 @@ impl<'a> Presentation<'a> {
         }
         let mut hidden = 0;
         for slide in self.related(self.main, kind::SLIDE) {
-            if self.write_slide(slide, &authors, xhtml)? {
+            if self.write_slide(slide, authors, xhtml)? {
                 hidden += 1;
             }
         }
@@ -357,15 +363,6 @@ impl<'a> Presentation<'a> {
         )?;
         extractor::write_thumbnails(&self.package, xhtml)?;
         Ok(())
-    }
-
-    /// `loadCommentAuthors`.
-    fn comment_authors(&self) -> Result<CommentAuthors, Failure> {
-        let mut authors = CommentAuthors::default();
-        for part in self.related(self.main, kind::COMMENT_AUTHORS) {
-            authors = self.read(part, authors)?;
-        }
-        Ok(authors)
     }
 
     fn read<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
@@ -466,6 +463,21 @@ impl<'a> Presentation<'a> {
             in_placeholder: false,
         };
         extractor::write_general_text_parts(&self.package, parent, kind, label, &mut skipper)
+    }
+}
+
+/// A presentation checked and read as far as Tika reads parts whole: what writing it takes.
+struct Read<'a> {
+    presentation: Presentation<'a>,
+    properties: Properties,
+    /// `loadCommentAuthors`.
+    authors: CommentAuthors,
+}
+
+impl Read<'_> {
+    fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        self.presentation
+            .write(&self.properties, &self.authors, xhtml)
     }
 }
 

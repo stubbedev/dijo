@@ -12,7 +12,7 @@ use crate::config::ParserConfigs;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Deferral, Failure, Parser, Prepared};
 use extractor::Interrupt;
 
 const MEDIA_TYPE: &str = "application/rtf";
@@ -34,51 +34,55 @@ impl Parser for RtfParser {
     /// document extractor, or fail to read; with text in the one code page the JDK decodes and
     /// this port does not, ISCII (`\ansicpg57002`); or with a creation date when Java's default
     /// time zone cannot be read. Only a document that names `\pict`, `\objdata`,
-    /// `\ansicpg57002` or `\creatim` can, and only such a document is read ahead to find out.
-    fn defers(
+    /// `\ansicpg57002` or `\creatim` can, and only such a document is read ahead to find out,
+    /// which reads it twice.
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        let undated = TimeZone::java_default().is_err();
-        let read_ahead = input.iter().enumerate().any(|(at, &byte)| {
-            let rest = &input[at + 1..];
-            byte == b'\\'
-                && (READ_AHEAD.iter().any(|word| rest.starts_with(word))
-                    || (undated && rest.starts_with(b"creatim")))
-        });
-        if !read_ahead {
-            return None;
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Deferral> {
+        if let Some(reason) = deferral(input, configs) {
+            return Err(reason);
         }
-        let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), configs, |xhtml| {
-            extractor::extract(input, xhtml)
-        });
-        match result {
-            Err(Interrupt::Deferred(deferral)) => Some(deferral.reason().to_owned()),
-            Ok(()) | Err(Interrupt::Failed(_) | Interrupt::Unchecked(_)) => None,
-        }
+        Ok(Box::new(move |xhtml| write(input, xhtml)))
     }
+}
 
-    /// Parses as `RTFParser.parse`, which ends the document even when the parse fails.
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-        let failure = match extractor::extract(input, xhtml) {
-            Ok(()) => return Ok(()),
-            Err(Interrupt::Failed(failure) | Interrupt::Unchecked(failure)) => failure,
-            Err(Interrupt::Deferred(deferral)) => Failure::Malformed(format!(
-                "The RTF document has {}, which leaves it to Tika",
-                deferral.reason()
-            )),
-        };
-        xhtml.end_document()?;
-        Err(failure)
+/// Why Tika's path should extract `input` rather than this parser, if it should.
+fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
+    let undated = TimeZone::java_default().is_err();
+    let read_ahead = input.iter().enumerate().any(|(at, &byte)| {
+        let rest = &input[at + 1..];
+        byte == b'\\'
+            && (READ_AHEAD.iter().any(|word| rest.starts_with(word))
+                || (undated && rest.starts_with(b"creatim")))
+    });
+    if !read_ahead {
+        return None;
     }
+    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), configs, |xhtml| {
+        extractor::extract(input, xhtml)
+    });
+    match result {
+        Err(Interrupt::Deferred(deferral)) => Some(deferral.reason().to_owned()),
+        Ok(()) | Err(Interrupt::Failed(_) | Interrupt::Unchecked(_)) => None,
+    }
+}
+
+/// Parses as `RTFParser.parse`, which ends the document even when the parse fails.
+fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+    let failure = match extractor::extract(input, xhtml) {
+        Ok(()) => return Ok(()),
+        Err(Interrupt::Failed(failure) | Interrupt::Unchecked(failure)) => failure,
+        Err(Interrupt::Deferred(deferral)) => Failure::Malformed(format!(
+            "The RTF document has {}, which leaves it to Tika",
+            deferral.reason()
+        )),
+    };
+    xhtml.end_document()?;
+    Err(failure)
 }
 
 /// Takes a document's XHTML and drops it, for reading a document ahead.

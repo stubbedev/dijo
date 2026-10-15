@@ -10,7 +10,7 @@ use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
 use crate::formats::handlers::{is_blank, is_java_whitespace};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Deferral, Failure, Parser, Prepared};
 use crate::mime::MediaType;
 
 const SUBSTATION_DIALOGUE: &str = "Dialogue:";
@@ -27,42 +27,41 @@ impl Parser for SubtitleParser {
         &["application/x-subrip", "text/vtt", "text/x-ssa"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        AutoDetectReader::defers(input).map(str::to_owned)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let content_type = xhtml
-            .metadata_mut()
-            .get("Content-Type")
-            .ok_or_else(|| Failure::Malformed("the document has no Content-Type".into()))?
-            .to_owned();
-        let substation = MediaType::parse(&content_type)
-            .is_some_and(|media_type| media_type.base_type() == MediaType::named("text/x-ssa"));
-        let reader = AutoDetectReader::read(input, Some(&content_type))?;
-        let metadata = xhtml.metadata_mut();
-        auto_detect_reader::set_metadata(&reader.detection, metadata);
-        metadata.set("Content-Encoding", reader.detection.decode_as.name());
-        let cues = if substation {
-            substation_cues(&reader.text)
-        } else {
-            timed_cues(&reader.text)
-        };
-        for cue in cues {
-            xhtml.element("p", &cue)?;
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Deferral> {
+        if let Some(reason) = AutoDetectReader::defers(input) {
+            return Err(reason.to_owned());
         }
-        Ok(())
+        Ok(Box::new(move |xhtml| write(input, xhtml)))
     }
+}
+
+/// Writes the cues of `input`, decoded as Tika's `AutoDetectReader` decodes it.
+fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let content_type = xhtml
+        .metadata_mut()
+        .get("Content-Type")
+        .ok_or_else(|| Failure::Malformed("the document has no Content-Type".into()))?
+        .to_owned();
+    let substation = MediaType::parse(&content_type)
+        .is_some_and(|media_type| media_type.base_type() == MediaType::named("text/x-ssa"));
+    let reader = AutoDetectReader::read(input, Some(&content_type))?;
+    let metadata = xhtml.metadata_mut();
+    auto_detect_reader::set_metadata(&reader.detection, metadata);
+    metadata.set("Content-Encoding", reader.detection.decode_as.name());
+    let cues = if substation {
+        substation_cues(&reader.text)
+    } else {
+        timed_cues(&reader.text)
+    };
+    for cue in cues {
+        xhtml.element("p", &cue)?;
+    }
+    Ok(())
 }
 
 /// The text of SubRip and WebVTT cues: the lines after each timing line, up to a blank line.

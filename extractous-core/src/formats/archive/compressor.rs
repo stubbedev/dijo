@@ -9,8 +9,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::handlers::is_blank;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Deferral, Parser, Prepared};
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
 const NATIVE: [Compressor; 9] = [
@@ -49,55 +48,38 @@ impl Parser for CompressorParser {
         &MEDIA_TYPES
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Deferral> {
         let content_type = metadata.get("Content-Type").unwrap_or_default();
         let Some(compressor) = Compressor::named(content_type) else {
-            return Some(format!(
+            return Err(format!(
                 "the content type {content_type} names no compressor, which commons-compress \
                  then detects"
             ));
         };
-        let decoded = match compressor.decode(input) {
-            Ok(decoded) => decoded,
-            Err(undecoded) => return Some(format!("the {compressor:?} stream: {undecoded}")),
-        };
-        let mut scan = Scan::new();
-        if let Some(reason) = scan.entry(&decoded.content) {
-            return Some(reason);
-        }
-        if entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME)).is_err() {
-            return Some(
-                "lower-casing the file name changes its length, which GzipUtils mixes up"
-                    .to_owned(),
-            );
-        }
-        scan.document(input.len())
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let metadata = xhtml.metadata_mut();
-        let content_type = metadata.get("Content-Type").unwrap_or_default();
-        let compressor = Compressor::named(content_type)
-            .ok_or_else(|| Failure::Malformed(format!("{content_type} names no compressor")))?;
         let decoded = compressor
             .decode(input)
-            .map_err(|undecoded| Failure::Malformed(undecoded.to_string()))?;
+            .map_err(|undecoded| format!("the {compressor:?} stream: {undecoded}"))?;
+        let mut scan = Scan::new();
+        if let Some(reason) = scan.entry(&decoded.content) {
+            return Err(reason);
+        }
         let entry = entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME)).map_err(
             |LowerCaseMismatch| {
-                Failure::Malformed("the file name's lower case differs in length".to_owned())
+                "lower-casing the file name changes its length, which GzipUtils mixes up".to_owned()
             },
         )?;
-        xhtml.parse_embedded(&decoded.content, &entry, Wrapping::PackageEntry)
+        if let Some(reason) = scan.document(input.len()) {
+            return Err(reason);
+        }
+        let content = decoded.content;
+        Ok(Box::new(move |xhtml| {
+            xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry)
+        }))
     }
 }
 

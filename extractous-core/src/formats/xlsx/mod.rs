@@ -12,7 +12,7 @@
 //! A workbook embedding an OLE object, which Tika opens as a compound file, is left to Tika, as
 //! is a package POI would read in a degraded way or refuse, one with a part whose XML Tika
 //! records failing on, and one using what this port does not read: see
-//! [`XlsxParser::defers`].
+//! [`Workbook::prepare`].
 
 mod cell;
 mod format;
@@ -35,10 +35,12 @@ use crate::formats::docx;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ignore};
-use crate::formats::ooxml::{self, Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};
+use crate::formats::ooxml::{
+    self, Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP,
+};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Deferral, Failure, Parser, Prepared};
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =
@@ -122,33 +124,18 @@ impl Parser for XlsxParser {
     /// Defers workbooks with OLE objects Tika opens, macros it extracts when asked to, parts
     /// whose XML Tika records failing on, packages POI does not open as this port does, and any
     /// workbook when Java's default time zone, which dates are written in, cannot be read.
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        if let Err(reason) = TimeZone::java_default() {
-            return Some(format!("Java's default time zone cannot be read: {reason}"));
-        }
-        Workbook::open(input, &configs.office)
-            .and_then(|workbook| workbook.check())
-            .err()
-            .map(|Unported(reason)| reason)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let zone = TimeZone::java_default().map_err(|reason| {
-            Failure::Malformed(format!("Java's default time zone cannot be read: {reason}"))
-        })?;
-        let workbook = Workbook::open(input, &configs.office)
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        workbook.write(zone, xhtml)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Deferral> {
+        let zone = TimeZone::java_default()
+            .map_err(|reason| format!("Java's default time zone cannot be read: {reason}"))?;
+        let read = Workbook::open(input, &configs.office)
+            .and_then(Workbook::prepare)
+            .map_err(|Unported(reason)| reason)?;
+        Ok(Box::new(move |xhtml| read.write(zone, xhtml)))
     }
 }
 
@@ -282,12 +269,12 @@ impl<'a> Workbook<'a> {
         sheets
     }
 
-    /// Every XML part the parse reads, with whether Tika reads it with a handler of its own.
-    fn read_parts(&self) -> Vec<usize> {
-        let mut parts: Vec<usize> = self.styles.into_iter().chain(self.shared_strings).collect();
+    /// The XML parts the parse writes as it reads them, or reads for what it writes as it goes,
+    /// which only their check reads ahead.
+    fn streamed_parts(&self) -> Vec<usize> {
+        let mut parts: Vec<usize> = Vec::new();
         for sheet in &self.sheets {
             parts.push(sheet.part);
-            parts.extend(self.comments_part(sheet.part));
             parts.extend(Package::related(
                 self.relationships(sheet.part),
                 sheet_kind::THREADED_COMMENT,
@@ -307,7 +294,6 @@ impl<'a> Workbook<'a> {
         }
         let workbook = self.relationships(self.workbook);
         for kind in [
-            sheet_kind::PERSON,
             sheet_kind::EXTERNAL_LINK,
             sheet_kind::CONNECTIONS,
             sheet_kind::PIVOT_CACHE_DEFINITION,
@@ -321,10 +307,11 @@ impl<'a> Workbook<'a> {
         parts
     }
 
-    /// Finds what this port leaves to Tika in a package it could open: embedded documents and
+    /// Finds what this port leaves to Tika in a package it could open (embedded documents and
     /// charts, macros to extract, parts whose XML Tika fails on, and properties it does not
-    /// read.
-    fn check(&self) -> Result<(), Unported> {
+    /// read), and reads what Tika reads whole before it writes from it: the properties, styles,
+    /// shared strings, each sheet's comments, the workbook's metadata and its people.
+    fn prepare(self) -> Result<Read<'a>, Unported> {
         for source in self.main_parts() {
             for relationship in self.relationships(source) {
                 extractor::check_embedded(&self.package, self.config, source, relationship, false)?;
@@ -364,30 +351,63 @@ impl<'a> Workbook<'a> {
                 }
             }
         }
-        for part in self.read_parts() {
+        let styles = match self.styles {
+            Some(part) => Some(read_checked(&self.package, part, Styles::default())?),
+            None => None,
+        };
+        let strings = match self.shared_strings {
+            Some(part) => Some(read_checked(
+                &self.package,
+                part,
+                SharedStrings::new(self.config.concatenates_phonetic_runs()),
+            )?),
+            None => None,
+        };
+        let mut comments = Vec::with_capacity(self.sheets.len());
+        for sheet in &self.sheets {
+            comments.push(match self.comments_part(sheet.part) {
+                Some(part) => Some(read_checked(&self.package, part, Comments::default())?),
+                None => None,
+            });
+        }
+        for part in self.streamed_parts() {
             read_checked(&self.package, part, Ignore)?;
+        }
+        let mut persons = Vec::new();
+        for part in Package::related(self.relationships(self.workbook), sheet_kind::PERSON) {
+            persons.push(read_checked(&self.package, part, Persons::default())?);
         }
         let metadata = read_checked(&self.package, self.workbook, WorkbookMetadata::default())?;
         if metadata.hides_an_unnamed_sheet() {
             return Err(Unported("a hidden sheet has no name".to_owned()));
         }
-        let mut metadata = TikaMetadata::new();
-        ooxml::extract_properties(&self.package, &mut metadata)
+        let properties = Properties::read(&self.package)?;
+        Ok(Read {
+            workbook: self,
+            properties,
+            styles,
+            strings,
+            comments,
+            metadata,
+            persons,
+        })
     }
 
-    fn write(&self, zone: &'static TimeZone, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn write(
+        &self,
+        read: &Read,
+        zone: &'static TimeZone,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         extractor::write_package_metadata(&self.package, xhtml.metadata_mut());
-        ooxml::extract_properties(&self.package, xhtml.metadata_mut())
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
+        read.properties.write(xhtml.metadata_mut());
         xhtml
             .metadata_mut()
             .set(excel::PROTECTED_WORKSHEET, "false");
-        self.write_sheets(zone, xhtml)?;
-        let metadata = self.read(self.workbook, WorkbookMetadata::default())?;
-        metadata.write(xhtml.metadata_mut());
-        for part in Package::related(self.relationships(self.workbook), sheet_kind::PERSON) {
-            self.read(part, Persons::default())?
-                .write(xhtml.metadata_mut());
+        self.write_sheets(read, zone, xhtml)?;
+        read.metadata.write(xhtml.metadata_mut());
+        for persons in &read.persons {
+            persons.write(xhtml.metadata_mut());
         }
         self.write_external_data(xhtml)?;
         let sheets_of_pictures = self.sheets_of_pictures();
@@ -413,25 +433,19 @@ impl<'a> Workbook<'a> {
     }
 
     /// The sheets, each in a `sheet` div, as `buildXHTML` writes them.
-    fn write_sheets(&self, zone: &'static TimeZone, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        let styles = match self.styles {
-            Some(part) => Some(self.read(part, Styles::default())?),
-            None => None,
-        };
-        let strings = match self.shared_strings {
-            Some(part) => Some(self.read(
-                part,
-                SharedStrings::new(self.config.concatenates_phonetic_runs()),
-            )?),
-            None => None,
-        };
+    fn write_sheets(
+        &self,
+        read: &Read,
+        zone: &'static TimeZone,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         let mut formatter = format::DataFormatter::new(zone);
         let settings = SheetSettings {
             headers_and_footers: self.config.includes_headers_and_footers(),
             missing_rows: self.config.includes_missing_rows(),
         };
         let mut drawing_hyperlinks: HashMap<String, String> = HashMap::new();
-        for sheet in &self.sheets {
+        for (sheet, comments) in self.sheets.iter().zip(&read.comments) {
             for drawing in self.internal_related(sheet.part, sheet_kind::DRAWING) {
                 for relationship in
                     Package::relationships_of(self.relationships(drawing), HYPERLINK_RELATIONSHIP)
@@ -442,10 +456,6 @@ impl<'a> Workbook<'a> {
                     );
                 }
             }
-            let comments = match self.comments_part(sheet.part) {
-                Some(part) => Some(self.read(part, Comments::default())?),
-                None => None,
-            };
             if comments.as_ref().is_some_and(|comments| comments.len() > 0) {
                 xhtml.metadata_mut().set(name::HAS_COMMENTS, "true");
             }
@@ -455,9 +465,9 @@ impl<'a> Workbook<'a> {
             xhtml.start_element("tbody")?;
             let mut output = SheetOutput::new(settings);
             let mut reader = SheetReader::new(
-                styles.as_ref(),
+                read.styles.as_ref(),
                 comments.as_ref(),
-                strings.as_ref(),
+                read.strings.as_ref(),
                 &mut formatter,
                 &mut output,
                 xhtml,
@@ -622,6 +632,24 @@ fn first_part(relationships: &[Relationship], kind: &str) -> Result<Option<usize
             "the {kind} part {} is missing, which Tika records failing on",
             relationship.target_uri()
         ))),
+    }
+}
+
+/// A workbook checked and read as far as Tika reads parts whole: what writing it takes.
+struct Read<'a> {
+    workbook: Workbook<'a>,
+    properties: Properties,
+    styles: Option<Styles>,
+    strings: Option<SharedStrings>,
+    /// The comments of each sheet, in the workbook's order.
+    comments: Vec<Option<Comments>>,
+    metadata: WorkbookMetadata,
+    persons: Vec<Persons>,
+}
+
+impl Read<'_> {
+    fn write(&self, zone: &'static TimeZone, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        self.workbook.write(self, zone, xhtml)
     }
 }
 
