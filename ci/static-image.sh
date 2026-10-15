@@ -86,9 +86,7 @@ classpath=${arguments[classpath_index]}
 arguments[classpath_index]="$classpath:$work/feature"
 
 mapfile -t static_java < <(find "$static_sources/java" -name '*.java' | sort)
-"$graalvm/bin/javac" --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED \
-    --add-exports org.graalvm.nativeimage.builder/com.oracle.svm.hosted.c=ALL-UNNAMED \
-    -cp "$graalvm/lib/svm/builder/svm.jar:$classpath" -d "$work/feature" "${static_java[@]}"
+"$graalvm/bin/javac" -cp "$graalvm/lib/svm/builder/svm.jar:$classpath" -d "$work/feature" "${static_java[@]}"
 
 jar_in_classpath() {
     tr ':' '\n' <<< "$classpath" | grep -E "/$1-[0-9][^/]*\.jar$" | grep -v sources

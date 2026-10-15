@@ -263,7 +263,6 @@ graalvmNative {
                     "-H:+AddAllCharsets", // Very important to get UTF8 working
                     "--enable-url-protocols=http,https",
                     "--enable-native-access=ALL-UNNAMED",
-                    "-H:ExcludeResources=org/sqlite/native/.*",
                     "-Dorg.sqlite.lib.exportPath=${layout.buildDirectory.dir('native/nativeCompile').get().asFile}",
                     "--initialize-at-build-time=ai.yobix.EncodingModels,org.apache.tika.ml.junkdetect.JunkDetector,org.apache.tika.ml.junkdetect.BigramTables,org.apache.tika.ml.chardetect.NaiveBayesBigramEncodingDetector,org.apache.tika.ml.chardetect.NaiveBayesBigramEncodingDetector\$Cohort",
                     "--initialize-at-run-time=org.apache.commons.logging.LogFactory",
@@ -274,6 +273,7 @@ graalvmNative {
                     // GraalVM 25 optimizations
                     // Note: --strict-image-heap is now default in GraalVM 25
                     "-H:+UnlockExperimentalVMOptions",
+                    "-H:ExcludeResources=org/sqlite/native/.*",
                     "-H:ServiceLoaderFeatureExcludeServiceProviders=org.apache.poi.xslf.draw.SVGImageRenderer",
                     "-H:+RemoveUnusedSymbols",            // Smaller binary
                     "-H:+ReportExceptionStackTraces"      // Better error messages
