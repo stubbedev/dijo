@@ -1,5 +1,5 @@
 //! Tika's `OOXMLWordAndPowerPointTextHandler`: reads a part of a Word document element by
-//! element, by local name, and hands paragraphs, runs, tables, links, fields and pictures
+//! element, by local name, and hands paragraphs, runs, tables, links, notes, fields and pictures
 //! to the [`Body`] that writes them.
 
 use std::collections::HashMap;
@@ -121,6 +121,10 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
             instruction: String::new(),
             picture: Picture::default(),
         }
+    }
+
+    pub(super) fn into_body(self) -> Body<'x, 'h, 'c> {
+        self.body
     }
 
     fn in_skipped_alternate_content(&self) -> bool {
@@ -334,6 +338,7 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
                 self.picture.description = attribute(attributes, "", "descr").map(str::to_owned);
             }
             "pic" => {}
+            "footnoteReference" => self.body.footnote_reference(w("id"))?,
             "imagedata" => {
                 let id = attribute(attributes, R_NAMESPACE, "id").map(str::to_owned);
                 self.picture.relationship.clone_from(&id);
@@ -342,6 +347,8 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
                     attribute(attributes, O_NAMESPACE, "title").map(str::to_owned);
             }
             "OLEObject" => self.ole_object(attributes)?,
+            "endnoteReference" => self.body.endnote_reference(w("id"))?,
+            "commentReference" => self.body.comment_reference(w("id")),
             "v" if namespace == C_NAMESPACE => self.in_chart_value = true,
             "rt" => self.in_ruby_text = true,
             "fldChar" => self.field_character(w("fldCharType"))?,

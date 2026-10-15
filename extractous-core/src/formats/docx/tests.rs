@@ -93,9 +93,10 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
 }
 
 /// Each setting of `OfficeParserConfig` the Word extractor reads, away from its default.
-fn other_settings() -> [ParserConfigs; 3] {
+fn other_settings() -> [ParserConfigs; 4] {
     [
         office(OfficeParserConfig::new().set_include_shape_based_content(false)),
+        office(OfficeParserConfig::new().set_include_headers_and_footers(false)),
         office(OfficeParserConfig::new().set_concatenate_phonetic_runs(false)),
         office(OfficeParserConfig::new().set_extract_macros(true)),
     ]
@@ -323,6 +324,16 @@ fn defers_macros_only_when_they_are_extracted() {
 fn defers_parts_whose_xml_tika_reports_failing_on() {
     let input = document("<w:p><w:r><w:t>open</w:p>", "", &[]);
     assert!(defers(&input).is_some_and(|reason| reason.contains("records a failure")));
+    let header = document(
+        "<w:p/>",
+        &relationship("rId9", kind::HEADER, "header1.xml"),
+        &[(
+            "word/header1.xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+            b"<w:hdr><w:p/></w:hdr>",
+        )],
+    );
+    assert!(defers(&header).is_some_and(|reason| reason.contains("header1.xml")));
     let quietly_read = document(
         "<w:p/>",
         &relationship("rId9", kind::SETTINGS, "settings.xml"),
@@ -422,4 +433,50 @@ fn defers_core_properties_poi_refuses() {
         "<dcterms:created xsi:type=\"dcterms:W3CDTF\">yesterday</dcterms:created>"
     )))
     .is_some_and(|reason| reason.contains("yesterday")));
+}
+
+#[test]
+fn writes_notes_where_they_are_referenced_and_comments_after_their_paragraph() {
+    let footnotes = format!(
+        "<w:footnotes {W}><w:footnote w:id=\"1\"><w:p><w:r><w:t>Note</w:t></w:r></w:p></w:footnote></w:footnotes>"
+    );
+    let comments = format!(
+        "<w:comments {W}><w:comment w:id=\"0\"><w:p><w:r><w:t>Said</w:t></w:r></w:p></w:comment>\
+         <w:comment w:id=\"7\"><w:p><w:r><w:t>Loose</w:t></w:r></w:p></w:comment></w:comments>"
+    );
+    let input = document(
+        "<w:p><w:r><w:t>A</w:t></w:r><w:r><w:footnoteReference w:id=\"1\"/></w:r>\
+         <w:r><w:commentReference w:id=\"0\"/></w:r><w:r><w:t>B</w:t></w:r></w:p>\
+         <w:p><w:r><w:footnoteReference w:id=\"5\"/></w:r></w:p>",
+        &format!(
+            "{}{}",
+            relationship("rId1", kind::FOOTNOTES, "footnotes.xml"),
+            relationship("rId2", kind::COMMENTS, "comments.xml")
+        ),
+        &[
+            (
+                "word/footnotes.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+                footnotes.as_bytes(),
+            ),
+            (
+                "word/comments.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml",
+                comments.as_bytes(),
+            ),
+        ],
+    );
+    assert_eq!(defers(&input), None);
+    let text = text_of(&input, &ParserConfigs::default());
+    assert!(
+        text.contains(
+            "<p>A<div class=\"footnote\"><p>Note</p>\n</div>\nB</p>\n<div class=\"comment\"><p>Said</p>\n</div>"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("<p>[5]</p>"), "{text}");
+    assert!(
+        text.contains("<div class=\"comment\"><p>Loose</p>"),
+        "{text}"
+    );
 }

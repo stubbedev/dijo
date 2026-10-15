@@ -205,6 +205,11 @@ impl OfficeParserConfig {
         self.include_shape_based_content.unwrap_or(true)
     }
 
+    /// Whether headers and footers are extracted, as Tika does unless told not to.
+    pub(crate) fn includes_headers_and_footers(&self) -> bool {
+        self.include_headers_and_footers.unwrap_or(true)
+    }
+
     /// Whether phonetic guides follow the text they annotate, as Tika has them unless told not to.
     pub(crate) fn concatenates_phonetic_runs(&self) -> bool {
         self.concatenate_phonetic_runs.unwrap_or(true)

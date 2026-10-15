@@ -1,6 +1,6 @@
 //! Word documents (DOCX, DOCM, DOTX, DOTM) as Tika's `OOXMLParser` reads them with its
 //! streaming Word extractor, `SXWPFWordExtractorDecorator`: the package's metadata, then the
-//! main document with its diagrams and charts, the glossary,
+//! main document with its headers, notes, comments, diagrams, charts and footers, the glossary,
 //! links to what lies outside the package and the thumbnail.
 //!
 //! Tika parses the pictures, embedded objects and attachments of a document recursively, with
@@ -8,13 +8,15 @@
 //! way or refuse, and one using what this port does not read: see [`DocxParser::defers_with`].
 
 mod body;
+mod notes;
 mod numbering;
 mod styles;
 mod text;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use body::{Body, Context};
+use body::{unreferenced_comment, Body, Context};
+use notes::{Collector, InlineParts};
 use numbering::{ListManager, Numbering};
 use styles::Styles;
 use text::{TextHandler, TextOptions};
@@ -243,9 +245,20 @@ impl<'a> Document<'a> {
     /// The parts of a main document `handleDocumentPart` parses with the text handler, in order.
     fn text_parts(&self, story: usize) -> Vec<usize> {
         let relationships = self.relationships(story);
-        let mut parts = vec![story];
+        let footers_too = self.config.includes_headers_and_footers();
+        let mut parts = Vec::new();
+        if footers_too {
+            parts.extend(Package::related(relationships, kind::HEADER));
+        }
+        for kind in [kind::FOOTNOTES, kind::ENDNOTES, kind::COMMENTS] {
+            parts.extend(Package::related(relationships, kind));
+        }
+        parts.push(story);
         parts.extend(Package::related(relationships, kind::DIAGRAM_DATA));
         parts.extend(Package::related(relationships, kind::CHART));
+        if footers_too {
+            parts.extend(Package::related(relationships, kind::FOOTER));
+        }
         parts.extend(Package::first_related(relationships, kind::STYLES));
         parts
     }
@@ -261,17 +274,6 @@ impl<'a> Document<'a> {
         let mut stories = self.stories.clone();
         stories.extend(&self.glossaries);
         for story in stories {
-            for (kind, feature) in LEFT_FOR_NOW_PARTS {
-                if Package::relationships_of(self.relationships(story), kind)
-                    .next()
-                    .is_some()
-                {
-                    return Err(Unported(format!(
-                        "{} has {feature}, which this port leaves to Tika for now",
-                        self.package.name(story)
-                    )));
-                }
-            }
             for part in self.text_parts(story) {
                 let name = self.package.name(part);
                 let Some(scan) = ooxml::read_quietly(&self.package, part, LeftForNow::default())?
@@ -407,11 +409,27 @@ impl<'a> Document<'a> {
             Some(part) => Some(self.read_part(part, Styles::default())?),
             None => None,
         };
-        self.write_part(story, styles.as_ref(), &mut lists, xhtml)?;
+        let no_notes = InlineParts::default();
+        let footers_too = self.config.includes_headers_and_footers();
+        if footers_too {
+            for header in Package::related(relationships, kind::HEADER) {
+                self.write_part(header, styles.as_ref(), &mut lists, &no_notes, xhtml)?;
+            }
+        }
+        let inline = self.inline_parts(story)?;
+        let emitted = self.write_part(story, styles.as_ref(), &mut lists, &inline, xhtml)?;
         let mut trailing = Package::related(relationships, kind::DIAGRAM_DATA);
         trailing.extend(Package::related(relationships, kind::CHART));
+        if footers_too {
+            trailing.extend(Package::related(relationships, kind::FOOTER));
+        }
         for part in trailing {
-            self.write_part(part, styles.as_ref(), &mut lists, xhtml)?;
+            self.write_part(part, styles.as_ref(), &mut lists, &no_notes, xhtml)?;
+        }
+        for (id, events) in inline.comments.iter() {
+            if !emitted.contains(id) {
+                unreferenced_comment(xhtml, &inline, events)?;
+            }
         }
         Ok(())
     }
@@ -429,20 +447,22 @@ impl<'a> Document<'a> {
             .map_err(|Unported(reason)| Failure::Malformed(reason))
     }
 
-    /// `handlePart`: writes a part with the text handler.
+    /// `handlePart`: writes a part with the text handler; returns the comments it inlined.
     fn write_part(
         &self,
         part: usize,
         styles: Option<&Styles>,
         lists: &mut ListManager,
+        inline: &InlineParts,
         xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
+    ) -> Result<HashSet<String>, Failure> {
         let relationships = self.linked_relationships(part);
         let body = Body::new(
             xhtml,
             Context {
                 styles,
                 lists,
+                inline,
                 records_metadata: true,
             },
         );
@@ -453,7 +473,8 @@ impl<'a> Document<'a> {
         };
         let mut handler = TextHandler::new(body, &relationships, options);
         let bytes = self.read(part)?;
-        xml::read_sax(&bytes, self.package.name(part), &mut handler)
+        xml::read_sax(&bytes, self.package.name(part), &mut handler)?;
+        Ok(handler.into_body().into_emitted_comments())
     }
 
     /// `loadLinkedRelationships`: the targets of a part's links by id, and the file names of
@@ -476,6 +497,35 @@ impl<'a> Document<'a> {
             }
         }
         linked
+    }
+
+    /// `collectInlineParts`: the footnotes, endnotes and comments of a main document.
+    fn inline_parts(&self, story: usize) -> Result<InlineParts, Failure> {
+        let mut inline = InlineParts::default();
+        let sources = [
+            (kind::FOOTNOTES, "footnote", &["0", "-1"][..]),
+            (kind::ENDNOTES, "endnote", &["0", "-1"][..]),
+            (kind::COMMENTS, "comment", &[][..]),
+        ];
+        for (index, (kind, wrapper, skipped)) in sources.into_iter().enumerate() {
+            let mut collector = Collector::new(wrapper, skipped);
+            for part in Package::related(self.relationships(story), kind) {
+                inline.relationships.extend(self.linked_relationships(part));
+                collector = self.read_part(part, collector)?;
+            }
+            for (id, events) in collector.into_notes() {
+                match index {
+                    0 => {
+                        inline.footnotes.insert(id, events);
+                    }
+                    1 => {
+                        inline.endnotes.insert(id, events);
+                    }
+                    _ => inline.comments.insert(&id, events),
+                }
+            }
+        }
+        Ok(inline)
     }
 
     /// `detectSecurityFeatures`.
@@ -602,23 +652,11 @@ impl SaxHandler for Ignore {
 }
 
 /// The elements of the features this port leaves to Tika for now, with the feature of each.
-const LEFT_FOR_NOW: [(&str, &str); 7] = [
-    ("footnoteReference", "notes"),
-    ("endnoteReference", "notes"),
-    ("commentReference", "comments"),
+const LEFT_FOR_NOW: [(&str, &str); 4] = [
     ("ins", "tracked changes"),
     ("del", "tracked changes"),
     ("moveFrom", "tracked changes"),
     ("moveTo", "tracked changes"),
-];
-
-/// The relationships to the parts of the features this port leaves to Tika for now.
-const LEFT_FOR_NOW_PARTS: [(&str, &str); 5] = [
-    (kind::HEADER, "headers"),
-    (kind::FOOTER, "footers"),
-    (kind::FOOTNOTES, "notes"),
-    (kind::ENDNOTES, "notes"),
-    (kind::COMMENTS, "comments"),
 ];
 
 /// Finds the first element of a feature in [`LEFT_FOR_NOW`].
