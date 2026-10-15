@@ -1177,14 +1177,22 @@ impl Font {
                         Ok(encoding.code(name).map(|code| vec![code as u8]))
                     }
                     SimpleKind::TrueType(program) => {
-                        let Program::Embedded(_) = program else {
+                        let Program::Embedded(ttf) = program else {
                             return Err(fallback());
                         };
-                        Err(Unported(
-                            "a TrueType font whose space is measured by encoding it, which the \
-                             port does not do"
-                                .to_owned(),
-                        ))
+                        let encoding = simple.encoding.as_deref().ok_or_else(|| {
+                            Unported(
+                                "a TrueType font without an encoding, which PDFBox encodes \
+                                 through the font's own"
+                                    .to_owned(),
+                            )
+                        })?;
+                        if !encoding.contains(name)
+                            || (ttf.name_to_glyph(name) == 0 && ttf.name_to_glyph("uni0020") == 0)
+                        {
+                            return Ok(None);
+                        }
+                        Ok(encoding.code(name).map(|code| vec![code as u8]))
                     }
                 }
             }
