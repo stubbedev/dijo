@@ -42,7 +42,8 @@ import java.util.zip.GZIPOutputStream;
  * path, which it does not sort, so the composite is built here in the order the extractous native
  * image's class path gives them: tika-encoding-detector-html, tika-ml-junkdetect (the
  * arbitrating JunkFilter), tika-encoding-detector-mojibuster, then tika-core's BOMDetector and
- * MetadataCharsetDetector.
+ * MetadataCharsetDetector. The class path starts with the encoding rules NativeImageRules.java
+ * compiles, which the native image substitutes for Tika's.
  */
 public final class EncodingReference {
 

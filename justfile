@@ -51,8 +51,24 @@ encoding-reference:
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     fixtures=extractous-core/tests/fixtures/charset
     java "$fixtures/CharsetTables.java" extractous-core/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
-    java -cp "$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
+    rules=$(just native-image-rules)
+    java -cp "$rules:$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/encoding-reference.tsv.gz"
+
+# Compile Tika's encoding rules with the change the native image substitutes into them, for the reference
+# recipes to detect encodings as extractous does, and print the class directory to put ahead of Tika's jars.
+[unix]
+native-image-rules:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    rules=target/native-image-rules
+    rm -rf "$rules"
+    mkdir -p "$rules"
+    java extractous-core/tests/fixtures/charset/NativeImageRules.java \
+        "$jars/sources/tika-encoding-detector-mojibuster-4.1.0-sources.jar" "$jars/*" "$rules" >&2
+    echo "$rules"
 
 # Regenerate what Tika's XHTMLContentHandler and our handler chains write for the parser calls in
 # extractous-core/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.

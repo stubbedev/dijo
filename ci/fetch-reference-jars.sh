@@ -25,5 +25,9 @@ while IFS=$'\t' read -r path sha256; do
             exit 1
             ;;
     esac
-    fetch_pinned "https://repo1.maven.org/maven2/$path" "$sha256" "$dir/$(basename "$path")"
+    case "$path" in
+        *-sources.jar) target="$dir/sources" ;;
+        *) target="$dir" ;;
+    esac
+    fetch_pinned "https://repo1.maven.org/maven2/$path" "$sha256" "$target/$(basename "$path")"
 done < "$here/reference-jars.tsv"

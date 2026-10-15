@@ -1,6 +1,7 @@
 # The jars the reference recipes run Apache Tika's own code from (`just charsoup-reference` for the CharSoup
 # language detector, `just junk-reference` for the JunkDetector and Mojibuster), from Maven Central, then
-# SHA-256. The Tika artifacts must be the version extractous-core/tika-native/build.gradle pins.
+# SHA-256. The Tika artifacts must be the version extractous-core/tika-native/build.gradle pins. Sources
+# jars go to the sources/ directory beside the jars, off the reference recipes' class paths.
 org/apache/tika/tika-core/4.1.0/tika-core-4.1.0.jar	36f75bacc69de3b239135d7964a4250dfbe1ef59b3638a8da0ca1a7161060e24
 org/apache/tika/tika-langdetect-charsoup/4.1.0/tika-langdetect-charsoup-4.1.0.jar	79d1eae3e7e94abdd9eb80accc1686e1701780dc44f1683e95fe94aec1c95113
 org/apache/tika/tika-langdetect-charsoup-core/4.1.0/tika-langdetect-charsoup-core-4.1.0.jar	764a962d4631840562dc3586857224ed4e9fbc7fec0fafd76631f0f967ab2b7d
@@ -10,3 +11,4 @@ org/apache/tika/tika-ml-core/4.1.0/tika-ml-core-4.1.0.jar	0a6359a48e653eb85df842
 org/apache/tika/tika-ml-junkdetect/4.1.0/tika-ml-junkdetect-4.1.0.jar	b4d5f1311708ca6dcdf395e6913202c1565282b249b45e33ea32b1edf4c2cd10
 org/apache/tika/tika-encoding-detector-mojibuster/4.1.0/tika-encoding-detector-mojibuster-4.1.0.jar	3e993c6eaed7a79fd4cf1e8f712eaf802dbf5f4b1d555c20d7616b55240d3d0e
 org/apache/tika/tika-encoding-detector-html/4.1.0/tika-encoding-detector-html-4.1.0.jar	9d97da89b5f96df1ab85f01a1e67780cae1c0f3fc66eacdb942e9b51789e56ae
+org/apache/tika/tika-encoding-detector-mojibuster/4.1.0/tika-encoding-detector-mojibuster-4.1.0-sources.jar	117ea867accc2c6541842494f35b121dd8da8a4e5c93f22930f12a6f22c16cc4

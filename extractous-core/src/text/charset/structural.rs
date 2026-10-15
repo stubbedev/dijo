@@ -157,9 +157,13 @@ pub(super) fn iso2022(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Whether the even and odd bytes differ in variety as text in a two-byte Unicode encoding
-/// does: one column holds three times the distinct values of the other.
+/// does: one column holds three times the distinct values of the other. As the extractous native
+/// image substitutes Tika's rule (`Target_org_apache_tika_ml_chardetect_StructuralEncodingRules`),
+/// only bytes holding a NUL count: UTF-16 without a byte order mark holds one for every ASCII
+/// character, while a legacy double-byte encoding such as Shift_JIS, whose columns differ alike,
+/// holds none.
 pub(super) fn has_two_byte_column_asymmetry_evidence(bytes: &[u8]) -> bool {
-    if bytes.len() < MIN_COLUMN_EVIDENCE_PROBE {
+    if bytes.len() < MIN_COLUMN_EVIDENCE_PROBE || !bytes.contains(&0) {
         return false;
     }
     let mut seen = [[false; 256]; 2];
