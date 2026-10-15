@@ -78,6 +78,12 @@ pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
         .map_err(|message| Error::NativeLibrary(message.clone()))
 }
 
+/// Whether the process has created its isolate, which nothing but Tika's path needs.
+#[cfg(test)]
+pub(crate) fn isolate_created() -> bool {
+    ISOLATE.get().is_some()
+}
+
 /// Sets up the isolate; only once, and before the first extraction starts it.
 pub fn configure_isolate(settings: IsolateSettings) -> ExtractResult<()> {
     if ISOLATE.get().is_some() {

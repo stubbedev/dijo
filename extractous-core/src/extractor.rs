@@ -269,13 +269,13 @@ impl Extractor {
     /// Detects the media type of a file, such as `application/pdf`, from its content, its
     /// container structure and its name.
     pub fn detect_file(&self, file_path: &str) -> ExtractResult<MediaType> {
-        tika::detect(isolate()?, Source::File(file_path)).map(MediaType)
+        formats::detect(Source::File(file_path)).map(MediaType)
     }
 
     /// Detects the media type of a document held in memory from its content and container
     /// structure.
     pub fn detect_bytes(&self, buffer: &[u8]) -> ExtractResult<MediaType> {
-        tika::detect(isolate()?, Source::Bytes(buffer)).map(MediaType)
+        formats::detect(Source::Bytes(buffer)).map(MediaType)
     }
 
     /// Detects the media type of the document at a URL.

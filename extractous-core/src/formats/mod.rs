@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use crate::config::ParserConfigs;
 use crate::errors::{Error, ExtractResult};
 use crate::isolate::isolate;
+use crate::mime::{self, Detection, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
 use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Write, WriteLimit};
@@ -117,56 +118,105 @@ pub(crate) struct Routed<'a> {
 }
 
 /// Routes a document to its native parser, if its format has one and the parser does not defer
-/// this document to Tika, detecting it with Tika's detector until the detection is ported
-/// (#41). Documents read from a URL, and those whose embedded documents are spooled, stay with
-/// Tika.
+/// this document to Tika. The document is detected in Rust, without the JVM, so a document a
+/// native parser reads never starts it. Documents read from a URL, those whose embedded
+/// documents are spooled, and files too large to read whole for their detection stay with Tika.
+///
+/// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
+/// Tika's path, whose own detection then fails it exactly as Tika does.
 pub(crate) fn route(source: Source<'_>, spooling: bool) -> ExtractResult<Option<Routed<'_>>> {
     if spooling || matches!(source, Source::Url(_)) || !any_parsers() {
         return Ok(None);
     }
-    let (media_type, metadata) = tika::detect_with_metadata(isolate()?, source)?;
-    let Some(parser) = parser_for(&media_type) else {
+    let Some(input) = detection_input(source)? else {
         return Ok(None);
     };
-    let input = input(source)?;
+    let Ok(detected) = Detected::detect(source, &input) else {
+        return Ok(None);
+    };
+    let Some(parser) = parser_for(&detected.media_type) else {
+        return Ok(None);
+    };
     if parser.defers(&input).is_some() {
         return Ok(None);
     }
     Ok(Some(Routed {
         parser,
-        detected: Detected::from_tika(media_type, metadata),
+        detected,
         input,
     }))
 }
 
-/// The bytes of a document read from a file or memory.
-fn input(source: Source<'_>) -> ExtractResult<Cow<'_, [u8]>> {
+/// The largest file read whole to be detected in Rust: a larger one is left to Tika, which reads
+/// only the parts of it its detectors look at.
+const MAX_DETECTED_FILE: u64 = 64 * 1024 * 1024;
+
+/// The bytes of a document read from a file or memory, which detection reads whole, or `None`
+/// for a file larger than [`MAX_DETECTED_FILE`] or a document read from a URL.
+fn detection_input(source: Source<'_>) -> ExtractResult<Option<Cow<'_, [u8]>>> {
+    let unreadable =
+        |path: &str, e: io::Error| Error::IoError(format!("Could not read {path}: {e}"));
     match source {
-        Source::File(path) => fs::read(path)
-            .map(Cow::Owned)
-            .map_err(|e| Error::IoError(format!("Could not read {path}: {e}"))),
-        Source::Bytes(bytes) => Ok(Cow::Borrowed(bytes)),
-        Source::Url(url) => Err(Error::IoError(format!(
-            "Documents read from a URL have no native parser: {url}"
-        ))),
+        Source::File(path) => {
+            let length = fs::metadata(path).map_err(|e| unreadable(path, e))?.len();
+            if length > MAX_DETECTED_FILE {
+                return Ok(None);
+            }
+            fs::read(path)
+                .map(|bytes| Some(Cow::Owned(bytes)))
+                .map_err(|e| unreadable(path, e))
+        }
+        Source::Bytes(bytes) => Ok(Some(Cow::Borrowed(bytes))),
+        Source::Url(_) => Ok(None),
     }
 }
 
+/// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust for a file or
+/// bytes, with Tika for a URL, which it fetches, for a file too large to read whole, and for a
+/// document Tika's detection throws on, so the failure is Tika's own.
+pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
+    if let Some(input) = detection_input(source)? {
+        if let Ok(detected) = Detected::detect(source, &input) {
+            return Ok(detected.media_type);
+        }
+    }
+    tika::detect(isolate()?, source)
+}
+
+/// `Path.getFileName().toString()` of a path as Java's `Paths.get` reads it on this platform:
+/// the last name, trailing separators ignored.
+fn java_file_name(path: &str) -> &str {
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    let trimmed = path.trim_end_matches(separators);
+    trimmed.rsplit(separators).next().unwrap_or(trimmed)
+}
+
 impl Detected {
-    /// What Tika's detection returned. Its metadata comes as a map without the order it was set
-    /// in, so the names are set in sorted order, which decides the head's order only between
-    /// names in the same bucket of Java's `HashMap`.
-    fn from_tika(media_type: String, metadata: Metadata) -> Self {
-        let mut names: Vec<(String, Vec<String>)> = metadata.into_iter().collect();
-        names.sort();
-        let mut ordered = TikaMetadata::new();
-        for (name, values) in names {
-            ordered.set_values(&name, values);
-        }
-        Self {
+    /// Detects `input`, read from `source`, with the metadata `TikaNativeMain.detect` holds after
+    /// Tika's detection: for a file, the resource name and length `TikaInputStream.get(Path,
+    /// metadata)` writes, then what the detectors write, in the order they write it.
+    fn detect(source: Source<'_>, input: &[u8]) -> Result<Self, mime::DetectionError> {
+        let mut metadata = TikaMetadata::new();
+        let origin = match source {
+            Source::File(path) => {
+                let name = java_file_name(path);
+                metadata.set("tk:resource-name", name);
+                metadata.set("Content-Length", input.len().to_string());
+                Origin::File { name }
+            }
+            Source::Bytes(_) | Source::Url(_) => Origin::Bytes,
+        };
+        let Detection {
             media_type,
-            metadata: ordered,
+            metadata: entries,
+        } = mime::detect(input, origin)?;
+        for entry in entries {
+            metadata.set(entry.key.name(), entry.value);
         }
+        Ok(Self {
+            media_type: media_type.to_string(),
+            metadata,
+        })
     }
 
     /// The metadata a parser starts from, as Tika's `AutoDetectParser` and `CompositeParser`
@@ -505,5 +555,108 @@ impl Read for NativeStream {
         buf[..count].copy_from_slice(&self.chunk[self.position..self.position + count]);
         self.position += count;
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::process::Command;
+
+    use super::*;
+    use crate::Extractor;
+
+    const CHILD: &str = "EXTRACTOUS_NATIVE_ROUTING_CHILD";
+    const TEST: &str = "formats::tests::native_documents_never_start_the_jvm";
+
+    /// Extracts and detects documents native parsers read, in every way the extractor offers,
+    /// in a process of its own: the test runs itself again, so no other test has created the
+    /// isolate first, and checks that none of it did.
+    #[test]
+    fn native_documents_never_start_the_jvm() {
+        if std::env::var_os(CHILD).is_none() {
+            let exe = std::env::current_exe().expect("the test binary");
+            let child = Command::new(exe)
+                .args(["--exact", TEST, "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .expect("the test binary runs");
+            let report = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                child.status.success() && report.contains(&format!("test {TEST} ... ok")),
+                "the routing child failed: {report}{}",
+                String::from_utf8_lossy(&child.stderr)
+            );
+            return;
+        }
+        let documents = "../test_files/documents";
+        let extractor = Extractor::new();
+        let (text, metadata) = extractor
+            .extract_file_to_string(&format!("{documents}/book.fb2"))
+            .unwrap();
+        assert!(!text.is_empty());
+        assert_eq!(
+            metadata.get("tk:parsed-by").map(Vec::as_slice),
+            Some(["extractous::FictionBookParser".to_owned()].as_slice())
+        );
+        let odt = std::fs::read(format!("{documents}/simple.odt")).unwrap();
+        let (text, _) = extractor.extract_bytes_to_string(&odt).unwrap();
+        assert!(!text.is_empty());
+        let (mut stream, _) = extractor
+            .extract_file(&format!("{documents}/simple.odt"))
+            .unwrap();
+        let mut streamed = String::new();
+        stream.read_to_string(&mut streamed).unwrap();
+        assert!(!streamed.is_empty());
+        assert_eq!(
+            extractor
+                .detect_file(&format!("{documents}/2022_Q3_AAPL.pdf"))
+                .unwrap()
+                .as_str(),
+            "application/pdf"
+        );
+        assert_eq!(
+            extractor.detect_bytes(&odt).unwrap().as_str(),
+            "application/vnd.oasis.opendocument.text"
+        );
+        assert!(!crate::isolate::isolate_created());
+    }
+
+    #[test]
+    fn names_files_as_java_does() {
+        assert_eq!(java_file_name("a/b/report.pdf"), "report.pdf");
+        assert_eq!(java_file_name("report.pdf"), "report.pdf");
+        assert_eq!(java_file_name("a/b/"), "b");
+        assert_eq!(java_file_name("a/.."), "..");
+    }
+
+    #[test]
+    fn detects_files_with_the_metadata_tika_opens_them_with() {
+        let path = "../test_files/documents/simple.odt";
+        let input = std::fs::read(path).unwrap();
+        let detected = Detected::detect(Source::File(path), &input).unwrap();
+        assert_eq!(
+            detected.media_type,
+            "application/vnd.oasis.opendocument.text"
+        );
+        let names: Vec<&str> = detected.metadata.names().collect();
+        for name in [
+            "tk:resource-name",
+            "Content-Length",
+            "tk:content-type-magic-detected",
+            "zip:detector-zip-file-opened",
+        ] {
+            assert!(names.contains(&name), "{name} in {names:?}");
+        }
+        assert_eq!(
+            detected.metadata.get("tk:resource-name"),
+            Some("simple.odt")
+        );
+        let bytes = Detected::detect(Source::Bytes(&input), &input).unwrap();
+        assert_eq!(bytes.metadata.get("tk:resource-name"), None);
+        assert_eq!(
+            bytes.metadata.get("Content-Length"),
+            Some(input.len().to_string().as_str())
+        );
     }
 }
