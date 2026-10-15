@@ -8,7 +8,7 @@ use crate::errors::Error;
 use crate::formats::embedded::{self, EmbeddedRecord, Embedding, Event, Wrapping, PACKAGE_ENTRY};
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, Failure, Parser};
+use crate::formats::{self, Failure, Opened, Parser};
 use crate::isolate::isolate;
 use crate::tika::{self, EmbeddedOutcome};
 
@@ -217,6 +217,12 @@ impl<'h> Xhtml<'h> {
         &mut self.metadata
     }
 
+    /// Records `parser` among the parsers of this document, as Tika's `CompositeParser` records
+    /// the one it dispatches a document parsed into this one's handler to.
+    pub(crate) fn record_parser(&mut self, parser: &str) {
+        self.embedding.record_parser(parser);
+    }
+
     /// Has `body` write the document with `metadata` in place of the document's, as a parser
     /// does that hands Tika's handler to another parser with metadata of its own: the head shows
     /// `metadata` as `body` leaves it, and the document's metadata is back once `body` returns.
@@ -380,7 +386,12 @@ impl<'h> Xhtml<'h> {
             }
         }
         let mut open = Vec::new();
-        let ended = match formats::route_embedded(data, metadata, self.embedding.configs()) {
+        let ended = match formats::route_embedded(
+            data,
+            metadata,
+            Opened::WithMetadata,
+            self.embedding.configs(),
+        ) {
             Some((parser, start)) => self.parse_natively(parser, data, start, metadata, &mut open),
             None => self.parse_with_tika(data, metadata, &mut open),
         };

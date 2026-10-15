@@ -137,12 +137,21 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
 
 /// The native result as Tika's path would name its parser.
 fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: CharSet) -> Extracted {
-    let mut native_bytes = Vec::new();
-    let mut tika_bytes = Vec::new();
-    formats::encode(native_name, char_set, &mut native_bytes);
-    formats::encode(tika_name, char_set, &mut tika_bytes);
+    let names = std::iter::once((native_name, tika_name)).chain(
+        formats::PARSERS
+            .iter()
+            .map(|parser| (parser.name(), parser.tika_name())),
+    );
+    let mut text = native.text;
+    for (native_name, tika_name) in names {
+        let mut native_bytes = Vec::new();
+        let mut tika_bytes = Vec::new();
+        formats::encode(native_name, char_set, &mut native_bytes);
+        formats::encode(tika_name, char_set, &mut tika_bytes);
+        text = replace_bytes(&text, &native_bytes, &tika_bytes);
+    }
     Extracted {
-        text: replace_bytes(&native.text, &native_bytes, &tika_bytes),
+        text,
         metadata: native
             .metadata
             .into_iter()

@@ -1,19 +1,24 @@
-//! CMS (PKCS #7) data, as our Java `CmsParser` reports it: encrypted data (enveloped,
-//! authenticated-enveloped or encrypted) as encrypted, before the document starts; a detached
-//! signature, signed data typed `application/pkcs7-signature` without content of its own, as an
-//! empty document.
+//! CMS (PKCS #7) data, as our Java `CmsParser` and the Tika `Pkcs7Parser` it hands the rest
+//! read it: encrypted data (enveloped, authenticated-enveloped or encrypted) is reported as
+//! encrypted, before the document starts; a detached signature, signed data typed
+//! `application/pkcs7-signature` without content of its own, is an empty document; signed and
+//! compressed data have their `Content-Type` refined and their content parsed, from fresh
+//! metadata, by the parser it is routed to, into the same handler; digested data is labelled
+//! and empty, and anything else empty.
 //!
-//! Whether signed data carries its content is read from the start of the BER encoding Bouncy
-//! Castle's streaming `CMSSignedDataParser` reads before it answers: the content info, the
-//! version and digest algorithms of the signed data, and its encapsulated content info. Signed
-//! data with content, which Tika's `Pkcs7Parser` parses with the whole of Tika, and everything
-//! else stay on Tika's path.
+//! The content is read from the BER encoding as Bouncy Castle's streaming parsers read it:
+//! the content info, the version and digest or compression algorithms, and the encapsulated
+//! content info, its OCTET STRING primitive or constructed. Content no native parser takes,
+//! signed data typed `application/pkcs7-mime` without content (whose kind Bouncy Castle tells
+//! by its signers and certificates), and encodings the port does not read as Bouncy Castle
+//! does stay on Tika's path.
 
+use crate::compress::zlib;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{self, Failure, Opened, Parser};
 use crate::mime::MediaType;
 
 /// The bytes `CmsParser` reads the content type from.
@@ -21,11 +26,25 @@ const HEADER_BYTES: usize = 64;
 const SEQUENCE: u8 = 0x30;
 const SET: u8 = 0x31;
 const INTEGER: u8 = 0x02;
+const OCTET_STRING: u8 = 0x04;
+const CONSTRUCTED_OCTET_STRING: u8 = 0x24;
 const OBJECT_IDENTIFIER: u8 = 0x06;
 const EXPLICIT_0: u8 = 0xA0;
 const SIGNATURE: &str = "application/pkcs7-signature";
+/// The types `CmsClassifier` refines CMS data to.
+const SIGNED: &str = "application/pkcs7-mime; smime-type=signed-data";
+const COMPRESSED: &str = "application/pkcs7-mime; smime-type=compressed-data";
+const DIGESTED: &str = "application/pkcs7-mime; smime-type=digested-data";
+/// `Pkcs7Parser.MAX_DECOMPRESSED`.
+const MAX_DECOMPRESSED: usize = 100 * 1024 * 1024;
 /// 1.2.840.113549.1.7.2, `signedData`.
 const SIGNED_DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02];
+/// 1.2.840.113549.1.7.5, `digestedData`.
+const DIGESTED_DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x05];
+/// 1.2.840.113549.1.9.16.1.9, `id-ct-compressedData`.
+const COMPRESSED_DATA: &[u8] = &[
+    0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x01, 0x09,
+];
 /// The encrypted content types `CmsParser` reports, by OID content, with their names.
 const ENCRYPTED: [(&[u8], &str); 3] = [
     (
@@ -160,68 +179,135 @@ impl<'a> Ber<'a> {
     }
 }
 
-/// Whether signed data `input` encapsulates its content, as `CMSSignedDataParser` finds it,
-/// `None` where the port does not read it as Bouncy Castle does.
-fn encapsulates_content(input: &[u8]) -> Option<bool> {
+impl<'a> Ber<'a> {
+    /// Reads the header of the next element, which must be `tag`.
+    fn expect(&mut self, tag: u8) -> Option<Length> {
+        let (found, length) = self.header()?;
+        (found == tag).then_some(length)
+    }
+
+    /// Reads an object identifier, returning its content.
+    fn object_identifier(&mut self) -> Option<&'a [u8]> {
+        let Length::Definite(length) = self.expect(OBJECT_IDENTIFIER)? else {
+            return None;
+        };
+        Some(self.take(length))
+    }
+
+    /// Reads an `AlgorithmIdentifier`: an object identifier and, at most, its parameters.
+    fn algorithm_identifier(&mut self) -> Option<()> {
+        let identifier = self.expect(SEQUENCE)?;
+        let start = self.at;
+        self.object_identifier()?;
+        if self.has_more(start, identifier) {
+            let (_, parameters) = self.header()?;
+            self.skip(parameters)?;
+            if self.has_more(start, identifier) {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    /// The content of an OCTET STRING, primitive or constructed of nested ones.
+    fn octet_string(&mut self, content: &mut Vec<u8>) -> Option<()> {
+        match self.header()? {
+            (OCTET_STRING, Length::Definite(length)) => {
+                content.extend_from_slice(self.take(length))
+            }
+            (CONSTRUCTED_OCTET_STRING, length) => {
+                let start = self.at;
+                while self.has_more(start, length) {
+                    self.octet_string(content)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    /// Reads an encapsulated content info: its content type, then the content of its OCTET
+    /// STRING, if it has one.
+    fn encapsulated_content(&mut self) -> Option<Option<Vec<u8>>> {
+        let encapsulated = self.expect(SEQUENCE)?;
+        let start = self.at;
+        self.object_identifier()?;
+        if !self.has_more(start, encapsulated) {
+            return Some(None);
+        }
+        self.expect(EXPLICIT_0)?;
+        let mut content = Vec::new();
+        self.octet_string(&mut content)?;
+        Some(Some(content))
+    }
+}
+
+/// The content type of `input` as `CmsClassifier.contentType` reads it, `None` when it is not a
+/// SEQUENCE, or `Err` for one the port does not read as Bouncy Castle does.
+fn classify(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
+    if input.first() != Some(&SEQUENCE) {
+        return Ok(None);
+    }
     let mut ber = Ber {
         bytes: input,
         at: 0,
     };
-    let (SEQUENCE, _) = ber.header()? else {
-        return None;
+    ber.expect(SEQUENCE)
+        .and_then(|_| ber.object_identifier())
+        .map(Some)
+        .ok_or("CMS data the port does not read as Bouncy Castle does")
+}
+
+/// The content of signed data, as `CMSSignedDataParser.getSignedContent` reads it: the content
+/// info, the version and digest algorithms of the signed data, then its encapsulated content
+/// info; `None` where the port does not read it as Bouncy Castle does.
+fn signed_content(input: &[u8]) -> Option<Option<Vec<u8>>> {
+    let mut ber = Ber {
+        bytes: input,
+        at: 0,
     };
-    let (OBJECT_IDENTIFIER, Length::Definite(length)) = ber.header()? else {
-        return None;
-    };
-    if ber.take(length) != SIGNED_DATA {
+    ber.expect(SEQUENCE)?;
+    if ber.object_identifier()? != SIGNED_DATA {
         return None;
     }
-    let (EXPLICIT_0, _) = ber.header()? else {
-        return None;
-    };
-    let (SEQUENCE, _) = ber.header()? else {
-        return None;
-    };
-    let (INTEGER, Length::Definite(length)) = ber.header()? else {
+    ber.expect(EXPLICIT_0)?;
+    ber.expect(SEQUENCE)?;
+    let Length::Definite(length) = ber.expect(INTEGER)? else {
         return None;
     };
     ber.take(length);
-    let (SET, algorithms) = ber.header()? else {
-        return None;
-    };
+    let algorithms = ber.expect(SET)?;
     let start = ber.at;
     while ber.has_more(start, algorithms) {
-        let (SEQUENCE, identifier) = ber.header()? else {
-            return None;
-        };
-        let identifier_start = ber.at;
-        let (OBJECT_IDENTIFIER, Length::Definite(length)) = ber.header()? else {
-            return None;
-        };
-        ber.take(length);
-        if ber.has_more(identifier_start, identifier) {
-            let (_, parameters) = ber.header()?;
-            ber.skip(parameters)?;
-            if ber.has_more(identifier_start, identifier) {
-                return None;
-            }
-        }
+        ber.algorithm_identifier()?;
     }
-    let (SEQUENCE, encapsulated) = ber.header()? else {
-        return None;
+    ber.encapsulated_content()
+}
+
+/// The content of compressed data, inflated as `CMSCompressedDataParser.getContent` with a
+/// `ZlibExpanderProvider` inflates it, within `Pkcs7Parser`'s bound; `None` where the port does
+/// not read it as Bouncy Castle does, the zlib stream does not end, or the content passes the
+/// bound, past which Tika drops the rest and records a warning.
+fn compressed_content(input: &[u8]) -> Option<Vec<u8>> {
+    let mut ber = Ber {
+        bytes: input,
+        at: 0,
     };
-    let start = ber.at;
-    let (OBJECT_IDENTIFIER, Length::Definite(length)) = ber.header()? else {
+    ber.expect(SEQUENCE)?;
+    if ber.object_identifier()? != COMPRESSED_DATA {
+        return None;
+    }
+    ber.expect(EXPLICIT_0)?;
+    ber.expect(SEQUENCE)?;
+    let Length::Definite(length) = ber.expect(INTEGER)? else {
         return None;
     };
     ber.take(length);
-    if !ber.has_more(start, encapsulated) {
-        return Some(false);
-    }
-    let (EXPLICIT_0, _) = ber.header()? else {
-        return None;
-    };
-    Some(true)
+    ber.algorithm_identifier()?;
+    let compressed = ber.encapsulated_content()??;
+    zlib::decode(&compressed)
+        .ok()
+        .filter(|inflated| inflated.len() <= MAX_DECOMPRESSED)
 }
 
 /// Whether `metadata` types the document `application/pkcs7-signature`.
@@ -230,6 +316,52 @@ fn typed_as_signature(metadata: &TikaMetadata) -> bool {
         .get("Content-Type")
         .and_then(MediaType::parse)
         .is_some_and(|kind| kind.base_type().as_str() == SIGNATURE)
+}
+
+/// What `CmsParser`, and the `Pkcs7Parser` it hands what it does not report itself, write for
+/// a document that is not encrypted.
+enum Plan {
+    /// An empty document, its `Content-Type` refined to the type given, if any.
+    Empty(Option<&'static str>),
+    /// The `Content-Type` refined to `content_type`, then the content parsed by the parser
+    /// Tika's `AutoDetectParser` would route it to, from the metadata it starts from, into the
+    /// same handler.
+    Content {
+        content_type: &'static str,
+        content: Vec<u8>,
+        parser: &'static dyn Parser,
+        start: TikaMetadata,
+    },
+}
+
+/// What happens to `input`, typed by `metadata`, or why Tika's path is left to read it.
+fn plan(input: &[u8], metadata: &TikaMetadata, configs: &ParserConfigs) -> Result<Plan, String> {
+    let unread = || "CMS data the port does not read as Bouncy Castle does".to_owned();
+    let content = |content_type: &'static str, content: Vec<u8>| {
+        formats::route_embedded(&content, &TikaMetadata::new(), Opened::Alone, configs)
+            .map(|(parser, start)| Plan::Content {
+                content_type,
+                content,
+                parser,
+                start,
+            })
+            .ok_or_else(|| "content Tika's path parses".to_owned())
+    };
+    if typed_as_signature(metadata) {
+        return match signed_content(input).ok_or_else(unread)? {
+            None => Ok(Plan::Empty(None)),
+            Some(signed) => content(SIGNED, signed),
+        };
+    }
+    match classify(input).map_err(str::to_owned)? {
+        Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
+            Some(signed) => content(SIGNED, signed),
+            None => Err("signed data whose kind Bouncy Castle tells by its signers".to_owned()),
+        },
+        Some(COMPRESSED_DATA) => content(COMPRESSED, compressed_content(input).ok_or_else(unread)?),
+        Some(DIGESTED_DATA) => Ok(Plan::Empty(Some(DIGESTED))),
+        _ => Ok(Plan::Empty(None)),
+    }
 }
 
 /// Our Java `CmsParser`.
@@ -253,7 +385,7 @@ impl Parser for CmsParser {
         &self,
         input: &[u8],
         metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
+        configs: &ParserConfigs,
     ) -> Option<String> {
         if let Err(why) = header_content_type(input) {
             return Some(why.to_owned());
@@ -261,14 +393,7 @@ impl Parser for CmsParser {
         if encryption(input).is_some() {
             return None;
         }
-        if !typed_as_signature(metadata) {
-            return Some("CMS data Tika's Pkcs7Parser reads".to_owned());
-        }
-        match encapsulates_content(input) {
-            Some(false) => None,
-            Some(true) => Some("signed data that encapsulates its content".to_owned()),
-            None => Some("CMS data the port does not read as Bouncy Castle does".to_owned()),
-        }
+        plan(input, metadata, configs).err()
     }
 
     fn fails_before_starting(
@@ -284,14 +409,31 @@ impl Parser for CmsParser {
         })
     }
 
-    /// A detached signature: an empty document.
     fn parse(
         &self,
-        _input: &[u8],
-        _configs: &ParserConfigs,
-        _xhtml: &mut Xhtml,
+        input: &[u8],
+        configs: &ParserConfigs,
+        xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        Ok(())
+        let plan = plan(input, xhtml.metadata_mut(), configs).map_err(Failure::Malformed)?;
+        match plan {
+            Plan::Empty(content_type) => {
+                if let Some(content_type) = content_type {
+                    xhtml.metadata_mut().set("Content-Type", content_type);
+                }
+                Ok(())
+            }
+            Plan::Content {
+                content_type,
+                content,
+                parser,
+                start,
+            } => {
+                xhtml.metadata_mut().set("Content-Type", content_type);
+                xhtml.record_parser(parser.name());
+                xhtml.with_metadata(start, |xhtml| parser.parse(&content, configs, xhtml))
+            }
+        }
     }
 }
 
@@ -301,7 +443,7 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
+        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
 
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
@@ -327,29 +469,172 @@ mod tests {
         assert!(header_content_type(&[0x30, 0x03, 0x06, 0x01, 0x81]).is_err());
     }
 
+    /// A DER element of `tag` holding `content`.
+    fn der(tag: u8, content: &[u8]) -> Vec<u8> {
+        let mut element = vec![tag];
+        match content.len() {
+            length @ 0..=0x7F => element.push(length as u8),
+            length @ 0x80..=0xFF => element.extend([0x81, length as u8]),
+            length => element.extend([0x82, (length >> 8) as u8, length as u8]),
+        }
+        element.extend_from_slice(content);
+        element
+    }
+
+    /// A BER element of `tag` holding `elements`, of indefinite length.
+    fn ber(tag: u8, elements: &[Vec<u8>]) -> Vec<u8> {
+        [vec![tag, 0x80], elements.concat(), vec![0, 0]].concat()
+    }
+
+    const DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x01];
+    const SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+    const ZLIB: &[u8] = &[
+        0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x03, 0x08,
+    ];
+
+    /// Signed data of `content`, as `encapsulated` encodes it, without signers.
+    fn signed(encapsulated: Vec<u8>) -> Vec<u8> {
+        let algorithm = der(
+            SEQUENCE,
+            &[der(OBJECT_IDENTIFIER, SHA256), der(0x05, &[])].concat(),
+        );
+        let signed_data = der(
+            SEQUENCE,
+            &[
+                der(INTEGER, &[1]),
+                der(SET, &algorithm),
+                encapsulated,
+                der(SET, &[]),
+            ]
+            .concat(),
+        );
+        der(
+            SEQUENCE,
+            &[
+                der(OBJECT_IDENTIFIER, SIGNED_DATA),
+                der(EXPLICIT_0, &signed_data),
+            ]
+            .concat(),
+        )
+    }
+
+    fn encapsulated(content: &[u8]) -> Vec<u8> {
+        der(
+            SEQUENCE,
+            &[
+                der(OBJECT_IDENTIFIER, DATA),
+                der(EXPLICIT_0, &der(OCTET_STRING, content)),
+            ]
+            .concat(),
+        )
+    }
+
+    /// Compressed data of `content`.
+    fn compressed(content: &[u8]) -> Vec<u8> {
+        let compressed_data = der(
+            SEQUENCE,
+            &[
+                der(INTEGER, &[0]),
+                der(SEQUENCE, &der(OBJECT_IDENTIFIER, ZLIB)),
+                encapsulated(&zlib::tests::zlib(content)),
+            ]
+            .concat(),
+        );
+        der(
+            SEQUENCE,
+            &[
+                der(OBJECT_IDENTIFIER, COMPRESSED_DATA),
+                der(EXPLICIT_0, &compressed_data),
+            ]
+            .concat(),
+        )
+    }
+
+    const XML: &[u8] = br#"<?xml version="1.0"?><r xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Signed</dc:title>Some signed text.</r>"#;
+
     #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn reads_tikas_test_signatures_as_tikas_path_does() {
-        let (parsed, _) = documents(&CmsParser, &[&conformance_corpus()]);
-        let named = |names: &[&str]| -> Vec<PathBuf> {
-            parsed
-                .iter()
-                .filter(|path| names.iter().any(|name| path.ends_with(name)))
-                .cloned()
-                .collect()
-        };
-        let detached = named(&DETACHED);
-        assert_eq!(detached.len(), DETACHED.len());
+    fn reads_content_as_tikas_path_does() {
+        let scratch = Scratch::new("cms");
+        let split = ber(
+            SEQUENCE,
+            &[
+                der(OBJECT_IDENTIFIER, DATA),
+                ber(
+                    EXPLICIT_0,
+                    &[ber(
+                        CONSTRUCTED_OCTET_STRING,
+                        &[der(OCTET_STRING, &XML[..20]), der(OCTET_STRING, &XML[20..])],
+                    )],
+                ),
+            ],
+        );
+        let read = [
+            scratch.write("signed.p7m", &signed(encapsulated(XML))),
+            scratch.write("split.p7m", &signed(split)),
+            scratch.write(
+                "signed-text.p7s",
+                &signed(encapsulated(b"Plain signed text.")),
+            ),
+            scratch.write(
+                "compressed.p7z",
+                &compressed(b"Compressed text, compressed text."),
+            ),
+            scratch.write(
+                "detached.p7s",
+                &signed(der(SEQUENCE, &der(OBJECT_IDENTIFIER, DATA))),
+            ),
+        ];
+        let (parsed, deferred) = documents(&CmsParser, &[scratch.directory()]);
+        assert!(deferred.is_empty(), "{deferred:?}");
+        assert_eq!(parsed.len(), read.len());
         assert_same_as_tika(
-            &detached.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
+            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
         );
-        let enveloped = named(&ENVELOPED);
+    }
+
+    #[test]
+    fn reads_the_signed_local_document_as_tikas_path_does() {
+        let (parsed, deferred) = documents(&CmsParser, &[Path::new("../test_files/documents")]);
+        assert!(deferred.is_empty(), "{deferred:?}");
+        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&paths, TIKA_NAME);
+    }
+
+    /// Tika's CMS test documents the native path leaves to Tika's: compressed PDF content, which
+    /// no native parser takes (the document is in two of the corpus's modules), digested data
+    /// typed as a signature, which Bouncy Castle fails to read as signed data, and signed data
+    /// in PEM, which it cannot read at all.
+    const LEFT_TO_TIKA: [&str; 4] = [
+        "testPKCS7_compressed_def_long.p7z",
+        "testPKCS7_compressed_def_long.p7z",
+        "testPKCS7_digested.p7",
+        "testPKCS7_signed_data_def.pem",
+    ];
+
+    #[test]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+    fn reads_tikas_test_documents_as_tikas_path_does() {
+        let (parsed, deferred) = documents(&CmsParser, &[&conformance_corpus()]);
+        let mut left: Vec<String> = deferred
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, LEFT_TO_TIKA);
+        let (enveloped, rest): (Vec<&Path>, Vec<&Path>) = parsed
+            .iter()
+            .map(PathBuf::as_path)
+            .partition(|path| ENVELOPED.iter().any(|name| path.ends_with(name)));
         assert_eq!(enveloped.len(), ENVELOPED.len());
-        let paths: Vec<&Path> = enveloped.iter().map(PathBuf::as_path).collect();
-        assert_fails_as_tika(&paths);
+        assert!(DETACHED
+            .iter()
+            .all(|name| rest.iter().any(|path| path.ends_with(name))));
+        assert_same_as_tika(&rest, TIKA_NAME);
+        assert_fails_as_tika(&enveloped);
         let error = crate::Extractor::new()
-            .extract_file_to_string(paths[0].to_str().unwrap())
+            .extract_file_to_string(enveloped[0].to_str().unwrap())
             .unwrap_err();
         assert!(matches!(error, Error::Encrypted(_)), "{error:?}");
     }

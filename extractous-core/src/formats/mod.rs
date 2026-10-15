@@ -230,8 +230,19 @@ pub(crate) fn route<'a>(
 /// The metadata key naming the type whose parser parses a document, whatever it is detected as.
 const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
 
-/// Routes a document embedded in one a native parser reads, given its `data` and the
-/// `metadata` its embedding parser gives it, as Tika's `AutoDetectParser` and `CompositeParser`
+/// How the `TikaInputStream` of an embedded document was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Opened {
+    /// With its metadata, as `TikaInputStream.get(stream, tmp, metadata)` opens it: reading it
+    /// to its end records its length there.
+    WithMetadata,
+    /// Alone, as `TikaInputStream.get(stream)` opens it: its metadata never learns its length.
+    Alone,
+}
+
+/// Routes a document embedded in one a native parser reads, given its `data`, the `metadata`
+/// its embedding parser gives it and how its stream was `opened`, as Tika's `AutoDetectParser`
+/// and `CompositeParser`
 /// route it: detected with the resource name and `Content-Type` of its metadata as hints, then
 /// parsed by the parser of the type the metadata overrides the parser with, else of the
 /// detected type. Returns that parser, if it is native and neither defers the document nor
@@ -241,12 +252,13 @@ const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
 pub(crate) fn route_embedded(
     data: &[u8],
     metadata: &TikaMetadata,
+    opened: Opened,
     configs: &ParserConfigs,
 ) -> Option<(&'static dyn Parser, TikaMetadata)> {
     if data.is_empty() {
         return None;
     }
-    let detected = Detected::detect_embedded(data, metadata).ok()?;
+    let detected = Detected::detect_embedded(data, metadata, opened).ok()?;
     let parser = parser_for(
         metadata
             .get(PARSER_OVERRIDE)
@@ -332,15 +344,18 @@ impl Detected {
         })
     }
 
-    /// Detects an embedded document `input` with the `metadata` its embedding parser gives it,
-    /// which hints at its type and which the detection's metadata is added to.
+    /// Detects an embedded document `input`, its stream `opened` as given, with the `metadata`
+    /// its embedding parser gives it, which hints at its type and which the detection's
+    /// metadata is added to.
     fn detect_embedded(
         input: &[u8],
         metadata: &TikaMetadata,
+        opened: Opened,
     ) -> Result<Self, mime::DetectionError> {
         let origin = Origin::Embedded {
             name: metadata.get(embedded::RESOURCE_NAME),
             content_type: metadata.get("Content-Type"),
+            learns_length: opened == Opened::WithMetadata,
         };
         let Detection {
             media_type,

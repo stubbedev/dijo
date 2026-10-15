@@ -42,10 +42,12 @@ pub(crate) enum Origin<'a> {
     /// them all.
     Bytes,
     /// An embedded document, streamed as bytes are, with the resource name and `Content-Type`
-    /// its embedding parser gave it, which hint at its type.
+    /// its embedding parser gave it, which hint at its type. Its metadata learns its length when
+    /// a detector reads it all only if the stream was opened with that metadata.
     Embedded {
         name: Option<&'a str>,
         content_type: Option<&'a str>,
+        learns_length: bool,
     },
 }
 
@@ -121,7 +123,12 @@ impl Written {
 
     /// A detector read the stream to its end: a stream of bytes learns its length.
     fn spool(&mut self, origin: Origin<'_>) {
-        if !matches!(origin, Origin::File { .. }) && !self.spooled {
+        let learns_length = match origin {
+            Origin::File { .. } => false,
+            Origin::Bytes => true,
+            Origin::Embedded { learns_length, .. } => learns_length,
+        };
+        if learns_length && !self.spooled {
             self.spooled = true;
             self.set(Key::ContentLength, self.length.to_string());
         }
@@ -135,7 +142,9 @@ pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, Detec
     let (name, content_type) = match origin {
         Origin::File { name } => (Some(name), None),
         Origin::Bytes => (None, None),
-        Origin::Embedded { name, content_type } => (name, content_type),
+        Origin::Embedded {
+            name, content_type, ..
+        } => (name, content_type),
     };
     let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name, content_type);
     let mut written = Written {
