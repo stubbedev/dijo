@@ -103,6 +103,23 @@ text-reference:
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
+# Regenerate what Apache Tika's RTFParser makes of the code pages RTF names and of the dates in its
+# info group, which the Rust port is tested against, after refreshing the fixture zoneinfo files the
+# dates are computed with from the system's.
+[unix]
+rtf-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/rtf
+    system=$(readlink -f /etc/localtime | sed 's|/zoneinfo/.*|/zoneinfo|')
+    (cd "$fixtures/zoneinfo" && find . -type f) | while IFS= read -r zone; do
+        cp -L "$system/$zone" "$fixtures/zoneinfo/$zone"
+        chmod u+w "$fixtures/zoneinfo/$zone"
+    done
+    java -cp "$jars/*" "$fixtures/RtfReference.java" "$fixtures"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]
