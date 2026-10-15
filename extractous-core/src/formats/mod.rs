@@ -3,11 +3,14 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod auto_detect_reader;
 mod fiction_book;
 pub(crate) mod handlers;
+mod media_type;
 pub(crate) mod metadata;
 #[cfg(test)]
 pub(crate) mod parity;
+mod subtitle;
 mod text;
 pub(crate) mod xhtml;
 pub(crate) mod xml;
@@ -67,7 +70,11 @@ pub(crate) trait Parser: Sync {
     fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure>;
 }
 
-static PARSERS: &[&dyn Parser] = &[&fiction_book::FictionBookParser, &text::TextAndCsvParser];
+static PARSERS: &[&dyn Parser] = &[
+    &fiction_book::FictionBookParser,
+    &subtitle::SubtitleParser,
+    &text::TextAndCsvParser,
+];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
 fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {

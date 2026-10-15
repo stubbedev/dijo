@@ -4,12 +4,8 @@
 //!
 //! # The decisions
 //!
-//! Tika reads the input with an `AutoDetectReader`: the charset detection of
-//! [`charset::detect`] (told the content type the parser was given), decoding with the detected
-//! charset's vendor superset, and one U+FEFF dropped from the start of the decoded text. That
-//! drops the byte order mark of UTF-8, UTF-16LE/BE and UTF-32LE/BE, which Java's decoders for
-//! those charsets keep as a character; Java's `UTF-16` decoder, named only by a declared
-//! charset, drops a byte order mark itself, so a second one goes too. A charset the content type
+//! Tika reads the input with an [`AutoDetectReader`], told the content type the parser was
+//! given. A charset the content type
 //! declares is one more report to the detection: the byte order mark's report and Mojibuster's
 //! come first, and the JunkFilter arbitrates among them all (see the `declared/` inputs of the
 //! reference). Through `AutoDetectParser`, as extractous parses, the content type is the
@@ -65,17 +61,17 @@
 //! since Commons CSV reads every text with the format it uses (see [`csv`]).
 
 mod csv;
-mod media_type;
 #[cfg(test)]
 mod reference;
 mod sniffer;
 
-use media_type::MediaType;
 use sniffer::Delimiter;
 
+use crate::formats::auto_detect_reader::{self, AutoDetectReader};
+use crate::formats::media_type::MediaType;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser};
-use crate::text::charset::{self, Detection};
+use crate::text::charset::Detection;
 
 /// The UTF-16 units of each read of `handleText`'s buffer, each written as one `characters`
 /// event.
@@ -94,8 +90,7 @@ impl Parser for TextAndCsvParser {
     }
 
     fn defers(&self, input: &[u8]) -> Option<&'static str> {
-        charset::undecodable(input)
-            .map(|_| "a detector may report a charset the native decoders do not decode")
+        AutoDetectReader::defers(input)
     }
 
     fn parse(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
@@ -138,15 +133,9 @@ impl Document {
     /// Sets the metadata and writes the body as TextAndCSVParser does. Of the values Tika sets
     /// more than once, only the last counts: each name keeps the place it was first set at.
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        let detection = &self.detection;
         let metadata = xhtml.metadata_mut();
-        metadata.set("tk:detected-encoding", detection.charset.name());
-        metadata.set("tk:encoding-detector", detection.detector.tika_name());
-        metadata.set("tk:encoding-detection-trace", detection.trace.to_string());
-        if detection.decode_as != detection.charset {
-            metadata.set("tk:decoded-charset", detection.decode_as.name());
-        }
-        metadata.set("Content-Encoding", detection.decode_as.name());
+        auto_detect_reader::set_metadata(&self.detection, metadata);
+        metadata.set("Content-Encoding", self.detection.decode_as.name());
         metadata.set("Content-Type", self.content_type.to_string());
         match &self.body {
             Body::Paragraph(chunks) => {
@@ -195,15 +184,9 @@ fn read(input: &[u8], content_type: &str) -> Result<Document, Failure> {
             "Tika's MediaType does not parse the content type {content_type:?}"
         ))
     })?;
-    let detection = charset::detect(input, Some(content_type));
+    let AutoDetectReader { detection, text } = AutoDetectReader::read(input, content_type)?;
+    let text = text.as_str();
     let charset = detection.decode_as;
-    let decoded = charset.decode(input).ok_or_else(|| {
-        Failure::Malformed(format!(
-            "the text is detected as {}, which the native decoders do not decode",
-            charset.name()
-        ))
-    })?;
-    let text = decoded.strip_prefix('\u{FEFF}').unwrap_or(&decoded);
     let sniffed = [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base());
     let (content_type, body) = match sniffed.then(|| sniffer::sniff(text)) {
         None => (given, Body::Paragraph(chunks(text))),
@@ -261,58 +244,20 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::assert_same_as_tika;
-    use crate::isolate::isolate;
-    use crate::tika::{self, Source};
+    use crate::formats::parity::{assert_same_as_tika, documents};
 
     const TIKA_NAME: &str = "org.apache.tika.parser.csv.TextAndCSVParser";
 
-    /// The files under `roots` that Tika detects as a type this parser reads, split into those
-    /// it parses and those it defers.
-    fn documents(roots: &[&str]) -> (Vec<PathBuf>, Vec<PathBuf>) {
-        let mut files: Vec<PathBuf> = Vec::new();
-        let mut pending: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
-        while let Some(path) = pending.pop() {
-            if path.is_dir() {
-                let entries = std::fs::read_dir(&path)
-                    .unwrap_or_else(|e| panic!("cannot list {}: {e}", path.display()));
-                pending.extend(entries.map(|entry| entry.unwrap().path()));
-            } else {
-                files.push(path);
-            }
-        }
-        files.sort();
-        let (mut parsed, mut deferred) = (Vec::new(), Vec::new());
-        for file in files {
-            let path = file.to_str().unwrap();
-            let (media_type, _) =
-                tika::detect_with_metadata(isolate().unwrap(), Source::File(path)).unwrap();
-            if !TextAndCsvParser
-                .media_types()
-                .contains(&media_type.as_str())
-            {
-                continue;
-            }
-            let input = std::fs::read(&file).unwrap();
-            if input.is_empty() {
-                continue;
-            }
-            if TextAndCsvParser.defers(&input).is_some() {
-                deferred.push(file);
-            } else {
-                parsed.push(file);
-            }
-        }
-        (parsed, deferred)
-    }
-
     #[test]
     fn extracts_what_tikas_path_extracts() {
-        let (parsed, deferred) = documents(&[
-            "../test_files/documents",
-            "../quality/corpus",
-            "../quality/truth",
-        ]);
+        let (parsed, deferred) = documents(
+            &TextAndCsvParser,
+            &[
+                "../test_files/documents",
+                "../quality/corpus",
+                "../quality/truth",
+            ],
+        );
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         assert!(parsed.len() >= 100, "{} documents", parsed.len());
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
@@ -322,7 +267,10 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents: conformance/prepare.sh target/conformance"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-        let (parsed, deferred) = documents(&["../target/conformance/tika-4.1.0/tika-parsers"]);
+        let (parsed, deferred) = documents(
+            &TextAndCsvParser,
+            &["../target/conformance/tika-4.1.0/tika-parsers"],
+        );
         assert!(parsed.len() >= 15, "{} documents", parsed.len());
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
