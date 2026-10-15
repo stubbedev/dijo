@@ -4,6 +4,7 @@
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
 mod auto_detect_reader;
+mod docx;
 mod fiction_book;
 pub(crate) mod handlers;
 pub(crate) mod java;
@@ -11,6 +12,7 @@ mod java_time;
 mod media_type;
 pub(crate) mod metadata;
 mod odf;
+mod ooxml;
 #[cfg(test)]
 pub(crate) mod parity;
 mod rtf;
@@ -88,6 +90,7 @@ pub(crate) trait Parser: Sync {
 }
 
 static PARSERS: &[&dyn Parser] = &[
+    &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &odf::OpenDocumentParser,
     &rtf::RtfParser,

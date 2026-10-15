@@ -1,7 +1,10 @@
 //! What ports of Tika code need from Java itself to give Java's results: the iteration order of
-//! a `java.util.HashMap` with string keys.
+//! a `java.util.HashMap` with string keys, and `Integer.parseInt`, `Long.parseLong` and
+//! `String.trim`.
 
 use std::collections::HashMap;
+
+use crate::unicode::decimal_digit;
 
 const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
@@ -120,6 +123,36 @@ fn spread(hash: u32) -> u32 {
     hash ^ (hash >> 16)
 }
 
+/// `Integer.parseInt(text)`: an optional sign and decimal digits of any script, in range.
+pub(crate) fn parse_int(text: &str) -> Option<i32> {
+    parse_long(text).and_then(|value| i32::try_from(value).ok())
+}
+
+/// `Long.parseLong(text)`: an optional sign and decimal digits of any script, in range.
+pub(crate) fn parse_long(text: &str) -> Option<i64> {
+    let (negative, digits) = match text.chars().next()? {
+        '-' => (true, &text[1..]),
+        '+' => (false, &text[1..]),
+        _ => (false, text),
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    let mut magnitude: i128 = 0;
+    for character in digits.chars() {
+        magnitude = magnitude * 10 + i128::from(decimal_digit(character)?);
+        if magnitude > i128::from(i64::MAX) + 1 {
+            return None;
+        }
+    }
+    i64::try_from(if negative { -magnitude } else { magnitude }).ok()
+}
+
+/// `String.trim()`: without the characters up to U+0020 at either end.
+pub(crate) fn trim(text: &str) -> &str {
+    text.trim_matches(|character| character <= ' ')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +178,25 @@ mod tests {
             map.iter().map(|(key, ())| key).collect::<Vec<_>>(),
             expected.split_whitespace().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn parses_numbers_as_java_does() {
+        assert_eq!(parse_int("42"), Some(42));
+        assert_eq!(parse_int("+7"), Some(7));
+        assert_eq!(parse_int("-2147483648"), Some(i32::MIN));
+        assert_eq!(parse_int("2147483648"), None);
+        assert_eq!(parse_int("٣"), Some(3));
+        assert_eq!(parse_int("𝟗"), Some(9));
+        assert_eq!(parse_int(" 1"), None);
+        assert_eq!(parse_int("-"), None);
+        assert_eq!(parse_long("9223372036854775807"), Some(i64::MAX));
+        assert_eq!(parse_long("-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(parse_long("9223372036854775808"), None);
+    }
+
+    #[test]
+    fn trims_as_java_does() {
+        assert_eq!(trim("\u{1}\t a \u{a0}\n"), "a \u{a0}");
     }
 }

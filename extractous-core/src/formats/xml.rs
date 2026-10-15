@@ -112,6 +112,17 @@ pub(crate) fn attribute<'a>(
         .map(|attribute| attribute.value.as_ref())
 }
 
+/// The value of the attribute written `qualified_name`, as SAX's `getValue(qName)`.
+pub(crate) fn attribute_named<'a>(
+    attributes: &'a [Attribute<'_>],
+    qualified_name: &str,
+) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.qualified_name == qualified_name)
+        .map(|attribute| attribute.value.as_ref())
+}
+
 /// What receives the events of [`parse_sax`]: a port of a Java SAX `ContentHandler`. An element
 /// without a namespace is in the namespace `""`.
 pub(crate) trait SaxHandler {
@@ -123,6 +134,38 @@ pub(crate) trait SaxHandler {
     ) -> Result<(), Failure>;
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure>;
     fn characters(&mut self, text: &str) -> Result<(), Failure>;
+
+    /// The start of an element with what SAX also reports of it: its qualified name, and with
+    /// the `namespace-prefixes` feature, its namespace declarations. A handler that needs no
+    /// more than [`SaxHandler::start_element`] leaves this to call it.
+    fn start_tag(&mut self, tag: &StartTag<'_, '_>) -> Result<(), Failure> {
+        self.start_element(tag.namespace, tag.local_name, tag.attributes)
+    }
+
+    /// A document type declaration, which Tika's parsers skip and POI's refuse.
+    fn document_type(&mut self) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+/// A start tag as [`SaxHandler::start_tag`] receives it.
+pub(crate) struct StartTag<'t, 'a> {
+    pub(crate) namespace: &'t str,
+    pub(crate) local_name: &'t str,
+    pub(crate) qualified_name: &'t str,
+    pub(crate) attributes: &'t [Attribute<'a>],
+    /// The `xmlns` attributes, in the XMLNS namespace.
+    pub(crate) declarations: &'t [Attribute<'a>],
+}
+
+/// [`parse_sax`] on the bytes of an XML document, decoded as Java's SAX parser decodes them.
+pub(crate) fn read_sax(
+    input: &[u8],
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
+    let text = decode(input, what)?;
+    parse_sax(&text, what, handler)
 }
 
 /// Reads the XML document `text` as the JDK's namespace-aware SAX parser does, handing `handler`
@@ -197,7 +240,8 @@ pub(crate) fn parse_sax(
                 handler.characters(&resolved)?;
             }
             Event::Eof => break,
-            Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
+            Event::DocType(_) => handler.document_type()?,
+            Event::Comment(_) | Event::Decl(_) | Event::PI(_) => {}
         }
     }
     if let Some(element) = open.last() {
@@ -216,14 +260,32 @@ fn start_element(
     handler: &mut impl SaxHandler,
 ) -> Result<(String, String), Failure> {
     let (namespace, local_name) = element_name(reader, start.name(), malformed)?;
-    let mut attributes = Vec::new();
+    let mut attributes: Vec<Attribute<'_>> = Vec::new();
+    let mut declarations: Vec<Attribute<'_>> = Vec::new();
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|e| malformed(e.to_string()))?;
-        if let Some(attribute) = sax_attribute(reader, attribute, malformed)? {
-            attributes.push(attribute);
+        if attribute.key.as_namespace_binding().is_some() {
+            declarations.push(declaration(attribute, malformed)?);
+            continue;
         }
+        let attribute = sax_attribute(reader, attribute, malformed)?;
+        if attributes.iter().any(|seen| {
+            seen.namespace == attribute.namespace && seen.local_name == attribute.local_name
+        }) {
+            return Err(malformed(format!(
+                "repeats the attribute {}",
+                attribute.qualified_name
+            )));
+        }
+        attributes.push(attribute);
     }
-    handler.start_element(&namespace, local_name, &attributes)?;
+    handler.start_tag(&StartTag {
+        namespace: &namespace,
+        local_name,
+        qualified_name: start.name().into_inner(),
+        attributes: &attributes,
+        declarations: &declarations,
+    })?;
     Ok((namespace, local_name.to_owned()))
 }
 
@@ -231,11 +293,8 @@ fn sax_attribute<'a>(
     reader: &'a NsReader<&[u8]>,
     attribute: QuickAttribute<'a>,
     malformed: &impl Fn(String) -> Failure,
-) -> Result<Option<Attribute<'a>>, Failure> {
+) -> Result<Attribute<'a>, Failure> {
     let key = attribute.key;
-    if key.as_namespace_binding().is_some() {
-        return Ok(None);
-    }
     let qualified_name = key.into_inner();
     if attribute.value.contains('<') {
         return Err(malformed(format!(
@@ -261,12 +320,38 @@ fn sax_attribute<'a>(
             )))
         }
     };
-    Ok(Some(Attribute {
+    Ok(Attribute {
         namespace,
         local_name: local_name.into_inner(),
         qualified_name,
         value,
-    }))
+    })
+}
+
+/// The namespace for `xmlns` attributes.
+pub(crate) const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
+
+/// A namespace declaration as SAX reports it with `namespace-prefixes` on.
+fn declaration<'a>(
+    attribute: QuickAttribute<'a>,
+    malformed: &impl Fn(String) -> Failure,
+) -> Result<Attribute<'a>, Failure> {
+    let qualified_name = attribute.key.into_inner();
+    let value = attribute
+        .normalized_value(XmlVersion::Implicit1_0)
+        .map_err(|e| {
+            malformed(format!(
+                "has a bad namespace declaration {qualified_name}: {e}"
+            ))
+        })?;
+    Ok(Attribute {
+        namespace: XMLNS_NAMESPACE,
+        local_name: qualified_name
+            .strip_prefix("xmlns:")
+            .unwrap_or(qualified_name),
+        qualified_name,
+        value,
+    })
 }
 
 fn element_name<'n>(
@@ -456,9 +541,59 @@ mod tests {
             "<x:a/>",
             "<a x:b='1'/>",
             "<a>]]></a>",
+            "<a xmlns:p='u' xmlns:q='u' p:b='1' q:b='2'/>",
         ] {
             assert!(events(document).is_err(), "{document:?}");
         }
+    }
+
+    #[derive(Default)]
+    struct Tags {
+        tags: Vec<String>,
+        document_types: usize,
+    }
+
+    impl SaxHandler for Tags {
+        fn start_tag(&mut self, tag: &StartTag<'_, '_>) -> Result<(), Failure> {
+            let declarations: Vec<String> = tag
+                .declarations
+                .iter()
+                .map(|d| format!("{}={}", d.qualified_name, d.value))
+                .collect();
+            self.tags
+                .push(format!("{} {}", tag.qualified_name, declarations.join(" ")));
+            Ok(())
+        }
+
+        fn start_element(&mut self, _: &str, _: &str, _: &[Attribute<'_>]) -> Result<(), Failure> {
+            unreachable!("start_tag is overridden")
+        }
+
+        fn end_element(&mut self, _: &str, _: &str) -> Result<(), Failure> {
+            Ok(())
+        }
+
+        fn characters(&mut self, _: &str) -> Result<(), Failure> {
+            Ok(())
+        }
+
+        fn document_type(&mut self) -> Result<(), Failure> {
+            self.document_types += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reports_qualified_names_declarations_and_document_types() {
+        let mut tags = Tags::default();
+        parse_sax(
+            "<!DOCTYPE p:a><p:a xmlns:p=\"urn:p\" xmlns=\"urn:d\"><b/></p:a>",
+            "x",
+            &mut tags,
+        )
+        .unwrap();
+        assert_eq!(tags.tags, ["p:a xmlns:p=urn:p xmlns=urn:d", "b "]);
+        assert_eq!(tags.document_types, 1);
     }
 
     #[test]

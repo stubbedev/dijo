@@ -188,10 +188,26 @@ tika_config! {
     }
 }
 
+/// The settings native parsers read, unset ones as Tika's `OfficeParserConfig` defaults them.
 impl OfficeParserConfig {
     /// Whether deleted content is extracted, which Tika leaves out unless asked.
     pub(crate) fn includes_deleted_content(&self) -> bool {
         self.include_deleted_content.unwrap_or(false)
+    }
+
+    /// Whether macros are extracted, which Tika leaves out unless asked.
+    pub(crate) fn extracts_macros(&self) -> bool {
+        self.extract_macros.unwrap_or(false)
+    }
+
+    /// Whether the text of shapes such as text boxes is extracted, as Tika does unless told not to.
+    pub(crate) fn includes_shape_based_content(&self) -> bool {
+        self.include_shape_based_content.unwrap_or(true)
+    }
+
+    /// Whether phonetic guides follow the text they annotate, as Tika has them unless told not to.
+    pub(crate) fn concatenates_phonetic_runs(&self) -> bool {
+        self.concatenate_phonetic_runs.unwrap_or(true)
     }
 }
 
