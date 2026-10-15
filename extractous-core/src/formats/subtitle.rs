@@ -49,7 +49,7 @@ impl Parser for SubtitleParser {
             .to_owned();
         let substation = MediaType::parse(&content_type)
             .is_some_and(|media_type| media_type.base_type() == MediaType::named("text/x-ssa"));
-        let reader = AutoDetectReader::read(input, &content_type)?;
+        let reader = AutoDetectReader::read(input, Some(&content_type))?;
         let metadata = xhtml.metadata_mut();
         auto_detect_reader::set_metadata(&reader.detection, metadata);
         metadata.set("Content-Encoding", reader.detection.decode_as.name());
