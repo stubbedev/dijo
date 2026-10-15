@@ -14,7 +14,6 @@
 //! embedded in `MBD` storages, and macros extracted when asked to, are left to Tika: see
 //! [`XlsParser::defers`].
 
-mod drawing;
 mod factory;
 mod listener;
 mod records;
@@ -22,16 +21,16 @@ mod stream;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use drawing::{Content, Escher};
 use factory::{Event, Records};
 use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settings};
-use stream::Thrown;
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::Wrapping;
+use crate::formats::escher::{self, Content, Escher};
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::parse_summaries;
+use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
 use crate::formats::{Failure, Parser, Unported};
@@ -320,7 +319,7 @@ fn read_records(
     let mut pictures = Vec::new();
     let mut stored = 0;
     for &index in &read.drawing_groups {
-        let records = drawing::decode(&records.drawing_groups[index]).map_err(throws)?;
+        let records = escher::decode(&records.drawing_groups[index]).map_err(throws)?;
         find_pictures(&records, &sheets_of_pictures, &mut stored, &mut pictures);
     }
     Ok((read, pictures))
@@ -329,6 +328,24 @@ fn read_records(
 /// `buildPicToSheetsMap`: the sheets, numbered from one, whose shapes show each stored picture,
 /// by its number.
 fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSet<usize>> {
+    /// `buildPicToSheetsMap`'s reading of a sheet's drawing data: the records up to the first
+    /// POI fails on, or whose length is not positive.
+    fn sheet_records(data: &[u8]) -> Vec<Escher> {
+        let mut records = Vec::new();
+        let mut position = 0usize;
+        while (position as i64) < data.len() as i64 - 8 {
+            let Ok((record, length)) = escher::record_at(data, position) else {
+                break;
+            };
+            if length <= 0 {
+                break;
+            }
+            records.push(record);
+            position += length as usize;
+        }
+        records
+    }
+
     fn collect(record: &Escher, sheet: usize, map: &mut HashMap<i32, BTreeSet<usize>>) {
         if let Content::Options(pictures) = &record.content {
             for &picture in pictures {
@@ -344,7 +361,7 @@ fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSe
     let mut map = HashMap::new();
     for (&index, data) in drawings {
         let sheet = index as usize + 1;
-        for record in drawing::sheet_records(data) {
+        for record in sheet_records(data) {
             collect(&record, sheet, &mut map);
         }
     }
@@ -359,12 +376,12 @@ fn find_pictures(
     pictures: &mut Vec<Picture>,
 ) {
     for record in records {
-        if let Content::Stored(blip) = &record.content {
+        if let Content::Stored(bse) = &record.content {
             *stored += 1;
-            if let Some(blip) = blip {
+            if let Some(blip) = &bse.blip {
                 pictures.push(Picture {
-                    data: drawing::picture_data(&blip.data).to_vec(),
-                    media_type: drawing::media_type(blip.record_id),
+                    data: escher::picture_data(&blip.data).to_vec(),
+                    media_type: escher::media_type(blip.record_id),
                     sheets: sheets.get(stored).cloned().unwrap_or_default(),
                 });
             }

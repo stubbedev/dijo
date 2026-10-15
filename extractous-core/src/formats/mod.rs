@@ -12,6 +12,7 @@ mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
 mod epub;
+mod escher;
 mod fiction_book;
 pub(crate) mod handlers;
 mod html;
@@ -33,6 +34,7 @@ mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
 pub(crate) mod plist;
+mod poi;
 mod pptx;
 #[cfg(test)]
 pub(crate) mod reference;

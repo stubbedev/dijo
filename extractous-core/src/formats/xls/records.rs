@@ -2,7 +2,8 @@
 //! [`RecordStream`], and every other record POI knows read past whole, as its constructors do on
 //! well-formed records.
 
-use super::stream::{java_string, thrown, Read, RecordStream, MAX_STRING_LENGTH};
+use super::stream::{java_string, RecordStream, MAX_STRING_LENGTH};
+use crate::formats::poi::{thrown, Read};
 
 /// Record types, as POI's record classes name them.
 pub(super) mod sid {

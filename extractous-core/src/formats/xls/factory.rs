@@ -6,7 +6,8 @@
 use std::collections::VecDeque;
 
 use super::records::{read_record, sid, CellRef, Record};
-use super::stream::{thrown, Read, RecordStream};
+use super::stream::RecordStream;
+use crate::formats::poi::{thrown, Read};
 
 /// What a record before a `CONTINUE` record makes of it, by the class of POI's `_lastRecord`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

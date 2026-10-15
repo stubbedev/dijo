@@ -2,6 +2,8 @@
 //! by records that run on into the `CONTINUE` records after them where POI's reads do, and the
 //! exceptions POI throws on records that end early or late.
 
+use crate::formats::poi::{thrown, Read, Thrown};
+
 /// The type of a `CONTINUE` record.
 pub(super) const CONTINUE: u16 = 0x003C;
 /// The longest record POI reads.
@@ -10,16 +12,6 @@ const MAX_RECORD_DATA_SIZE: i64 = 8224;
 pub(super) const MAX_RECORD_LENGTH: i64 = 100_000;
 /// `StringUtil`'s largest record.
 pub(super) const MAX_STRING_LENGTH: i64 = 10_000_000;
-
-/// A Java exception POI throws reading the workbook, which fails Tika's parse.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Thrown(pub(super) String);
-
-pub(super) type Read<T> = Result<T, Thrown>;
-
-pub(super) fn thrown<T>(reason: impl Into<String>) -> Read<T> {
-    Err(Thrown(reason.into()))
-}
 
 /// The records of a workbook stream, as `RecordInputStream` reads them.
 pub(super) struct RecordStream<'a> {
