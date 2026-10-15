@@ -515,17 +515,9 @@ impl<'a> Workbook<'a> {
     /// `handleGeneralTextContainingPart` for a drawing's diagrams, then its charts, each kind's
     /// parts read by one of Tika's Word and PowerPoint text handlers.
     fn write_text_parts(&self, drawing: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let no_links = HashMap::new();
         for (kind, class) in TEXT_PART_KINDS {
-            let mut relationships =
-                Package::relationships_of(self.relationships(drawing), kind).peekable();
-            if relationships.peek().is_none() {
-                continue;
-            }
-            let parts = relationships
-                .filter_map(|relationship| relationship.part)
-                .map(|part| Ok((self.package.name(part).to_owned(), self.package.read(part)?)))
-                .collect::<Result<Vec<_>, Failure>>()?;
-            docx::write_general_text_parts(parts, class, xhtml)?;
+            docx::write_general_text_parts(&self.package, drawing, kind, class, &no_links, xhtml)?;
         }
         Ok(())
     }

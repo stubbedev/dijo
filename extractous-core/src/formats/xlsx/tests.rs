@@ -9,25 +9,8 @@ const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 const DEFERRED: [(&str, &str); 0] = [];
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 5] = [
-    ("testEXCEL.strict.xlsx", "no transitional main document"),
-    (
-        "testEXCEL_embeddedPDF_windows.xlsx",
-        "embeds /xl/embeddings/oleObject1.bin",
-    ),
-    (
-        "testExcel_embeddedPDF.xlsx",
-        "embeds /xl/embeddings/oleObject1.bin",
-    ),
-    (
-        "testMSChart-govdocs-428996.xlsx",
-        "embeds /xl/embeddings/oleObject1.bin",
-    ),
-    (
-        "testWPSAttachment.xlsx",
-        "embeds /xl/embeddings/oleObject5.bin",
-    ),
-];
+const DEFERRED_CONFORMANCE: [(&str, &str); 1] =
+    [("testEXCEL.strict.xlsx", "no transitional main document")];
 
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
@@ -103,21 +86,11 @@ fn extracts_what_tikas_path_extracts_from_many_shared_strings() {
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let documents = workbooks(&[&parity::conformance_corpus()]);
     let defaults = ParserConfigs::default();
-    let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert!(ported
-        .iter()
-        .any(|document| file_name(document) == CUT_IN_AN_EMBEDDED_DOCUMENT));
-    let compared: Vec<PathBuf> = ported
-        .into_iter()
-        .filter(|document| file_name(document) != CUT_IN_AN_EMBEDDED_DOCUMENT)
-        .collect();
-    assert_same_as_tika(&compared, &defaults);
+    assert_same_as_tika(
+        &ported(&documents, &DEFERRED_CONFORMANCE, &defaults),
+        &defaults,
+    );
 }
-
-/// The workbook of Tika's tests whose string extraction, cut at 100 characters, is cut in its
-/// embedded PDF: Tika's PDF parser then closes the elements it opened, which the replay of the
-/// embedded document's recorded events cannot know of, so the cut output lacks their end tags.
-const CUT_IN_AN_EMBEDDED_DOCUMENT: &str = "testEXCEL_embeddedPDF_mac.xlsx";
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const RELATIONSHIPS_NS: &str =

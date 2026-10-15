@@ -1,6 +1,7 @@
-//! Tika's `OOXMLWordAndPowerPointTextHandler`: reads a part of a Word document element by
-//! element, by local name, and hands paragraphs, runs, tables, links, notes, fields, pictures
-//! and tracked changes to the [`Body`] that writes them.
+//! Tika's `OOXMLWordAndPowerPointTextHandler`: reads a part of a Word document or a presentation
+//! element by element, by local name, and hands paragraphs, runs, tables, links, notes, fields,
+//! pictures and tracked changes to the [`Body`] that writes them, noting whether a slide is hidden
+//! or animated.
 
 use std::collections::HashMap;
 
@@ -38,7 +39,7 @@ impl RunProperties {
 
 /// The settings of a text handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct TextOptions {
+pub(crate) struct TextOptions {
     pub(super) include_text_boxes: bool,
     pub(super) concatenate_phonetic_runs: bool,
     pub(super) prefer_alternate_content_choice: bool,
@@ -72,7 +73,7 @@ struct Picture {
     last_image_data: Option<String>,
 }
 
-pub(super) struct TextHandler<'x, 'h, 'c, 'r> {
+pub(crate) struct TextHandler<'x, 'h, 'c, 'r> {
     body: Body<'x, 'h, 'c>,
     relationships: &'r HashMap<String, String>,
     options: TextOptions,
@@ -98,10 +99,12 @@ pub(super) struct TextHandler<'x, 'h, 'c, 'r> {
     instruction: String,
     edit: Edit,
     picture: Picture,
+    hidden_slide: bool,
+    has_animations: bool,
 }
 
 impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
-    pub(super) fn new(
+    pub(crate) fn new(
         body: Body<'x, 'h, 'c>,
         relationships: &'r HashMap<String, String>,
         options: TextOptions,
@@ -132,7 +135,19 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
             instruction: String::new(),
             edit: Edit::None,
             picture: Picture::default(),
+            hidden_slide: false,
+            has_animations: false,
         }
+    }
+
+    /// Whether the part is a slide its `show` attribute hides.
+    pub(crate) fn is_hidden_slide(&self) -> bool {
+        self.hidden_slide
+    }
+
+    /// Whether the part has a slide's animation timing.
+    pub(crate) fn has_animations(&self) -> bool {
+        self.has_animations
     }
 
     pub(super) fn into_body(self) -> Body<'x, 'h, 'c> {
@@ -372,6 +387,12 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
             "commentReference" => self.body.comment_reference(w("id")),
             "v" if namespace == C_NAMESPACE => self.in_chart_value = true,
             "rt" => self.in_ruby_text = true,
+            "sld" => {
+                if matches!(attribute_named(attributes, "show"), Some("0" | "false")) {
+                    self.hidden_slide = true;
+                }
+            }
+            "timing" => self.has_animations = true,
             "fldChar" => self.field_character(w("fldCharType"))?,
             "instrText" => self.in_instruction = true,
             "hlinkHover" => {

@@ -1,4 +1,5 @@
-//! Java's default `TimeZone`, as `java.util.TimeZone.getDefault()` finds it on a Unix system and
+//! Java's default `TimeZone`, as `java.util.TimeZone.getDefault()` finds it on a Unix system (and,
+//! from the Windows registry and the bundled time zone database, on Windows) and
 //! `sun.util.calendar.ZoneInfo` answers for it: the zone named by `TZ`, `/etc/timezone` or the
 //! `/etc/localtime` link, with its rules read from the system's zoneinfo files. Like `ZoneInfo`,
 //! it knows no local mean time: before 1900 a zone is at its current standard offset.
@@ -6,8 +7,8 @@
     all(not(unix), not(test)),
     expect(
         dead_code,
-        reason = "Java reads the default zone from the registry on Windows, which is not ported, \
-                  so only the tests read zoneinfo files there"
+        reason = "only Unix finds the default zone by its ID or zoneinfo file; Windows reads it \
+                  from the bundled database, so outside the tests that lookup is Unix's alone"
     )
 )]
 
@@ -94,12 +95,25 @@ impl TimeZone {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn system_default() -> Result<Self, String> {
-        Err(
-            "Java reads its default time zone from the Windows registry, which is not ported"
-                .to_owned(),
-        )
+        Err("Java's default time zone is found only on Unix and Windows".to_owned())
+    }
+
+    /// The zone Windows is set to, as Java reads it from the registry and maps it to a zone ID,
+    /// with its rules from the time zone database bundled into the binary. Unlike Java, a `TZ`
+    /// variable in the environment wins over the registry.
+    #[cfg(windows)]
+    fn system_default() -> Result<Self, String> {
+        let system = jiff::tz::TimeZone::try_system()
+            .map_err(|e| format!("Windows's time zone cannot be read: {e}"))?;
+        let id = system
+            .iana_name()
+            .ok_or_else(|| "Windows's time zone maps to no zone ID".to_owned())?;
+        let (_, tzif) = jiff_tzdb::get(id)
+            .ok_or_else(|| format!("The bundled time zone database has no {id}"))?;
+        Self::from_tzif_bytes(tzif, id)?
+            .ok_or_else(|| format!("The bundled time zone {id} is not one Java reads"))
     }
 
     #[cfg(unix)]
@@ -145,11 +159,17 @@ impl TimeZone {
                 ))
             }
         };
+        Self::from_tzif_bytes(&bytes, &path.display().to_string())
+    }
+
+    /// The zone the TZif data `bytes`, which `what` names in errors, describes, or `None` when
+    /// they are not TZif data Java reads: not TZif at all, or with leap seconds.
+    fn from_tzif_bytes(bytes: &[u8], what: &str) -> Result<Option<Self>, String> {
         if !bytes.starts_with(TZIF_MAGIC) {
             return Ok(None);
         }
-        let tzif = Tzif::parse(&bytes)
-            .map_err(|e| format!("The time zone {} is malformed: {e}", path.display()))?;
+        let tzif =
+            Tzif::parse(bytes).map_err(|e| format!("The time zone {what} is malformed: {e}"))?;
         if tzif.leap_seconds {
             return Ok(None);
         }

@@ -24,11 +24,13 @@ pub(crate) mod metadata;
 mod mobi;
 mod notebook;
 mod odf;
+mod ole10_native;
 mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
 pub(crate) mod plist;
+mod pptx;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -143,6 +145,7 @@ static PARSERS: &[&dyn Parser] = &[
     &odf::FlatOpenDocumentParser,
     &open_pgp::OpenPgpParser,
     &plist::PListParser,
+    &pptx::PptxParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,

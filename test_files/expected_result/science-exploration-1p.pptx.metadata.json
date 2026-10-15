@@ -30,7 +30,7 @@
         "Slide 1"
     ],
     "tk:parsed-by": [
-        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
+        "extractous::OOXMLParser",
         "org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor"
     ],
     "custom:Slides": [
@@ -43,7 +43,7 @@
         "690"
     ],
     "tk:parsed-by-full-set": [
-        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
+        "extractous::OOXMLParser",
         "org.apache.tika.parser.image.ImageParser",
         "ai.yobix.PreparingOcrParser"
     ],

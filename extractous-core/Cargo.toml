@@ -31,7 +31,7 @@ bzip2 = "0.6.1"
 snap = "1.1.2"
 lz4_flex = "0.14.0"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz"] }
-ruzstd = "0.9.0"
+ruzstd = "0.9.1"
 tar = { version = "0.4.46", default-features = false }
 ar = "0.9.0"
 cpio = "0.4.1"
@@ -51,6 +51,8 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2
 serde_json = "1.0.145"
 
 [target.'cfg(windows)'.dependencies]
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
+jiff-tzdb = "0.1.9"
 windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }
 
 [dev-dependencies]

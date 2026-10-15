@@ -108,7 +108,7 @@ fn root_element(content: &[u8]) -> Option<(String, String)> {
     let mut root = None;
     let _ = xml::parse(content, &mut |event| {
         if let Event::Start(name, _) = event {
-            root = Some((name.namespace.clone(), name.local_name.clone()));
+            root = Some((name.namespace().to_owned(), name.local_name().to_owned()));
             return Flow::Stop;
         }
         Flow::Continue
@@ -275,7 +275,7 @@ fn star_office_type(content: &[u8]) -> Option<MediaType> {
         let Event::Start(name, attributes) = event else {
             return Flow::Continue;
         };
-        if name.local_name != "file-entry" {
+        if name.local_name() != "file-entry" {
             return Flow::Continue;
         }
         let mut media_type = None;

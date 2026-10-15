@@ -154,9 +154,9 @@ impl MimeTypes {
             let result = xml::parse(document.as_bytes(), &mut |event| {
                 let outcome = match event {
                     Event::Start(name, attributes) => {
-                        types.start(&mut reading, &name.qualified_name, attributes)
+                        types.start(&mut reading, name.qualified_name(), attributes)
                     }
-                    Event::End(name) => types.end(&mut reading, &name.qualified_name),
+                    Event::End(name) => types.end(&mut reading, name.qualified_name()),
                     Event::Text(..) | Event::DocumentType => Ok(()),
                 };
                 match outcome {
@@ -458,7 +458,7 @@ fn root_element(data: &[u8]) -> Option<(String, String)> {
         let mut root = None;
         let result = xml::parse(data, &mut |event| {
             if let Event::Start(name, _) = event {
-                root = Some((name.namespace.clone(), name.local_name.clone()));
+                root = Some((name.namespace().to_owned(), name.local_name().to_owned()));
                 return Flow::Stop;
             }
             Flow::Continue

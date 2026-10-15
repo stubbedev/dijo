@@ -7,11 +7,11 @@
 //! OCR, so a document holding any is left to Tika, as is a package POI would read in a degraded
 //! way or refuse, and one using what this port does not read: see [`DocxParser::defers_with`].
 
-mod body;
-mod notes;
-mod numbering;
+pub(crate) mod body;
+pub(crate) mod notes;
+pub(crate) mod numbering;
 mod styles;
-mod text;
+pub(crate) mod text;
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,7 +25,7 @@ use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
-use crate::formats::ooxml::{self, Package, Relationship, Unported, HYPERLINK_RELATIONSHIP};
+use crate::formats::ooxml::{self, Package, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Failure, Parser};
@@ -67,14 +67,6 @@ const MAIN_DOCUMENT_TYPES: [&str; 4] = [
 ];
 const GLOSSARY_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.glossary+xml";
-/// The kinds of relationships whose targets `loadLinkedRelationships` names by file.
-const EMBEDDED_KINDS: [&str; 5] = [
-    kind::AUDIO,
-    kind::IMAGE,
-    kind::PACKAGE,
-    kind::OFFICE_DOCUMENT,
-    kind::DIAGRAM_DATA,
-];
 /// The kinds of relationships of a main document whose parts may embed documents.
 const MAIN_PART_KINDS: [&str; 6] = [
     kind::HEADER,
@@ -375,23 +367,7 @@ impl<'a> Document<'a> {
     /// `loadLinkedRelationships`: the targets of a part's links by id, and the file names of
     /// what it embeds.
     fn linked_relationships(&self, part: usize) -> HashMap<String, String> {
-        let relationships = self.relationships(part);
-        let mut linked = HashMap::new();
-        for relationship in Package::relationships_of(relationships, HYPERLINK_RELATIONSHIP) {
-            linked.insert(
-                relationship.id.clone(),
-                relationship.target_uri().to_owned(),
-            );
-        }
-        for kind in EMBEDDED_KINDS {
-            for relationship in Package::relationships_of(relationships, kind) {
-                linked.insert(
-                    relationship.id.clone(),
-                    file_name(relationship.target_uri()),
-                );
-            }
-        }
-        linked
+        extractor::linked_relationships(self.relationships(part), true)
     }
 
     /// `collectInlineParts`: the footnotes, endnotes and comments of a main document.
@@ -467,50 +443,23 @@ impl<'a> Document<'a> {
     }
 }
 
-/// What `handleGeneralTextContainingPart` writes for the diagrams or charts of a part of the
-/// other formats: the `parts`, each a name and its XML, read by one of Tika's text handlers at
-/// its defaults, `new OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml),
-/// new HashMap<>())`, without styles, lists, notes or metadata. The div of class `class` Tika
-/// opens around them goes to that handler too, which writes nothing of it.
+/// What `handleGeneralTextContainingPart` writes for the parts `parent`'s relationships of
+/// `kind` lead to, read by one of Tika's text handlers at its defaults, `new
+/// OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml), links)`, without
+/// styles, lists, notes or metadata.
 pub(crate) fn write_general_text_parts(
-    parts: impl IntoIterator<Item = (String, Vec<u8>)>,
+    package: &Package,
+    parent: usize,
+    kind: &str,
     class: &str,
+    links: &HashMap<String, String>,
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
     let mut lists = ListManager::new(None);
     let inline = InlineParts::default();
-    let body = Body::new(
-        xhtml,
-        Context {
-            styles: None,
-            lists: &mut lists,
-            inline: &inline,
-            records_metadata: false,
-            include_deleted: false,
-            include_move_from: false,
-        },
-    );
-    let relationships = HashMap::new();
-    let mut handler = TextHandler::new(body, &relationships, TextOptions::default());
-    let div = [Attribute {
-        qualified_name: "class".to_owned(),
-        namespace: String::new(),
-        local_name: "class".to_owned(),
-        value: class.to_owned(),
-    }];
-    handler.start_element("", "div", &div)?;
-    for (name, bytes) in parts {
-        xml::parse_sax(&bytes, &name, &mut handler)?;
-    }
-    handler.end_element("", "div")
-}
-
-/// `FileHelper.getFilename(new File(uri))`: the last segment of the path `File` makes of it.
-fn file_name(uri: &str) -> String {
-    let path = uri.trim_end_matches('/');
-    path.rfind('/')
-        .map_or(path, |index| &path[index + 1..])
-        .to_owned()
+    let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
+    let mut handler = TextHandler::new(body, links, TextOptions::default());
+    extractor::write_general_text_parts(package, parent, kind, class, &mut handler)
 }
 
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.

@@ -60,6 +60,15 @@ fn int_at(bytes: &[u8], offset: usize) -> i32 {
     ])
 }
 
+/// How POI's `DirectoryNode` finds an entry by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lookup {
+    /// `getEntry`: the entry of exactly that name.
+    Exact,
+    /// `getEntryCaseInsensitive`: the last entry whose name upper-cases to the name's.
+    IgnoringCase,
+}
+
 /// A compound document POI opened.
 pub(crate) struct OleFile<'a> {
     data: &'a [u8],
@@ -355,6 +364,36 @@ impl<'a> OleFile<'a> {
         self.children(0).map(|i| self.entry(i).name()).collect()
     }
 
+    /// `DirectoryNode.hasEntry` on the root: whether it has an entry of exactly this name.
+    pub(crate) fn has_root_entry(&self, name: &str) -> bool {
+        self.children(0).any(|i| self.entry(i).name() == name)
+    }
+
+    /// The content of the root's document `name`, found as `lookup` finds it, or why POI cannot
+    /// read it.
+    pub(crate) fn root_document(
+        &self,
+        name: &str,
+        lookup: Lookup,
+    ) -> std::result::Result<Vec<u8>, String> {
+        let upper = java::to_upper_case(name);
+        let entry = match lookup {
+            Lookup::Exact => self.children(0).find(|&i| self.entry(i).name() == name),
+            Lookup::IgnoringCase => self
+                .children(0)
+                .filter(|&i| java::to_upper_case(&self.entry(i).name()) == upper)
+                .last(),
+        }
+        .ok_or_else(|| format!("the compound document has no entry {name:?}"))?;
+        if self.entry(entry).kind != Kind::Document {
+            return Err(format!(
+                "the compound document's entry {name:?} is not a document"
+            ));
+        }
+        self.document(entry)
+            .map_err(|Unreadable| format!("the compound document's entry {name:?} is unreadable"))
+    }
+
     /// Whether an entry named `upper` in upper case is within `max_depth` levels of `index`.
     fn find_recursively(&self, index: usize, upper: &str, depth: usize, max_depth: usize) -> bool {
         let entry = self.entry(index);
@@ -450,8 +489,7 @@ fn by_names(names: &HashSet<String>, file: Option<&OleFile<'_>>) -> MediaType {
     } else if has("VISIODOCUMENT") {
         "application/vnd.visio"
     } else if has("\u{1}OLE10NATIVE") {
-        return MediaType::named("application/x-tika-msoffice-embedded")
-            .with_parameter("format", "ole10_native");
+        return ole10_native();
     } else if has("MATOST") || (has("CONTENTS") && has("SPELLING")) {
         WPS
     } else if has("EQUATION NATIVE") {
@@ -484,6 +522,17 @@ fn by_names(names: &HashSet<String>, file: Option<&OleFile<'_>>) -> MediaType {
         OLE
     };
     MediaType::named(found)
+}
+
+fn ole10_native() -> MediaType {
+    MediaType::named("application/x-tika-msoffice-embedded")
+        .with_parameter("format", "ole10_native")
+}
+
+/// `POIFSDocumentType.detectType(root) == OLE10_NATIVE`: whether `POIFSContainerDetector` names
+/// the document an OLE 1.0 object.
+pub(crate) fn is_ole10_native(file: &OleFile<'_>) -> bool {
+    by_names(&upper_names(Some(file)), Some(file)) == ole10_native()
 }
 
 fn comp_obj_embedded() -> MediaType {
@@ -591,12 +640,12 @@ pub(crate) fn misc(data: &[u8], file: Option<&OleFile<'_>>) -> Option<MediaType>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// A 512-byte-sector compound document with a root holding the named streams, each four
-    /// bytes in the mini stream.
-    fn compound(names: &[&str], content: &[u8]) -> Vec<u8> {
+    /// A 512-byte-sector compound document with a root holding the named streams, each the
+    /// same `content` of at most 64 bytes in the mini stream.
+    pub(crate) fn compound(names: &[&str], content: &[u8]) -> Vec<u8> {
         let mut header = vec![0u8; 512];
         header[..8].copy_from_slice(&SIGNATURE);
         header[0x1A] = 3;

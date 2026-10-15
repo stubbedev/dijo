@@ -94,14 +94,14 @@ pub(crate) fn parse_sax(
                         (Cow::Borrowed(&[]), Cow::Borrowed(attributes))
                     };
                 handler.start_tag(&StartTag {
-                    namespace: &name.namespace,
-                    local_name: &name.local_name,
-                    qualified_name: &name.qualified_name,
+                    namespace: name.namespace(),
+                    local_name: name.local_name(),
+                    qualified_name: name.qualified_name(),
                     attributes: &attributes,
                     declarations: &declarations,
                 })
             }
-            Event::End(name) => handler.end_element(&name.namespace, &name.local_name),
+            Event::End(name) => handler.end_element(name.namespace(), name.local_name()),
             Event::Text(text, TextKind::Data) => {
                 for_each_sax_piece(text, |piece| handler.characters(piece))
             }
