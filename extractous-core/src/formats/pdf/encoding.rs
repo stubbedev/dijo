@@ -2,7 +2,6 @@
 //! (`models/pdf/encodings.tsv`, written by `just pdf-resources`), encodings with differences,
 //! and the Adobe Glyph List with the names it maps to Unicode.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use lopdf::{Dictionary, Object};
@@ -10,6 +9,7 @@ use lopdf::{Dictionary, Object};
 use super::cos::{name_string, Pdf};
 use super::position::GlyphText;
 use super::Unported;
+use crate::hash::FastMap;
 
 const ENCODINGS: &str = include_str!("../../../models/pdf/encodings.tsv");
 const GLYPH_LIST: &str = include_str!("../../../models/pdf/glyphlist.txt");
@@ -75,7 +75,7 @@ pub(super) enum Kind {
     /// `DictionaryEncoding`: a base encoding, if any, with differences.
     Dictionary {
         base: Option<Box<Encoding>>,
-        differences: HashMap<i32, String>,
+        differences: FastMap<i32, String>,
     },
     /// `BuiltInEncoding` or `Type1Encoding`: the encoding a font program has built in.
     FontProgram,
@@ -85,20 +85,20 @@ pub(super) enum Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Encoding {
     pub(super) kind: Kind,
-    code_to_name: HashMap<i32, String>,
-    name_to_code: HashMap<String, i32>,
+    code_to_name: FastMap<i32, String>,
+    name_to_code: FastMap<String, i32>,
 }
 
-static BUILTIN: LazyLock<HashMap<Builtin, Encoding>> = LazyLock::new(|| {
-    let mut encodings: HashMap<Builtin, Encoding> = Builtin::ALL
+static BUILTIN: LazyLock<FastMap<Builtin, Encoding>> = LazyLock::new(|| {
+    let mut encodings: FastMap<Builtin, Encoding> = Builtin::ALL
         .iter()
         .map(|&builtin| {
             (
                 builtin,
                 Encoding {
                     kind: Kind::Builtin(builtin),
-                    code_to_name: HashMap::new(),
-                    name_to_code: HashMap::new(),
+                    code_to_name: FastMap::default(),
+                    name_to_code: FastMap::default(),
                 },
             )
         })
@@ -167,8 +167,8 @@ impl Encoding {
     pub(super) fn font_program(entries: &[(i32, String)]) -> Encoding {
         let mut encoding = Encoding {
             kind: Kind::FontProgram,
-            code_to_name: HashMap::new(),
-            name_to_code: HashMap::new(),
+            code_to_name: FastMap::default(),
+            name_to_code: FastMap::default(),
         };
         for (code, name) in java_integer_map_order(entries) {
             encoding.add(code, name.clone());
@@ -222,8 +222,8 @@ impl Encoding {
     pub(super) fn in_order(entries: &[(i32, String)]) -> Encoding {
         let mut encoding = Encoding {
             kind: Kind::FontProgram,
-            code_to_name: HashMap::new(),
-            name_to_code: HashMap::new(),
+            code_to_name: FastMap::default(),
+            name_to_code: FastMap::default(),
         };
         for (code, name) in entries {
             encoding.add(*code, name.clone());
@@ -287,7 +287,7 @@ impl Encoding {
         let mut encoding = Encoding {
             kind: Kind::Dictionary {
                 base: base.map(|base| Box::new(base.clone())),
-                differences: HashMap::new(),
+                differences: FastMap::default(),
             },
             code_to_name: base.map(|b| b.code_to_name.clone()).unwrap_or_default(),
             name_to_code: base.map(|b| b.name_to_code.clone()).unwrap_or_default(),
@@ -295,7 +295,7 @@ impl Encoding {
         let Some(array) = pdf.array(dict, b"Differences") else {
             return encoding;
         };
-        let mut differences = HashMap::new();
+        let mut differences = FastMap::default();
         let mut index: i32 = -1;
         for item in array {
             match pdf.resolve(item) {
@@ -338,7 +338,7 @@ pub(super) fn java_bucket(hash: i32, capacity: usize) -> usize {
 /// [`java_integer_map_order`] of a map whose table starts at `table` buckets, a power of two.
 pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize) -> Vec<(i32, &V)> {
     let mut unique: Vec<(i32, &V)> = Vec::with_capacity(entries.len());
-    let mut positions: HashMap<i32, usize> = HashMap::new();
+    let mut positions: FastMap<i32, usize> = FastMap::default();
     for (key, value) in entries {
         match positions.get(key) {
             Some(&position) => unique[position].1 = value,
@@ -365,15 +365,15 @@ pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize)
 /// PDFBox's `GlyphList`: glyph names to Unicode, and Unicode back to names.
 #[derive(Debug)]
 pub(super) struct GlyphList {
-    name_to_unicode: HashMap<String, String>,
-    unicode_to_name: HashMap<String, String>,
+    name_to_unicode: FastMap<String, String>,
+    unicode_to_name: FastMap<String, String>,
 }
 
 /// `GlyphList.getAdobeGlyphList`.
 pub(super) static ADOBE: LazyLock<GlyphList> = LazyLock::new(|| {
     let mut list = GlyphList {
-        name_to_unicode: HashMap::with_capacity(4281),
-        unicode_to_name: HashMap::with_capacity(4281),
+        name_to_unicode: FastMap::with_capacity_and_hasher(4281, Default::default()),
+        unicode_to_name: FastMap::with_capacity_and_hasher(4281, Default::default()),
     };
     list.load(GLYPH_LIST);
     list
@@ -382,8 +382,8 @@ pub(super) static ADOBE: LazyLock<GlyphList> = LazyLock::new(|| {
 /// `GlyphList.getZapfDingbats`.
 pub(super) static ZAPF_DINGBATS: LazyLock<GlyphList> = LazyLock::new(|| {
     let mut list = GlyphList {
-        name_to_unicode: HashMap::new(),
-        unicode_to_name: HashMap::new(),
+        name_to_unicode: FastMap::default(),
+        unicode_to_name: FastMap::default(),
     };
     list.load(ZAPF_DINGBATS_GLYPHS);
     list

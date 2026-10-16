@@ -1,7 +1,6 @@
 //! FontBox's `CMap` and `CMapParser`: the character maps of composite fonts and the
 //! `ToUnicode` maps of all fonts, read as FontBox reads them, and the predefined Identity maps.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use super::cos::decode_java;
@@ -196,7 +195,7 @@ pub(super) struct CMap {
     one_byte: FastMap<u32, String>,
     two_bytes: FastMap<u32, String>,
     more_bytes: FastMap<u32, String>,
-    code_to_cid: HashMap<usize, FastMap<u32, u32>>,
+    code_to_cid: FastMap<usize, FastMap<u32, u32>>,
     cid_ranges: Vec<CidRange>,
     space_mapping: i64,
 }
@@ -217,7 +216,7 @@ impl CMap {
             one_byte: FastMap::default(),
             two_bytes: FastMap::default(),
             more_bytes: FastMap::default(),
-            code_to_cid: HashMap::new(),
+            code_to_cid: FastMap::default(),
             cid_ranges: Vec::new(),
             space_mapping: -1,
         }

@@ -3,7 +3,6 @@
 //! kept, not sorted by position, a space between words), and handed to the writer's callbacks,
 //! which Tika's `PDF2XHTML` and `PDFMarkedContent2XHTML` override.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use unicode_normalization::UnicodeNormalization;
@@ -12,6 +11,7 @@ use super::jfloat;
 use super::position::{TextPosition, FIRST_RIGHT_TO_LEFT};
 use super::Unported;
 use crate::formats::xhtml::Stop;
+use crate::hash::FastMap;
 
 const BIDI_MIRRORING: &str = include_str!("../../../models/pdf/BidiMirroring.txt");
 
@@ -451,8 +451,8 @@ fn normalize_word(word: String) -> Result<String, Unported> {
 }
 
 /// PDFBox's mirrored characters (`BidiMirroring.txt`).
-static MIRRORING: LazyLock<HashMap<char, char>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
+static MIRRORING: LazyLock<FastMap<char, char>> = LazyLock::new(|| {
+    let mut map = FastMap::default();
     for line in BIDI_MIRRORING.lines() {
         let line = line.split('#').next().unwrap_or_default();
         if line.len() < 2 {

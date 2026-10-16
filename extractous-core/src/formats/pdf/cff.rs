@@ -3,10 +3,10 @@
 //! bounding box, and the widths its Type 2 charstrings set, as `Type2CharStringParser` and
 //! `Type2CharString` work them out.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use super::Unported;
+use crate::hash::FastMap;
 
 /// FontBox's predefined CFF data, which `just pdf-resources` writes from its jar.
 const TABLES_TSV: &str = include_str!("../../../models/pdf/cff.tsv");
@@ -17,15 +17,15 @@ const MAX_SUBROUTINE_DEPTH: usize = 64;
 /// FontBox's standard strings, predefined charsets and predefined encodings.
 struct Tables {
     strings: Vec<String>,
-    charsets: HashMap<String, Vec<(u32, u32, String)>>,
-    encodings: HashMap<String, Vec<(i32, String)>>,
+    charsets: FastMap<String, Vec<(u32, u32, String)>>,
+    encodings: FastMap<String, Vec<(i32, String)>>,
 }
 
 static TABLES: LazyLock<Tables> = LazyLock::new(|| {
     let mut tables = Tables {
         strings: Vec::with_capacity(391),
-        charsets: HashMap::new(),
-        encodings: HashMap::new(),
+        charsets: FastMap::default(),
+        encodings: FastMap::default(),
     };
     let number = |text: &str| -> u32 {
         text.parse()
@@ -203,7 +203,7 @@ type Entry = Vec<Number>;
 /// `DictData`: the entries by operator name, the last of a name kept.
 #[derive(Debug, Default)]
 struct Dict {
-    entries: HashMap<&'static str, Entry>,
+    entries: FastMap<&'static str, Entry>,
 }
 
 impl Dict {
@@ -404,9 +404,9 @@ fn read_dict_at(input: &mut Input, offset: i32, size: i32) -> Parsed<Dict> {
 /// A Type 1-keyed font's charset: SIDs and names by glyph.
 #[derive(Debug, Default, Clone)]
 struct Charset {
-    sid_to_gid: HashMap<u32, u32>,
-    gid_to_sid: HashMap<u32, u32>,
-    name_to_sid: HashMap<String, u32>,
+    sid_to_gid: FastMap<u32, u32>,
+    gid_to_sid: FastMap<u32, u32>,
+    name_to_sid: FastMap<String, u32>,
 }
 
 impl Charset {
@@ -438,8 +438,8 @@ impl Charset {
 /// A CID-keyed font's charset: CIDs by glyph, through ranges where the charset has them.
 #[derive(Debug, Default)]
 struct CidCharset {
-    cid_to_gid: HashMap<u32, u32>,
-    gid_to_cid: HashMap<u32, u32>,
+    cid_to_gid: FastMap<u32, u32>,
+    gid_to_cid: FastMap<u32, u32>,
     /// `(first glyph, first CID, glyphs after the first)`.
     ranges: Vec<(u32, u32, u32)>,
 }
