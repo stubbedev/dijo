@@ -11,11 +11,12 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::date_format::is_valid_excel_date;
-use super::decimal::{BigDecimal, Rounding};
-use super::decimal_format::DecimalFormat;
 use super::fraction::max_denominator;
-use super::{printf, FormatError, DOT, SPACE};
+use super::{FormatError, DOT, SPACE};
+use crate::java::decimal::{BigDecimal, Rounding};
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
+use crate::java::printf;
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::{self, CalendarFields, TimeZone};
 use crate::java::{parse_double, round as java_round, trim as java_trim};

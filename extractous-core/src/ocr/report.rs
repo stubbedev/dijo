@@ -8,7 +8,7 @@
 
 use std::fmt::Write as _;
 
-use crate::formats::data_format::printf;
+use crate::java::printf;
 
 /// The metadata key the reports are added under.
 pub(crate) const KEY: &str = "extractous:ocr";

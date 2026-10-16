@@ -1,15 +1,14 @@
 //! Tika's `MediaTypeRegistry`: the known types, their aliases and what each specializes.
 
-use std::collections::HashMap;
-
 use super::media_type::MediaType;
+use crate::hash::FastMap;
 
 /// The types `tika-mimetypes.xml` declares, the aliases it maps to them, and the supertype each
 /// declares.
 #[derive(Debug, Default)]
 pub(crate) struct Registry {
-    canonical: HashMap<MediaType, MediaType>,
-    supertypes: HashMap<MediaType, MediaType>,
+    canonical: FastMap<MediaType, MediaType>,
+    supertypes: FastMap<MediaType, MediaType>,
 }
 
 impl Registry {

@@ -3,11 +3,11 @@
 //! or its Exif directory's name, then the page count, the JPEG comment, the camera's Exif
 //! fields, the dimensions, the GPS position and the IPTC fields Tika maps.
 
-use crate::formats::data_format::decimal::Rounding;
-use crate::formats::data_format::decimal_format::DecimalFormat;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp::{self, bag, text, Property};
 use crate::formats::Unported;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::{self, TimeZone};
 

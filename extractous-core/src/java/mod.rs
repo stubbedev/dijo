@@ -2,12 +2,16 @@
 //! a `java.util.HashMap` and `HashSet` with string keys, string comparison, hashing, lengths,
 //! trimming and case mapping, `Character.isWhitespace` and the regex classes `\s` and `.`,
 //! `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble`, `Math.round` and
-//! `System.lineSeparator`; with `Double.toString` ([`dtoa`]) and the `BigInteger` arithmetic it
-//! needs ([`bigint`]), `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and
-//! `TimeZone` ([`time`]).
+//! `System.lineSeparator`; with `Double.toString` and `Float.toString` ([`dtoa`]) and the
+//! `BigInteger` arithmetic it needs ([`bigint`]), `BigDecimal` ([`decimal`]),
+//! `java.text.DecimalFormat` ([`decimal_format`]), `String.format` ([`printf`]),
+//! `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and `TimeZone` ([`time`]).
 
 pub(crate) mod bigint;
+pub(crate) mod decimal;
+pub(crate) mod decimal_format;
 pub(crate) mod dtoa;
+pub(crate) mod printf;
 pub(crate) mod simple_date_format;
 pub(crate) mod time;
 

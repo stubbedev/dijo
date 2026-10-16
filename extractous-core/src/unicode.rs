@@ -120,9 +120,55 @@ pub fn java_script_name(script: Script) -> String {
     script.full_name().to_ascii_uppercase()
 }
 
+/// The Unicode names of scripts that are not their Java constant's words capitalized.
+const IRREGULAR_SCRIPT_NAMES: [&str; 1] = ["SignWriting"];
+
+/// The script whose `Character.UnicodeScript` constant is named `name`: the inverse of
+/// [`java_script_name`], or `None` for a name that is no script. The Unicode name is the
+/// constant's words capitalized, but for a few irregular names.
+pub fn java_script(name: &str) -> Option<Script> {
+    let full_name = match IRREGULAR_SCRIPT_NAMES
+        .iter()
+        .find(|irregular| irregular.eq_ignore_ascii_case(name))
+    {
+        Some(irregular) => (*irregular).to_owned(),
+        None => {
+            let mut capitalized = String::with_capacity(name.len());
+            let mut word_start = true;
+            for c in name.chars() {
+                capitalized.push(if word_start {
+                    c
+                } else {
+                    c.to_ascii_lowercase()
+                });
+                word_start = c == '_';
+            }
+            capitalized
+        }
+    };
+    Script::from_full_name(&full_name).filter(|&script| java_script_name(script) == name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_the_script_of_every_code_point_by_its_java_name() {
+        let mut scripts: Vec<Script> = (0..=0x10_FFFFu32)
+            .filter_map(char::from_u32)
+            .map(script)
+            .collect();
+        scripts.sort_unstable_by_key(|script| script.full_name());
+        scripts.dedup();
+        assert!(scripts.len() > 150, "{} scripts", scripts.len());
+        for script in scripts {
+            assert_eq!(java_script(&java_script_name(script)), Some(script));
+        }
+        assert_eq!(java_script("SIGNWRITING"), Some(Script::SignWriting));
+        assert_eq!(java_script("Latin"), None);
+        assert_eq!(java_script("OTHER"), None);
+    }
 
     #[test]
     fn reads_the_script_of_ascii_as_the_script_table_does() {
