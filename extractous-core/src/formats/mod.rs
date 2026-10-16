@@ -29,6 +29,7 @@ mod iwork;
 mod jdk_zip;
 mod list_numbering;
 mod mail;
+mod markdown;
 pub(crate) mod media;
 pub(crate) mod metadata;
 mod mif;
@@ -208,6 +209,7 @@ static PARSERS: &[&dyn Parser] = &[
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,
+    &markdown::MarkdownParser,
     &media::FlacParser,
     &media::OpusParser,
     &media::VorbisParser,

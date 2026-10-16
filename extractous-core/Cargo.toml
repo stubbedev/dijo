@@ -52,6 +52,7 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2
 serde_json = "1.0.145"
 lopdf = { version = "0.45.0", default-features = false }
 lzxd = "0.2.7"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
