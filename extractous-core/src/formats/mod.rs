@@ -11,6 +11,7 @@ mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
 mod epub;
+mod feed;
 mod fiction_book;
 pub(crate) mod handlers;
 mod html;
@@ -169,6 +170,7 @@ static PARSERS: &[&dyn Parser] = &[
     &cms::CmsParser,
     &dc_xml::DcXmlParser,
     &docx::DocxParser,
+    &feed::FeedParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
     &hwpx::HwpxParser,
