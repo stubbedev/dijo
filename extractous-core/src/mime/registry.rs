@@ -34,6 +34,11 @@ impl Registry {
         }
     }
 
+    /// Whether `kind`, or its base type, is a type or an alias the registry declares.
+    pub(crate) fn declares(&self, kind: &MediaType) -> bool {
+        self.canonical.contains_key(kind) || self.canonical.contains_key(&kind.base_type())
+    }
+
     /// `isSpecializationOf`: whether `a` descends from `b`.
     pub(crate) fn is_specialization_of(&self, a: &MediaType, b: &MediaType) -> bool {
         let mut current = self.supertype(a);

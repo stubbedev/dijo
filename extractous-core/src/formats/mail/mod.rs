@@ -83,6 +83,10 @@ impl Parser for Rfc822Parser {
         &["message/rfc822"]
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &["message/rfc822"]
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -315,7 +319,7 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_messages_as_tikas_path_does() {
-        assert_parity(&Rfc822Parser, TIKA_NAME, &[&conformance_corpus()], 26);
+        assert_parity(&Rfc822Parser, TIKA_NAME, &[&conformance_corpus()], 28);
     }
 
     #[test]

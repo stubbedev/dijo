@@ -254,6 +254,14 @@ mime-reference:
     java -cp "$classpath" "$fixtures/MimeReference.java" test_files/documents quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/mime-reference.tsv"
 
+# Regenerate the types Tika's composite parser, as extractous configures it, has a parser of its own for,
+# which native routing walks a document's types against, from Tika's path in the native library.
+composite-reference:
+    COMPOSITE_REFERENCE={{justfile_directory()}}/{{core}}/src/formats/composite/parsers.rs \
+        cargo nextest run -p extractous-core --lib \
+        -E 'test(=formats::composite::tests::lists_the_types_tikas_composite_parser_reads)'
+    rustfmt --edition 2021 {{core}}/src/formats/composite/parsers.rs
+
 # Regenerate the answers of Apache Tika's own CharSoup language detector that the Rust port is tested against, after
 # checking that the embedded model is the one in the pinned Tika version's jar.
 [unix]

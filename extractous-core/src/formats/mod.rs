@@ -9,6 +9,7 @@ mod archive;
 pub(crate) mod audit;
 mod auto_detect_reader;
 mod cms;
+mod composite;
 pub(crate) mod data_format;
 mod dbf;
 mod dc_xml;
@@ -17,6 +18,7 @@ mod doc;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
+mod empty;
 mod epub;
 mod escher;
 mod executable;
@@ -76,7 +78,7 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
 use crate::isolate::{heap_cap, isolate};
 use crate::memory;
-use crate::mime::{self, Detection, Origin};
+use crate::mime::{self, Detection, MediaType, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
 use embedded::ParseContext;
@@ -175,6 +177,12 @@ pub(crate) trait Parser: Sync {
     /// The media types it parses, without parameters, as Tika's detection names them.
     fn media_types(&self) -> &'static [&'static str];
 
+    /// The types of its [`Parser::media_types`] whose subtypes it parses too, as the parser it
+    /// replaces parses those Tika's composite parser has no parser of their own for.
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Reads `input`, from the `metadata` Tika's parser starts from and under the parser
     /// settings `configs` the extraction was given, as far as deciding whether it extracts the
     /// document as the Tika parser it replaces does: what then writes it, or why it writes
@@ -261,17 +269,41 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::HttpParser,
     &warc::WaczParser,
     &xlsx::XlsxParser,
+    &empty::EmptyParser,
 ];
 
-/// The native parser for `media_type` (parameters such as `charset` are ignored), or why
-/// there is none.
+/// The native parser for a document of `media_type`, picked as `CompositeParser.getParser` picks
+/// Tika's: the parser of the first type of its [`mime::lineage`] a parser reads, else Tika's
+/// fallback, the [`empty::EmptyParser`]. A supertype's parser takes the document only where it
+/// reads that type's subtypes. Where Tika's parser for a type is not native, and at a type the
+/// default types do not declare, whose parser in Tika's composite parser only a parse could
+/// tell, Tika's path reads the document.
 fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unrouted> {
-    let base = media_type.split(';').next().unwrap_or_default().trim();
-    PARSERS
-        .iter()
-        .copied()
-        .find(|parser| parser.media_types().contains(&base))
-        .ok_or_else(|| Unrouted::Unparsed(media_type.to_owned()))
+    let Some(parsed) = MediaType::parse(media_type) else {
+        return Ok(&empty::EmptyParser);
+    };
+    let mut lineage = mime::lineage(&parsed).peekable();
+    let own = lineage
+        .peek()
+        .map(MediaType::base_type)
+        .expect("a lineage starts with the type itself");
+    for kind in lineage {
+        let reads = |parser: &&dyn Parser| {
+            let types = if kind.base_type() == own {
+                parser.media_types()
+            } else {
+                parser.media_types_with_subtypes()
+            };
+            types.contains(&kind.as_str())
+        };
+        if let Some(parser) = PARSERS.iter().copied().find(reads) {
+            return Ok(parser);
+        }
+        if !mime::declares(&kind) || composite::tika_reads(&kind) {
+            return Err(Unrouted::Unparsed(media_type.to_owned()));
+        }
+    }
+    Ok(&empty::EmptyParser)
 }
 
 /// What a document is and what Tika knows about it before its parser runs: the metadata of the
@@ -315,7 +347,7 @@ pub(crate) enum Unrouted {
     Empty,
     /// Tika's detection throws on it.
     Undetected,
-    /// No native parser reads the type it is parsed as.
+    /// Tika reads the type it is parsed as with a parser that is not native.
     Unparsed(
         #[cfg_attr(
             not(test),

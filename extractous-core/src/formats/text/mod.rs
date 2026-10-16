@@ -96,6 +96,10 @@ impl Parser for TextAndCsvParser {
         &["text/plain", "text/csv", "text/tab-separated-values"]
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &["text/plain"]
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
