@@ -16,7 +16,7 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::java::LINE_SEPARATOR;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::Failure;
+use crate::formats::{Failure, InputFile};
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -36,6 +36,7 @@ const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception"
 pub(crate) struct ParseContext<'c> {
     configs: &'c ParserConfigs,
     spooler: Option<RefCell<Spooler>>,
+    file: InputFile,
 }
 
 impl<'c> ParseContext<'c> {
@@ -44,6 +45,7 @@ impl<'c> ParseContext<'c> {
         Self {
             configs,
             spooler: None,
+            file: InputFile::Spooled,
         }
     }
 
@@ -56,11 +58,22 @@ impl<'c> ParseContext<'c> {
                 budget: spool.byte_budget,
                 spooled: Vec::new(),
             })),
+            file: InputFile::Spooled,
         }
     }
 
     pub(crate) fn configs(&self) -> &'c ParserConfigs {
         self.configs
+    }
+
+    /// The extraction of a document Tika holds in `file`.
+    pub(crate) fn reading(self, file: InputFile) -> Self {
+        Self { file, ..self }
+    }
+
+    /// The file Tika holds the document in.
+    pub(crate) fn input_file(&self) -> &InputFile {
+        &self.file
     }
 
     /// The embedded documents copied to the spool, in order.
