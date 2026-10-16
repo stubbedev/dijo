@@ -7,9 +7,9 @@ use std::collections::HashSet;
 use lopdf::{Dictionary, Object};
 
 use super::cos::{as_dict, name_string, text_string, Identity, Pdf};
-use super::date::{self, Zoned};
 use super::recording::Recording;
 use super::{Unported, MAX_RECURSION_DEPTH};
+use crate::formats::xmp::date::{self, Zoned};
 use crate::java::is_blank;
 use crate::java::time::format_instant;
 

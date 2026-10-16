@@ -15,7 +15,7 @@ use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::Failure;
+use crate::formats::{Failure, InputFile};
 use crate::java::LINE_SEPARATOR;
 
 /// The class of the div an embedded document is written in.
@@ -29,11 +29,14 @@ const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 
 /// What the parses of one extraction share, as Tika's `ParseContext` does: the parser settings,
-/// and whether its embedded documents are parsed or spooled.
+/// whether its embedded documents are parsed or spooled, and the script OCR last found in its
+/// images, as our Java `OcrConfig` keeps it.
 #[derive(Debug)]
 pub(crate) struct ParseContext<'c> {
     configs: &'c ParserConfigs,
     spooler: Option<RefCell<Spooler>>,
+    file: InputFile,
+    ocr_script: RefCell<Option<String>>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -42,6 +45,8 @@ impl<'c> ParseContext<'c> {
         Self {
             configs,
             spooler: None,
+            file: InputFile::Spooled,
+            ocr_script: RefCell::new(None),
         }
     }
 
@@ -54,11 +59,34 @@ impl<'c> ParseContext<'c> {
                 budget: spool.byte_budget,
                 spooled: Vec::new(),
             })),
+            file: InputFile::Spooled,
+            ocr_script: RefCell::new(None),
         }
     }
 
     pub(crate) fn configs(&self) -> &'c ParserConfigs {
         self.configs
+    }
+
+    /// The extraction of a document Tika holds in `file`.
+    pub(crate) fn reading(self, file: InputFile) -> Self {
+        Self { file, ..self }
+    }
+
+    /// The file Tika holds the document in.
+    pub(crate) fn input_file(&self) -> &InputFile {
+        &self.file
+    }
+
+    /// The script the next image of this extraction is first read in with the automatic OCR
+    /// language: the one detection last found in an earlier image, or none before any.
+    pub(crate) fn assumed_ocr_script(&self) -> Option<String> {
+        self.ocr_script.borrow().clone()
+    }
+
+    /// Remembers the script OCR detection found, for the next images of this extraction.
+    pub(crate) fn learn_ocr_script(&self, script: String) {
+        *self.ocr_script.borrow_mut() = Some(script);
     }
 
     /// The embedded documents copied to the spool, in order.

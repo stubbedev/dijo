@@ -4,9 +4,11 @@
 //! `PDFTextStripper` assembles it from the glyphs its content stream shows, written by
 //! `PDF2XHTML` in our reading order, or for a tagged document by `PDFMarkedContent2XHTML`
 //! through its structure tree, then the bookmarks, the files the document embeds, parsed as
-//! embedded documents, and the form. Documents with a page Tika would OCR, and documents with
-//! what the port does not do (encryption the empty password does not open, XFA forms and fonts
-//! it cannot measure, among others), are left to Tika.
+//! embedded documents, and the form. The pages `TextLayerCheckingPdfParser` reads by OCR are
+//! rendered and read with tesseract ([`ocr`]). Documents with a page Tika would OCR with no
+//! tesseract to run, and documents with what the port does not do (encryption the empty
+//! password does not open, XFA forms and fonts it cannot measure, among others), are left to
+//! Tika.
 
 mod afm;
 mod attachment;
@@ -14,7 +16,6 @@ mod cff;
 mod cmap;
 mod content;
 mod cos;
-mod date;
 mod document;
 mod encoding;
 mod engine;
@@ -35,10 +36,7 @@ mod truetype;
 mod type1;
 mod writer;
 mod xfa;
-mod xmp;
 mod xref;
-
-use std::sync::OnceLock;
 
 use lopdf::Document;
 
@@ -49,7 +47,7 @@ use crate::formats::xhtml::Stop;
 use crate::formats::{Declined, Parser, Prepared};
 
 use cos::Pdf;
-use ocr::OcrCheck;
+use ocr::{OcrCheck, PageOcr};
 use recording::Recording;
 use structure::StructureIndex;
 use tagged::Tagged;
@@ -68,15 +66,8 @@ const DELEGATES: [(&str, &str); 1] = [(PDF_PARSER, TIKA_PDF_PARSER)];
 /// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
 const MAX_RECURSION_DEPTH: usize = 100;
 
-/// Why the port leaves a document to Tika: something in it the port does not do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Unported(pub(super) String);
-
-/// Whether tesseract runs, which makes Tika read PDFs through our `TextLayerCheckingPdfParser`.
-fn ocr_runs() -> bool {
-    static RUNS: OnceLock<bool> = OnceLock::new();
-    *RUNS.get_or_init(|| crate::ocr::tesseract_version().is_ok())
-}
+pub(super) use crate::formats::Unported;
+use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
 
 /// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
 pub(crate) struct PdfParser;
@@ -114,9 +105,23 @@ impl Parser for PdfParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let recording = record(input, metadata, configs)?;
+        let (recording, page_ocr) = record(input, metadata, configs)?;
         Ok(Box::new(move |xhtml| {
-            let replayed = recording.replay(xhtml);
+            let replayed = match page_ocr {
+                None => recording.replay(xhtml, None),
+                Some(page_ocr) => {
+                    let context = xhtml.context();
+                    let auto = OcrSettings::of(&configs.ocr).auto();
+                    let assumed = auto.then(|| context.assumed_ocr_script()).flatten();
+                    let (replayed, learned) = page_ocr.write_document(assumed, |page_ends| {
+                        recording.replay(xhtml, Some(page_ends))
+                    });
+                    if let (Ok(()), Some(learned)) = (&replayed, learned) {
+                        context.learn_ocr_script(learned);
+                    }
+                    replayed
+                }
+            };
             xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
             replayed
         }))
@@ -153,15 +158,16 @@ impl Settings {
     }
 }
 
-/// The document's extraction, recorded from `metadata`, unless the document is left to Tika:
-/// for a setting the port does not read, something in the document it does not do, or a page
-/// Tika would OCR. The document is read once, into the recording, which holds no more of it
-/// than its output and the files it embeds.
+/// The document's extraction, recorded from `metadata`, and the OCR of the pages our
+/// `TextLayerCheckingPdfParser` reads, unless the document is left to Tika: for a setting the
+/// port does not read, something in the document it does not do, or a page Tika would OCR whose
+/// OCR the port does not run. The document is read once, into the recording, which holds no
+/// more of it than its output and the files it embeds.
 fn record(
     input: &[u8],
     metadata: &TikaMetadata,
     configs: &ParserConfigs,
-) -> Result<Recording, Declined> {
+) -> Result<(Recording, Option<PageOcr>), Declined> {
     let deferred = |Unported(reason)| Declined::Deferred(reason);
     let settings = Settings::of(&configs.pdf).map_err(deferred)?;
     let loaded = load(input).map_err(deferred)?;
@@ -179,8 +185,8 @@ fn record(
                 unreachable!("a recording stops only at the memory budget, not at {stop:?}")
             }
         });
-    if matches!(recorded, Err(Declined::Fails(_))) {
-        return recorded.map(|()| recording);
+    if let Err(failure @ Declined::Fails(_)) = recorded {
+        return Err(failure);
     }
     if let Some(number) = loaded.pdf.lost_object_needed() {
         return Err(Declined::Deferred(format!(
@@ -194,7 +200,24 @@ fn record(
              by searching the document"
         )));
     }
-    recorded.map(|()| recording)
+    recorded?;
+    let page_ocr = PageOcr::of(
+        recording.pages_read(),
+        loaded.pdf.pages().map_err(deferred)?.len(),
+        settings.ocr,
+        input,
+        configs.ocr.skips_ocr(),
+        OcrSettings::of(&configs.ocr),
+    )
+    .map_err(deferred)?;
+    if page_ocr.is_some() && recording.embeds_files() {
+        return Err(Declined::Deferred(
+            "files the document embeds, which Tika's path parses while our \
+             TextLayerCheckingPdfParser holds back the pages it reads by OCR"
+                .to_owned(),
+        ));
+    }
+    Ok((recording, page_ocr))
 }
 
 /// A document's objects, as `lopdf` reads them, and what the empty password opens it with.
@@ -355,16 +378,16 @@ fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PdfOcrStrategy;
+    use crate::config::{PdfOcrStrategy, TesseractOcrConfig};
     use crate::formats::parity::{
-        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
-        documents, Scratch,
+        assert_same_as_tika_but_ocr, assert_same_as_tika_delegating,
+        assert_same_as_tika_delegating_with, conformance_corpus, documents, Scratch,
     };
     use std::path::{Path, PathBuf};
 
     const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
-    /// Why a document of the corpora is left to Tika.
+    /// Why OCR reads pages of a document of the corpora, or the port leaves it to Tika.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Why {
         /// Tika OCRs a page of next to no glyphs, whatever its text layer reads.
@@ -378,8 +401,26 @@ mod tests {
         Unported(&'static str),
     }
 
-    /// The documents of the corpora the port leaves to Tika, and why.
-    const DEFERRED: [(&str, Why); 9] = [
+    impl Why {
+        /// Whether the port leaves a document for this reason to Tika: one whose pages Tika's
+        /// PDF parser wants OCR for when no tesseract runs, and one it does not do.
+        fn defers(self) -> bool {
+            match self {
+                Self::Ocr | Self::Unmapped => !ocr_runs(),
+                Self::Doubtful => false,
+                Self::Unported(_) => true,
+            }
+        }
+
+        /// Whether the port reads pages of a document for this reason by OCR.
+        fn reads_by_ocr(self) -> bool {
+            ocr_runs() && matches!(self, Self::Ocr | Self::Unmapped | Self::Doubtful)
+        }
+    }
+
+    /// The documents of the corpora whose pages OCR reads, or which the port leaves to Tika,
+    /// and why.
+    const NOT_THE_TEXT_LAYER: [(&str, Why); 9] = [
         ("arabic.pdf", Why::Unmapped),
         ("deu-ocr.pdf", Why::Ocr),
         ("eng-ocr.pdf", Why::Ocr),
@@ -404,6 +445,41 @@ mod tests {
 
     fn corpora() -> Vec<&'static Path> {
         CORPORA.iter().map(Path::new).collect()
+    }
+
+    /// The documents of the corpora whose pages OCR reads, when tesseract runs.
+    fn read_by_ocr() -> Vec<PathBuf> {
+        NOT_THE_TEXT_LAYER
+            .iter()
+            .filter(|(_, why)| why.reads_by_ocr())
+            .filter_map(|(name, _)| {
+                CORPORA
+                    .iter()
+                    .map(|corpus| Path::new(corpus).join(name))
+                    .find(|path| path.is_file())
+            })
+            .collect()
+    }
+
+    /// Whether the native parser reads pages of the document at `path` by OCR under `configs`.
+    fn reads_pages_by_ocr(path: &Path, configs: &ParserConfigs) -> bool {
+        let input = std::fs::read(path).unwrap();
+        record(&input, &TikaMetadata::new(), configs).is_ok_and(|(_, page_ocr)| page_ocr.is_some())
+    }
+
+    /// Reads the pages Tika's path reads by OCR as it writes them, the OCR text aside, and
+    /// reads text where it reads text.
+    fn reads_pages_by_ocr_as_tikas_path_does(documents: &[PathBuf], configs: &ParserConfigs) {
+        assert!(ocr_runs(), "tesseract is not installed");
+        let texts =
+            assert_same_as_tika_but_ocr(&as_paths(documents), tika_name(), &DELEGATES, configs);
+        for (path, (tika, native)) in documents.iter().zip(texts) {
+            assert!(
+                tika.trim().is_empty() || !native.trim().is_empty(),
+                "{}: {tika:?} against {native:?}",
+                path.display()
+            );
+        }
     }
 
     fn deferral_of(path: &Path) -> String {
@@ -866,11 +942,40 @@ mod tests {
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, _) = documents(&PdfParser, &corpora());
+        let read_by_ocr = read_by_ocr();
+        let parsed: Vec<PathBuf> = parsed
+            .into_iter()
+            .filter(|path| {
+                !read_by_ocr
+                    .iter()
+                    .any(|read| read.file_name() == path.file_name())
+            })
+            .collect();
         assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
     }
 
     #[test]
-    fn defers_what_tika_ocrs_and_what_the_port_does_not_do() {
+    fn reads_pages_by_ocr_as_tikas_path_does_by_default() {
+        reads_pages_by_ocr_as_tikas_path_does(&read_by_ocr(), &ParserConfigs::default());
+    }
+
+    #[test]
+    fn reads_pages_by_ocr_as_tikas_path_does_as_the_command_line_sets_it() {
+        reads_pages_by_ocr_as_tikas_path_does(
+            &read_by_ocr(),
+            &ParserConfigs {
+                pdf: PdfParserConfig::new()
+                    .set_ocr_strategy(PdfOcrStrategy::AUTO)
+                    .set_ocr_strategy_auto("50%,10")
+                    .set_extract_bookmarks_text(false),
+                ocr: TesseractOcrConfig::new().set_language(TesseractOcrConfig::AUTO_LANGUAGE),
+                ..ParserConfigs::default()
+            },
+        );
+    }
+
+    #[test]
+    fn defers_what_the_port_does_not_do() {
         let (_, deferred) = documents(&PdfParser, &corpora());
         let mut found: Vec<(String, String)> = deferred
             .iter()
@@ -880,10 +985,10 @@ mod tests {
             })
             .collect();
         found.sort();
-        let expected: Vec<(&str, Why)> = DEFERRED
+        let expected: Vec<(&str, Why)> = NOT_THE_TEXT_LAYER
             .iter()
             .copied()
-            .filter(|(_, why)| ocr_runs() || *why != Why::Doubtful)
+            .filter(|(_, why)| why.defers())
             .collect();
         assert_eq!(
             found
@@ -894,11 +999,10 @@ mod tests {
         );
         for ((name, reason), (_, why)) in found.iter().zip(&expected) {
             let as_expected = match why {
-                Why::Unmapped if ocr_runs() => reason.contains("is doubtful (unmapped-glyphs)"),
                 Why::Ocr | Why::Unmapped => {
-                    reason.starts_with("page ") && reason.ends_with("which Tika OCRs")
+                    reason.starts_with("page ") && reason.contains("wants OCR")
                 }
-                Why::Doubtful => reason.contains("is doubtful"),
+                Why::Doubtful => unreachable!("{name} is deferred for a doubtful page"),
                 Why::Unported(start) => reason.starts_with(start),
             };
             assert!(as_expected, "{name}: {reason}");
@@ -912,7 +1016,19 @@ mod tests {
         for path in &deferred {
             println!("deferred {}: {}", path.display(), deferral_of(path));
         }
-        println!("{} parsed, {} deferred", parsed.len(), deferred.len());
-        assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
+        let configs = ParserConfigs::default();
+        let (read, extracted): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+            .into_iter()
+            .partition(|path| reads_pages_by_ocr(path, &configs));
+        println!(
+            "{} parsed, {} of them with pages read by OCR, {} deferred",
+            extracted.len() + read.len(),
+            read.len(),
+            deferred.len()
+        );
+        assert_same_as_tika_delegating(&as_paths(&extracted), tika_name(), &DELEGATES);
+        if !read.is_empty() {
+            reads_pages_by_ocr_as_tikas_path_does(&read, &configs);
+        }
     }
 }

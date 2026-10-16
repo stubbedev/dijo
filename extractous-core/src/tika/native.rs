@@ -379,6 +379,22 @@ fn make_executable(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The language data the build bundled, unpacked, or none when it bundled none.
+pub(crate) fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
+    if OCR_FILES.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(unpacked()?.join(OCR_MODELS)))
+}
+
+/// The tesseract library the build bundled, unpacked, if it bundled one.
+#[cfg(not(feature = "static-image"))]
+pub(crate) fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
+    OCR_TESSERACT_LIBRARY
+        .map(|library| Ok(unpacked()?.join(library)))
+        .transpose()
+}
+
 /// The version of the tesseract the build runs: the bundled library, or without a bundle the
 /// program on the PATH.
 #[cfg(not(feature = "static-image"))]
@@ -389,15 +405,11 @@ pub(crate) fn tesseract_version() -> Result<String, String> {
     }
 }
 
-/// The version of the tesseract linked into the static executable.
+/// The version of the tesseract linked into the static executable, which native readings
+/// and Tika's path both run.
 #[cfg(feature = "static-image")]
 pub(crate) fn tesseract_version() -> Result<String, String> {
-    unsafe extern "C" {
-        fn extractous_tesseract_version() -> *const std::ffi::c_char;
-    }
-    Ok(linked_version(unsafe {
-        std::ffi::CStr::from_ptr(extractous_tesseract_version())
-    }))
+    crate::ocr::tesseract().map(|tesseract| linked_version(&tesseract.version()))
 }
 
 #[cfg(not(feature = "static-image"))]
@@ -423,13 +435,13 @@ fn library_version(library: &Path) -> Result<String, String> {
         )
     }
     .map_err(fail)?;
-    Ok(linked_version(unsafe {
-        std::ffi::CStr::from_ptr(version())
-    }))
+    Ok(linked_version(
+        &unsafe { std::ffi::CStr::from_ptr(version()) }.to_string_lossy(),
+    ))
 }
 
-fn linked_version(version: &std::ffi::CStr) -> String {
-    format!("tesseract {} (linked)", version.to_string_lossy())
+fn linked_version(version: &str) -> String {
+    format!("tesseract {version} (linked)")
 }
 
 /// The licenses of the tesseract and the language data the build bundled.

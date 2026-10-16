@@ -1,17 +1,44 @@
-//! Tika's `XmpExtractor` with `PDMetadataExtractor`'s fixups: an XMP packet flattened into
-//! leaves as `XmpSaxFlattener` flattens it, mapped to Tika's metadata properties, its dates
-//! normalized, and unmapped leaves kept under `xmp-raw:`.
+//! Tika's `XmpExtractor` from `tika-parser-xmp-commons`, which the PDF and image parsers share:
+//! an XMP packet flattened into leaves as `XmpSaxFlattener` flattens it, mapped to Tika's
+//! metadata properties, its dates normalized as `XmpDates` normalizes them with PDFBox's
+//! `DateConverter` ([`date`]), and unmapped leaves kept under `xmp-raw:`.
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::content::parse_literal;
-use super::cos::text_string;
-use super::date;
-use super::recording::Recording;
-use super::Unported;
+pub(crate) mod date;
+
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
+use crate::formats::Unported;
 use crate::java::time::format_instant;
+
+/// Where the properties of an XMP packet are written: a document's metadata, or a recording
+/// of what its extraction writes.
+pub(crate) trait Sink {
+    fn get(&self, name: &str) -> Option<&str>;
+    fn values(&self, name: &str) -> &[String];
+    fn set(&mut self, name: &str, value: String);
+    fn add(&mut self, name: &str, value: String);
+}
+
+impl Sink for TikaMetadata {
+    fn get(&self, name: &str) -> Option<&str> {
+        TikaMetadata::get(self, name)
+    }
+
+    fn values(&self, name: &str) -> &[String] {
+        TikaMetadata::values(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: String) {
+        TikaMetadata::set(self, name, value);
+    }
+
+    fn add(&mut self, name: &str, value: String) {
+        TikaMetadata::add(self, name, value);
+    }
+}
 
 const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const META: &str = "adobe:ns:meta/";
@@ -44,8 +71,8 @@ const MAX_HISTORY_EVENTS: usize = 1024;
 /// A Tika metadata `Property`, as far as setting it differs: a bag or sequence takes several
 /// values, a date is normalized, and a composite sets its secondaries too.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Property {
-    pub(super) name: &'static str,
+pub(crate) struct Property {
+    pub(crate) name: &'static str,
     multi: bool,
     date: bool,
     secondary: &'static [Property],
@@ -53,13 +80,13 @@ pub(super) struct Property {
 
 impl Property {
     /// `isMultiValuePermitted`.
-    pub(super) fn is_multi(&self) -> bool {
+    pub(crate) fn is_multi(&self) -> bool {
         self.multi
     }
 }
 
 /// A single-valued text property.
-pub(super) const fn text(name: &'static str) -> Property {
+pub(crate) const fn text(name: &'static str) -> Property {
     Property {
         name,
         multi: false,
@@ -69,7 +96,7 @@ pub(super) const fn text(name: &'static str) -> Property {
 }
 
 /// A property of several text values.
-pub(super) const fn bag(name: &'static str) -> Property {
+pub(crate) const fn bag(name: &'static str) -> Property {
     Property {
         name,
         multi: true,
@@ -87,11 +114,11 @@ const fn date_property(name: &'static str) -> Property {
     }
 }
 
-pub(super) const DC_TITLE: Property = bag("dc:title");
-pub(super) const DC_CREATOR: Property = bag("dc:creator");
-pub(super) const DC_SUBJECT: Property = bag("dc:subject");
-pub(super) const DCTERMS_CREATED: Property = date_property("dcterms:created");
-pub(super) const DCTERMS_MODIFIED: Property = date_property("dcterms:modified");
+pub(crate) const DC_TITLE: Property = bag("dc:title");
+pub(crate) const DC_CREATOR: Property = bag("dc:creator");
+pub(crate) const DC_SUBJECT: Property = bag("dc:subject");
+pub(crate) const DCTERMS_CREATED: Property = date_property("dcterms:created");
+pub(crate) const DCTERMS_MODIFIED: Property = date_property("dcterms:modified");
 const OFFICE_KEYWORDS: Property = Property {
     name: "meta:keyword",
     multi: true,
@@ -522,27 +549,6 @@ impl SaxHandler for Flattener {
     }
 }
 
-/// `PDMetadataExtractor.decode`: a value written as a PDF literal string with a byte order
-/// mark, decoded as PDFBox decodes text strings.
-pub(super) fn decode(value: &str) -> String {
-    let encoded = ["\\376\\377", "\\377\\376", "\\357\\273\\277"];
-    if value.encode_utf16().count() < 8 || !encoded.iter().any(|bom| value.starts_with(bom)) {
-        return value.to_owned();
-    }
-    let latin1: Vec<u8> = std::iter::once(b'(')
-        .chain(
-            value
-                .chars()
-                .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')),
-        )
-        .chain(std::iter::once(b')'))
-        .collect();
-    match parse_literal(&latin1) {
-        Some(bytes) => text_string(&bytes),
-        None => value.to_owned(),
-    }
-}
-
 /// `XmpDates.normalize`: a date's instant as Tika writes dates, if PDFBox reads it.
 fn normalize_date(raw: &str) -> Result<Option<String>, Unported> {
     let trimmed = crate::java::trim(raw);
@@ -563,8 +569,8 @@ fn value_for(property: &Property, value: &str) -> Result<String, Unported> {
 }
 
 /// `Metadata.set(Property, String)`.
-pub(super) fn set(metadata: &mut Recording, property: &Property, value: &str) {
-    metadata.set(property.name, value);
+pub(crate) fn set(metadata: &mut dyn Sink, property: &Property, value: &str) {
+    metadata.set(property.name, value.to_owned());
     for secondary in property.secondary {
         set(metadata, secondary, value);
     }
@@ -572,8 +578,8 @@ pub(super) fn set(metadata: &mut Recording, property: &Property, value: &str) {
 
 /// `Metadata.add(Property, String)`: unported where Tika throws on a second value of a
 /// single-valued property.
-pub(super) fn add(
-    metadata: &mut Recording,
+pub(crate) fn add(
+    metadata: &mut dyn Sink,
     property: &Property,
     value: &str,
 ) -> Result<(), Unported> {
@@ -592,9 +598,9 @@ pub(super) fn add(
         return Ok(());
     }
     if metadata.values(property.name).is_empty() {
-        metadata.set(property.name, value);
+        metadata.set(property.name, value.to_owned());
     } else if property.multi {
-        metadata.add(property.name, value);
+        metadata.add(property.name, value.to_owned());
     } else {
         return Err(Unported(format!(
             "a second value for the single-valued property {}, which Tika throws on",
@@ -605,7 +611,7 @@ pub(super) fn add(
 }
 
 /// `emit`.
-fn emit(metadata: &mut Recording, property: &Property, value: &str) -> Result<(), Unported> {
+fn emit(metadata: &mut dyn Sink, property: &Property, value: &str) -> Result<(), Unported> {
     let value = value_for(property, value)?;
     if property.multi {
         add(metadata, property, &value)
@@ -615,27 +621,29 @@ fn emit(metadata: &mut Recording, property: &Property, value: &str) -> Result<()
     }
 }
 
-/// `PDMetadataExtractor.extract`: the XMP packet `packet` mapped into `metadata`, and the
-/// PDF/A version derived from it. A packet that is not well-formed XML is unported: Tika
-/// records the parser's exception, with its stack trace, in the metadata.
-pub(super) fn extract(packet: &[u8], metadata: &mut Recording) -> Result<(), Unported> {
+/// A container's fixup of the values of its XMP, `XmpExtractor`'s `valueDecoder`.
+pub(crate) type Decoder = fn(&str) -> String;
+
+/// The identity decoder, for XMP that needs no fixup.
+pub(crate) fn as_is(value: &str) -> String {
+    value.to_owned()
+}
+
+/// `XmpExtractor.extract`: the XMP packet `packet` mapped into `metadata`, its values fixed up
+/// by `decode`. A packet that is not well-formed XML is unported: Tika records the parser's
+/// exception, with its stack trace, in the metadata.
+pub(crate) fn extract(
+    packet: &[u8],
+    metadata: &mut dyn Sink,
+    decode: Decoder,
+) -> Result<(), Unported> {
     let mut flattener = Flattener::default();
     xml::parse_sax(packet, "the XMP packet", &mut flattener).map_err(|failure| {
         Unported(format!(
             "an XMP packet that is not well-formed, whose exception Tika records: {failure:?}"
         ))
     })?;
-    map(&flattener.leaves, metadata)?;
-    if let Some(conformance) = metadata.get("pdfaid:conformance").map(str::to_owned) {
-        let part = metadata
-            .get("pdfaid:part")
-            .map_or_else(|| "UNKNOWN".to_owned(), str::to_owned);
-        metadata.set(
-            "pdfa:pdf-version",
-            format!("A-{part}{}", conformance.to_lowercase()),
-        );
-    }
-    Ok(())
+    map(&flattener.leaves, metadata, decode)
 }
 
 fn is_history_event(leaf: &Leaf) -> bool {
@@ -657,18 +665,18 @@ fn history_index(path: &str) -> Option<i32> {
 }
 
 /// `XmpExtractor.map`.
-fn map(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unported> {
-    emit_history(leaves, metadata)?;
-    emit_lang_alternatives(leaves, metadata)?;
+fn map(leaves: &[Leaf], metadata: &mut dyn Sink, decode: Decoder) -> Result<(), Unported> {
+    emit_history(leaves, metadata, decode)?;
+    emit_lang_alternatives(leaves, metadata, decode)?;
     for leaf in leaves {
         if !is_history_event(leaf) && !is_lang_alternative(leaf) {
-            map_leaf(leaf, metadata)?;
+            map_leaf(leaf, metadata, decode)?;
         }
     }
     Ok(())
 }
 
-fn emit_history(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unported> {
+fn emit_history(leaves: &[Leaf], metadata: &mut dyn Sink, decode: Decoder) -> Result<(), Unported> {
     let mut events: BTreeMap<i32, HashMap<&'static str, String>> = BTreeMap::new();
     for leaf in leaves.iter().filter(|leaf| is_history_event(leaf)) {
         let Some(index) = history_index(&leaf.path).filter(|&index| index >= 0) else {
@@ -703,7 +711,11 @@ fn emit_history(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unporte
     Ok(())
 }
 
-fn emit_lang_alternatives(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unported> {
+fn emit_lang_alternatives(
+    leaves: &[Leaf],
+    metadata: &mut dyn Sink,
+    decode: Decoder,
+) -> Result<(), Unported> {
     let mut keys: Vec<(String, String)> = Vec::new();
     let mut groups: HashMap<(String, String), Vec<&Leaf>> = HashMap::new();
     for leaf in leaves.iter().filter(|leaf| is_lang_alternative(leaf)) {
@@ -753,7 +765,7 @@ fn emit_lang_alternatives(leaves: &[Leaf], metadata: &mut Recording) -> Result<(
     Ok(())
 }
 
-fn map_leaf(leaf: &Leaf, metadata: &mut Recording) -> Result<(), Unported> {
+fn map_leaf(leaf: &Leaf, metadata: &mut dyn Sink, decode: Decoder) -> Result<(), Unported> {
     let namespace = leaf.namespace.as_str();
     let local = leaf.local_name();
     if namespace == XMLNS_XML || dropped(namespace, local) {
@@ -821,8 +833,8 @@ mod tests {
 
     #[test]
     fn maps_xmp_as_tika_does() {
-        let mut metadata = Recording::new(crate::formats::metadata::TikaMetadata::new());
-        extract(PACKET, &mut metadata).unwrap();
+        let mut metadata = TikaMetadata::new();
+        extract(PACKET, &mut metadata, as_is).unwrap();
         assert_eq!(metadata.get("xmp:CreatorTool"), Some("Writer"));
         assert_eq!(metadata.get("xmp:CreateDate"), Some("2026-10-13T19:30:18Z"));
         assert_eq!(
@@ -836,12 +848,6 @@ mod tests {
         assert_eq!(metadata.values("dc:creator"), ["One", "Two"]);
         assert_eq!(metadata.values("xmp:dc:creator"), ["One", "Two"]);
         assert_eq!(metadata.get("xmp-raw:pdf:Unmapped"), Some("raw"));
-    }
-
-    #[test]
-    fn decodes_pdf_encoded_values() {
-        assert_eq!(decode("\\376\\377\\000A\\000B"), "AB");
-        assert_eq!(decode("plain text"), "plain text");
     }
 
     #[test]

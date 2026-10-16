@@ -9,11 +9,11 @@
 
 mod cell_format;
 mod date_format;
-mod decimal;
-mod decimal_format;
+pub(crate) mod decimal;
+pub(crate) mod decimal_format;
 mod fraction;
 mod number_text;
-mod printf;
+pub(crate) mod printf;
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

@@ -400,9 +400,102 @@ pub(crate) fn assert_same_as_tika_delegating_with(
     compare(documents, configs, expected);
 }
 
+/// What OCR reads, which the two paths are not compared on: the text in each div of class
+/// `ocr`, and the report of how each image was read.
+const OCR_DIV: &str = "<div class=\"ocr\">";
+
+/// Asserts that the native parser of each document, which Tika's path parses with `tika_name`
+/// delegating to `delegates`, writes exactly the XHTML and the metadata Tika's path does under
+/// `configs`, but for what OCR reads: the text in each div of class `ocr`, which the quality
+/// corpus scores instead, and the values of the reports of how each image was read, compared by
+/// their count. Returns each document's OCR text, Tika's path's and the native parser's.
+pub(crate) fn assert_same_as_tika_but_ocr(
+    documents: &[&Path],
+    tika_name: &str,
+    delegates: &[(&str, &str)],
+    configs: &ParserConfigs,
+) -> Vec<(String, String)> {
+    let mut differences = Vec::new();
+    let mut texts = Vec::new();
+    for document in documents {
+        let path = document.to_str().unwrap();
+        let native_name = routed(path).parser.name();
+        let names = tika_names(native_name, tika_name, delegates);
+        let tika = tika_stream(path, configs, Output::Xml, CharSet::UTF_8);
+        let native = native_stream(path, configs, Output::Xml, CharSet::UTF_8)
+            .map(|native| comparable(as_tika(native, &names, CharSet::UTF_8)));
+        let (Ok(tika), Ok(native)) = (&tika, &native) else {
+            differences.push(format!(
+                "{path}:\n  tika   {}\n  native {}",
+                describe(&tika),
+                describe(&native)
+            ));
+            continue;
+        };
+        let (tika_masked, tika_text) = without_ocr(comparable(tika.clone()));
+        let (native_masked, native_text) = without_ocr(native.clone());
+        if tika_masked != native_masked {
+            differences.push(format!(
+                "{path}:\n  tika   {}\n  native {}",
+                describe(&Ok(tika_masked)),
+                describe(&Ok(native_masked))
+            ));
+        }
+        texts.push((tika_text, native_text));
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+    texts
+}
+
+/// An XHTML extraction with the text of each div of class `ocr` left out, and the values of the
+/// OCR reports masked; and that text, its divs' joined.
+fn without_ocr(mut extracted: Extracted) -> (Extracted, String) {
+    let xhtml = String::from_utf8(extracted.text)
+        .expect("XHTML in UTF-8")
+        .replace("<div class=\"ocr\" />", "<div class=\"ocr\"></div>");
+    let mut masked = String::with_capacity(xhtml.len());
+    let mut read = String::new();
+    let mut rest = xhtml.as_str();
+    while let Some(start) = rest.find(OCR_DIV) {
+        let inside = start + OCR_DIV.len();
+        masked.push_str(&rest[..inside]);
+        let end = rest[inside..]
+            .find("</div>")
+            .map_or(rest.len(), |end| inside + end);
+        read.push_str(&rest[inside..end]);
+        read.push('\n');
+        rest = &rest[end..];
+    }
+    masked.push_str(rest);
+    let report = format!("<meta name=\"{}\" content=\"", crate::ocr::REPORT);
+    let mut unreported = String::with_capacity(masked.len());
+    let mut rest = masked.as_str();
+    while let Some(start) = rest.find(&report) {
+        let inside = start + report.len();
+        unreported.push_str(&rest[..inside]);
+        rest = &rest[inside..];
+        rest = &rest[rest.find('"').unwrap_or(rest.len())..];
+    }
+    unreported.push_str(rest);
+    extracted.text = unreported.into_bytes();
+    for (name, values) in &mut extracted.metadata {
+        if name == crate::ocr::REPORT {
+            values
+                .iter_mut()
+                .for_each(|value| *value = "<report>".to_owned());
+        }
+    }
+    (extracted, read)
+}
+
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
 pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
-    compare(documents, &ParserConfigs::default(), Expected::Failure);
+    assert_fails_as_tika_with(documents, &ParserConfigs::default());
+}
+
+/// [`assert_fails_as_tika`] under the settings `configs`.
+pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
+    compare(documents, configs, Expected::Failure);
 }
 
 fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
@@ -470,6 +563,15 @@ pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Defe
 /// The non-empty files under `roots` whose detected type `parser` reads, split into
 /// those it parses and those it defers to Tika.
 pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    documents_with(parser, roots, &ParserConfigs::default())
+}
+
+/// [`documents`], deferred under the settings `configs`.
+pub(crate) fn documents_with(
+    parser: &dyn Parser,
+    roots: &[&Path],
+    configs: &ParserConfigs,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut pending: Vec<PathBuf> = roots.iter().map(|root| root.to_path_buf()).collect();
     while let Some(path) = pending.pop() {
@@ -500,7 +602,10 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, 
         if !parser.media_types().contains(&base) {
             continue;
         }
-        if deferral(parser, &file).is_some() {
+        if parser
+            .defers(&input, &detected.metadata_for(parser), configs)
+            .is_some()
+        {
             deferred.push(file);
         } else {
             parsed.push(file);
