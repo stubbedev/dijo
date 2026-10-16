@@ -14,7 +14,7 @@ mod cff;
 mod cmap;
 mod content;
 mod cos;
-mod date;
+pub(super) mod date;
 mod document;
 mod encoding;
 mod engine;
@@ -35,7 +35,6 @@ pub(crate) mod truetype;
 mod type1;
 mod writer;
 mod xfa;
-mod xmp;
 mod xref;
 
 use std::sync::OnceLock;
@@ -71,6 +70,12 @@ const MAX_RECURSION_DEPTH: usize = 100;
 /// Why the port leaves a document to Tika: something in it the port does not do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Unported(pub(super) String);
+
+impl From<crate::formats::Unported> for Unported {
+    fn from(crate::formats::Unported(reason): crate::formats::Unported) -> Self {
+        Self(reason)
+    }
+}
 
 /// Whether tesseract runs, which makes Tika read PDFs through our `TextLayerCheckingPdfParser`.
 fn ocr_runs() -> bool {

@@ -61,6 +61,24 @@ pub(super) struct Recording {
     spans: Vec<Span>,
 }
 
+impl crate::formats::xmp::MetadataSink for Recording {
+    fn get(&self, name: &str) -> Option<&str> {
+        Recording::get(self, name)
+    }
+
+    fn values(&self, name: &str) -> &[String] {
+        Recording::values(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: impl Into<String>) {
+        Recording::set(self, name, value);
+    }
+
+    fn add(&mut self, name: &str, value: impl Into<String>) {
+        Recording::add(self, name, value);
+    }
+}
+
 impl Recording {
     /// A recording of a document whose parser starts from `metadata`.
     pub(super) fn new(metadata: TikaMetadata) -> Self {

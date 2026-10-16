@@ -64,6 +64,7 @@ mod xls;
 mod xlsx;
 pub(crate) mod xml;
 mod xml_2003;
+mod xmp;
 mod zip_file;
 
 use std::borrow::Cow;

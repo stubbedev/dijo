@@ -92,7 +92,7 @@ pub(super) struct Zoned {
 
 /// `DateConverter.toCalendar(String)`: the date's instant in milliseconds, or `None` where
 /// PDFBox reads no date.
-pub(super) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
+pub(in crate::formats) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
     Ok(to_zoned(text)?.map(|date| date.millis))
 }
 
