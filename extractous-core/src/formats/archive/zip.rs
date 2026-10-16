@@ -258,6 +258,9 @@ fn write_entries<'z>(
                 )))
             }
         };
+        // Tika identifies the div by the name before its backslashes become slashes, and the
+        // resource by the name after (#99).
+        let name = name.replace('\\', "/");
         let metadata = entry_metadata(entry, &name, zone);
         write_entry_div(xhtml, &name)?;
         xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;
@@ -325,8 +328,7 @@ fn instant(time: Instant) -> String {
 fn entry_metadata(entry: &ZipEntry, name: &str, zone: &TimeZone) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
     if !name.is_empty() {
-        let name = name.replace('\\', "/");
-        metadata.set(RESOURCE_NAME, name.clone());
+        metadata.set(RESOURCE_NAME, name);
         metadata.set(INTERNAL_PATH, name);
     }
     if let Some(created) = entry.created() {
