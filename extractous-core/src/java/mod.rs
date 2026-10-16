@@ -426,6 +426,18 @@ pub(crate) fn ascii(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// `new String(bytes, UTF_16LE)`: each unpaired surrogate, and an odd byte at the end,
+/// decoded as U+FFFD, as the JDK's decoder replaces them.
+pub(crate) fn utf16le(bytes: &[u8]) -> String {
+    let (pairs, rest) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
+    let mut text = String::from_utf16_lossy(&units);
+    if !rest.is_empty() {
+        text.push('\u{FFFD}');
+    }
+    text
+}
+
 /// `new String(bytes, UTF_8)`: malformed input replaced as the JDK's decoder replaces it.
 pub(crate) fn utf8(bytes: &[u8]) -> String {
     if bytes.is_ascii() {

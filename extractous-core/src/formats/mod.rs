@@ -43,6 +43,7 @@ mod notebook;
 mod odf;
 mod ole10_native;
 mod ole2;
+mod onenote;
 mod ooxml;
 mod open_pgp;
 #[cfg(test)]
@@ -244,6 +245,7 @@ static PARSERS: &[&dyn Parser] = &[
     &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
+    &onenote::OneNoteParser,
     &open_pgp::OpenPgpParser,
     &pdf::PdfParser,
     &plist::PListParser,
