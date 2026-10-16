@@ -356,15 +356,16 @@ pub(super) enum PageReading {
 }
 
 impl PageReading {
-    /// The text the reading writes, as Tika's page checker records it: the text, and the line
-    /// break after its `div`.
-    fn recorded_text(&self) -> String {
-        match self {
-            Self::Read { attempt, .. } => attempt
-                .text()
-                .map_or_else(String::new, |text| format!("{text}\n")),
-            Self::Skipped | Self::Failed(_) => String::new(),
-        }
+    /// Whether the reading replaces a page's text layer assessed as `layer`: when OCR read the
+    /// page, and the layer is garbage or the OCR text reads better. Our Java replaced a
+    /// garbage layer with the empty output of a skipped OCR too, so that the page's text
+    /// disappeared (#117).
+    fn replaces(&self, layer: &Assessment, unmapped: Unmapped) -> bool {
+        let Self::Read { attempt, .. } = self else {
+            return false;
+        };
+        layer.badness >= quality::GARBAGE
+            || reads_better(attempt.text().unwrap_or_default(), layer, unmapped)
     }
 
     /// `TextLayerCheckingPdfParser.useOcr`: the reading's text in a div of class `ocr`, as the
@@ -431,10 +432,7 @@ impl EndPage for PageHook<'_, '_, '_> {
                 Ok(reading.write(xhtml)?)
             }
             PageCheck::Weigh(layer) => {
-                let failed = matches!(reading, PageReading::Failed(_));
-                if failed
-                    || !(layer.badness >= quality::GARBAGE || self.reads_better(&reading, &layer))
-                {
+                if !reading.replaces(&layer, self.ocr.unmapped) {
                     return held(xhtml);
                 }
                 xhtml.metadata_mut().add(
@@ -447,13 +445,13 @@ impl EndPage for PageHook<'_, '_, '_> {
     }
 }
 
-impl PageHook<'_, '_, '_> {
-    /// Whether the OCR text reads better than the text layer it would replace.
-    fn reads_better(&self, reading: &PageReading, layer: &Assessment) -> bool {
-        let text = reading.recorded_text();
-        let length = text.encode_utf16().count() as i32;
-        quality::assess(&text, length, 0, self.ocr.unmapped).badness < layer.badness
-    }
+/// Whether the OCR text `text` reads better than the text layer it would replace, its glyphs
+/// counted as the characters it shows. Our Java counted the UTF-16 length of the text with the
+/// line break after it (#117).
+fn reads_better(text: &str, layer: &Assessment, unmapped: Unmapped) -> bool {
+    let glyphs = text.chars().filter(|c| !c.is_whitespace()).count();
+    let glyphs = i32::try_from(glyphs).unwrap_or(i32::MAX);
+    quality::assess(text, glyphs, 0, unmapped).badness < layer.badness
 }
 
 #[cfg(test)]
@@ -498,6 +496,28 @@ mod tests {
         let one = Thresholds::parse("1").unwrap();
         assert!(!one.ocr_wanted(100, 1));
         assert!(one.ocr_wanted(100, 2));
+    }
+
+    #[test]
+    fn keeps_a_text_layer_ocr_did_not_read() {
+        let garbage = Assessment {
+            badness: quality::GARBAGE,
+            fault: "no-text",
+        };
+        for reading in [PageReading::Skipped, PageReading::Failed("no".to_owned())] {
+            assert!(!reading.replaces(&garbage, DEFAULT.unmapped));
+        }
+    }
+
+    #[test]
+    fn weighs_ocr_text_by_the_characters_it_shows() {
+        let doubtful = Assessment {
+            badness: 0.6,
+            fault: "symbols",
+        };
+        let prose = "The keeper climbed the stairs every evening and wrote one line.";
+        assert!(reads_better(prose, &doubtful, DEFAULT.unmapped));
+        assert!(!reads_better("", &doubtful, DEFAULT.unmapped));
     }
 
     #[test]

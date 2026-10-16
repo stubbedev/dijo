@@ -591,12 +591,11 @@ unsafe fn text_of(api: &Api, handle: *mut BaseApi) -> Option<Reading> {
     })
 }
 
-/// Whether detection decided on a script: whether its confidence, as `GetOsdText` prints it with
-/// two decimals, is above zero.
+/// Whether detection decided on a script: whether its confidence is above zero. Our Java read
+/// it as `GetOsdText` prints it, with two decimals, so that a confidence under 0.005 decided
+/// none (#117).
 fn decided(script_confidence: c_float) -> bool {
-    format!("{script_confidence:.2}")
-        .parse::<f64>()
-        .is_ok_and(|confidence| confidence > 0.0)
+    script_confidence > 0.0
 }
 
 /// `OrientationIdToValue` of the orientation detection found, in clockwise quarter turns.
@@ -679,10 +678,11 @@ mod tests {
     }
 
     #[test]
-    fn decides_as_the_printed_confidence_does() {
+    fn decides_on_any_confidence_above_zero() {
         assert!(decided(0.01));
         assert!(decided(0.006));
-        assert!(!decided(0.004));
+        assert!(decided(0.004));
         assert!(!decided(0.0));
+        assert!(!decided(f32::NAN));
     }
 }
