@@ -380,8 +380,8 @@ mod tests {
     use super::*;
     use crate::config::{PdfOcrStrategy, TesseractOcrConfig};
     use crate::formats::parity::{
-        assert_same_as_tika_but_ocr, assert_same_as_tika_delegating,
-        assert_same_as_tika_delegating_with, conformance_corpus, documents, Scratch,
+        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
+        documents, Scratch,
     };
     use std::path::{Path, PathBuf};
 
@@ -459,27 +459,6 @@ mod tests {
                     .find(|path| path.is_file())
             })
             .collect()
-    }
-
-    /// Whether the native parser reads pages of the document at `path` by OCR under `configs`.
-    fn reads_pages_by_ocr(path: &Path, configs: &ParserConfigs) -> bool {
-        let input = std::fs::read(path).unwrap();
-        record(&input, &TikaMetadata::new(), configs).is_ok_and(|(_, page_ocr)| page_ocr.is_some())
-    }
-
-    /// Reads the pages Tika's path reads by OCR as it writes them, the OCR text aside, and
-    /// reads text where it reads text.
-    fn reads_pages_by_ocr_as_tikas_path_does(documents: &[PathBuf], configs: &ParserConfigs) {
-        assert!(ocr_runs(), "tesseract is not installed");
-        let texts =
-            assert_same_as_tika_but_ocr(&as_paths(documents), tika_name(), &DELEGATES, configs);
-        for (path, (tika, native)) in documents.iter().zip(texts) {
-            assert!(
-                tika.trim().is_empty() || !native.trim().is_empty(),
-                "{}: {tika:?} against {native:?}",
-                path.display()
-            );
-        }
     }
 
     fn deferral_of(path: &Path) -> String {
@@ -601,6 +580,68 @@ mod tests {
     const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
+
+    /// A document of one page scanned at 300 dpi, the image in grey and no text on it.
+    fn scanned(image: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        const POINTS_PER_PIXEL: f64 = 72.0 / 300.0;
+        let gray = image::load_from_memory(image).unwrap().to_luma8();
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(gray.as_raw()).unwrap();
+        let mut hex: String = encoder
+            .finish()
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        hex.push('>');
+        let width = f64::from(gray.width()) * POINTS_PER_PIXEL;
+        let height = f64::from(gray.height()) * POINTS_PER_PIXEL;
+        let content = format!("q {width:.2} 0 0 {height:.2} 0 0 cm /Scan Do Q");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width:.2} {height:.2}] \
+                 /Contents 4 0 R /Resources << /XObject << /Scan 5 0 R >> >> >>"
+            ),
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len() + 1
+            ),
+            format!(
+                "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceGray \
+                 /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] /Length {} >>\n\
+                 stream\n{hex}\nendstream",
+                gray.width(),
+                gray.height(),
+                hex.len() + 1
+            ),
+        ];
+        document(&objects.each_ref().map(String::as_str), b"", &[])
+    }
+
+    #[test]
+    fn reads_right_to_left_scanned_pages_by_ocr_as_tikas_path_does() {
+        assert!(ocr_runs(), "tesseract is not installed");
+        let scratch = Scratch::new("pdf-right-to-left");
+        let image = std::fs::read("../test_files/documents/ara-ocr.png").unwrap();
+        let scan = scratch.write("ara-ocr.pdf", &scanned(&image));
+        let input = std::fs::read(&scan).unwrap();
+        for language in [TesseractOcrConfig::AUTO_LANGUAGE, "ara"] {
+            let configs = ParserConfigs {
+                ocr: TesseractOcrConfig::new().set_language(language),
+                ..ParserConfigs::default()
+            };
+            let recorded = record(&input, &TikaMetadata::new(), &configs);
+            assert!(
+                recorded.is_ok_and(|(_, page_ocr)| page_ocr.is_some()),
+                "the scan is not read by OCR with {language}"
+            );
+            assert_same_as_tika_delegating_with(&[&scan], tika_name(), &DELEGATES, &configs);
+        }
+    }
 
     #[test]
     fn extracts_documents_lopdf_recovers_as_tikas_path_does() {
@@ -942,27 +983,16 @@ mod tests {
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, _) = documents(&PdfParser, &corpora());
-        let read_by_ocr = read_by_ocr();
-        let parsed: Vec<PathBuf> = parsed
-            .into_iter()
-            .filter(|path| {
-                !read_by_ocr
-                    .iter()
-                    .any(|read| read.file_name() == path.file_name())
-            })
-            .collect();
         assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
     }
 
     #[test]
-    fn reads_pages_by_ocr_as_tikas_path_does_by_default() {
-        reads_pages_by_ocr_as_tikas_path_does(&read_by_ocr(), &ParserConfigs::default());
-    }
-
-    #[test]
     fn reads_pages_by_ocr_as_tikas_path_does_as_the_command_line_sets_it() {
-        reads_pages_by_ocr_as_tikas_path_does(
-            &read_by_ocr(),
+        assert!(ocr_runs(), "tesseract is not installed");
+        assert_same_as_tika_delegating_with(
+            &as_paths(&read_by_ocr()),
+            tika_name(),
+            &DELEGATES,
             &ParserConfigs {
                 pdf: PdfParserConfig::new()
                     .set_ocr_strategy(PdfOcrStrategy::AUTO)
@@ -1016,19 +1046,7 @@ mod tests {
         for path in &deferred {
             println!("deferred {}: {}", path.display(), deferral_of(path));
         }
-        let configs = ParserConfigs::default();
-        let (read, extracted): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-            .into_iter()
-            .partition(|path| reads_pages_by_ocr(path, &configs));
-        println!(
-            "{} parsed, {} of them with pages read by OCR, {} deferred",
-            extracted.len() + read.len(),
-            read.len(),
-            deferred.len()
-        );
-        assert_same_as_tika_delegating(&as_paths(&extracted), tika_name(), &DELEGATES);
-        if !read.is_empty() {
-            reads_pages_by_ocr_as_tikas_path_does(&read, &configs);
-        }
+        println!("{} parsed, {} deferred", parsed.len(), deferred.len());
+        assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
     }
 }
