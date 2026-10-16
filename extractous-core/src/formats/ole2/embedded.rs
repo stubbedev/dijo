@@ -17,21 +17,11 @@ use crate::formats::Unported;
 use crate::mime::java::to_lower_case;
 use crate::mime::{self, ole_directory_type, MediaType, Origin};
 use crate::ole2::{class_id_string, write, EntryId, EntryKind, Ole2, Unreadable};
-use crate::text::charset::Charset;
 
 const CONTENT_TYPE: &str = "Content-Type";
 const CONTENT_LENGTH: &str = "Content-Length";
 const OLE10_NATIVE: &str = "\u{1}Ole10Native";
 const OCX_NAME_ENTRY: &str = "\u{3}OCXNAME";
-/// The streams of a message's subject, conversation topic and normalized subject, which
-/// `tryToGetMsgTitle` names an embedded message by.
-const MESSAGE_TITLES: [&str; 3] = [
-    "__substg1.0_0037001F",
-    "__substg1.0_0E1D001F",
-    "__substg1.0_0070001F",
-];
-/// How much of a message's title stream `tryToGetMsgTitle` reads.
-const MESSAGE_TITLE_LENGTH: usize = 1000;
 
 /// A document handed on to be parsed, with the metadata Tika gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,11 +103,13 @@ pub(crate) fn office_document(
     {
         return contents(file, directory, &resource, metadata);
     }
-    let resource = if kind == MediaType::named("application/vnd.ms-outlook") {
-        message_title(file, directory).unwrap_or(resource)
-    } else {
-        resource
-    };
+    if kind == MediaType::named("application/vnd.ms-outlook") {
+        return Err(Unported(
+            "an embedded Outlook message, whose properties POI reads as those of a message \
+             stored in another, and as a message of its own once handed on"
+                .to_owned(),
+        ));
+    }
     metadata.set(CONTENT_TYPE, kind.to_string());
     if !is_blank(&resource) {
         if extension.is_empty() {
@@ -263,23 +255,6 @@ fn ocx_name(file: &Ole2<'_>, directory: EntryId, metadata: &mut TikaMetadata) {
     metadata.set(OCX_NAME, String::from_utf16_lossy(&units));
 }
 
-/// `tryToGetMsgTitle`: the start of the first title stream an embedded message has.
-fn message_title(file: &Ole2<'_>, directory: EntryId) -> Option<String> {
-    MESSAGE_TITLES.iter().find_map(|name| {
-        let entry = file.child(directory, name)?;
-        if file.kind(entry) != EntryKind::Document {
-            return None;
-        }
-        let data = file.read(entry).ok()?;
-        let start = &data[..data.len().min(MESSAGE_TITLE_LENGTH)];
-        Some(
-            Charset::named("UTF-16LE")
-                .decode(start)
-                .expect("the JDK decodes UTF-16LE"),
-        )
-    })
-}
-
 /// `appendExtensionIfMissing`.
 fn with_extension(name: &str, extension: &str) -> String {
     if is_blank(extension) {
@@ -355,6 +330,20 @@ mod tests {
         assert_eq!(embedded.data, b"%PDF-1.4\n%");
         assert_eq!(embedded.metadata.get(CONTENT_TYPE), Some("application/pdf"));
         assert_eq!(embedded.metadata.get(RESOURCE_NAME), Some("_123.pdf"));
+    }
+
+    #[test]
+    fn leaves_an_embedded_message_to_tika() {
+        let data = embedding(vec![(
+            units("__substg1.0_0037001F"),
+            Node::Document(vec![b'a', 0]),
+        )]);
+        let file = Ole2::open(&data).unwrap();
+        let object = file.child(file.root(), "_123").unwrap();
+        assert!(matches!(
+            office_document(&file, object, None),
+            Err(Unported(reason)) if reason.contains("Outlook message")
+        ));
     }
 
     #[test]
