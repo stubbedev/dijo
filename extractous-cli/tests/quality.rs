@@ -13,8 +13,13 @@ use unicode_normalization::UnicodeNormalization;
 use common::{matched, tokens};
 
 const QUALITY: &str = "../quality";
+/// How many documents are extracted at once, unless `QUALITY_JOBS` names another number.
 const JOBS: usize = 4;
 const ANCHOR_TOKENS: usize = 4;
+
+/// Names the categories to score, separated by commas, when only some are: the documents of the
+/// others are left out, and no record of every document's scores is written.
+const CATEGORIES: &str = "QUALITY_CATEGORIES";
 
 /// Names the external programs, such as `heif-dec`, that this environment lacks. The documents
 /// that need one are checked for the error naming it instead of being scored.
@@ -109,6 +114,37 @@ fn assert_scores_every_document(missing: &BTreeSet<String>, writer: &str) {
         missing.is_empty(),
         "{writer} records every document's scores, so {MISSING_HELPERS} must name no helper"
     );
+    assert!(
+        std::env::var_os(CATEGORIES).is_none(),
+        "{writer} records every document's scores, so {CATEGORIES} must not be set"
+    );
+}
+
+/// The categories [`CATEGORIES`] names, each one a category of corpus.tsv, or none to score
+/// every category.
+fn categories(documents: &[Document]) -> Option<BTreeSet<String>> {
+    let named: BTreeSet<String> = std::env::var(CATEGORIES)
+        .ok()?
+        .split(',')
+        .map(|category| category.trim().to_string())
+        .collect();
+    for category in &named {
+        assert!(
+            documents
+                .iter()
+                .any(|document| &document.category == category),
+            "{CATEGORIES} names {category}, which no document in corpus.tsv is in"
+        );
+    }
+    Some(named)
+}
+
+/// How many documents are extracted at once: `QUALITY_JOBS`, or [`JOBS`].
+fn jobs() -> usize {
+    std::env::var("QUALITY_JOBS").map_or(JOBS, |jobs| {
+        jobs.parse()
+            .unwrap_or_else(|e| panic!("QUALITY_JOBS={jobs} is no number: {e}"))
+    })
 }
 
 /// The extractous to score: QUALITY_BINARY, such as the static executable, or cargo's build.
@@ -423,8 +459,15 @@ fn scoreboard(documents: &[&Document], results: &BTreeMap<String, Scores>) -> St
 fn extraction_quality_does_not_regress() {
     let manifest = manifest();
     let missing = missing_helpers(&manifest);
-    let (documents, unscored): (Vec<&Document>, Vec<&Document>) =
-        manifest.iter().partition(|document| {
+    let categories = categories(&manifest);
+    let (documents, unscored): (Vec<&Document>, Vec<&Document>) = manifest
+        .iter()
+        .filter(|document| {
+            categories
+                .as_ref()
+                .is_none_or(|categories| categories.contains(&document.category))
+        })
+        .partition(|document| {
             document
                 .helper
                 .as_ref()
@@ -436,7 +479,7 @@ fn extraction_quality_does_not_regress() {
     let results = Mutex::new(BTreeMap::new());
     let next = Mutex::new(documents.iter());
     std::thread::scope(|scope| {
-        for _ in 0..JOBS {
+        for _ in 0..jobs() {
             scope.spawn(|| loop {
                 let Some(document) = next.lock().unwrap().next() else {
                     return;
