@@ -130,6 +130,100 @@ fn reads_local_webps_as_tika_does() {
 }
 
 #[test]
+fn reads_local_pngs_and_gifs_as_tika_does() {
+    let deferred = same_as_tika(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &local_roots(),
+    );
+    assert!(deferred.is_empty(), "{deferred:?}");
+}
+
+#[test]
+fn reads_images_imageio_has_no_reader_for_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-io");
+    let icon_bitmap = [
+        &[40, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 32, 0][..],
+        &[0; 32],
+    ]
+    .concat();
+    let icon = [
+        &[
+            0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0, 48, 0, 0, 0, 22, 0, 0, 0,
+        ][..],
+        &icon_bitmap,
+    ]
+    .concat();
+    scratch.write("tiny.ico", &icon);
+    scratch.write(
+        "tiny.xcf",
+        &[&b"gimp xcf file\0"[..], &[0, 0, 0, 1, 0, 0, 0, 1], &[0; 20]].concat(),
+    );
+    scratch.write(
+        "tiny.jpx",
+        &[
+            0, 0, 0, 12, b'j', b'P', b' ', b' ', 13, 10, 0x87, 10, 0, 0, 0, 20, b'f', b't', b'y',
+            b'p', b'j', b'p', b'x', b' ', 0, 0, 0, 0, b'j', b'p', b'x', b' ',
+        ],
+    );
+    let (parsed, deferred) = documents_with(&ImageParser, &[scratch.directory()], &skipping_ocr());
+    assert_eq!(
+        (parsed.len(), deferred.len()),
+        (3, 0),
+        "{parsed:?} {deferred:?}"
+    );
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_delegating_with(
+        &paths,
+        "org.apache.tika.parser.image.ImageParser",
+        &DELEGATES,
+        &skipping_ocr(),
+    );
+}
+
+#[test]
+fn defers_bmps_and_wbmps_tika_reads_with_a_reader_picked_at_random() {
+    let bmp = [
+        &b"BM"[..],
+        &[
+            58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0,
+        ],
+        &[
+            0, 0, 0, 0, 4, 0, 0, 0, 0x13, 0x0B, 0, 0, 0x13, 0x0B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        &[0xFF, 0xFF, 0xFF, 0],
+    ]
+    .concat();
+    for (media_type, image) in [
+        ("image/bmp", &bmp[..]),
+        ("image/vnd.wap.wbmp", &[0, 0, 0x88, 0x01, 2, 0xAA, 0x55][..]),
+    ] {
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", media_type);
+        let deferred = ImageParser.defers(image, &metadata, &skipping_ocr());
+        assert!(
+            deferred
+                .as_deref()
+                .is_some_and(|reason| reason.contains("at random")),
+            "{media_type}: {deferred:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_pngs_and_gifs_as_tika_does() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let deferred = same_as_tika(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &roots,
+    );
+    println!("deferred: {deferred:?}");
+}
+
+#[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
 fn reads_tikas_test_webps_as_tika_does() {
     let roots = conformance_roots();

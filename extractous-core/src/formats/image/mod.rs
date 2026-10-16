@@ -9,6 +9,7 @@
 
 mod extractor;
 mod image_xmp;
+mod imageio;
 mod metadata_extractor;
 mod motion_photo;
 #[cfg(test)]
@@ -90,6 +91,8 @@ fn java_zone() -> Result<&'static TimeZone, Unported> {
 enum Format {
     Jpeg,
     Tiff,
+    /// An image `ImageParser` reads with ImageIO.
+    ImageIo,
 }
 
 /// Tika's `JpegParser`.
@@ -134,6 +137,110 @@ impl Parser for TiffParser {
     ) -> Result<Prepared<'a>, Declined> {
         prepare(Format::Tiff, input, metadata, configs)
     }
+}
+
+/// Tika's `ImageParser`, of the types whose ImageIO readers the port reads as they do and of
+/// those ImageIO has no reader for.
+pub(crate) struct ImageParser;
+
+impl Parser for ImageParser {
+    fn name(&self) -> &'static str {
+        "extractous::ImageParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &[
+            "image/png",
+            "image/gif",
+            "image/bmp",
+            "image/vnd.wap.wbmp",
+            "image/vnd.microsoft.icon",
+            "image/x-xcf",
+            "image/jp2",
+            "image/jpx",
+        ]
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare(Format::ImageIo, input, metadata, configs)
+    }
+}
+
+/// `ImageParser.extractMetadata`: the reader ImageIO picks for the type reads the image's
+/// count, size and metadata trees, and the comment and bits per sample are mapped to Tika's.
+fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> {
+    let content_type = metadata.get("Content-Type").unwrap_or_default().to_owned();
+    let parse_error = |cause: &str| fails(format!("{content_type} parse error: {cause}"));
+    let read = match content_type.as_str() {
+        "image/png" => imageio::png::read(input).map_err(|error| match error {
+            imageio::png::PngError::Image(cause) => parse_error(&cause),
+            imageio::png::PngError::Runtime(cause) => fails(cause),
+            imageio::png::PngError::Unported(unported) => unported.into(),
+        })?,
+        "image/gif" => match imageio::gif::read(input) {
+            Ok(imageio::gif::Outcome::Read(read)) => read,
+            Ok(imageio::gif::Outcome::UnexpectedBlockZero { images }) => {
+                metadata.set("tk:num-images", images.to_string());
+                return Ok(Read {
+                    metadata,
+                    prefix_route_names: 0,
+                    reads_file: false,
+                });
+            }
+            Err(imageio::gif::GifError::Image(cause)) => return Err(parse_error(&cause)),
+            Err(imageio::gif::GifError::Runtime(cause)) => return Err(fails(cause)),
+        },
+        "image/bmp" | "image/vnd.wap.wbmp" => {
+            return Err(Unported::new(format!(
+                "an image of {content_type}, which Tika's ImageIO reads with the JDK's reader or \
+                 jai-imageio's, picked at random in each process, so its metadata has no one form"
+            ))
+            .into())
+        }
+        _ => {
+            return Ok(Read {
+                metadata,
+                prefix_route_names: 0,
+                reads_file: false,
+            })
+        }
+    };
+    metadata.set("tk:num-images", read.images.to_string());
+    metadata.set(extractor::IMAGE_WIDTH.name, read.width.to_string());
+    metadata.set(extractor::IMAGE_LENGTH.name, read.height.to_string());
+    let mut target = Target::new(&mut metadata);
+    target.add_prefixed(extractor::UNKNOWN_IMG, "height", &read.height.to_string());
+    target.add_prefixed(extractor::UNKNOWN_IMG, "width", &read.width.to_string());
+    for tree in &read.trees {
+        imageio::load_node(&mut target, tree, "", false);
+    }
+    let prefix_route_names = target.prefix_route_names();
+    for (key, property) in [
+        (
+            "img:CommentExtensions CommentExtension",
+            &extractor::COMMENTS,
+        ),
+        ("img:markerSequence com", &extractor::COMMENTS),
+        ("img:Data BitsPerSample", &extractor::BITS_PER_SAMPLE),
+    ] {
+        if let Some(value) = metadata.get(key) {
+            let value = match value.strip_suffix(' ') {
+                Some(stripped) => stripped.to_owned(),
+                None => value.to_owned(),
+            };
+            crate::formats::xmp::set(&mut metadata, property, &value);
+        }
+    }
+    Ok(Read {
+        metadata,
+        prefix_route_names,
+        reads_file: false,
+    })
 }
 
 /// Our Java `RecognizedImageParser` over Tika's `WebPParser`: the WebP parser writes a document
@@ -224,6 +331,8 @@ fn fails(message: String) -> Declined {
 struct Read {
     metadata: TikaMetadata,
     prefix_route_names: usize,
+    /// Whether metadata-extractor read it, which reads the file too.
+    reads_file: bool,
 }
 
 /// `AbstractImageParser.parse` of a JPEG or TIFF: its metadata read now, the file's own when the
@@ -241,7 +350,9 @@ fn prepare<'a>(
     let trailer = motion_photo::trailer(&read.metadata, input)?;
     Ok(Box::new(move |xhtml| {
         *xhtml.metadata_mut() = read.metadata;
-        add_file_directory(xhtml, input.len(), enricher, zone, read.prefix_route_names)?;
+        if read.reads_file {
+            add_file_directory(xhtml, input.len(), enricher, zone, read.prefix_route_names)?;
+        }
         if enricher {
             enrich(xhtml);
         }
@@ -277,6 +388,7 @@ fn extract_metadata(
                 })?;
             jpeg::read(&segments, &mut directories)?;
         }
+        Format::ImageIo => return image_io(input, metadata),
         Format::Tiff => {
             image_xmp::scan_and_extract(input, &mut metadata)?;
             match exif::read_tiff(input, 0, &mut directories) {
@@ -295,6 +407,7 @@ fn extract_metadata(
     Ok(Read {
         metadata,
         prefix_route_names,
+        reads_file: true,
     })
 }
 

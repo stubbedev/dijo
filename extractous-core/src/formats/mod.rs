@@ -179,6 +179,7 @@ static PARSERS: &[&dyn Parser] = &[
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
+    &image::ImageParser,
     &image::JpegParser,
     &image::RecognizedImageParser,
     &image::TiffParser,
