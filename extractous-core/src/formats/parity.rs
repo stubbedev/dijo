@@ -706,10 +706,24 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                         extracted.metadata
                     )
                 };
+                let differing: Vec<String> = tika
+                    .1
+                    .iter()
+                    .zip(&native.1)
+                    .filter_map(|(tika, native)| {
+                        let at = tika
+                            .content
+                            .iter()
+                            .zip(&native.content)
+                            .position(|(tika, native)| tika != native)?;
+                        Some(format!("{} from byte {at}", tika.name))
+                    })
+                    .collect();
                 Err(format!(
-                    "{path} with a budget of {budget} bytes\n  tika   {}\n  native {}",
+                    "{path} with a budget of {budget} bytes\n  tika   {}\n  native {}\n  contents differ: {}",
                     show(&tika),
-                    show(&native)
+                    show(&native),
+                    differing.join(", ")
                 ))
             }
         }

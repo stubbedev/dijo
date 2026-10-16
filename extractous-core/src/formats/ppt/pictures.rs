@@ -454,8 +454,6 @@ impl MetafileHeader {
         let inch = 72i32;
         let mut checksum = 0i32;
         checksum ^= KEY & 0x0000_FFFF;
-        checksum ^= KEY & 0x0000_FFFF;
-        checksum ^= (KEY & (0xFFFF_0000_u32 as i32)) >> 16;
         checksum ^= (KEY & (0xFFFF_0000_u32 as i32)) >> 16;
         for value in [left, top, right, bottom, inch] {
             checksum ^= value;
@@ -554,5 +552,6 @@ mod tests {
         assert_eq!(placeable.len(), 22);
         assert_eq!(&placeable[..4], &[0xD7, 0xCD, 0xC6, 0x9A]);
         assert_eq!(&placeable[10..12], &100u16.to_le_bytes());
+        assert_eq!(&placeable[20..], &[0x0F, 0x57]);
     }
 }
