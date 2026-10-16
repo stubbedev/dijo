@@ -7,12 +7,10 @@
 //! format made for one value is the one later values of that string get, and a date format
 //! keeps the last cell value it was given.
 
-mod bigint;
 mod cell_format;
-pub(crate) mod date_format;
+mod date_format;
 mod decimal;
 mod decimal_format;
-mod dtoa;
 mod fraction;
 mod number_text;
 mod printf;
@@ -22,15 +20,16 @@ use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
-use crate::formats::java::{self, trim};
-use crate::formats::java_time::TimeZone;
+use crate::java::dtoa::java_double_to_string;
+use crate::java::simple_date_format::Unported;
+use crate::java::time::TimeZone;
+use crate::java::{self, trim};
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 pub(crate) use date_format::is_a_date_format;
 use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter};
 use decimal::{BigDecimal, Rounding};
 use decimal_format::DecimalFormat;
-pub(crate) use dtoa::java_double_to_string;
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.
@@ -46,6 +45,12 @@ pub(crate) enum FormatError {
     Thrown(String),
     /// Java writes what this port does not.
     Unported(&'static str),
+}
+
+impl From<Unported> for FormatError {
+    fn from(unported: Unported) -> Self {
+        FormatError::Unported(unported.0)
+    }
 }
 
 /// POI's `BuiltinFormats`, by index.
@@ -949,7 +954,7 @@ mod tests {
     fn formats_as_tika_excel_data_formatter_does() {
         use std::io::Read;
         static COPENHAGEN: LazyLock<TimeZone> =
-            LazyLock::new(|| crate::formats::java_time::tests::zone("Europe/Copenhagen"));
+            LazyLock::new(|| crate::java::time::tests::zone("Europe/Copenhagen"));
         let mut text = String::new();
         flate2::read::GzDecoder::new(FORMATS)
             .read_to_string(&mut text)

@@ -6,10 +6,10 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use super::W_NAMESPACE;
-use crate::formats::java::parse_int;
 use crate::formats::list_numbering::{LevelCounter, LevelTuple};
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::parse_int;
 
 /// The list definitions of a document.
 #[derive(Debug, Default)]

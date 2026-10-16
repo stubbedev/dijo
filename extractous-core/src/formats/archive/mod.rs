@@ -16,10 +16,10 @@ pub(crate) use zip::ZipParser;
 
 use crate::compress::ArchiveFile;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
+use crate::java::time::format_instant;
 
 /// `ZipParser.writeEntryXhtml` and the div of `handleEntryMetadata`: an empty `div` of class
 /// `embedded` identified by the entry's name, if it has one.

@@ -7,12 +7,12 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS};
 use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java;
 
 const TEXT_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
 const TABLE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";

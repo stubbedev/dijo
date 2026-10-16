@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use super::properties::{read_properties, PropertySet};
 use super::types::{property, Type, MULTIVALUED_FLAG};
-use crate::formats::java::parse_hex_int;
 use crate::formats::poi::{Read, Thrown};
+use crate::java::parse_hex_int;
 use crate::ole2::{EntryId, EntryKind, Ole2};
 use crate::text::charset::Charset;
 

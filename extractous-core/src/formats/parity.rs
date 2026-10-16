@@ -150,6 +150,24 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
     })
 }
 
+/// The native names of the parsers of a document paired with Tika's: the parser `native_name`
+/// Tika's path names `tika_name`, its `delegates`, then every native parser and the parsers it
+/// delegates to, which its embedded documents may record.
+fn tika_names<'n>(
+    native_name: &'n str,
+    tika_name: &'n str,
+    delegates: &[(&'n str, &'n str)],
+) -> Vec<(&'n str, &'n str)> {
+    [(native_name, tika_name)]
+        .into_iter()
+        .chain(delegates.iter().copied())
+        .chain(formats::PARSERS.iter().flat_map(|parser| {
+            std::iter::once((parser.name(), parser.tika_name()))
+                .chain(parser.tika_delegates().iter().copied())
+        }))
+        .collect()
+}
+
 /// The native result as Tika's path would name its parsers: each native name of `names` as the
 /// Tika name paired with it.
 fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
@@ -326,11 +344,6 @@ enum Expected<'a> {
     Same(Naming<'a>),
     /// Both fail on it.
     Failure,
-    /// Both extract it identically but for the XML string cut at the write limit inside an HTML
-    /// part of an embedded message: there Tika's path also writes the `</body>` that the HTML
-    /// parse it aborts leaks through the body filter, which the native replay of the embedded
-    /// document, parsed whole without the limit, never sees.
-    LeaksBodyEndAtLimit(Naming<'a>),
 }
 
 /// How Tika's path names the parsers of a document the native parser extracts.
@@ -382,23 +395,6 @@ pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
     compare(documents, &ParserConfigs::default(), Expected::Failure);
 }
 
-/// Asserts what [`assert_same_as_tika`] does, but that Tika's XML string, cut at the write limit
-/// inside an HTML part of an embedded message, ends in the `</body>` its aborted HTML parse leaks
-/// ([`Expected::LeaksBodyEndAtLimit`]).
-pub(crate) fn assert_same_as_tika_but_body_end_leaked_at_limit(
-    documents: &[&Path],
-    tika_name: &str,
-) {
-    compare(
-        documents,
-        &ParserConfigs::default(),
-        Expected::LeaksBodyEndAtLimit(Naming {
-            tika_name,
-            delegates: &[],
-        }),
-    );
-}
-
 fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     let mut differences = Vec::new();
     for document in documents {
@@ -421,23 +417,10 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             }
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
-                    (
-                        Expected::Same(naming) | Expected::LeaksBodyEndAtLimit(naming),
-                        Ok(tika),
-                        Ok(native),
-                    ) => {
-                        let names: Vec<(&str, &str)> = [(native_name, naming.tika_name)]
-                            .into_iter()
-                            .chain(naming.delegates.iter().copied())
-                            .collect();
+                    (Expected::Same(naming), Ok(tika), Ok(native)) => {
+                        let names = tika_names(native_name, naming.tika_name, naming.delegates);
                         let tika = comparable(tika.clone());
-                        let mut native = comparable(as_tika(native.clone(), &names, char_set));
-                        if matches!(expected, Expected::LeaksBodyEndAtLimit(_))
-                            && entry == "string"
-                            && output == Output::Xml
-                        {
-                            native.text.extend_from_slice(b"</body>");
-                        }
+                        let native = comparable(as_tika(native.clone(), &names, char_set));
                         if entry == "string" {
                             tika == cut_to(native, &tika)
                         } else {
@@ -625,6 +608,8 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
     let native_spool = Scratch::new("spool-native");
     let routed = routed(path);
+    let native_name = routed.parser.name();
+    let tika_name = routed.parser.tika_name();
     let options = StreamOptions {
         char_set: CharSet::UTF_8,
         output: Output::Xml,
@@ -653,20 +638,7 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
     match (tika, native) {
         (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
-            let parsed_by = |metadata: &[(String, Vec<String>)]| -> Vec<String> {
-                metadata
-                    .iter()
-                    .find(|(name, _)| name == "tk:parsed-by")
-                    .map(|(_, values)| values.clone())
-                    .unwrap_or_else(|| panic!("{path:?}: an extraction without tk:parsed-by"))
-            };
-            let native_parsers = parsed_by(&native_metadata);
-            let tika_parsers = parsed_by(&metadata);
-            let names: Vec<(&str, &str)> = native_parsers
-                .iter()
-                .zip(&tika_parsers)
-                .map(|(native, tika)| (native.as_str(), tika.as_str()))
-                .collect();
+            let names = tika_names(native_name, tika_name, &[]);
             let tika = (
                 comparable(Extracted { text, metadata }),
                 spooled(embedded, tika_spool.directory()),

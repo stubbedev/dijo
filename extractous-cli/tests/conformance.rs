@@ -17,10 +17,10 @@ const JOBS: &str = "8";
 const TIMEOUT_SECONDS: &str = "60";
 
 /// The parsers of ours that read a format differently from Tika on purpose (iWork text Tika
-/// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers), so their
-/// text is not compared with Tika's: tests of their own check it. The native port of one counts
-/// as it does.
-const OWN_PARSERS: [&str; 10] = [
+/// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers, the Kindle
+/// books and HWPX documents Tika does not read), so their text is not compared with Tika's:
+/// tests of their own check it. The native port of one counts as it does.
+const OWN_PARSERS: [&str; 14] = [
     "ai.yobix.IworkArchiveParser",
     "extractous::IworkArchiveParser",
     "ai.yobix.SubtitleParser",
@@ -31,6 +31,10 @@ const OWN_PARSERS: [&str; 10] = [
     "extractous::FictionBookParser",
     "ai.yobix.EmlxParser",
     "extractous::EmlxParser",
+    "ai.yobix.MobiParser",
+    "extractous::MobiParser",
+    "ai.yobix.HwpxParser",
+    "extractous::HwpxParser",
 ];
 
 /// How the native extraction of a file compares with Tika on the JVM.

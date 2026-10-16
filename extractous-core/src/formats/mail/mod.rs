@@ -36,10 +36,10 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::parse_inline;
 use crate::formats::html;
-use crate::formats::java::parse_long;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text;
 use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::java::parse_long;
 
 /// What the port leaves to Tika.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,11 @@ impl Parser for Rfc822Parser {
         "extractous::RFC822Parser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.mail.RFC822Parser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["message/rfc822"]
     }
@@ -91,6 +96,11 @@ impl Parser for Rfc822Parser {
 impl Parser for EmlxParser {
     fn name(&self) -> &'static str {
         "extractous::EmlxParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.EmlxParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

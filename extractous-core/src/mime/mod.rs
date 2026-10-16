@@ -16,7 +16,6 @@
 
 mod archive;
 mod detectors;
-pub(crate) mod java;
 mod java_regex;
 mod magic;
 mod media_type;
@@ -30,7 +29,6 @@ pub(crate) use crate::ole2::tests::compound as compound_document;
 pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
-pub(crate) use java::trim as java_trim;
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 
@@ -43,6 +41,14 @@ pub(crate) enum Origin<'a> {
     /// Bytes streamed without a name, whose length the metadata learns only if a detector reads
     /// them all.
     Bytes,
+    /// An embedded document, streamed as bytes are, with the resource name and `Content-Type`
+    /// its embedding parser gave it, which hint at its type. Its metadata learns its length when
+    /// a detector reads it all only if the stream was opened with that metadata.
+    Embedded {
+        name: Option<&'a str>,
+        content_type: Option<&'a str>,
+        learns_length: bool,
+    },
 }
 
 /// A metadata key the detection writes.
@@ -117,7 +123,12 @@ impl Written {
 
     /// A detector read the stream to its end: a stream of bytes learns its length.
     fn spool(&mut self, origin: Origin<'_>) {
-        if origin == Origin::Bytes && !self.spooled {
+        let learns_length = match origin {
+            Origin::File { .. } => false,
+            Origin::Bytes => true,
+            Origin::Embedded { learns_length, .. } => learns_length,
+        };
+        if learns_length && !self.spooled {
             self.spooled = true;
             self.set(Key::ContentLength, self.length.to_string());
         }
@@ -143,11 +154,14 @@ pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
 pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     let types = mime_types();
     let registry = types.registry();
-    let name = match origin {
-        Origin::File { name } => Some(name),
-        Origin::Bytes => None,
+    let (name, content_type) = match origin {
+        Origin::File { name } => (Some(name), None),
+        Origin::Bytes => (None, None),
+        Origin::Embedded {
+            name, content_type, ..
+        } => (name, content_type),
     };
-    let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name);
+    let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name, content_type);
     let mut written = Written {
         entries: Vec::new(),
         spooled: false,

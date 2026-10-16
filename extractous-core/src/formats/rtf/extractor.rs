@@ -9,10 +9,11 @@ use std::collections::HashMap;
 use super::charsets;
 use super::embedded::{hex_value, Deferral, Embedded};
 use super::input::Input;
-use crate::formats::java_time::{self, CalendarFields, TimeZone};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
+use crate::java;
+use crate::java::time::{self, CalendarFields, TimeZone};
 use crate::text::charset::Charset;
 
 /// The UTF-16 units `TextExtractor` decodes into at a time, each batch written as one
@@ -319,11 +320,6 @@ struct Extractor<'a, 'x, 'h> {
     open: Vec<&'static str>,
     /// The metadata of a document extracted into another's elements, else the document's own.
     inline_metadata: Option<TikaMetadata>,
-}
-
-/// Java's `String.trim`: characters up to a space go from both ends.
-fn trim_java(text: &str) -> &str {
-    text.trim_matches(|c: char| c <= ' ')
 }
 
 impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
@@ -1100,12 +1096,12 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
     fn read_instruction(&mut self) {
         let instruction = String::from_utf16_lossy(&self.pending_buffer);
         self.pending_buffer.clear();
-        let instruction = trim_java(&instruction);
+        let instruction = java::trim(&instruction);
         let Some(target) = instruction.strip_prefix(HYPERLINK) else {
             self.field = Field::None;
             return;
         };
-        let mut target = trim_java(target);
+        let mut target = java::trim(target);
         let local = target.contains("\\l ");
         if let Some(open) = target.find('"') {
             if let Some(close) = target[open + 1..].find('"') {
@@ -1132,7 +1128,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
                 second: 0,
                 millisecond: 0,
             };
-            let created = java_time::format_instant(fields.epoch_millis(zone));
+            let created = time::format_instant(fields.epoch_millis(zone));
             self.metadata().set("dcterms:created", created);
             return Ok(());
         }

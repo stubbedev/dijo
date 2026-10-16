@@ -384,6 +384,6 @@ fn combine_diacritic(text: &str) -> String {
     };
     match combining {
         Some(combining) => combining.to_string(),
-        None => crate::formats::java::trim(&text.nfkc().collect::<String>()).to_owned(),
+        None => crate::java::trim(&text.nfkc().collect::<String>()).to_owned(),
     }
 }

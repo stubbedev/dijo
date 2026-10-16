@@ -12,9 +12,9 @@ use super::cos::{as_dict, text_string, Pdf};
 use super::encoding::java_bucket;
 use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::embedded::{ResourceType, RESOURCE_NAME};
-use crate::formats::handlers::is_blank;
-use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
+use crate::java;
+use crate::java::is_blank;
 
 /// The type of a file specification dictionary.
 const FILESPEC: &[u8] = b"Filespec";

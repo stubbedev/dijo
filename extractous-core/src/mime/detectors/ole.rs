@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::mime::java;
+use crate::java;
 use crate::mime::media_type::MediaType;
 pub(crate) use crate::ole2::is_ole;
 use crate::ole2::{EntryId, EntryKind, Ole2};

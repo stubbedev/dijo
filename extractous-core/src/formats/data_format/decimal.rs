@@ -1,7 +1,7 @@
 //! `java.math.BigDecimal`, as far as the number formats use it: exact values of doubles and of
 //! decimal text, rounding to a precision, scaling by powers of ten and the parts of a value.
 
-use super::bigint::BigUint;
+use crate::java::bigint::BigUint;
 
 /// Java's `RoundingMode`s the formats round with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +148,7 @@ impl BigDecimal {
         if !value.is_finite() {
             return None;
         }
-        Self::parse(&super::dtoa::java_double_to_string(value))
+        Self::parse(&crate::java::dtoa::java_double_to_string(value))
     }
 
     pub(crate) fn is_zero(&self) -> bool {

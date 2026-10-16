@@ -10,14 +10,15 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::date_format::{is_valid_excel_date, SimpleDateFormat};
+use super::date_format::is_valid_excel_date;
 use super::decimal::{BigDecimal, Rounding};
 use super::decimal_format::DecimalFormat;
-use super::dtoa::java_double_to_string;
 use super::fraction::max_denominator;
 use super::{printf, FormatError, DOT, SPACE};
-use crate::formats::java::{parse_double, round as java_round, trim as java_trim};
-use crate::formats::java_time::{self, CalendarFields, TimeZone};
+use crate::java::dtoa::java_double_to_string;
+use crate::java::simple_date_format::SimpleDateFormat;
+use crate::java::time::{self, CalendarFields, TimeZone};
+use crate::java::{parse_double, round as java_round, trim as java_trim};
 
 type Outcome<T> = Result<T, FormatError>;
 
@@ -1552,7 +1553,7 @@ struct DatePartHandler {
 impl PartHandler for DatePartHandler {
     fn handle(&mut self, part: &str, desc: &mut Vec<u16>) -> Result<Option<String>, String> {
         let pos = desc.len() as isize;
-        let length = part.encode_utf16().count();
+        let length = crate::java::utf16_length(part);
         let first = part.chars().next().unwrap_or('\0');
         Ok(match first {
             's' | 'S' => {
@@ -1811,7 +1812,7 @@ impl ElapsedPartHandler {
 impl PartHandler for ElapsedPartHandler {
     fn handle(&mut self, part: &str, desc: &mut Vec<u16>) -> Result<Option<String>, String> {
         let pos = desc.len();
-        let length = part.encode_utf16().count();
+        let length = crate::java::utf16_length(part);
         let mut literal = part.to_owned();
         match part.chars().next() {
             Some('[') if length >= 3 => {
@@ -2057,7 +2058,7 @@ impl CellFormat {
 
 /// `DateUtil.getExcelDate(Date)`: the cell value of an instant in `zone`, the 1900 system.
 fn excel_date(millis: i64, zone: &TimeZone) -> f64 {
-    let local = java_time::local_fields(millis, zone);
+    let local = time::local_fields(millis, zone);
     let year = local.year;
     let last_day_of_1899 = year == 1899 && local.day_of_year == 365;
     if year < 1900 && !last_day_of_1899 {

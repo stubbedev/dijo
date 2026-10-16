@@ -649,7 +649,7 @@ impl TrueType {
         }
         if let Some(digits) = name.strip_prefix('g') {
             if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-                if let Some(glyph) = crate::formats::java::parse_int(digits) {
+                if let Some(glyph) = crate::java::parse_int(digits) {
                     return glyph as u32;
                 }
             }

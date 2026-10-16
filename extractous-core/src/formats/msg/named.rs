@@ -8,10 +8,10 @@ use std::sync::OnceLock;
 use super::chunks::{Chunk, Message};
 use super::properties::Value;
 use super::types::Type;
-use crate::formats::handlers::is_blank;
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::poi::{Read, Thrown};
+use crate::java::is_blank;
+use crate::java::time::format_instant;
 use crate::text::charset::Charset;
 
 pub(super) const PROPERTY_PREFIX: &str = "mapi:property:";
@@ -100,7 +100,7 @@ fn tags(chunks: &[Chunk]) -> Read<HashMap<i64, Vec<Tag>>> {
                         let decoded = Charset::named("UTF-16LE")
                             .decode(name)
                             .expect("the JDK decodes UTF-16LE");
-                        let lower: Vec<u8> = crate::mime::java::to_lower_case(&decoded)
+                        let lower: Vec<u8> = crate::java::to_lower_case(&decoded)
                             .encode_utf16()
                             .flat_map(u16::to_le_bytes)
                             .collect();
@@ -331,7 +331,7 @@ fn value_string(value: &Value) -> String {
         Value::Long(value) => value.to_string(),
         Value::LongLong(value) => value.to_string(),
         Value::Float(_) => unreachable!("a float is left to Tika"),
-        Value::Double(value) => crate::formats::data_format::java_double_to_string(*value),
+        Value::Double(value) => crate::java::dtoa::java_double_to_string(*value),
         Value::Currency(value) => value.to_string(),
         Value::Time(_) => unreachable!("a time is written as an instant"),
         Value::Bytes(bytes) => debug_string(bytes),

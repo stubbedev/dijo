@@ -32,7 +32,6 @@ use sheet::{SheetOutput, SheetReader, SheetSettings};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::data_format::DataFormatter;
 use crate::formats::docx;
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ignore};
 use crate::formats::ooxml::{
@@ -41,6 +40,7 @@ use crate::formats::ooxml::{
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::time::TimeZone;
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =
@@ -109,6 +109,11 @@ pub(crate) struct XlsxParser;
 impl Parser for XlsxParser {
     fn name(&self) -> &'static str {
         "extractous::OOXMLParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

@@ -16,10 +16,10 @@ pub(crate) use html::decapsulate;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::ParseContext;
 use crate::formats::handlers::Discard;
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::java::time::TimeZone;
 use extractor::Interrupt;
 
 const MEDIA_TYPE: &str = "application/rtf";
@@ -31,6 +31,11 @@ pub(crate) struct RtfParser;
 impl Parser for RtfParser {
     fn name(&self) -> &'static str {
         "extractous::RTFParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.rtf.RTFParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

@@ -48,6 +48,11 @@ impl Parser for DocParser {
         "extractous::OfficeParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.OfficeParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[MEDIA_TYPE]
     }

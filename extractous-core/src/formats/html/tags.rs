@@ -3,10 +3,9 @@
 //! from the HTML module, which `just html-reference` writes to `models/`), and the parser options
 //! of `HtmlTagOptions`. Tags the parse meets that the set lacks are added to the parse's copy.
 
+use crate::java;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-
-use crate::formats::java;
 
 const TIKA_SELF_CLOSEABLE: &str = include_str!("../../../models/tika-self-closeable-tags.txt");
 

@@ -437,7 +437,7 @@ pub(super) fn link_uri(pdf: &Pdf, objr: Option<&Dictionary>) -> Option<String> {
         return None;
     }
     pdf.text(action, b"URI")
-        .filter(|uri| !crate::formats::handlers::is_blank(uri))
+        .filter(|uri| !crate::java::is_blank(uri))
 }
 
 /// `PDStructureElement.getAttributes`: the element's attribute objects, by owner.

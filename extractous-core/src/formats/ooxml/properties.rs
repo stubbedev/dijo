@@ -7,13 +7,13 @@ use std::collections::HashSet;
 use super::package::refuse_document_type;
 use super::package::{Package, Unported, CORE_PROPERTIES_CONTENT_TYPE};
 use super::read_quietly;
-use crate::formats::java::{self, parse_long};
 use crate::formats::metadata::{TikaMetadata, USER_DEFINED_PREFIX};
 use crate::formats::ole2::add_multi;
 use crate::formats::xml::{
     self, attribute, attribute_named, Attribute, SaxHandler, StartTag, XMLNS,
 };
 use crate::formats::Failure;
+use crate::java::{self, parse_long};
 use crate::unicode::decimal_digit;
 
 const CORE_NAMESPACE: &str =
@@ -682,7 +682,7 @@ impl SaxHandler for CustomProperties {
                 },
                 "i1" | "i2" | "i4" | "int" | "ui1" | "ui2" | "i8" | "ui4" | "ui8" | "uint"
                 | "r4" | "r8" => self.put(property, trimmed),
-                "decimal" if trimmed.encode_utf16().count() <= MAX_DECIMAL_LENGTH => {
+                "decimal" if crate::java::utf16_length(&trimmed) <= MAX_DECIMAL_LENGTH => {
                     match plain_decimal(&trimmed) {
                         Ok(Some(plain)) => self.put(property, plain),
                         Ok(None) => {}

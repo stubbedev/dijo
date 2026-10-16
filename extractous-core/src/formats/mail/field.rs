@@ -260,7 +260,7 @@ impl RawField {
         if cursor.at_end() {
             return Err(InvalidField::NoColon);
         }
-        let name = crate::formats::java::trim(&name).to_owned();
+        let name = crate::java::trim(&name).to_owned();
         if !name.chars().all(is_field_char) {
             return Err(InvalidField::IllegalName);
         }

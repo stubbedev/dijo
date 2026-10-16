@@ -10,9 +10,9 @@ use super::date::parse_date_lenient;
 use super::stream::{events, BodyDescriptor, Event, MimeError};
 use super::Unported;
 use crate::formats::embedded::ResourceType;
-use crate::formats::handlers::is_blank;
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
+use crate::java::is_blank;
+use crate::java::time::format_instant;
 use crate::mime::MediaType;
 
 const MULTIPART_ALTERNATIVE: &str = "multipart/alternative";
@@ -167,7 +167,7 @@ impl Handler<'_> {
     }
 
     fn add_raw_header(&mut self, name: &str, body: &str) {
-        if name.encode_utf16().count() > MAX_PREFIXED_NAME_LENGTH {
+        if crate::java::utf16_length(name) > MAX_PREFIXED_NAME_LENGTH {
             return;
         }
         self.metadata
@@ -408,7 +408,7 @@ pub(super) fn person_and_email(text: &str) -> (Option<String>, Option<String>) {
         .chars()
         .map(|c| if matches!(c, '<' | '>' | '"') { ' ' } else { c })
         .collect();
-    let person = person.trim_matches(|c: char| c <= ' ');
+    let person = crate::java::trim(&person);
     (
         (!person.is_empty()).then(|| person.to_owned()),
         (!email.is_empty()).then_some(email),

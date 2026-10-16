@@ -9,9 +9,9 @@ use lopdf::{Dictionary, Object};
 use super::cos::{as_dict, name_string, text_string, Identity, Pdf};
 use super::date::{self, Zoned};
 use super::{Unported, MAX_RECURSION_DEPTH};
-use crate::formats::handlers::is_blank;
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
+use crate::java::is_blank;
+use crate::java::time::format_instant;
 
 /// How deep the port follows a field tree for its signatures, where PDFBox recurses without
 /// bound.
@@ -208,7 +208,7 @@ impl<'p> Field<'p> {
                         Some(Object::Array(items)) => strings(items)?,
                         _ => Vec::new(),
                     };
-                    match crate::formats::java::parse_int(&state) {
+                    match crate::java::parse_int(&state) {
                         Some(index) if !exports.is_empty() => usize::try_from(index)
                             .ok()
                             .and_then(|index| exports.get(index))

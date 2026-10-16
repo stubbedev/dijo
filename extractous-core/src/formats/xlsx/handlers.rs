@@ -5,13 +5,13 @@
 
 use std::collections::HashMap;
 
-use crate::formats::handlers::is_blank;
-use crate::formats::java::{equals_ignore_case, trim};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{external_reference, name};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::is_blank;
+use crate::java::{equals_ignore_case, trim};
 
 /// The namespace of relationship ids.
 const RELATIONSHIPS_NS: &str =

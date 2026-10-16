@@ -2,7 +2,7 @@
 //! formatting of the paragraphs of one list in order, which the Word extractors of both formats
 //! share.
 
-use crate::formats::java::parse_int;
+use crate::java::parse_int;
 
 const BULLET: &str = "\u{b7}";
 /// A level not counted yet, as counts of decimal lists start at 0.

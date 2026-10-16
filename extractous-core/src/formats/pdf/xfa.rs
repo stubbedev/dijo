@@ -6,9 +6,9 @@ use lopdf::Object;
 
 use super::cos::Pdf;
 use super::Unported;
-use crate::formats::handlers::is_blank;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::is_blank;
 
 /// What `XFA_TEMPLATE_ANY_VERSION` matches the start of: the template namespace of any version.
 const TEMPLATE_NAMESPACE: &str = "http://www.xfa.org/schema/xfa-template";

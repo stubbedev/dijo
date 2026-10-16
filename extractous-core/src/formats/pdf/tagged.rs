@@ -15,8 +15,8 @@ use super::structure::{
     self, attribute_int, attributes, is_standard_type, Label, Leaf, StructureIndex,
 };
 use super::writer::{PageWriter, WriteFailure};
-use crate::formats::handlers::is_blank;
 use crate::formats::xhtml::Stop;
+use crate::java::is_blank;
 
 /// `PDF.MARKED_CONTENT_REJECTIONS`.
 pub(super) const MARKED_CONTENT_REJECTIONS: &str = "pdf:marked-content-rejections";
@@ -827,7 +827,7 @@ impl<'p> Tagged<'p> {
                 let mut spec = ElementSpec::new("div", attrs, false);
                 spec.alt = alt
                     .filter(|alt| !is_blank(alt))
-                    .map(|alt| crate::formats::java::trim(&alt).to_owned());
+                    .map(|alt| crate::java::trim(&alt).to_owned());
                 return spec;
             }
             _ => {}

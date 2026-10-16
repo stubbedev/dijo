@@ -7,12 +7,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::codepage;
 use super::property_set::{self, millis_to_filetime, Fault, PropertySet, Section, Value};
-use crate::formats::data_format::java_double_to_string;
-use crate::formats::handlers::is_blank;
-use crate::formats::java;
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::{TikaMetadata, USER_DEFINED_PREFIX};
 use crate::formats::Unported;
+use crate::java;
+use crate::java::dtoa::java_double_to_string;
+use crate::java::is_blank;
+use crate::java::time::format_instant;
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const SUMMARY_INFORMATION: &str = "\u{5}SUMMARYINFORMATION";

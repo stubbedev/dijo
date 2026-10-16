@@ -11,9 +11,9 @@ use super::xmp::{
     self, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
 };
 use super::{date, Unported};
-use crate::formats::handlers::is_blank;
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
+use crate::java::is_blank;
+use crate::java::time::format_instant;
 
 const STARTXREF: &[u8] = b"startxref";
 /// `StartXRefScanner.MAX_LENGTH_LONG`.
@@ -106,11 +106,7 @@ pub(super) fn header_version(input: &[u8]) -> Result<f32, Unported> {
     if !header.contains(MARKER) {
         header = lines.next_line()?;
         while !header.contains(MARKER) {
-            if header
-                .chars()
-                .next()
-                .is_some_and(crate::formats::java::is_digit)
-            {
+            if header.chars().next().is_some_and(crate::java::is_digit) {
                 break;
             }
             header = lines.next_line()?;
@@ -155,7 +151,7 @@ fn java_split_count(text: &str) -> usize {
 /// `Float.parseFloat` of a short decimal: trimmed, with an optional type suffix, digits with
 /// at most one dot.
 fn java_parse_float(text: &str) -> Option<f32> {
-    let text = crate::formats::java::trim(text);
+    let text = crate::java::trim(text);
     let text = text.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(text);
     let decimal = !text.is_empty()
         && text != "."

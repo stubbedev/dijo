@@ -460,7 +460,7 @@ impl GlyphList {
         } else {
             return None;
         };
-        let code = crate::formats::java::parse_hex_int(hex)?;
+        let code = crate::java::parse_hex_int(hex)?;
         let code = code as u32 & 0xFFFF;
         if (0xD800..0xE000).contains(&code) {
             return None;

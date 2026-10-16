@@ -27,13 +27,13 @@ use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settin
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
+use crate::java::time::TimeZone;
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{EntryKind, Ole2, Unreadable};
 
@@ -60,6 +60,11 @@ pub(crate) struct XlsParser;
 impl Parser for XlsParser {
     fn name(&self) -> &'static str {
         "extractous::OfficeParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.OfficeParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

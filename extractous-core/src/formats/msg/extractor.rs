@@ -12,16 +12,17 @@ use super::named;
 use super::properties::Value;
 use super::types::{property, Type};
 use crate::config::ParserConfigs;
-use crate::formats::embedded::{Wrapping, RESOURCE_NAME, RESOURCE_TYPE};
-use crate::formats::handlers::{is_blank, parse_inline};
-use crate::formats::java::{equals_ignore_case, trim};
-use crate::formats::java_time::{format_instant, CalendarFields, TimeZone};
+use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
+use crate::formats::handlers::parse_inline;
 use crate::formats::mail::decode_encoded_words;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{codepage_encoding, office_document, Embedded};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, rtf, Failure, Prepared, Unported};
+use crate::java::is_blank;
+use crate::java::time::{format_instant, CalendarFields, TimeZone};
+use crate::java::{equals_ignore_case, trim};
 use crate::ole2::Ole2;
 use crate::text::charset::{self, Charset};
 
@@ -451,7 +452,7 @@ fn normalized_class(class: Option<&str>) -> &'static str {
     let Some(class) = class.filter(|class| !is_blank(class)) else {
         return "UNSPECIFIED";
     };
-    let lower = crate::mime::java::to_lower_case(class);
+    let lower = crate::java::to_lower_case(class);
     MESSAGE_CLASSES
         .lines()
         .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
@@ -459,7 +460,7 @@ fn normalized_class(class: Option<&str>) -> &'static str {
             let mut columns = line.split_whitespace();
             let key = columns.next()?;
             let value = columns.next()?;
-            (crate::mime::java::to_lower_case(key) == lower).then_some(value)
+            (crate::java::to_lower_case(key) == lower).then_some(value)
         })
         .unwrap_or("UNKNOWN")
 }
@@ -810,7 +811,7 @@ fn attachment_metadata(
             || (flags.is_some_and(|flags| flags & RENDERED_IN_BODY != 0)
                 && metadata.get(name::ATTACH_MIME).is_some_and(is_inlineable));
         if inline {
-            metadata.set(RESOURCE_TYPE, "INLINE");
+            ResourceType::Inline.set(&mut metadata);
         }
     }
     metadata
@@ -821,7 +822,7 @@ fn is_inlineable(media_type: &str) -> bool {
     if is_blank(media_type) {
         return false;
     }
-    let lower = trim(&crate::mime::java::to_lower_case(media_type)).to_owned();
+    let lower = trim(&crate::java::to_lower_case(media_type)).to_owned();
     lower.starts_with("image/") || INLINEABLE_TYPES.contains(&lower.as_str())
 }
 

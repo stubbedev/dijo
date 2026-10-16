@@ -54,6 +54,13 @@ use writer::{DocumentWriter, PageLayer, WriteFailure};
 const MEDIA_TYPE: &str = "application/pdf";
 const TEXT_LAYER_CHECKING_PARSER: &str = "extractous::TextLayerCheckingPdfParser";
 const PDF_PARSER: &str = "extractous::PDFParser";
+#[cfg(test)]
+const TIKA_PDF_PARSER: &str = "org.apache.tika.parser.pdf.PDFParser";
+#[cfg(test)]
+const TIKA_TEXT_LAYER_CHECKING_PARSER: &str = "ai.yobix.TextLayerCheckingPdfParser";
+/// The parser our `TextLayerCheckingPdfParser` records delegating to, under both names.
+#[cfg(test)]
+const DELEGATES: [(&str, &str); 1] = [(PDF_PARSER, TIKA_PDF_PARSER)];
 /// `PagesConfig.Auto`'s defaults: a page of at most this many glyphs is OCRed...
 const OCR_MAX_GLYPHS: i32 = 10;
 /// ...and so is one with more glyphs than this that map to no character.
@@ -81,6 +88,20 @@ impl Parser for PdfParser {
         } else {
             PDF_PARSER
         }
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        if ocr_runs() {
+            TIKA_TEXT_LAYER_CHECKING_PARSER
+        } else {
+            TIKA_PDF_PARSER
+        }
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &DELEGATES
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -361,9 +382,6 @@ mod tests {
     };
     use std::path::{Path, PathBuf};
 
-    const TIKA_PDF_PARSER: &str = "org.apache.tika.parser.pdf.PDFParser";
-    const TIKA_TEXT_LAYER_CHECKING_PARSER: &str = "ai.yobix.TextLayerCheckingPdfParser";
-    const DELEGATES: [(&str, &str); 1] = [(PDF_PARSER, TIKA_PDF_PARSER)];
     const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
     /// Why a document of the corpora is left to Tika.
@@ -394,11 +412,7 @@ mod tests {
     ];
 
     fn tika_name() -> &'static str {
-        if ocr_runs() {
-            TIKA_TEXT_LAYER_CHECKING_PARSER
-        } else {
-            TIKA_PDF_PARSER
-        }
+        PdfParser.tika_name()
     }
 
     fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {

@@ -19,8 +19,6 @@ pub(crate) mod handlers;
 mod html;
 mod hwpx;
 mod iwork;
-pub(crate) mod java;
-pub(crate) mod java_time;
 mod jdk_zip;
 mod list_numbering;
 mod mail;
@@ -86,8 +84,11 @@ pub(crate) enum Failure {
     Stopped(Stop),
     /// The document is not well-formed in its format, with what was wrong where.
     Malformed(String),
-    /// An extraction the document depends on failed, such as that of a document embedded in it.
+    /// An extraction the document depends on failed.
     Extraction(Error),
+    /// A document embedded in it failed in a way that fails every document it is embedded in,
+    /// as an exception Tika's embedded document extractor does not catch does.
+    Embedded(Error),
 }
 
 impl From<Stop> for Failure {
@@ -131,6 +132,17 @@ pub(crate) type Prepared<'a> = Box<dyn FnOnce(&mut Xhtml<'_>) -> Result<(), Fail
 pub(crate) trait Parser: Sync {
     /// The name recorded in `tk:parsed-by` for the documents it parses.
     fn name(&self) -> &'static str;
+
+    /// The class name of the parser Tika's path parses its documents with, which it replaces.
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str;
+
+    /// The parsers it records delegating to, each native name paired with the class name of
+    /// Tika's.
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
 
     /// The media types it parses, without parameters, as Tika's detection names them.
     fn media_types(&self) -> &'static [&'static str];
@@ -253,6 +265,71 @@ pub(crate) fn route(source: Source<'_>) -> ExtractResult<Option<Routed<'_>>> {
     }))
 }
 
+/// The metadata key naming the type whose parser parses a document, whatever it is detected as.
+const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
+
+/// How the `TikaInputStream` of an embedded document was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Opened {
+    /// With its metadata, as `TikaInputStream.get(stream, tmp, metadata)` opens it: reading it
+    /// to its end records its length there.
+    WithMetadata,
+    /// Alone, as `TikaInputStream.get(stream)` opens it: its metadata never learns its length.
+    Alone,
+}
+
+/// A document embedded in one a native parser reads, as its native parser prepared it.
+pub(crate) struct EmbeddedRoute<'a> {
+    pub(crate) parser: &'static dyn Parser,
+    /// The metadata the parser starts from.
+    pub(crate) start: TikaMetadata,
+    pub(crate) prepared: Prepared<'a>,
+}
+
+/// The native parser of a document embedded in one a native parser reads, with the metadata it
+/// starts from, given its `data`, the `metadata` its embedding parser gives it and how its
+/// stream was `opened`, as Tika's `AutoDetectParser` and `CompositeParser` route it: detected
+/// with the resource name and `Content-Type` of its metadata as hints, then parsed by the parser
+/// of the type the metadata overrides the parser with, else of the detected type. `None` when
+/// that parser is not native, the document is empty, which Tika's zero-byte check fails, or
+/// Tika's detection throws on it.
+pub(crate) fn embedded_parser(
+    data: &[u8],
+    metadata: &TikaMetadata,
+    opened: Opened,
+) -> Option<(&'static dyn Parser, TikaMetadata)> {
+    if data.is_empty() {
+        return None;
+    }
+    let detected = Detected::detect_embedded(data, metadata, opened).ok()?;
+    let parser = parser_for(
+        metadata
+            .get(PARSER_OVERRIDE)
+            .unwrap_or(&detected.media_type),
+    )?;
+    let start = detected.metadata_for(parser);
+    Some((parser, start))
+}
+
+/// Routes a document embedded in one a native parser reads to its [`embedded_parser`], and
+/// returns what that parser prepared, if it takes the document. Otherwise Tika's path parses
+/// the document, as it does one the parser defers and one Tika's parser fails before it starts,
+/// as only Tika's path records that failure.
+pub(crate) fn route_embedded<'a>(
+    data: &'a [u8],
+    metadata: &TikaMetadata,
+    opened: Opened,
+    configs: &'a ParserConfigs,
+) -> Option<EmbeddedRoute<'a>> {
+    let (parser, start) = embedded_parser(data, metadata, opened)?;
+    let prepared = parser.prepare(data, &start, configs).ok()?;
+    Some(EmbeddedRoute {
+        parser,
+        start,
+        prepared,
+    })
+}
+
 /// The largest file read whole to be detected in Rust: a larger one is left to Tika, which reads
 /// only the parts of it its detectors look at.
 const MAX_DETECTED_FILE: u64 = 64 * 1024 * 1024;
@@ -325,6 +402,33 @@ impl Detected {
         })
     }
 
+    /// Detects an embedded document `input`, its stream `opened` as given, with the `metadata`
+    /// its embedding parser gives it, which hints at its type and which the detection's
+    /// metadata is added to.
+    fn detect_embedded(
+        input: &[u8],
+        metadata: &TikaMetadata,
+        opened: Opened,
+    ) -> Result<Self, mime::DetectionError> {
+        let origin = Origin::Embedded {
+            name: metadata.get(embedded::RESOURCE_NAME),
+            content_type: metadata.get("Content-Type"),
+            learns_length: opened == Opened::WithMetadata,
+        };
+        let Detection {
+            media_type,
+            metadata: entries,
+        } = mime::detect(input, origin)?;
+        let mut metadata = metadata.clone();
+        for entry in entries {
+            metadata.set(entry.key.name(), entry.value);
+        }
+        Ok(Self {
+            media_type: media_type.to_string(),
+            metadata,
+        })
+    }
+
     /// The metadata a parser starts from, as Tika's `AutoDetectParser` and `CompositeParser`
     /// leave it: the detected `Content-Type` and the parser in `tk:parsed-by`.
     pub(crate) fn metadata_for(&self, parser: &dyn Parser) -> TikaMetadata {
@@ -376,7 +480,7 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
             "{} stopped writing the document: {stop:?}",
             parser.name()
         )),
-        Failure::Extraction(error) => error,
+        Failure::Extraction(error) | Failure::Embedded(error) => error,
     }
 }
 

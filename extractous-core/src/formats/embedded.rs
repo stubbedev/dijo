@@ -14,9 +14,9 @@ use std::io::Write as _;
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
-use crate::formats::java::LINE_SEPARATOR;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
+use crate::java::LINE_SEPARATOR;
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -146,7 +146,8 @@ impl<'c> Embedding<'c> {
         }
     }
 
-    /// Records a parser the extraction used, once.
+    /// Records `parser`, which a document parsed into this one's handler starts with, as
+    /// Tika's shared `ParseRecord` records each parser `CompositeParser` dispatches to.
     pub(crate) fn record_parser(&mut self, parser: &str) {
         if !self
             .record

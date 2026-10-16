@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 
 use super::W_NAMESPACE;
-use crate::formats::java;
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java;
 
 /// The names of the styles, by id.
 #[derive(Debug, Default)]
@@ -73,7 +73,7 @@ impl TagAndStyle {
 
 /// `WordExtractor.buildParagraphTagAndStyle(styleName, false)`.
 pub(super) fn paragraph_tag_and_style(style: &str) -> TagAndStyle {
-    if style.encode_utf16().count() < 2 {
+    if crate::java::utf16_length(style) < 2 {
         return TagAndStyle::plain("p", None);
     }
     match style {

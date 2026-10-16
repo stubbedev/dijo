@@ -10,10 +10,10 @@ use super::records::{bof, sid, CellRef, Record, SharedString};
 use crate::formats::data_format::{
     builtin_format, default_number_format, is_a_date_format, DataFormatter, FormatError,
 };
-use crate::formats::handlers::is_blank;
-use crate::formats::java::{equals_ignore_case, trim};
-use crate::formats::java_time::TimeZone;
 use crate::formats::poi::{Read, Thrown};
+use crate::java::is_blank;
+use crate::java::time::TimeZone;
+use crate::java::{equals_ignore_case, trim};
 
 /// The first format index of a workbook's own formats.
 const FIRST_CUSTOM_FORMAT: i32 = 50;

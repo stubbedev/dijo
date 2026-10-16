@@ -6,15 +6,15 @@
 //! storage.
 
 use crate::formats::embedded::{RELATIONSHIP_ID, RESOURCE_NAME};
-use crate::formats::handlers::is_blank;
-use crate::formats::java::equals_ignore_case;
 use crate::formats::metadata::office::{
     EMBEDDED_STORAGE_CLASS_ID, OCX_NAME, ORIGINAL_RESOURCE_NAME, RESOURCE_NAME_EXTENSION_INFERRED,
 };
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::Unported;
-use crate::mime::java::to_lower_case;
+use crate::java::equals_ignore_case;
+use crate::java::is_blank;
+use crate::java::to_lower_case;
 use crate::mime::{self, ole_directory_type, MediaType, Origin};
 use crate::ole2::{class_id_string, write, EntryId, EntryKind, Ole2, Unreadable};
 
