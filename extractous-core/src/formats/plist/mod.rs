@@ -470,7 +470,22 @@ mod tests {
         let (parsed, deferred) = documents(&PListParser, &[&conformance_corpus()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 3);
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+        // Its embedded keyed archives hold UIDs, which Tika names by their object (#104).
+        let (with_uids, paths): (Vec<&Path>, Vec<&Path>) = parsed
+            .iter()
+            .map(PathBuf::as_path)
+            .partition(|path| path.ends_with("testWEBARCHIVE.webarchive"));
         assert_same_as_tika(&paths, TIKA_NAME);
+        let [with_uids] = with_uids[..] else {
+            panic!("{with_uids:?}");
+        };
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(with_uids.to_str().unwrap())
+            .unwrap();
+        assert!(
+            xml.contains("<key>WebResourceResponse</key><uid>1</uid>"),
+            "{xml}"
+        );
     }
 }
