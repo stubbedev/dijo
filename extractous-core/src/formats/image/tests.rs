@@ -328,3 +328,138 @@ fn reads_tikas_test_webps_and_photoshop_images_as_tika_does() {
     );
     println!("deferred: {deferred:?}");
 }
+
+/// A big-endian IFD entry of `tag`, `format`, `count` and a value or offset of four bytes.
+fn ifd_entry(tag: u16, format: u16, count: u32, value: [u8; 4]) -> Vec<u8> {
+    [
+        &tag.to_be_bytes()[..],
+        &format.to_be_bytes(),
+        &count.to_be_bytes(),
+        &value,
+    ]
+    .concat()
+}
+
+/// A big-endian IFD of these entries, with no IFD after it.
+fn ifd(entries: &[Vec<u8>]) -> Vec<u8> {
+    [
+        &(entries.len() as u16).to_be_bytes()[..],
+        &entries.concat(),
+        &[0; 4],
+    ]
+    .concat()
+}
+
+/// The binary property list of an Apple run time: valid, with these seconds at a nanosecond
+/// scale.
+fn apple_run_time(seconds: i64) -> Vec<u8> {
+    let objects: Vec<Vec<u8>> = vec![
+        vec![0xD4, 1, 2, 3, 4, 5, 6, 7, 8],
+        [&[0x55][..], b"flags"].concat(),
+        [&[0x55][..], b"value"].concat(),
+        [&[0x59][..], b"timescale"].concat(),
+        [&[0x55][..], b"epoch"].concat(),
+        vec![0x10, 1],
+        [&[0x13][..], &(seconds * 1_000_000_000).to_be_bytes()].concat(),
+        [&[0x12][..], &1_000_000_000u32.to_be_bytes()].concat(),
+        vec![0x10, 0],
+    ];
+    let mut plist = b"bplist00".to_vec();
+    let mut offsets = Vec::new();
+    for object in &objects {
+        offsets.push(plist.len() as u8);
+        plist.extend_from_slice(object);
+    }
+    let table = plist.len() as i64;
+    plist.extend_from_slice(&offsets);
+    plist.extend_from_slice(&[0; 6]);
+    plist.extend_from_slice(&[1, 1]);
+    plist.extend_from_slice(&(objects.len() as i64).to_be_bytes());
+    plist.extend_from_slice(&0i64.to_be_bytes());
+    plist.extend_from_slice(&table.to_be_bytes());
+    plist
+}
+
+/// An Apple maker note: its header, then an IFD of its run time, acceleration vector, HDR image
+/// type and live photo id, whose offsets count from the note's start.
+fn apple_maker_note() -> Vec<u8> {
+    const HEADER: usize = 14;
+    const ENTRIES: u16 = 4;
+    let data_start = HEADER + 2 + 12 * usize::from(ENTRIES) + 4;
+    let run_time = apple_run_time(595_778);
+    let acceleration: Vec<u8> = [(-93i32, 100i32), (1, 100), (35, -100)]
+        .iter()
+        .flat_map(|(numerator, denominator)| {
+            [numerator.to_be_bytes(), denominator.to_be_bytes()].concat()
+        })
+        .collect();
+    let acceleration_at = data_start + run_time.len();
+    let note = ifd(&[
+        ifd_entry(
+            0x0003,
+            7,
+            run_time.len() as u32,
+            (data_start as u32).to_be_bytes(),
+        ),
+        ifd_entry(0x0008, 10, 3, (acceleration_at as u32).to_be_bytes()),
+        ifd_entry(0x000a, 9, 1, 3i32.to_be_bytes()),
+        ifd_entry(0x0017, 4, 1, 8192u32.to_be_bytes()),
+    ]);
+    [&b"Apple iOS\0\0\x01MM"[..], &note, &run_time, &acceleration].concat()
+}
+
+/// Big-endian TIFF data of an iPhone's Exif: IFD0's make and model, and the Exif IFD with its
+/// maker note.
+fn iphone_exif() -> Vec<u8> {
+    let maker_note = apple_maker_note();
+    let ifd0_entries = 4u32;
+    let ifd0_length = 2 + 12 * ifd0_entries + 4;
+    let strings_at = 8 + ifd0_length;
+    let exif_ifd_at = strings_at + 16;
+    let exif_ifd_length = 2 + 12 + 4;
+    let note_at = exif_ifd_at + exif_ifd_length;
+    let ifd0 = ifd(&[
+        ifd_entry(0x010f, 2, 6, strings_at.to_be_bytes()),
+        ifd_entry(0x0110, 2, 9, (strings_at + 6).to_be_bytes()),
+        ifd_entry(0x0112, 3, 1, [0, 1, 0, 0]),
+        ifd_entry(0x8769, 4, 1, exif_ifd_at.to_be_bytes()),
+    ]);
+    let exif_ifd = ifd(&[ifd_entry(
+        0x927c,
+        7,
+        maker_note.len() as u32,
+        note_at.to_be_bytes(),
+    )]);
+    [
+        &b"MM\0\x2a\0\0\0\x08"[..],
+        &ifd0,
+        b"Apple\0iPhone 8\0\0",
+        &exif_ifd,
+        &maker_note,
+    ]
+    .concat()
+}
+
+#[test]
+fn reads_apple_maker_notes_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-apple");
+    let jpeg = scratch.write(
+        "iphone.jpg",
+        &[
+            &[0xFF, 0xD8, 0xFF, 0xE1][..],
+            &((iphone_exif().len() + 8) as u16).to_be_bytes(),
+            b"Exif\0\0",
+            &iphone_exif(),
+            &[0xFF, 0xD9],
+        ]
+        .concat(),
+    );
+    let (parsed, deferred) = documents_with(&JpegParser, &[&jpeg], &skipping_ocr());
+    assert_eq!((parsed.len(), deferred.len()), (1, 0), "{deferred:?}");
+    assert_same_as_tika_delegating_with(
+        &[&jpeg],
+        "org.apache.tika.parser.image.JpegParser",
+        &DELEGATES,
+        &skipping_ocr(),
+    );
+}

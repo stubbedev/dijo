@@ -4,6 +4,7 @@
 //! Values are kept as the Java types metadata-extractor stores them as ([`Value`]), since a
 //! description depends on the type as much as on the value.
 
+mod apple;
 pub(crate) mod dates;
 mod descriptions;
 pub(crate) mod exif;
@@ -328,6 +329,8 @@ pub(crate) enum Kind {
     Huffman,
     Webp,
     FileSystem,
+    AppleMakernote,
+    AppleRunTime,
     Error,
 }
 
@@ -354,6 +357,8 @@ impl Kind {
             Kind::Huffman => "Huffman",
             Kind::Webp => "WebP",
             Kind::FileSystem => "File",
+            Kind::AppleMakernote => "Apple Makernote",
+            Kind::AppleRunTime => "Apple Run Time",
             Kind::Error => "Error",
         }
     }
@@ -389,6 +394,8 @@ impl Kind {
             Kind::Huffman => names::HUFFMAN,
             Kind::Webp => names::WEBP,
             Kind::FileSystem => names::FILE_SYSTEM,
+            Kind::AppleMakernote => names::APPLE_MAKERNOTE,
+            Kind::AppleRunTime => names::APPLE_RUN_TIME,
             Kind::Error => &[],
         }
     }

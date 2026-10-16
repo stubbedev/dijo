@@ -1,14 +1,14 @@
 //! metadata-extractor's `TiffReader` with its `ExifTiffHandler`: the IFDs of a TIFF structure, in
 //! a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its Exif and GPS
 //! sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
-//! the IPTC, ICC, Photoshop and PrintIM data some tags hold. Maker notes, XMP held in a tag and
-//! Panasonic's raw IFD0 are left to Tika's path.
+//! the IPTC, ICC, Photoshop and PrintIM data some tags hold, and Apple's maker note. Other maker
+//! notes, XMP held in a tag and Panasonic's raw IFD0 are left to Tika's path.
 
 use std::collections::HashSet;
 
 use super::reader::{Bounds, Reader};
 use super::{
-    icc, iptc, java_string, photoshop, Directory, Kind, Metadata, Rational, Unported, Value,
+    apple, icc, iptc, java_string, photoshop, Directory, Kind, Metadata, Rational, Unported, Value,
 };
 use crate::text::charset::Charset;
 use tags::*;
@@ -303,6 +303,7 @@ impl Handler<'_> {
         reader: &mut Reader,
         tag: i32,
         byte_count: i64,
+        processed: &mut HashSet<i64>,
     ) -> Result<bool, TiffError> {
         let kind = self.current_kind();
         if tag == 0 {
@@ -314,7 +315,7 @@ impl Handler<'_> {
             }
         }
         if tag == TAG_MAKERNOTE && kind == Some(Kind::ExifSubIfd) {
-            return self.process_makernote(offset, reader);
+            return self.process_makernote(offset, reader, processed);
         }
         if tag == TAG_IPTC_NAA && kind == Some(Kind::ExifIfd0) {
             if reader.i8(offset)? == 0x1c {
@@ -337,6 +338,14 @@ impl Handler<'_> {
         if tag == TAG_APPLICATION_NOTES && matches!(kind, Some(Kind::ExifIfd0 | Kind::ExifSubIfd)) {
             return Err(Unported::new("XMP held in a TIFF tag, which XMPCore reads").into());
         }
+        if tag == apple::TAG_RUN_TIME && kind == Some(Kind::AppleMakernote) {
+            let bytes = reader.bytes(offset, byte_count)?;
+            let maker_note = self
+                .current
+                .expect("the maker note is the current directory");
+            apple::extract_run_time(bytes, self.metadata, maker_note)?;
+            return Ok(true);
+        }
         if tag == TAG_PRINT_IMAGE_MATCHING_INFO {
             self.metadata.add(Directory::new(Kind::PrintIm));
             let index = self.metadata.directories.len() - 1;
@@ -351,9 +360,15 @@ impl Handler<'_> {
         Ok(false)
     }
 
-    /// `processMakernote`, as far as telling whether metadata-extractor reads the maker note as
-    /// a directory of its own, which the port does not: such a note is left to Tika's path.
-    fn process_makernote(&mut self, offset: i64, reader: &mut Reader) -> Result<bool, TiffError> {
+    /// `processMakernote`: Apple's maker note read as its IFD, and as far as telling whether
+    /// metadata-extractor reads another maker note as a directory of its own, which the port does
+    /// not: such a note is left to Tika's path.
+    fn process_makernote(
+        &mut self,
+        offset: i64,
+        reader: &mut Reader,
+        processed: &mut HashSet<i64>,
+    ) -> Result<bool, TiffError> {
         let make = self
             .metadata
             .first(Kind::ExifIfd0)
@@ -447,7 +462,13 @@ impl Handler<'_> {
                 return Ok(true);
             }
         } else if chars(10) == "Apple iOS\0" {
-            "Apple"
+            let order = reader.motorola;
+            reader.motorola = true;
+            self.push(Kind::AppleMakernote);
+            let read = process_ifd(self, reader, processed, offset + 14, offset);
+            reader.motorola = order;
+            read?;
+            return Ok(true);
         } else if reader.u16(offset)? == 0x0001 {
             "Reconyx HyperFire"
         } else if crate::formats::java::equals_ignore_case(&chars(9), "RECONYXUF")
@@ -653,7 +674,9 @@ fn process_ifd_body(
                 }
             }
         }
-        if !is_ifd_pointer && !handler.custom_process_tag(value_offset, reader, tag, byte_count)? {
+        if !is_ifd_pointer
+            && !handler.custom_process_tag(value_offset, reader, tag, byte_count, processed)?
+        {
             process_tag(
                 handler,
                 tag,

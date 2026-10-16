@@ -837,3 +837,18 @@ pub(super) const FILE_SYSTEM: &[(i32, &str)] = &[
     (0x0002, "File Size"),
     (0x0003, "File Modified Date"),
 ];
+pub(super) const APPLE_MAKERNOTE: &[(i32, &str)] = &[
+    (0x0003, "Run Time"),
+    (0x0008, "Acceleration Vector"),
+    (0x000a, "HDR Image Type"),
+    (0x000b, "Burst UUID"),
+    (0x0011, "Content Identifier"),
+    (0x0015, "Image Unique ID"),
+    (0x0017, "Live Photo ID"),
+];
+pub(super) const APPLE_RUN_TIME: &[(i32, &str)] = &[
+    (0x0001, "Flags"),
+    (0x0002, "Epoch"),
+    (0x0003, "Scale"),
+    (0x0004, "Value"),
+];
