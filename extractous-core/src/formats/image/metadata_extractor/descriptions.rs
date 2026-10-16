@@ -10,7 +10,7 @@ use crate::text::charset::Charset;
 
 use super::exif::tags::*;
 use super::{
-    apple, dates, geo, icc, iptc, jpeg, photoshop, webp, Directory, Kind, Unported, Value,
+    apple, dates, geo, heif, icc, iptc, jpeg, photoshop, webp, Directory, Kind, Unported, Value,
 };
 
 /// A description, or the exception metadata-extractor throws describing the tag, which the port
@@ -39,6 +39,7 @@ pub(super) fn describe(directory: &Directory, tag: i32) -> Described {
         Kind::FileSystem => Ok(file_system(directory, tag)),
         Kind::AppleMakernote => apple::describe(directory, tag),
         Kind::AppleRunTime => apple::describe_run_time(directory, tag),
+        Kind::Heif => heif::describe(directory, tag),
         Kind::PrintIm | Kind::Error => Ok(base(directory, tag)),
     }
 }

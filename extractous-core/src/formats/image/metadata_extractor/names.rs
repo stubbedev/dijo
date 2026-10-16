@@ -852,3 +852,12 @@ pub(super) const APPLE_RUN_TIME: &[(i32, &str)] = &[
     (0x0003, "Scale"),
     (0x0004, "Value"),
 ];
+pub(super) const HEIF: &[(i32, &str)] = &[
+    (0x0001, "Major Brand"),
+    (0x0002, "Minor Version"),
+    (0x0003, "Compatible Brands"),
+    (0x0004, "Width"),
+    (0x0005, "Height"),
+    (0x0006, "Rotation"),
+    (0x0007, "Bits Per Channel"),
+];

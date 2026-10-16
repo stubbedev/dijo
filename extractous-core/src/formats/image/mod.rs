@@ -27,7 +27,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Stop, Xhtml};
 use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepared, Unported};
 use extractor::Target;
-use metadata_extractor::{exif, jpeg, webp, Directory, Kind, Metadata, Value};
+use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
 
 /// The name the port records the OCR enricher under, as Tika records `ai.yobix.PreparingOcrParser`.
 pub(crate) const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
@@ -94,6 +94,7 @@ enum Format {
     Tiff,
     /// An image `ImageParser` reads with ImageIO.
     ImageIo,
+    Heif,
 }
 
 /// Tika's `JpegParser`.
@@ -137,6 +138,34 @@ impl Parser for TiffParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         prepare(Format::Tiff, input, metadata, configs)
+    }
+}
+
+/// Tika's `HeifParser`.
+pub(crate) struct HeifParser;
+
+impl Parser for HeifParser {
+    fn name(&self) -> &'static str {
+        "extractous::HeifParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &[
+            "image/heif",
+            "image/heif-sequence",
+            "image/heic",
+            "image/heic-sequence",
+            "image/avif",
+        ]
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare(Format::Heif, input, metadata, configs)
     }
 }
 
@@ -418,7 +447,8 @@ fn prepare<'a>(
     }))
 }
 
-/// `extractMetadata` of a JPEG or TIFF: its XMP, then metadata-extractor's directories copied.
+/// `extractMetadata` of a JPEG, TIFF or HEIF image: its XMP, then metadata-extractor's
+/// directories copied, which for the first two end with the directory of the file it reads.
 fn extract_metadata(
     format: Format,
     input: &[u8],
@@ -440,6 +470,12 @@ fn extract_metadata(
             jpeg::read(&segments, &mut directories)?;
         }
         Format::ImageIo => return image_io(input, metadata),
+        Format::Heif => {
+            if !image_xmp::extract_heif(input, &mut metadata)? {
+                image_xmp::scan_and_extract(input, &mut metadata)?;
+            }
+            heif::read(input, &mut directories)?;
+        }
         Format::Tiff => {
             image_xmp::scan_and_extract(input, &mut metadata)?;
             match exif::read_tiff(input, 0, &mut directories) {
@@ -458,7 +494,7 @@ fn extract_metadata(
     Ok(Read {
         metadata,
         prefix_route_names,
-        reads_file: true,
+        reads_file: format != Format::Heif,
     })
 }
 

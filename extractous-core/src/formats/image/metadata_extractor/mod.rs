@@ -9,6 +9,7 @@ pub(crate) mod dates;
 mod descriptions;
 pub(crate) mod exif;
 pub(crate) mod geo;
+pub(crate) mod heif;
 pub(crate) mod icc;
 pub(crate) mod iptc;
 pub(crate) mod jpeg;
@@ -225,6 +226,8 @@ pub(crate) enum Value {
     Rationals(Vec<Rational>),
     /// `StringValue[]`.
     StringValues(Vec<StringValue>),
+    /// `String[]`.
+    Texts(Vec<String>),
     /// `JpegComponent`: a component's id, sampling factors and quantization table.
     Component {
         id: i32,
@@ -245,6 +248,7 @@ impl Value {
             Value::Doubles(values) => values.len(),
             Value::Rationals(values) => values.len(),
             Value::StringValues(values) => values.len(),
+            Value::Texts(values) => values.len(),
             _ => return None,
         })
     }
@@ -331,6 +335,7 @@ pub(crate) enum Kind {
     FileSystem,
     AppleMakernote,
     AppleRunTime,
+    Heif,
     Error,
 }
 
@@ -359,6 +364,7 @@ impl Kind {
             Kind::FileSystem => "File",
             Kind::AppleMakernote => "Apple Makernote",
             Kind::AppleRunTime => "Apple Run Time",
+            Kind::Heif => "HEIF",
             Kind::Error => "Error",
         }
     }
@@ -396,6 +402,7 @@ impl Kind {
             Kind::FileSystem => names::FILE_SYSTEM,
             Kind::AppleMakernote => names::APPLE_MAKERNOTE,
             Kind::AppleRunTime => names::APPLE_RUN_TIME,
+            Kind::Heif => names::HEIF,
             Kind::Error => &[],
         }
     }
@@ -578,6 +585,7 @@ impl Directory {
             Value::Text(text) => vec![text.clone()],
             Value::StringValue(value) => vec![value.to_string()],
             Value::StringValues(values) => values.iter().map(ToString::to_string).collect(),
+            Value::Texts(values) => values.clone(),
             Value::Ints(values) => values.iter().map(ToString::to_string).collect(),
             Value::Bytes(values) => values
                 .iter()
@@ -616,6 +624,7 @@ impl Directory {
             Value::Doubles(values) => join(values.iter().map(|value| float_array_element(*value))),
             Value::Rationals(values) => join(values.iter().map(ToString::to_string)),
             Value::StringValues(values) => join(values.iter().map(ToString::to_string)),
+            Value::Texts(values) => join(values.iter().cloned()),
             Value::Component {
                 sampling,
                 quantization,

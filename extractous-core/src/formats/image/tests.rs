@@ -94,6 +94,19 @@ fn reads_tikas_test_tiffs_as_tika_does() {
 }
 
 #[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_heif_images_as_tika_does() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let deferred = same_as_tika(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &roots,
+    );
+    println!("deferred: {deferred:?}");
+}
+
+#[test]
 fn defers_images_tika_reads_with_tesseract() {
     let jpeg = std::fs::read("../quality/corpus/prose-photo-perspective.jpg").unwrap();
     let mut metadata = TikaMetadata::new();
@@ -329,6 +342,21 @@ fn reads_tikas_test_webps_and_photoshop_images_as_tika_does() {
     println!("deferred: {deferred:?}");
 }
 
+/// An ISO base media file box of `kind` around `payload`.
+fn bmff(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    [
+        &((payload.len() + 8) as u32).to_be_bytes()[..],
+        kind,
+        payload,
+    ]
+    .concat()
+}
+
+/// A full box: a box whose payload starts with a version and three bytes of flags.
+fn full_bmff(kind: &[u8; 4], version: u8, payload: &[u8]) -> Vec<u8> {
+    bmff(kind, &[&[version, 0, 0, 0][..], payload].concat())
+}
+
 /// A big-endian IFD entry of `tag`, `format`, `count` and a value or offset of four bytes.
 fn ifd_entry(tag: u16, format: u16, count: u32, value: [u8; 4]) -> Vec<u8> {
     [
@@ -459,6 +487,104 @@ fn reads_apple_maker_notes_as_tika_does() {
     assert_same_as_tika_delegating_with(
         &[&jpeg],
         "org.apache.tika.parser.image.JpegParser",
+        &DELEGATES,
+        &skipping_ocr(),
+    );
+}
+
+/// A HEIF image as an iPhone writes it, without the image: its file type, its meta box of a
+/// picture handler, an image item and an Exif item, the image's properties, and the media data
+/// of both items.
+fn iphone_heic() -> Vec<u8> {
+    let file_type = bmff(b"ftyp", &[&b"heic"[..], &[0; 4], b"mif1heic"].concat());
+    let exif = [&6u32.to_be_bytes()[..], b"Exif\0\0", &iphone_exif()].concat();
+    let image = b"not an image".to_vec();
+    let meta = |image_at: u32, exif_at: u32| {
+        let info = full_bmff(
+            b"iinf",
+            0,
+            &[
+                &2u16.to_be_bytes()[..],
+                &full_bmff(b"infe", 2, &[&[0, 1, 0, 0][..], b"hvc1\0"].concat()),
+                &full_bmff(b"infe", 2, &[&[0, 2, 0, 0][..], b"Exif\0"].concat()),
+            ]
+            .concat(),
+        );
+        let location = |item: u16, at: u32, length: usize| {
+            [
+                &item.to_be_bytes()[..],
+                &[0, 0, 0, 1],
+                &at.to_be_bytes(),
+                &(length as u32).to_be_bytes(),
+            ]
+            .concat()
+        };
+        let locations = full_bmff(
+            b"iloc",
+            0,
+            &[
+                &[0x44, 0x00, 0, 2][..],
+                &location(1, image_at, image.len()),
+                &location(2, exif_at, exif.len()),
+            ]
+            .concat(),
+        );
+        let properties = bmff(
+            b"iprp",
+            &bmff(
+                b"ipco",
+                &[
+                    full_bmff(
+                        b"ispe",
+                        0,
+                        &[&512u32.to_be_bytes()[..], &384u32.to_be_bytes()].concat(),
+                    ),
+                    full_bmff(b"pixi", 0, &[3, 8, 8, 8]),
+                    bmff(b"irot", &[1]),
+                    bmff(
+                        b"colr",
+                        &[&b"nclx"[..], &[0, 1, 0, 13, 0, 6, 0x80]].concat(),
+                    ),
+                ]
+                .concat(),
+            ),
+        );
+        full_bmff(
+            b"meta",
+            0,
+            &[
+                full_bmff(
+                    b"hdlr",
+                    0,
+                    &[&[0; 4][..], b"pict", &[0; 12], b"\0"].concat(),
+                ),
+                full_bmff(b"pitm", 0, &1u16.to_be_bytes()),
+                info,
+                locations,
+                properties,
+            ]
+            .concat(),
+        )
+    };
+    let media_at = (file_type.len() + meta(0, 0).len() + 8) as u32;
+    let exif_at = media_at + image.len() as u32;
+    [
+        file_type,
+        meta(media_at, exif_at),
+        bmff(b"mdat", &[&image[..], &exif].concat()),
+    ]
+    .concat()
+}
+
+#[test]
+fn reads_heif_images_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-heif");
+    let heic = scratch.write("iphone.heic", &iphone_heic());
+    let (parsed, deferred) = documents_with(&HeifParser, &[&heic], &skipping_ocr());
+    assert_eq!((parsed.len(), deferred.len()), (1, 0), "{deferred:?}");
+    assert_same_as_tika_delegating_with(
+        &[&heic],
+        "org.apache.tika.parser.image.HeifParser",
         &DELEGATES,
         &skipping_ocr(),
     );

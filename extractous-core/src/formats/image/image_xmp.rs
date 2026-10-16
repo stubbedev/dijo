@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 
 use regex::bytes::Regex;
 
+use super::metadata_extractor::heif;
 use super::metadata_extractor::jpeg::{self, SegmentError};
 use super::metadata_extractor::reader::Sequential;
 use crate::formats::metadata::TikaMetadata;
@@ -220,4 +221,110 @@ fn riff_chunk<'a>(input: &'a [u8], four_cc: &[u8]) -> Result<Option<&'a [u8]>, U
         }
         position += skip as usize;
     }
+}
+
+/// `HeifXmp.MAX_ITEM`.
+const MAX_ITEM: i64 = 64 * 1024 * 1024;
+
+/// `HeifXmp.extract`: the XMP item of a HEIF file, read when there is one, which tells whether
+/// it was.
+pub(crate) fn extract_heif(input: &[u8], metadata: &mut TikaMetadata) -> Result<bool, Unported> {
+    let Some(packet) = heif_item(input) else {
+        return Ok(false);
+    };
+    xmp::extract(&packet, metadata, xmp::as_is)?;
+    Ok(true)
+}
+
+/// `HeifXmp.locate`: the first item of type `mime` that looks like XMP, among those the item
+/// location box of the top-level `meta` box places in the file; none for a box structure that
+/// does not read, whatever fails reading it.
+fn heif_item(input: &[u8]) -> Option<Vec<u8>> {
+    let length = input.len() as i64;
+    let (_, meta_children, meta_end) = heif_box(input, 0, length, b"meta")?;
+    let children = meta_children + 4;
+    let (info_start, _, info_end) = heif_box(input, children, meta_end, b"iinf")?;
+    let (location_start, _, location_end) = heif_box(input, children, meta_end, b"iloc")?;
+    let read_box = |start: i64, end: i64| {
+        let length = usize::try_from((end - start) as i32).ok()?;
+        input.get(usize::try_from(start).ok()?..)?.get(..length)
+    };
+    let mut reader = heif::Sequential::new(read_box(info_start, info_end)?);
+    let found = heif::Box::read(&mut reader).ok()?;
+    let info = heif::item_info_box(&mut reader, &found).ok()?;
+    let mut reader = heif::Sequential::new(read_box(location_start, location_end)?);
+    let found = heif::Box::read(&mut reader).ok()?;
+    let extents = heif::item_location_box(&mut reader, &found).ok()?;
+    let mut items: Vec<(i64, Vec<heif::Extent>)> = Vec::new();
+    for extent in extents {
+        match items.iter_mut().find(|(item, _)| *item == extent.item) {
+            Some((_, of_item)) => of_item.push(extent),
+            None => items.push((extent.item, vec![extent])),
+        }
+    }
+    items.into_iter().find_map(|(item, extents)| {
+        let mime = info.get(&item)?.item_type.as_deref() == Some("mime");
+        let data = mime.then(|| item_data(input, &extents)).flatten()?;
+        looks_like_xmp(&data).then_some(data)
+    })
+}
+
+/// `HeifXmp.box`: the start, payload start and end of the first box of `kind` between `start`
+/// and `end`, none past a box that does not fit.
+fn heif_box(input: &[u8], start: i64, end: i64, kind: &[u8; 4]) -> Option<(i64, i64, i64)> {
+    let mut position = start;
+    while position + 8 <= end {
+        let at = usize::try_from(position).ok()?;
+        let header = input.get(at..at + 8)?;
+        let mut size = i64::from(u32::from_be_bytes([
+            header[0], header[1], header[2], header[3],
+        ]));
+        let mut header_length = 8;
+        if size == 1 {
+            let long = input.get(at + 8..at + 16)?;
+            size = i64::from_be_bytes(long.try_into().expect("eight bytes"));
+            header_length = 16;
+        } else if size == 0 {
+            size = end - position;
+        }
+        if size < header_length || position + size > end {
+            return None;
+        }
+        if &header[4..8] == kind {
+            return Some((position, position + header_length, position + size));
+        }
+        position += size;
+    }
+    None
+}
+
+/// `HeifXmp.readExtents`: the item's extents in turn, none when one is outside the file or they
+/// come to more than `MAX_ITEM`.
+fn item_data(input: &[u8], extents: &[heif::Extent]) -> Option<Vec<u8>> {
+    let length = input.len() as i64;
+    let mut total = 0i64;
+    for extent in extents {
+        if extent.offset < 0 || extent.length < 0 || extent.offset + extent.length > length {
+            return None;
+        }
+        total += extent.length;
+        if total > MAX_ITEM {
+            return None;
+        }
+    }
+    let mut data = Vec::with_capacity(total as usize);
+    for extent in extents {
+        let start = extent.offset as usize;
+        data.extend_from_slice(&input[start..start + extent.length as usize]);
+    }
+    Some(data)
+}
+
+/// `looksLikeXmp`: whether the first 8192 bytes name the XMP meta element, the RDF root or a
+/// packet.
+fn looks_like_xmp(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(8192)];
+    [&b"xmpmeta"[..], b"rdf:RDF", b"xpacket"]
+        .iter()
+        .any(|needle| head.windows(needle.len()).any(|window| window == *needle))
 }
