@@ -380,6 +380,26 @@ impl<'h> Xhtml<'h> {
         }
     }
 
+    /// Starts `name` in the handler under the XHTML, as a parser does that writes to the content
+    /// handler it was given rather than to its `XHTMLContentHandler`: in no namespace, without a
+    /// tab, and without ending the head.
+    pub(crate) fn raw_start_element(&mut self, name: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.start_element(name, &[])
+    }
+
+    /// Ends `name` in the handler under the XHTML, without a line break.
+    pub(crate) fn raw_end_element(&mut self, name: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.end_element(name)
+    }
+
+    /// Writes `text` to the handler under the XHTML, the characters XML cannot hold as they are.
+    pub(crate) fn raw_characters(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.characters(text)
+    }
+
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
         self.handler.ignorable_whitespace("\n")
     }

@@ -7,6 +7,7 @@ mod archive;
 mod auto_detect_reader;
 mod cms;
 mod dc_xml;
+mod dif;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
@@ -196,6 +197,7 @@ static PARSERS: &[&dyn Parser] = &[
     &executable::UniversalExecutableParser,
     &translation::TmxParser,
     &translation::Xliff12Parser,
+    &dif::DifParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
