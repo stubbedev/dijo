@@ -1,6 +1,8 @@
 //! Images decoded for OCR, as our Java `PreparingOcrParser` has ImageIO decode them: every page
 //! of a TIFF, the first image of anything else, in grey as Java2D draws colour into grey.
-//! Transparency is ignored, as tesseract ignores it.
+//! Transparency is ignored, as tesseract ignores it. JPEG 2000 images, which tesseract reads
+//! where Java has no decoder, are decoded by hayro-jpeg2000, and JBIG2 images, which
+//! jbig2-imageio decodes for Java, by hayro-jbig2.
 
 use std::io::Cursor;
 
@@ -9,8 +11,8 @@ use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use tiff::ColorType;
 
-use super::raster;
 use super::recognize::MAX_PIXELS;
+use super::{jbig2, raster};
 
 /// The formats this module decodes, by the media types Tika's detection gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +21,8 @@ pub(crate) enum Format {
     Tiff,
     Photoshop,
     Pcx,
+    Jpeg2000,
+    Jbig2,
 }
 
 impl Format {
@@ -39,6 +43,8 @@ impl Format {
             "image/tiff" => Self::Tiff,
             "image/vnd.adobe.photoshop" => Self::Photoshop,
             "image/vnd.zbrush.pcx" => Self::Pcx,
+            "image/jp2" | "image/jpx" => Self::Jpeg2000,
+            "image/x-jbig2" => Self::Jbig2,
             _ => return None,
         })
     }
@@ -109,7 +115,27 @@ pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String
         }
         Format::Photoshop => raster::photoshop(input).map(Decoded::Single),
         Format::Pcx => raster::pcx(input).map(Decoded::Single),
+        Format::Jpeg2000 => jpeg2000(input).map(Decoded::Single),
+        Format::Jbig2 => jbig2::decode(input).map(Decoded::Single),
     }
+}
+
+/// Fails for an image of more than [`MAX_PIXELS`] pixels, which is not decoded.
+pub(crate) fn within_limits(width: u32, height: u32) -> Result<(), String> {
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!("the image has {width}x{height} pixels"));
+    }
+    Ok(())
+}
+
+/// A JPEG 2000 image or codestream, its colours converted as its colour space says.
+fn jpeg2000(input: &[u8]) -> Result<GrayImage, String> {
+    let image = hayro_jpeg2000::Image::new(input, &hayro_jpeg2000::DecodeSettings::default())
+        .map_err(|e| format!("cannot read the JPEG 2000 image: {e}"))?;
+    within_limits(image.width(), image.height())?;
+    let image = DynamicImage::from_decoder(image)
+        .map_err(|e| format!("cannot decode the JPEG 2000 image: {e}"))?;
+    Ok(gray(image))
 }
 
 /// The grey level Java2D draws a colour as: ITU-R BT.601 luma, rounded.
@@ -142,9 +168,7 @@ fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>) -> Page {
     let (width, height) = decoder
         .dimensions()
         .map_err(|e| format!("cannot read the page's size: {e}"))?;
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(format!("the page has {width}x{height} pixels"));
-    }
+    within_limits(width, height)?;
     let color = decoder
         .colortype()
         .map_err(|e| format!("cannot read the page's colours: {e}"))?;
@@ -256,6 +280,38 @@ mod tests {
         assert_eq!(luma(255, 255, 255), 255);
         assert_eq!(luma(0, 0, 0), 0);
         assert_eq!(luma(255, 0, 0), 77);
+    }
+
+    /// The corpus made its other scans of the PNG's, in grey: the Photoshop file as it is, the
+    /// PCX image reduced to a palette, and the JPEG 2000 image compressed with loss. Each decodes to the
+    /// PNG's size with under one pixel in a hundred more than its format's levels off.
+    #[test]
+    fn decodes_the_corpus_scans_as_the_png_holds_them() {
+        let png = image::open("../quality/corpus/prose-scan-300dpi.png")
+            .unwrap()
+            .to_luma8();
+        for (file, format, levels) in [
+            ("prose-scan.psd", Format::Photoshop, 2),
+            ("prose-scan.pcx", Format::Pcx, 2),
+            ("prose-scan.jp2", Format::Jpeg2000, 16),
+        ] {
+            let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
+            let Decoded::Single(decoded) =
+                decode(&input, format).unwrap_or_else(|e| panic!("{file}: {e}"))
+            else {
+                panic!("{file} is one image");
+            };
+            assert_eq!(decoded.dimensions(), png.dimensions(), "{file}");
+            let differing = decoded
+                .pixels()
+                .zip(png.pixels())
+                .filter(|(a, b)| a.0[0].abs_diff(b.0[0]) > levels)
+                .count();
+            assert!(
+                differing * 100 < (png.width() * png.height()) as usize,
+                "{file}: {differing} pixels differ"
+            );
+        }
     }
 
     #[test]

@@ -719,6 +719,8 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "hayro",
+ "hayro-jbig2",
+ "hayro-jpeg2000",
  "image",
  "jiff",
  "jiff-tzdb",
@@ -1026,6 +1028,7 @@ checksum = "000e025850f4592ddcaee85640db70704151f2bafd43b6f431aa5b6a2c6a35a9"
 dependencies = [
  "fearless_simd 1.1.0",
  "hayro-ccitt",
+ "image",
 ]
 
 [[package]]
@@ -1035,6 +1038,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "122c5f834c37a2260b9c851bb8be685cf539b2a8b94b704a931ef7d2525d5835"
 dependencies = [
  "fearless_simd 1.1.0",
+ "image",
+ "moxcms",
 ]
 
 [[package]]

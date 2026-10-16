@@ -56,6 +56,7 @@ prose-scan.avif	prose	ocr	heif-dec
 prose-scan.pbm	prose	ocr		
 prose-scan.djvu	prose	ocr		
 prose-scan.jb2	prose	ocr		
+prose-scan.jp2	prose	ocr		
 prose-scan.psd	prose	ocr		
 prose-scan.pcx	prose	ocr		
 prose-scan.tga	prose	ocr		

@@ -167,6 +167,16 @@ fn reads_scans_with_tesseract_as_tikas_path_does() {
 }
 
 #[test]
+fn reads_jbig2_and_jpeg_2000_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &["prose-scan.jb2", "prose-scan.jp2"],
+        &automatic_language(),
+    );
+}
+
+#[test]
 fn reads_scans_in_the_configured_language_as_tikas_path_does() {
     reads_with_tesseract_as_tikas_path_does(
         &ImageParser,

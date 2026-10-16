@@ -3,6 +3,7 @@
 
 mod decode;
 mod flatten;
+pub(crate) mod jbig2;
 mod pages;
 mod prepare;
 mod raster;
