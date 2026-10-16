@@ -10,9 +10,10 @@
 //! `en_US` locale with dates in Java's default time zone and the 1900 date system; see
 //! [`crate::formats::data_format`].
 //!
-//! An encrypted workbook, one in a format before BIFF8, one POI throws on, one with documents
-//! embedded in `MBD` storages, and macros extracted when asked to, are left to Tika: see
-//! [`XlsParser::defers`].
+//! An encrypted workbook is decrypted with the password, or failed as Tika's path fails it where
+//! the password does not open it. One in a format before BIFF8, one POI throws on, one with
+//! documents embedded in `MBD` storages, and macros extracted when asked to, are left to Tika:
+//! see [`XlsParser::defers`].
 
 mod factory;
 mod listener;
@@ -24,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use factory::{Event, Records};
 use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settings};
 
-use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::java_time::TimeZone;
@@ -33,7 +34,7 @@ use crate::formats::ole2::Summaries;
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
+use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USED};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{EntryKind, Ole2, Unreadable};
 
@@ -66,9 +67,10 @@ impl Parser for XlsParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers workbooks POI or Tika throws on, encrypted ones, ones before BIFF8, ones with
-    /// embedded documents, macros extracted when asked to, and any workbook when Java's default
-    /// time zone, which dates are written in, cannot be read.
+    /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
+    /// throws on, ones before BIFF8, ones with embedded documents, macros extracted when asked
+    /// to, and any workbook when Java's default time zone, which dates are written in, cannot be
+    /// read.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -77,8 +79,7 @@ impl Parser for XlsParser {
     ) -> Result<Prepared<'a>, Declined> {
         let zone = TimeZone::java_default()
             .map_err(|reason| format!("Java's default time zone cannot be read: {reason}"))?;
-        let workbook =
-            Workbook::read(input, &configs.office, zone).map_err(|Unported(reason)| reason)?;
+        let workbook = Workbook::read(input, configs, zone)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
 }
@@ -86,6 +87,9 @@ impl Parser for XlsParser {
 /// A workbook read through Tika's listener.
 struct Workbook {
     summaries: Summaries,
+    /// Whether a password was given, which `ExcelExtractor` asks the `PasswordProvider` for
+    /// before it reads the workbook, marking the metadata.
+    asks_password: bool,
     read: Extracted,
     pictures: Vec<Picture>,
 }
@@ -101,13 +105,13 @@ struct Picture {
 impl Workbook {
     fn read(
         input: &[u8],
-        config: &OfficeParserConfig,
+        configs: &ParserConfigs,
         zone: &'static TimeZone,
-    ) -> Result<Self, Unported> {
-        if config.extracts_macros() {
-            return Err(Unported(
-                "macros are extracted, which this port does not do".to_owned(),
-            ));
+    ) -> Result<Self, Declined> {
+        if configs.office.extracts_macros() {
+            return Err(
+                Unported("macros are extracted, which this port does not do".to_owned()).into(),
+            );
         }
         let file = Ole2::open(input).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot open the compound document: {reason}"))
@@ -115,13 +119,15 @@ impl Workbook {
         if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
             return Err(Unported(format!(
                 "POI reads the compound document from a stream differently: {reason}"
-            )));
+            ))
+            .into());
         }
         let root = file.root();
         if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
             return Err(Unported(
                 "the compound document is no workbook to POI's container detection".to_owned(),
-            ));
+            )
+            .into());
         }
         let Some(name) = WORKBOOK_ENTRY_NAMES
             .into_iter()
@@ -132,27 +138,30 @@ impl Workbook {
                     .to_owned()
             } else {
                 "the compound document has no workbook entry, which Tika fails on".to_owned()
-            }));
+            })
+            .into());
         };
         let entry = file
             .child_ignoring_case(root, name)
             .expect("the workbook entry the root has");
         if file.kind(entry) != EntryKind::Document {
-            return Err(Unported("the workbook entry is a directory".to_owned()));
+            return Err(Unported("the workbook entry is a directory".to_owned()).into());
         }
         if file.children(root).any(|child| {
             file.name(child).starts_with("MBD") && file.kind(child) != EntryKind::Document
         }) {
             return Err(Unported(
                 "the workbook embeds documents, which this port does not parse".to_owned(),
-            ));
+            )
+            .into());
         }
         let stream = file.read(entry).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot read the workbook stream: {reason}"))
         })?;
-        let (read, pictures) = read_records(&stream, config, zone)?;
+        let (read, pictures) = read_records(&stream, configs, zone)?;
         Ok(Workbook {
             summaries: Summaries::read(&file, root)?,
+            asks_password: configs.password.is_some(),
             read,
             pictures,
         })
@@ -165,6 +174,9 @@ impl Workbook {
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         self.summaries.write(xhtml.metadata_mut());
         xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+        if self.asks_password {
+            xhtml.metadata_mut().set(PASSWORD_USED, "true");
+        }
         let mut stopped = None;
         let mut outside = &self.read.outside;
         for page in &self.read.pages {
@@ -258,13 +270,15 @@ fn write_out(out: &[Out], xhtml: &mut Xhtml) -> Result<(), Stop> {
     Ok(())
 }
 
-/// `TikaHSSFListener.processFile`: the records through the listener, the text left outside the
-/// sheets, and the pictures of the drawing groups. An encrypted workbook is left to Tika.
+/// `TikaHSSFListener.processFile`: the records, decrypted where the workbook is encrypted,
+/// through the listener, the text left outside the sheets, and the pictures of the drawing
+/// groups.
 fn read_records(
     stream: &[u8],
-    config: &OfficeParserConfig,
+    configs: &ParserConfigs,
     zone: &'static TimeZone,
-) -> Result<(Extracted, Vec<Picture>), Unported> {
+) -> Result<(Extracted, Vec<Picture>), Declined> {
+    let config = &configs.office;
     let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
     let settings = Settings {
         headers_and_footers: config.includes_headers_and_footers(),
@@ -273,11 +287,7 @@ fn read_records(
         missing_rows: config.includes_missing_rows(),
     };
     let mut records = Records::new(stream).map_err(throws)?;
-    if records.encrypted {
-        return Err(Unported(
-            "the workbook is encrypted, which Tika decrypts with a password".to_owned(),
-        ));
-    }
+    records.decrypt(configs)?;
     let mut listener = Listener::new(settings, zone);
     while let Some(event) = records.next().map_err(throws)? {
         match event {

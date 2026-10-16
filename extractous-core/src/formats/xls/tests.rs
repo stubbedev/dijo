@@ -3,20 +3,25 @@ use std::path::{Path, PathBuf};
 use super::records::sid;
 use super::stream::tests::record;
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 8] = [
+const DEFERRED_CONFORMANCE: [(&str, &str); 7] = [
     ("testEXCEL_5.xls", "before BIFF8"),
     ("testEXCEL_95.xls", "before BIFF8"),
     ("testEXCEL_embeddedPDF_windows.xls", "embeds documents"),
     ("testEXCEL_embeded.xls", "embeds documents"),
-    ("testEXCEL_protected_passtika.xls", "encrypted"),
     ("testExcel_embeddedPDF.xls", "embeds documents"),
     ("testMSChart-govdocs-428996.xls", "embeds documents"),
     ("testWPSAttachment.xls", "embeds documents"),
+];
+
+/// The encrypted workbooks, by file name, with the password that opens them.
+const ENCRYPTED: [(&str, &str); 2] = [
+    ("testEXCEL_protected_passtika.xls", "tika"),
+    ("tika-password.xls", "tika"),
 ];
 
 fn file_name(path: &Path) -> String {
@@ -60,9 +65,14 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     documents.sort();
     let defaults = ParserConfigs::default();
     let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert_eq!(ported.len(), 20);
-    let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, &defaults);
+    assert_eq!(ported.len(), 21);
+    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+}
+
+#[test]
+fn opens_the_repositorys_encrypted_workbook_as_tikas_path_does() {
+    let encrypted = PathBuf::from("../test_files/documents/encrypted/tika-password.xls");
+    assert_same_as_tika_with_passwords(&[encrypted], TIKA_PARSER, &ENCRYPTED);
 }
 
 fn bof(kind: i16) -> Vec<u8> {
@@ -122,13 +132,13 @@ fn globals(sheets: &[&str], shared: &[&str]) -> Vec<u8> {
     data
 }
 
-fn settings() -> OfficeParserConfig {
-    OfficeParserConfig::new()
+fn configs() -> ParserConfigs {
+    ParserConfigs::default()
 }
 
-fn read(stream: &[u8]) -> Result<Extracted, Unported> {
+fn read(stream: &[u8]) -> Result<Extracted, Declined> {
     let zone = TimeZone::fixed(0);
-    read_records(stream, &settings(), Box::leak(Box::new(zone))).map(|(read, _)| read)
+    read_records(stream, &configs(), Box::leak(Box::new(zone))).map(|(read, _)| read)
 }
 
 fn texts(out: &[Out]) -> Vec<String> {
@@ -209,10 +219,27 @@ fn records_comment_authors_and_hidden_sheets() {
 }
 
 #[test]
-fn leaves_encrypted_workbooks_and_pictures_to_tika() {
+fn leaves_xor_obfuscated_workbooks_to_tika() {
     let mut stream = bof(0x05);
     stream.extend(record(sid::FILE_PASS, &[0; 6]));
-    assert!(read(&stream).is_err_and(|Unported(reason)| reason.contains("encrypted")));
+    assert!(matches!(
+        read(&stream),
+        Err(Declined::Deferred(reason)) if reason.contains("XOR obfuscation")
+    ));
+}
+
+#[test]
+fn leaves_workbooks_poi_decrypts_out_of_step_to_tika() {
+    let mut stream = bof(0x05);
+    stream.extend(record(sid::WRITE_PROTECT, &[0, 0]));
+    let mut file_pass = 1u16.to_le_bytes().to_vec();
+    file_pass.extend([1, 0, 1, 0]);
+    file_pass.extend([0; 48]);
+    stream.extend(record(sid::FILE_PASS, &file_pass));
+    assert!(matches!(
+        read(&stream),
+        Err(Declined::Deferred(reason)) if reason.contains("out of step")
+    ));
 }
 
 #[test]
@@ -263,7 +290,7 @@ fn finds_the_pictures_and_the_sheets_showing_them() {
     stream.extend(record(sid::DRAWING, &shapes));
     stream.extend(record(sid::EOF, &[]));
     let zone = TimeZone::fixed(0);
-    let (_, pictures) = read_records(&stream, &settings(), Box::leak(Box::new(zone))).unwrap();
+    let (_, pictures) = read_records(&stream, &configs(), Box::leak(Box::new(zone))).unwrap();
     let [picture] = &pictures[..] else {
         panic!("one picture");
     };

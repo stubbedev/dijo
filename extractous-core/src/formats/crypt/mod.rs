@@ -14,7 +14,7 @@ use crate::formats::Unported;
 
 /// `Decryptor.DEFAULT_PASSWORD`, which Office encrypts a document with when it is only to be
 /// write protected.
-const DEFAULT_PASSWORD: &str = "VelvetSweatshop";
+pub(crate) const DEFAULT_PASSWORD: &str = "VelvetSweatshop";
 /// The most UTF-16 units of a password binary RC4 and CryptoAPI hash.
 const MAX_PASSWORD_UNITS: usize = 255;
 
@@ -265,6 +265,8 @@ struct Header {
     cipher: Cipher,
     hash: Hash,
     key_bits: i32,
+    /// The UTF-16 units of the CSP name, before its terminator.
+    csp_units: usize,
 }
 
 impl Header {
@@ -289,13 +291,17 @@ impl Header {
             at: input.at,
         }
         .i32()?;
+        let mut csp_units = 0;
         if check_for_salt != 16 {
-            while input.u16()? != 0 {}
+            while input.u16()? != 0 {
+                csp_units += 1;
+            }
         }
         Ok(Header {
             cipher,
             hash,
             key_bits,
+            csp_units,
         })
     }
 }
@@ -347,16 +353,49 @@ impl Rc4Key {
 pub(crate) trait BlockKeys {
     fn block(&self, block: u32) -> Rc4Key;
 
-    /// What `ChunkedCipherInputStream` reads of `data` in chunks of `chunk` bytes, each
-    /// decrypted with the key of its number from its start, the bytes before `from` read plain
-    /// (`readPlain`).
-    fn decrypt_chunks(&self, data: &mut [u8], chunk: usize, from: usize) {
-        for (number, bytes) in data.chunks_mut(chunk).enumerate() {
-            let start = number * chunk;
-            let mut cipher = self.block(number as u32).cipher();
-            let plain = from.saturating_sub(start).min(bytes.len());
-            cipher.apply_keystream(&mut vec![0; plain]);
-            cipher.apply_keystream(&mut bytes[plain..]);
+    /// What `ChunkedCipherInputStream` reads of `data` in chunks of `chunk` bytes, the bytes
+    /// before `from` read plain (`readPlain`).
+    fn decrypt_chunks(&self, data: &mut [u8], chunk: usize, from: usize)
+    where
+        Self: Sized,
+    {
+        if let Some(encrypted) = data.get_mut(from..) {
+            ChunkedKeyStream::new(self, chunk).decrypt(encrypted, from);
+        }
+    }
+}
+
+/// The key stream `ChunkedCipherInputStream` decrypts a stream with, by position: each byte
+/// with the key of its chunk of `chunk` bytes, from the chunk's start.
+pub(crate) struct ChunkedKeyStream<'k, K: BlockKeys> {
+    keys: &'k K,
+    chunk: usize,
+    /// The number of the chunk last decrypted, and its key stream.
+    current: Option<(usize, Vec<u8>)>,
+}
+
+impl<'k, K: BlockKeys> ChunkedKeyStream<'k, K> {
+    pub(crate) fn new(keys: &'k K, chunk: usize) -> Self {
+        ChunkedKeyStream {
+            keys,
+            chunk,
+            current: None,
+        }
+    }
+
+    /// `data`, which starts at `position` of the stream, decrypted in place.
+    pub(crate) fn decrypt(&mut self, data: &mut [u8], position: usize) {
+        for (at, byte) in (position..).zip(data.iter_mut()) {
+            let number = at / self.chunk;
+            let stream = match &mut self.current {
+                Some((current, stream)) if *current == number => stream,
+                current => {
+                    let mut stream = vec![0; self.chunk];
+                    self.keys.block(number as u32).decrypt(&mut stream);
+                    &mut current.insert((number, stream)).1
+                }
+            };
+            *byte ^= stream[at % self.chunk];
         }
     }
 }
@@ -378,6 +417,15 @@ impl BlockKeys for Rc4Keys {
 }
 
 impl EncryptionInfo {
+    /// The length POI writes the info in (`FilePassRecord.getDataSize` past its type), which
+    /// a workbook measures its first records with: an absent CSP name written empty.
+    pub(crate) fn written_length(&self) -> usize {
+        match self {
+            EncryptionInfo::BinaryRc4(_) => 4 + 48,
+            EncryptionInfo::CryptoApi(api) => 4 + 4 + 4 + 32 + 2 * api.csp_units + 2 + 60,
+        }
+    }
+
     /// `Decryptor.verifyPassword`: the key, where the password opens the encryption.
     pub(crate) fn verify(&self, password: &str) -> Option<Rc4Keys> {
         match self {
@@ -443,6 +491,7 @@ impl BlockKeys for BinaryRc4Key {
 pub(crate) struct CryptoApi {
     hash: Hash,
     key_bits: i32,
+    csp_units: usize,
     verifier: Verifier,
 }
 
@@ -457,6 +506,7 @@ impl CryptoApi {
         Ok(CryptoApi {
             hash: header.hash,
             key_bits: header.key_bits,
+            csp_units: header.csp_units,
             verifier,
         })
     }
@@ -532,6 +582,7 @@ mod tests {
         CryptoApi {
             hash: Hash::Sha1,
             key_bits,
+            csp_units: 0,
             verifier: Verifier {
                 salt,
                 verifier: encrypted[..16].try_into().unwrap(),
@@ -631,5 +682,10 @@ mod tests {
         assert_eq!(data[68..512], stream(0, 512)[68..]);
         assert_eq!(data[512..1024], stream(1, 512)[..]);
         assert_eq!(data[1024..], stream(2, 76)[..]);
+        let mut pieces = vec![0u8; 1100];
+        let mut key_stream = ChunkedKeyStream::new(&key, 512);
+        key_stream.decrypt(&mut pieces[68..600], 68);
+        key_stream.decrypt(&mut pieces[600..], 600);
+        assert_eq!(pieces, data);
     }
 }

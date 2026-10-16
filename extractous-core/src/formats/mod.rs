@@ -363,8 +363,8 @@ fn run<'h>(
 }
 
 /// What our Java `LegacyOfficePasswordParser` records once a document a password was given for
-/// is parsed.
-const PASSWORD_USED: &str = "extractous:password-used";
+/// is parsed, and its `PasswordProvider` once a parser asks it for the password.
+pub(crate) const PASSWORD_USED: &str = "extractous:password-used";
 
 /// Whether a prepared document still keeps to its memory budget, before anything of it is
 /// written.

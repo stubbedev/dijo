@@ -148,7 +148,8 @@ pub(super) enum Record {
     Header(String),
     Footer(String),
     Obj,
-    FilePass,
+    /// A `FILEPASS` record's data: the type of its encryption and the encryption.
+    FilePass(Vec<u8>),
     WriteProtect,
     DbCell,
     /// A record of a type POI does not parse.
@@ -339,10 +340,7 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
             stream.read_remainder()?;
             Record::Obj
         }
-        sid::FILE_PASS => {
-            stream.read_remainder()?;
-            Record::FilePass
-        }
+        sid::FILE_PASS => Record::FilePass(stream.read_fully(stream.remaining() as usize)?),
         sid::WRITE_PROTECT => {
             if stream.remaining() == 2 {
                 stream.read_i16()?;
