@@ -349,8 +349,15 @@ fn run<'h>(
         Xhtml::write_reporting_head(handler, metadata, context, on_head, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
+    if result.is_ok() && context.configs().password.is_some() {
+        metadata.set(PASSWORD_USED, "true");
+    }
     (metadata, result)
 }
+
+/// What our Java `LegacyOfficePasswordParser` records once a document a password was given for
+/// is parsed.
+const PASSWORD_USED: &str = "extractous:password-used";
 
 /// Whether a prepared document still keeps to its memory budget, before anything of it is
 /// written.
@@ -907,6 +914,33 @@ mod tests {
         }
         assert!(differences.is_empty(), "{}", differences.join("\n"));
         assert!(spooling > 0);
+    }
+
+    /// A document parsed with a password is marked as our Java's `LegacyOfficePasswordParser`
+    /// marks it, and one parsed without none is not.
+    #[test]
+    fn marks_what_is_parsed_with_a_password() {
+        let path = "../test_files/documents/simple.odt";
+        let routed = route(Source::File(path)).unwrap().unwrap();
+        let password = crate::config::Password::new("secret");
+        let used = |configs: &ParserConfigs| {
+            let (_, metadata) = parse_to_string(
+                routed.parser,
+                &routed.input,
+                &routed.detected,
+                configs,
+                100_000,
+                Output::Text,
+            )
+            .unwrap()
+            .unwrap();
+            metadata.get(PASSWORD_USED).cloned()
+        };
+        assert_eq!(used(&ParserConfigs::default()), None);
+        assert_eq!(
+            used(&ParserConfigs::default().with_password(Some(&password))),
+            Some(vec!["true".to_owned()])
+        );
     }
 
     #[test]

@@ -56,14 +56,9 @@ fn tika_stream(path: &str, configs: &ParserConfigs, output: Output, char_set: Ch
         timeout: None,
         embedded: None,
     };
-    let (mut reader, _) = tika::parse_to_stream(
-        isolate().unwrap(),
-        Source::File(path),
-        configs,
-        None,
-        &options,
-    )
-    .map_err(|e| e.to_string())?;
+    let (mut reader, _) =
+        tika::parse_to_stream(isolate().unwrap(), Source::File(path), configs, &options)
+            .map_err(|e| e.to_string())?;
     let mut text = Vec::new();
     reader
         .read_to_end(&mut text)
@@ -80,7 +75,6 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
         Source::File(path),
         i32::try_from(SMALL_LIMIT).unwrap(),
         configs,
-        None,
         output == Output::Xml,
     )
     .map_err(|e| e.to_string())?;
@@ -612,7 +606,6 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
         isolate().unwrap(),
         Source::File(path),
         &configs,
-        None,
         &tika_options,
     )
     .and_then(|(mut reader, _)| {

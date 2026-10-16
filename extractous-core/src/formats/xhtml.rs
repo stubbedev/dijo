@@ -411,8 +411,7 @@ impl<'h> Xhtml<'h> {
                     isolate,
                     data,
                     &metadata.pairs(),
-                    self.embedding.context().configs(),
-                    None,
+                    &self.embedding.context().configs().with_password(None),
                 )
             })
             .map_err(Failure::Extraction)?;
