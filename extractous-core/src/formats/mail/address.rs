@@ -1,11 +1,11 @@
 //! Address fields as mime4j's `LenientAddressParser` reads them and as Tika's
 //! `MailContentHandler` writes each address: a mailbox with a display name as
-//! `Name <address>`, one without as its address, and a group as `Name: a, b;`.
+//! `Name <address>`, one without as its address, and a group as `Name: a, b;`. Display names
+//! and group names are decoded once, as phrases (#77).
 
-use super::codec::decode_encoded_words;
 use super::field::{
-    copy_content, is_whitespace, parse_value, skip_all_whitespace, skip_comment, skip_whitespace,
-    Cursor, Delimiters,
+    copy_content, is_whitespace, parse_value, parse_words, skip_all_whitespace, skip_comment,
+    skip_whitespace, Cursor, Delimiters, Words,
 };
 use super::Unported;
 
@@ -41,12 +41,27 @@ impl Mailbox {
         }
     }
 
-    /// `MailContentHandler.getDisplayString` of a mailbox: its name decoded once more.
-    fn display(&self) -> Result<String, Unported> {
-        Ok(match &self.name {
-            Some(name) => format!("{} <{}>", decode_encoded_words(name)?, self.address()),
+    /// `MailContentHandler.getDisplayString` of a mailbox. Tika decodes the name once more (#77).
+    fn display(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{name} <{}>", self.address()),
             None => self.address(),
-        })
+        }
+    }
+
+    /// The display name, decoded, or the text of a mailbox that has no domain and is no
+    /// address.
+    pub(super) fn name(&self) -> Option<&str> {
+        match (&self.name, &self.domain) {
+            (Some(name), _) => Some(name),
+            (None, None) => Some(self.local_part.as_str()).filter(|text| !text.is_empty()),
+            (None, Some(_)) => None,
+        }
+    }
+
+    /// The email address, when the mailbox has a domain.
+    pub(super) fn email(&self) -> Option<String> {
+        self.domain.is_some().then(|| self.address())
     }
 }
 
@@ -61,8 +76,9 @@ pub(super) enum Address {
 }
 
 impl Address {
-    /// `MailContentHandler.getDisplayString`: a group as its `toString`.
-    pub(super) fn display(&self) -> Result<String, Unported> {
+    /// `MailContentHandler.getDisplayString`: a group as its `toString`, its name decoded
+    /// (#77).
+    pub(super) fn display(&self) -> String {
         match self {
             Address::Mailbox(mailbox) => mailbox.display(),
             Address::Group { name, mailboxes } => {
@@ -75,7 +91,7 @@ impl Address {
                     text.push_str(&mailbox.address());
                 }
                 text.push(';');
-                Ok(text)
+                text
             }
         }
     }
@@ -152,60 +168,54 @@ fn skip_route(buf: &[u8], cursor: &mut Cursor, delimiters: Delimiters) {
     }
 }
 
+/// A mailbox of a display name, decoded as a phrase, a local part and a domain.
 fn create_mailbox(
-    name: Option<String>,
+    name: &Words,
     local_part: String,
     domain: Option<String>,
 ) -> Result<Mailbox, Unported> {
-    let name = match name {
-        Some(name) => Some(decode_encoded_words(&name)?),
-        None => None,
-    };
-    Ok(Mailbox::new(name, local_part, domain))
+    Ok(Mailbox::new(Some(name.phrase()?), local_part, domain))
 }
 
-/// `parseMailboxAddress`: `opening <local@domain>`, the opening text the display name.
+/// `parseMailboxAddress`: `opening <local@domain>`, the opening words the display name.
 fn parse_mailbox_address(
-    opening: String,
+    opening: &Words,
     buf: &[u8],
     cursor: &mut Cursor,
 ) -> Result<Mailbox, Unported> {
     if cursor.at_end() || buf[cursor.pos] != OPENING_BRACKET {
-        return create_mailbox(None, opening, None);
+        return Ok(Mailbox::new(None, opening.value()?, None));
     }
     cursor.pos += 1;
     skip_route(buf, cursor, Delimiters::of(&[CLOSING_BRACKET]));
     let local_part = parse_value(buf, cursor, Delimiters::of(&[AT, CLOSING_BRACKET]))?;
     if cursor.at_end() {
-        return create_mailbox(Some(opening), local_part, None);
+        return create_mailbox(opening, local_part, None);
     }
     match buf[cursor.pos] {
         AT | CLOSING_BRACKET => cursor.pos += 1,
-        _ => return create_mailbox(Some(opening), local_part, None),
+        _ => return create_mailbox(opening, local_part, None),
     }
     let domain = parse_domain(buf, cursor, Delimiters::of(&[CLOSING_BRACKET]));
     if cursor.at_end() {
-        return create_mailbox(Some(opening), local_part, Some(domain));
+        return create_mailbox(opening, local_part, Some(domain));
     }
     if buf[cursor.pos] != CLOSING_BRACKET {
-        return create_mailbox(Some(opening), local_part, Some(domain));
+        return create_mailbox(opening, local_part, Some(domain));
     }
     cursor.pos += 1;
     skip_all_whitespace(buf, cursor);
-    create_mailbox(Some(opening), local_part, Some(domain))
+    create_mailbox(opening, local_part, Some(domain))
 }
 
-/// The private `createMailbox(localPart)`: a mailbox of the opening text alone, decoded, or
-/// none when it is empty.
-fn bare_mailbox(local_part: String) -> Result<Option<Mailbox>, Unported> {
-    if local_part.is_empty() {
+/// The private `createMailbox(localPart)`: a mailbox of the opening words alone, decoded as a
+/// phrase, or none when there are none.
+fn bare_mailbox(opening: &Words) -> Result<Option<Mailbox>, Unported> {
+    let text = opening.phrase()?;
+    if text.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Mailbox::new(
-        None,
-        decode_encoded_words(&local_part)?,
-        None,
-    )))
+    Ok(Some(Mailbox::new(None, text, None)))
 }
 
 fn parse_mailbox(
@@ -213,22 +223,22 @@ fn parse_mailbox(
     cursor: &mut Cursor,
     delimiters: Delimiters,
 ) -> Result<Option<Mailbox>, Unported> {
-    let opening = parse_value(
+    let opening = parse_words(
         buf,
         cursor,
         Delimiters::of(&[AT, OPENING_BRACKET]).with(delimiters),
-    )?;
+    );
     if cursor.at_end() {
-        return bare_mailbox(opening);
+        return bare_mailbox(&opening);
     }
     match buf[cursor.pos] {
-        OPENING_BRACKET => parse_mailbox_address(opening, buf, cursor).map(Some),
+        OPENING_BRACKET => parse_mailbox_address(&opening, buf, cursor).map(Some),
         AT => {
             cursor.pos += 1;
             let domain = parse_domain(buf, cursor, delimiters);
-            Ok(Some(Mailbox::new(None, opening, Some(domain))))
+            Ok(Some(Mailbox::new(None, opening.value()?, Some(domain))))
         }
-        _ => bare_mailbox(opening),
+        _ => bare_mailbox(&opening),
     }
 }
 
@@ -257,24 +267,24 @@ fn parse_address(
     cursor: &mut Cursor,
     delimiters: Delimiters,
 ) -> Result<Option<Address>, Unported> {
-    let opening = parse_value(
+    let opening = parse_words(
         buf,
         cursor,
         Delimiters::of(&[COLON, AT, OPENING_BRACKET]).with(delimiters),
-    )?;
+    );
     if cursor.at_end() {
-        return Ok(bare_mailbox(opening)?.map(Address::Mailbox));
+        return Ok(bare_mailbox(&opening)?.map(Address::Mailbox));
     }
     match buf[cursor.pos] {
         OPENING_BRACKET => Ok(Some(Address::Mailbox(parse_mailbox_address(
-            opening, buf, cursor,
+            &opening, buf, cursor,
         )?))),
         AT => {
             cursor.pos += 1;
             let domain = parse_domain(buf, cursor, delimiters);
             Ok(Some(Address::Mailbox(Mailbox::new(
                 None,
-                opening,
+                opening.value()?,
                 Some(domain),
             ))))
         }
@@ -285,11 +295,11 @@ fn parse_address(
                 cursor.pos += 1;
             }
             Ok(Some(Address::Group {
-                name: opening,
+                name: opening.phrase()?,
                 mailboxes,
             }))
         }
-        _ => Ok(bare_mailbox(opening)?.map(Address::Mailbox)),
+        _ => Ok(bare_mailbox(&opening)?.map(Address::Mailbox)),
     }
 }
 
@@ -301,7 +311,7 @@ mod tests {
         parse_address_list(body)
             .unwrap()
             .iter()
-            .map(|address| address.display().unwrap())
+            .map(Address::display)
             .collect()
     }
 
@@ -332,9 +342,21 @@ mod tests {
     }
 
     #[test]
+    fn decodes_names_once() {
+        assert_eq!(
+            display("\"=?utf-8?q?=3D=3Futf-8=3Fq=3Fx=3F=3D?=\" <a@b.org>"),
+            ["=?utf-8?q?x?= <a@b.org>"]
+        );
+        assert_eq!(
+            display("=?utf-8?q?=C3=89quipe?=: a@x.org;"),
+            ["Équipe: a@x.org;"]
+        );
+    }
+
+    #[test]
     fn flattens_groups_into_their_mailboxes() {
         let flat = flatten(parse_address_list("G: a@x, b@y;, c@z").unwrap());
-        let shown: Vec<String> = flat.iter().map(|a| a.display().unwrap()).collect();
+        let shown: Vec<String> = flat.iter().map(Address::display).collect();
         assert_eq!(shown, ["a@x", "b@y", "c@z"]);
     }
 }

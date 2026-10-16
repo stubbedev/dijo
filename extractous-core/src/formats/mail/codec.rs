@@ -1,9 +1,8 @@
-//! mime4j's decoders: `Base64InputStream` and `QuotedPrintableInputStream` with a silent
-//! monitor, `DecoderUtil`'s encoded words, and the `URLDecoder` its parameter mapping uses.
+//! The decoders of mail: base64 and quoted-printable bodies, `DecoderUtil`'s encoded words,
+//! and the percent-encoded values of RFC 2231 parameters.
 
 use super::Unported;
 use crate::text::charset::Charset;
-use crate::unicode::is_whitespace;
 
 const BASE64_PAD: u8 = b'=';
 const CR: u8 = b'\r';
@@ -91,211 +90,55 @@ fn hex_value(byte: Option<u8>) -> Option<u8> {
     }
 }
 
-/// The size of `QuotedPrintableInputStream`'s buffer of encoded bytes: the recycled buffers it
-/// gets are at least this large.
-const QP_BUFFER_SIZE: usize = 4000;
-
-/// `QuotedPrintableInputStream` with a silent monitor: every line break a CRLF, white space
-/// before a line break or the end dropped, soft line breaks joined, and malformed escapes kept
-/// as they are. It looks ahead within its buffer of encoded bytes only, so what it makes of
-/// `==` before a line break depends on where its reads from the source end.
-pub(super) struct QuotedPrintableReader {
-    encoded: Vec<u8>,
-    pos: usize,
-    limit: usize,
-    last_was_cr: bool,
-    /// Decoded bytes a read had no room for.
-    decoded: Vec<u8>,
-    blanks: Vec<u8>,
-}
-
-/// Where a read puts what it decodes: the caller's buffer until it is full, then the
-/// reader's own.
-struct Output<'a> {
-    buffer: &'a mut [u8],
-    index: usize,
-    overflow: &'a mut Vec<u8>,
-}
-
-impl Output<'_> {
-    fn push(&mut self, byte: u8) {
-        if self.index < self.buffer.len() {
-            self.buffer[self.index] = byte;
-            self.index += 1;
-        } else {
-            self.overflow.push(byte);
-        }
-    }
-}
-
-impl QuotedPrintableReader {
-    pub(super) fn new() -> Self {
-        QuotedPrintableReader {
-            encoded: vec![0; QP_BUFFER_SIZE],
-            pos: 0,
-            limit: 0,
-            last_was_cr: false,
-            decoded: Vec::new(),
-            blanks: Vec::new(),
-        }
-    }
-
-    /// `fillBuffer`: compacts the buffer and reads once into its room, `None` at the end.
-    fn fill(&mut self, source: &mut dyn FnMut(&mut [u8]) -> Option<usize>) -> Option<usize> {
-        if self.pos < self.limit {
-            self.encoded.copy_within(self.pos..self.limit, 0);
-            self.limit -= self.pos;
-        } else {
-            self.limit = 0;
-        }
-        self.pos = 0;
-        if self.limit == self.encoded.len() {
-            return Some(0);
-        }
-        let read = source(&mut self.encoded[self.limit..])?;
-        self.limit += read;
-        Some(read)
-    }
-
-    fn peek(&self, offset: usize) -> Option<u8> {
-        (self.pos + offset < self.limit).then(|| self.encoded[self.pos + offset])
-    }
-
-    fn next_byte(&mut self) -> Option<u8> {
-        let byte = self.peek(0)?;
-        self.pos += 1;
-        Some(byte)
-    }
-
-    /// `transfer`: the pending white space first when `keep_blanks`, then the byte.
-    fn transfer(&mut self, out: &mut Output, byte: Option<u8>, keep_blanks: bool) {
-        if keep_blanks {
-            for blank in std::mem::take(&mut self.blanks) {
-                out.push(blank);
-            }
-        }
-        if let Some(byte) = byte {
-            out.push(byte);
-        }
-    }
-
-    /// `read(b, off, len)`: decodes into `buffer`, `None` at the end.
-    pub(super) fn read(
-        &mut self,
-        buffer: &mut [u8],
-        source: &mut dyn FnMut(&mut [u8]) -> Option<usize>,
-    ) -> Option<usize> {
-        let to = buffer.len();
-        let mut leftover = std::mem::take(&mut self.decoded);
-        let chunk = leftover.len().min(to);
-        buffer[..chunk].copy_from_slice(&leftover[..chunk]);
-        leftover.drain(..chunk);
-        let mut out = Output {
-            buffer,
-            index: chunk,
-            overflow: &mut leftover,
-        };
-        let mut eof = false;
-        while out.index < to {
-            if self.limit - self.pos < 3 {
-                eof = self.fill(source).is_none();
-            }
-            if self.limit == self.pos && eof {
-                let read = out.index;
-                self.decoded = leftover;
-                return (read > 0).then_some(read);
-            }
-            while self.pos < self.limit && out.index < to {
-                let b = self.encoded[self.pos];
-                self.pos += 1;
-                if self.last_was_cr && b != LF {
-                    self.transfer(&mut out, Some(CR), false);
-                }
-                if b == CR {
-                    self.last_was_cr = true;
-                    continue;
-                }
-                self.last_was_cr = false;
-                if b == LF {
-                    if self.blanks.first() != Some(&EQ) {
-                        self.transfer(&mut out, Some(CR), false);
-                        self.transfer(&mut out, Some(LF), false);
-                    }
-                    self.blanks.clear();
-                } else if b == EQ {
-                    if self.limit - self.pos < 2 && !eof {
-                        self.pos -= 1;
-                        break;
-                    }
-                    self.escape(&mut out);
-                } else if is_whitespace(char::from(b)) {
-                    self.blanks.push(b);
-                } else {
-                    self.transfer(&mut out, Some(b), true);
-                }
-            }
-        }
-        self.decoded = leftover;
-        Some(to)
-    }
-
-    /// What follows an `=`: a soft line break, an escaped byte, or bytes kept as they are.
-    fn escape(&mut self, out: &mut Output) {
-        let b2 = self.next_byte();
-        match b2 {
-            Some(EQ) => {
-                self.transfer(out, Some(EQ), true);
-                let (bb1, bb2) = (self.peek(0), self.peek(1));
-                if bb1 == Some(LF) || (bb1 == Some(CR) && bb2 == Some(LF)) {
-                    self.blanks.push(EQ);
-                }
-            }
-            Some(b2) if is_whitespace(char::from(b2)) => {
-                if self.peek(0) == Some(LF) {
-                    self.last_was_cr = b2 == CR;
-                }
-                self.transfer(out, None, true);
-                if b2 != LF {
-                    self.blanks.extend_from_slice(&[EQ, b2]);
-                }
-            }
-            _ => {
-                let b3 = self.next_byte();
-                match (hex_value(b2), hex_value(b3)) {
-                    (Some(upper), Some(lower)) => {
-                        self.transfer(out, Some((upper << 4) | lower), true)
-                    }
-                    _ => {
-                        self.transfer(out, Some(EQ), true);
-                        self.transfer(out, b2, false);
-                        self.transfer(out, b3, false);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// What `DecoderUtil` decodes from quoted-printable text: the bytes a
-/// `QuotedPrintableInputStream` reads one at a time from the whole text.
+/// Quoted-printable decoded as RFC 2045 says, over the whole text at once: `=XX` an escaped
+/// byte (in either case), `=` ending a line a soft line break, the space and tab before a line
+/// break or the end dropped as transport padding, every line break kept as it is, and a
+/// malformed escape kept as it is. mime4j's `QuotedPrintableInputStream` makes every line
+/// break a CRLF, reads `= x` as a soft line break that keeps `= `, and decides `==` before a
+/// line break by looking ahead within its buffer alone (#73).
 pub(super) fn decode_quoted_printable(input: &[u8]) -> Vec<u8> {
-    let mut reader = QuotedPrintableReader::new();
-    let mut position = 0;
-    let mut source = |into: &mut [u8]| {
-        if position >= input.len() {
-            return None;
-        }
-        let count = into.len().min(input.len() - position);
-        into[..count].copy_from_slice(&input[position..position + count]);
-        position += count;
-        Some(count)
-    };
     let mut out = Vec::with_capacity(input.len());
-    let mut byte = [0u8];
-    while reader.read(&mut byte, &mut source).is_some() {
-        out.push(byte[0]);
+    for line in input.split_inclusive(|&byte| byte == LF) {
+        let (content, line_break) = match line {
+            [content @ .., CR, LF] => (content, &line[line.len() - 2..]),
+            [content @ .., LF] => (content, &line[line.len() - 1..]),
+            content => (content, &[][..]),
+        };
+        let end = content
+            .iter()
+            .rposition(|&byte| byte != b' ' && byte != b'\t')
+            .map_or(0, |last| last + 1);
+        let content = &content[..end];
+        match content.strip_suffix(&[EQ]) {
+            Some(soft) => decode_escapes(soft, &mut out),
+            None => {
+                decode_escapes(content, &mut out);
+                out.extend_from_slice(line_break);
+            }
+        }
     }
     out
+}
+
+/// The escapes of a line of quoted-printable text decoded, an `=` not followed by two
+/// hexadecimal digits kept as it is.
+fn decode_escapes(line: &[u8], out: &mut Vec<u8>) {
+    let mut at = 0;
+    while at < line.len() {
+        let byte = line[at];
+        if byte == EQ {
+            if let (Some(upper), Some(lower)) = (
+                hex_value(line.get(at + 1).copied()),
+                hex_value(line.get(at + 2).copied()),
+            ) {
+                out.push((upper << 4) | lower);
+                at += 3;
+                continue;
+            }
+        }
+        out.push(byte);
+        at += 1;
+    }
 }
 
 /// `DecoderUtil.decodeEncodedWords` with a silent monitor and no fallback charset: every
@@ -400,9 +243,10 @@ fn decode_word(charset: &str, encoding: &str, encoded: &str) -> Option<Vec<u8>> 
             .collect()
     };
     if encoding.eq_ignore_ascii_case("Q") {
-        Some(decode_quoted_printable(&ascii(
-            &encoded.replace('_', "=20"),
-        )))
+        // An encoded word has no line breaks, so a `=` that ends it is kept, as malformed.
+        let mut out = Vec::with_capacity(encoded.len());
+        decode_escapes(&ascii(&encoded.replace('_', "=20")), &mut out);
+        Some(out)
     } else if encoding.eq_ignore_ascii_case("B") {
         Some(decode_base64_word(&ascii(encoded)))
     } else {
@@ -463,13 +307,19 @@ mod tests {
     }
 
     #[test]
-    fn decodes_quoted_printable_as_mime4j_does() {
-        assert_eq!(decode_quoted_printable(b"a=3Db \nc"), b"a=b\r\nc");
+    fn decodes_quoted_printable_as_rfc_2045_says() {
+        assert_eq!(decode_quoted_printable(b"a=3Db \nc"), b"a=b\nc");
+        assert_eq!(decode_quoted_printable(b"a=3db\r\nc\r\n"), b"a=b\r\nc\r\n");
         assert_eq!(decode_quoted_printable(b"soft=\r\nbreak  "), b"softbreak");
+        assert_eq!(decode_quoted_printable(b"soft= \t\nbreak"), b"softbreak");
         assert_eq!(decode_quoted_printable(b"x=4"), b"x=4");
+        assert_eq!(decode_quoted_printable(b"x=4\r\ny"), b"x=4\r\ny");
+        assert_eq!(decode_quoted_printable(b"x=ZZ"), b"x=ZZ");
         assert_eq!(decode_quoted_printable(b"x=\n= y"), b"x= y");
         assert_eq!(decode_quoted_printable(b"a\rb"), b"a\rb");
         assert_eq!(decode_quoted_printable(b"a==\r\nb"), b"a=b");
+        assert_eq!(decode_quoted_printable(b"a==3D\nb"), b"a==\nb");
+        assert_eq!(decode_quoted_printable(b"tail="), b"tail");
     }
 
     #[test]

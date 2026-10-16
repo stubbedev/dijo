@@ -1,7 +1,9 @@
 //! Compares a native parser with Tika's path, which it replaces, on the same documents: the
 //! streamed text and XHTML, their final metadata, and the text and XHTML of a string extraction
-//! cut by a small length limit. The only difference allowed is the parser's name in
-//! `tk:parsed-by`, which the native output is compared under Tika's. Documents Tika's path fails
+//! cut by a small length limit. The only differences allowed are the parser's name in
+//! `tk:parsed-by`, which the native output is compared under Tika's, and the values of metadata
+//! a test names as departures, which the native parser gives otherwise on purpose where Tika's
+//! are wrong, each with the issue that tells why. Documents Tika's path fails
 //! on are compared on their outcome alone: the native parser must fail too. A native parser that
 //! records the parsers its Tika counterpart delegates to is compared under their Tika names too.
 //!
@@ -289,6 +291,22 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
+/// Two string extractions, Tika's path's and the native parser's, without departures, cut to
+/// the length of the shorter where there are departures: the length limit cut each before what
+/// departed was left out, so one may run on further than the other.
+fn cut_alike(
+    mut tika: Extracted,
+    mut native: Extracted,
+    departures: Departures,
+) -> (Extracted, Extracted) {
+    if !departures.is_empty() {
+        let length = tika.text.len().min(native.text.len());
+        tika.text.truncate(length);
+        native.text.truncate(length);
+    }
+    (tika, native)
+}
+
 /// A Java stack trace without its frames, its lines ended by `\n`: Java ends them with the
 /// platform's line separator, the native parsers with `\n` everywhere (#108).
 fn without_frames(trace: &str) -> String {
@@ -426,6 +444,83 @@ struct Naming<'a> {
     tika_name: &'a str,
     /// The Tika names of the parsers it delegates to, each paired after its native name.
     delegates: &'a [(&'a str, &'a str)],
+    /// The metadata the native parser gives other values than Tika's path on purpose.
+    departures: Departures<'a>,
+}
+
+/// What a native parser does otherwise than Tika's path on purpose, where Tika is wrong, with
+/// the issue that tells why. The parser's own tests check what it does instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Departure<'a> {
+    /// The values of a metadata name, not compared, in the metadata nor in the XHTML head.
+    Values(&'a str, &'a str),
+    /// Line breaks: the text is compared with each CRLF an LF, where Tika's path makes a line
+    /// feed a CRLF.
+    LineBreaks(&'a str),
+}
+
+/// What a native parser does otherwise than Tika's path on purpose.
+pub(crate) type Departures<'a> = &'a [Departure<'a>];
+
+/// What stands for a value a departure leaves uncompared.
+const DEPARTED: &str = "<departed>";
+
+/// An extraction, its text in `char_set`, without what `departures` leave uncompared: each
+/// value of a metadata name, in the metadata and as the content of each `meta` element of the
+/// XHTML head, up to the end of a string extraction the length limit cuts in it; and, for
+/// line breaks, every CRLF of the text an LF.
+fn without_departures(
+    mut extracted: Extracted,
+    char_set: CharSet,
+    departures: Departures,
+) -> Extracted {
+    if departures.is_empty() {
+        return extracted;
+    }
+    let names: Vec<&str> = departures
+        .iter()
+        .filter_map(|departure| match departure {
+            Departure::Values(name, _) => Some(*name),
+            Departure::LineBreaks(_) => None,
+        })
+        .collect();
+    for (name, values) in &mut extracted.metadata {
+        if names.contains(&name.as_str()) {
+            values
+                .iter_mut()
+                .for_each(|value| *value = DEPARTED.to_owned());
+        }
+    }
+    let Some(mut text) = decoded(&extracted.text, char_set) else {
+        return extracted;
+    };
+    if departures
+        .iter()
+        .any(|departure| matches!(departure, Departure::LineBreaks(_)))
+    {
+        text = text.replace("\r\n", "\n");
+        // A CRLF the length limit of a string extraction cuts after its CR.
+        if text.ends_with('\r') {
+            text.pop();
+            text.push('\n');
+        }
+    }
+    for name in names {
+        let meta = format!("<meta name=\"{name}\" content=\"");
+        let mut kept = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find(&meta) {
+            let inside = start + meta.len();
+            kept.push_str(&rest[..inside]);
+            kept.push_str(DEPARTED);
+            rest = &rest[inside..];
+            rest = &rest[rest.find('"').unwrap_or(rest.len())..];
+        }
+        kept.push_str(rest);
+        text = kept;
+    }
+    extracted.text = text.into_bytes();
+    extracted
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -444,8 +539,24 @@ pub(crate) fn assert_same_as_tika_with(
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
+        departures: &[],
     });
     compare(documents, configs, expected);
+}
+
+/// [`assert_same_as_tika`], but for the values of the metadata `departures` names, which the
+/// native parser gives on purpose otherwise than Tika's path.
+pub(crate) fn assert_same_as_tika_departing(
+    documents: &[&Path],
+    tika_name: &str,
+    departures: Departures,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures,
+    });
+    compare(documents, &ParserConfigs::default(), expected);
 }
 
 /// Asserts that of `documents`, each one `passwords` names, by file name with the password that
@@ -521,6 +632,7 @@ pub(crate) fn assert_same_as_tika_delegating_with(
     let expected = Expected::Same(Naming {
         tika_name,
         delegates,
+        departures: &[],
     });
     compare(documents, configs, expected);
 }
@@ -655,8 +767,13 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             let (tika, native) = match (expected, tika, native) {
                 (Expected::Same(naming), Ok(tika), Ok(native)) => {
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                    let tika = comparable(tika, char_set);
-                    let native = comparable(as_tika(native, &names, char_set), char_set);
+                    let tika =
+                        without_departures(comparable(tika, char_set), char_set, naming.departures);
+                    let native = without_departures(
+                        comparable(as_tika(native, &names, char_set), char_set),
+                        char_set,
+                        naming.departures,
+                    );
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
                             without_ocr(tika, output, char_set, tika_read),
@@ -664,7 +781,7 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                         ),
                         None if entry == "string" => {
                             let native = cut_to(native, &tika);
-                            (tika, native)
+                            cut_alike(tika, native, naming.departures)
                         }
                         None => (tika, native),
                     };

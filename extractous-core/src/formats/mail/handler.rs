@@ -4,15 +4,14 @@
 //! multipart in a `div` of class `email-entry`, and every other part handed to the embedded
 //! document extractor.
 
-use super::address::{flatten, parse_address_list};
+use super::address::{flatten, parse_address_list, Address, Mailbox};
 use super::codec::decode_encoded_words;
-use super::date::parse_date_lenient;
+use super::date::parse_date;
 use super::stream::{events, BodyDescriptor, Event, MimeError};
 use super::Unported;
 use crate::formats::embedded::ResourceType;
 use crate::formats::metadata::TikaMetadata;
 use crate::java::is_blank;
-use crate::java::time::format_instant;
 use crate::mime::MediaType;
 
 const MULTIPART_ALTERNATIVE: &str = "multipart/alternative";
@@ -121,23 +120,24 @@ impl Handler<'_> {
         match lower.as_str() {
             "from" => {
                 for address in flatten(parse_address_list(body)?) {
-                    let from = address.display()?;
-                    set_person_and_email(&from, self.metadata);
+                    if let Address::Mailbox(mailbox) = &address {
+                        set_name_and_email(mailbox, self.metadata);
+                    }
+                    let from = address.display();
                     self.metadata.add("message:from", from.clone());
                     self.metadata.add("dc:creator", from);
                 }
             }
             "subject" => {
+                // Tika also names the message after its subject, as `<subject>.eml` (#79).
                 let subject = decode_encoded_words(body)?;
                 self.metadata.set("dc:title", subject.clone());
-                self.metadata.set("dc:subject", subject.clone());
-                self.metadata
-                    .set("tk:resource-name", format!("{subject}.eml"));
+                self.metadata.set("dc:subject", subject);
             }
             "to" | "cc" | "bcc" => {
                 let property = format!("message:{lower}");
                 for address in parse_address_list(body)? {
-                    self.metadata.add(&property, address.display()?);
+                    self.metadata.add(&property, address.display());
                 }
             }
             "content-type" => {
@@ -157,10 +157,12 @@ impl Handler<'_> {
                     self.add_raw_header(name, body);
                 }
             }
-            "date" => match parse_date_lenient(body)? {
-                Some(millis) => self.metadata.set("dcterms:created", format_instant(millis)),
-                None => self.metadata.remove("dcterms:created"),
-            },
+            // A date that does not parse leaves the one before it, which Tika removes (#80).
+            "date" => {
+                if let Some(date) = parse_date(body)? {
+                    self.metadata.set("dcterms:created", date.format());
+                }
+            }
             _ => self.add_raw_header(name, body),
         }
         Ok(())
@@ -263,8 +265,8 @@ impl Handler<'_> {
                 None
             };
             if let Some(property) = property {
-                if let Some(millis) = parse_date_lenient(value)? {
-                    metadata.set(property, format_instant(millis));
+                if let Some(date) = parse_date(value)? {
+                    metadata.set(property, date.format());
                 }
             }
         }
@@ -357,63 +359,16 @@ fn is_inline_text(metadata: &TikaMetadata) -> bool {
             .is_some_and(|kind| kind.starts_with("text"))
 }
 
-/// `MailUtil.setPersonAndEmail` for the sender: the person and the email address of `text`,
-/// each set when not empty.
-pub(super) fn set_person_and_email(text: &str, metadata: &mut TikaMetadata) {
-    let (person, email) = person_and_email(text);
-    if let Some(person) = person {
-        metadata.set("message:from-name", person);
+/// The sender's name and email address, each set when the mailbox has it. Tika takes them from
+/// the address as it shows it, with a regular expression for the last thing that looks like an
+/// address and the rest the name, so that a name holding an `@` loses part of itself (#77).
+pub(super) fn set_name_and_email(mailbox: &Mailbox, metadata: &mut TikaMetadata) {
+    if let Some(name) = mailbox.name() {
+        metadata.set("message:from-name", name.to_owned());
     }
-    if let Some(email) = email {
+    if let Some(email) = mailbox.email() {
         metadata.set("message:from-email", email);
     }
-}
-
-/// What `MailUtil` makes of a sender: the last address `[^<@\s]+@[^@> ]+` in the text is the
-/// email, and what is left of the text, without angle brackets and quotes, the person; either
-/// `None` when empty.
-pub(super) fn person_and_email(text: &str) -> (Option<String>, Option<String>) {
-    let chars: Vec<char> = text.chars().collect();
-    let is_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\u{B}' | '\u{C}' | '\r');
-    let mut rest = String::new();
-    let mut email = String::new();
-    let mut copied = 0;
-    let mut at = 0;
-    while at < chars.len() {
-        if chars[at] != '@' {
-            at += 1;
-            continue;
-        }
-        let mut start = at;
-        while start > copied
-            && !matches!(chars[start - 1], '<' | '@')
-            && !is_space(chars[start - 1])
-        {
-            start -= 1;
-        }
-        let mut end = at + 1;
-        while end < chars.len() && !matches!(chars[end], '@' | '>' | ' ') {
-            end += 1;
-        }
-        if start == at || end == at + 1 {
-            at += 1;
-            continue;
-        }
-        rest.extend(&chars[copied..start]);
-        email = chars[start..end].iter().collect();
-        copied = end;
-        at = end;
-    }
-    rest.extend(&chars[copied..]);
-    let person: String = rest
-        .chars()
-        .map(|c| if matches!(c, '<' | '>' | '"') { ' ' } else { c })
-        .collect();
-    let person = crate::java::trim(&person);
-    (
-        (!person.is_empty()).then(|| person.to_owned()),
-        (!email.is_empty()).then_some(email),
-    )
 }
 
 #[cfg(test)]
@@ -421,10 +376,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splits_a_sender_as_mail_util_does() {
+    fn takes_the_sender_from_its_mailbox() {
         let split = |text: &str| {
             let mut metadata = TikaMetadata::new();
-            set_person_and_email(text, &mut metadata);
+            for address in flatten(parse_address_list(text).unwrap()) {
+                if let Address::Mailbox(mailbox) = &address {
+                    set_name_and_email(mailbox, &mut metadata);
+                }
+            }
             (
                 metadata.get("message:from-name").map(str::to_owned),
                 metadata.get("message:from-email").map(str::to_owned),
@@ -438,17 +397,21 @@ mod tests {
             split("ada@example.org"),
             (None, Some("ada@example.org".into()))
         );
-        assert_eq!(split("\"Name\""), (Some("Name".into()), None));
-        assert_eq!(split("a@b c@d"), (None, Some("c@d".into())));
+        assert_eq!(
+            split("\"ada@home\" <ada@example.org>"),
+            (Some("ada@home".into()), Some("ada@example.org".into()))
+        );
+        assert_eq!(split("Name"), (Some("Name".into()), None));
     }
 
     #[test]
     fn reads_headers_and_parts_as_mail_content_handler_does() {
-        let message = b"From: Ada <ada@example.org>\r\nSubject: =?utf-8?q?Caf=C3=A9?=\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\nX-Mailer: test\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b\r\nContent-Type: application/pdf; name=a.pdf\r\nContent-Disposition: attachment; filename=\"b.pdf\"\r\n\r\n%PDF\r\n--b--\r\n";
+        let message = b"From: Ada <ada@example.org>\r\nSubject: =?utf-8?q?Caf=C3=A9?=\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\nDate: not a date\r\nX-Mailer: test\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b\r\nContent-Type: application/pdf; name=a.pdf\r\nContent-Disposition: attachment; filename=\"b.pdf\"\r\n\r\n%PDF\r\n--b--\r\n";
         let mut metadata = TikaMetadata::new();
+        metadata.set("tk:resource-name", "notes.eml");
         let items = read(message, &mut metadata).unwrap();
         assert_eq!(metadata.get("dc:title"), Some("Café"));
-        assert_eq!(metadata.get("tk:resource-name"), Some("Café.eml"));
+        assert_eq!(metadata.get("tk:resource-name"), Some("notes.eml"));
         assert_eq!(
             metadata.get("dcterms:created"),
             Some("2024-03-05T13:30:00Z")

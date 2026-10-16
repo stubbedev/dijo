@@ -7,9 +7,12 @@
 //!   [`structured`], [`address`]), encoded words and bodies decoded as its codecs decode them
 //!   ([`codec`]);
 //! - a port of Tika's `MailContentHandler` makes metadata of the message's headers, its dates
-//!   read by `MailDateParser` ([`date`]), and of its parts the message's body ([`handler`]):
-//!   text and HTML parsed inline by the native text and HTML parsers, other parts handed to the
-//!   embedded document extractor.
+//!   read in the forms `MailDateParser` reads ([`date`]), and of its parts the message's body
+//!   ([`handler`]): text and HTML parsed inline by the native text and HTML parsers, other parts
+//!   handed to the embedded document extractor.
+//!
+//! Where mime4j and Tika slip, the port reads mail as the RFCs say instead: the modules name
+//! each such place with the issue that records Tika's behaviour.
 //!
 //! A message defers to Tika when it needs a charset the native decoders do not decode, names a
 //! time zone java.time would look up in its time-zone database, or holds a text or HTML part
@@ -29,6 +32,7 @@ mod structured;
 mod synthetic;
 
 pub(crate) use codec::decode_encoded_words;
+pub(crate) use date::{parse_date, MailDate};
 use handler::{read, Inline, Item, Problem};
 pub(crate) use mbox::MboxParser;
 
@@ -281,10 +285,23 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    use crate::formats::parity::{
+        assert_same_as_tika_departing, conformance_corpus, documents, Departure, Departures,
+    };
 
     const TIKA_NAME: &str = "org.apache.tika.parser.mail.RFC822Parser";
     const EMLX_NAME: &str = "ai.yobix.EmlxParser";
+
+    /// What the port does otherwise than Tika on purpose: Tika names a message after its
+    /// subject, and makes each line feed of a quoted-printable part a CRLF.
+    pub(super) const DEPARTURES: Departures = &[
+        Departure::Values("tk:resource-name", "#79"),
+        Departure::LineBreaks("#73"),
+    ];
+
+    /// The documents whose sender's name Tika's regular expression takes otherwise than the
+    /// port takes it from the parsed mailbox (#77), by file name.
+    const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
 
     /// Asserts parity on the documents of `parser` under `roots`, which it must parse all of,
     /// and that there are `count`.
@@ -292,8 +309,47 @@ mod tests {
         let (parsed, deferred) = documents(parser, roots);
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         assert_eq!(parsed.len(), count, "documents of {tika_name}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, tika_name);
+        let (other, paths): (Vec<&Path>, Vec<&Path>) =
+            parsed.iter().map(PathBuf::as_path).partition(|path| {
+                OTHER_SENDER_NAMES
+                    .iter()
+                    .any(|name| path.file_name().is_some_and(|file| file == *name))
+            });
+        assert_same_as_tika_departing(&paths, tika_name, DEPARTURES);
+        let mut departures = DEPARTURES.to_vec();
+        departures.push(Departure::Values("message:from-name", "#77"));
+        assert_same_as_tika_departing(&other, tika_name, &departures);
+    }
+
+    #[test]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+    fn takes_the_sender_name_from_the_mailbox() {
+        let path = documents(&Rfc822Parser, &[&conformance_corpus()])
+            .0
+            .into_iter()
+            .find(|path| path.ends_with("testGroupWiseEml.eml"))
+            .expect("Tika's GroupWise message");
+        let (_, metadata) = crate::Extractor::new()
+            .extract_file_to_string(path.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            metadata.get("message:from-name"),
+            Some(&vec!["Novell GroupWise".to_owned()])
+        );
+    }
+
+    #[test]
+    fn keeps_the_name_of_the_message_file() {
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(
+                b"From: a@example.org\r\nSubject: A/subject: of sorts\r\n\r\nBody.\r\n",
+            )
+            .unwrap();
+        assert_eq!(
+            metadata.get("dc:title"),
+            Some(&vec!["A/subject: of sorts".to_owned()])
+        );
+        assert_eq!(metadata.get("tk:resource-name"), None);
     }
 
     const ROOTS: [&str; 3] = [
