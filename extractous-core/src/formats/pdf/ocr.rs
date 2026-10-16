@@ -313,7 +313,7 @@ impl PageOcr {
 fn described(failure: &OcrError) -> String {
     let class = match failure {
         OcrError::TimedOut { .. } => "org.apache.tika.exception.TikaTimeoutException",
-        OcrError::Failed { .. } | OcrError::Model { .. } => {
+        OcrError::Failed { .. } | OcrError::Model { .. } | OcrError::Models { .. } => {
             "org.apache.tika.exception.TikaException"
         }
     };

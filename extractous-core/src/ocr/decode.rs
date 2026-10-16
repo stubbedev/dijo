@@ -201,8 +201,15 @@ fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>) -> Page {
         ColorType::Palette(bits @ (1 | 2 | 4 | 8)) => {
             let palette = palette.expect("a palette page has its colour map");
             unpack(&levels, width, bits)
-                .map(|index| palette.get(usize::from(index)).copied().unwrap_or(0))
-                .collect()
+                .map(|index| {
+                    palette.get(usize::from(index)).copied().ok_or_else(|| {
+                        format!(
+                            "a pixel of colour {index}, which the colour map of {} lacks",
+                            palette.len()
+                        )
+                    })
+                })
+                .collect::<Result<_, _>>()?
         }
         other => return Err(format!("cannot read pages of {other:?}")),
     };

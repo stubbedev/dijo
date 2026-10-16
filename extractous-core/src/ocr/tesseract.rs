@@ -22,6 +22,8 @@ const IDLE: Duration = Duration::from_secs(5 * 60);
 const OSD_MODEL: &str = "osd";
 /// The most threads tesseract's recognizer divides one reading's work among.
 const MAX_READING_THREADS: usize = 4;
+/// The extension of a model's file.
+const MODEL_EXTENSION: &str = ".traineddata";
 /// `RIL_WORD` of `TessPageIteratorLevel`.
 const WORD: c_int = 3;
 /// `PSM_OSD_ONLY`.
@@ -211,6 +213,8 @@ pub(crate) enum OcrError {
     Failed { image: String, model: String },
     /// It could not load a model.
     Model { model: String },
+    /// The models it reads with could not be listed.
+    Models { dir: String, reason: String },
 }
 
 impl fmt::Display for OcrError {
@@ -225,6 +229,9 @@ impl fmt::Display for OcrError {
                 "Reading {image} failed: tesseract could not read it with {model}"
             ),
             Self::Model { model } => write!(f, "tesseract cannot load the model {model}"),
+            Self::Models { dir, reason } => {
+                write!(f, "Listing tesseract's models under {dir} failed: {reason}")
+            }
         }
     }
 }
@@ -462,6 +469,25 @@ impl Tesseract {
         if let Some(languages) = known.as_ref() {
             return Ok(languages.clone());
         }
+        let languages = match self.data_dir() {
+            Some(dir) => models_under(&dir)?,
+            None => self.listed_languages()?,
+        };
+        *known = Some(languages.clone());
+        Ok(languages)
+    }
+
+    /// The directory tesseract reads its models from, when it is known without loading one: the
+    /// one it was given, or the one `TESSDATA_PREFIX` names.
+    fn data_dir(&self) -> Option<std::path::PathBuf> {
+        match &self.datapath {
+            Some(datapath) => Some(std::path::PathBuf::from(datapath.to_str().ok()?)),
+            None => std::env::var_os("TESSDATA_PREFIX").map(std::path::PathBuf::from),
+        }
+    }
+
+    /// The models an engine finds where tesseract looks by itself, as `--list-langs` lists them.
+    fn listed_languages(&self) -> Result<BTreeSet<String>, OcrError> {
         let engine = self.take(OSD_MODEL)?;
         let languages = unsafe {
             let listed = (self.api.available_languages)(engine.0.as_ptr());
@@ -477,7 +503,6 @@ impl Tesseract {
             languages
         };
         self.release(OSD_MODEL, engine);
-        *known = Some(languages.clone());
         Ok(languages)
     }
 
@@ -575,6 +600,30 @@ impl Drop for Tesseract {
             unsafe { (self.api.delete)(idle.engine.0.as_ptr()) };
         }
     }
+}
+
+/// The models under a directory, in its subdirectories too, named as `-l` names them: their
+/// paths below it without the `.traineddata`, with a slash between directories on every
+/// platform.
+fn models_under(dir: &std::path::Path) -> Result<BTreeSet<String>, OcrError> {
+    let unlisted = |e: std::io::Error| OcrError::Models {
+        dir: dir.display().to_string(),
+        reason: e.to_string(),
+    };
+    let mut models = BTreeSet::new();
+    let mut pending = vec![(dir.to_path_buf(), String::new())];
+    while let Some((directory, prefix)) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(unlisted)? {
+            let entry = entry.map_err(unlisted)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().map_err(unlisted)?.is_dir() {
+                pending.push((entry.path(), format!("{prefix}{name}/")));
+            } else if let Some(model) = name.strip_suffix(MODEL_EXTENSION) {
+                models.insert(format!("{prefix}{model}"));
+            }
+        }
+    }
+    Ok(models)
 }
 
 /// The text an engine recognized, and its words' mean confidence.
@@ -793,6 +842,29 @@ mod tests {
         assert_eq!(clockwise_quarter_turns(90), 3);
         assert_eq!(clockwise_quarter_turns(180), 2);
         assert_eq!(clockwise_quarter_turns(270), 1);
+    }
+
+    #[test]
+    fn lists_models_as_tesseract_names_them() {
+        let scratch = crate::formats::parity::Scratch::new("tessdata");
+        scratch.write("eng.traineddata", b"");
+        scratch.write("notes.txt", b"");
+        std::fs::create_dir(scratch.directory().join("script")).unwrap();
+        std::fs::write(scratch.directory().join("script/Latin.traineddata"), b"").unwrap();
+        let models: Vec<String> = models_under(scratch.directory())
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(models, ["eng", "script/Latin"]);
+    }
+
+    #[test]
+    fn lists_the_models_tesseract_lists() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        assert_eq!(
+            tesseract.languages().unwrap(),
+            tesseract.listed_languages().unwrap()
+        );
     }
 
     #[test]

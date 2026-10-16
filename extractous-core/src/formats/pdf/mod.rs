@@ -4,9 +4,11 @@
 //! `PDFTextStripper` assembles it from the glyphs its content stream shows, written by
 //! `PDF2XHTML` in our reading order, or for a tagged document by `PDFMarkedContent2XHTML`
 //! through its structure tree, then the bookmarks, the files the document embeds, parsed as
-//! embedded documents, and the form. Documents with a page Tika would OCR, and documents with
-//! what the port does not do (encryption the empty password does not open, XFA forms and fonts
-//! it cannot measure, among others), are left to Tika.
+//! embedded documents, and the form. The pages `TextLayerCheckingPdfParser` reads by OCR are
+//! rendered and read with tesseract ([`ocr`]). Documents with a page Tika would OCR with no
+//! tesseract to run, and documents with what the port does not do (encryption the empty
+//! password does not open, XFA forms and fonts it cannot measure, among others), are left to
+//! Tika.
 
 mod afm;
 mod attachment;
