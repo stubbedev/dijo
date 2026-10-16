@@ -125,6 +125,8 @@ pub(crate) struct Xhtml<'h> {
     head: Head,
     ended: bool,
     embedding: Embedding<'h>,
+    /// What learns the metadata the head shows, once it is written.
+    on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
 }
 
 impl<'h> Xhtml<'h> {
@@ -140,12 +142,26 @@ impl<'h> Xhtml<'h> {
         context: &'h ParseContext<'h>,
         body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
     ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
+        Self::write_reporting_head(handler, metadata, context, None, body)
+    }
+
+    /// Writes a document as [`Xhtml::write`] does, handing `on_head` the metadata the head shows
+    /// once it is written: what a reader of the output can know of the document before its
+    /// content.
+    pub(crate) fn write_reporting_head<E: From<Stop>>(
+        handler: &'h mut dyn ContentHandler,
+        metadata: TikaMetadata,
+        context: &'h ParseContext<'h>,
+        on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
+        body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
+    ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
         let mut xhtml = Self {
             handler,
             metadata,
             head: Head::NotStarted,
             ended: false,
             embedding: Embedding::new(context),
+            on_head,
         };
         let result = xhtml
             .start_document()
@@ -470,6 +486,9 @@ impl<'h> Xhtml<'h> {
         let written = self.write_head(&metadata);
         self.metadata = metadata;
         written?;
+        if let Some(on_head) = &mut self.on_head {
+            on_head(&self.metadata);
+        }
         self.handler.end_element("head")?;
         self.newline()?;
         self.handler
