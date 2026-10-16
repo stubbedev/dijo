@@ -29,10 +29,65 @@ pub(super) enum Enricher<'a> {
     Skipping,
     /// The enricher reads the image, decoded.
     Reading {
-        tesseract: &'static Tesseract,
-        settings: OcrSettings,
+        reader: OcrReader,
         decoded: Decoded<'a>,
     },
+}
+
+/// What `PreparingOcrParser` reads images with in this process: tesseract, under an
+/// extraction's OCR settings.
+pub(crate) struct OcrReader {
+    tesseract: &'static Tesseract,
+    settings: OcrSettings,
+}
+
+impl OcrReader {
+    /// The reader under the OCR settings of `configs`, or why this process cannot read.
+    pub(crate) fn of(configs: &ParserConfigs) -> Result<Self, Unported> {
+        let tesseract = ocr::tesseract().map_err(|reason| {
+            Unported::new(format!(
+                "OCR in this process, which needs tesseract's library: {reason}"
+            ))
+        })?;
+        Ok(Self {
+            tesseract,
+            settings: OcrSettings::of(&configs.ocr),
+        })
+    }
+
+    /// `PreparingOcrParser.parse` of a decoded image of `file_size` bytes, turned upright by
+    /// its EXIF `orientation`, the image on page `page` of the document embedding it: read in
+    /// the script the extraction assumes, the script it learns kept, and what it read written
+    /// into the document.
+    pub(crate) fn read(
+        &self,
+        xhtml: &mut Xhtml,
+        decoded: Decoded<'_>,
+        file_size: u64,
+        orientation: Option<Orientation>,
+        page: Option<u32>,
+    ) -> Result<(), Failure> {
+        let context = xhtml.context();
+        let assumed = self
+            .settings
+            .auto()
+            .then(|| context.assumed_ocr_script())
+            .flatten();
+        let read = ocr::read_image(
+            self.tesseract,
+            &self.settings,
+            decoded,
+            file_size,
+            orientation,
+            assumed.as_deref(),
+        )
+        .map_err(|e| Failure::Extraction(Error::ParseError(e.to_string())))?;
+        if let Some(learned) = &read.learned {
+            context.learn_ocr_script(learned.clone());
+        }
+        write(xhtml, &read, page)?;
+        Ok(())
+    }
 }
 
 impl<'a> Enricher<'a> {
@@ -57,8 +112,8 @@ impl<'a> Enricher<'a> {
                 "an image of {base}, which the port does not decode for OCR"
             ))
         })?;
-        let settings = OcrSettings::of(&configs.ocr);
-        let decoded = ocr::decode(input, format, settings.timeout()).map_err(|undecoded| {
+        let timeout = OcrSettings::of(&configs.ocr).timeout();
+        let decoded = ocr::decode(input, format, timeout).map_err(|undecoded| {
             Unported::new(match undecoded {
                 #[cfg(not(feature = "static-image"))]
                 Undecoded::NoDecoder => format!(
@@ -70,14 +125,8 @@ impl<'a> Enricher<'a> {
                 }
             })
         })?;
-        let tesseract = ocr::tesseract().map_err(|reason| {
-            Unported::new(format!(
-                "OCR in this process, which needs tesseract's library: {reason}"
-            ))
-        })?;
         Ok(Self::Reading {
-            tesseract,
-            settings,
+            reader: OcrReader::of(configs)?,
             decoded,
         })
     }
@@ -89,12 +138,7 @@ impl<'a> Enricher<'a> {
             return Ok(());
         }
         xhtml.delegate_to(PREPARING_OCR_PARSER);
-        let Self::Reading {
-            tesseract,
-            settings,
-            decoded,
-        } = self
-        else {
+        let Self::Reading { reader, decoded } = self else {
             return Ok(());
         };
         let metadata = xhtml.metadata_mut();
@@ -103,25 +147,7 @@ impl<'a> Enricher<'a> {
             .get(PAGE_NUMBER)
             .and_then(crate::java::parse_int)
             .and_then(|page| u32::try_from(page).ok());
-        let context = xhtml.context();
-        let assumed = settings
-            .auto()
-            .then(|| context.assumed_ocr_script())
-            .flatten();
-        let read = ocr::read_image(
-            tesseract,
-            &settings,
-            decoded,
-            file_size as u64,
-            orientation,
-            assumed.as_deref(),
-        )
-        .map_err(|e| Failure::Extraction(Error::ParseError(e.to_string())))?;
-        if let Some(learned) = &read.learned {
-            context.learn_ocr_script(learned.clone());
-        }
-        write(xhtml, &read, page)?;
-        Ok(())
+        reader.read(xhtml, decoded, file_size as u64, orientation, page)
     }
 }
 

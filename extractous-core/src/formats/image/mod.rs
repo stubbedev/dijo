@@ -6,7 +6,7 @@
 //! The enricher reads the image with tesseract, natively too; with OCR skipped it records itself
 //! but reads nothing.
 
-mod enricher;
+pub(super) mod enricher;
 mod extractor;
 mod image_xmp;
 mod imageio;

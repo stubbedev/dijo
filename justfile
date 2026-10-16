@@ -88,6 +88,25 @@ handler-reference:
     cp "$fixtures/HandlerChainReference.java" "$sources/"
     java -cp "$jars/*" "$sources/HandlerChainReference.java" "$fixtures/scripts.txt" "$fixtures/chains.tsv"
 
+# Regenerate how our Java DjvuRenderer renders each page of the DjVu documents of the corpora, which the
+# Rust renderer is tested against.
+[unix]
+djvu-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/djvu
+    sources=target/djvu-reference/ai/yobix
+    rm -rf "$sources"
+    mkdir -p "$sources"
+    for class in BzzDecoder DjvuDocument DjvuRenderer Iw44Decoder Jb2Decoder ZpDecoder; do
+        cp "extractous-core/tika-native/src/main/java/ai/yobix/$class.java" "$sources/"
+    done
+    cp "$fixtures/DjvuReference.java" "$sources/"
+    mapfile -t documents < <(find test_files/documents quality/corpus "$fixtures" -name '*.djvu' | sort)
+    java -cp "$jars/*" "$sources/DjvuReference.java" "$fixtures/renders.tsv" "${documents[@]}"
+
 # Regenerate what Apache Tika's TextAndCSVParser makes of the plain text, CSV and TSV inputs of the corpora,
 # which the Rust port of its decisions is tested against.
 [unix]
