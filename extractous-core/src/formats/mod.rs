@@ -1081,10 +1081,16 @@ mod tests {
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn spools_tikas_documents_as_tikas_path_does() {
         let corpus = crate::formats::parity::conformance_corpus();
-        let exceptions = [(
-            "testZSTD.zst",
-            crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
-        )];
+        let exceptions = [
+            (
+                "testZSTD.zst",
+                crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
+            ),
+            (
+                "testPSD_xmp.psd",
+                crate::formats::parity::PSD_PROFILE_AWT_REJECTS,
+            ),
+        ];
         let mut differences = Vec::new();
         let mut spooling = 0;
         for parser in PARSERS {

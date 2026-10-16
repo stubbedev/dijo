@@ -586,10 +586,7 @@ mod tests {
     /// Tika's CMS test documents the native path leaves to Tika's: digested data typed as a
     /// signature, which Bouncy Castle fails to read as signed data, and signed data in PEM,
     /// which it cannot read at all.
-    const LEFT_TO_TIKA: [&str; 2] = [
-        "testPKCS7_digested.p7",
-        "testPKCS7_signed_data_def.pem",
-    ];
+    const LEFT_TO_TIKA: [&str; 2] = ["testPKCS7_digested.p7", "testPKCS7_signed_data_def.pem"];
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]

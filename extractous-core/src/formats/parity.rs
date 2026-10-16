@@ -36,6 +36,13 @@ use crate::{CharSet, Metadata};
 
 const SMALL_LIMIT: usize = 100;
 
+/// Why the native path extracts a Photoshop image Tika's path fails on: with OCR on, our Java
+/// OCR path converts the image's colours with AWT, whose colour management throws
+/// `CMMException: Invalid profile` on its ICC profile; the native path prepares it without.
+pub(crate) const PSD_PROFILE_AWT_REJECTS: &str = "Tika's OCR path throws CMMException on the \
+                                                  image's colour profile; the native path reads \
+                                                  it";
+
 /// Why the native path extracts Zstandard files Tika's path leaves empty: Tika's native image
 /// lacks zstd-jni, so its path parses them with `EmptyParser`.
 pub(crate) const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as \
@@ -701,6 +708,22 @@ fn extracted(
 
 /// What OCR read in a document, by each path, as their streamed UTF-8 XHTML has it, when either
 /// read any.
+/// Two streamed UTF-8 XHTML extractions, Tika's path's and the native parser's, without what
+/// OCR read in either.
+fn without_ocr_both(tika: Extracted, native: Extracted) -> (Extracted, Extracted) {
+    let texts = |extracted: &Extracted| {
+        ocr_texts(std::str::from_utf8(&extracted.text).expect("XHTML in UTF-8"))
+    };
+    let (tika_read, native_read) = (texts(&tika), texts(&native));
+    if tika_read.is_empty() && native_read.is_empty() {
+        return (tika, native);
+    }
+    (
+        without_ocr(tika, Output::Xml, CharSet::UTF_8, &tika_read),
+        without_ocr(native, Output::Xml, CharSet::UTF_8, &native_read),
+    )
+}
+
 fn read_by_ocr(xhtml: &Comparison) -> Option<OcrTexts> {
     let (_, _, _, Ok(tika), Ok(native)) = xhtml else {
         return None;
@@ -952,22 +975,23 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
     match (tika, native) {
         (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
             let names = tika_names(native_name, tika_name, &[]);
-            let tika = (
-                comparable(Extracted { text, metadata }, CharSet::UTF_8),
-                spooled(embedded, tika_spool.directory()),
-            );
-            let native = (
-                comparable(
-                    as_tika(
-                        Extracted {
-                            text: native_text,
-                            metadata: native_metadata,
-                        },
-                        &names,
-                        CharSet::UTF_8,
-                    ),
+            let tika_extracted = comparable(Extracted { text, metadata }, CharSet::UTF_8);
+            let native_extracted = comparable(
+                as_tika(
+                    Extracted {
+                        text: native_text,
+                        metadata: native_metadata,
+                    },
+                    &names,
                     CharSet::UTF_8,
                 ),
+                CharSet::UTF_8,
+            );
+            let (tika_extracted, native_extracted) =
+                without_ocr_both(tika_extracted, native_extracted);
+            let tika = (tika_extracted, spooled(embedded, tika_spool.directory()));
+            let native = (
+                native_extracted,
                 as_tika_spools(spooled(native_embedded, native_spool.directory()), &tika.1),
             );
             if native == tika {
