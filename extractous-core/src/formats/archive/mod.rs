@@ -43,10 +43,9 @@ fn entry_metadata(file: &ArchiveFile, xhtml: &mut Xhtml) -> Result<TikaMetadata,
     }
     metadata.set("Content-Length", file.size.to_string());
     if !file.name.is_empty() {
-        let name = file.name.replace('\\', "/");
-        metadata.set(RESOURCE_NAME, name.clone());
-        metadata.set(INTERNAL_PATH, name.clone());
-        write_entry_div(xhtml, &name)?;
+        metadata.set(RESOURCE_NAME, file.name.clone());
+        metadata.set(INTERNAL_PATH, file.name.clone());
+        write_entry_div(xhtml, &file.name)?;
     }
     Ok(metadata)
 }

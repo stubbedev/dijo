@@ -1,6 +1,8 @@
-//! Tika's `PackageParser` over the TAR, ar and cpio archives commons-compress's
-//! `ArchiveStreamFactory` recognizes: each file but a directory handed to the embedded document
-//! extractor with the metadata `handleEntryMetadata` gives it, in archive order.
+//! Tika's `PackageParser` over TAR, ar and cpio archives: each file but a directory handed to the
+//! embedded document extractor with the metadata `handleEntryMetadata` gives it, in archive
+//! order. The archive is read as the format its detected type names, and keeps that type; Tika
+//! reads it as the format `ArchiveStreamFactory` recognizes in its bytes and sets that format's
+//! type, but for GNU TAR (#101).
 
 use super::nesting::Scan;
 use super::write_files;
@@ -13,10 +15,22 @@ use crate::mime::MediaType;
 
 const GTAR: &str = "application/x-gtar";
 
-/// The format `ArchiveStreamFactory` recognizes in `input` and the files its archive input
-/// stream gives, or why the native readers do not read them.
-fn read(input: &[u8]) -> Result<(Archiver, Vec<ArchiveFile>), String> {
-    let archiver = Archiver::detect(input)
+/// The format `content_type` names.
+fn named(content_type: &str) -> Option<Archiver> {
+    match MediaType::parse(content_type)?.base_type().as_str() {
+        "application/x-tar" | GTAR => Some(Archiver::Tar),
+        "application/x-archive" => Some(Archiver::Ar),
+        "application/x-cpio" => Some(Archiver::Cpio),
+        _ => None,
+    }
+}
+
+/// The format `content_type` names, else the one `ArchiveStreamFactory` recognizes in `input`,
+/// and the files its reader gives, or why the native readers do not read them.
+fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, String> {
+    let archiver = content_type
+        .and_then(named)
+        .or_else(|| Archiver::detect(input))
         .ok_or_else(|| "commons-compress recognizes no archive in it".to_owned())?;
     let files = match archiver {
         Archiver::Tar => tar::files(input),
@@ -28,9 +42,7 @@ fn read(input: &[u8]) -> Result<(Archiver, Vec<ArchiveFile>), String> {
             ))
         }
     };
-    files
-        .map(|files| (archiver, files))
-        .map_err(|undecoded| format!("the {archiver:?} archive: {undecoded}"))
+    files.map_err(|undecoded| format!("the {archiver:?} archive: {undecoded}"))
 }
 
 /// Tika's `PackageParser`.
@@ -58,30 +70,18 @@ impl Parser for PackageParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let (archiver, files) = read(input)?;
+        let files = read(input, metadata.get("Content-Type"))?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
             return Err(Declined::Deferred(reason));
         }
         Ok(Box::new(move |xhtml| {
-            update_media_type(archiver, xhtml.metadata_mut());
             let written = write_files(&files, xhtml);
             xhtml.end_document()?;
             written
         }))
-    }
-}
-
-/// `updateMediaType`: the format's type, unless the archive was detected as a GNU TAR archive.
-fn update_media_type(archiver: Archiver, metadata: &mut TikaMetadata) {
-    let gtar = metadata
-        .get("Content-Type")
-        .and_then(MediaType::parse)
-        .is_some_and(|incoming| incoming.as_str() == GTAR);
-    if !gtar {
-        metadata.set("Content-Type", archiver.media_type());
     }
 }
 

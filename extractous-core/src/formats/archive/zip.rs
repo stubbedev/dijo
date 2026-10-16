@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use super::nesting::Scan;
 use super::write_entry_div;
 use crate::compress::zip::extra::Instant;
-use crate::compress::zip::file::{NameSource, ZipEntry, ZipFile};
+use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::stream::ZipStream;
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
@@ -229,6 +229,7 @@ fn write_entries<'z>(
         let name = entry_name(entry).ok_or_else(|| {
             Failure::Malformed(format!("the name of {} cannot be decoded", entry.name))
         })?;
+        let name = zip_file::entry_name(name, entry.version_made_by);
         if entry.uses_encryption() {
             record_unread(
                 xhtml,
@@ -258,9 +259,6 @@ fn write_entries<'z>(
                 )))
             }
         };
-        // Tika identifies the div by the name before its backslashes become slashes, and the
-        // resource by the name after (#99).
-        let name = name.replace('\\', "/");
         let metadata = entry_metadata(entry, &name, zone);
         write_entry_div(xhtml, &name)?;
         xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;

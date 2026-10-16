@@ -112,17 +112,65 @@ impl EmbeddedExtractResult {
         fs::create_dir_all(base_dir).map_err(|e| Error::IoError(e.to_string()))?;
 
         for (index, doc) in self.documents.iter().enumerate() {
-            let filename = if doc.resource_name.is_empty() {
-                format!("embedded_{}", index)
-            } else {
-                doc.resource_name.clone()
-            };
+            let filename = safe_relative_path(&doc.resource_name)
+                .unwrap_or_else(|| format!("embedded_{}", index).into());
 
             let file_path = Path::new(base_dir).join(&filename);
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| Error::IoError(e.to_string()))?;
+            }
             doc.save_to_file(file_path.to_str().unwrap())
                 .map_err(|e| Error::IoError(e.to_string()))?;
         }
 
         Ok(())
+    }
+}
+
+/// A resource name as a path below a directory on this platform, or `None` when nothing of it
+/// is left: its components split at `/`, which archive formats separate paths with, empty, `.`
+/// and `..` ones dropped so it cannot leave the directory, and each character a file name on
+/// this platform cannot hold, `\\` among them on Windows, made `_`.
+fn safe_relative_path(resource_name: &str) -> Option<std::path::PathBuf> {
+    let invalid =
+        |c: char| c == '\0' || (cfg!(windows) && (c.is_control() || "<>:\"\\|?*".contains(c)));
+    let path: std::path::PathBuf = resource_name
+        .split('/')
+        .filter(|component| !matches!(*component, "" | "." | ".."))
+        .map(|component| component.replace(invalid, "_"))
+        .collect();
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_saved_documents_inside_the_directory() {
+        let path =
+            |name: &str| safe_relative_path(name).map(|path| path.to_string_lossy().into_owned());
+        assert_eq!(path(""), None);
+        assert_eq!(path("../.."), None);
+        assert_eq!(
+            path("/etc/passwd").as_deref(),
+            Some(if cfg!(windows) {
+                "etc\\passwd"
+            } else {
+                "etc/passwd"
+            })
+        );
+        assert_eq!(
+            path("a/../b.txt").as_deref(),
+            Some(if cfg!(windows) { "a\\b.txt" } else { "a/b.txt" })
+        );
+        assert_eq!(
+            path("back\\slash.txt").as_deref(),
+            Some(if cfg!(windows) {
+                "back_slash.txt"
+            } else {
+                "back\\slash.txt"
+            })
+        );
     }
 }

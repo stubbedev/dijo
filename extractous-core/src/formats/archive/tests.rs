@@ -226,7 +226,6 @@ fn extracts_tar_ar_and_cpio_archives_as_tikas_path_does() {
                     (b"pax", b'0', text),
                     (b"././@LongLink", b'L', long.as_bytes()),
                     (b"cut", b'0', html),
-                    (b"back\\slash.txt", b'0', text),
                     (b"link", b'2', b""),
                 ]),
             ),
@@ -240,6 +239,17 @@ fn extracts_tar_ar_and_cpio_archives_as_tikas_path_does() {
             ),
         ],
     );
+}
+
+/// A backslash is a character of a TAR name, which Tika turns into a slash (#101).
+#[test]
+fn keeps_backslashes_in_tar_names() {
+    let archive = tar(&[(b"back\\slash.txt", b'0', b"text")]);
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(&archive)
+        .unwrap();
+    assert!(xml.contains("id=\"back\\slash.txt\""), "{xml}");
 }
 
 #[test]

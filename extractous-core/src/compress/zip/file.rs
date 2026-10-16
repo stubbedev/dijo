@@ -26,6 +26,9 @@ const ZSTD: [u16; 2] = [93, 20];
 const XZ: u16 = 95;
 const PLATFORM_FAT: u16 = 0;
 const PLATFORM_UNIX: u16 = 3;
+/// The hosts of "version made by" whose file systems separate paths with `\`: MS-DOS and OS/2
+/// FAT, Windows NTFS and VFAT.
+const WINDOWS_PLATFORMS: [u16; 3] = [PLATFORM_FAT, 10, 14];
 
 type Result<T> = std::result::Result<T, Corrupt>;
 
@@ -381,10 +384,12 @@ impl<'a> ZipFile<'a> {
     }
 }
 
-/// `ZipArchiveEntry.setName`: a name without a slash, of an entry made on FAT, with its
-/// backslashes turned into slashes.
-pub(super) fn entry_name(name: String, version_made_by: u16) -> String {
-    if version_made_by >> 8 & 0x0F == PLATFORM_FAT && !name.contains('/') {
+/// The name of an entry made on a Windows file system, where `\` separates paths and no name
+/// holds one, with its backslashes turned into slashes; any other name as stored, where `\` is
+/// a character of the name. commons-compress turns them only for FAT names without a slash,
+/// and Tika then turns every backslash of every name (#101).
+pub(crate) fn entry_name(name: String, version_made_by: u16) -> String {
+    if WINDOWS_PLATFORMS.contains(&(version_made_by >> 8)) {
         name.replace('\\', "/")
     } else {
         name
@@ -402,6 +407,16 @@ pub(super) fn unicode_text(fields: &ExtraFields, id: u16, original: &[u8]) -> Op
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn turns_backslashes_only_in_names_made_on_windows() {
+        let made_on = |host: u16| host << 8 | 20;
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(0)), "a/b.txt");
+        assert_eq!(entry_name("d/a\\b.txt".into(), made_on(10)), "d/a/b.txt");
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(14)), "a/b.txt");
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(3)), "a\\b.txt");
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(19)), "a\\b.txt");
+    }
+
     use std::io::Write;
 
     use super::*;
