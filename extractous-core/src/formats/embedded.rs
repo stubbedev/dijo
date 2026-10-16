@@ -16,7 +16,6 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Failure, InputFile};
-use crate::java::LINE_SEPARATOR;
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -316,9 +315,10 @@ pub(crate) fn record_exception(metadata: &mut TikaMetadata, exception: &str) {
     metadata.add(EXCEPTION_WARNING, first_line(exception));
 }
 
-/// The first line of the stack trace `printStackTrace` writes of `exception`.
+/// The first line of the stack trace `printStackTrace` writes of `exception`, ended by `\n` on
+/// every platform: Java ends it with the platform's line separator (#108).
 fn first_line(exception: &str) -> String {
-    format!("{exception}{LINE_SEPARATOR}")
+    format!("{exception}\n")
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.

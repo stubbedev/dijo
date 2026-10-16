@@ -21,9 +21,6 @@ use std::collections::HashMap;
 use crate::text::charset::Charset;
 use crate::unicode::{decimal_digit, is_whitespace};
 
-/// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
-pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
-
 const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
 const MIN_TREEIFY_CAPACITY: usize = 64;

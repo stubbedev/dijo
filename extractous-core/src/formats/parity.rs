@@ -289,12 +289,14 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
-/// A Java stack trace without its frames.
+/// A Java stack trace without its frames, its lines ended by `\n`: Java ends them with the
+/// platform's line separator, the native parsers with `\n` everywhere (#108).
 fn without_frames(trace: &str) -> String {
     trace
         .split_inclusive('\n')
         .filter(|line| !line.starts_with('\t'))
-        .collect()
+        .collect::<String>()
+        .replace("\r\n", "\n")
 }
 
 /// Text written in `char_set`, decoded, unless it is not valid in it.
