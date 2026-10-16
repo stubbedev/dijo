@@ -1,25 +1,25 @@
 //! Tika's `AbstractPDF2XHTML` and `PDF2XHTML`: each page a `div` of paragraphs the stripper's
 //! calls open and close, the page's annotations after its text, then the bookmarks and the
-//! form, and the metadata the writer collects on the way.
+//! form, and the metadata the writer collects on the way, recorded as they are written.
 
 use std::collections::{BTreeSet, HashSet};
 
 use lopdf::{Dictionary, Object};
 
-use super::attachment::{self, EmbeddedFile, FileSpec, SpecKey, Written};
+use super::attachment::{self, FileSpec, SpecKey, Written};
 use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
 use super::form;
+use super::ocr::OcrCheck;
 use super::position::TextPosition;
 use super::reading_order;
+use super::recording::Recording;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::{jfloat, xfa, Unported};
-use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::is_blank;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::Failure;
 
 /// How many annotation types and subtypes Tika lists, at most.
 const MAX_ANNOTATION_TYPES: usize = 100;
@@ -28,21 +28,11 @@ const MAX_BOOKMARK_ITEMS: usize = 100_000;
 /// `AbstractPDF2XHTML.MAX_BOOKMARK_DEPTH`.
 const MAX_BOOKMARK_DEPTH: usize = 50;
 
-/// Why writing the document stopped.
+/// Why recording the document stopped.
 pub(super) enum WriteFailure {
+    /// The recording outgrew the extraction's memory budget.
     Stop(Stop),
     Unported(Unported),
-    /// Parsing a document embedded in it failed in a way that fails the document.
-    Embedded(Failure),
-}
-
-impl From<Failure> for WriteFailure {
-    fn from(failure: Failure) -> Self {
-        match failure {
-            Failure::Stopped(stop) => Self::Stop(stop),
-            other => Self::Embedded(other),
-        }
-    }
 }
 
 impl From<Stop> for WriteFailure {
@@ -66,151 +56,51 @@ impl From<WriteError> for WriteFailure {
     }
 }
 
-impl From<WriteFailure> for Failure {
-    fn from(failure: WriteFailure) -> Self {
-        match failure {
-            WriteFailure::Stop(stop) => Failure::Stopped(stop),
-            WriteFailure::Unported(unported) => Failure::Malformed(format!(
-                "the document needs what the port does not do, though it was not deferred: {}",
-                unported.0
-            )),
-            WriteFailure::Embedded(failure) => failure,
-        }
-    }
-}
-
-/// What a page's text layer was, for the decision whether OCR reads it instead.
-#[derive(Debug, Clone)]
-pub(super) struct PageLayer {
-    pub(super) glyphs: i32,
-    pub(super) unmapped: i32,
-    /// The characters and whitespace the page's `div` holds, as Tika's page checker records them.
-    pub(super) text: String,
-}
-
-/// What a page's `div` holds, held back until the page ends.
-#[derive(Debug)]
-enum Held {
-    Start {
-        name: String,
-        attributes: Vec<(String, String)>,
-    },
-    End(String),
-    Characters(String),
-    Newline,
-    Embedded(EmbeddedFile),
-}
-
 /// The stripper's callbacks as `PDF2XHTML` and, for a tagged document,
 /// `PDFMarkedContent2XHTML` take them.
-pub(super) struct PageWriter<'p, 'x, 'h> {
-    pub(super) xhtml: &'x mut Xhtml<'h>,
+pub(super) struct PageWriter<'p, 'r> {
+    pub(super) out: &'r mut Recording,
     /// `PDFTextStripper.inParagraph`.
     in_paragraph: bool,
     pub(super) tagged: Option<Tagged<'p>>,
-    /// The text of the current page's `div`, while it is recorded.
-    recording: Option<String>,
-    /// What the current page's `div` holds so far, when pages are written only once they end,
-    /// as our `TextLayerCheckingPdfParser` passes them on.
-    held: Option<Vec<Held>>,
+    /// The text of the current page's `div`, while it is kept for the page's assessment.
+    layer_text: Option<String>,
 }
 
-impl PageWriter<'_, '_, '_> {
-    /// Writes characters, recorded as Tika's page checker records them.
+impl PageWriter<'_, '_> {
+    /// Writes characters, kept as Tika's page checker keeps them.
     pub(super) fn characters(&mut self, text: &str) -> Result<(), Stop> {
-        if let Some(recording) = self.recording.as_mut() {
-            recording.extend(text.chars().map(Xhtml::safe_char));
+        if let Some(layer_text) = self.layer_text.as_mut() {
+            layer_text.extend(text.chars().map(Xhtml::safe_char));
         }
-        match self.held.as_mut() {
-            Some(held) => {
-                held.push(Held::Characters(text.to_owned()));
-                Ok(())
-            }
-            None => self.xhtml.characters(text),
-        }
+        self.out.characters(text)
     }
 
     pub(super) fn newline(&mut self) -> Result<(), Stop> {
-        if let Some(recording) = self.recording.as_mut() {
-            recording.push('\n');
+        if let Some(layer_text) = self.layer_text.as_mut() {
+            layer_text.push('\n');
         }
-        match self.held.as_mut() {
-            Some(held) => {
-                held.push(Held::Newline);
-                Ok(())
-            }
-            None => self.xhtml.newline(),
-        }
+        self.out.newline()
     }
 
-    /// Starts an element, its indentation recorded.
+    /// Starts an element, its indentation kept.
     pub(super) fn start(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         if Xhtml::is_indented(name) {
-            if let Some(recording) = self.recording.as_mut() {
-                recording.push('\t');
+            if let Some(layer_text) = self.layer_text.as_mut() {
+                layer_text.push('\t');
             }
         }
-        match self.held.as_mut() {
-            Some(held) => {
-                held.push(Held::Start {
-                    name: name.to_owned(),
-                    attributes: attributes
-                        .iter()
-                        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                        .collect(),
-                });
-                Ok(())
-            }
-            None => self.xhtml.start_element_with(name, attributes),
-        }
+        self.out.start_element_with(name, attributes)
     }
 
-    /// Ends an element, the line break after a block recorded.
+    /// Ends an element, the line break after a block kept.
     pub(super) fn end(&mut self, name: &str) -> Result<(), Stop> {
         if Xhtml::is_endline(name) {
-            if let Some(recording) = self.recording.as_mut() {
-                recording.push('\n');
+            if let Some(layer_text) = self.layer_text.as_mut() {
+                layer_text.push('\n');
             }
         }
-        match self.held.as_mut() {
-            Some(held) => {
-                held.push(Held::End(name.to_owned()));
-                Ok(())
-            }
-            None => self.xhtml.end_element(name),
-        }
-    }
-
-    /// Parses a file the page's annotations embed, in what the page's `div` holds when it is
-    /// held back.
-    fn embedded(&mut self, file: EmbeddedFile) -> Result<(), WriteFailure> {
-        match self.held.as_mut() {
-            Some(held) => {
-                held.push(Held::Embedded(file));
-                Ok(())
-            }
-            None => parse_embedded(self.xhtml, &file),
-        }
-    }
-
-    /// Writes what the page's `div` holds, when it was held back.
-    fn release(&mut self) -> Result<(), WriteFailure> {
-        let Some(held) = self.held.as_mut() else {
-            return Ok(());
-        };
-        for item in std::mem::take(held) {
-            match item {
-                Held::Start { name, attributes } => {
-                    self.xhtml
-                        .start_element_with(&name, &borrowed(&attributes))?;
-                }
-                Held::End(name) => self.xhtml.end_element(&name)?,
-                Held::Characters(text) => self.xhtml.characters(&text)?,
-                Held::Newline => self.xhtml.newline()?,
-                Held::Embedded(file) => parse_embedded(self.xhtml, &file)?,
-            }
-        }
-        Ok(())
+        self.out.end_element(name)
     }
 
     /// `PDF2XHTML.writeParagraphStart`: the stripper's, then a `p`.
@@ -245,7 +135,7 @@ impl PageWriter<'_, '_, '_> {
     }
 }
 
-impl Callbacks for PageWriter<'_, '_, '_> {
+impl Callbacks for PageWriter<'_, '_> {
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]) {
         if let Some(tagged) = &self.tagged {
             if tagged.reading_order {
@@ -293,61 +183,53 @@ impl Callbacks for PageWriter<'_, '_, '_> {
 }
 
 /// The document being written.
-pub(super) struct DocumentWriter<'p, 'x, 'h> {
+pub(super) struct DocumentWriter<'p, 'r> {
     pdf: &'p Pdf,
     engine: Engine<'p>,
-    pub(super) page: PageWriter<'p, 'x, 'h>,
+    pub(super) page: PageWriter<'p, 'r>,
     /// `getCurrentPageNo`.
     page_number: usize,
     /// Whether untagged pages are put into reading order.
     reading_order: bool,
+    /// How Tika's path decides whether it OCRs a page, which leaves the document to it.
+    ocr: OcrCheck,
     annotation_types: BTreeSet<String>,
     annotation_subtypes: BTreeSet<String>,
     total_glyphs: i64,
     total_unmapped: i64,
     /// Tika's `extractedFiles`: the file specifications annotations led to.
     extracted: HashSet<SpecKey>,
-    /// Whether the document is written only to decide whether it is deferred, its embedded
-    /// files not parsed and the text layer of each page recorded.
-    dry_run: bool,
-    /// The text layer of each page, when recorded.
-    pub(super) layers: Option<Vec<PageLayer>>,
 }
 
-impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
+impl<'p, 'r> DocumentWriter<'p, 'r> {
     pub(super) fn new(
         pdf: &'p Pdf,
-        xhtml: &'x mut Xhtml<'h>,
+        out: &'r mut Recording,
         tagged: Option<Tagged<'p>>,
         reading_order: bool,
-        hold_pages: bool,
-        dry_run: bool,
+        ocr: OcrCheck,
     ) -> Self {
         let labels = tagged.as_ref().is_some_and(Tagged::has_index);
         if let Some(reason) = tagged.as_ref().and_then(|tagged| tagged.document_rejection) {
-            xhtml
-                .metadata_mut()
-                .add(MARKED_CONTENT_REJECTIONS, format!("document:{reason}"));
+            out.add(MARKED_CONTENT_REJECTIONS, format!("document:{reason}"));
         }
         Self {
             pdf,
             engine: Engine::new(pdf, labels),
             page: PageWriter {
-                xhtml,
+                out,
                 in_paragraph: false,
                 tagged,
-                recording: None,
-                held: hold_pages.then(Vec::new),
+                layer_text: None,
             },
             page_number: 0,
             reading_order,
+            ocr,
             annotation_types: BTreeSet::new(),
             annotation_subtypes: BTreeSet::new(),
             total_glyphs: 0,
             total_unmapped: 0,
             extracted: HashSet::new(),
-            dry_run,
-            layers: dry_run.then(Vec::new),
         }
     }
 
@@ -355,26 +237,15 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
     /// of the document.
     pub(super) fn write(&mut self) -> Result<(), WriteFailure> {
         for page in self.pdf.pages()? {
+            self.page.out.enter_page();
             self.process_page(page)?;
+            self.page.out.leave_page();
         }
         self.end_document()
     }
 
-    /// `PDF2XHTML.processPage`, which records that the length limit was reached on the page
-    /// as `handleCatchableIOE` does.
-    fn process_page(&mut self, page: Page<'p>) -> Result<(), WriteFailure> {
-        let processed = self.process_page_content(page);
-        if let Err(WriteFailure::Stop(Stop::LimitReached)) = processed {
-            self.page
-                .xhtml
-                .metadata_mut()
-                .set("tk:exception:write-limit-reached", "true");
-        }
-        processed
-    }
-
     /// `PDFTextStripper.processPage`, as `PDF2XHTML` and Tika's tagged writer run it.
-    fn process_page_content(&mut self, page: Page<'p>) -> Result<(), WriteFailure> {
+    fn process_page(&mut self, page: Page<'p>) -> Result<(), WriteFailure> {
         self.page_number += 1;
         self.start_page()?;
         let mut content = self.engine.process_page(page)?;
@@ -390,13 +261,15 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         self.end_page(page, &content)
     }
 
-    /// `AbstractPDF2XHTML.startPage`.
+    /// `AbstractPDF2XHTML.startPage`, the page's content held back from there when Tika's
+    /// page checker holds it.
     fn start_page(&mut self) -> Result<(), WriteFailure> {
         self.page
-            .xhtml
+            .out
             .start_element_with("div", &[("class", "page")])?;
-        if self.layers.is_some() {
-            self.page.recording = Some(String::new());
+        if self.ocr.holds_pages() {
+            self.page.out.hold();
+            self.page.layer_text = Some(String::new());
         }
         match self.page.tagged.as_mut() {
             Some(tagged) => tagged.start_page(),
@@ -405,29 +278,27 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         Ok(())
     }
 
-    /// `PDF2XHTML.endPage` and `AbstractPDF2XHTML.endPage`.
+    /// `PDF2XHTML.endPage` and `AbstractPDF2XHTML.endPage`, unless Tika's path OCRs the page.
     fn end_page(&mut self, page: Page<'p>, content: &PageContent) -> Result<(), WriteFailure> {
         self.page.write_paragraph_end()?;
-        let metadata = self.page.xhtml.metadata_mut();
-        metadata.add("pdf:chars-per-page", content.glyphs.to_string());
-        metadata.add(
+        let out = &mut *self.page.out;
+        out.add("pdf:chars-per-page", content.glyphs.to_string());
+        out.add(
             "pdf:unmapped-unicode-chars-per-page",
             content.unmapped.to_string(),
         );
         self.total_glyphs += i64::from(content.glyphs);
         self.total_unmapped += i64::from(content.unmapped);
         self.annotations(page)?;
-        if let Some(text) = self.page.recording.take() {
-            if let Some(layers) = self.layers.as_mut() {
-                layers.push(PageLayer {
-                    glyphs: content.glyphs,
-                    unmapped: content.unmapped,
-                    text,
-                });
-            }
-        }
-        self.page.release()?;
-        self.page.xhtml.end_element("div")?;
+        let layer_text = self.page.layer_text.take();
+        self.ocr.deferral(
+            self.page_number,
+            content.glyphs,
+            content.unmapped,
+            layer_text.as_deref(),
+        )?;
+        self.page.out.release();
+        self.page.out.end_element("div")?;
         Ok(())
     }
 
@@ -525,9 +396,9 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
     fn end_document(&mut self) -> Result<(), WriteFailure> {
         if let Some(tagged) = &self.page.tagged {
             let (pages_tagged, pages_fallback) = (tagged.pages_tagged, tagged.pages_fallback);
-            let metadata = self.page.xhtml.metadata_mut();
-            metadata.set("pdf:marked-content-pages-tagged", pages_tagged.to_string());
-            metadata.set(
+            let out = &mut *self.page.out;
+            out.set("pdf:marked-content-pages-tagged", pages_tagged.to_string());
+            out.set(
                 "pdf:marked-content-pages-fallback",
                 pages_fallback.to_string(),
             );
@@ -535,43 +406,36 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         self.bookmarks()?;
         self.embedded_documents()?;
         self.acro_form()?;
-        let types: Vec<String> = std::mem::take(&mut self.annotation_types)
-            .into_iter()
-            .collect();
-        let subtypes: Vec<String> = std::mem::take(&mut self.annotation_subtypes)
-            .into_iter()
-            .collect();
-        let metadata = self.page.xhtml.metadata_mut();
-        for annotation_type in types {
-            metadata.add("pdf:annotation-types", annotation_type);
+        let out = &mut *self.page.out;
+        for annotation_type in std::mem::take(&mut self.annotation_types) {
+            out.add("pdf:annotation-types", annotation_type);
         }
-        for subtype in subtypes {
-            metadata.add("pdf:annotation-subtypes", subtype);
+        for subtype in std::mem::take(&mut self.annotation_subtypes) {
+            out.add("pdf:annotation-subtypes", subtype);
         }
-        self.page.xhtml.end_document()?;
+        out.end_document()?;
         let total_glyphs = self.total_glyphs as i32;
         let total_unmapped = self.total_unmapped as i32;
-        let metadata = self.page.xhtml.metadata_mut();
-        metadata.set(
+        out.set(
             "pdf:total-unmapped-unicode-chars",
             total_unmapped.to_string(),
         );
         if total_glyphs > 0 {
             let share = total_unmapped as f32 / total_glyphs as f32;
-            metadata.set(
+            out.set(
                 "pdf:overall-percentage-unmapped-unicode-chars",
                 jfloat::double_to_string(f64::from(share)),
             );
         }
-        metadata.set(
+        out.set(
             "pdf:contains-damaged-font",
             self.engine.damaged_font.to_string(),
         );
-        metadata.set(
+        out.set(
             "pdf:contains-non-embedded-font",
             self.engine.non_embedded_font.to_string(),
         );
-        metadata.set("pdf:num-3d-annotations", "0");
+        out.set("pdf:num-3d-annotations", "0");
         Ok(())
     }
 
@@ -591,11 +455,11 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         let Some(mut current) = item(outline, b"First") else {
             return Ok(());
         };
-        let xhtml = &mut self.page.xhtml;
+        let out = &mut *self.page.out;
         let mut seen: HashSet<Identity> = HashSet::new();
         let mut parents: Vec<(Identity, &'p Dictionary)> = Vec::new();
         let mut opened: Vec<bool> = Vec::new();
-        xhtml.start_element("ul")?;
+        out.start_element("ul")?;
         let mut lists = 1;
         let mut items = 0;
         let mut truncated = false;
@@ -610,7 +474,7 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                     break;
                 };
                 if opened.pop() == Some(true) {
-                    xhtml.end_element("ul")?;
+                    out.end_element("ul")?;
                     lists -= 1;
                 }
                 next = item(parent.1, b"Next");
@@ -619,16 +483,16 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
             current = entry;
             seen.insert(current.0);
             items += 1;
-            xhtml.start_element("li")?;
+            out.start_element("li")?;
             if let Some(title) = pdf.text(current.1, b"Title") {
-                xhtml.characters(&title)?;
+                out.characters(&title)?;
             }
-            xhtml.end_element("li")?;
+            out.end_element("li")?;
             match item(current.1, b"First").filter(|(id, _)| !seen.contains(id)) {
                 Some(child) => {
                     let open = lists < MAX_BOOKMARK_DEPTH;
                     if open {
-                        xhtml.start_element("ul")?;
+                        out.start_element("ul")?;
                         lists += 1;
                     }
                     parents.push(current);
@@ -638,9 +502,9 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                 None => next = item(current.1, b"Next"),
             }
         }
-        xhtml.end_element("ul")?;
+        out.end_element("ul")?;
         if truncated {
-            self.page.xhtml.metadata_mut().add(
+            out.add(
                 "tk:exception:warn",
                 format!("bookmark outline truncated at {MAX_BOOKMARK_ITEMS} items"),
             );
@@ -649,7 +513,9 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
     }
 
     /// `processDocOnAction` for the file specification of an annotation: its files, written
-    /// in the page's `div` unless an annotation led to the specification before.
+    /// in the page's `div` unless an annotation led to the specification before. Our
+    /// `TextLayerCheckingPdfParser` weighs the text of such a file with the page's, which the
+    /// port does not.
     fn annotation_file(
         &mut self,
         source: &str,
@@ -670,9 +536,7 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                     Written::Embedded { attributes, file } => {
                         self.page.start("div", &borrowed(&attributes))?;
                         self.page.end("div")?;
-                        if !self.dry_run {
-                            self.page.embedded(file)?;
-                        } else if self.page.held.is_some() {
+                        if self.ocr.holds_pages() {
                             return Err(Unported(
                                 "a file an annotation embeds, whose text our \
                                  TextLayerCheckingPdfParser weighs with the page's"
@@ -680,6 +544,7 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                             )
                             .into());
                         }
+                        self.page.out.embedded(file)?;
                     }
                 }
             }
@@ -698,18 +563,16 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                 continue;
             }
             for written in attachment::written(pdf, &name, "", spec, Vec::new())? {
-                let xhtml = &mut *self.page.xhtml;
+                let out = &mut *self.page.out;
                 match written {
                     Written::Link(attributes) => {
-                        xhtml.start_element_with("div", &borrowed(&attributes))?;
-                        xhtml.end_element("div")?;
+                        out.start_element_with("div", &borrowed(&attributes))?;
+                        out.end_element("div")?;
                     }
                     Written::Embedded { attributes, file } => {
-                        xhtml.start_element_with("div", &borrowed(&attributes))?;
-                        xhtml.end_element("div")?;
-                        if !self.dry_run {
-                            parse_embedded(xhtml, &file)?;
-                        }
+                        out.start_element_with("div", &borrowed(&attributes))?;
+                        out.end_element("div")?;
+                        out.embedded(file)?;
                     }
                 }
             }
@@ -728,58 +591,58 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         if let Some(xfa) = xfa {
             return self.xfa(&xfa::extract(&xfa::bytes(pdf, xfa)?)?);
         }
-        let Some(lines) = form::lines(pdf, self.page.xhtml.metadata_mut())? else {
+        let out = &mut *self.page.out;
+        let Some(lines) = form::lines(pdf, out)? else {
             return Ok(());
         };
-        let xhtml = &mut self.page.xhtml;
-        xhtml.start_element_with("div", &[("class", "acroform")])?;
-        xhtml.start_element("ol")?;
+        out.start_element_with("div", &[("class", "acroform")])?;
+        out.start_element("ol")?;
         for line in &lines {
             match line {
                 form::Line::Field { alternate, text } => {
-                    xhtml.start_element_with("li", &alternate_name(alternate))?;
-                    xhtml.characters(text)?;
-                    xhtml.end_element("li")?;
+                    out.start_element_with("li", &alternate_name(alternate))?;
+                    out.characters(text)?;
+                    out.end_element("li")?;
                 }
                 form::Line::Signature { alternate, data } => {
-                    xhtml.start_element_with("li", &alternate_name(alternate))?;
-                    xhtml.start_element_with("ol", &[("type", "signaturedata")])?;
+                    out.start_element_with("li", &alternate_name(alternate))?;
+                    out.start_element_with("ol", &[("type", "signaturedata")])?;
                     for (key, value) in data {
-                        xhtml.start_element_with("li", &[("signdata", key)])?;
-                        xhtml.characters(value)?;
-                        xhtml.end_element("li")?;
+                        out.start_element_with("li", &[("signdata", key)])?;
+                        out.characters(value)?;
+                        out.end_element("li")?;
                     }
-                    xhtml.end_element("ol")?;
-                    xhtml.end_element("li")?;
+                    out.end_element("ol")?;
+                    out.end_element("li")?;
                 }
-                form::Line::StartList => xhtml.start_element("ol")?,
-                form::Line::EndList => xhtml.end_element("ol")?,
+                form::Line::StartList => out.start_element("ol")?,
+                form::Line::EndList => out.end_element("ol")?,
             }
         }
-        xhtml.end_element("ol")?;
-        xhtml.end_element("div")?;
+        out.end_element("ol")?;
+        out.end_element("div")?;
         Ok(())
     }
 
     /// `XFAExtractor.extract`'s output: the form's paragraphs, then its fields.
     fn xfa(&mut self, form: &xfa::Form) -> Result<(), WriteFailure> {
-        let xhtml = &mut self.page.xhtml;
-        xhtml.start_element_with("div", &[("class", "xfa_content")])?;
+        let out = &mut *self.page.out;
+        out.start_element_with("div", &[("class", "xfa_content")])?;
         for paragraph in &form.paragraphs {
-            xhtml.element("p", paragraph)?;
+            out.element("p", paragraph)?;
         }
         if !form.fields.is_empty() {
-            xhtml.start_element_with("div", &[("class", "xfa_form")])?;
-            xhtml.start_element("ol")?;
+            out.start_element_with("div", &[("class", "xfa_form")])?;
+            out.start_element("ol")?;
             for (name, text) in &form.fields {
-                xhtml.start_element_with("li", &[("fieldName", name)])?;
-                xhtml.characters(text)?;
-                xhtml.end_element("li")?;
+                out.start_element_with("li", &[("fieldName", name)])?;
+                out.characters(text)?;
+                out.end_element("li")?;
             }
-            xhtml.end_element("ol")?;
-            xhtml.end_element("div")?;
+            out.end_element("ol")?;
+            out.end_element("div")?;
         }
-        xhtml.end_element("div")?;
+        out.end_element("div")?;
         Ok(())
     }
 }
@@ -838,12 +701,4 @@ fn borrowed(attributes: &[(String, String)]) -> Vec<(&str, &str)> {
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect()
-}
-
-/// `parseEmbedded` of a file the document embeds, which Tika writes without a `package-entry`
-/// div of its own.
-fn parse_embedded(xhtml: &mut Xhtml, file: &EmbeddedFile) -> Result<(), WriteFailure> {
-    xhtml
-        .parse_embedded(&file.data, &file.metadata, Wrapping::Bare)
-        .map_err(WriteFailure::from)
 }

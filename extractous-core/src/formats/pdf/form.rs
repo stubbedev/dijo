@@ -8,10 +8,10 @@ use lopdf::{Dictionary, Object};
 
 use super::cos::{as_dict, name_string, text_string, Identity, Pdf};
 use super::date::{self, Zoned};
+use super::recording::Recording;
 use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::handlers::is_blank;
 use crate::formats::java_time::format_instant;
-use crate::formats::metadata::TikaMetadata;
 
 /// How deep the port follows a field tree for its signatures, where PDFBox recurses without
 /// bound.
@@ -324,7 +324,7 @@ pub(super) fn has_fields(pdf: &Pdf) -> Result<bool, Unported> {
 }
 
 /// `extractAcroForm` without XFA: the lines of the form's list, if the document has a form.
-pub(super) fn lines(pdf: &Pdf, metadata: &mut TikaMetadata) -> Result<Option<Vec<Line>>, Unported> {
+pub(super) fn lines(pdf: &Pdf, metadata: &mut Recording) -> Result<Option<Vec<Line>>, Unported> {
     let Some(form) = pdf
         .catalog()
         .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
@@ -345,7 +345,7 @@ fn field_lines<'p>(
     field: &Field<'p>,
     depth: usize,
     lines: &mut Vec<Line>,
-    metadata: &mut TikaMetadata,
+    metadata: &mut Recording,
 ) -> Result<(), Unported> {
     if depth >= MAX_RECURSION_DEPTH {
         return Ok(());
@@ -410,7 +410,7 @@ fn enqueue<'p>(
 
 /// `PDFParser.extractSignatures`: the signature fields of the whole field tree and what their
 /// signatures say.
-pub(super) fn signatures(pdf: &Pdf, metadata: &mut TikaMetadata) -> Result<(), Unported> {
+pub(super) fn signatures(pdf: &Pdf, metadata: &mut Recording) -> Result<(), Unported> {
     let Some(form) = pdf
         .catalog()
         .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
@@ -468,7 +468,7 @@ pub(super) fn signatures(pdf: &Pdf, metadata: &mut TikaMetadata) -> Result<(), U
 }
 
 /// `PDMetadataExtractor.addNotNull`: the value, unless it is missing or blank.
-fn add_not_blank(metadata: &mut TikaMetadata, name: &str, value: Option<String>) {
+fn add_not_blank(metadata: &mut Recording, name: &str, value: Option<String>) {
     if let Some(value) = value.filter(|value| !is_blank(value)) {
         metadata.add(name, value);
     }

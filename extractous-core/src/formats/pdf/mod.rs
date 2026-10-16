@@ -23,9 +23,11 @@ mod form;
 mod jfloat;
 mod matrix;
 mod metadata;
+mod ocr;
 mod position;
 mod quality;
 mod reading_order;
+mod recording;
 mod stripper;
 mod structure;
 mod tagged;
@@ -40,24 +42,21 @@ use std::sync::OnceLock;
 use lopdf::Document;
 
 use crate::config::ParserConfigs;
-use crate::formats::embedded::ParseContext;
-use crate::formats::handlers::Discard;
+use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
+use crate::formats::xhtml::Stop;
 use crate::formats::{Declined, Parser, Prepared};
 
 use cos::Pdf;
+use ocr::OcrCheck;
+use recording::Recording;
 use structure::StructureIndex;
 use tagged::Tagged;
-use writer::{DocumentWriter, PageLayer, WriteFailure};
+use writer::{DocumentWriter, WriteFailure};
 
 const MEDIA_TYPE: &str = "application/pdf";
 const TEXT_LAYER_CHECKING_PARSER: &str = "extractous::TextLayerCheckingPdfParser";
 const PDF_PARSER: &str = "extractous::PDFParser";
-/// `PagesConfig.Auto`'s defaults: a page of at most this many glyphs is OCRed...
-const OCR_MAX_GLYPHS: i32 = 10;
-/// ...and so is one with more glyphs than this that map to no character.
-const OCR_UNMAPPED_LIMIT: f32 = 10.0;
 /// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
 const MAX_RECURSION_DEPTH: usize = 100;
 
@@ -90,83 +89,56 @@ impl Parser for PdfParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let loaded =
-            loaded(input, configs).map_err(|Unported(reason)| Declined::Deferred(reason))?;
+        let recording = record(input, metadata, configs)?;
         Ok(Box::new(move |xhtml| {
-            if ocr_runs() {
-                xhtml.delegate_to(PDF_PARSER);
-            }
-            extract(&loaded, input, configs, xhtml, false)?;
-            Ok(())
+            let replayed = recording.replay(xhtml);
+            xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
+            replayed
         }))
     }
 }
 
-/// The document, loaded, unless it is left to Tika: for a setting the port does not read,
-/// something in the document it does not do, or a page Tika would OCR.
-fn loaded(input: &[u8], configs: &ParserConfigs) -> Result<Loaded, Unported> {
+/// The document's extraction, recorded from `metadata`, unless the document is left to Tika:
+/// for a setting the port does not read, something in the document it does not do, or a page
+/// Tika would OCR. The document is read once, into the recording, which holds no more of it
+/// than its output and the files it embeds.
+fn record(
+    input: &[u8],
+    metadata: &TikaMetadata,
+    configs: &ParserConfigs,
+) -> Result<Recording, Declined> {
     if let Some(setting) = configs.pdf.unread_setting() {
-        return Err(Unported(format!(
+        return Err(Declined::Deferred(format!(
             "the PDF setting {setting}, which the port does not read"
         )));
     }
-    let loaded = load(input)?;
-    let mut layers = Vec::new();
-    let context = ParseContext::new(configs);
-    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &context, |xhtml| {
-        layers = extract(&loaded, input, configs, xhtml, true)?;
-        Ok(())
-    });
-    if let Some(number) = loaded.pdf.lost_object_needed() {
-        return Err(Unported(format!(
+    let loaded = load(input).map_err(|Unported(reason)| Declined::Deferred(reason))?;
+    let mut recording = Recording::new(metadata.clone());
+    if ocr_runs() {
+        recording.delegate_to(PDF_PARSER);
+    }
+    let recorded =
+        extract(&loaded, input, configs, &mut recording).map_err(|failure| match failure {
+            WriteFailure::Unported(Unported(reason)) => Declined::Deferred(reason),
+            WriteFailure::Stop(Stop::MemoryLimit(limit)) => {
+                Declined::Fails(Error::MemoryLimit(limit))
+            }
+            WriteFailure::Stop(stop) => {
+                unreachable!("a recording stops only at the memory budget, not at {stop:?}")
+            }
+        });
+    if let (Some(number), false) = (
+        loaded.pdf.lost_object_needed(),
+        matches!(recorded, Err(Declined::Fails(_))),
+    ) {
+        return Err(Declined::Deferred(format!(
             "object {number}, which lopdf cannot read and PDFBox may recover"
         )));
     }
-    match result {
-        Ok(()) => {}
-        Err(WriteFailure::Unported(unported)) => return Err(unported),
-        Err(WriteFailure::Stop(stop)) => {
-            unreachable!("a discarded document stopped being written: {stop:?}")
-        }
-        Err(WriteFailure::Embedded(failure)) => {
-            unreachable!("a dry run parsed an embedded document: {failure:?}")
-        }
-    }
-    for (index, layer) in layers.iter().enumerate() {
-        ocr_deferral(index + 1, layer)?;
-    }
-    Ok(loaded)
-}
-
-/// Why Tika would OCR a page, if it would: `AbstractPDF2XHTML.ocrWanted` under its automatic
-/// strategy, and our `TextLayerCheckingPdfParser`'s doubt about the page's text when tesseract
-/// runs. A page of more glyphs than the limit without characters is both.
-fn ocr_deferral(page: usize, layer: &PageLayer) -> Result<(), Unported> {
-    if layer.glyphs <= OCR_MAX_GLYPHS || layer.unmapped as f32 > OCR_UNMAPPED_LIMIT {
-        return Err(Unported(format!(
-            "page {page} shows {} glyphs, {} of them without characters, which Tika OCRs",
-            layer.glyphs, layer.unmapped
-        )));
-    }
-    if !ocr_runs() {
-        return Ok(());
-    }
-    let assessment = quality::assess(
-        &layer.text,
-        layer.glyphs,
-        layer.unmapped,
-        OCR_UNMAPPED_LIMIT,
-    );
-    if assessment.badness >= quality::DOUBTFUL {
-        return Err(Unported(format!(
-            "the text layer of page {page} is doubtful ({}), which Tika OCRs",
-            assessment.fault
-        )));
-    }
-    Ok(())
+    recorded.map(|()| recording)
 }
 
 /// Whether the cross-reference table puts the object `id` where it is: at an offset where its
@@ -277,39 +249,36 @@ impl Access {
 }
 
 /// `PDFParser.parse` from the cross-reference scan on: the metadata, then the pages and the
-/// end of the document, written by the tagged writer for a document with marked content. A
-/// dry run, which decides whether the document is deferred, parses no embedded file and
-/// returns each page's text layer.
+/// end of the document, written by the tagged writer for a document with marked content, into
+/// `out`.
 fn extract(
     loaded: &Loaded,
     input: &[u8],
     configs: &ParserConfigs,
-    xhtml: &mut Xhtml,
-    dry_run: bool,
-) -> Result<Vec<PageLayer>, WriteFailure> {
+    out: &mut Recording,
+) -> Result<(), WriteFailure> {
     let pdf = &loaded.pdf;
-    let metadata = xhtml.metadata_mut();
     let mut startxrefs = 0;
     for offset in metadata::scan_startxrefs(input) {
         if offset.startxref == 0 {
             continue;
         }
         startxrefs += 1;
-        metadata.add("pdf:eof-offsets", offset.end_eof_offset.to_string());
+        out.add("pdf:eof-offsets", offset.end_eof_offset.to_string());
     }
     let updates = (startxrefs - 1).max(0).to_string();
-    metadata.set("pdf:incremental-update-count", updates.clone());
-    metadata.set("tk:version-count", updates);
+    out.set("pdf:incremental-update-count", updates.clone());
+    out.set("tk:version-count", updates);
     let catalog = pdf.catalog().ok_or_else(|| {
         Unported("a document without a catalog, which PDFBox fails on".to_owned())
     })?;
-    metadata.set("pdf:has-collection", catalog.has(b"Collection").to_string());
+    out.set("pdf:has-collection", catalog.has(b"Collection").to_string());
     let acro_form = pdf.dict(catalog, b"AcroForm");
     let has_xfa = acro_form.is_some_and(|form| form.has(b"XFA"));
-    metadata.set("pdf:has-xfa", has_xfa.to_string());
+    out.set("pdf:has-xfa", has_xfa.to_string());
     let has_marked_content = StructureIndex::<()>::has_marked_content(pdf);
-    metadata.set("pdf:has-marked-content", has_marked_content.to_string());
-    metadata.set("Content-Type", MEDIA_TYPE);
+    out.set("pdf:has-marked-content", has_marked_content.to_string());
+    out.set("Content-Type", MEDIA_TYPE);
     for (name, bit) in [
         ("access-permission:extract-for-accessibility", 10),
         ("access-permission:extract-content", 5),
@@ -320,24 +289,21 @@ fn extract(
         ("access-permission:can-print", 3),
         ("access-permission:can-print-faithful", 12),
     ] {
-        metadata.set(name, loaded.access.grants(bit).to_string());
+        out.set(name, loaded.access.grants(bit).to_string());
     }
     let encrypted = loaded.access != Access::Unencrypted;
-    metadata.set("pdf:encrypted", encrypted.to_string());
+    out.set("pdf:encrypted", encrypted.to_string());
     let has_fields = form::has_fields(pdf)?;
     let version = metadata::header_version(input)?;
-    metadata::document(pdf, metadata, version, has_fields)?;
-    form::signatures(pdf, metadata)?;
+    metadata::document(pdf, out, version, has_fields)?;
+    form::signatures(pdf, out)?;
     if is_illustrator(pdf)? {
-        metadata.set("Content-Type", "application/illustrator");
+        out.set("Content-Type", "application/illustrator");
     }
     let reading_order = configs.pdf.reads_in_reading_order();
     let tagged = has_marked_content.then(|| Tagged::new(pdf, reading_order));
-    let mut writer = DocumentWriter::new(pdf, xhtml, tagged, reading_order, ocr_runs(), dry_run);
-    let written = writer.write();
-    let layers = writer.layers.take().unwrap_or_default();
-    xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
-    written.map(|()| layers)
+    let ocr = OcrCheck::of(ocr_runs());
+    DocumentWriter::new(pdf, out, tagged, reading_order, ocr).write()
 }
 
 /// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data.
@@ -369,8 +335,11 @@ mod tests {
     /// Why a document of the corpora is left to Tika.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Why {
-        /// Tika OCRs a page whatever its text layer reads.
+        /// Tika OCRs a page of next to no glyphs, whatever its text layer reads.
         Ocr,
+        /// Tika OCRs a page of too many glyphs without characters: by their count, or for its
+        /// doubtful text layer when tesseract runs.
+        Unmapped,
         /// Our `TextLayerCheckingPdfParser` doubts a page's text layer, when tesseract runs.
         Doubtful,
         /// The port does not do what the document needs, as the reason starts.
@@ -379,14 +348,14 @@ mod tests {
 
     /// The documents of the corpora the port leaves to Tika, and why.
     const DEFERRED: [(&str, Why); 9] = [
-        ("arabic.pdf", Why::Ocr),
+        ("arabic.pdf", Why::Unmapped),
         ("deu-ocr.pdf", Why::Ocr),
         ("eng-ocr.pdf", Why::Ocr),
-        ("hindi.pdf", Why::Ocr),
+        ("hindi.pdf", Why::Unmapped),
         ("prose-broken-offset.pdf", Why::Doubtful),
         ("prose-broken-private-use.pdf", Why::Doubtful),
         ("prose-scan.pdf", Why::Ocr),
-        ("thai.pdf", Why::Ocr),
+        ("thai.pdf", Why::Unmapped),
         (
             "user-password.pdf",
             Why::Unported("encryption the empty password does not open"),
@@ -620,6 +589,23 @@ mod tests {
     }
 
     #[test]
+    fn fails_a_document_whose_recording_outgrows_the_memory_budget() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let configs = ParserConfigs::default();
+        let prepared = crate::memory::within(1, || {
+            PdfParser
+                .prepare(&input, &TikaMetadata::new(), &configs)
+                .map(drop)
+        });
+        assert!(
+            matches!(prepared, Err(Declined::Fails(Error::MemoryLimit(1)))),
+            "{prepared:?}"
+        );
+    }
+
+    #[test]
     fn tells_objects_the_table_misplaces() {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
@@ -670,7 +656,10 @@ mod tests {
         );
         for ((name, reason), (_, why)) in found.iter().zip(&expected) {
             let as_expected = match why {
-                Why::Ocr => reason.starts_with("page ") && reason.ends_with("which Tika OCRs"),
+                Why::Unmapped if ocr_runs() => reason.contains("is doubtful (unmapped-glyphs)"),
+                Why::Ocr | Why::Unmapped => {
+                    reason.starts_with("page ") && reason.ends_with("which Tika OCRs")
+                }
                 Why::Doubtful => reason.contains("is doubtful"),
                 Why::Unported(start) => reason.starts_with(start),
             };
