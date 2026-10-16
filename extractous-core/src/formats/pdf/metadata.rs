@@ -5,15 +5,16 @@
 
 use lopdf::Object;
 
+use super::content::parse_literal;
 use super::cos::{name_string, text_string, Pdf};
 use super::jfloat;
 use super::recording::Recording;
-use super::xmp::{
-    self, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
-};
-use super::{date, Unported};
+use super::Unported;
 use crate::formats::handlers::is_blank;
 use crate::formats::java_time::format_instant;
+use crate::formats::xmp::{
+    self, date, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
+};
 
 const STARTXREF: &[u8] = b"startxref";
 /// `StartXRefScanner.MAX_LENGTH_LONG`.
@@ -215,8 +216,25 @@ fn add_metadata(
     Ok(())
 }
 
+/// `PDMetadataExtractor.decode`: a value written as a PDF literal string with a byte order
+/// mark, decoded as PDFBox decodes text strings.
 fn xmp_decode(value: &str) -> String {
-    xmp::decode(value)
+    let encoded = ["\\376\\377", "\\377\\376", "\\357\\273\\277"];
+    if value.encode_utf16().count() < 8 || !encoded.iter().any(|bom| value.starts_with(bom)) {
+        return value.to_owned();
+    }
+    let latin1: Vec<u8> = std::iter::once(b'(')
+        .chain(
+            value
+                .chars()
+                .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')),
+        )
+        .chain(std::iter::once(b')'))
+        .collect();
+    match parse_literal(&latin1) {
+        Some(bytes) => text_string(&bytes),
+        None => value.to_owned(),
+    }
 }
 
 /// `PDMetadataExtractor.addMetadata(Metadata, Property, Calendar)`.
@@ -261,7 +279,16 @@ pub(super) fn document(
                     unported.0
                 ))
             })?;
-            xmp::extract(&packet, metadata)?;
+            xmp::extract(&packet, metadata, xmp_decode)?;
+            if let Some(conformance) = metadata.get("pdfaid:conformance").map(str::to_owned) {
+                let part = metadata
+                    .get("pdfaid:part")
+                    .map_or_else(|| "UNKNOWN".to_owned(), str::to_owned);
+                metadata.set(
+                    "pdfa:pdf-version",
+                    format!("A-{part}{}", conformance.to_lowercase()),
+                );
+            }
         }
     }
     metadata.set("xmpTPg:NPages", pdf.number_of_pages()?.to_string());
@@ -424,6 +451,12 @@ fn custom_text(metadata: &mut Recording, name: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_pdf_encoded_xmp_values() {
+        assert_eq!(xmp_decode("\\376\\377\\000A\\000B"), "AB");
+        assert_eq!(xmp_decode("plain text"), "plain text");
+    }
 
     #[test]
     fn scans_startxrefs_as_tika_does() {

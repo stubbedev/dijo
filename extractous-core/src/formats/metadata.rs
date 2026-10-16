@@ -5,6 +5,37 @@
 use crate::formats::java::JavaHashMap;
 use crate::Metadata;
 
+/// What the extractors shared between parsers write metadata into: [`TikaMetadata`] itself, or
+/// a parser's record of what it writes there.
+pub(crate) trait MetadataSink {
+    /// The first value of `name`, as Tika's `Metadata.get`.
+    fn get(&self, name: &str) -> Option<&str>;
+    /// Every value of `name`, as Tika's `Metadata.getValues`.
+    fn values(&self, name: &str) -> &[String];
+    /// Tika's `Metadata.set`.
+    fn set(&mut self, name: &str, value: impl Into<String>);
+    /// Tika's `Metadata.add`.
+    fn add(&mut self, name: &str, value: impl Into<String>);
+}
+
+impl MetadataSink for TikaMetadata {
+    fn get(&self, name: &str) -> Option<&str> {
+        TikaMetadata::get(self, name)
+    }
+
+    fn values(&self, name: &str) -> &[String] {
+        TikaMetadata::values(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: impl Into<String>) {
+        TikaMetadata::set(self, name, value);
+    }
+
+    fn add(&mut self, name: &str, value: impl Into<String>) {
+        TikaMetadata::add(self, name, value);
+    }
+}
+
 /// A document's metadata, in the order Tika's `HashMap` holds it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TikaMetadata {

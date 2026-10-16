@@ -15,8 +15,10 @@ mod fiction_book;
 pub(crate) mod handlers;
 mod html;
 mod hwpx;
+mod image;
 mod iwork;
 pub(crate) mod java;
+pub(crate) mod java_text;
 pub(crate) mod java_time;
 mod jdk_zip;
 mod mail;
@@ -40,6 +42,7 @@ mod text;
 pub(crate) mod xhtml;
 mod xlsx;
 pub(crate) mod xml;
+pub(crate) mod xmp;
 mod zip_file;
 
 use std::borrow::Cow;
@@ -110,6 +113,23 @@ impl From<Deferral> for Declined {
     }
 }
 
+/// Something in a document a port does not do as Tika does: the reason the document is
+/// deferred to Tika's path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unported(pub(crate) String);
+
+impl Unported {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
+    }
+}
+
+impl From<Unported> for Declined {
+    fn from(Unported(reason): Unported) -> Self {
+        Self::Deferred(reason)
+    }
+}
+
 /// A document its parser has read as far as deciding it extracts it: what writes the document's
 /// content as XHTML and adds the metadata it finds, holding what the parser read on the way, so
 /// that nothing is read twice. The document is started before and ended after it.
@@ -159,6 +179,11 @@ static PARSERS: &[&dyn Parser] = &[
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
+    &image::HeifParser,
+    &image::ImageParser,
+    &image::JpegParser,
+    &image::RecognizedImageParser,
+    &image::TiffParser,
     &hwpx::HwpxParser,
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
@@ -199,6 +224,18 @@ fn any_parsers() -> bool {
 pub(crate) struct Detected {
     pub(crate) media_type: String,
     pub(crate) metadata: TikaMetadata,
+    pub(crate) file: InputFile,
+}
+
+/// The file Tika's `TikaInputStream` holds a document in, which a parser that asks it for a path
+/// (`getPath`) is given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InputFile {
+    /// The file the document was read from, at this path.
+    Original(String),
+    /// None yet: a document read from memory, which Tika spools to a temporary file of its own
+    /// the first time a parser asks for a path.
+    Spooled,
 }
 
 /// A document a native parser reads, and what its detection found.
@@ -276,7 +313,7 @@ pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
 
 /// `Path.getFileName().toString()` of a path as Java's `Paths.get` reads it on this platform:
 /// the last name, trailing separators ignored.
-fn java_file_name(path: &str) -> &str {
+pub(crate) fn java_file_name(path: &str) -> &str {
     let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
     let trimmed = path.trim_end_matches(separators);
     trimmed.rsplit(separators).next().unwrap_or(trimmed)
@@ -288,14 +325,14 @@ impl Detected {
     /// metadata)` writes, then what the detectors write, in the order they write it.
     pub(crate) fn detect(source: Source<'_>, input: &[u8]) -> Result<Self, mime::DetectionError> {
         let mut metadata = TikaMetadata::new();
-        let origin = match source {
+        let (origin, file) = match source {
             Source::File(path) => {
                 let name = java_file_name(path);
                 metadata.set("tk:resource-name", name);
                 metadata.set("Content-Length", input.len().to_string());
-                Origin::File { name }
+                (Origin::File { name }, InputFile::Original(path.to_owned()))
             }
-            Source::Bytes(_) | Source::Url(_) => Origin::Bytes,
+            Source::Bytes(_) | Source::Url(_) => (Origin::Bytes, InputFile::Spooled),
         };
         let Detection {
             media_type,
@@ -307,6 +344,7 @@ impl Detected {
         Ok(Self {
             media_type: media_type.to_string(),
             metadata,
+            file,
         })
     }
 
@@ -458,7 +496,7 @@ pub(crate) fn parse_to_string(
         };
         prepared_within_budget(parser)?;
         let mut out = StringOut::default();
-        let context = ParseContext::new(configs);
+        let context = ParseContext::new(configs).reading(detected.file.clone());
         let (metadata, result) = Chain::String { output, max_length }
             .write_to(&mut out, |handler| {
                 run(parser, prepared, metadata, &context, handler, None)
@@ -607,7 +645,8 @@ pub(crate) fn parse_to_stream(
                 let context = match &options.spool {
                     Some(spool) => ParseContext::spooling(&configs, spool),
                     None => ParseContext::new(&configs),
-                };
+                }
+                .reading(detected.file.clone());
                 let head_sender = sender.clone();
                 let mut on_head = |metadata: &TikaMetadata| {
                     let _ = head_sender.send(Message::Head(metadata.to_map()));

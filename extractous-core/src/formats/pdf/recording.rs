@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use super::attachment::EmbeddedFile;
 use crate::formats::embedded::Wrapping;
-use crate::formats::metadata::TikaMetadata;
+use crate::formats::metadata::{MetadataSink, TikaMetadata};
 use crate::formats::xhtml::{within_budget, Stop, Xhtml};
 use crate::formats::Failure;
 
@@ -308,4 +308,22 @@ fn is_metadata(event: &Event) -> bool {
         event,
         Event::Set { .. } | Event::Add { .. } | Event::ResetValues { .. } | Event::Delegate(_)
     )
+}
+
+impl MetadataSink for Recording {
+    fn get(&self, name: &str) -> Option<&str> {
+        Recording::get(self, name)
+    }
+
+    fn values(&self, name: &str) -> &[String] {
+        Recording::values(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: impl Into<String>) {
+        Recording::set(self, name, value);
+    }
+
+    fn add(&mut self, name: &str, value: impl Into<String>) {
+        Recording::add(self, name, value);
+    }
 }

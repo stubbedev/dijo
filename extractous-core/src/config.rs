@@ -315,6 +315,11 @@ tika_config! {
 impl TesseractOcrConfig {
     /// The language that makes OCR detect each image's script and pick a model for it.
     pub const AUTO_LANGUAGE: &'static str = "auto";
+
+    /// Whether OCR is skipped, which Tika's `TesseractOCRConfig` does not do unless asked.
+    pub(crate) fn skips_ocr(&self) -> bool {
+        self.skip_ocr.unwrap_or(false)
+    }
 }
 
 /// A password for encrypted documents. It never appears in `Debug` output.

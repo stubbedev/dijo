@@ -14,7 +14,6 @@ mod cff;
 mod cmap;
 mod content;
 mod cos;
-mod date;
 mod document;
 mod encoding;
 mod engine;
@@ -35,10 +34,7 @@ mod truetype;
 mod type1;
 mod writer;
 mod xfa;
-mod xmp;
 mod xref;
-
-use std::sync::OnceLock;
 
 use lopdf::Document;
 
@@ -61,15 +57,8 @@ const PDF_PARSER: &str = "extractous::PDFParser";
 /// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
 const MAX_RECURSION_DEPTH: usize = 100;
 
-/// Why the port leaves a document to Tika: something in it the port does not do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Unported(pub(super) String);
-
-/// Whether tesseract runs, which makes Tika read PDFs through our `TextLayerCheckingPdfParser`.
-fn ocr_runs() -> bool {
-    static RUNS: OnceLock<bool> = OnceLock::new();
-    *RUNS.get_or_init(|| crate::ocr::tesseract_version().is_ok())
-}
+pub(super) use crate::formats::Unported;
+use crate::ocr::tesseract_runs as ocr_runs;
 
 /// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
 pub(crate) struct PdfParser;

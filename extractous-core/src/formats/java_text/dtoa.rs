@@ -393,16 +393,81 @@ fn round_up(conversion: &mut Conversion) {
     conversion.rounded_up = true;
 }
 
+/// A Java floating-point type, `double` or `float`, written with its own shortest digits.
+pub(crate) trait JavaFloat:
+    Copy + PartialEq + PartialOrd + std::fmt::LowerExp + std::str::FromStr
+{
+    const ZERO: Self;
+    fn is_nan(self) -> bool;
+    fn is_infinite(self) -> bool;
+    fn is_sign_negative(self) -> bool;
+    fn abs(self) -> Self;
+    fn to_f64(self) -> f64;
+}
+
+impl JavaFloat for f64 {
+    const ZERO: Self = 0.0;
+    fn is_nan(self) -> bool {
+        f64::is_nan(self)
+    }
+    fn is_infinite(self) -> bool {
+        f64::is_infinite(self)
+    }
+    fn is_sign_negative(self) -> bool {
+        f64::is_sign_negative(self)
+    }
+    fn abs(self) -> Self {
+        f64::abs(self)
+    }
+    fn to_f64(self) -> f64 {
+        self
+    }
+}
+
+impl JavaFloat for f32 {
+    const ZERO: Self = 0.0;
+    fn is_nan(self) -> bool {
+        f32::is_nan(self)
+    }
+    fn is_infinite(self) -> bool {
+        f32::is_infinite(self)
+    }
+    fn is_sign_negative(self) -> bool {
+        f32::is_sign_negative(self)
+    }
+    fn abs(self) -> Self {
+        f32::abs(self)
+    }
+    fn to_f64(self) -> f64 {
+        f64::from(self)
+    }
+}
+
 /// `Double.toString`: the shortest digits that read back as the value, plainly between 10^-3 and
 /// 10^7, else as `d.dddE±n`, with at least one digit after the point.
 pub(crate) fn java_double_to_string(value: f64) -> String {
+    java_to_string(value)
+}
+
+/// `Float.toString`, which lays out the shortest digits that read back as the float as
+/// `Double.toString` lays out those of a double.
+pub(crate) fn java_float_to_string(value: f32) -> String {
+    java_to_string(value)
+}
+
+fn java_to_string<F: JavaFloat>(value: F) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
     }
     if value.is_infinite() {
-        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_owned();
+        return if value > F::ZERO {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }
+        .to_owned();
     }
-    if value == 0.0 {
+    if value == F::ZERO {
         return if value.is_sign_negative() {
             "-0.0"
         } else {
@@ -412,10 +477,10 @@ pub(crate) fn java_double_to_string(value: f64) -> String {
     }
     let (digits, exponent) = shortest_digits(value.abs());
     let mut text = String::new();
-    if value < 0.0 {
+    if value < F::ZERO {
         text.push('-');
     }
-    let magnitude = value.abs();
+    let magnitude = value.abs().to_f64();
     if (1e-3..1e7).contains(&magnitude) {
         if exponent <= 0 {
             text.push_str("0.");
@@ -448,7 +513,7 @@ pub(crate) fn java_double_to_string(value: f64) -> String {
 /// with the exponent of `0.digits × 10^n`: of the shortest decimals that read back as the value,
 /// the one closest to it, an even last digit breaking a tie, two digits considered where one
 /// would do.
-pub(crate) fn shortest_digits(value: f64) -> (String, i32) {
+pub(crate) fn shortest_digits<F: JavaFloat>(value: F) -> (String, i32) {
     let split = |text: &str| -> (String, i32) {
         let (mantissa, exponent) = text
             .split_once('e')
@@ -462,7 +527,7 @@ pub(crate) fn shortest_digits(value: f64) -> (String, i32) {
     let (shortest, exponent) = split(&format!("{value:e}"));
     let length = shortest.len().max(2);
     let closest = format!("{value:.*e}", length - 1);
-    let (digits, exponent) = if closest.parse::<f64>() == Ok(value) {
+    let (digits, exponent) = if closest.parse::<F>().ok() == Some(value) {
         split(&closest)
     } else {
         (shortest, exponent)

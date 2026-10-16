@@ -7,11 +7,11 @@ use std::collections::HashSet;
 use lopdf::{Dictionary, Object};
 
 use super::cos::{as_dict, name_string, text_string, Identity, Pdf};
-use super::date::{self, Zoned};
 use super::recording::Recording;
 use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::handlers::is_blank;
 use crate::formats::java_time::format_instant;
+use crate::formats::xmp::date::{self, Zoned};
 
 /// How deep the port follows a field tree for its signatures, where PDFBox recurses without
 /// bound.

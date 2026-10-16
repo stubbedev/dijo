@@ -31,7 +31,8 @@ pub(crate) use detectors::ole::{is_ole10_native, Lookup, OleFile};
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use java::trim as java_trim;
 pub(crate) use media_type::MediaType;
-use mime_types::{mime_types, MIN_LENGTH};
+pub(crate) use mime_types::mime_types;
+use mime_types::MIN_LENGTH;
 
 /// What Tika knows of a document before it detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
