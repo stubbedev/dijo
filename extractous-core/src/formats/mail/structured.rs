@@ -6,7 +6,7 @@
 use super::codec::{decode_encoded_words, lookup, url_decode, UrlDecodeError};
 use super::field::unfold;
 use super::Unported;
-use crate::formats::java::JavaHashMap;
+use crate::java::JavaHashMap;
 
 /// A token of the grammars' lexers.
 #[derive(Debug, Clone, PartialEq, Eq)]

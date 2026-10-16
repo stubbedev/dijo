@@ -387,7 +387,7 @@ impl Handler<'_> {
         };
         let make_is = |name: &str| {
             make.as_deref()
-                .is_some_and(|make| crate::formats::java::equals_ignore_case(make, name))
+                .is_some_and(|make| crate::java::equals_ignore_case(make, name))
         };
         let maker = if chars(6) == "OLYMP\0"
             || chars(5) == "EPSON"
@@ -398,11 +398,10 @@ impl Handler<'_> {
             "Olympus"
         } else if starts("MINOLTA") {
             "Minolta"
-        } else if make.as_deref().is_some_and(|make| {
-            crate::formats::java::trim(make)
-                .to_uppercase()
-                .starts_with("NIKON")
-        }) {
+        } else if make
+            .as_deref()
+            .is_some_and(|make| crate::java::trim(make).to_uppercase().starts_with("NIKON"))
+        {
             "Nikon"
         } else if chars(8) == "SONY CAM"
             || chars(8) == "SONY DSC"
@@ -456,7 +455,7 @@ impl Handler<'_> {
             if chars(2) == "Rv" || chars(3) == "Rev" {
                 return Ok(false);
             }
-            if crate::formats::java::equals_ignore_case(&chars(5), "Ricoh") {
+            if crate::java::equals_ignore_case(&chars(5), "Ricoh") {
                 "Ricoh"
             } else {
                 return Ok(true);
@@ -471,8 +470,8 @@ impl Handler<'_> {
             return Ok(true);
         } else if reader.u16(offset)? == 0x0001 {
             "Reconyx HyperFire"
-        } else if crate::formats::java::equals_ignore_case(&chars(9), "RECONYXUF")
-            || crate::formats::java::equals_ignore_case(&chars(9), "RECONYXH2")
+        } else if crate::java::equals_ignore_case(&chars(9), "RECONYXUF")
+            || crate::java::equals_ignore_case(&chars(9), "RECONYXH2")
         {
             "Reconyx"
         } else if make_is("SAMSUNG") {

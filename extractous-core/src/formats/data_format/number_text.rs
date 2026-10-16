@@ -2,7 +2,7 @@
 //! 15 significant digits, with Excel's own rounding of the binary value, its switch to scientific
 //! notation and its odd text for some special values.
 
-use crate::formats::java_text::bigint::BigUint;
+use crate::java::bigint::BigUint;
 
 const EXCEL_NAN_BITS: u64 = 0xFFFF_0420_003C_0000;
 const MAX_TEXT_LEN: usize = 20;

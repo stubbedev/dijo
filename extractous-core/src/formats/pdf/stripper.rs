@@ -432,7 +432,7 @@ fn normalize_word(word: &str) -> Result<String, Unported> {
                 out.push_str("\u{0644}\u{0644}\u{0647}");
             } else {
                 let normalized: String = c.nfkc().collect();
-                let normalized = crate::formats::java::trim(&normalized);
+                let normalized = crate::java::trim(&normalized);
                 if code >= 0xFB1D && normalized.encode_utf16().count() > 1 {
                     out.extend(normalized.chars().rev());
                 } else {

@@ -286,7 +286,7 @@ impl<'a> Lexer<'a> {
         }
         self.position -= 1;
         if let Some(radix) = radix {
-            let base = crate::formats::java::parse_int(&radix).ok_or(Failure::Number)?;
+            let base = crate::java::parse_int(&radix).ok_or(Failure::Number)?;
             if !(2..=36).contains(&base) {
                 return Err(Failure::Damaged);
             }

@@ -29,7 +29,7 @@ struct Declaration {
 }
 
 fn positive_long(value: Option<&str>) -> Option<i64> {
-    crate::formats::java::parse_long(crate::formats::java::trim(value?)).filter(|value| *value > 0)
+    crate::java::parse_long(crate::java::trim(value?)).filter(|value| *value > 0)
 }
 
 fn declaration(metadata: &TikaMetadata) -> Option<Declaration> {
@@ -97,7 +97,7 @@ pub(crate) fn trailer(metadata: &TikaMetadata, input: &[u8]) -> Result<Option<Tr
         .is_some_and(|mime| !mime.starts_with(&format!("{}/", detected.kind())));
     let extension = match &declared.mime {
         None => "",
-        Some(mime) => mime::mime_types().extension(if from_detection {
+        Some(mime) => mime::mime_types().extension_for_name(if from_detection {
             detected.as_str()
         } else {
             mime

@@ -17,8 +17,8 @@ use super::recording::Recording;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::{jfloat, xfa, Settings, Unported};
-use crate::formats::handlers::is_blank;
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::java::is_blank;
 
 /// How many annotation types and subtypes Tika lists, at most.
 const MAX_ANNOTATION_TYPES: usize = 100;

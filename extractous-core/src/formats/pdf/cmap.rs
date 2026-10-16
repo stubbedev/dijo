@@ -600,7 +600,7 @@ impl Parser<'_> {
                     )
                 } else {
                     Token::Integer(
-                        crate::formats::java::parse_int(&text)
+                        crate::java::parse_int(&text)
                             .ok_or_else(|| malformed(&format!("Invalid number '{text}'")))?,
                     )
                 }

@@ -2,7 +2,7 @@
 //! whole numbers, and `%W.Pf` and `%W.PE` for doubles, which round the shortest decimal digits
 //! of the double half up, as the JDK's `FormattedFPDecimal` does.
 
-use super::dtoa::shortest_digits;
+use crate::java::dtoa::shortest_digits;
 
 /// A double's digits as `FormattedFPDecimal` holds them: `f × 10^e`, `f` of `n` digits.
 #[derive(Debug, Clone, Copy)]

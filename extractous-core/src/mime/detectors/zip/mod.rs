@@ -171,7 +171,7 @@ fn iwork_file(zip: &ZipFile<'_>) -> Option<MediaType> {
         );
     }
     zip.entry("buildVersionHistory.plist")?;
-    for name in crate::mime::java::hash_set_order(IWORK_CONTENT_ENTRIES) {
+    for name in crate::java::hash_set_order(IWORK_CONTENT_ENTRIES) {
         let found = zip
             .entry(name)
             .and_then(|entry| zip.read(entry))
@@ -192,7 +192,7 @@ fn ipa_patterns() -> Vec<NamePattern> {
         name.strip_prefix("Payload/")
             .and_then(|rest| rest.strip_suffix(suffix))
             .and_then(|rest| rest.strip_suffix(".app/"))
-            .is_some_and(|middle| !middle.contains(crate::mime::java::is_line_terminator))
+            .is_some_and(|middle| !middle.contains(crate::java::is_line_terminator))
     }
     vec![
         |name| name == "Payload/",
@@ -242,7 +242,7 @@ fn jar_file(zip: &ZipFile<'_>) -> Option<MediaType> {
 const KMZ: &str = "application/vnd.google-earth.kmz";
 
 fn is_top_level_kml(name: &str) -> bool {
-    !name.contains(['/', '\\']) && crate::mime::java::to_lower_case(name).ends_with(".kml")
+    !name.contains(['/', '\\']) && crate::java::to_lower_case(name).ends_with(".kml")
 }
 
 fn kmz_file(zip: &ZipFile<'_>) -> Option<MediaType> {

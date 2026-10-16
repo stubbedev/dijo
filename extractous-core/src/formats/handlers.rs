@@ -4,9 +4,11 @@
 //! (`WriteOutContentHandler`'s limit), and the writers [`ToText`] (`ToTextContentHandler`) and
 //! [`ToXml`] (`ToXMLContentHandler`).
 
-use crate::formats::java::JavaHashMap;
-use crate::formats::xhtml::{ContentHandler, Stop, XHTML_NAMESPACE};
-use crate::unicode::is_whitespace;
+use crate::formats::metadata::TikaMetadata;
+use crate::formats::xhtml::{ContentHandler, Embedded, Stop, Xhtml, XHTML_NAMESPACE};
+use crate::formats::{Failure, Prepared};
+use crate::java::JavaHashMap;
+use crate::java::{is_blank, utf16_length};
 
 /// The block elements [`BlockBreaks`] ends with a line break and [`AnchoredBlocks`] holds back.
 const BLOCKS: [&str; 16] = [
@@ -771,14 +773,20 @@ impl ContentHandler for Discard {
     }
 }
 
-/// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
-pub(crate) fn is_blank(text: &str) -> bool {
-    text.chars().all(is_whitespace)
-}
-
-/// The length of `text` in UTF-16 code units, which is how Java counts characters.
-pub(crate) fn utf16_length(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
+/// A document its parser `prepared` from fresh metadata parsed into another document's body,
+/// through an `EmbeddedContentHandler` and a `BodyContentHandler`, as a parser does that hands a
+/// part of its document to another parser with its own `XHTMLContentHandler`, such as the mail
+/// parser's `handleInlineBodyPart`.
+pub(crate) fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let context = xhtml.context();
+    let mut open = Vec::new();
+    let mut forward = Embedded {
+        outer: xhtml,
+        open: &mut open,
+    };
+    let mut body = Body::new(&mut forward);
+    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);
+    result
 }
 
 #[cfg(test)]

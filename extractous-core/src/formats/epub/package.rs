@@ -3,10 +3,10 @@
 //! `DcXMLParser`, and its manifest and spine through the `ContentOrderScraper`.
 
 use crate::formats::element_metadata::DublinCore;
-use crate::formats::java::{self, JavaHashMap};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::{self, JavaHashMap};
 
 const RENDITION_LAYOUT: &str = "epub:rendition:layout";
 const VERSION: &str = "epub:version";
@@ -80,7 +80,7 @@ impl Rendition {
             }
             "package" => {
                 if let Some(version) = attribute_value(attributes, "version")
-                    .filter(|version| !crate::formats::handlers::is_blank(version))
+                    .filter(|version| !crate::java::is_blank(version))
                 {
                     metadata.set(VERSION, version);
                 }
@@ -252,7 +252,7 @@ impl SaxHandler for Contents {
             && attribute_value(attributes, "name") == Some("cover")
         {
             if let Some(content) = attribute_value(attributes, "content")
-                .filter(|content| !crate::formats::handlers::is_blank(content))
+                .filter(|content| !crate::java::is_blank(content))
             {
                 self.cover_meta = Some(java::trim(content).to_owned());
             }

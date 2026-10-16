@@ -7,9 +7,6 @@ use crate::formats::parity::{
     documents_with,
 };
 
-/// The OCR enricher's names, the port's paired with Tika's.
-const DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
-
 fn skipping_ocr() -> ParserConfigs {
     ParserConfigs {
         ocr: TesseractOcrConfig::new().set_skip_ocr(true),

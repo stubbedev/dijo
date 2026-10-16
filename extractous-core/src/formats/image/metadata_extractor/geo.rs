@@ -3,7 +3,7 @@
 use super::descriptions::decimal;
 use super::exif::tags::{GPS_LATITUDE, GPS_LATITUDE_REF, GPS_LONGITUDE, GPS_LONGITUDE_REF};
 use super::{Directory, Rational};
-use crate::formats::java::equals_ignore_case;
+use crate::java::equals_ignore_case;
 
 /// A latitude and longitude in decimal degrees.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -4,7 +4,7 @@
 //! rules java.time looks up in its time-zone database, leaves the message to Tika.
 
 use super::Unported;
-use crate::formats::java_time::civil;
+use crate::java::time::civil;
 
 const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 const MAX_OFFSET_SECONDS: i64 = 18 * 3600;
@@ -66,7 +66,7 @@ fn normalize(text: &str) -> String {
             in_space = false;
         }
     }
-    collapsed.trim_matches(|c: char| c <= ' ').to_owned()
+    crate::java::trim(&collapsed).to_owned()
 }
 
 /// An offset a pattern found: its sign, hours and minutes.
@@ -1182,7 +1182,7 @@ fn resolve_date(parsed: &Parsed) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::java_time::format_instant;
+    use crate::java::time::format_instant;
 
     fn parse(text: &str) -> Option<String> {
         parse_date_lenient(text).unwrap().map(format_instant)

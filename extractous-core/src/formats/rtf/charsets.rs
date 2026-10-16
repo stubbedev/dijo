@@ -5,7 +5,7 @@
 use crate::text::charset::Charset;
 
 /// The charset `TextExtractor.getCharset(name)` finds.
-fn named(name: &str) -> Charset {
+pub(super) fn named(name: &str) -> Charset {
     Charset::for_name(name).unwrap_or_else(|| Charset::named("US-ASCII"))
 }
 

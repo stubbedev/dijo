@@ -4,7 +4,7 @@
 
 use super::descriptions::{base, indexed, Described};
 use super::{Directory, Kind, Metadata, Rational, Unported, Value};
-use crate::formats::java_text::printf;
+use crate::java::printf;
 
 pub(super) const TAG_RUN_TIME: i32 = 0x0003;
 const TAG_ACCELERATION_VECTOR: i32 = 0x0008;

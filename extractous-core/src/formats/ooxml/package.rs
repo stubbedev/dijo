@@ -13,10 +13,8 @@ use super::uri::{self, Resolution};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::central_directory_records;
 use crate::formats::Failure;
-
-/// Why this port leaves a package to Tika.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unported(pub(crate) String);
+pub(crate) use crate::formats::Unported;
+use crate::java;
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const TYPES_NAMESPACE: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
@@ -309,7 +307,7 @@ impl<'a> Package<'a> {
                 None => by_id.push(relationship),
             }
         }
-        by_id.sort_by(|a, b| java_compare(&a.id, &b.id));
+        by_id.sort_by(|a, b| java::compare(&a.id, &b.id));
         Ok(by_id)
     }
 
@@ -323,7 +321,7 @@ fn describe(failure: &Failure) -> String {
     match failure {
         Failure::Malformed(reason) => reason.clone(),
         Failure::Stopped(stop) => format!("{stop:?}"),
-        Failure::Extraction(error) => error.to_string(),
+        Failure::Extraction(error) | Failure::Embedded(error) => error.to_string(),
     }
 }
 
@@ -423,11 +421,6 @@ fn compare_numbers(a: &[u8], b: &[u8]) -> Ordering {
     let strip = |digits: &[u8]| -> usize { digits.iter().take_while(|&&d| d == b'0').count() };
     let (a, b) = (&a[strip(a)..], &b[strip(b)..]);
     a.len().cmp(&b.len()).then_with(|| a.cmp(b))
-}
-
-/// `String.compareTo`: by UTF-16 code units.
-fn java_compare(a: &str, b: &str) -> Ordering {
-    a.encode_utf16().cmp(b.encode_utf16())
 }
 
 /// The content types of `[Content_Types].xml`.

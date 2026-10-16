@@ -54,6 +54,11 @@ impl Parser for JSoupParser {
         "extractous::JSoupParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.html.JSoupParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &TYPES
     }
@@ -84,6 +89,21 @@ pub(crate) fn prepare(
     }
     Ok(Box::new(move |xhtml| {
         write(&document, previous.as_deref(), xhtml)
+    }))
+}
+
+/// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units.
+pub(crate) fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Deferral> {
+    let dom = tree_builder::parse(html, Source::String);
+    if let Some(reason) = handler::deferral(&dom, None) {
+        return Err(reason.to_owned());
+    }
+    Ok(Box::new(move |xhtml| {
+        let Err(stop) = handler::write(&dom, xhtml) else {
+            return Ok(());
+        };
+        xhtml.end_document()?;
+        Err(stop.into())
     }))
 }
 

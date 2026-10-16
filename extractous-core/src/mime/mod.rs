@@ -16,7 +16,6 @@
 
 mod archive;
 mod detectors;
-pub(crate) mod java;
 mod java_regex;
 mod magic;
 mod media_type;
@@ -26,10 +25,10 @@ mod text;
 mod uri;
 
 #[cfg(test)]
-pub(crate) use detectors::ole::tests::compound as compound_document;
-pub(crate) use detectors::ole::{is_ole10_native, Lookup, OleFile};
+pub(crate) use crate::ole2::tests::compound as compound_document;
+pub(crate) use detectors::ole::directory_type as ole_directory_type;
+pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
-pub(crate) use java::trim as java_trim;
 pub(crate) use media_type::MediaType;
 pub(crate) use mime_types::mime_types;
 use mime_types::MIN_LENGTH;
@@ -43,6 +42,14 @@ pub(crate) enum Origin<'a> {
     /// Bytes streamed without a name, whose length the metadata learns only if a detector reads
     /// them all.
     Bytes,
+    /// An embedded document, streamed as bytes are, with the resource name and `Content-Type`
+    /// its embedding parser gave it, which hint at its type. Its metadata learns its length when
+    /// a detector reads it all only if the stream was opened with that metadata.
+    Embedded {
+        name: Option<&'a str>,
+        content_type: Option<&'a str>,
+        learns_length: bool,
+    },
 }
 
 /// A metadata key the detection writes.
@@ -117,10 +124,30 @@ impl Written {
 
     /// A detector read the stream to its end: a stream of bytes learns its length.
     fn spool(&mut self, origin: Origin<'_>) {
-        if origin == Origin::Bytes && !self.spooled {
+        let learns_length = match origin {
+            Origin::File { .. } => false,
+            Origin::Bytes => true,
+            Origin::Embedded { learns_length, .. } => learns_length,
+        };
+        if learns_length && !self.spooled {
             self.spooled = true;
             self.set(Key::ContentLength, self.length.to_string());
         }
+    }
+}
+
+/// `MimeTypes.forName(type).getExtension()` of the default types: the first extension of the
+/// type, with its dot, or nothing.
+pub(crate) fn extension(media_type: &MediaType) -> &'static str {
+    mime_types().extension(media_type)
+}
+
+/// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an
+/// archive or compression format by its first bytes, or `application/octet-stream`.
+pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
+    match zip::detect(data) {
+        zip::Detected::Zip(found) => found.media_type,
+        zip::Detected::Other(found) => found.unwrap_or_else(|| MediaType::named(OCTET_STREAM)),
     }
 }
 
@@ -128,11 +155,14 @@ impl Written {
 pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     let types = mime_types();
     let registry = types.registry();
-    let name = match origin {
-        Origin::File { name } => Some(name),
-        Origin::Bytes => None,
+    let (name, content_type) = match origin {
+        Origin::File { name } => (Some(name), None),
+        Origin::Bytes => (None, None),
+        Origin::Embedded {
+            name, content_type, ..
+        } => (name, content_type),
     };
-    let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name);
+    let magic = types.detect(&data[..data.len().min(MIN_LENGTH)], name, content_type);
     let mut written = Written {
         entries: Vec::new(),
         spooled: false,
@@ -143,7 +173,7 @@ pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, Detec
     let ole_header = ole::is_ole(data);
     let ole_file = if ole_header {
         written.spool(origin);
-        ole::OleFile::open(data)
+        ole::OleFile::open(data).ok()
     } else {
         None
     };

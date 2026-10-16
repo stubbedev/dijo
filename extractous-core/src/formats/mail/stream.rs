@@ -101,8 +101,7 @@ impl DescriptorBuilder {
             }
             "content-transfer-encoding" if self.transfer_encoding.is_none() => {
                 let body = field.body();
-                self.transfer_encoding =
-                    Some(crate::formats::java::trim(&body).to_ascii_lowercase());
+                self.transfer_encoding = Some(crate::java::trim(&body).to_ascii_lowercase());
             }
             "content-disposition" if self.disposition.is_none() => {
                 self.disposition = Some(field.body());
@@ -335,7 +334,7 @@ impl Boundary {
     fn new(boundary: &str, buffer: &mut LineBuffer, source: &mut Source) -> Self {
         let mut pattern = b"--".to_vec();
         pattern.extend(boundary.encode_utf16().map(|unit| unit as u8));
-        buffer.ensure_capacity((2 * boundary.encode_utf16().count()).max(BUFFER_SIZE));
+        buffer.ensure_capacity((2 * crate::java::utf16_length(boundary)).max(BUFFER_SIZE));
         let mut stream = Boundary {
             pattern,
             eof: false,

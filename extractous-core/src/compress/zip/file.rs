@@ -9,7 +9,7 @@ use super::{
     STORED,
 };
 use crate::compress::crc32;
-use crate::formats::java_time::{CalendarFields, TimeZone};
+use crate::java::time::{CalendarFields, TimeZone};
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const ZIP64_EOCD_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";

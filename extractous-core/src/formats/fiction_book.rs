@@ -4,10 +4,10 @@
 //! together and keeping the names of embedded images and the language code in the text.
 
 use crate::config::ParserConfigs;
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::strip;
 
 const MAX_HEADING_LEVEL: usize = 6;
 const PARAGRAPHS: [&str; 4] = ["p", "v", "text-author", "subtitle"];
@@ -18,6 +18,11 @@ pub(crate) struct FictionBookParser;
 impl Parser for FictionBookParser {
     fn name(&self) -> &'static str {
         "extractous::FictionBookParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.FictionBookParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

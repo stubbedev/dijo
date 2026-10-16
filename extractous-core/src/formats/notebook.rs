@@ -9,11 +9,11 @@ use serde_json::Value;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::handlers::{is_blank, utf16_length};
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Parser, Prepared};
-use crate::mime::java::is_regex_space;
+use crate::java::is_regex_space;
+use crate::java::strip;
+use crate::java::{is_blank, utf16_length};
 
 const PLAIN_TEXT: &str = "text/plain";
 const MARKDOWN: &str = "text/markdown";
@@ -250,6 +250,11 @@ pub(crate) struct NotebookParser;
 impl Parser for NotebookParser {
     fn name(&self) -> &'static str {
         "extractous::NotebookParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.NotebookParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

@@ -87,6 +87,11 @@ impl Parser for TextAndCsvParser {
         "extractous::TextAndCSVParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.csv.TextAndCSVParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["text/plain", "text/csv", "text/tab-separated-values"]
     }

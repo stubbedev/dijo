@@ -10,10 +10,11 @@
 //! parser goes by Tika's name; and the stack traces of their failures without the Java frames
 //! below the embedded document's parse, the embedding parser's in Tika's path and the native
 //! bridge's in the other, which no native parser runs, and with the random numbers of Tika's
-//! temporary files masked. A failure the parser records itself (`embedded-stream-exception`) is
-//! compared without its frames, all of them the Java parser's. In a string extraction, the
-//! native path, which parses an embedded document whole, may go on to more parsers and failures
-//! than Tika's, which stops at the length limit; Tika's must lead the native ones.
+//! temporary files, and the suffixes the native bridge gives them, masked. A failure the parser
+//! records itself (`embedded-stream-exception`) is compared without its frames, all of them the
+//! Java parser's. In a string extraction, the native path, which parses an embedded document
+//! whole, may go on to more parsers and failures than Tika's, which stops at the length limit;
+//! Tika's must lead the native ones.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -149,6 +150,24 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
     })
 }
 
+/// The native names of the parsers of a document paired with Tika's: the parser `native_name`
+/// Tika's path names `tika_name`, its `delegates`, then every native parser and the parsers it
+/// delegates to, which its embedded documents may record.
+fn tika_names<'n>(
+    native_name: &'n str,
+    tika_name: &'n str,
+    delegates: &[(&'n str, &'n str)],
+) -> Vec<(&'n str, &'n str)> {
+    [(native_name, tika_name)]
+        .into_iter()
+        .chain(delegates.iter().copied())
+        .chain(formats::PARSERS.iter().flat_map(|parser| {
+            std::iter::once((parser.name(), parser.tika_name()))
+                .chain(parser.tika_delegates().iter().copied())
+        }))
+        .collect()
+}
+
 /// The native result as Tika's path would name its parsers: each native name of `names` as the
 /// Tika name paired with it.
 fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
@@ -245,8 +264,10 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
-/// The text with the random number of each of Tika's temporary files, `apache-tika-<digits>`,
-/// masked.
+/// The text with the random number and the suffix of each of Tika's temporary files,
+/// `apache-tika-<digits>.<suffix>`, masked: the suffix is the extension of the name the
+/// embedded document's stream was made with, which the native bridge gives it and Tika's path,
+/// making the stream from bytes alone, does not.
 fn without_temporary_names(text: &str) -> String {
     const PREFIX: &str = "apache-tika-";
     let mut out = String::with_capacity(text.len());
@@ -255,6 +276,9 @@ fn without_temporary_names(text: &str) -> String {
         out.push_str(&rest[..at + PREFIX.len()]);
         rest =
             rest[at + PREFIX.len()..].trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
+        if let Some(suffix) = rest.strip_prefix('.') {
+            rest = suffix.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
+        }
         out.push('N');
     }
     out.push_str(rest);
@@ -320,11 +344,6 @@ enum Expected<'a> {
     Same(Naming<'a>),
     /// Both fail on it.
     Failure,
-    /// Both extract it identically but for the XML string cut at the write limit inside an HTML
-    /// part of an embedded message: there Tika's path also writes the `</body>` that the HTML
-    /// parse it aborts leaks through the body filter, which the native replay of the embedded
-    /// document, parsed whole without the limit, never sees.
-    LeaksBodyEndAtLimit(Naming<'a>),
 }
 
 /// How Tika's path names the parsers of a document the native parser extracts.
@@ -391,23 +410,6 @@ pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserCon
     compare(documents, configs, Expected::Failure);
 }
 
-/// Asserts what [`assert_same_as_tika`] does, but that Tika's XML string, cut at the write limit
-/// inside an HTML part of an embedded message, ends in the `</body>` its aborted HTML parse leaks
-/// ([`Expected::LeaksBodyEndAtLimit`]).
-pub(crate) fn assert_same_as_tika_but_body_end_leaked_at_limit(
-    documents: &[&Path],
-    tika_name: &str,
-) {
-    compare(
-        documents,
-        &ParserConfigs::default(),
-        Expected::LeaksBodyEndAtLimit(Naming {
-            tika_name,
-            delegates: &[],
-        }),
-    );
-}
-
 fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     let mut differences = Vec::new();
     for document in documents {
@@ -430,23 +432,10 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             }
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
-                    (
-                        Expected::Same(naming) | Expected::LeaksBodyEndAtLimit(naming),
-                        Ok(tika),
-                        Ok(native),
-                    ) => {
-                        let names: Vec<(&str, &str)> = [(native_name, naming.tika_name)]
-                            .into_iter()
-                            .chain(naming.delegates.iter().copied())
-                            .collect();
+                    (Expected::Same(naming), Ok(tika), Ok(native)) => {
+                        let names = tika_names(native_name, naming.tika_name, naming.delegates);
                         let tika = comparable(tika.clone());
-                        let mut native = comparable(as_tika(native.clone(), &names, char_set));
-                        if matches!(expected, Expected::LeaksBodyEndAtLimit(_))
-                            && entry == "string"
-                            && output == Output::Xml
-                        {
-                            native.text.extend_from_slice(b"</body>");
-                        }
+                        let native = comparable(as_tika(native.clone(), &names, char_set));
                         if entry == "string" {
                             tika == cut_to(native, &tika)
                         } else {
@@ -467,6 +456,20 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
         }
     }
     assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// Why `parser` defers the document at `path` to Tika, given the metadata the detection
+/// starts it from, if it does.
+pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
+    let name = path.to_str().unwrap();
+    let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
+    let detected = formats::Detected::detect(Source::File(name), &input)
+        .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
+    parser.defers(
+        &input,
+        &detected.metadata_for(parser),
+        &ParserConfigs::default(),
+    )
 }
 
 /// The non-empty files under `roots` whose detected type `parser` reads, split into
@@ -632,6 +635,8 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
     let native_spool = Scratch::new("spool-native");
     let routed = routed(path);
+    let native_name = routed.parser.name();
+    let tika_name = routed.parser.tika_name();
     let options = StreamOptions {
         char_set: CharSet::UTF_8,
         output: Output::Xml,
@@ -660,20 +665,7 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
     match (tika, native) {
         (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
-            let parsed_by = |metadata: &[(String, Vec<String>)]| -> Vec<String> {
-                metadata
-                    .iter()
-                    .find(|(name, _)| name == "tk:parsed-by")
-                    .map(|(_, values)| values.clone())
-                    .unwrap_or_else(|| panic!("{path:?}: an extraction without tk:parsed-by"))
-            };
-            let native_parsers = parsed_by(&native_metadata);
-            let tika_parsers = parsed_by(&metadata);
-            let names: Vec<(&str, &str)> = native_parsers
-                .iter()
-                .zip(&tika_parsers)
-                .map(|(native, tika)| (native.as_str(), tika.as_str()))
-                .collect();
+            let names = tika_names(native_name, tika_name, &[]);
             let tika = (
                 comparable(Extracted { text, metadata }),
                 spooled(embedded, tika_spool.directory()),
@@ -742,6 +734,18 @@ mod tests {
         assert_eq!(
             without_embedding_frames(native),
             "E: no\n\tat P.parse(P.java:1)\n\tat org.apache.tika.parser.AutoDetectParser.parse(A.java:2)\nCaused by: C: why\n\tat Q.q(Q.java:4)\n"
+        );
+    }
+
+    #[test]
+    fn masks_the_numbers_and_suffixes_of_temporary_files() {
+        assert_eq!(
+            without_temporary_names("Reading /tmp/apache-tika-18224193047354770268.bmp failed"),
+            without_temporary_names("Reading /tmp/apache-tika-1899816013292051053.tmp failed"),
+        );
+        assert_eq!(
+            without_temporary_names("/tmp/apache-tika-12-34.pdf: x"),
+            "/tmp/apache-tika-N: x"
         );
     }
 }

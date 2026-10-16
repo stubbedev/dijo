@@ -15,10 +15,10 @@ use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
-use crate::formats::java_time::{instant_string, TimeZone};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::time::{instant_string, TimeZone};
 use crate::mime::MediaType;
 use crate::text::charset::{self, Charset};
 
@@ -116,6 +116,11 @@ pub(crate) struct ZipParser;
 impl Parser for ZipParser {
     fn name(&self) -> &'static str {
         "extractous::ZipParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.pkg.ZipParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

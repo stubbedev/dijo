@@ -18,11 +18,11 @@ pub(crate) mod photoshop;
 pub(crate) mod reader;
 pub(crate) mod webp;
 
-use crate::formats::java::parse_long;
-use crate::formats::java_text::decimal::Rounding;
-use crate::formats::java_text::decimal_format::DecimalFormat;
-use crate::formats::java_text::dtoa::java_double_to_string;
-use crate::formats::java_time::TimeZone;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
+use crate::java::dtoa::java_double_to_string;
+use crate::java::parse_long;
+use crate::java::time::TimeZone;
 use crate::text::charset::Charset;
 
 /// metadata-extractor's `Rational`: a numerator and a denominator, neither reduced.
@@ -480,7 +480,7 @@ impl Directory {
         match value {
             Value::Text(_) | Value::StringValue(_) => {
                 let text = value.text()?;
-                Some(match crate::formats::java::parse_int(&text) {
+                Some(match crate::java::parse_int(&text) {
                     Some(int) => int,
                     None => chars_as_number(&text) as i32,
                 })
@@ -516,9 +516,7 @@ impl Directory {
     pub(crate) fn double(&self, tag: i32) -> Option<f64> {
         let value = self.object(tag)?;
         match value {
-            Value::Text(_) | Value::StringValue(_) => {
-                crate::formats::java::parse_double(&value.text()?)
-            }
+            Value::Text(_) | Value::StringValue(_) => crate::java::parse_double(&value.text()?),
             other => other.number_double(),
         }
     }
@@ -528,7 +526,7 @@ impl Directory {
         let value = self.object(tag)?;
         match value {
             Value::Text(_) | Value::StringValue(_) => {
-                crate::formats::java::parse_double(&value.text()?).map(|double| double as f32)
+                crate::java::parse_double(&value.text()?).map(|double| double as f32)
             }
             other => other.number_float(),
         }

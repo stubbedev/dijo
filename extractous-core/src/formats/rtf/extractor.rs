@@ -9,10 +9,11 @@ use std::collections::HashMap;
 use super::charsets;
 use super::embedded::{hex_value, Deferral, Embedded};
 use super::input::Input;
-use crate::formats::java_time::{self, CalendarFields, TimeZone};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
+use crate::java;
+use crate::java::time::{self, CalendarFields, TimeZone};
 use crate::text::charset::Charset;
 
 /// The UTF-16 units `TextExtractor` decodes into at a time, each batch written as one
@@ -62,12 +63,18 @@ type Step = Result<(), Interrupt>;
 /// Extracts `input` into `xhtml`. On a failure, the elements still open are ended, as
 /// `RTFParser`'s `XHTMLBalancingHandler` drains them, unless that fails in turn.
 pub(super) fn extract(input: &[u8], xhtml: &mut Xhtml) -> Step {
-    let mut extractor = Extractor::new(input, xhtml);
+    let mut extractor = Extractor::new(input, xhtml, None);
     let result = extractor.extract();
     if let Err(Interrupt::Failed(_)) = result {
         extractor.drain()?;
     }
     result
+}
+
+/// `RTFParser.parseInline`: extracts `input` into the elements of another document's `xhtml`,
+/// the metadata of its header into `metadata`, ending no element on a failure.
+pub(super) fn extract_inline(input: &[u8], xhtml: &mut Xhtml, metadata: TikaMetadata) -> Step {
+    Extractor::new(input, xhtml, Some(metadata)).extract()
 }
 
 /// The state of one group, `{...}`, which its nested groups start from.
@@ -311,15 +318,12 @@ struct Extractor<'a, 'x, 'h> {
     paragraphs: ParagraphStack,
     /// The elements started and not yet ended, as `XHTMLBalancingHandler` tracks them.
     open: Vec<&'static str>,
-}
-
-/// Java's `String.trim`: characters up to a space go from both ends.
-fn trim_java(text: &str) -> &str {
-    text.trim_matches(|c: char| c <= ' ')
+    /// The metadata of a document extracted into another's elements, else the document's own.
+    inline_metadata: Option<TikaMetadata>,
 }
 
 impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
-    fn new(input: &'a [u8], out: &'x mut Xhtml<'h>) -> Self {
+    fn new(input: &'a [u8], out: &'x mut Xhtml<'h>, inline_metadata: Option<TikaMetadata>) -> Self {
         Self {
             input: Input::new(input),
             out,
@@ -348,11 +352,15 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             date: DateParts::default(),
             paragraphs: ParagraphStack::default(),
             open: Vec::new(),
+            inline_metadata,
         }
     }
 
     fn metadata(&mut self) -> &mut TikaMetadata {
-        self.out.metadata_mut()
+        match &mut self.inline_metadata {
+            Some(metadata) => metadata,
+            None => self.out.metadata_mut(),
+        }
     }
 
     fn start(&mut self, tag: &'static str) -> Step {
@@ -1088,12 +1096,12 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
     fn read_instruction(&mut self) {
         let instruction = String::from_utf16_lossy(&self.pending_buffer);
         self.pending_buffer.clear();
-        let instruction = trim_java(&instruction);
+        let instruction = java::trim(&instruction);
         let Some(target) = instruction.strip_prefix(HYPERLINK) else {
             self.field = Field::None;
             return;
         };
-        let mut target = trim_java(target);
+        let mut target = java::trim(target);
         let local = target.contains("\\l ");
         if let Some(open) = target.find('"') {
             if let Some(close) = target[open + 1..].find('"') {
@@ -1120,7 +1128,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
                 second: 0,
                 millisecond: 0,
             };
-            let created = java_time::format_instant(fields.epoch_millis(zone));
+            let created = time::format_instant(fields.epoch_millis(zone));
             self.metadata().set("dcterms:created", created);
             return Ok(());
         }

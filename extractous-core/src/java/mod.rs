@@ -1,10 +1,23 @@
-//! What ports of Tika code need from Java itself to give Java's results: the iteration order of
-//! a `java.util.HashMap` with string keys, `Integer.parseInt`, `Long.parseLong`,
-//! `Double.parseDouble`, `Math.round`, `String.trim`, `String.strip` and `System.lineSeparator`.
+//! What ports of Java code need from Java itself to give Java's results: the iteration order of
+//! a `java.util.HashMap` and `HashSet` with string keys, string comparison, hashing, lengths,
+//! trimming and case mapping, `Character.isWhitespace` and the regex classes `\s` and `.`,
+//! `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble`, `Math.round` and
+//! `System.lineSeparator`; with `Double.toString` and `Float.toString` ([`dtoa`]) and the
+//! `BigInteger` arithmetic it needs ([`bigint`]), `BigDecimal` ([`decimal`]),
+//! `java.text.DecimalFormat` ([`decimal_format`]), `String.format` ([`printf`]),
+//! `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and `TimeZone` ([`time`]).
 
+pub(crate) mod bigint;
+pub(crate) mod decimal;
+pub(crate) mod decimal_format;
+pub(crate) mod dtoa;
+pub(crate) mod printf;
+pub(crate) mod simple_date_format;
+pub(crate) mod time;
+
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
-pub(crate) use crate::mime::java_trim as trim;
 use crate::unicode::{decimal_digit, is_whitespace};
 
 /// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
@@ -52,6 +65,16 @@ impl<V> JavaHashMap<V> {
             map.initial_capacity = (size * 4).div_ceil(3).next_power_of_two();
         }
         map
+    }
+
+    /// An empty map whose table `new HashSet<>(collection)` sizes for a collection of `size`
+    /// elements: `new HashMap<>(max((int) (size / .75f) + 1, 16))`.
+    pub(crate) fn for_hash_set(size: usize) -> Self {
+        let requested = ((size as f32 / 0.75) as usize + 1).max(INITIAL_CAPACITY);
+        Self {
+            initial_capacity: requested.next_power_of_two(),
+            ..Self::default()
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -134,6 +157,18 @@ impl<V> JavaHashMap<V> {
         order
             .into_iter()
             .map(|(_, entry)| (entry.key.as_str(), &entry.value))
+    }
+
+    /// Whether two of `keys` share a bucket of the table, where Java iterates them in the order
+    /// they were inserted.
+    pub(crate) fn share_a_bucket(&self, keys: &[&str]) -> bool {
+        let mask = self.capacity.saturating_sub(1);
+        let mut buckets: Vec<usize> = keys
+            .iter()
+            .map(|key| spread(string_hash(key)) as usize & mask)
+            .collect();
+        buckets.sort_unstable();
+        buckets.windows(2).any(|pair| pair[0] == pair[1])
     }
 
     fn insert_new(&mut self, key: &str, value: V) {
@@ -308,6 +343,24 @@ pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
             .all(|(x, y)| x == y || upper(x) == upper(y) || lower(upper(x)) == lower(upper(y)))
 }
 
+/// `String.split` on one character that is no regex metacharacter: the pieces without the
+/// empty ones at the end, and none for a text of separators only.
+pub(crate) fn split(text: &str, separator: char) -> Vec<&str> {
+    let mut pieces: Vec<&str> = text.split(separator).collect();
+    while pieces.len() > 1 && pieces.last().is_some_and(|piece| piece.is_empty()) {
+        pieces.pop();
+    }
+    if pieces == [""] && !text.is_empty() {
+        pieces.clear();
+    }
+    pieces
+}
+
+/// `String.trim()`: without the characters up to U+0020 at either end.
+pub(crate) fn trim(text: &str) -> &str {
+    text.trim_matches(|character| character <= ' ')
+}
+
 /// `String.strip()`: without the whitespace `Character.isWhitespace` sees at either end.
 pub(crate) fn strip(text: &str) -> &str {
     text.trim_matches(is_whitespace)
@@ -454,6 +507,75 @@ fn parse_hex_double(text: &str) -> Option<f64> {
     Some(value * 2f64.powi(i32::try_from(scale.clamp(-1100, 1100)).unwrap_or(0)))
 }
 
+/// Java's `String.compareTo`: UTF-16 code units compared in order.
+pub(crate) fn compare(a: &str, b: &str) -> Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
+/// A string ordered as Java orders strings, for sorted maps keyed as a `TreeMap<String, _>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JavaString(pub(crate) String);
+
+impl Ord for JavaString {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare(&self.0, &other.0)
+    }
+}
+
+impl PartialOrd for JavaString {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Java's `String.length()`: the number of UTF-16 code units.
+pub(crate) fn utf16_length(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
+pub(crate) fn is_blank(text: &str) -> bool {
+    text.chars().all(is_whitespace)
+}
+
+/// Whether Java's regex `\s` (without `UNICODE_CHARACTER_CLASS`) matches `c`.
+pub(crate) fn is_regex_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r')
+}
+
+/// Whether `c` ends a line for Java's regex `.` and `$`.
+pub(crate) fn is_line_terminator(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Java's `String.toLowerCase(Locale.ROOT)`, which `Locale.ENGLISH` matches.
+pub(crate) fn to_lower_case(text: &str) -> String {
+    text.to_lowercase()
+}
+
+/// Java's `String.toUpperCase(Locale.ROOT)`.
+pub(crate) fn to_upper_case(text: &str) -> String {
+    text.to_uppercase()
+}
+
+/// The order a `java.util.HashSet<String>` of the default capacity iterates `items` in, added
+/// in the given order: by bucket of the spread hash in the table the set has grown to, and in
+/// insertion order within a bucket. Equal items are kept once.
+pub(crate) fn hash_set_order<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut unique: Vec<&str> = Vec::new();
+    for item in items {
+        if !unique.contains(&item) {
+            unique.push(item);
+        }
+    }
+    let mut capacity = INITIAL_CAPACITY;
+    while unique.len() * 4 > capacity * 3 {
+        capacity *= 2;
+    }
+    unique.sort_by_key(|item| spread(string_hash(item)) as usize & (capacity - 1));
+    unique
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,5 +674,20 @@ mod tests {
         assert_eq!(round(0.49999999999999994), 0);
         assert_eq!(round(f64::NAN), 0);
         assert_eq!(round(1e300), i64::MAX);
+    }
+
+    #[test]
+    fn orders_as_java_does() {
+        assert_eq!(compare("\u{FFFF}", "\u{1F600}"), Ordering::Greater);
+        assert_eq!(compare("a", "b"), Ordering::Less);
+        assert_eq!(utf16_length("a\u{1F600}"), 3);
+    }
+
+    #[test]
+    fn iterates_a_hash_set_as_java_does() {
+        assert_eq!(
+            hash_set_order(["presentation.apxl", "index.xml", "index.apxl"]),
+            ["index.apxl", "index.xml", "presentation.apxl"]
+        );
     }
 }

@@ -5,7 +5,7 @@
 use super::descriptions::{base, decimal, Described};
 use super::reader::{Bounds, Reader, Sequential};
 use super::{exif, icc, iptc, java_string, Directory, Kind, Metadata, Unported, Value};
-use crate::formats::java_text::dtoa::{java_double_to_string, java_float_to_string};
+use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::text::charset::Charset;
 
 const TAG_XML: i32 = 0x03ea;

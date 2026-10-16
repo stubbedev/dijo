@@ -3,9 +3,9 @@
 //! has nothing of its own for the tag. The Exif and GPS descriptors are here; those of the other
 //! directories are beside their readers.
 
-use crate::formats::java::trim as java_trim;
-use crate::formats::java_text::decimal::Rounding;
-use crate::formats::java_text::decimal_format::DecimalFormat;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
+use crate::java::trim as java_trim;
 use crate::text::charset::Charset;
 
 use super::exif::tags::*;
@@ -186,14 +186,14 @@ fn shutter_speed(directory: &Directory, tag: i32) -> Option<String> {
     let apex = directory.float(tag)?;
     if apex <= 1.0 {
         let power = (1.0 / (f64::from(apex) * 2f64.ln()).exp()) as f32;
-        let power10 = crate::formats::java::round(f64::from(power) * 10.0);
+        let power10 = crate::java::round(f64::from(power) * 10.0);
         let rounded_power = power10 as f32 / 10.0;
         return Some(format!(
             "{} sec",
             rounded("0.##", Rounding::HalfUp, f64::from(rounded_power))
         ));
     }
-    let power = crate::formats::java::round((f64::from(apex) * 2f64.ln()).exp()) as i32;
+    let power = crate::java::round((f64::from(apex) * 2f64.ln()).exp()) as i32;
     Some(format!("1/{power} sec"))
 }
 
@@ -573,7 +573,7 @@ fn exif_value(directory: &Directory, tag: i32) -> Option<String> {
         TAG_INTEROP_INDEX => {
             let value = d.string(tag)?;
             Some(
-                if crate::formats::java::equals_ignore_case(java_trim(&value), "R98") {
+                if crate::java::equals_ignore_case(java_trim(&value), "R98") {
                     "Recommended Exif Interoperability Rules (ExifR98)".to_owned()
                 } else {
                     format!("Unknown ({value})")
@@ -865,7 +865,7 @@ fn gps(directory: &Directory, tag: i32) -> Described {
 fn gps_value(directory: &Directory, tag: i32) -> Option<String> {
     let d = directory;
     let trimmed = |tag: i32| d.string(tag).map(|value| java_trim(&value).to_owned());
-    let case = |value: &str, name: &str| crate::formats::java::equals_ignore_case(value, name);
+    let case = |value: &str, name: &str| crate::java::equals_ignore_case(value, name);
     match tag {
         GPS_VERSION_ID => version_bytes(d, tag, 1),
         GPS_ALTITUDE | GPS_H_POSITIONING_ERROR => Some(format!(
@@ -960,7 +960,7 @@ fn gps_value(directory: &Directory, tag: i32) -> Option<String> {
 
 fn speed_reference(directory: &Directory) -> Option<String> {
     let value = java_trim(&directory.string(GPS_SPEED_REF)?).to_owned();
-    let case = |name: &str| crate::formats::java::equals_ignore_case(&value, name);
+    let case = |name: &str| crate::java::equals_ignore_case(&value, name);
     Some(if case("K") {
         "km/h".to_owned()
     } else if case("M") {
@@ -974,7 +974,7 @@ fn speed_reference(directory: &Directory) -> Option<String> {
 
 fn distance_reference(directory: &Directory) -> Option<String> {
     let value = java_trim(&directory.string(GPS_DEST_DISTANCE_REF)?).to_owned();
-    let case = |name: &str| crate::formats::java::equals_ignore_case(&value, name);
+    let case = |name: &str| crate::java::equals_ignore_case(&value, name);
     Some(if case("K") {
         "kilometers".to_owned()
     } else if case("M") {
@@ -996,7 +996,7 @@ fn destination(directory: &Directory, tag: i32, reference: i32, positive: &str) 
         *degrees,
         *minutes,
         *seconds,
-        crate::formats::java::equals_ignore_case(&reference, positive),
+        crate::java::equals_ignore_case(&reference, positive),
     )?;
     Some(geo::degrees_minutes_seconds(decimal))
 }

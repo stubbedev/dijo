@@ -947,7 +947,7 @@ pub(super) fn number(text: &str) -> Result<Object, String> {
     if text.contains(['.', 'e']) {
         return real(text).map(Object::Real);
     }
-    if let Some(value) = crate::formats::java::parse_long(text) {
+    if let Some(value) = crate::java::parse_long(text) {
         if text
             .bytes()
             .all(|c| c.is_ascii_digit() || c == b'-' || c == b'+')

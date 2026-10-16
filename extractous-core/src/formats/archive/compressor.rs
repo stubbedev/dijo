@@ -7,9 +7,9 @@ use crate::compress::compressor::Compressor;
 use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
-use crate::formats::handlers::is_blank;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Parser, Prepared};
+use crate::java::is_blank;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
 const NATIVE: [Compressor; 9] = [
@@ -42,6 +42,11 @@ pub(crate) struct CompressorParser;
 impl Parser for CompressorParser {
     fn name(&self) -> &'static str {
         "extractous::CompressorParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.pkg.CompressorParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {
