@@ -201,59 +201,64 @@ impl Mif<'_, '_> {
     }
 }
 
+/// A native result as Tika's path writes it (#118): typed `application/x-mif`, the first of
+/// the parser's types in `HashSet` order, and the text of each paragraph escaped once more.
+#[cfg(test)]
+pub(crate) fn as_tika_writes_it(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    _: &crate::formats::parity::ComparedMetadata,
+) {
+    for (name, values) in metadata.iter_mut() {
+        if name == "Content-Type" {
+            *values = vec!["application/x-mif".to_owned()];
+        }
+    }
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('"', "&amp;quot;")
+            .replace('\'', "&amp;apos;")
+    };
+    let xml = text.starts_with("<?xml") || text.starts_with("<html");
+    let Some(body) = text.find("<body").filter(|_| xml) else {
+        // Plain text: escaped once.
+        *text = text
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;");
+        return;
+    };
+    let content_type = r#"<meta name="Content-Type" content=""#;
+    if let Some(start) = text.find(content_type) {
+        let start = start + content_type.len();
+        let end = start + text[start..].find('"').expect("the attribute's end");
+        text.replace_range(start..end, "application/x-mif");
+    }
+    let mut rewritten = text[..body].to_owned();
+    let mut rest = &text[body..];
+    while let Some(start) = rest.find('<') {
+        rewritten.push_str(&escape(&rest[..start]));
+        let end = start
+            + rest[start..]
+                .find('>')
+                .map_or(rest.len() - start, |end| end + 1);
+        rewritten.push_str(&rest[start..end]);
+        rest = &rest[end..];
+    }
+    rewritten.push_str(&escape(rest));
+    *text = rewritten;
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::formats::parity::{
-        assert_same_as_tika_departing, conformance_corpus, documents, ComparedMetadata, Scratch,
+        assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
     };
-
-    /// A native result as Tika's path writes it (#118): typed `application/x-mif`, the first of
-    /// the parser's types in `HashSet` order, and the text of each paragraph escaped once more.
-    fn as_tika_writes_it(text: &mut String, metadata: &mut ComparedMetadata, _: &ComparedMetadata) {
-        for (name, values) in metadata.iter_mut() {
-            if name == "Content-Type" {
-                *values = vec!["application/x-mif".to_owned()];
-            }
-        }
-        let escape = |text: &str| {
-            text.replace('&', "&amp;")
-                .replace('"', "&amp;quot;")
-                .replace('\'', "&amp;apos;")
-        };
-        let xml = text.starts_with("<?xml") || text.starts_with("<html");
-        let Some(body) = text.find("<body").filter(|_| xml) else {
-            // Plain text: escaped once.
-            *text = text
-                .replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-                .replace('"', "&quot;")
-                .replace('\'', "&apos;");
-            return;
-        };
-        let content_type = r#"<meta name="Content-Type" content=""#;
-        if let Some(start) = text.find(content_type) {
-            let start = start + content_type.len();
-            let end = start + text[start..].find('"').expect("the attribute's end");
-            text.replace_range(start..end, "application/x-mif");
-        }
-        let mut rewritten = text[..body].to_owned();
-        let mut rest = &text[body..];
-        while let Some(start) = rest.find('<') {
-            rewritten.push_str(&escape(&rest[..start]));
-            let end = start
-                + rest[start..]
-                    .find('>')
-                    .map_or(rest.len() - start, |end| end + 1);
-            rewritten.push_str(&rest[start..end]);
-            rest = &rest[end..];
-        }
-        rewritten.push_str(&escape(rest));
-        *text = rewritten;
-    }
 
     #[test]
     fn matches_lines_as_mif_extractor_does() {

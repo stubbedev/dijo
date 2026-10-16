@@ -454,6 +454,75 @@ fn write(
     }
 }
 
+/// A native result as Tika's path writes it, without the fixes of #89 that real books
+/// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
+/// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
+/// as Tika's last `dc:date` wins.
+#[cfg(test)]
+pub(crate) fn as_tika_writes_it(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    _tika: &crate::formats::parity::ComparedMetadata,
+) {
+    let dates = ["dcterms:issued", "dcterms:modified"];
+    if metadata.iter().any(|(name, _)| name == "dcterms:created") {
+        metadata.retain(|(name, _)| !dates.contains(&name.as_str()));
+        for date in dates {
+            let meta = format!(r#"<meta name="{date}" content=""#);
+            while let Some(start) = text.find(&meta) {
+                let end = start + text[start..].find('\n').unwrap() + 1;
+                text.replace_range(start..end, "");
+            }
+        }
+    }
+    let mut rewritten = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find('<') {
+        let end = start
+            + rest[start..]
+                .find('>')
+                .map_or(rest.len() - start, |end| end + 1);
+        rewritten.push_str(&rest[..start]);
+        let tag = &rest[start..end];
+        if tag.contains(" xml:lang=\"") {
+            rewritten.push_str(&with_one_lang(tag));
+        } else {
+            rewritten.push_str(tag);
+        }
+        rest = &rest[end..];
+    }
+    rewritten.push_str(rest);
+    *text = rewritten;
+}
+
+/// The start tag `tag` with `xml:lang` named `lang`, and only the first `lang` kept.
+#[cfg(test)]
+fn with_one_lang(tag: &str) -> String {
+    let mut kept = String::with_capacity(tag.len());
+    let mut seen = false;
+    let mut rest = tag;
+    while let Some(at) = rest.find(" xml:lang=\"").or_else(|| rest.find(" lang=\"")) {
+        let at = [rest.find(" xml:lang=\""), rest.find(" lang=\"")]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(at);
+        let value_start = at + rest[at..].find('"').expect("the attribute's quote") + 1;
+        // A text cut at the length limit may end inside the value.
+        let Some(value_end) = rest[value_start..].find('"').map(|end| value_start + end) else {
+            break;
+        };
+        kept.push_str(&rest[..at]);
+        if !seen {
+            kept.push_str(&format!(r#" lang="{}""#, &rest[value_start..value_end]));
+            seen = true;
+        }
+        rest = &rest[value_end + 1..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,7 +532,7 @@ mod tests {
     }
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
-        conformance_corpus, documents, ComparedMetadata, Scratch,
+        conformance_corpus, documents, Scratch,
     };
     use std::io::{Cursor, Write};
     use std::path::{Path, PathBuf};
@@ -503,73 +572,6 @@ mod tests {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Not written</title></head><body>{body}</body></html>"#
         )
-    }
-
-    /// A native result as Tika's path writes it, without the fixes of #89 that real books
-    /// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
-    /// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
-    /// as Tika's last `dc:date` wins.
-    fn as_tika_writes_it(
-        text: &mut String,
-        metadata: &mut ComparedMetadata,
-        _tika: &ComparedMetadata,
-    ) {
-        let dates = ["dcterms:issued", "dcterms:modified"];
-        if metadata.iter().any(|(name, _)| name == "dcterms:created") {
-            metadata.retain(|(name, _)| !dates.contains(&name.as_str()));
-            for date in dates {
-                let meta = format!(r#"<meta name="{date}" content=""#);
-                while let Some(start) = text.find(&meta) {
-                    let end = start + text[start..].find('\n').unwrap() + 1;
-                    text.replace_range(start..end, "");
-                }
-            }
-        }
-        let mut rewritten = String::with_capacity(text.len());
-        let mut rest = text.as_str();
-        while let Some(start) = rest.find('<') {
-            let end = start
-                + rest[start..]
-                    .find('>')
-                    .map_or(rest.len() - start, |end| end + 1);
-            rewritten.push_str(&rest[..start]);
-            let tag = &rest[start..end];
-            if tag.contains(" xml:lang=\"") {
-                rewritten.push_str(&with_one_lang(tag));
-            } else {
-                rewritten.push_str(tag);
-            }
-            rest = &rest[end..];
-        }
-        rewritten.push_str(rest);
-        *text = rewritten;
-    }
-
-    /// The start tag `tag` with `xml:lang` named `lang`, and only the first `lang` kept.
-    fn with_one_lang(tag: &str) -> String {
-        let mut kept = String::with_capacity(tag.len());
-        let mut seen = false;
-        let mut rest = tag;
-        while let Some(at) = rest.find(" xml:lang=\"").or_else(|| rest.find(" lang=\"")) {
-            let at = [rest.find(" xml:lang=\""), rest.find(" lang=\"")]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap_or(at);
-            let value_start = at + rest[at..].find('"').expect("the attribute's quote") + 1;
-            // A text cut at the length limit may end inside the value.
-            let Some(value_end) = rest[value_start..].find('"').map(|end| value_start + end) else {
-                break;
-            };
-            kept.push_str(&rest[..at]);
-            if !seen {
-                kept.push_str(&format!(r#" lang="{}""#, &rest[value_start..value_end]));
-                seen = true;
-            }
-            rest = &rest[value_end + 1..];
-        }
-        kept.push_str(rest);
-        kept
     }
 
     #[test]

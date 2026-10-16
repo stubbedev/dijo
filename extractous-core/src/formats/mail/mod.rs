@@ -317,7 +317,23 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_messages_as_tikas_path_does() {
-        assert_parity(&Rfc822Parser, TIKA_NAME, &[&conformance_corpus()], 26);
+        let (parsed, deferred) = documents(&Rfc822Parser, &[&conformance_corpus()]);
+        assert!(deferred.is_empty(), "deferred: {deferred:?}");
+        assert_eq!(parsed.len(), 26, "documents of {TIKA_NAME}");
+        // Its attached ZIP archive has an encrypted entry, whose name Tika writes as text
+        // besides recording its failure (#99).
+        let (encrypted, paths): (Vec<&Path>, Vec<&Path>) = parsed
+            .iter()
+            .map(PathBuf::as_path)
+            .partition(|path| path.ends_with("testRFC822_encrypted_zip"));
+        assert_same_as_tika(&paths, TIKA_NAME);
+        let [encrypted] = encrypted[..] else {
+            panic!("{encrypted:?}");
+        };
+        let (text, _) = crate::Extractor::new()
+            .extract_file_to_string(encrypted.to_str().unwrap())
+            .unwrap();
+        assert!(!text.trim().is_empty());
     }
 
     #[test]

@@ -1096,6 +1096,14 @@ mod tests {
                 "testPSD_xmp.psd",
                 crate::formats::parity::PSD_PROFILE_AWT_REJECTS,
             ),
+            (
+                "testZipEncrypted.zip",
+                "Tika writes the name of an encrypted entry as text (#99)",
+            ),
+            (
+                "testEPUB_multi-metadata-vals.epub",
+                "Tika writes the pictures outside the spine in HashMap order (#88)",
+            ),
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;
@@ -1106,19 +1114,28 @@ mod tests {
                 if exceptions.iter().any(|(exception, _)| *exception == name) {
                     continue;
                 }
-                // The fixes of #99 and #105 depart from Tika's path systematically.
+                // The fixes of #89, #99, #105 and #118 depart from Tika's path systematically.
+                let head: crate::formats::parity::Normalisation =
+                    crate::formats::dc_xml::without_head;
                 let departure: Option<(crate::formats::parity::Departure, _)> = match parser.name()
                 {
-                    "extractous::ZipParser" => {
+                    "extractous::ZipParser" | "extractous::CmsParser" => {
                         Some((crate::formats::archive::as_tika_checks_zips, None))
                     }
-                    "extractous::DcXMLParser" => Some((
+                    "extractous::DcXMLParser" | "extractous::MobiParser" => Some((
                         crate::formats::dc_xml::without_unread_dublin_core,
-                        Some(
-                            crate::formats::dc_xml::without_head
-                                as crate::formats::parity::Normalisation,
-                        ),
+                        Some(head),
                     )),
+                    "extractous::EpubParser" => {
+                        Some((crate::formats::epub::as_tika_writes_it, None))
+                    }
+                    "extractous::MP4Parser" => {
+                        Some((crate::formats::media::mp4_as_tika_reads_it, None))
+                    }
+                    "extractous::DIFParser" => {
+                        Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
+                    }
+                    "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
                     _ => None,
                 };
                 for budget in [u64::MAX, 3000] {

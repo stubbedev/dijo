@@ -424,9 +424,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
+    use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents, Scratch};
 
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
     /// The detached signatures and certificate lists of Tika's tests, which Tika's path writes
@@ -589,7 +587,12 @@ mod tests {
             .iter()
             .copied()
             .partition(|path| read_as_xml(path));
-        assert_same_as_tika(&rest, TIKA_NAME);
+        // Content that is a ZIP archive now has its integrity check in its head (#99).
+        crate::formats::parity::assert_same_as_tika_departing(
+            &rest,
+            TIKA_NAME,
+            crate::formats::archive::as_tika_checks_zips,
+        );
         if !xml.is_empty() {
             crate::formats::parity::assert_same_as_tika_normalising(
                 &xml,

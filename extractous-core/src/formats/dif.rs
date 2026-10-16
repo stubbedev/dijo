@@ -189,14 +189,33 @@ impl SaxHandler for Dif<'_, '_> {
     }
 }
 
+/// A native result with each leaf's text cut to the last piece Tika's parser read of it,
+/// where Tika's value ends the native one: the reader splits text around an entity (#118).
+#[cfg(test)]
+pub(crate) fn as_tika_keeps_last_pieces(
+    _text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    tika: &crate::formats::parity::ComparedMetadata,
+) {
+    for (name, values) in metadata.iter_mut() {
+        let Some((_, tika_values)) = tika.iter().find(|(tika_name, _)| tika_name == name) else {
+            continue;
+        };
+        for (value, tika_value) in values.iter_mut().zip(tika_values) {
+            if value.ends_with(tika_value.as_str()) {
+                value.clone_from(tika_value);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::formats::parity::{
-        assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents,
-        ComparedMetadata, Scratch,
+        assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
     };
 
     const RECORD: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -275,25 +294,5 @@ mod tests {
         assert_eq!(parsed.len(), 3, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika_departing(&paths, DifParser.tika_name(), as_tika_keeps_last_pieces);
-    }
-
-    /// A native result with each leaf's text cut to the last piece Tika's parser read of it,
-    /// where Tika's value ends the native one: the reader splits text around an entity (#118).
-    fn as_tika_keeps_last_pieces(
-        _text: &mut String,
-        metadata: &mut ComparedMetadata,
-        tika: &ComparedMetadata,
-    ) {
-        for (name, values) in metadata.iter_mut() {
-            let Some((_, tika_values)) = tika.iter().find(|(tika_name, _)| tika_name == name)
-            else {
-                continue;
-            };
-            for (value, tika_value) in values.iter_mut().zip(tika_values) {
-                if value.ends_with(tika_value.as_str()) {
-                    value.clone_from(tika_value);
-                }
-            }
-        }
     }
 }

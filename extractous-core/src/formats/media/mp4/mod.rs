@@ -119,13 +119,62 @@ fn write(events: &[Event<'_>], xhtml: &mut Xhtml) -> Result<(), Failure> {
 }
 
 #[cfg(test)]
+const END_OF_DATA: &str = "java.io.EOFException: End of data reached.\n";
+#[cfg(test)]
+const WARNING_META: &str = r#"<meta name="tk:exception:warn" content=""#;
+
+/// A native result as Tika's path writes it, without two fixes of #118: Tika reads on from
+/// where a failed read left its stream, short of what it consumed, so it records the end
+/// of data once more first; and it reads an `ilst` box past its end, into the box after
+/// it, which ends the `udta` box before its location.
+#[cfg(test)]
+pub(crate) fn as_tika_reads_it(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    tika: &crate::formats::parity::ComparedMetadata,
+) {
+    let tika_values = |name: &str| {
+        tika.iter()
+            .find(|(tika_name, _)| tika_name == name)
+            .map(|(_, values)| values.as_slice())
+    };
+    if let (Some(tika_warnings), Some((_, warnings))) = (
+        tika_values(crate::formats::embedded::EXCEPTION_WARNING),
+        metadata
+            .iter_mut()
+            .find(|(name, _)| name == crate::formats::embedded::EXCEPTION_WARNING),
+    ) {
+        if tika_warnings.first().map(String::as_str) == Some(END_OF_DATA)
+            && tika_warnings[1..] == warnings[..]
+        {
+            warnings.insert(0, END_OF_DATA.to_owned());
+            if let Some(at) = text.find(WARNING_META) {
+                text.insert_str(at, &format!("{WARNING_META}{END_OF_DATA}\" />\n"));
+            }
+        }
+    }
+    for name in ["geo:lat", "geo:long", "geo:alt"] {
+        if tika_values(name).is_none() {
+            metadata.retain(|(native_name, _)| native_name != name);
+            let meta = format!(r#"<meta name="{name}" content=""#);
+            if let Some(start) = text.find(&meta) {
+                let end = start
+                    + text[start..]
+                        .find('\n')
+                        .map_or(text.len() - start, |end| end + 1);
+                text.replace_range(start..end, "");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::embedded::EXCEPTION_WARNING;
     use crate::formats::parity::{
-        assert_same_as_tika_departing, conformance_corpus, documents, ComparedMetadata, Scratch,
+        assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
     };
 
     const TIKA_NAME: &str = "org.apache.tika.parser.mp4.MP4Parser";
@@ -414,53 +463,6 @@ mod tests {
             TIKA_NAME,
             as_tika_reads_it,
         );
-    }
-
-    const END_OF_DATA: &str = "java.io.EOFException: End of data reached.\n";
-    const WARNING_META: &str = r#"<meta name="tk:exception:warn" content=""#;
-
-    /// A native result as Tika's path writes it, without two fixes of #118: Tika reads on from
-    /// where a failed read left its stream, short of what it consumed, so it records the end
-    /// of data once more first; and it reads an `ilst` box past its end, into the box after
-    /// it, which ends the `udta` box before its location.
-    fn as_tika_reads_it(
-        text: &mut String,
-        metadata: &mut ComparedMetadata,
-        tika: &ComparedMetadata,
-    ) {
-        let tika_values = |name: &str| {
-            tika.iter()
-                .find(|(tika_name, _)| tika_name == name)
-                .map(|(_, values)| values.as_slice())
-        };
-        if let (Some(tika_warnings), Some((_, warnings))) = (
-            tika_values(EXCEPTION_WARNING),
-            metadata
-                .iter_mut()
-                .find(|(name, _)| name == EXCEPTION_WARNING),
-        ) {
-            if tika_warnings.first().map(String::as_str) == Some(END_OF_DATA)
-                && tika_warnings[1..] == warnings[..]
-            {
-                warnings.insert(0, END_OF_DATA.to_owned());
-                if let Some(at) = text.find(WARNING_META) {
-                    text.insert_str(at, &format!("{WARNING_META}{END_OF_DATA}\" />\n"));
-                }
-            }
-        }
-        for name in ["geo:lat", "geo:long", "geo:alt"] {
-            if tika_values(name).is_none() {
-                metadata.retain(|(native_name, _)| native_name != name);
-                let meta = format!(r#"<meta name="{name}" content=""#);
-                if let Some(start) = text.find(&meta) {
-                    let end = start
-                        + text[start..]
-                            .find('\n')
-                            .map_or(text.len() - start, |end| end + 1);
-                    text.replace_range(start..end, "");
-                }
-            }
-        }
     }
 
     /// The UUID of an Exif `uuid` box.
