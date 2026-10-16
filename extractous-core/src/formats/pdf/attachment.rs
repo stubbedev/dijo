@@ -11,7 +11,7 @@ use lopdf::{Dictionary, Object, ObjectId, StringFormat};
 use super::cos::{as_dict, text_string, Pdf};
 use super::encoding::java_bucket;
 use super::{Unported, MAX_RECURSION_DEPTH};
-use crate::formats::embedded::{ATTACHMENT, RESOURCE_NAME, RESOURCE_TYPE};
+use crate::formats::embedded::{ResourceType, RESOURCE_NAME};
 use crate::formats::handlers::is_blank;
 use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
@@ -153,7 +153,7 @@ pub(super) fn written(
         if size > -1 {
             metadata.set("Content-Length", size.to_string());
         }
-        metadata.set(RESOURCE_TYPE, ATTACHMENT);
+        ResourceType::Attachment.set(&mut metadata);
         metadata.set("tk:orig-resource-name", file_name.clone());
         let described = [
             (
