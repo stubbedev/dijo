@@ -218,6 +218,9 @@ struct BlockGroup {
 /// The tagged writer's state.
 pub(super) struct Tagged<'p> {
     pub(super) reading_order: bool,
+    /// Whether a page with tagged text is written through the tree only when it passes the
+    /// gate, as `MarkedContentConfig.Strategy.AUTO` has it, rather than always, as `TAGS` has.
+    gated: bool,
     index: Option<StructureIndex<'p, ElementSpec>>,
     pdf: &'p Pdf,
     state: State,
@@ -236,12 +239,13 @@ pub(super) struct Tagged<'p> {
 }
 
 impl<'p> Tagged<'p> {
-    pub(super) fn new(pdf: &'p Pdf, reading_order: bool) -> Self {
+    pub(super) fn new(pdf: &'p Pdf, reading_order: bool, gated: bool) -> Self {
         let index = StructureIndex::load(pdf);
         let document_rejection = index.reason;
         let index = document_rejection.is_none().then_some(index);
         Self {
             reading_order,
+            gated,
             index,
             pdf,
             state: State::Idle,
@@ -263,7 +267,7 @@ impl<'p> Tagged<'p> {
         self.index.is_some()
     }
 
-    fn of<'a>(writer: &'a mut PageWriter<'p, '_, '_>) -> &'a mut Tagged<'p> {
+    fn of<'a>(writer: &'a mut PageWriter<'p, '_>) -> &'a mut Tagged<'p> {
         writer
             .tagged
             .as_mut()
@@ -278,7 +282,7 @@ impl<'p> Tagged<'p> {
         self.pending_page_start = true;
     }
 
-    pub(super) fn write_paragraph_start(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    pub(super) fn write_paragraph_start(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         if tagged.state == State::Routing {
             tagged.events.push(Event::ParagraphStart);
@@ -290,7 +294,7 @@ impl<'p> Tagged<'p> {
         }
     }
 
-    pub(super) fn write_paragraph_end(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    pub(super) fn write_paragraph_end(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         if tagged.state == State::Routing {
             tagged.events.push(Event::ParagraphEnd);
@@ -306,7 +310,7 @@ impl<'p> Tagged<'p> {
     }
 
     pub(super) fn write_string(
-        writer: &mut PageWriter<'p, '_, '_>,
+        writer: &mut PageWriter<'p, '_>,
         text: &str,
         positions: &[&TextPosition],
     ) -> Result<(), Stop> {
@@ -319,7 +323,7 @@ impl<'p> Tagged<'p> {
         Ok(())
     }
 
-    pub(super) fn write_word_separator(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    pub(super) fn write_word_separator(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         if tagged.state == State::Routing {
             tagged.events.push(Event::WordSeparator);
@@ -329,7 +333,7 @@ impl<'p> Tagged<'p> {
         }
     }
 
-    pub(super) fn write_line_separator(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    pub(super) fn write_line_separator(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         if tagged.state == State::Routing {
             tagged.events.push(Event::LineSeparator);
@@ -339,7 +343,7 @@ impl<'p> Tagged<'p> {
         }
     }
 
-    fn flush_pending_page_start(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    fn flush_pending_page_start(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         if tagged.pending_page_start {
             tagged.pending_page_start = false;
@@ -350,7 +354,7 @@ impl<'p> Tagged<'p> {
 
     /// `writePage`: the page recorded, then written through the tree or flat.
     pub(super) fn write_page(
-        writer: &mut PageWriter<'p, '_, '_>,
+        writer: &mut PageWriter<'p, '_>,
         page_number: usize,
         content: &mut PageContent,
     ) -> Result<(), WriteFailure> {
@@ -385,7 +389,7 @@ impl<'p> Tagged<'p> {
             Some(rejection) => {
                 tagged.pages_fallback += 1;
                 tagged.state = State::Flat;
-                writer.xhtml.metadata_mut().add(
+                writer.out.add(
                     MARKED_CONTENT_REJECTIONS,
                     format!("{page_number}:{rejection}"),
                 );
@@ -400,7 +404,7 @@ impl<'p> Tagged<'p> {
     }
 
     /// `replayFlat`: the recorded calls, as `PDF2XHTML` would have made them.
-    fn replay_flat(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    fn replay_flat(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let events = std::mem::take(&mut Self::of(writer).events);
         for event in &events {
             match event {
@@ -565,6 +569,9 @@ impl<'p> Tagged<'p> {
         }
         if tagged == 0 {
             return Some("no-tagged-text".to_owned());
+        }
+        if !self.gated {
+            return None;
         }
         if in_block == 0 {
             return Some("no-block-structure".to_owned());
@@ -996,7 +1003,7 @@ fn separated_by_others(page_runs: &[Run], previous: &Run, run: &Run) -> bool {
 
 impl<'p> Tagged<'p> {
     /// `emitTagged`.
-    fn emit_tagged(writer: &mut PageWriter<'p, '_, '_>, content: &PageContent) -> Result<(), Stop> {
+    fn emit_tagged(writer: &mut PageWriter<'p, '_>, content: &PageContent) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         let page_runs = runs(&tagged.events);
         let mut group_of: HashMap<usize, usize> = HashMap::new();
@@ -1251,7 +1258,7 @@ impl<'p> Tagged<'p> {
 
     /// `closeOpenFrom`.
     fn close_open_from(
-        writer: &mut PageWriter<'p, '_, '_>,
+        writer: &mut PageWriter<'p, '_>,
         from: usize,
         mut wrapper: Option<&mut Wrapper>,
     ) -> Result<(), Stop> {
@@ -1289,7 +1296,7 @@ impl<'p> Tagged<'p> {
     }
 
     /// `suspendTextBlock`.
-    fn suspend_text_block(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    fn suspend_text_block(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         for i in (0..tagged.open.len()).rev() {
             if tagged.open_state[i] != ElementState::Open {
@@ -1309,7 +1316,7 @@ impl<'p> Tagged<'p> {
     }
 
     /// `suspendDemoted`.
-    fn suspend_demoted(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    fn suspend_demoted(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         for i in (0..tagged.open.len()).rev() {
             if tagged.open_state[i] != ElementState::Open {
@@ -1329,20 +1336,14 @@ impl<'p> Tagged<'p> {
         Ok(())
     }
 
-    fn open_wrapper(
-        writer: &mut PageWriter<'p, '_, '_>,
-        wrapper: &mut Wrapper,
-    ) -> Result<(), Stop> {
+    fn open_wrapper(writer: &mut PageWriter<'p, '_>, wrapper: &mut Wrapper) -> Result<(), Stop> {
         Self::sink_open(writer, wrapper.tag, &[], false)?;
         wrapper.open = true;
         wrapper.break_pending = false;
         Ok(())
     }
 
-    fn close_wrapper(
-        writer: &mut PageWriter<'p, '_, '_>,
-        wrapper: &mut Wrapper,
-    ) -> Result<(), Stop> {
+    fn close_wrapper(writer: &mut PageWriter<'p, '_>, wrapper: &mut Wrapper) -> Result<(), Stop> {
         Self::sink_close(writer, wrapper.tag, false)?;
         wrapper.open = false;
         wrapper.break_pending = false;
@@ -1350,7 +1351,7 @@ impl<'p> Tagged<'p> {
     }
 
     /// `sinkText`: text with whitespace at a block's start dropped and trailing whitespace held.
-    fn sink_text(writer: &mut PageWriter<'p, '_, '_>, text: &str) -> Result<(), Stop> {
+    fn sink_text(writer: &mut PageWriter<'p, '_>, text: &str) -> Result<(), Stop> {
         let tagged = Self::of(writer);
         let mut text = text;
         if tagged.at_block_start {
@@ -1375,21 +1376,21 @@ impl<'p> Tagged<'p> {
         Ok(())
     }
 
-    fn sink_newline(writer: &mut PageWriter<'p, '_, '_>) {
+    fn sink_newline(writer: &mut PageWriter<'p, '_>) {
         let tagged = Self::of(writer);
         if !tagged.at_block_start {
             tagged.held.push(Piece::Newline);
         }
     }
 
-    fn sink_boundary(writer: &mut PageWriter<'p, '_, '_>) {
+    fn sink_boundary(writer: &mut PageWriter<'p, '_>) {
         let last_newline = Self::of(writer).held.last() == Some(&Piece::Newline);
         if !last_newline {
             Self::sink_newline(writer);
         }
     }
 
-    fn flush_held(writer: &mut PageWriter<'p, '_, '_>) -> Result<(), Stop> {
+    fn flush_held(writer: &mut PageWriter<'p, '_>) -> Result<(), Stop> {
         let held = std::mem::take(&mut Self::of(writer).held);
         for piece in held {
             match piece {
@@ -1402,7 +1403,7 @@ impl<'p> Tagged<'p> {
     }
 
     fn sink_open(
-        writer: &mut PageWriter<'p, '_, '_>,
+        writer: &mut PageWriter<'p, '_>,
         tag: &str,
         attributes: &[(String, String)],
         inline: bool,
@@ -1419,11 +1420,7 @@ impl<'p> Tagged<'p> {
         Ok(())
     }
 
-    fn sink_close(
-        writer: &mut PageWriter<'p, '_, '_>,
-        tag: &str,
-        inline: bool,
-    ) -> Result<(), Stop> {
+    fn sink_close(writer: &mut PageWriter<'p, '_>, tag: &str, inline: bool) -> Result<(), Stop> {
         if !inline {
             let tagged = Self::of(writer);
             tagged.held.clear();
@@ -1437,7 +1434,7 @@ impl<'p> Tagged<'p> {
     }
 
     /// `openElement`: the node's element written, if it has one.
-    fn open_element(writer: &mut PageWriter<'p, '_, '_>, node: usize) -> Result<bool, Stop> {
+    fn open_element(writer: &mut PageWriter<'p, '_>, node: usize) -> Result<bool, Stop> {
         let spec = Self::of(writer).spec(node).clone();
         let Some(tag) = spec.tag() else {
             return Ok(false);
@@ -1464,7 +1461,7 @@ impl<'p> Tagged<'p> {
         Ok(true)
     }
 
-    fn close(writer: &mut PageWriter<'p, '_, '_>, node: usize) -> Result<(), Stop> {
+    fn close(writer: &mut PageWriter<'p, '_>, node: usize) -> Result<(), Stop> {
         let spec = Self::of(writer).spec(node).clone();
         if let Some(tag) = spec.tag() {
             Self::sink_close(writer, tag, spec.inline)?;
@@ -1476,7 +1473,7 @@ impl<'p> Tagged<'p> {
         Ok(())
     }
 
-    fn close_outer(writer: &mut PageWriter<'p, '_, '_>, node: usize) -> Result<(), Stop> {
+    fn close_outer(writer: &mut PageWriter<'p, '_>, node: usize) -> Result<(), Stop> {
         let outer = Self::of(writer).spec(node).outer;
         if let Some(outer) = outer {
             Self::sink_close(writer, outer, false)?;
@@ -1486,7 +1483,7 @@ impl<'p> Tagged<'p> {
 
     /// `writePieces`.
     fn write_pieces(
-        writer: &mut PageWriter<'p, '_, '_>,
+        writer: &mut PageWriter<'p, '_>,
         pieces: &[Piece],
         mut wrapper: Option<&mut Wrapper>,
     ) -> Result<(), Stop> {
@@ -1528,7 +1525,7 @@ impl<'p> Tagged<'p> {
 
     /// `emitBlocks`: text the tree does not own, in paragraphs.
     fn emit_blocks(
-        writer: &mut PageWriter<'p, '_, '_>,
+        writer: &mut PageWriter<'p, '_>,
         class: &str,
         page_runs: &[Run],
         runs: &[usize],

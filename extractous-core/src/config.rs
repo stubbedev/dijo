@@ -150,35 +150,52 @@ impl PdfParserConfig {
         self.reading_order.unwrap_or(true)
     }
 
-    /// The Java setter of a setting native PDF parsing does not read, if one is set.
-    pub(crate) fn unread_setting(&self) -> Option<&'static str> {
-        [
-            (self.ocr_strategy.is_some(), "setOcrStrategy"),
-            (self.ocr_strategy_auto.is_some(), "setOcrStrategyAuto"),
-            (
-                self.extract_inline_images.is_some(),
-                "setExtractInlineImages",
-            ),
-            (
-                self.extract_unique_inline_images_only.is_some(),
-                "setExtractUniqueInlineImagesOnly",
-            ),
-            (
-                self.extract_marked_content.is_some(),
-                "setExtractMarkedContent",
-            ),
-            (
-                self.extract_bookmarks_text.is_some(),
-                "setExtractBookmarksText",
-            ),
-            (
-                self.extract_annotation_text.is_some(),
-                "setExtractAnnotationText",
-            ),
-        ]
-        .into_iter()
-        .find_map(|(set, setter)| set.then_some(setter))
+    /// The OCR strategy, Tika's `AUTO` unless set.
+    pub(crate) fn ocr_strategy(&self) -> PdfOcrStrategy {
+        self.ocr_strategy.unwrap_or_default()
     }
+
+    /// The thresholds of the automatic OCR strategy, if they are set.
+    pub(crate) fn ocr_strategy_auto(&self) -> Option<&str> {
+        self.ocr_strategy_auto.as_deref()
+    }
+
+    /// How a tagged document's structure tree is used.
+    pub(crate) fn marked_content(&self) -> MarkedContentStrategy {
+        match self.extract_marked_content {
+            None => MarkedContentStrategy::Auto,
+            Some(true) => MarkedContentStrategy::Tags,
+            Some(false) => MarkedContentStrategy::None,
+        }
+    }
+
+    /// Whether the text of the bookmarks follows the pages, as it does unless told not to.
+    pub(crate) fn extracts_bookmarks_text(&self) -> bool {
+        self.extract_bookmarks_text.unwrap_or(true)
+    }
+
+    /// Whether the text of annotations is written, as it is unless told not to.
+    pub(crate) fn extracts_annotation_text(&self) -> bool {
+        self.extract_annotation_text.unwrap_or(true)
+    }
+
+    /// Whether inline images are extracted, which native PDF parsing does not do; whether only
+    /// unique ones are matters only when they are.
+    pub(crate) fn extracts_inline_images(&self) -> bool {
+        self.extract_inline_images.unwrap_or(false)
+    }
+}
+
+/// `MarkedContentConfig.Strategy`: how Tika's PDF parser uses a document's structure tree, as
+/// `setExtractMarkedContent` sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkedContentStrategy {
+    /// The structure on the pages that pass the per-page gate, the text stripper elsewhere.
+    Auto,
+    /// The structure on every page with tagged text.
+    Tags,
+    /// The text stripper only.
+    None,
 }
 
 tika_config! {

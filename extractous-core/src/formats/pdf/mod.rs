@@ -23,9 +23,11 @@ mod form;
 mod jfloat;
 mod matrix;
 mod metadata;
+mod ocr;
 mod position;
 mod quality;
 mod reading_order;
+mod recording;
 mod stripper;
 mod structure;
 mod tagged;
@@ -34,22 +36,24 @@ mod type1;
 mod writer;
 mod xfa;
 mod xmp;
+mod xref;
 
 use std::sync::OnceLock;
 
 use lopdf::Document;
 
-use crate::config::ParserConfigs;
-use crate::formats::embedded::ParseContext;
-use crate::formats::handlers::Discard;
+use crate::config::{MarkedContentStrategy, ParserConfigs, PdfParserConfig};
+use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
+use crate::formats::xhtml::Stop;
 use crate::formats::{Declined, Parser, Prepared};
 
 use cos::Pdf;
+use ocr::OcrCheck;
+use recording::Recording;
 use structure::StructureIndex;
 use tagged::Tagged;
-use writer::{DocumentWriter, PageLayer, WriteFailure};
+use writer::{DocumentWriter, WriteFailure};
 
 const MEDIA_TYPE: &str = "application/pdf";
 const TEXT_LAYER_CHECKING_PARSER: &str = "extractous::TextLayerCheckingPdfParser";
@@ -61,10 +65,6 @@ const TIKA_TEXT_LAYER_CHECKING_PARSER: &str = "ai.yobix.TextLayerCheckingPdfPars
 /// The parser our `TextLayerCheckingPdfParser` records delegating to, under both names.
 #[cfg(test)]
 const DELEGATES: [(&str, &str); 1] = [(PDF_PARSER, TIKA_PDF_PARSER)];
-/// `PagesConfig.Auto`'s defaults: a page of at most this many glyphs is OCRed...
-const OCR_MAX_GLYPHS: i32 = 10;
-/// ...and so is one with more glyphs than this that map to no character.
-const OCR_UNMAPPED_LIMIT: f32 = 10.0;
 /// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
 const MAX_RECURSION_DEPTH: usize = 100;
 
@@ -111,105 +111,90 @@ impl Parser for PdfParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let loaded =
-            loaded(input, configs).map_err(|Unported(reason)| Declined::Deferred(reason))?;
+        let recording = record(input, metadata, configs)?;
         Ok(Box::new(move |xhtml| {
-            if ocr_runs() {
-                xhtml.delegate_to(PDF_PARSER);
-            }
-            extract(&loaded, input, configs, xhtml, false)?;
-            Ok(())
+            let replayed = recording.replay(xhtml);
+            xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
+            replayed
         }))
     }
 }
 
-/// The document, loaded, unless it is left to Tika: for a setting the port does not read,
-/// something in the document it does not do, or a page Tika would OCR.
-fn loaded(input: &[u8], configs: &ParserConfigs) -> Result<Loaded, Unported> {
-    if let Some(setting) = configs.pdf.unread_setting() {
-        return Err(Unported(format!(
-            "the PDF setting {setting}, which the port does not read"
-        )));
+/// The PDF settings the port reads, as Tika's `PDFParser` and our `TextLayerCheckingPdfParser`
+/// take them.
+#[derive(Debug, Clone, Copy)]
+struct Settings {
+    ocr: OcrCheck,
+    /// Whether untagged pages are put into reading order.
+    reading_order: bool,
+    marked_content: MarkedContentStrategy,
+    bookmarks: bool,
+    annotation_text: bool,
+}
+
+impl Settings {
+    /// The settings `config` sets, or why the port leaves documents to Tika under them.
+    fn of(config: &PdfParserConfig) -> Result<Self, Unported> {
+        if config.extracts_inline_images() {
+            return Err(Unported(
+                "the PDF setting setExtractInlineImages, which the port does not read".to_owned(),
+            ));
+        }
+        Ok(Self {
+            ocr: OcrCheck::of(config, ocr_runs())?,
+            reading_order: config.reads_in_reading_order(),
+            marked_content: config.marked_content(),
+            bookmarks: config.extracts_bookmarks_text(),
+            annotation_text: config.extracts_annotation_text(),
+        })
     }
-    let loaded = load(input)?;
-    let mut layers = Vec::new();
-    let context = ParseContext::new(configs);
-    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &context, |xhtml| {
-        layers = extract(&loaded, input, configs, xhtml, true)?;
-        Ok(())
-    });
+}
+
+/// The document's extraction, recorded from `metadata`, unless the document is left to Tika:
+/// for a setting the port does not read, something in the document it does not do, or a page
+/// Tika would OCR. The document is read once, into the recording, which holds no more of it
+/// than its output and the files it embeds.
+fn record(
+    input: &[u8],
+    metadata: &TikaMetadata,
+    configs: &ParserConfigs,
+) -> Result<Recording, Declined> {
+    let deferred = |Unported(reason)| Declined::Deferred(reason);
+    let settings = Settings::of(&configs.pdf).map_err(deferred)?;
+    let loaded = load(input).map_err(deferred)?;
+    let mut recording = Recording::new(metadata.clone());
+    if ocr_runs() {
+        recording.delegate_to(PDF_PARSER);
+    }
+    let recorded =
+        extract(&loaded, input, settings, &mut recording).map_err(|failure| match failure {
+            WriteFailure::Unported(Unported(reason)) => Declined::Deferred(reason),
+            WriteFailure::Stop(Stop::MemoryLimit(limit)) => {
+                Declined::Fails(Error::MemoryLimit(limit))
+            }
+            WriteFailure::Stop(stop) => {
+                unreachable!("a recording stops only at the memory budget, not at {stop:?}")
+            }
+        });
+    if matches!(recorded, Err(Declined::Fails(_))) {
+        return recorded.map(|()| recording);
+    }
     if let Some(number) = loaded.pdf.lost_object_needed() {
-        return Err(Unported(format!(
+        return Err(Declined::Deferred(format!(
             "object {number}, which lopdf cannot read and PDFBox may recover"
         )));
     }
-    match result {
-        Ok(()) => {}
-        Err(WriteFailure::Unported(unported)) => return Err(unported),
-        Err(WriteFailure::Stop(stop)) => {
-            unreachable!("a discarded document stopped being written: {stop:?}")
-        }
-        Err(WriteFailure::Embedded(failure)) => {
-            unreachable!("a dry run parsed an embedded document: {failure:?}")
-        }
-    }
-    for (index, layer) in layers.iter().enumerate() {
-        ocr_deferral(index + 1, layer)?;
-    }
-    Ok(loaded)
-}
-
-/// Why Tika would OCR a page, if it would: `AbstractPDF2XHTML.ocrWanted` under its automatic
-/// strategy, and our `TextLayerCheckingPdfParser`'s doubt about the page's text when tesseract
-/// runs. A page of more glyphs than the limit without characters is both.
-fn ocr_deferral(page: usize, layer: &PageLayer) -> Result<(), Unported> {
-    if layer.glyphs <= OCR_MAX_GLYPHS || layer.unmapped as f32 > OCR_UNMAPPED_LIMIT {
-        return Err(Unported(format!(
-            "page {page} shows {} glyphs, {} of them without characters, which Tika OCRs",
-            layer.glyphs, layer.unmapped
+    let unlisted = loaded.pdf.unlisted_objects_needed();
+    if let Some((number, _)) = xref::first_found(input, &unlisted).map_err(deferred)? {
+        return Err(Declined::Deferred(format!(
+            "object {number}, which the cross-reference table does not list and PDFBox finds \
+             by searching the document"
         )));
     }
-    if !ocr_runs() {
-        return Ok(());
-    }
-    let assessment = quality::assess(
-        &layer.text,
-        layer.glyphs,
-        layer.unmapped,
-        OCR_UNMAPPED_LIMIT,
-    );
-    if assessment.badness >= quality::DOUBTFUL {
-        return Err(Unported(format!(
-            "the text layer of page {page} is doubtful ({}), which Tika OCRs",
-            assessment.fault
-        )));
-    }
-    Ok(())
-}
-
-/// Whether the cross-reference table puts the object `id` where it is: at an offset where its
-/// number and generation start an `obj`, after any whitespace.
-fn listed_where_it_is(doc: &Document, input: &[u8], (number, generation): lopdf::ObjectId) -> bool {
-    let offset = match doc.reference_table.entries.get(&number) {
-        Some(lopdf::xref::XrefEntry::Normal { offset, .. }) => offset,
-        Some(lopdf::xref::XrefEntry::Compressed { .. }) => return true,
-        _ => return false,
-    };
-    let Some(at) = input.get(*offset as usize..) else {
-        return false;
-    };
-    let words: Vec<&[u8]> = at
-        .split(|byte| byte.is_ascii_whitespace())
-        .filter(|word| !word.is_empty())
-        .take(3)
-        .collect();
-    words.len() == 3
-        && words[0] == number.to_string().as_bytes()
-        && words[1] == generation.to_string().as_bytes()
-        && words[2].starts_with(b"obj")
+    recorded.map(|()| recording)
 }
 
 /// A document's objects, as `lopdf` reads them, and what the empty password opens it with.
@@ -218,25 +203,21 @@ struct Loaded {
     access: Access,
 }
 
-/// The document's objects, decrypted with the empty password as Tika's `PDFParser` opens an
-/// encrypted document without one. A document the empty password does not open is left to
-/// Tika, which asks for a password.
+/// The document's objects where PDFBox finds them, decrypted with the empty password as Tika's
+/// `PDFParser` opens an encrypted document without one. A document the empty password does
+/// not open is left to Tika, which asks for a password.
 fn load(input: &[u8]) -> Result<Loaded, Unported> {
-    let mut doc = Document::load_mem(input)
-        .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?;
-    if let Ok(encrypt) = doc.trailer.get(b"Encrypt") {
-        let misplaced = match encrypt {
-            lopdf::Object::Reference(id) => !listed_where_it_is(&doc, input, *id),
-            _ => false,
-        };
+    let resolution = xref::resolve(input)?;
+    let mut doc = match Document::load_mem(input) {
+        Ok(doc) if !resolution.needs_rewrite(&doc, input)? => doc,
+        _ => Document::load_mem(&resolution.rewritten(input)?)
+            .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?,
+    };
+    resolution.set_trailer(&mut doc);
+    if doc.trailer.has(b"Encrypt") {
         return Err(Unported(
-            if misplaced {
-                "an encryption dictionary the cross-reference table misplaces, which lopdf \
-                 cannot read and PDFBox may recover"
-            } else {
-                "encryption the empty password does not open, which Tika asks a password for"
-            }
-            .to_owned(),
+            "encryption the empty password does not open, which Tika asks a password for"
+                .to_owned(),
         ));
     }
     let access = match doc.encryption_state.clone() {
@@ -244,7 +225,7 @@ fn load(input: &[u8]) -> Result<Loaded, Unported> {
         Some(state) => Access::of(&mut doc, &state)?,
     };
     Ok(Loaded {
-        pdf: Pdf::new(doc, input),
+        pdf: Pdf::new(doc, input, resolution.listed()),
         access,
     })
 }
@@ -298,39 +279,36 @@ impl Access {
 }
 
 /// `PDFParser.parse` from the cross-reference scan on: the metadata, then the pages and the
-/// end of the document, written by the tagged writer for a document with marked content. A
-/// dry run, which decides whether the document is deferred, parses no embedded file and
-/// returns each page's text layer.
+/// end of the document, written by the tagged writer for a document with marked content, into
+/// `out`.
 fn extract(
     loaded: &Loaded,
     input: &[u8],
-    configs: &ParserConfigs,
-    xhtml: &mut Xhtml,
-    dry_run: bool,
-) -> Result<Vec<PageLayer>, WriteFailure> {
+    settings: Settings,
+    out: &mut Recording,
+) -> Result<(), WriteFailure> {
     let pdf = &loaded.pdf;
-    let metadata = xhtml.metadata_mut();
     let mut startxrefs = 0;
     for offset in metadata::scan_startxrefs(input) {
         if offset.startxref == 0 {
             continue;
         }
         startxrefs += 1;
-        metadata.add("pdf:eof-offsets", offset.end_eof_offset.to_string());
+        out.add("pdf:eof-offsets", offset.end_eof_offset.to_string());
     }
     let updates = (startxrefs - 1).max(0).to_string();
-    metadata.set("pdf:incremental-update-count", updates.clone());
-    metadata.set("tk:version-count", updates);
+    out.set("pdf:incremental-update-count", updates.clone());
+    out.set("tk:version-count", updates);
     let catalog = pdf.catalog().ok_or_else(|| {
         Unported("a document without a catalog, which PDFBox fails on".to_owned())
     })?;
-    metadata.set("pdf:has-collection", catalog.has(b"Collection").to_string());
+    out.set("pdf:has-collection", catalog.has(b"Collection").to_string());
     let acro_form = pdf.dict(catalog, b"AcroForm");
     let has_xfa = acro_form.is_some_and(|form| form.has(b"XFA"));
-    metadata.set("pdf:has-xfa", has_xfa.to_string());
+    out.set("pdf:has-xfa", has_xfa.to_string());
     let has_marked_content = StructureIndex::<()>::has_marked_content(pdf);
-    metadata.set("pdf:has-marked-content", has_marked_content.to_string());
-    metadata.set("Content-Type", MEDIA_TYPE);
+    out.set("pdf:has-marked-content", has_marked_content.to_string());
+    out.set("Content-Type", MEDIA_TYPE);
     for (name, bit) in [
         ("access-permission:extract-for-accessibility", 10),
         ("access-permission:extract-content", 5),
@@ -341,24 +319,24 @@ fn extract(
         ("access-permission:can-print", 3),
         ("access-permission:can-print-faithful", 12),
     ] {
-        metadata.set(name, loaded.access.grants(bit).to_string());
+        out.set(name, loaded.access.grants(bit).to_string());
     }
     let encrypted = loaded.access != Access::Unencrypted;
-    metadata.set("pdf:encrypted", encrypted.to_string());
+    out.set("pdf:encrypted", encrypted.to_string());
     let has_fields = form::has_fields(pdf)?;
     let version = metadata::header_version(input)?;
-    metadata::document(pdf, metadata, version, has_fields)?;
-    form::signatures(pdf, metadata)?;
+    metadata::document(pdf, out, version, has_fields)?;
+    form::signatures(pdf, out)?;
     if is_illustrator(pdf)? {
-        metadata.set("Content-Type", "application/illustrator");
+        out.set("Content-Type", "application/illustrator");
     }
-    let reading_order = configs.pdf.reads_in_reading_order();
-    let tagged = has_marked_content.then(|| Tagged::new(pdf, reading_order));
-    let mut writer = DocumentWriter::new(pdf, xhtml, tagged, reading_order, ocr_runs(), dry_run);
-    let written = writer.write();
-    let layers = writer.layers.take().unwrap_or_default();
-    xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
-    written.map(|()| layers)
+    let tagged = match settings.marked_content {
+        _ if !has_marked_content => None,
+        MarkedContentStrategy::None => None,
+        MarkedContentStrategy::Auto => Some(Tagged::new(pdf, settings.reading_order, true)),
+        MarkedContentStrategy::Tags => Some(Tagged::new(pdf, settings.reading_order, false)),
+    };
+    DocumentWriter::new(pdf, out, tagged, settings).write()
 }
 
 /// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data.
@@ -377,8 +355,10 @@ fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PdfOcrStrategy;
     use crate::formats::parity::{
-        assert_same_as_tika_delegating, conformance_corpus, documents, Scratch,
+        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
+        documents, Scratch,
     };
     use std::path::{Path, PathBuf};
 
@@ -387,8 +367,11 @@ mod tests {
     /// Why a document of the corpora is left to Tika.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Why {
-        /// Tika OCRs a page whatever its text layer reads.
+        /// Tika OCRs a page of next to no glyphs, whatever its text layer reads.
         Ocr,
+        /// Tika OCRs a page of too many glyphs without characters: by their count, or for its
+        /// doubtful text layer when tesseract runs.
+        Unmapped,
         /// Our `TextLayerCheckingPdfParser` doubts a page's text layer, when tesseract runs.
         Doubtful,
         /// The port does not do what the document needs, as the reason starts.
@@ -397,14 +380,14 @@ mod tests {
 
     /// The documents of the corpora the port leaves to Tika, and why.
     const DEFERRED: [(&str, Why); 9] = [
-        ("arabic.pdf", Why::Ocr),
+        ("arabic.pdf", Why::Unmapped),
         ("deu-ocr.pdf", Why::Ocr),
         ("eng-ocr.pdf", Why::Ocr),
-        ("hindi.pdf", Why::Ocr),
+        ("hindi.pdf", Why::Unmapped),
         ("prose-broken-offset.pdf", Why::Doubtful),
         ("prose-broken-private-use.pdf", Why::Doubtful),
         ("prose-scan.pdf", Why::Ocr),
-        ("thai.pdf", Why::Ocr),
+        ("thai.pdf", Why::Unmapped),
         (
             "user-password.pdf",
             Why::Unported("encryption the empty password does not open"),
@@ -460,6 +443,66 @@ mod tests {
             .as_bytes(),
         );
         out
+    }
+
+    /// A document of the given objects, numbered from 1 with the catalog first, and a
+    /// cross-reference stream listing them, and each object of `dangling` at offset 0.
+    fn stream_document(objects: &[&str], dangling: &[u32]) -> Vec<u8> {
+        let mut out = b"%PDF-1.5\n".to_vec();
+        let mut rows: Vec<(u32, u32)> = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            rows.push((index as u32 + 1, out.len() as u32));
+            out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        rows.extend(dangling.iter().map(|&number| (number, 0)));
+        let stream_number = rows.iter().map(|&(number, _)| number).max().unwrap_or(0) + 1;
+        let start = out.len() as u32;
+        rows.push((stream_number, start));
+        rows.sort_unstable();
+        let mut data = Vec::new();
+        for (_, offset) in &rows {
+            data.push(1);
+            data.extend_from_slice(&offset.to_be_bytes());
+            data.extend_from_slice(&0u16.to_be_bytes());
+        }
+        let index: Vec<String> = rows
+            .iter()
+            .map(|(number, _)| format!("{number} 1"))
+            .collect();
+        out.extend_from_slice(
+            format!(
+                "{stream_number} 0 obj\n<< /Type /XRef /Size {} /Root 1 0 R /W [1 4 2] \
+                 /Index [{}] /Length {} >>\nstream\n",
+                stream_number + 1,
+                index.join(" "),
+                data.len()
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(&data);
+        out.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{start}\n%%EOF\n").as_bytes(),
+        );
+        out
+    }
+
+    /// Where `needle` first stands in `haystack`.
+    fn find(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap_or_else(|| panic!("{} is missing", String::from_utf8_lossy(needle)))
+    }
+
+    /// `haystack` with the first `needle` replaced by `replacement`.
+    fn replace(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+        let at = find(haystack, needle);
+        [&haystack[..at], replacement, &haystack[at + needle.len()..]].concat()
+    }
+
+    fn deferral(path: &Path) -> Option<String> {
+        let input = std::fs::read(path).unwrap();
+        PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
     }
 
     /// A page of Helvetica text drawn by `content`.
@@ -622,9 +665,10 @@ mod tests {
 
     #[test]
     fn defers_a_needed_object_lopdf_cannot_read() {
-        let objects = page_objects(TEXT);
+        let mut objects = page_objects(TEXT);
+        objects[3] = format!("<< /Length 5 /X <zz> >>\nstream\n{TEXT}\nendstream");
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let input = document(&objects, b"", &[(4, 3)]);
+        let input = document(&objects, b"", &[]);
         assert_eq!(
             PdfParser
                 .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
@@ -634,14 +678,180 @@ mod tests {
     }
 
     #[test]
-    fn tells_objects_the_table_misplaces() {
+    fn defers_a_needed_object_the_table_does_not_list_but_pdfbox_finds() {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let input = document(&objects, b"", &[(4, 2)]);
-        let doc = Document::load_mem(&input).unwrap();
-        assert!(listed_where_it_is(&doc, &input, (3, 0)));
-        assert!(!listed_where_it_is(&doc, &input, (4, 0)));
-        assert!(!listed_where_it_is(&doc, &input, (9, 0)));
+        let input = document(&objects, b"", &[]);
+        let font = find(&input, b"5 0 obj");
+        let entry = format!("{font:010} 00000 n \n");
+        let input = replace(&input, entry.as_bytes(), b"0000000000 65535 f \n");
+        assert_eq!(
+            PdfParser
+                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some(
+                "object 5, which the cross-reference table does not list and PDFBox finds by \
+                 searching the document"
+            )
+        );
+    }
+
+    #[test]
+    fn extracts_documents_pdfbox_repairs_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-repaired");
+        let mut objects = page_objects(TEXT);
+        objects.push("<< /Title (Eventyr) /Author (H. C. Andersen) >>".to_owned());
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let plain = document(&objects, b"", &[]);
+        let start = find(&plain, b"xref\n");
+        let startxref = format!("startxref\n{start}\n");
+        let documents = [
+            ("shifted.pdf", document(&objects, b"", &[(4, 3), (6, 1)])),
+            (
+                "startxref.pdf",
+                replace(
+                    &plain,
+                    startxref.as_bytes(),
+                    format!("startxref\n{}\n", start + 2).as_bytes(),
+                ),
+            ),
+            ("no-table.pdf", plain[..start].to_vec()),
+            ("stream.pdf", stream_document(&objects, &[9])),
+        ];
+        let paths: Vec<PathBuf> = documents
+            .iter()
+            .map(|(name, bytes)| scratch.write(name, bytes))
+            .collect();
+        for path in &paths {
+            assert_eq!(deferral(path), None, "{}", path.display());
+        }
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn fails_a_document_whose_recording_outgrows_the_memory_budget() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let configs = ParserConfigs::default();
+        let prepared = crate::memory::within(1, || {
+            PdfParser
+                .prepare(&input, &TikaMetadata::new(), &configs)
+                .map(drop)
+        });
+        assert!(
+            matches!(prepared, Err(Declined::Fails(Error::MemoryLimit(1)))),
+            "{prepared:?}"
+        );
+    }
+
+    fn with_pdf(pdf: PdfParserConfig) -> ParserConfigs {
+        ParserConfigs {
+            pdf,
+            ..ParserConfigs::default()
+        }
+    }
+
+    fn corpus_documents(names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|name| {
+                CORPORA
+                    .iter()
+                    .map(|corpus| Path::new(corpus).join(name))
+                    .find(|path| path.exists())
+                    .unwrap_or_else(|| panic!("no corpus holds {name}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn extracts_under_the_settings_the_port_reads_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-settings");
+        let objects = page_objects("BT /F1 12 Tf 72 720 Td (Kort.) Tj ET");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let short = scratch.write("short.pdf", &document(&objects, b"", &[]));
+        let tagged = corpus_documents(&["danish.pdf", "report.pdf", "table.pdf"]);
+        let settings: [(PdfParserConfig, Vec<PathBuf>); 8] = [
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR),
+                [corpus_documents(&["deu-ocr.pdf"]), vec![short.clone()]].concat(),
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::AUTO),
+                corpus_documents(&["notes.pdf"]),
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy_auto("faster, 4"),
+                [corpus_documents(&["notes.pdf"]), vec![short]].concat(),
+            ),
+            (
+                PdfParserConfig::new().set_extract_marked_content(false),
+                tagged.clone(),
+            ),
+            (
+                PdfParserConfig::new().set_extract_marked_content(true),
+                [tagged.clone(), corpus_documents(&["prose-columns.pdf"])].concat(),
+            ),
+            (
+                PdfParserConfig::new().set_extract_bookmarks_text(false),
+                tagged,
+            ),
+            (
+                PdfParserConfig::new().set_extract_annotation_text(false),
+                corpus_documents(&["notes.pdf", "2022_Q3_AAPL.pdf"]),
+            ),
+            (
+                PdfParserConfig::new()
+                    .set_extract_inline_images(false)
+                    .set_extract_unique_inline_images_only(false),
+                corpus_documents(&["danish.pdf"]),
+            ),
+        ];
+        for (pdf, documents) in settings {
+            let configs = with_pdf(pdf);
+            for document in &documents {
+                let input = std::fs::read(document).unwrap();
+                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
+                assert_eq!(deferral, None, "{} under {configs:?}", document.display());
+            }
+            assert_same_as_tika_delegating_with(
+                &as_paths(&documents),
+                tika_name(),
+                &DELEGATES,
+                &configs,
+            );
+        }
+    }
+
+    #[test]
+    fn defers_under_the_settings_the_port_does_not_read() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        for (pdf, start) in [
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY),
+                "the OCR strategy OCR_ONLY",
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION),
+                "the OCR strategy OCR_AND_TEXT_EXTRACTION",
+            ),
+            (
+                PdfParserConfig::new().set_extract_inline_images(true),
+                "the PDF setting setExtractInlineImages",
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy_auto("faster , 4"),
+                "the automatic OCR thresholds \"faster , 4\"",
+            ),
+        ] {
+            let deferral = PdfParser
+                .defers(&input, &TikaMetadata::new(), &with_pdf(pdf))
+                .unwrap_or_default();
+            assert!(deferral.starts_with(start), "{deferral}");
+        }
     }
 
     #[test]
@@ -684,7 +894,10 @@ mod tests {
         );
         for ((name, reason), (_, why)) in found.iter().zip(&expected) {
             let as_expected = match why {
-                Why::Ocr => reason.starts_with("page ") && reason.ends_with("which Tika OCRs"),
+                Why::Unmapped if ocr_runs() => reason.contains("is doubtful (unmapped-glyphs)"),
+                Why::Ocr | Why::Unmapped => {
+                    reason.starts_with("page ") && reason.ends_with("which Tika OCRs")
+                }
                 Why::Doubtful => reason.contains("is doubtful"),
                 Why::Unported(start) => reason.starts_with(start),
             };

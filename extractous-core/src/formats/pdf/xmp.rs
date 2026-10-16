@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap};
 use super::content::parse_literal;
 use super::cos::text_string;
 use super::date;
+use super::recording::Recording;
 use super::Unported;
-use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
 use crate::java::time::format_instant;
@@ -563,7 +563,7 @@ fn value_for(property: &Property, value: &str) -> Result<String, Unported> {
 }
 
 /// `Metadata.set(Property, String)`.
-pub(super) fn set(metadata: &mut TikaMetadata, property: &Property, value: &str) {
+pub(super) fn set(metadata: &mut Recording, property: &Property, value: &str) {
     metadata.set(property.name, value);
     for secondary in property.secondary {
         set(metadata, secondary, value);
@@ -573,7 +573,7 @@ pub(super) fn set(metadata: &mut TikaMetadata, property: &Property, value: &str)
 /// `Metadata.add(Property, String)`: unported where Tika throws on a second value of a
 /// single-valued property.
 pub(super) fn add(
-    metadata: &mut TikaMetadata,
+    metadata: &mut Recording,
     property: &Property,
     value: &str,
 ) -> Result<(), Unported> {
@@ -605,7 +605,7 @@ pub(super) fn add(
 }
 
 /// `emit`.
-fn emit(metadata: &mut TikaMetadata, property: &Property, value: &str) -> Result<(), Unported> {
+fn emit(metadata: &mut Recording, property: &Property, value: &str) -> Result<(), Unported> {
     let value = value_for(property, value)?;
     if property.multi {
         add(metadata, property, &value)
@@ -618,7 +618,7 @@ fn emit(metadata: &mut TikaMetadata, property: &Property, value: &str) -> Result
 /// `PDMetadataExtractor.extract`: the XMP packet `packet` mapped into `metadata`, and the
 /// PDF/A version derived from it. A packet that is not well-formed XML is unported: Tika
 /// records the parser's exception, with its stack trace, in the metadata.
-pub(super) fn extract(packet: &[u8], metadata: &mut TikaMetadata) -> Result<(), Unported> {
+pub(super) fn extract(packet: &[u8], metadata: &mut Recording) -> Result<(), Unported> {
     let mut flattener = Flattener::default();
     xml::parse_sax(packet, "the XMP packet", &mut flattener).map_err(|failure| {
         Unported(format!(
@@ -657,7 +657,7 @@ fn history_index(path: &str) -> Option<i32> {
 }
 
 /// `XmpExtractor.map`.
-fn map(leaves: &[Leaf], metadata: &mut TikaMetadata) -> Result<(), Unported> {
+fn map(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unported> {
     emit_history(leaves, metadata)?;
     emit_lang_alternatives(leaves, metadata)?;
     for leaf in leaves {
@@ -668,7 +668,7 @@ fn map(leaves: &[Leaf], metadata: &mut TikaMetadata) -> Result<(), Unported> {
     Ok(())
 }
 
-fn emit_history(leaves: &[Leaf], metadata: &mut TikaMetadata) -> Result<(), Unported> {
+fn emit_history(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unported> {
     let mut events: BTreeMap<i32, HashMap<&'static str, String>> = BTreeMap::new();
     for leaf in leaves.iter().filter(|leaf| is_history_event(leaf)) {
         let Some(index) = history_index(&leaf.path).filter(|&index| index >= 0) else {
@@ -703,7 +703,7 @@ fn emit_history(leaves: &[Leaf], metadata: &mut TikaMetadata) -> Result<(), Unpo
     Ok(())
 }
 
-fn emit_lang_alternatives(leaves: &[Leaf], metadata: &mut TikaMetadata) -> Result<(), Unported> {
+fn emit_lang_alternatives(leaves: &[Leaf], metadata: &mut Recording) -> Result<(), Unported> {
     let mut keys: Vec<(String, String)> = Vec::new();
     let mut groups: HashMap<(String, String), Vec<&Leaf>> = HashMap::new();
     for leaf in leaves.iter().filter(|leaf| is_lang_alternative(leaf)) {
@@ -753,7 +753,7 @@ fn emit_lang_alternatives(leaves: &[Leaf], metadata: &mut TikaMetadata) -> Resul
     Ok(())
 }
 
-fn map_leaf(leaf: &Leaf, metadata: &mut TikaMetadata) -> Result<(), Unported> {
+fn map_leaf(leaf: &Leaf, metadata: &mut Recording) -> Result<(), Unported> {
     let namespace = leaf.namespace.as_str();
     let local = leaf.local_name();
     if namespace == XMLNS_XML || dropped(namespace, local) {
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn maps_xmp_as_tika_does() {
-        let mut metadata = TikaMetadata::new();
+        let mut metadata = Recording::new(crate::formats::metadata::TikaMetadata::new());
         extract(PACKET, &mut metadata).unwrap();
         assert_eq!(metadata.get("xmp:CreatorTool"), Some("Writer"));
         assert_eq!(metadata.get("xmp:CreateDate"), Some("2026-10-13T19:30:18Z"));
