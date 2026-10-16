@@ -364,16 +364,31 @@ pub(crate) fn assert_same_as_tika_delegating(
     tika_name: &str,
     delegates: &[(&str, &str)],
 ) {
+    assert_same_as_tika_delegating_with(documents, tika_name, delegates, &ParserConfigs::default());
+}
+
+/// [`assert_same_as_tika_delegating`] under the settings `configs`.
+pub(crate) fn assert_same_as_tika_delegating_with(
+    documents: &[&Path],
+    tika_name: &str,
+    delegates: &[(&str, &str)],
+    configs: &ParserConfigs,
+) {
     let expected = Expected::Same(Naming {
         tika_name,
         delegates,
     });
-    compare(documents, &ParserConfigs::default(), expected);
+    compare(documents, configs, expected);
 }
 
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
 pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
-    compare(documents, &ParserConfigs::default(), Expected::Failure);
+    assert_fails_as_tika_with(documents, &ParserConfigs::default());
+}
+
+/// [`assert_fails_as_tika`] under the settings `configs`.
+pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
+    compare(documents, configs, Expected::Failure);
 }
 
 /// Asserts what [`assert_same_as_tika`] does, but that Tika's XML string, cut at the write limit
@@ -457,6 +472,15 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
 /// The non-empty files under `roots` whose detected type `parser` reads, split into
 /// those it parses and those it defers to Tika.
 pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    documents_with(parser, roots, &ParserConfigs::default())
+}
+
+/// [`documents`], deferred under the settings `configs`.
+pub(crate) fn documents_with(
+    parser: &dyn Parser,
+    roots: &[&Path],
+    configs: &ParserConfigs,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut pending: Vec<PathBuf> = roots.iter().map(|root| root.to_path_buf()).collect();
     while let Some(path) = pending.pop() {
@@ -488,11 +512,7 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, 
             continue;
         }
         if parser
-            .defers(
-                &input,
-                &detected.metadata_for(parser),
-                &ParserConfigs::default(),
-            )
+            .defers(&input, &detected.metadata_for(parser), configs)
             .is_some()
         {
             deferred.push(file);

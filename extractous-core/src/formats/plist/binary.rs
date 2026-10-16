@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::formats::xlsx::format::dtoa::java_double_to_string;
+use crate::formats::java_text::dtoa::java_double_to_string;
 use crate::text::charset::Charset;
 
 const MAGIC: &[u8] = b"bplist";

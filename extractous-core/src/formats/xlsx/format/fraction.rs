@@ -6,11 +6,11 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::bigint::BigUint;
-use super::decimal::BigDecimal;
-use super::dtoa::java_double_to_string;
 use super::FormatError;
 use crate::formats::java::{parse_int, round};
+use crate::formats::java_text::bigint::BigUint;
+use crate::formats::java_text::decimal::BigDecimal;
+use crate::formats::java_text::dtoa::java_double_to_string;
 
 const MAX_ITERATIONS: i32 = 100;
 const MAX_DENOMINATOR_POWER: usize = 4;

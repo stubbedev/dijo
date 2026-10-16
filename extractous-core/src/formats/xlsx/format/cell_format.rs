@@ -11,12 +11,13 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::date_format::{is_valid_excel_date, SimpleDateFormat};
-use super::decimal::{BigDecimal, Rounding};
-use super::decimal_format::DecimalFormat;
-use super::dtoa::java_double_to_string;
 use super::fraction::max_denominator;
-use super::{printf, FormatError, DOT, SPACE};
+use super::{FormatError, DOT, SPACE};
 use crate::formats::java::{parse_double, round as java_round, trim as java_trim};
+use crate::formats::java_text::decimal::{BigDecimal, Rounding};
+use crate::formats::java_text::decimal_format::DecimalFormat;
+use crate::formats::java_text::dtoa::java_double_to_string;
+use crate::formats::java_text::printf;
 use crate::formats::java_time::{self, CalendarFields, TimeZone};
 
 type Outcome<T> = Result<T, FormatError>;

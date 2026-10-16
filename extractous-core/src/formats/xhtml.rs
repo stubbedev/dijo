@@ -580,6 +580,42 @@ fn replace_invalid(text: &str) -> String {
         .collect()
 }
 
+/// Tika's `EmbeddedContentHandler` over a document's `XHTMLContentHandler`, as a parser hands it
+/// to another parser that writes a whole document of its own: the other document's start and
+/// end are dropped, and everything else is written through this document's handler, its
+/// `html`, `meta` and `body` elements into this document's body.
+pub(crate) struct Nested<'x, 'h>(pub(crate) &'x mut Xhtml<'h>);
+
+impl ContentHandler for Nested<'_, '_> {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.0.start_prefix_mapping(prefix, uri)
+    }
+
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        self.0.start_element_with(name, attributes)
+    }
+
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.0.end_element(name)
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        self.0.characters_chunk(text)
+    }
+
+    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        self.0.ignorable_whitespace(text)
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
