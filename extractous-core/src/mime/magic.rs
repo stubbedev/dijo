@@ -277,7 +277,9 @@ impl MagicMatch {
                 let buffer_end = self.begin + (data.len() - self.begin).min(REGEX_WINDOW + span);
                 (self.begin..=last).any(|start| {
                     let region_end = (start + REGEX_WINDOW).min(buffer_end);
-                    start < region_end && regex.is_match(haystack.text(start, region_end))
+                    start < region_end
+                        && regex.may_start_with(char::from(data[start]))
+                        && regex.is_match(haystack.text(start, region_end))
                 })
             }
             Kind::Bytes | Kind::IgnoreCase => {

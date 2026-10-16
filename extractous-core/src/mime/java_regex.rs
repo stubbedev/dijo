@@ -65,6 +65,12 @@ impl JavaRegex {
         })
     }
 
+    /// Whether a match may start with `c`, which rules out a region that starts otherwise without
+    /// compiling the regex or decoding the region.
+    pub(crate) fn may_start_with(&self, c: char) -> bool {
+        self.first.is_none_or(|first| first == c)
+    }
+
     /// Whether a region matches.
     pub(crate) fn is_match(&self, region: &str) -> bool {
         if self.first.is_some_and(|first| !region.starts_with(first)) {
