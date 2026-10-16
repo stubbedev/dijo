@@ -9,6 +9,7 @@ use super::codec::decode_encoded_words;
 use super::date::parse_date_lenient;
 use super::stream::{events, BodyDescriptor, Event, MimeError};
 use super::Unported;
+use crate::formats::embedded::ResourceType;
 use crate::formats::metadata::TikaMetadata;
 use crate::java::is_blank;
 use crate::java::time::format_instant;
@@ -18,9 +19,6 @@ const MULTIPART_ALTERNATIVE: &str = "multipart/alternative";
 const RAW_HEADER_PREFIX: &str = "message:raw-header:";
 /// The longest name `Metadata.add(KeyPrefix, name, value)` accepts.
 const MAX_PREFIXED_NAME_LENGTH: usize = 1024;
-pub(super) const EMBEDDED_RESOURCE_TYPE: &str = "tk:embedded-resource-type";
-const ATTACHMENT: &str = "ATTACHMENT";
-const INLINE: &str = "INLINE";
 
 /// What the body of a message holds, in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -251,9 +249,9 @@ impl Handler<'_> {
         }
         let mut description = disposition.kind.clone();
         if disposition.kind.eq_ignore_ascii_case("attachment") {
-            metadata.set(EMBEDDED_RESOURCE_TYPE, ATTACHMENT);
+            ResourceType::Attachment.set(&mut metadata);
         } else if disposition.kind.eq_ignore_ascii_case("inline") {
-            metadata.set(EMBEDDED_RESOURCE_TYPE, INLINE);
+            ResourceType::Inline.set(&mut metadata);
         }
         for (name, value) in disposition.parameters.iter() {
             description.push_str(&format!("; {name}=\"{value}\""));
@@ -343,8 +341,8 @@ impl Handler<'_> {
     /// `handleEmbedded`: a part handed to the embedded document extractor, an attachment unless
     /// its disposition says otherwise.
     fn handle_embedded(&mut self, mut metadata: TikaMetadata, content: Vec<u8>) {
-        if metadata.get(EMBEDDED_RESOURCE_TYPE).is_none() {
-            metadata.set(EMBEDDED_RESOURCE_TYPE, ATTACHMENT);
+        if !ResourceType::is_set(&metadata) {
+            ResourceType::Attachment.set(&mut metadata);
         }
         self.items.push(Item::Embedded(content, metadata));
     }
@@ -352,7 +350,7 @@ impl Handler<'_> {
 
 /// `detectInlineTextOrHtml` for a part whose type is known: text that is not an attachment.
 fn is_inline_text(metadata: &TikaMetadata) -> bool {
-    metadata.get(EMBEDDED_RESOURCE_TYPE) != Some(ATTACHMENT)
+    !ResourceType::Attachment.is_of(metadata)
         && metadata
             .get("Content-Type")
             .is_some_and(|kind| kind.starts_with("text"))
@@ -467,7 +465,7 @@ mod tests {
             embedded.get("Content-Disposition"),
             Some("attachment; filename=\"b.pdf\"")
         );
-        assert_eq!(embedded.get(EMBEDDED_RESOURCE_TYPE), Some(ATTACHMENT));
+        assert!(ResourceType::Attachment.is_of(embedded));
     }
 
     #[test]

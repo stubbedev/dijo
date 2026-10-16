@@ -207,7 +207,7 @@ fn embedded_metadata(item: &Item, path: &str, cover: bool) -> TikaMetadata {
     }
     metadata.set(embedded::RESOURCE_NAME, path);
     if cover {
-        metadata.set(embedded::RESOURCE_TYPE, embedded::THUMBNAIL);
+        embedded::ResourceType::Thumbnail.set(&mut metadata);
     }
     metadata
 }

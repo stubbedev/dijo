@@ -23,9 +23,7 @@ pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
 pub(crate) const RESOURCE_NAME: &str = "tk:resource-name";
 pub(crate) const INTERNAL_PATH: &str = "tk:internal-path";
 pub(crate) const RELATIONSHIP_ID: &str = "tk:embedded-relationship-id";
-pub(crate) const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
-pub(crate) const THUMBNAIL: &str = "THUMBNAIL";
-pub(crate) const ATTACHMENT: &str = "ATTACHMENT";
+const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
@@ -215,10 +213,46 @@ pub(crate) enum Wrapping {
     Bare,
 }
 
+/// What an embedded document is to the document embedding it, as Tika's
+/// `TikaCoreProperties.EmbeddedResourceType` names it in `tk:embedded-resource-type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResourceType {
+    Attachment,
+    Inline,
+    Thumbnail,
+    AlternateFormatChunk,
+}
+
+impl ResourceType {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Attachment => "ATTACHMENT",
+            Self::Inline => "INLINE",
+            Self::Thumbnail => "THUMBNAIL",
+            Self::AlternateFormatChunk => "ALTERNATE_FORMAT_CHUNK",
+        }
+    }
+
+    /// Records this as the resource type of the document embedded with `metadata`.
+    pub(crate) fn set(self, metadata: &mut TikaMetadata) {
+        metadata.set(RESOURCE_TYPE, self.name());
+    }
+
+    /// Whether the document embedded with `metadata` is of this resource type.
+    pub(crate) fn is_of(self, metadata: &TikaMetadata) -> bool {
+        metadata.get(RESOURCE_TYPE) == Some(self.name())
+    }
+
+    /// Whether the document embedded with `metadata` has a resource type at all.
+    pub(crate) fn is_set(metadata: &TikaMetadata) -> bool {
+        metadata.get(RESOURCE_TYPE).is_some()
+    }
+}
+
 /// Whether Tika parses a document embedded with `metadata`: every one but a thumbnail, which
 /// would only add a garbled copy of the front page's text.
 pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
-    metadata.get(RESOURCE_TYPE) != Some(THUMBNAIL)
+    !ResourceType::Thumbnail.is_of(metadata)
 }
 
 /// `EmbeddedDocumentUtil.recordEmbeddedStreamException` of an exception a parser makes itself,

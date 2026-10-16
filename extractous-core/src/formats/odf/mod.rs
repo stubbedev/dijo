@@ -248,7 +248,7 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
     metadata.set(embedded::INTERNAL_PATH, name);
     metadata.set(embedded::RESOURCE_NAME, name);
     if name.contains("Pictures/") {
-        metadata.set(embedded::RESOURCE_TYPE, "INLINE");
+        embedded::ResourceType::Inline.set(&mut metadata);
         let detection = mime::detect(bytes, Origin::File { name }).map_err(|error| {
             Failure::Malformed(format!("Tika's detection throws on {name}: {error:?}"))
         })?;
