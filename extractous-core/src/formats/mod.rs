@@ -3,6 +3,7 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod apple_single;
 mod archive;
 mod auto_detect_reader;
 mod cms;
@@ -202,6 +203,7 @@ static PARSERS: &[&dyn Parser] = &[
     &dif::DifParser,
     &mif::MifParser,
     &ms_owner::MsOwnerFileParser,
+    &apple_single::AppleSingleFileParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
