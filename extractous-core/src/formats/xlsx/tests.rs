@@ -399,6 +399,33 @@ fn snippets() -> Vec<(&'static str, Vec<u8>)> {
     let rels_type = "application/vnd.openxmlformats-package.relationships+xml";
     vec![
         (
+            // The second sheet is protected, past where the length limit cuts the first.
+            "late-protection",
+            workbook(
+                &[
+                    sheet(
+                        "Long",
+                        cells(&[
+                            "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>A cell of text long \
+                             enough that the length limit of a string extraction cuts it short \
+                             before the sheet after it is read</t></is></c></row>",
+                        ]),
+                    ),
+                    sheet(
+                        "Protected",
+                        format!(
+                            "{}<sheetProtection sheet=\"1\"/>",
+                            cells(&["<row r=\"1\"><c r=\"A1\"><v>1</v></c></row>"])
+                        ),
+                    ),
+                ],
+                &[],
+                "",
+                &[],
+                Vec::new(),
+            ),
+        ),
+        (
             "cells",
             workbook(
                 &[sheet("Numbers &amp; text", numbers), sheet("Empty", String::new())],

@@ -473,7 +473,8 @@ pub(crate) struct Departures {
     pub(crate) repeated: &'static [&'static str],
     /// Metadata the native parser has its final value of when it writes the XHTML head, where
     /// Tika's path writes the head with a value it changes later: Tika's `meta` element of it
-    /// is compared with its final value.
+    /// is compared with its final value, and where the length limit cut the output before Tika
+    /// changed it, Tika's value is taken as the native one.
     pub(crate) final_in_head: &'static [&'static str],
 }
 
@@ -524,6 +525,21 @@ fn without_departures(
         native_text = without_wrapper(&native_text, wrapper);
     }
     for name in departures.final_in_head {
+        // Cut by the length limit, Tika's value is the one it had where the limit stopped it.
+        let native_values = native
+            .metadata
+            .iter()
+            .find(|(native_name, _)| native_name == name)
+            .map(|(_, values)| values.clone());
+        if let (Some(_), Some(values)) = (cut, native_values) {
+            if let Some((_, tika_values)) = tika
+                .metadata
+                .iter_mut()
+                .find(|(tika_name, _)| tika_name == name)
+            {
+                *tika_values = values;
+            }
+        }
         let Some((_, values)) = tika
             .metadata
             .iter()
