@@ -22,8 +22,6 @@ pub(super) enum Deferral {
     /// A picture or object Tika fails to read, recording the failure with its stack trace in
     /// the document's metadata.
     RecordedFailure,
-    /// A creation date, which needs Java's default time zone, when it cannot be read.
-    TimeZone,
     /// Text in a code page the JDK decodes and this port does not.
     Charset,
 }
@@ -36,7 +34,6 @@ impl Deferral {
             Deferral::RecordedFailure => {
                 "an embedded picture or object Tika fails to read, recording the failure"
             }
-            Deferral::TimeZone => "a creation date, and Java's default time zone is unknown",
             Deferral::Charset => "text in a code page this port does not decode",
         }
     }

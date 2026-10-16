@@ -304,11 +304,23 @@ mod tests {
     const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
 
     /// Asserts parity on the documents of `parser` under `roots`, which it must parse all of,
-    /// and that there are `count`.
-    fn assert_parity(parser: &dyn Parser, tika_name: &str, roots: &[&Path], count: usize) {
+    /// and that there are `count`, but for those named in `except`, which it returns.
+    fn assert_parity(
+        parser: &dyn Parser,
+        tika_name: &str,
+        roots: &[&Path],
+        count: usize,
+        except: &[&str],
+    ) -> Vec<PathBuf> {
         let (parsed, deferred) = documents(parser, roots);
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         assert_eq!(parsed.len(), count, "documents of {tika_name}");
+        let (excepted, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
+            parsed.into_iter().partition(|path| {
+                except
+                    .iter()
+                    .any(|name| path.file_name().is_some_and(|file| file == *name))
+            });
         let (other, paths): (Vec<&Path>, Vec<&Path>) =
             parsed.iter().map(PathBuf::as_path).partition(|path| {
                 OTHER_SENDER_NAMES
@@ -319,6 +331,7 @@ mod tests {
         let mut departures = DEPARTURES.to_vec();
         departures.push(Departure::Values("message:from-name", "#77"));
         assert_same_as_tika_departing(&other, tika_name, &departures);
+        excepted
     }
 
     #[test]
@@ -361,25 +374,40 @@ mod tests {
     #[test]
     fn extracts_messages_as_tikas_path_does() {
         let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
-        assert_parity(&Rfc822Parser, TIKA_NAME, &roots, 3);
+        assert_parity(&Rfc822Parser, TIKA_NAME, &roots, 3, &[]);
     }
 
     #[test]
     fn extracts_apple_mail_messages_as_tikas_path_does() {
         let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
-        assert_parity(&EmlxParser, EMLX_NAME, &roots, 1);
+        assert_parity(&EmlxParser, EMLX_NAME, &roots, 1, &[]);
     }
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_messages_as_tikas_path_does() {
-        assert_parity(&Rfc822Parser, TIKA_NAME, &[&conformance_corpus()], 26);
+        // Its attached ZIP archive has an encrypted entry, whose name Tika writes as text
+        // besides recording its failure (#99).
+        let encrypted = assert_parity(
+            &Rfc822Parser,
+            TIKA_NAME,
+            &[&conformance_corpus()],
+            26,
+            &["testRFC822_encrypted_zip"],
+        );
+        let [encrypted] = &encrypted[..] else {
+            panic!("{encrypted:?}");
+        };
+        let (text, _) = crate::Extractor::new()
+            .extract_file_to_string(encrypted.to_str().unwrap())
+            .unwrap();
+        assert!(!text.trim().is_empty());
     }
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_apple_mail_messages_as_tikas_path_does() {
-        assert_parity(&EmlxParser, EMLX_NAME, &[&conformance_corpus()], 3);
+        assert_parity(&EmlxParser, EMLX_NAME, &[&conformance_corpus()], 3, &[]);
     }
 
     #[test]

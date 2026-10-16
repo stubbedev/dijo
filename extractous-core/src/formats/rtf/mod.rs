@@ -19,7 +19,6 @@ use crate::formats::handlers::Discard;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
-use crate::java::time::TimeZone;
 use extractor::Interrupt;
 
 const MEDIA_TYPE: &str = "application/rtf";
@@ -44,9 +43,8 @@ impl Parser for RtfParser {
 
     /// Defers a document with a picture or an embedded object Tika would hand to its embedded
     /// document extractor, or fail to read; with text in the one code page the JDK decodes and
-    /// this port does not, ISCII (`\ansicpg57002`); or with a creation date when Java's default
-    /// time zone cannot be read. Only a document that names `\pict`, `\objdata`,
-    /// `\ansicpg57002` or `\creatim` can, and only such a document is read ahead to find out,
+    /// this port does not, ISCII (`\ansicpg57002`). Only a document that names `\pict`,
+    /// `\objdata` or `\ansicpg57002` can, and only such a document is read ahead to find out,
     /// which reads it twice.
     fn prepare<'a>(
         &self,
@@ -63,12 +61,11 @@ impl Parser for RtfParser {
 
 /// Why Tika's path should extract `input` rather than this parser, if it should.
 pub(crate) fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
-    let undated = TimeZone::java_default().is_err();
     let read_ahead = input.iter().enumerate().any(|(at, &byte)| {
-        let rest = &input[at + 1..];
         byte == b'\\'
-            && (READ_AHEAD.iter().any(|word| rest.starts_with(word))
-                || (undated && rest.starts_with(b"creatim")))
+            && READ_AHEAD
+                .iter()
+                .any(|word| input[at + 1..].starts_with(word))
     });
     if !read_ahead {
         return None;
@@ -149,11 +146,7 @@ mod tests {
         r#"{\rtf1\ansi\pard {\field{\*\fldinst HYPERLINK "http://c.dk/"}{\fldrslt x {\field{\*\fldinst PAGEREF _Toc1 \\h}{\fldrslt 3}} y}} z\par}"#,
         r"{\rtf1\ansi\pard {\field{\*\fldinst PAGE}{\fldrslt 7}} page\par}",
         r"{\rtf1\ansi\pard \b {\field{\*\fldinst HYPERLINK http://d.dk}{\fldrslt \i in}} out\par}",
-        r"{\rtf1\ansi\deff0{\info{\title Fyrets \u230?bog}{\author A}{\author B}{\keywords k1, k2}{\subject S}{\category Cat}{\comment C1}{\company Co}{\manager M}{\template T.dot}{\doccomm ignored}{\creatim\yr2006\mo3\dy1\hr10\min15}{\revtim\yr2007\mo4\dy2\hr11\min16}{\nofpages3}{\nofwords40}{\nofchars200}}\pard body\par}",
-        r"{\rtf1\ansi{\info{\creatim\yr2024\mo3\dy31\hr2\min30}}\pard a\par}",
-        r"{\rtf1\ansi{\info{\creatim\yr2024\mo10\dy27\hr2\min30}}\pard a\par}",
-        r"{\rtf1\ansi{\info{\creatim\yr1500\mo14\dy-3\hr30\min-5}}\pard a\par}",
-        r"{\rtf1\ansi{\info{\creatim}}\pard a\par}",
+        r"{\rtf1\ansi\deff0{\info{\title Fyrets \u230?bog}{\author A}{\author B}{\keywords k1, k2}{\subject S}{\category Cat}{\comment C1}{\company Co}{\manager M}{\template T.dot}{\doccomm ignored}{\revtim\yr2007\mo4\dy2\hr11\min16}{\nofpages3}{\nofwords40}{\nofchars200}}\pard body\par}",
         r"{\rtf1\ansi\fromhtml1{\*\htmltag <p>}\htmlrtf {\htmlrtf0 visible}\htmlrtf0\par}",
         r"{\rtf1\ansi x\par",
         r"{\rtf1\ansi\pard x\par}trailing}",
@@ -242,39 +235,79 @@ mod tests {
         paths.iter().map(PathBuf::as_path).collect()
     }
 
-    /// The documents of `paths` the native parser reads, after asserting that it defers the
-    /// others only for a creation date where Java's default time zone is unknown, as on
-    /// Windows, whose registry lookup is not ported.
-    fn read_natively<'p>(paths: &[&'p Path]) -> Vec<&'p Path> {
-        let zone_unknown = TimeZone::java_default().is_err();
-        let mut read = Vec::new();
+    /// Asserts that the native parser reads each of `paths` rather than deferring it.
+    fn assert_read_natively(paths: &[&Path]) {
         for path in paths {
             let input = std::fs::read(path).unwrap();
-            match RtfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default()) {
-                None => read.push(*path),
-                Some(reason) if zone_unknown && reason == embedded::Deferral::TimeZone.reason() => {
-                }
-                Some(reason) => panic!("{} defers: {reason}", path.display()),
-            }
+            let deferral =
+                RtfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(deferral, None, "{}", path.display());
         }
-        read
+    }
+
+    /// The XHTML the native path extracts from `rtf`.
+    fn extract(rtf: &[u8]) -> String {
+        crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(rtf)
+            .unwrap()
+            .0
     }
 
     #[test]
     fn extracts_what_tikas_path_extracts() {
-        let documents = read_natively(&[Path::new("../quality/corpus/prose.rtf")]);
-        assert_same_as_tika(&documents, TIKA_PARSER);
+        // The document's creation date is all zeros, which Tika's lenient calendar makes
+        // a date in year -0001 in the JVM's zone and the native parser leaves out (#65): it is compared
+        // without the date, and read natively with it.
+        const ZERO_DATE: &str = r"{\creatim\yr0\mo0\dy0\hr0\min0}";
+        let prose = std::fs::read_to_string("../quality/corpus/prose.rtf").unwrap();
+        assert!(prose.contains(ZERO_DATE));
+        assert!(!extract(prose.as_bytes()).contains("dcterms:created"));
+        let undated = SnippetFiles::new("prose", &[&prose.replace(ZERO_DATE, "")]);
+        assert_read_natively(&undated.paths());
+        assert_same_as_tika(&undated.paths(), TIKA_PARSER);
     }
 
     #[test]
     fn extracts_snippets_as_tikas_path_does() {
         let snippets = SnippetFiles::new("same", SNIPPETS);
-        let paths = snippets.paths();
-        let documents = read_natively(&paths);
-        if TimeZone::java_default().is_ok() {
-            assert_eq!(documents.len(), paths.len());
-        }
-        assert_same_as_tika(&documents, TIKA_PARSER);
+        assert_read_natively(&snippets.paths());
+        assert_same_as_tika(&snippets.paths(), TIKA_PARSER);
+    }
+
+    #[test]
+    fn reads_creation_dates_as_utc_wall_clock_times() {
+        // Tika reads them in the JVM's default zone, and makes something of any fields (#65).
+        let created = |info: &str| {
+            let xhtml = extract(format!(r"{{\rtf1\ansi{{\info{info}}}\pard a\par}}").as_bytes());
+            let start = xhtml.find(r#"<meta name="dcterms:created" content=""#)?;
+            let value = &xhtml[start + 38..];
+            Some(value[..value.find('"').unwrap()].to_owned())
+        };
+        let date = |text: &str| Some(text.to_owned());
+        assert_eq!(
+            created(r"{\creatim\yr2006\mo3\dy1\hr10\min15}"),
+            date("2006-03-01T10:15:00Z")
+        );
+        assert_eq!(
+            created(r"{\creatim\yr2024\mo3\dy31\hr2\min30}"),
+            date("2024-03-31T02:30:00Z")
+        );
+        assert_eq!(
+            created(r"{\creatim\yr2024\mo2\dy29}"),
+            date("2024-02-29T00:00:00Z")
+        );
+        assert_eq!(created(r"{\creatim\yr2023\mo2\dy29}"), None);
+        assert_eq!(created(r"{\creatim\yr1500\mo14\dy-3\hr30\min-5}"), None);
+        assert_eq!(created(r"{\creatim\yr2024\mo1\dy1\hr24}"), None);
+        assert_eq!(created(r"{\creatim}"), None);
+        assert_eq!(created(r"{\creatim\yr0\mo0\dy0\hr0\min0}"), None);
+        // Each date group names its own fields: the revision date's do not fill in creation's.
+        assert_eq!(created(r"{\revtim\yr2007\mo4\dy2}{\creatim\hr1}"), None);
+        assert_eq!(
+            created(r"{\creatim\yr2007\mo4\dy2}{\revtim\yr2008\mo5\dy3}"),
+            date("2007-04-02T00:00:00Z")
+        );
     }
 
     #[test]

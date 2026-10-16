@@ -1094,7 +1094,11 @@ mod tests {
         for name in ["nested.zip", "vodafone.xlsx"] {
             let path = std::path::PathBuf::from("../test_files/documents").join(name);
             for budget in [u64::MAX, 3000] {
-                let spooled = crate::formats::parity::spools_as_tika(&path, budget);
+                // The ZIP's integrity check now reaches its head (#99).
+                let departure = (name == "nested.zip")
+                    .then_some((crate::formats::archive::as_tika_checks_zips as _, None));
+                let spooled =
+                    crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure);
                 assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
             }
         }
@@ -1119,6 +1123,14 @@ mod tests {
                 "testHTML_metadata_two_titles.html",
                 "a meta title after the title element is a further dc:title (#86)",
             ),
+            (
+                "testZipEncrypted.zip",
+                "Tika writes the name of an encrypted entry as text (#99)",
+            ),
+            (
+                "testEPUB_multi-metadata-vals.epub",
+                "Tika writes the pictures outside the spine in HashMap order (#88)",
+            ),
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;
@@ -1135,8 +1147,34 @@ mod tests {
                 if exceptions.iter().any(|(exception, _)| *exception == name) {
                     continue;
                 }
+                // The fixes of #89, #99, #105 and #118 depart from Tika's path systematically.
+                let head: crate::formats::parity::Normalisation =
+                    crate::formats::dc_xml::without_head;
+                let departure: Option<(crate::formats::parity::NativeRewrite, _)> = match parser
+                    .name()
+                {
+                    "extractous::ZipParser" | "extractous::CmsParser" => {
+                        Some((crate::formats::archive::as_tika_checks_zips, None))
+                    }
+                    "extractous::DcXMLParser" | "extractous::MobiParser" => Some((
+                        crate::formats::dc_xml::without_unread_dublin_core,
+                        Some(head),
+                    )),
+                    "extractous::EpubParser" => {
+                        Some((crate::formats::epub::as_tika_writes_it, None))
+                    }
+                    "extractous::MP4Parser" => {
+                        Some((crate::formats::media::mp4_as_tika_reads_it, None))
+                    }
+                    "extractous::DIFParser" => {
+                        Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
+                    }
+                    "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
+                    _ => None,
+                };
                 for budget in [u64::MAX, 3000] {
-                    match crate::formats::parity::spools_as_tika(&path, budget) {
+                    match crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure)
+                    {
                         Ok(0) => {}
                         Ok(_) => spooling += 1,
                         Err(difference) => differences.push(difference),

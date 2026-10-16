@@ -220,7 +220,10 @@ fn object(element: &Element, depth: usize) -> Result<Value, Problem> {
                 let [key, value] = pair else {
                     return Err(unparsed());
                 };
-                dict.put(Key::Text(key.text().to_owned()), object(value, depth + 1)?);
+                dict.put(
+                    Key::String(key.text().to_owned()),
+                    object(value, depth + 1)?,
+                );
             }
             Object::Dict(dict)
         }
@@ -405,18 +408,19 @@ mod tests {
         let entries: Vec<_> = dict
             .entries()
             .iter()
-            .map(|(key, value)| (key.clone(), (**value).clone()))
+            .map(|(key, value)| (key.clone(), value.as_deref().cloned()))
             .collect();
-        let text = |text: &str| Key::Text(text.to_owned());
+        let entry = |key: &str, value: Object| (Key::String(key.to_owned()), Some(value));
+        // The unknown element is a null, which takes the key's value: dd-plist drops it (#104).
         assert_eq!(
             entries,
             [
-                (text("a"), Object::String("xyz".into())),
-                (text("b"), Object::Integer(31)),
-                (text("c"), Object::Real(2.0)),
-                (text("d"), Object::Boolean(true)),
-                (text("e"), Object::Data(b"ABC".to_vec())),
-                (text("f"), Object::Date(86_400.0)),
+                (Key::String("a".to_owned()), None),
+                entry("b", Object::Integer(31)),
+                entry("c", Object::Real(2.0)),
+                entry("d", Object::Boolean(true)),
+                entry("e", Object::Data(b"ABC".to_vec())),
+                entry("f", Object::Date(86_400.0)),
             ]
         );
     }

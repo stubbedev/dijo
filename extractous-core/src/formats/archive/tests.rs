@@ -18,7 +18,10 @@ use crate::compress::zip::file::tests::zip;
 use crate::compress::zlib::tests::zlib;
 use crate::compress::zstd::tests::zstd;
 use crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI;
-use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+use crate::formats::parity::{
+    assert_same_as_tika, assert_same_as_tika_rewriting, conformance_corpus, documents,
+    NativeRewrite, Scratch,
+};
 use crate::formats::Parser;
 
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
@@ -41,6 +44,17 @@ fn assert_parity(
     roots: &[&Path],
     limited: &[(&str, &str)],
 ) -> Vec<String> {
+    assert_parity_departing(parser, tika_name, roots, limited, None)
+}
+
+/// [`assert_parity`], with each native result rewritten by `departure`, if any.
+fn assert_parity_departing(
+    parser: &dyn Parser,
+    tika_name: &str,
+    roots: &[&Path],
+    limited: &[(&str, &str)],
+    departure: Option<NativeRewrite>,
+) -> Vec<String> {
     let (parsed, deferred) = documents(parser, roots);
     eprintln!(
         "{tika_name}: {} parsed, deferred {deferred:?}",
@@ -55,7 +69,10 @@ fn assert_parity(
         "parsed only {excluded:?} of the documents excluded from the comparison"
     );
     let paths: Vec<&Path> = compared.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, tika_name);
+    match departure {
+        Some(departure) => assert_same_as_tika_rewriting(&paths, tika_name, departure),
+        None => assert_same_as_tika(&paths, tika_name),
+    }
     names(&deferred)
 }
 
@@ -84,14 +101,78 @@ fn assert_synthetic_parity(
     expected.sort_unstable();
     assert_eq!(names(&parsed), expected);
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, tika_name);
+    if tika_name == ZIP_PARSER {
+        assert_same_as_tika_rewriting(&paths, tika_name, as_tika_checks_zips);
+    } else {
+        assert_same_as_tika(&paths, tika_name);
+    }
 }
+
+/// Why the native path extracts a ZIP archive with an encrypted entry differently: Tika writes
+/// the entry's name in a paragraph besides recording its failure (#99).
+const ENCRYPTED_ENTRY_AS_TEXT: &str = "Tika writes the name of an encrypted entry as text";
 
 #[test]
 fn extracts_zip_archives_as_tikas_path_does() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
-    let deferred = assert_parity(&ZipParser, ZIP_PARSER, &roots, &[]);
+    let deferred = assert_parity_departing(
+        &ZipParser,
+        ZIP_PARSER,
+        &roots,
+        &[("encrypted-entry.zip", ENCRYPTED_ENTRY_AS_TEXT)],
+        Some(as_tika_checks_zips),
+    );
     assert_eq!(deferred, ["spanned.z01"]);
+}
+
+#[test]
+fn records_encrypted_zip_entries_as_failures_only() {
+    let (xml, metadata) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string("../test_files/documents/encrypted/encrypted-entry.zip")
+        .unwrap();
+    assert!(xml.contains("unencrypted.txt"), "{xml}");
+    assert!(!xml.contains("<p>encrypted.txt</p>"), "{xml}");
+    let integrity = xml.find("zip:integrity-check-result").unwrap();
+    assert!(integrity < xml.find("<body>").unwrap(), "{xml}");
+    let failures = &metadata["tk:exception:embedded-stream-exception"];
+    assert!(
+        failures[0].contains("stream (encrypted.txt) is encrypted"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn reads_zip_entries_as_flagged_and_dated_without_a_zone() {
+    use std::io::Write;
+    // Tika takes a JAR only by its first entry, reads DOS times in the JVM's zone and takes
+    // the UTF-8 flag only as a hint (#99).
+    let mut writer = ::zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let time = ::zip::DateTime::from_date_and_time(2020, 6, 15, 12, 30, 10).unwrap();
+    let options = ::zip::write::SimpleFileOptions::default().last_modified_time(time);
+    for (name, content) in [
+        ("caf\u{e9} \u{65e5}\u{672c}.txt", "text"),
+        ("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n"),
+    ] {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+    }
+    let archive = writer.finish().unwrap().into_inner();
+    let (xml, metadata) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(&archive)
+        .unwrap();
+    assert_eq!(metadata["Content-Type"], ["application/java-archive"]);
+    assert!(
+        xml.contains("<h1>caf\u{e9} \u{65e5}\u{672c}.txt</h1>"),
+        "{xml}"
+    );
+    let entry = crate::compress::zip::file::ZipFile::open(&archive).unwrap();
+    let modified = entry.entries()[0].modified().unwrap();
+    assert_eq!(
+        crate::java::time::instant_string(modified.seconds, modified.nanos),
+        "2020-06-15T12:30:10Z"
+    );
 }
 
 #[test]
@@ -118,11 +199,15 @@ fn extracts_synthetic_zip_archives_as_tikas_path_does() {
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
-    let deferred = assert_parity(
+    let deferred = assert_parity_departing(
         &ZipParser,
         ZIP_PARSER,
         &[&conformance_corpus()],
-        &[("testOpenOfficeInAZip.zip", FOREIGN_PARAGRAPHS)],
+        &[
+            ("testOpenOfficeInAZip.zip", FOREIGN_PARAGRAPHS),
+            ("testZipEncrypted.zip", ENCRYPTED_ENTRY_AS_TEXT),
+        ],
+        Some(as_tika_checks_zips),
     );
     assert_eq!(
         deferred,

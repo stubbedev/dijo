@@ -8,7 +8,7 @@ use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::is_blank;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
@@ -78,8 +78,14 @@ impl Parser for CompressorParser {
             return Err(Declined::Deferred(reason));
         }
         let content = decoded.content;
+        // The document ends whatever the entry's parse does, short of the output stopping:
+        // Tika leaves it open when the parse fails (#100).
         Ok(Box::new(move |xhtml| {
-            xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry)
+            let parsed = xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry);
+            if !matches!(parsed, Err(Failure::Stopped(_))) {
+                xhtml.end_document()?;
+            }
+            parsed
         }))
     }
 }

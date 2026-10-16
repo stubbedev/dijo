@@ -165,6 +165,13 @@ impl DublinCore {
         )
     }
 
+    /// The handlers without the one for `dc:date`, for a reader that names dates itself.
+    pub(crate) fn without_date() -> Self {
+        let mut dublin_core = Self::new();
+        dublin_core.0.retain(|element| element.local_name != "date");
+        dublin_core
+    }
+
     pub(crate) fn start(&mut self, namespace: &str, local_name: &str) {
         for element in &mut self.0 {
             element.start(namespace, local_name);

@@ -394,6 +394,34 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
+/// A string extraction's results with both texts cut where they part, when what follows in
+/// one of them is only end tags and white space: the native text was cut at the length limit
+/// before a [`NativeRewrite`] rewrote it, and what the rewrite undoes counts towards the limit,
+/// so the text ends earlier or later than Tika's, its open elements then ended.
+fn cut_texts(mut tika: Extracted, mut native: Extracted) -> (Extracted, Extracted) {
+    let common = tika
+        .text
+        .iter()
+        .zip(&native.text)
+        .take_while(|(tika, native)| tika == native)
+        .count();
+    let only_end_tags = |rest: &[u8]| {
+        let mut rest = std::str::from_utf8(rest).unwrap_or("x").trim_start();
+        while let Some(tag) = rest.strip_prefix("</") {
+            let Some(end) = tag.find('>') else {
+                return false;
+            };
+            rest = tag[end + 1..].trim_start();
+        }
+        rest.is_empty()
+    };
+    if only_end_tags(&tika.text[common..]) || only_end_tags(&native.text[common..]) {
+        tika.text.truncate(common);
+        native.text.truncate(common);
+    }
+    (tika, native)
+}
+
 /// Two string extractions, Tika's path's and the native parser's, without departures, cut to
 /// the length of the shorter where there are departures: the length limit cut each before what
 /// departed was left out, so one may run on further than the other.
@@ -492,16 +520,6 @@ fn in_defined_order(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
     ordered.push_str(rest);
     let mut encoded = Vec::with_capacity(text.len());
     formats::encode(&ordered, char_set, &mut encoded);
-    encoded
-}
-
-/// Text written in `char_set` with `departure` applied to it, unless it is not valid in it.
-fn departed(text: Vec<u8>, char_set: CharSet, departure: fn(&str) -> String) -> Vec<u8> {
-    let Some(decoded) = decoded(&text, char_set) else {
-        return text;
-    };
-    let mut encoded = Vec::with_capacity(text.len());
-    formats::encode(&departure(&decoded), char_set, &mut encoded);
     encoded
 }
 
@@ -837,9 +855,6 @@ struct Naming<'a> {
     delegates: &'a [(&'a str, &'a str)],
     /// The metadata the native parser gives other values than Tika's path on purpose.
     departures: Departures<'a>,
-    /// What undoes, in the native text, a departure in the head of the native parser from
-    /// Tika's path that a quirk issue names, if the comparison expects one.
-    departure: Option<fn(&str) -> String>,
 }
 
 /// What a native parser does otherwise than Tika's path on purpose, where Tika is wrong, with
@@ -918,25 +933,6 @@ fn without_departures(
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
-/// `tika_name`, extracts what Tika's path does under Tika's default settings once `departure`
-/// undoes, in each native text, where the native parser's head departs from Tika's path on
-/// purpose. A string extraction the departure changes is not compared: its length limit counts
-/// the line breaks of the head, so the departure moves where the text is cut.
-pub(crate) fn assert_same_as_tika_head_departing(
-    documents: &[&Path],
-    tika_name: &str,
-    departure: fn(&str) -> String,
-) {
-    let expected = Expected::Same(Naming {
-        tika_name,
-        delegates: &[],
-        departures: &[],
-        departure: Some(departure),
-    });
-    compare(documents, &ParserConfigs::default(), expected);
-}
-
-/// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, extracts exactly what Tika's path does under Tika's default settings.
 pub(crate) fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
     assert_same_as_tika_with(documents, tika_name, &ParserConfigs::default());
@@ -953,9 +949,104 @@ pub(crate) fn assert_same_as_tika_with(
         tika_name,
         delegates: &[],
         departures: &[],
-        departure: None,
     });
-    compare(documents, configs, expected);
+    compare(documents, configs, expected, None);
+}
+
+/// The metadata of an extraction, as the two paths are compared on it.
+pub(crate) type ComparedMetadata = Vec<(String, Vec<String>)>;
+
+/// A rewrite of a native result, its decoded text and its metadata, into what Tika's path
+/// writes, given Tika's metadata, undoing a fix that departs from Tika's path systematically:
+/// it names the issue of the quirk, and undoes only what that fix changes.
+pub(crate) type NativeRewrite = fn(&mut String, &mut ComparedMetadata, &ComparedMetadata);
+
+/// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
+/// compared.
+pub(crate) fn assert_same_as_tika_rewriting(
+    documents: &[&Path],
+    tika_name: &str,
+    rewrite: NativeRewrite,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures: &[],
+    });
+    compare(
+        documents,
+        &ParserConfigs::default(),
+        expected,
+        Some((rewrite, None)),
+    );
+}
+
+/// A rewrite of the decoded text of both results, for a fix whose departure cannot be undone
+/// from the native result alone: it names the issue, and normalises only what that fix changes.
+pub(crate) type Normalisation = fn(&mut String);
+
+/// [`assert_same_as_tika_rewriting`], with both texts then rewritten by `normalise`.
+pub(crate) fn assert_same_as_tika_normalising(
+    documents: &[&Path],
+    tika_name: &str,
+    rewrite: NativeRewrite,
+    normalise: Normalisation,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures: &[],
+    });
+    compare(
+        documents,
+        &ParserConfigs::default(),
+        expected,
+        Some((rewrite, Some(normalise))),
+    );
+}
+
+/// The result `extracted`, its text in `char_set`, with the text rewritten by `normalise`.
+fn normalised(mut extracted: Extracted, char_set: CharSet, normalise: Normalisation) -> Extracted {
+    let mut text = decoded(&extracted.text, char_set).expect("text in its character set");
+    normalise(&mut text);
+    extracted.text.clear();
+    formats::encode(&text, char_set, &mut extracted.text);
+    extracted
+}
+
+/// The native result `native`, its text in `char_set`, rewritten by `rewrite` beside Tika's
+/// result `tika`.
+fn rewritten(
+    mut native: Extracted,
+    tika: &Extracted,
+    char_set: CharSet,
+    rewrite: NativeRewrite,
+) -> Extracted {
+    let mut text = decoded(&native.text, char_set).expect("text the native path wrote");
+    rewrite(&mut text, &mut native.metadata, &tika.metadata);
+    native.text.clear();
+    formats::encode(&text, char_set, &mut native.text);
+    native
+}
+
+/// Both results, the native one rewritten and both then normalised as `rewrite` says.
+fn with_rewrite(
+    tika: Extracted,
+    native: Extracted,
+    char_set: CharSet,
+    rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+) -> (Extracted, Extracted) {
+    let Some((rewrite, normalise)) = rewrite else {
+        return (tika, native);
+    };
+    let native = rewritten(native, &tika, char_set, rewrite);
+    match normalise {
+        Some(normalise) => (
+            normalised(tika, char_set, normalise),
+            normalised(native, char_set, normalise),
+        ),
+        None => (tika, native),
+    }
 }
 
 /// [`assert_same_as_tika`], but for the values of the metadata `departures` names, which the
@@ -969,9 +1060,8 @@ pub(crate) fn assert_same_as_tika_departing(
         tika_name,
         delegates: &[],
         departures,
-        departure: None,
     });
-    compare(documents, &ParserConfigs::default(), expected);
+    compare(documents, &ParserConfigs::default(), expected, None);
 }
 
 /// Asserts that of `documents`, each one `passwords` names, by file name with the password that
@@ -1048,9 +1138,8 @@ pub(crate) fn assert_same_as_tika_delegating_with(
         tika_name,
         delegates,
         departures: &[],
-        departure: None,
     });
-    compare(documents, configs, expected);
+    compare(documents, configs, expected, None);
 }
 
 /// Where a div of class `ocr` starts, the text OCR read in it following.
@@ -1203,10 +1292,15 @@ pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
 
 /// [`assert_fails_as_tika`] under the settings `configs`.
 pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
-    compare(documents, configs, Expected::Failure);
+    compare(documents, configs, Expected::Failure, None);
 }
 
-fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
+fn compare(
+    documents: &[&Path],
+    configs: &ParserConfigs,
+    expected: Expected,
+    rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+) {
     let mut differences = Vec::new();
     for document in documents {
         let path = document.to_str().unwrap();
@@ -1253,17 +1347,11 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                         char_set,
                     );
                     with_native_failures_masked(&mut tika, &mut native);
-                    if let Some(departure) = naming.departure {
-                        let text = departed(native.text.clone(), char_set, departure);
-                        if entry == "string" && text != native.text {
-                            continue;
-                        }
-                        native.text = text;
-                    }
                     if naming.tika_name == RECOGNIZED_IMAGE_PARSER {
                         tika.text = without_nested_document(tika.text, output, char_set);
                         native.text = without_nested_document(native.text, output, char_set);
                     }
+                    let (tika, native) = with_rewrite(tika, native, char_set, rewrite);
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
                             without_ocr(tika, output, char_set, tika_read),
@@ -1275,7 +1363,11 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                                 native.text = cut_sooner(native.text, &tika.text, longer);
                             }
                             native.text = with_the_body_end_tika_leaks(native.text, &tika.text);
-                            cut_alike(tika, native, naming.departures)
+                            let (tika, native) = cut_alike(tika, native, naming.departures);
+                            match rewrite {
+                                Some(_) => cut_texts(tika, native),
+                                None => (tika, native),
+                            }
                         }
                         None => (tika, native),
                     };
@@ -1528,6 +1620,16 @@ fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> 
 /// metadata, and the same files, named, typed, numbered and cut alike. Where the two differ, or
 /// one path fails and the other does not, what differs.
 pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
+    spools_as_tika_rewriting(path, budget, None)
+}
+
+/// [`spools_as_tika`], with the native result rewritten by `rewrite`, and both texts then by
+/// its normalisation, if any.
+pub(crate) fn spools_as_tika_rewriting(
+    path: &Path,
+    budget: u64,
+    rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+) -> Result<usize, String> {
     let path = path.to_str().unwrap();
     let configs = ParserConfigs::default();
     let tika_spool = Scratch::new("spool-tika");
@@ -1600,6 +1702,8 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                 ),
                 CharSet::UTF_8,
             );
+            let (tika_extracted, native_extracted) =
+                with_rewrite(tika_extracted, native_extracted, CharSet::UTF_8, rewrite);
             let (tika_extracted, _) =
                 with_native_edit_time(tika_extracted, &native_extracted, CharSet::UTF_8);
             let (mut tika_extracted, mut native_extracted) =
