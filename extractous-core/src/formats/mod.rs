@@ -11,6 +11,7 @@ mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
 mod epub;
+mod executable;
 mod feed;
 mod fiction_book;
 mod font;
@@ -190,6 +191,8 @@ static PARSERS: &[&dyn Parser] = &[
     &media::FlvParser,
     &media::Mp3Parser,
     &media::Mp4Parser,
+    &executable::ExecutableParser,
+    &executable::UniversalExecutableParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
