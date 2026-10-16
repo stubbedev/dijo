@@ -6,15 +6,7 @@ use crate::formats::parity::{self, assert_same_as_tika_with, Departure};
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The messages this port leaves to Tika, by file name, with a part of the reason.
-const DEFERRED: [(&str, &str); 7] = [
-    ("testMSG_Appointment.msg", "identity hash codes"),
-    ("testMSG_StickyNote.msg", "identity hash codes"),
-    ("testMSG_att_msg.msg", "identity hash codes"),
-    ("testMSG_Task.msg", "identity hash codes"),
-    ("testMSG_att_doc.msg", "identity hash codes"),
-    ("testMSG_forwarded.msg", "identity hash codes"),
-    ("testMSG_chinese.msg", "partial block"),
-];
+const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "partial block")];
 
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
@@ -131,7 +123,7 @@ fn reads_a_stored_message_as_tikas_path_reads_it() {
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
-    assert_eq!(ported.len(), 5);
+    assert_eq!(ported.len(), 11);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
     parity::assert_same_as_tika_departing(&documents, TIKA_PARSER, RECIPIENT_NAMES);
 }

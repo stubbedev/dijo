@@ -199,6 +199,11 @@ impl Extractor {
 
     /// Extracts text from a file path. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
+    ///
+    /// For a document a native parser reads, the metadata is what is known before the parse:
+    /// the input's and its detection's. The parse's final metadata comes from
+    /// [`StreamReader::metadata`] once the stream has been read. A document Tika reads returns
+    /// the metadata as Tika had it when the first output was written.
     pub fn extract_file(&self, file_path: &str) -> ExtractResult<(StreamReader, Metadata)> {
         self.extract_to_stream(Source::File(file_path), None)
     }

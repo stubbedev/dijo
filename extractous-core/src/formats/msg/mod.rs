@@ -49,25 +49,16 @@ impl Parser for MsgParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers messages POI or Tika throws on, those it leaves to Tika's parsers, and those whose
-    /// head Tika writes in an order of identity hash codes.
+    /// Defers messages POI or Tika throws on and those it leaves to Tika's parsers. Tika writes
+    /// the named properties and times of a message in the order of hash maps keyed by identity,
+    /// which its head shows; the native head lists them sorted by name (#64).
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        metadata: &TikaMetadata,
+        _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let (summaries, extracted) = read(input, configs).map_err(|Unported(reason)| reason)?;
-        let mut head = metadata.clone();
-        summaries.write(&mut head);
-        head.set("Content-Type", MEDIA_TYPE);
-        if extracted.has_identity_ordered_head(head) {
-            return Err(Declined::Deferred(
-                "named properties or times whose order in the head Tika takes from identity \
-                 hash codes"
-                    .to_owned(),
-            ));
-        }
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);

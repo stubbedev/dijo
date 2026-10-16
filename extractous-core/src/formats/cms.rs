@@ -361,12 +361,18 @@ fn empty<'a>(content_type: Option<&'static str>) -> Prepared<'a> {
 /// why Tika's path is left to read it, when that parser is not native or declines it. The parser
 /// prepares the content here, to tell whether it takes it, and again as the document is written,
 /// as what it prepares borrows the content, which the document owns.
+///
+/// The content's metadata, which the head shows, starts with its `Content-Length`. Tika's
+/// `Pkcs7Parser` parses it from fresh metadata, as a stream opened alone, which never learns
+/// its length (#113).
 fn with_content<'a>(
     content_type: &'static str,
     content: Vec<u8>,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Deferral> {
-    let (parser, start) = formats::embedded_parser(&content, &TikaMetadata::new(), Opened::Alone)
+    let mut given = TikaMetadata::new();
+    given.set("Content-Length", content.len().to_string());
+    let (parser, start) = formats::embedded_parser(&content, &given, Opened::Alone)
         .ok_or_else(|| "content Tika's path parses".to_owned())?;
     if parser.prepare(&content, &start, configs).is_err() {
         return Err(format!("content {} declines", parser.name()));
@@ -425,10 +431,61 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika_head_departing, conformance_corpus, documents,
+        Scratch,
     };
 
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
+
+    /// The `meta` element of the `Content-Length` the head of signed or compressed content
+    /// shows, which Tika's path does not give the content (#113).
+    const CONTENT_LENGTH: &str = "<meta name=\"Content-Length\" content=\"";
+
+    /// A native text without the `Content-Length` of the content of signed or compressed data
+    /// in its head, which Tika's path does not give it (#113): the head of such content shows
+    /// the content's metadata, which has no resource name, where a document's own has one.
+    fn without_content_length(native: &str) -> String {
+        let Some(head_end) = native.find("</head>") else {
+            return native.to_owned();
+        };
+        let head = &native[..head_end];
+        if head.contains("name=\"tk:resource-name\"") {
+            return native.to_owned();
+        }
+        let Some(start) = head.find(CONTENT_LENGTH) else {
+            return native.to_owned();
+        };
+        let end = start + native[start..].find("/>\n").expect("the meta element ends") + 3;
+        format!("{}{}", &native[..start], &native[end..])
+    }
+
+    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
+        assert_same_as_tika_head_departing(documents, tika_name, without_content_length);
+    }
+
+    #[test]
+    fn gives_the_content_its_length() {
+        let scratch = Scratch::new("cms-length");
+        let content = b"Plain signed text.";
+        let path = scratch.write("signed-text.p7s", &signed(encapsulated(content)));
+        let (xhtml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(path.to_str().unwrap())
+            .unwrap();
+        let length = format!("{CONTENT_LENGTH}{}\" />", content.len());
+        assert!(xhtml.contains(&length), "{xhtml}");
+        assert!(!xhtml.contains("tk:resource-name"), "{xhtml}");
+        assert_eq!(
+            metadata.get("tk:resource-name"),
+            Some(&vec!["signed-text.p7s".to_owned()])
+        );
+        assert_eq!(
+            without_content_length(&xhtml)
+                .matches(CONTENT_LENGTH)
+                .count(),
+            0
+        );
+    }
     /// The detached signatures and certificate lists of Tika's tests, which Tika's path writes
     /// as empty documents.
     const DETACHED: [&str; 5] = [

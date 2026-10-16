@@ -421,6 +421,12 @@ Body.";
             &html.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
         );
+        let (xhtml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .set_extract_string_max_length(100)
+            .extract_file_to_string(html[0].to_str().unwrap())
+            .unwrap();
+        assert!(xhtml.ends_with("word </p></div>"), "{xhtml}");
     }
 
     #[test]

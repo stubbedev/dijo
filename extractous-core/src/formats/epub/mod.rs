@@ -507,7 +507,7 @@ mod tests {
             r#"<itemref idref="ch1"/><itemref idref="notes"/><itemref idref="ch2"/><itemref idref="unknown"/>"#,
         );
         let first = chapter(
-            r#"Loose text<p epub:type="chapter" xml:lang="da" lang="en" class="c">Hver aften &amp; nat&#x21; <!-- skipped --><?pi skipped?></p><section xmlns:x="urn:x"><h1>Overskrift</h1><ul><li>en</li><li>to</li></ul><table><tr><td>a</td><td>b</td></tr></table></section><h:p xmlns:h="http://www.w3.org/1999/xhtml">Prefixed</h:p><p>Efter</p>"#,
+            r#"Loose text<p epub:type="chapter" xml:lang="da" lang="en" class="c">Hver aften &amp; nat&#x21; <!-- skipped --><?pi skipped?></p><section xmlns:x="urn:x"><h1>Overskrift</h1><ul><li>en</li><li>to</li></ul><table><tr><td>a</td><td>b</td></tr></table></section><p>Efter</p>"#,
         );
         let second = r#"<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><div><p>Anden</p></div></body></html>"#;
         let unnamespaced = r#"<html><body><p>Never written</p></body></html>"#;
@@ -568,6 +568,38 @@ mod tests {
         ];
         let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika(&paths, TIKA_NAME);
+    }
+
+    /// An element of a chapter under a prefix for XHTML is written well-formed, in XHTML, where
+    /// Tika's path writes a prefixed start tag with an unprefixed end tag (#87).
+    #[test]
+    fn writes_xhtml_under_a_prefix_well_formed() {
+        let opf = package(
+            "2.0",
+            "<dc:title>Prefiks</dc:title>",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/>"#,
+        );
+        let input = book(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            (
+                "OEBPS/a.xhtml",
+                &chapter(
+                    r#"<p>Før</p><h:p xmlns:h="http://www.w3.org/1999/xhtml">Prefixed</h:p><p>Efter</p>"#,
+                ),
+            ),
+        ]);
+        let (xhtml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&input)
+            .unwrap();
+        assert!(
+            xhtml
+                .contains("<p>Før</p>\n<p xmlns:h=\"http://www.w3.org/1999/xhtml\">Prefixed</p>\n<p>Efter</p>"),
+            "{xhtml}"
+        );
     }
 
     #[test]
