@@ -333,11 +333,6 @@ fn has_bom(bytes: &[u8]) -> bool {
     matches!(bytes, [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..])
 }
 
-/// `new String(bytes, ISO_8859_1)`.
-fn latin1(bytes: &[u8]) -> String {
-    bytes.iter().map(|&byte| char::from(byte)).collect()
-}
-
 /// `getComment`: the language, then the description up to its terminator and the text after
 /// it, or all of it as text without one.
 fn id3_comment(data: &[u8]) -> Option<Comment> {
@@ -345,7 +340,7 @@ fn id3_comment(data: &[u8]) -> Option<Comment> {
         return None;
     }
     let (charset, double_byte) = encoding(data[0])?;
-    let language = latin1(&data[1..4]);
+    let language = java::latin1(&data[1..4]);
     let body = &data[4..];
     let mut description = None;
     let mut text_start = None;
@@ -387,7 +382,7 @@ fn picture_of(data: &[u8]) -> Option<Picture> {
     if mime_end + 1 >= data.len() {
         return None;
     }
-    let mime_type = Some(latin1(&data[1..mime_end])).filter(|mime| !mime.is_empty());
+    let mime_type = Some(java::latin1(&data[1..mime_end])).filter(|mime| !mime.is_empty());
     picture_with_description(data, mime_end + 2, found, mime_type, data[mime_end + 1])
 }
 

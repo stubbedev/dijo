@@ -78,9 +78,7 @@ fn raw_fields(comments: &Comments) -> Option<Fields> {
         at += 4;
         let bytes = data.get(at..at.checked_add(length)?)?;
         at += length;
-        let comment = Charset::named("UTF-8")
-            .decode(bytes)
-            .expect("the JDK decoders decode UTF-8");
+        let comment = java::utf8(bytes);
         let Some((name, value)) = comment.split_once('=') else {
             continue;
         };

@@ -10,14 +10,6 @@ const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 const EQ: u8 = b'=';
 
-/// The JDK's `new String(bytes, UTF_8)`.
-pub(super) fn decode_utf8(bytes: &[u8]) -> String {
-    if bytes.is_ascii() {
-        return bytes.iter().map(|&b| char::from(b)).collect();
-    }
-    decode(Charset::named("UTF-8"), bytes).expect("the JDK decoders decode UTF-8")
-}
-
 /// `new String(bytes, charset)`, or the charset when the port does not decode it as the JDK
 /// does.
 pub(super) fn decode(charset: Charset, bytes: &[u8]) -> Result<String, Unported> {

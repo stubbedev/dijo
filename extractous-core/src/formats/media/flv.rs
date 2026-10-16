@@ -8,8 +8,7 @@ use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::dtoa::java_double_to_string;
-use crate::java::JavaHashMap;
-use crate::text::charset::Charset;
+use crate::java::{self, JavaHashMap};
 
 const TYPE_METADATA: u8 = 0x12;
 const MASK_AUDIO: u8 = 1;
@@ -149,9 +148,7 @@ impl<'a> Input<'a> {
     fn string(&mut self) -> Result<String, Stop> {
         let size = usize::from(self.u16()?);
         let bytes = self.take(size)?;
-        Ok(Charset::named("UTF-8")
-            .decode(bytes)
-            .expect("the JDK decoders decode UTF-8"))
+        Ok(java::utf8(bytes))
     }
 
     /// `readAMFObject`: entries up to the end marker, the marker's type read as `read()`

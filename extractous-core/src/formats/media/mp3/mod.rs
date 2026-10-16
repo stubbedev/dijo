@@ -17,7 +17,6 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java;
 use crate::java::dtoa::java_double_to_string;
-use crate::text::charset::Charset;
 
 /// The bytes at the end of the file `Mp3Parser`'s `TailStream` keeps for the ID3v1 tag and the
 /// lyrics.
@@ -244,9 +243,7 @@ fn lyrics(tail: &[u8]) -> Result<(Option<Tags>, Option<String>), Thrown> {
     let size_field = tail
         .get(look_at.checked_sub(6).ok_or_else(out_of_bounds)?..look_at)
         .ok_or_else(out_of_bounds)?;
-    let size_text = Charset::named("UTF-8")
-        .decode(size_field)
-        .expect("the JDK decoders decode UTF-8");
+    let size_text = java::utf8(size_field);
     let length = java::parse_int(&size_text)
         .ok_or_else(|| format!("NumberFormatException: For input string: \"{size_text}\""))?;
     let start = i64::try_from(look_at).expect("in memory") - i64::from(length) + 5;

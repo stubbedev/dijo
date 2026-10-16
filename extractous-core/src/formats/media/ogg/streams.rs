@@ -5,7 +5,6 @@
 
 use super::packets::{Packet, Reader, Thrown};
 use crate::java::{self, JavaHashMap};
-use crate::text::charset::Charset;
 
 /// A little-endian `int` at `offset`, `IOUtils.getInt4` cast to `int`; past the data an
 /// `ArrayIndexOutOfBoundsException`.
@@ -30,9 +29,7 @@ fn utf8(data: &[u8], offset: i64, length: i32) -> Result<String, Thrown> {
         .zip(usize::try_from(length).ok())
         .and_then(|(start, length)| data.get(start..start.checked_add(length)?))
         .ok_or_else(|| "StringIndexOutOfBoundsException".to_owned())?;
-    Ok(Charset::named("UTF-8")
-        .decode(range)
-        .expect("the JDK decoders decode UTF-8"))
+    Ok(java::utf8(range))
 }
 
 /// A stream's Vorbis-style comments, `VorbisStyleComments`: the packet they were read from, the

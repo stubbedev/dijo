@@ -14,6 +14,7 @@ pub(crate) mod time;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use crate::text::charset::Charset;
 use crate::unicode::{decimal_digit, is_whitespace};
 
 /// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
@@ -351,6 +352,21 @@ pub(crate) fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
+/// `new String(bytes, ISO_8859_1)`.
+pub(crate) fn latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&byte| char::from(byte)).collect()
+}
+
+/// `new String(bytes, UTF_8)`: malformed input replaced as the JDK's decoder replaces it.
+pub(crate) fn utf8(bytes: &[u8]) -> String {
+    if bytes.is_ascii() {
+        return latin1(bytes);
+    }
+    Charset::named("UTF-8")
+        .decode(bytes)
+        .expect("the JDK decoders decode UTF-8")
+}
+
 /// `String.equalsIgnoreCase`: the same length, and each pair of characters the same, or the same
 /// once both are upper-cased, or once those are lower-cased, each by its one-character mapping.
 pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
@@ -619,6 +635,14 @@ pub(crate) fn hash_set_order<'a>(items: impl IntoIterator<Item = &'a str>) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_bytes_as_new_string_does() {
+        assert_eq!(latin1(b"\xA9xyz"), "\u{A9}xyz");
+        assert_eq!(utf8(b"plain"), "plain");
+        assert_eq!(utf8(b"K\xC3\xB8ge"), "K\u{F8}ge");
+        assert_eq!(utf8(b"A\xC3\xFF"), "A\u{FFFD}\u{FFFD}");
+    }
 
     #[test]
     fn hashes_strings_as_java_does() {

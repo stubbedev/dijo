@@ -84,7 +84,7 @@ impl Parsing {
             4 => self.buffer.end_text(),
             5 | 7 | 8 => self.buffer.restart(),
             6 => {
-                self.reason = Some(latin1(self.buffer.pushed()));
+                self.reason = Some(java::latin1(self.buffer.pushed()));
                 self.buffer.restart();
             }
             9 => return Flow::Break,
@@ -95,7 +95,7 @@ impl Parsing {
                 self.buffer.restart();
             }
             12 => {
-                let value = latin1(self.buffer.text());
+                let value = java::latin1(self.buffer.text());
                 let name = self.name.clone().expect("a header value follows its name");
                 self.headers.add(name, value);
                 self.buffer.restart();
@@ -105,11 +105,6 @@ impl Parsing {
         }
         Flow::Continue
     }
-}
-
-/// `new String(bytes, ISO_8859_1)`.
-pub(super) fn latin1(bytes: &[u8]) -> String {
-    bytes.iter().map(|&byte| char::from(byte)).collect()
 }
 
 /// `new String(bytes, US_ASCII)`: a byte beyond ASCII as U+FFFD.

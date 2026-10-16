@@ -4,13 +4,12 @@
 //! after it skipped.
 
 use super::headers::{Headers, NotSole};
-use super::http::{ascii, latin1};
+use super::http::ascii;
 use super::ragel::{Flow, ERROR};
 use super::tables::{WARC, WARC_FIRST_FINAL, WARC_START};
 use super::text::TextBuffer;
 use crate::java;
 use crate::java::time::{civil, format_instant};
-use crate::text::charset::Charset;
 
 /// A record: its protocol, WARC or ARC, its header fields and its block.
 #[derive(Debug)]
@@ -252,16 +251,14 @@ impl Header {
                 self.buffer.restart();
             }
             6 => {
-                let value = Charset::named("UTF-8")
-                    .decode(self.buffer.text())
-                    .expect("the JDK decoders decode UTF-8");
+                let value = java::utf8(self.buffer.text());
                 let name = self.name.clone().expect("a field value follows its name");
                 self.headers.add(name, value);
                 self.buffer.restart();
                 self.buffer.forget_text();
             }
             7 => {
-                let url = latin1(self.buffer.pushed());
+                let url = java::latin1(self.buffer.pushed());
                 if let Some(file_name) = url.strip_prefix("filedesc://") {
                     self.set("WARC-Type", "warcinfo".to_owned());
                     self.set("WARC-Filename", file_name.to_owned());

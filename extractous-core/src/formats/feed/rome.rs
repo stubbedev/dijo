@@ -5,7 +5,6 @@
 
 use super::jdom::{self, Element, Node};
 use crate::java;
-use crate::text::charset::Charset;
 
 const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const RSS_090: &str = "http://my.netscape.com/rdf/simple/0.9/";
@@ -439,9 +438,7 @@ fn rome_base64(text: &str) -> Result<String, Thrown> {
             }
         }
     }
-    Ok(Charset::named("UTF-8")
-        .decode(&decoded)
-        .expect("the JDK decoders decode UTF-8"))
+    Ok(java::utf8(&decoded))
 }
 
 #[cfg(test)]
