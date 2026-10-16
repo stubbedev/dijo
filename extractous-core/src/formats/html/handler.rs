@@ -205,6 +205,9 @@ impl HtmlHandler<'_, '_> {
                 self.xhtml.metadata_mut().set("Content-Language", lang);
             }
         }
+        if name == "TITLE" && self.title_level == 0 {
+            self.title.clear();
+        }
         if name == "TITLE" || self.title_level > 0 {
             self.title_level += 1;
         }
@@ -245,7 +248,8 @@ impl HtmlHandler<'_, '_> {
                 self.start_element_with_mapped_attributes(safe, attributes)?;
             }
         }
-        self.title.clear();
+        // Tika clears the title at every start element, so markup inside the title keeps only
+        // its last text (#86).
         Ok(())
     }
 

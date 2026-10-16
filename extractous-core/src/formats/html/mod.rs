@@ -4,8 +4,8 @@
 //! - its encoding detection, the chain [`charset::detect`] ports, sets the `tk:` metadata, a
 //!   `Content-Type` of the type with the detected charset and a `Content-Encoding`;
 //! - jsoup decodes the bytes with the detected charset's superset, unless they start with a byte
-//!   order mark, which overrides it (`DataUtil.detectCharsetFromBom`, which reads four bytes,
-//!   zeros past the end, so `FF FE` alone reads as UTF-32);
+//!   order mark, which overrides it (`DataUtil.detectCharsetFromBom`, without its padding of
+//!   a short input with zeros, which reads `FF FE` alone as UTF-32: #85);
 //! - a port of jsoup 1.23.2's tokeniser and tree builder, with Tika's tag set, builds the
 //!   document ([`tree_builder`]);
 //! - Tika's traversal and `HtmlHandler` write it ([`handler`]).
@@ -150,16 +150,15 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
 }
 
 /// The text jsoup reads: decoded with a byte order mark's charset when the input starts with
-/// one, else with `decode_as`.
+/// one, else with `decode_as`. A UTF-32 mark needs four bytes of input: jsoup pads a shorter
+/// input with zeros, so `FF FE` alone reads as UTF-32 there (#85).
 fn decode(input: &[u8], decode_as: Charset) -> Result<String, Failure> {
-    let mut bom = [0u8; 4];
-    for (slot, &byte) in bom.iter_mut().zip(input) {
-        *slot = byte;
-    }
-    let (charset, bytes) = match bom {
-        [0x00, 0x00, 0xFE, 0xFF] | [0xFF, 0xFE, 0x00, 0x00] => (Charset::named("UTF-32"), input),
-        [0xFE, 0xFF, _, _] | [0xFF, 0xFE, _, _] => (Charset::named("UTF-16"), input),
-        [0xEF, 0xBB, 0xBF, _] => (Charset::named("UTF-8"), &input[3..]),
+    let (charset, bytes) = match input {
+        [0x00, 0x00, 0xFE, 0xFF, ..] | [0xFF, 0xFE, 0x00, 0x00, ..] => {
+            (Charset::named("UTF-32"), input)
+        }
+        [0xFE, 0xFF, ..] | [0xFF, 0xFE, ..] => (Charset::named("UTF-16"), input),
+        [0xEF, 0xBB, 0xBF, ..] => (Charset::named("UTF-8"), &input[3..]),
         _ => (decode_as, input),
     };
     charset.decode(bytes).ok_or_else(|| {
@@ -225,6 +224,11 @@ mod tests {
         assert_eq!(decode(b"\xEF\xBB\xBFcaf\xC3\xA9", windows).unwrap(), "café");
         assert_eq!(decode(b"\xFE\xFF\x00a", windows).unwrap(), "a");
         assert_eq!(decode(b"caf\xE9", windows).unwrap(), "café");
-        assert_eq!(decode(b"\xFF\xFE", windows).unwrap(), "\u{FFFD}");
+        assert_eq!(decode(b"\xFF\xFE", windows).unwrap(), "");
+        assert_eq!(decode(b"\xFF\xFEa\x00", windows).unwrap(), "a");
+        assert_eq!(
+            decode(b"\xFF\xFE\x00\x00a\x00\x00\x00", windows).unwrap(),
+            "a"
+        );
     }
 }
