@@ -10,7 +10,7 @@ use super::package::{
     Package, Relationship, Unported, HYPERLINK_RELATIONSHIP, RELATIONSHIPS_CONTENT_TYPE,
 };
 use crate::config::OfficeParserConfig;
-use crate::formats::embedded::{self, Wrapping};
+use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -246,7 +246,7 @@ impl<H: SaxHandler> SaxHandler for Balancer<'_, H> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Embedding {
     /// A file Tika parses as an embedded document of this resource type.
-    File(&'static str),
+    File(ResourceType),
     /// An OLE object too small to be a compound file, which Tika passes over.
     SmallOleObject,
     /// An OLE object Tika opens as a compound file.
@@ -269,12 +269,12 @@ fn embedding(package: &Package, relationship: &Relationship) -> Option<(usize, E
                 Embedding::OleObject
             }
         }
-        kind::IMAGE => Embedding::File("INLINE"),
+        kind::IMAGE => Embedding::File(ResourceType::Inline),
         kind::MEDIA | kind::VIDEO | kind::AUDIO | kind::PACKAGE | kind::OLE_OBJECT => {
-            Embedding::File("ATTACHMENT")
+            Embedding::File(ResourceType::Attachment)
         }
         kind::VBA_PROJECT => Embedding::Macros,
-        kind::ALTERNATE_FORMAT_CHUNK => Embedding::File("ALTERNATE_FORMAT_CHUNK"),
+        kind::ALTERNATE_FORMAT_CHUNK => Embedding::File(ResourceType::AlternateFormatChunk),
         _ => return None,
     };
     Some((target, embedding))
@@ -376,7 +376,7 @@ fn write_embedded_file(
     package: &Package,
     part: usize,
     id: &str,
-    resource_type: &str,
+    resource_type: ResourceType,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
@@ -392,10 +392,10 @@ fn write_embedded_file(
 }
 
 /// What Tika's metadata names of every part it parses as an embedded document.
-fn part_metadata(id: &str, resource_type: &str, name: &str) -> TikaMetadata {
+fn part_metadata(id: &str, resource_type: ResourceType, name: &str) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
     metadata.set(embedded::RELATIONSHIP_ID, id);
-    metadata.set(embedded::RESOURCE_TYPE, resource_type);
+    resource_type.set(&mut metadata);
     metadata.set(embedded::INTERNAL_PATH, name);
     metadata
 }
@@ -484,11 +484,11 @@ fn write_ole_object(
 ) -> Result<(), Failure> {
     let object =
         read_ole_object(package, part).map_err(|Unported(reason)| Failure::Malformed(reason))?;
-    let mut metadata = part_metadata(id, "ATTACHMENT", package.name(part));
+    let mut metadata = part_metadata(id, ResourceType::Attachment, package.name(part));
     let data = match object {
         OleObject::Skipped => return Ok(()),
         OleObject::Whole => {
-            return write_embedded_file(package, part, id, "ATTACHMENT", anchor, xhtml);
+            return write_embedded_file(package, part, id, ResourceType::Attachment, anchor, xhtml);
         }
         OleObject::Entry(data) => data,
         OleObject::Native(native) => {
