@@ -41,6 +41,7 @@ mod text;
 pub(crate) mod xhtml;
 mod xlsx;
 pub(crate) mod xml;
+pub(crate) mod xmp;
 mod zip_file;
 
 use std::borrow::Cow;
@@ -108,6 +109,17 @@ pub(crate) enum Declined {
 impl From<Deferral> for Declined {
     fn from(deferral: Deferral) -> Self {
         Self::Deferred(deferral)
+    }
+}
+
+/// Something in a document a port does not do as Tika does: the reason the document is
+/// deferred to Tika's path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unported(pub(crate) String);
+
+impl From<Unported> for Declined {
+    fn from(Unported(reason): Unported) -> Self {
+        Self::Deferred(reason)
     }
 }
 
