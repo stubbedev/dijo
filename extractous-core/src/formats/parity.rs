@@ -387,6 +387,176 @@ fn without_embedding_frames(trace: &str) -> String {
     kept
 }
 
+const TOTAL_TIME: &str = "extended-properties:TotalTime";
+/// What an OLE2 document's edit time comes to in Tika's path: its file time in 100-nanosecond
+/// units, a minute being this many.
+const FILE_TIME_MINUTE: i64 = 600_000_000;
+
+/// Tika's extraction with the edit time of an OLE2 document's summary information as the native
+/// parsers write it, where the two agree on it (#106): Tika writes the raw file time, and `0`
+/// where the document records none, the native parsers the whole minutes, and nothing where there
+/// is none. The XHTML head is rewritten alike, its other metadata in the native head's order where
+/// the edit time goes, which changes the order of Java's `HashMap` of them. Where Tika's
+/// extraction was rewritten, by how many characters its edit time was longer, which a length
+/// limit counts.
+fn with_native_edit_time(
+    mut tika: Extracted,
+    native: &Extracted,
+    char_set: CharSet,
+) -> (Extracted, Option<usize>) {
+    let value = |extracted: &Extracted| {
+        extracted
+            .metadata
+            .iter()
+            .find(|(name, _)| name == TOTAL_TIME)
+            .and_then(|(_, values)| values.first().cloned())
+    };
+    let (Some(raw), native_value) = (value(&tika), value(native)) else {
+        return (tika, None);
+    };
+    let Ok(file_time) = raw.parse::<i64>() else {
+        return (tika, None);
+    };
+    let minutes = (file_time != 0).then(|| (file_time / FILE_TIME_MINUTE).to_string());
+    if native_value.as_ref() == Some(&raw) || native_value != minutes {
+        return (tika, None);
+    }
+    let longer = raw.len() - minutes.as_ref().map_or(0, String::len);
+    if let (Some(text), Some(native_text)) = (
+        decoded(&tika.text, char_set),
+        decoded(&native.text, char_set),
+    ) {
+        let mut encoded = Vec::new();
+        formats::encode(
+            &with_head_edit_time(&text, &native_text, &raw, minutes.as_deref()),
+            char_set,
+            &mut encoded,
+        );
+        tika.text = encoded;
+    }
+    match minutes {
+        Some(minutes) => {
+            for (name, values) in &mut tika.metadata {
+                if name == TOTAL_TIME {
+                    *values = vec![minutes.clone()];
+                }
+            }
+        }
+        None => tika.metadata.retain(|(name, _)| name != TOTAL_TIME),
+    }
+    (tika, Some(longer))
+}
+
+/// The XHTML `text` with the edit time `raw` of its head as `minutes`, or without it, its other
+/// metadata then in the order of the native head `native`, as a `HashMap` without the edit time
+/// orders them, where the two name the same metadata.
+fn with_head_edit_time(text: &str, native: &str, raw: &str, minutes: Option<&str>) -> String {
+    let element = |content: &str| format!("<meta name=\"{TOTAL_TIME}\" content=\"{content}\" />");
+    let Some(minutes) = minutes else {
+        let Some((start, end)) = head_span(text) else {
+            return text.to_owned();
+        };
+        let lines: Vec<(&str, &str)> = head_lines(&text[start..end])
+            .into_iter()
+            .filter(|&(name, line)| name != TOTAL_TIME || line.trim_end() != element(raw))
+            .collect();
+        let mut names: Vec<&str> = Vec::new();
+        for (name, _) in &lines {
+            if !names.contains(name) {
+                names.push(name);
+            }
+        }
+        let mut order: Vec<&str> = Vec::new();
+        if let Some((native_start, native_end)) = head_span(native) {
+            for (name, _) in head_lines(&native[native_start..native_end]) {
+                if !order.contains(&name) {
+                    order.push(name);
+                }
+            }
+        }
+        let mut sorted_names = names.clone();
+        let mut sorted_order = order.clone();
+        sorted_names.sort_unstable();
+        sorted_order.sort_unstable();
+        if sorted_names == sorted_order {
+            names = order;
+        }
+        let head: String = names
+            .iter()
+            .flat_map(|&name| {
+                lines
+                    .iter()
+                    .filter(move |(line_name, _)| *line_name == name)
+                    .map(|(_, line)| *line)
+            })
+            .collect();
+        return format!("{}{head}{}", &text[..start], &text[end..]);
+    };
+    text.replacen(&element(raw), &element(minutes), 1)
+}
+
+/// Where the metadata of an XHTML head start and end.
+fn head_span(text: &str) -> Option<(usize, usize)> {
+    let start = text.find("<head>\n")? + "<head>\n".len();
+    let end = text[start..].find("<title>")? + start;
+    Some((start, end))
+}
+
+/// The lines of the metadata of an XHTML head, each with its name.
+fn head_lines(head: &str) -> Vec<(&str, &str)> {
+    head.split_inclusive('\n')
+        .map(|line| {
+            let name = line
+                .strip_prefix("<meta name=\"")
+                .and_then(|line| line.split_once('"'))
+                .map_or("", |(name, _)| name);
+            (name, line)
+        })
+        .collect()
+}
+
+/// The native text of a string extraction as Tika's is, where the two differ only in what the
+/// native one goes on to past where Tika's length limit cut it sooner, as Tika's edit time,
+/// longer by `longer` characters, counted towards it (#106): at one place, at most `longer`
+/// characters of text and the markup around them.
+fn cut_sooner(native: Vec<u8>, tika: &[u8], longer: usize) -> Vec<u8> {
+    let (Ok(native_text), Ok(tika_text)) =
+        (std::str::from_utf8(&native), std::str::from_utf8(tika))
+    else {
+        return native;
+    };
+    let Some(inserted) = native_text.len().checked_sub(tika_text.len()) else {
+        return native;
+    };
+    let common = native_text
+        .char_indices()
+        .zip(tika_text.chars())
+        .find(|((_, native), tika)| native != tika)
+        .map_or(tika_text.len(), |((at, _), _)| at);
+    let Some(more) = native_text.get(common..common + inserted) else {
+        return native;
+    };
+    let mut in_markup = false;
+    let text = more
+        .chars()
+        .filter(|&c| {
+            match c {
+                '<' => in_markup = true,
+                '>' => {
+                    in_markup = false;
+                    return false;
+                }
+                _ => {}
+            }
+            !in_markup
+        })
+        .count();
+    if text <= longer && native_text[common + inserted..] == tika_text[common..] {
+        return tika.to_vec();
+    }
+    native
+}
+
 fn replace_bytes(haystack: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let mut replaced = Vec::with_capacity(haystack.len());
     let mut rest = haystack;
@@ -655,15 +825,19 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             let (tika, native) = match (expected, tika, native) {
                 (Expected::Same(naming), Ok(tika), Ok(native)) => {
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                    let tika = comparable(tika, char_set);
                     let native = comparable(as_tika(native, &names, char_set), char_set);
+                    let (tika, edit_time_longer) =
+                        with_native_edit_time(comparable(tika, char_set), &native, char_set);
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
                             without_ocr(tika, output, char_set, tika_read),
                             without_ocr(native, output, char_set, native_read),
                         ),
                         None if entry == "string" => {
-                            let native = cut_to(native, &tika);
+                            let mut native = cut_to(native, &tika);
+                            if let Some(longer) = edit_time_longer {
+                                native.text = cut_sooner(native.text, &tika.text, longer);
+                            }
                             (tika, native)
                         }
                         None => (tika, native),
@@ -989,6 +1163,8 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                 ),
                 CharSet::UTF_8,
             );
+            let (tika_extracted, _) =
+                with_native_edit_time(tika_extracted, &native_extracted, CharSet::UTF_8);
             let (tika_extracted, native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
             let tika = (tika_extracted, spooled(embedded, tika_spool.directory()));
