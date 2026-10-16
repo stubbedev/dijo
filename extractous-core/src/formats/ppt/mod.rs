@@ -4,11 +4,13 @@
 //! and the OLE objects its shapes show, then the pictures and the objects no shape showed, and
 //! the hidden slides, animations and comment authors as metadata.
 //!
-//! A presentation POI or Tika throws on is left to Tika, as is an encrypted one, one before
-//! PowerPoint 97, one whose pictures or objects Tika fails on and records, and macros extracted
-//! when asked to: see [`PptParser::prepare`].
+//! An encrypted presentation is decrypted with the password, or failed as Tika's path fails it
+//! where the password does not open it. A presentation POI or Tika throws on is left to Tika, as
+//! is one before PowerPoint 97, one whose pictures or objects Tika fails on and records, and
+//! macros extracted when asked to: see [`PptParser::prepare`].
 
 mod drawing;
+mod encryption;
 mod extractor;
 mod headers;
 mod pictures;
@@ -44,16 +46,16 @@ impl Parser for PptParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers presentations POI or Tika throws on, encrypted ones, those before PowerPoint 97,
-    /// those with pictures or objects Tika records failing on, and macros extracted when asked
-    /// to.
+    /// Fails encrypted presentations the password does not open, and defers those POI or Tika
+    /// throws on, those before PowerPoint 97, those with pictures or objects Tika records
+    /// failing on, and macros extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, out) = read(input, configs).map_err(|Unported(reason)| reason)?;
+        let (summaries, out) = read(input, configs)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
@@ -64,11 +66,11 @@ impl Parser for PptParser {
 
 /// The summary information and what Tika's extractor makes of the presentation in a compound
 /// document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<Out>), Unported> {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<Out>), Declined> {
     if configs.office.extracts_macros() {
-        return Err(Unported(
-            "macros are extracted, which this port does not do".to_owned(),
-        ));
+        return Err(
+            Unported("macros are extracted, which this port does not do".to_owned()).into(),
+        );
     }
     let file = Ole2::open(input).map_err(|Unreadable(reason)| {
         Unported(format!("POI cannot open the compound document: {reason}"))
@@ -76,19 +78,24 @@ fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<Out>), 
     if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
         return Err(Unported(format!(
             "POI reads the compound document from a stream differently: {reason}"
-        )));
+        ))
+        .into());
     }
     let root = file.root();
     if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
         return Err(Unported(
             "the compound document is no presentation to POI's container detection".to_owned(),
-        ));
+        )
+        .into());
     }
     let summaries = Summaries::read(&file, root)?;
     let directory = show::presentation_directory(&file, root)?;
-    let (_, records) = show::read_records(&file, directory)?;
+    let show::Records {
+        records,
+        encryption,
+    } = show::read_records(&file, directory, configs)?;
     let show = show::Show::new(&records)?;
-    let pictures = pictures::read(&file, directory, &records)?;
+    let pictures = pictures::read(&file, directory, &records, encryption.as_ref())?;
     let objects = pictures::objects(&records);
     let out = extract(&show, objects, &pictures, configs)?;
     Ok((summaries, out))

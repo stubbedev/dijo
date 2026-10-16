@@ -7,6 +7,7 @@ use crate::formats::poi::{i32_at, inflate};
 use crate::formats::Unported;
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
+use super::encryption::Encryption;
 use super::records::{kind, Record};
 use super::show::Top;
 
@@ -183,12 +184,13 @@ impl Factory {
     }
 }
 
-/// `readPictures`: the pictures of the "Pictures" stream of `directory`, matched to the blip
-/// store of the first document record.
+/// `readPictures`: the pictures of the "Pictures" stream of `directory`, each decrypted in place
+/// where the presentation is encrypted, matched to the blip store of the first document record.
 pub(super) fn read(
     file: &Ole2<'_>,
     directory: EntryId,
     records: &[Top],
+    encryption: Option<&Encryption>,
 ) -> Result<Pictures, Unported> {
     let Some(entry) = file.child_ignoring_case(directory, PICTURES) else {
         return Ok(Pictures::default());
@@ -197,7 +199,8 @@ pub(super) fn read(
         return Err(poi_throws("the Pictures entry is no document"));
     }
     let mut store = first_document_store(records)?;
-    let stream = file.read(entry).map_err(|Unreadable(reason)| {
+    let encryption = pictures_encryption(records, encryption)?;
+    let mut stream = file.read(entry).map_err(|Unreadable(reason)| {
         Unported(format!("POI cannot read the Pictures stream: {reason}"))
     })?;
     if stream.len() > MAX_IMAGE {
@@ -206,6 +209,9 @@ pub(super) fn read(
     let mut factories = Vec::new();
     let mut position = 0usize;
     while position + PREAMBLE <= stream.len() {
+        if let Some(encryption) = encryption {
+            encryption.decrypt_picture(&mut stream, position)?;
+        }
         let offset = position as i32;
         let signature = u16::from_le_bytes([stream[position], stream[position + 1]]);
         let record_type = u16::from_le_bytes([stream[position + 2], stream[position + 3]]);
@@ -251,6 +257,27 @@ pub(super) fn read(
         pictures,
         store: Some(store),
     })
+}
+
+/// The encryption `readPictures` decrypts the pictures with: that of the first
+/// `DocumentEncryptionAtom` of the records (`getDocumentEncryptionAtom`), which must be the one
+/// opened, as POI's decryptor of any other has no key.
+fn pictures_encryption<'e>(
+    records: &[Top],
+    encryption: Option<&'e Encryption>,
+) -> Result<Option<&'e Encryption>, Unported> {
+    let first = records.iter().find(|top| {
+        top.record
+            .as_ref()
+            .is_some_and(|record| record.encryption().is_some())
+    });
+    match (first, encryption) {
+        (None, _) => Ok(None),
+        (Some(top), Some(encryption)) if top.offset == encryption.atom => Ok(Some(encryption)),
+        (Some(_), _) => Err(poi_throws(
+            "the first DocumentEncryptionAtom is not the one opened, whose decryptor has no key",
+        )),
+    }
 }
 
 /// `getBlipStore`: the blip store of the first document record by offset, failing where a

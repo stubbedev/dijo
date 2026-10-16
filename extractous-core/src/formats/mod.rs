@@ -6,6 +6,7 @@
 mod archive;
 mod auto_detect_reader;
 mod cms;
+mod crypt;
 mod data_format;
 mod dc_xml;
 mod doc;
@@ -119,6 +120,12 @@ pub(crate) enum Declined {
 
 impl From<Deferral> for Declined {
     fn from(deferral: Deferral) -> Self {
+        Self::Deferred(deferral)
+    }
+}
+
+impl From<Unported> for Declined {
+    fn from(Unported(deferral): Unported) -> Self {
         Self::Deferred(deferral)
     }
 }

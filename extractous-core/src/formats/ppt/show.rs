@@ -5,10 +5,12 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::formats::Unported;
+use crate::config::ParserConfigs;
+use crate::formats::{Declined, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 use super::drawing::{textbox_records, Drawing, Wrapper};
+use super::encryption::Encryption;
 use super::records::{build_at, kind, persist_pointers, Depth, Fault, Record};
 use super::text::{apply_hyperlinks, find_paragraphs, placeholder, MasterStyles, Paragraph};
 
@@ -86,11 +88,19 @@ fn current_edit_offset(file: &Ole2<'_>, directory: EntryId) -> Result<i64, Unpor
     ])))
 }
 
-/// `HSLFSlideShowImpl`'s records: the document stream read and its records built.
+/// The records of a presentation's document stream, and its encryption where it is encrypted.
+pub(super) struct Records {
+    pub(super) records: Vec<Top>,
+    pub(super) encryption: Option<Encryption>,
+}
+
+/// `HSLFSlideShowImpl`'s records: the document stream read and its records built, decrypted
+/// with the password where the presentation is encrypted.
 pub(super) fn read_records(
     file: &Ole2<'_>,
     directory: EntryId,
-) -> Result<(Vec<u8>, Vec<Top>), Unported> {
+    configs: &ParserConfigs,
+) -> Result<Records, Declined> {
     let edit = current_edit_offset(file, directory)?;
     let stream = match file.child_ignoring_case(directory, POWERPOINT_DOCUMENT) {
         Some(entry) if file.kind(entry) == EntryKind::Document => entry,
@@ -98,33 +108,74 @@ pub(super) fn read_records(
             if file.child_ignoring_case(directory, POWERPOINT_95).is_some() {
                 return Err(unported(
                     "a PowerPoint 95 presentation, which POI refuses and Tika fails on",
-                ));
+                )
+                .into());
             }
-            return Err(poi_throws(
-                "the presentation has no PowerPoint Document stream",
-            ));
+            return Err(poi_throws("the presentation has no PowerPoint Document stream").into());
         }
     };
-    let document = file.read(stream).map_err(|Unreadable(reason)| {
+    let mut document = file.read(stream).map_err(|Unreadable(reason)| {
         unported(format!("POI cannot read the document stream: {reason}"))
     })?;
     if document.len() > MAX_DOCUMENT {
-        return Err(poi_throws("the document stream is longer than POI reads"));
+        return Err(poi_throws("the document stream is longer than POI reads").into());
     }
-    let records = build_records(&document, edit as i32)?;
-    Ok((document, records))
+    build_records(&mut document, edit as i32, configs)
 }
 
-/// A record of the user edit chain: a user edit or its persist pointers.
+/// A record of the map `HSLFSlideShowImpl.read` builds: a user edit, its persist pointers, the
+/// encryption atom `HSLFSlideShowEncrypted` builds, or a record still to be built.
 enum Chained {
     Edit(Record),
     Pointers(Record),
+    Encryption(Record),
     Pending,
 }
 
-/// `HSLFSlideShowImpl.read`: the user edits and persist pointers from `edit` back, then every
-/// record a persist pointer gives, by offset.
-fn build_records(document: &[u8], edit: i32) -> Result<Vec<Top>, Unported> {
+/// `HSLFSlideShowImpl.read`: the user edits and persist pointers from `edit` back, the
+/// encryption opened, then every record a persist pointer gives, by offset, each decrypted in
+/// place before it is built where the presentation is encrypted.
+fn build_records(
+    document: &mut [u8],
+    edit: i32,
+    configs: &ParserConfigs,
+) -> Result<Records, Declined> {
+    let (mut map, persist_ids) = chain(document, edit)?;
+    let encryption = encryption(document, &mut map, configs)?;
+    let mut records = Vec::with_capacity(map.len());
+    for (offset, chained) in map {
+        let persist_id = persist_ids.get(&offset).copied();
+        let record = match chained {
+            Chained::Edit(record) | Chained::Pointers(record) | Chained::Encryption(record) => {
+                Some(record)
+            }
+            Chained::Pending => {
+                if let Some(encryption) = &encryption {
+                    let persist_id =
+                        persist_id.expect("a persist pointer gives each pending record's offset");
+                    encryption.decrypt_record(document, persist_id, offset)?;
+                }
+                build_at(document, i64::from(offset), Depth::TOP).map_err(Fault::unported)?
+            }
+        };
+        records.push(Top {
+            offset,
+            record,
+            persist_id,
+        });
+    }
+    Ok(Records {
+        records,
+        encryption,
+    })
+}
+
+/// The records `initRecordOffsets` maps by offset: the user edits from `edit` back with their
+/// persist pointers, and a slot for each record the pointers give; and each slot's persist id.
+type Chain = (BTreeMap<i32, Chained>, HashMap<i32, i32>);
+
+/// `initRecordOffsets`.
+fn chain(document: &[u8], edit: i32) -> Result<Chain, Unported> {
     let mut map: BTreeMap<i32, Chained> = BTreeMap::new();
     let mut persist_ids: HashMap<i32, i32> = HashMap::new();
     let mut offset = edit;
@@ -193,24 +244,7 @@ fn build_records(document: &[u8], edit: i32) -> Result<Vec<Top>, Unported> {
         }
         offset = previous;
     }
-    if let Some(reason) = encryption(document, &map)? {
-        return Err(reason);
-    }
-    let mut records = Vec::with_capacity(map.len());
-    for (offset, chained) in map {
-        let record = match chained {
-            Chained::Edit(record) | Chained::Pointers(record) => Some(record),
-            Chained::Pending => {
-                build_at(document, i64::from(offset), Depth::TOP).map_err(Fault::unported)?
-            }
-        };
-        records.push(Top {
-            offset,
-            record,
-            persist_id: persist_ids.get(&offset).copied(),
-        });
-    }
-    Ok(records)
+    Ok((map, persist_ids))
 }
 
 /// `PersistPtrHolder.getSlideLocationsLookup`: each persist id's offset, the last a holder gives.
@@ -220,9 +254,15 @@ pub(super) fn slide_locations(holder: &Record) -> Result<BTreeMap<i32, i32>, Unp
     Ok(pointers.into_iter().collect())
 }
 
-/// `new HSLFSlideShowEncrypted(docstream, records)`: why the presentation is left to Tika where
-/// a user edit names an encryption session the persist pointers give.
-fn encryption(document: &[u8], map: &BTreeMap<i32, Chained>) -> Result<Option<Unported>, Unported> {
+/// `new HSLFSlideShowEncrypted(docstream, records)`: the encryption of the most recent user
+/// edit that names an encryption session the persist pointers give, its atom added to the
+/// records, opened with the password.
+fn encryption(
+    document: &[u8],
+    map: &mut BTreeMap<i32, Chained>,
+    configs: &ParserConfigs,
+) -> Result<Option<Encryption>, Declined> {
+    let mut found = None;
     for chained in map.values().rev() {
         let Chained::Edit(user) = chained else {
             continue;
@@ -237,18 +277,27 @@ fn encryption(document: &[u8], map: &BTreeMap<i32, Chained>) -> Result<Option<Un
         }
         let pointers_offset = user.int(12).map_err(|_| poi_throws("a short user edit"))?;
         let Some(Chained::Pointers(pointers)) = map.get(&pointers_offset) else {
-            return Err(poi_throws("Encountered an unexpected record-type"));
+            return Err(poi_throws("Encountered an unexpected record-type").into());
         };
-        let Some(&location) = slide_locations(pointers)?.get(&session) else {
-            return Ok(None);
-        };
-        let atom = build_at(document, i64::from(location), Depth::TOP);
-        return Ok(Some(match atom {
-            Err(Fault::Unported(reason)) => reason,
-            _ => poi_throws("Did not have a DocumentEncryptionAtom"),
-        }));
+        found = slide_locations(pointers)?.get(&session).copied();
+        break;
     }
-    Ok(None)
+    let Some(location) = found else {
+        return Ok(None);
+    };
+    if !matches!(map.get(&location), None | Some(Chained::Pending)) {
+        return Err(poi_throws("Did not have a DocumentEncryptionAtom").into());
+    }
+    let atom = build_at(document, i64::from(location), Depth::TOP)
+        .map_err(Fault::unported)?
+        .filter(|record| record.kind == kind::DOCUMENT_ENCRYPTION_ATOM)
+        .ok_or_else(|| poi_throws("Did not have a DocumentEncryptionAtom"))?;
+    let info = atom
+        .encryption()
+        .expect("a DocumentEncryptionAtom holds its encryption");
+    let encryption = Encryption::open(location, info, configs)?;
+    map.insert(location, Chained::Encryption(atom));
+    Ok(Some(encryption))
 }
 
 /// What kind of sheet a sheet is.

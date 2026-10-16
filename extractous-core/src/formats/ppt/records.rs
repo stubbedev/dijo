@@ -3,6 +3,7 @@
 //! and the drawing group as Escher, each constructor's own checks, and the exceptions they throw,
 //! which POI passes over for a record that claims more bytes than its source holds.
 
+use crate::formats::crypt::EncryptionInfo;
 use crate::formats::escher::{self, Escher, Factory};
 use crate::formats::poi::{i16_at, i32_at, safely_clone, u16_at, u8_at, Read, Thrown};
 use crate::formats::Unported;
@@ -173,6 +174,9 @@ pub(super) enum Body {
     Drawing(Box<Drawing>),
     /// The document's drawing group (`PPDrawingGroup`): its `DggContainer`.
     DrawingGroup(Box<Escher>),
+    /// A `DocumentEncryptionAtom`: the encryption it reads, as CryptoAPI where its version
+    /// allows.
+    Encryption(Box<EncryptionInfo>),
 }
 
 impl Record {
@@ -257,6 +261,14 @@ impl Record {
     pub(super) fn drawing_group(&self) -> Option<&Escher> {
         match &self.body {
             Body::DrawingGroup(group) => Some(group),
+            _ => None,
+        }
+    }
+
+    /// The encryption of a `DocumentEncryptionAtom`.
+    pub(super) fn encryption(&self) -> Option<&EncryptionInfo> {
+        match &self.body {
+            Body::Encryption(info) => Some(info),
             _ => None,
         }
     }
@@ -605,10 +617,11 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
         | TX_INTERACTIVE_INFO_ATOM
         | EX_MEDIA_ATOM => atom(source, start, length, MAX_ATOM)?,
         DOCUMENT_ENCRYPTION_ATOM => {
-            return Err(Unported(
-                "the presentation is encrypted, which Tika decrypts with a password".to_owned(),
-            )
-            .into())
+            let body = source
+                .get(start as usize + 8..source.len().min((start + length) as usize))
+                .unwrap_or_default();
+            let info = EncryptionInfo::read(body).map_err(|unopened| unopened.unported())?;
+            Body::Encryption(Box::new(info))
         }
         _ => {
             let contents = clone(source, start, length.max(0), MAX_UNKNOWN)?;

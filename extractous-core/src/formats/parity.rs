@@ -84,6 +84,19 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     })
 }
 
+/// The error Tika's path fails with on the document at `path`.
+pub(crate) fn tika_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
+    tika::parse_to_string(
+        isolate().unwrap(),
+        Source::File(path.to_str().unwrap()),
+        i32::try_from(SMALL_LIMIT).unwrap(),
+        configs,
+        false,
+    )
+    .map(|_| ())
+    .expect_err("Tika's path fails on the document")
+}
+
 fn routed(path: &str) -> Routed<'_> {
     formats::route(Source::File(path))
         .unwrap()
