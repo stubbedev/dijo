@@ -177,6 +177,19 @@ pub(crate) fn write_general_text_parts<H: SaxHandler>(
     class: &str,
     handler: &mut H,
 ) -> Result<(), Failure> {
+    write_general_text_parts_each(package, parent, kind, class, handler, |_, _| {})
+}
+
+/// [`write_general_text_parts`], with `before` given the handler and each part before it is
+/// read.
+pub(crate) fn write_general_text_parts_each<H: SaxHandler>(
+    package: &Package,
+    parent: usize,
+    kind: &str,
+    class: &str,
+    handler: &mut H,
+    mut before: impl FnMut(&mut H, usize),
+) -> Result<(), Failure> {
     let mut parts = Package::relationships_of(&package.parts[parent].relationships, kind)
         .map(|relationship| relationship.part)
         .peekable();
@@ -191,6 +204,7 @@ pub(crate) fn write_general_text_parts<H: SaxHandler>(
     };
     handler.start_element("", "div", &[div])?;
     for part in parts.flatten() {
+        before(handler, part);
         let mut balancer = Balancer {
             inner: &mut *handler,
             open: Vec::new(),

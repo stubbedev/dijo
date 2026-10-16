@@ -65,16 +65,6 @@ impl<V> JavaHashMap<V> {
         map
     }
 
-    /// An empty map whose table `new HashSet<>(collection)` sizes for a collection of `size`
-    /// elements: `new HashMap<>(max((int) (size / .75f) + 1, 16))`.
-    pub(crate) fn for_hash_set(size: usize) -> Self {
-        let requested = ((size as f32 / 0.75) as usize + 1).max(INITIAL_CAPACITY);
-        Self {
-            initial_capacity: requested.next_power_of_two(),
-            ..Self::default()
-        }
-    }
-
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }

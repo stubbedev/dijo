@@ -23,7 +23,7 @@ pub(crate) fn within_budget() -> Result<(), Stop> {
 /// The XHTML namespace, which every element a native parser writes is in.
 pub(crate) const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 
-const ENDLINE: [&str; 29] = [
+pub(crate) const ENDLINE: [&str; 29] = [
     "p",
     "h1",
     "h2",
@@ -56,7 +56,7 @@ const ENDLINE: [&str; 29] = [
 ];
 const HEAD: [&str; 5] = ["title", "link", "base", "meta", "script"];
 const AUTO: [&str; 2] = ["head", "frameset"];
-const INDENT: [&str; 6] = ["li", "dd", "dt", "td", "th", "frame"];
+pub(crate) const INDENT: [&str; 6] = ["li", "dd", "dt", "td", "th", "frame"];
 const REPLACEMENT: char = '\u{fffd}';
 
 /// Why the output stopped taking content before the parser finished.
@@ -182,9 +182,6 @@ pub(crate) struct Xhtml<'h> {
     embedding: Embedding<'h>,
     /// What learns the metadata the head shows, once it is written.
     on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
-    /// How many XHTML handlers the content passes through: more than one while a parser writes
-    /// that another parser hands its handler on to.
-    layers: usize,
 }
 
 impl<'h> Xhtml<'h> {
@@ -220,7 +217,6 @@ impl<'h> Xhtml<'h> {
             ended: false,
             embedding: Embedding::new(context),
             on_head,
-            layers: 1,
         };
         let result = xhtml
             .start_document()
@@ -298,9 +294,7 @@ impl<'h> Xhtml<'h> {
             self.end_head(false)?;
         }
         if INDENT.contains(&name) {
-            for _ in 0..self.layers {
-                self.handler.ignorable_whitespace("\t")?;
-            }
+            self.handler.ignorable_whitespace("\t")?;
         }
         self.safe_start_element(name, attributes)
     }
@@ -318,9 +312,7 @@ impl<'h> Xhtml<'h> {
         }
         self.handler.end_element(name)?;
         if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
-            for _ in 0..self.layers {
-                self.newline()?;
-            }
+            self.newline()?;
         }
         Ok(())
     }
@@ -516,19 +508,6 @@ impl<'h> Xhtml<'h> {
             Err(failure) => Ended::Failed(failure),
         };
         self.leave_embedded(ended, open, wrapping)
-    }
-
-    /// Has `write` write content as a parser that this document's parser calls itself and
-    /// hands its handler on to through `EmbeddedContentHandler(BodyContentHandler(xhtml))`, the
-    /// other parser writing through an XHTML handler of its own: its body goes into this one as
-    /// it is written, its metadata is this document's, and the line breaks after block elements
-    /// and the tabs before indented ones, which each of the two handlers writes, are written
-    /// twice.
-    pub(crate) fn write_nested<T>(&mut self, write: impl FnOnce(&mut Xhtml) -> T) -> T {
-        self.layers += 1;
-        let written = write(self);
-        self.layers -= 1;
-        written
     }
 
     /// [`Xhtml::parse_embedded`] of a document whose `TikaInputStream` the parser `opened` as
