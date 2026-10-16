@@ -485,6 +485,11 @@ fn is_name_start(c: char) -> bool {
     c == ':' || c == '_' || c.is_ascii_alphabetic() || (!c.is_ascii() && is_unicode_name(c))
 }
 
+/// [`is_name_char`] of an ASCII character, told by its byte.
+fn is_ascii_name_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.')
+}
+
 fn is_name_char(c: char) -> bool {
     is_name_start(c)
         || c == '-'
@@ -686,7 +691,7 @@ impl Parser<'_> {
         while length < bytes.len() {
             let byte = bytes[length];
             if byte.is_ascii() {
-                if !is_name_char(char::from(byte)) {
+                if !is_ascii_name_char(byte) {
                     break;
                 }
                 length += 1;
@@ -1257,14 +1262,15 @@ impl Parser<'_> {
     /// Reads a qualified name into `name`, which it replaces; where its local name starts.
     fn qname_into(&mut self, what: &str, name: &mut String) -> Result<usize> {
         self.name_into(what, name)?;
-        match name.split_once(':') {
-            None => Ok(0),
-            Some((prefix, local))
-                if !prefix.is_empty() && !local.is_empty() && !local.contains(':') =>
-            {
-                Ok(prefix.len() + 1)
-            }
-            Some(_) => malformed(format!("{name} is not a qualified name")),
+        let bytes = name.as_bytes();
+        let Some(colon) = bytes.iter().position(|&byte| byte == b':') else {
+            return Ok(0);
+        };
+        let local = &bytes[colon + 1..];
+        if colon > 0 && !local.is_empty() && !local.contains(&b':') {
+            Ok(colon + 1)
+        } else {
+            malformed(format!("{name} is not a qualified name"))
         }
     }
 
