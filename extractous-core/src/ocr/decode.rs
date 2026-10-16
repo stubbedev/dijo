@@ -1,8 +1,9 @@
 //! Images decoded for OCR, as our Java `PreparingOcrParser` has ImageIO decode them: every page
 //! of a TIFF, the first image of anything else, in grey as Java2D draws colour into grey.
 //! Transparency is ignored, as tesseract ignores it. JPEG 2000 images, which tesseract reads
-//! where Java has no decoder, are decoded by hayro-jpeg2000, and JBIG2 images, which
-//! jbig2-imageio decodes for Java, by hayro-jbig2.
+//! where Java has no decoder, are decoded by hayro-jpeg2000, JBIG2 images, which jbig2-imageio
+//! decodes for Java, by hayro-jbig2, AVIF images by rav1d, and HEIC and HEIF images by libheif,
+//! which decodes all three for Java.
 
 use std::io::Cursor;
 
@@ -12,7 +13,7 @@ use tiff::tags::Tag;
 use tiff::ColorType;
 
 use super::recognize::MAX_PIXELS;
-use super::{jbig2, raster};
+use super::{avif, heif, jbig2, raster};
 
 /// The formats this module decodes, by the media types Tika's detection gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,8 @@ pub(crate) enum Format {
     Pcx,
     Jpeg2000,
     Jbig2,
+    Avif,
+    Heif,
 }
 
 impl Format {
@@ -45,6 +48,10 @@ impl Format {
             "image/vnd.zbrush.pcx" => Self::Pcx,
             "image/jp2" | "image/jpx" => Self::Jpeg2000,
             "image/x-jbig2" => Self::Jbig2,
+            "image/avif" => Self::Avif,
+            "image/heic" | "image/heic-sequence" | "image/heif" | "image/heif-sequence" => {
+                Self::Heif
+            }
             _ => return None,
         })
     }
@@ -88,8 +95,29 @@ pub(crate) enum Decoded<'a> {
     Pages(TiffPages<'a>),
 }
 
-/// Decodes an image file of a format, or tells why it cannot.
-pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String> {
+/// Why an image file was not decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Undecoded {
+    /// No decoder of its format is bundled or installed, as the static executable links them.
+    #[cfg(not(feature = "static-image"))]
+    NoDecoder,
+    /// It could not be decoded, for this reason.
+    Failed(String),
+}
+
+impl From<String> for Undecoded {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+/// Decodes an image file of a format, any program decoding it given `timeout`, or tells why it
+/// cannot.
+pub(crate) fn decode(
+    input: &[u8],
+    format: Format,
+    timeout: Option<std::time::Duration>,
+) -> Result<Decoded<'_>, Undecoded> {
     match format {
         Format::Image(format) => {
             let image = image::load_from_memory_with_format(input, format)
@@ -113,10 +141,12 @@ pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String
             }
             Ok(Decoded::Single(tiff_page(&mut decoder)?))
         }
-        Format::Photoshop => raster::photoshop(input).map(Decoded::Single),
-        Format::Pcx => raster::pcx(input).map(Decoded::Single),
-        Format::Jpeg2000 => jpeg2000(input).map(Decoded::Single),
-        Format::Jbig2 => jbig2::decode(input).map(Decoded::Single),
+        Format::Photoshop => Ok(Decoded::Single(raster::photoshop(input)?)),
+        Format::Pcx => Ok(Decoded::Single(raster::pcx(input)?)),
+        Format::Jpeg2000 => Ok(Decoded::Single(jpeg2000(input)?)),
+        Format::Jbig2 => Ok(Decoded::Single(jbig2::decode(input)?)),
+        Format::Avif => Ok(Decoded::Single(avif::decode(input)?)),
+        Format::Heif => heif::decode(input, timeout).map(Decoded::Single),
     }
 }
 
@@ -144,7 +174,7 @@ pub(crate) fn luma(red: u8, green: u8, blue: u8) -> u8 {
 }
 
 /// An image in grey.
-fn gray(image: DynamicImage) -> GrayImage {
+pub(crate) fn gray(image: DynamicImage) -> GrayImage {
     match image {
         DynamicImage::ImageLuma8(gray) => gray,
         DynamicImage::ImageLuma16(gray) => {
@@ -283,7 +313,7 @@ mod tests {
     }
 
     /// The corpus made its other scans of the PNG's, in grey: the Photoshop file as it is, the
-    /// PCX image reduced to a palette, and the JPEG 2000 image compressed with loss. Each decodes to the
+    /// PCX image reduced to a palette, and the rest compressed with loss. Each decodes to the
     /// PNG's size with under one pixel in a hundred more than its format's levels off.
     #[test]
     fn decodes_the_corpus_scans_as_the_png_holds_them() {
@@ -294,10 +324,12 @@ mod tests {
             ("prose-scan.psd", Format::Photoshop, 2),
             ("prose-scan.pcx", Format::Pcx, 2),
             ("prose-scan.jp2", Format::Jpeg2000, 16),
+            ("prose-scan.avif", Format::Avif, 2),
+            ("prose-scan.heic", Format::Heif, 2),
         ] {
             let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
             let Decoded::Single(decoded) =
-                decode(&input, format).unwrap_or_else(|e| panic!("{file}: {e}"))
+                decode(&input, format, None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
             else {
                 panic!("{file} is one image");
             };

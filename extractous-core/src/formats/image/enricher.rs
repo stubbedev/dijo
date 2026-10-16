@@ -9,7 +9,7 @@ use crate::errors::Error;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Failure, Unported};
 use crate::ocr::{
-    self, Decoded, Format, ImageRead, OcrSettings, Orientation, ReadPages, Tesseract,
+    self, Decoded, Format, ImageRead, OcrSettings, Orientation, ReadPages, Tesseract, Undecoded,
 };
 
 use super::{extractor, MIN_PIXELS, PREPARING_OCR_PARSER};
@@ -20,14 +20,6 @@ const ORIENTATION: &str = "tiff:Orientation";
 const PAGE_NUMBER: &str = "tk:page:number";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
 const WARNING: &str = "tk:exception:warn";
-/// The types `PreparingOcrParser` reads that no Java decoder or tesseract decodes but libheif.
-const UNDECODABLE: [&str; 5] = [
-    "image/heic",
-    "image/heic-sequence",
-    "image/heif",
-    "image/heif-sequence",
-    "image/avif",
-];
 
 /// What the enricher does with an image, decided before its document is written.
 pub(super) enum Enricher<'a> {
@@ -60,20 +52,23 @@ impl<'a> Enricher<'a> {
             return Ok(Self::Skipping);
         }
         let base = content_type.split(';').next().unwrap_or_default().trim();
-        if UNDECODABLE.contains(&base) {
-            return Err(Unported::new(format!(
-                "an image of {base}, which Tika's path decodes with libheif for OCR"
-            )));
-        }
         let format = Format::of(base).ok_or_else(|| {
             Unported::new(format!(
                 "an image of {base}, which the port does not decode for OCR"
             ))
         })?;
-        let decoded = ocr::decode(input, format).map_err(|reason| {
-            Unported::new(format!(
-                "an image of {base} the port cannot decode for OCR: {reason}"
-            ))
+        let settings = OcrSettings::of(&configs.ocr);
+        let decoded = ocr::decode(input, format, settings.timeout()).map_err(|undecoded| {
+            Unported::new(match undecoded {
+                #[cfg(not(feature = "static-image"))]
+                Undecoded::NoDecoder => format!(
+                    "an image of {base}, for which no decoder is bundled or installed: Tika's \
+                     path reports it unread"
+                ),
+                Undecoded::Failed(reason) => {
+                    format!("an image of {base} the port cannot decode for OCR: {reason}")
+                }
+            })
         })?;
         let tesseract = ocr::tesseract().map_err(|reason| {
             Unported::new(format!(
@@ -82,7 +77,7 @@ impl<'a> Enricher<'a> {
         })?;
         Ok(Self::Reading {
             tesseract,
-            settings: OcrSettings::of(&configs.ocr),
+            settings,
             decoded,
         })
     }

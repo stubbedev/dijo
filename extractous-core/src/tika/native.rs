@@ -395,6 +395,14 @@ pub(crate) fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
         .transpose()
 }
 
+/// The heif-png the build bundled, unpacked, if it bundled one.
+#[cfg(not(feature = "static-image"))]
+pub(crate) fn bundled_heif_decoder() -> Result<Option<PathBuf>, String> {
+    OCR_HEIF_DECODER
+        .map(|decoder| Ok(unpacked()?.join(decoder)))
+        .transpose()
+}
+
 /// The version of the tesseract the build runs: the bundled library, or without a bundle the
 /// program on the PATH.
 #[cfg(not(feature = "static-image"))]

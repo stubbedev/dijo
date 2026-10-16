@@ -113,6 +113,35 @@ fn reads_tikas_test_heif_images_as_tika_does() {
     println!("deferred: {deferred:?}");
 }
 
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_heif_images_with_tesseract_as_tikas_path_does() {
+    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let configs = automatic_language();
+    let (parsed, deferred) = documents_with(&HeifParser, &roots, &configs);
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    let texts = assert_same_as_tika_but_ocr(
+        &paths,
+        "org.apache.tika.parser.image.HeifParser",
+        &TIKA_DELEGATES,
+        &configs,
+    );
+    for (path, (tika, native)) in paths.iter().zip(texts) {
+        assert!(
+            tika.trim().is_empty() || !native.trim().is_empty(),
+            "{}: {tika:?} against {native:?}",
+            path.display()
+        );
+    }
+    let reasons: Vec<_> = deferred
+        .iter()
+        .map(|path| (path, deferral(&HeifParser, path)))
+        .collect();
+    println!("read: {paths:?}\ndeferred: {reasons:?}");
+}
+
 /// Reads images of the quality corpus with tesseract as Tika's path writes them, the OCR text
 /// aside, and reads text in each that Tika's path reads text in.
 fn reads_with_tesseract_as_tikas_path_does(
@@ -172,6 +201,16 @@ fn reads_jbig2_and_jpeg_2000_scans_with_tesseract_as_tikas_path_does() {
         &ImageParser,
         "org.apache.tika.parser.image.ImageParser",
         &["prose-scan.jb2", "prose-scan.jp2"],
+        &automatic_language(),
+    );
+}
+
+#[test]
+fn reads_heic_and_avif_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &["prose-scan.heic", "prose-scan.avif"],
         &automatic_language(),
     );
 }

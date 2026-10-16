@@ -1,8 +1,11 @@
 //! OCR: the tesseract Tika's path runs, and the one native readings run in this process, with
 //! our Java `PreparingOcrParser`'s preparation of the images it reads.
 
+mod av1;
+mod avif;
 mod decode;
 mod flatten;
+mod heif;
 pub(crate) mod jbig2;
 mod pages;
 mod prepare;
@@ -18,7 +21,7 @@ use std::sync::OnceLock;
 
 use crate::errors::{Error, ExtractResult};
 use crate::tika::native;
-pub(crate) use decode::{decode, Decoded, Format};
+pub(crate) use decode::{decode, Decoded, Format, Undecoded};
 pub(crate) use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
 pub(crate) use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
