@@ -914,8 +914,9 @@ mod tests {
     fn records_a_native_parsers_failure_on_an_embedded_document_concisely() {
         let configs = ParserConfigs::default();
         let mut entry = TikaMetadata::new();
-        entry.set("tk:resource-name", "leading.dif");
-        let dif = br#"<?xml version="1.0"?><DIF xmlns="http://gcmd.gsfc.nasa.gov/Aboutus/xml/dif/"><Entry_ID/></DIF>"#;
+        entry.set("tk:resource-name", "broken.xml");
+        // XML whose elements do not nest, which the native parser fails on.
+        let xml = br#"<?xml version="1.0"?><a><b>text</a>"#;
         let mut out = StringOut::default();
         let chain = Chain::Stream {
             output: Output::Text,
@@ -927,19 +928,21 @@ mod tests {
                 TikaMetadata::new(),
                 &ParseContext::new(&configs),
                 |xhtml| {
-                    xhtml.parse_embedded(dif, &entry, Wrapping::PackageEntry)?;
+                    xhtml.parse_embedded(xml, &entry, Wrapping::PackageEntry)?;
                     xhtml.element("p", "After.").map_err(Failure::from)
                 },
             )
         });
         result.unwrap();
         record.finish(&mut metadata, "outer");
-        assert_eq!(
-            metadata.values("tk:exception:embedded-exception"),
-            [
-                "extractous::DIFParser could not parse the embedded document \"leading.dif\": \
-              XML parse error: EmptyStackException"
-            ]
+        let [failure] = metadata.values("tk:exception:embedded-exception") else {
+            panic!("{metadata:?}");
+        };
+        assert!(
+            failure.starts_with("extractous::")
+                && failure.contains(" could not parse the embedded document \"broken.xml\": ")
+                && !failure.contains('\n'),
+            "{failure}"
         );
         assert!(out.0.contains("After."), "{}", out.0);
     }

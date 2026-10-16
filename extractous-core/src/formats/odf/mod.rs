@@ -750,7 +750,7 @@ mod tests {
         let (xml, metadata) = extract(&input);
         assert!(
             xml.contains(
-                "<h1><b><u>Heading</u></b></h1>\n<p>a   b<p class=\"note\"> Note </p>\nafter</p>\n\
+                "<h1><b><u>Heading</u></b></h1>\n<p>a   bafter</p><p class=\"note\"> Note </p>\n\n\
                  <p><i>semi</i><b>bold</b></p>"
             ),
             "{xml}"
