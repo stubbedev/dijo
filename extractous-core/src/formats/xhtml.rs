@@ -316,6 +316,13 @@ impl<'h> Xhtml<'h> {
         Ok(())
     }
 
+    /// Ends `name` as another `XHTMLContentHandler` ended it, which broke the line after it
+    /// itself: a handler below this one receives its events as they are.
+    pub(crate) fn end_element_passed_on(&mut self, name: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.end_element(name)
+    }
+
     /// Writes `text`; empty text writes nothing, as Tika's `characters(String)`.
     pub(crate) fn characters(&mut self, text: &str) -> Result<(), Stop> {
         if text.is_empty() {

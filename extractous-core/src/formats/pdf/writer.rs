@@ -193,8 +193,16 @@ impl PageWriter<'_, '_, '_> {
         }
     }
 
+    /// Drops what the page's `div` holds, when it was held back: its text, which OCR text
+    /// replaces. A held page holds no embedded file: a dry run defers the document then.
+    pub(super) fn discard(&mut self) {
+        if let Some(held) = self.held.as_mut() {
+            held.clear();
+        }
+    }
+
     /// Writes what the page's `div` holds, when it was held back.
-    fn release(&mut self) -> Result<(), WriteFailure> {
+    pub(super) fn release(&mut self) -> Result<(), WriteFailure> {
         let Some(held) = self.held.as_mut() else {
             return Ok(());
         };
@@ -292,8 +300,18 @@ impl Callbacks for PageWriter<'_, '_, '_> {
     }
 }
 
+/// What passes each held page on once it ends: our `TextLayerCheckingPdfParser`.
+pub(super) trait EndPage {
+    /// Passes on the page `index`, which `page` holds back, and ends it.
+    fn end_page(
+        &mut self,
+        index: usize,
+        page: &mut PageWriter<'_, '_, '_>,
+    ) -> Result<(), WriteFailure>;
+}
+
 /// The document being written.
-pub(super) struct DocumentWriter<'p, 'x, 'h> {
+pub(super) struct DocumentWriter<'p, 'x, 'h, 'e> {
     pdf: &'p Pdf,
     engine: Engine<'p>,
     pub(super) page: PageWriter<'p, 'x, 'h>,
@@ -312,9 +330,11 @@ pub(super) struct DocumentWriter<'p, 'x, 'h> {
     dry_run: bool,
     /// The text layer of each page, when recorded.
     pub(super) layers: Option<Vec<PageLayer>>,
+    /// What passes each held page on, when it is not passed on as it is.
+    page_ends: Option<&'e mut dyn EndPage>,
 }
 
-impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
+impl<'p, 'x, 'h, 'e> DocumentWriter<'p, 'x, 'h, 'e> {
     pub(super) fn new(
         pdf: &'p Pdf,
         xhtml: &'x mut Xhtml<'h>,
@@ -322,6 +342,7 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
         reading_order: bool,
         hold_pages: bool,
         dry_run: bool,
+        page_ends: Option<&'e mut dyn EndPage>,
     ) -> Self {
         let labels = tagged.as_ref().is_some_and(Tagged::has_index);
         if let Some(reason) = tagged.as_ref().and_then(|tagged| tagged.document_rejection) {
@@ -348,6 +369,7 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
             extracted: HashSet::new(),
             dry_run,
             layers: dry_run.then(Vec::new),
+            page_ends,
         }
     }
 
@@ -426,7 +448,10 @@ impl<'p, 'x, 'h> DocumentWriter<'p, 'x, 'h> {
                 });
             }
         }
-        self.page.release()?;
+        match self.page_ends.as_mut() {
+            Some(page_ends) => page_ends.end_page(self.page_number - 1, &mut self.page)?,
+            None => self.page.release()?,
+        }
         self.page.xhtml.end_element("div")?;
         Ok(())
     }

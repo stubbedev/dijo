@@ -150,11 +150,19 @@ impl PdfParserConfig {
         self.reading_order.unwrap_or(true)
     }
 
+    /// The OCR strategy, as set.
+    pub(crate) fn ocr_strategy(&self) -> Option<PdfOcrStrategy> {
+        self.ocr_strategy
+    }
+
+    /// The thresholds of the automatic OCR strategy, as set.
+    pub(crate) fn ocr_strategy_auto(&self) -> Option<&str> {
+        self.ocr_strategy_auto.as_deref()
+    }
+
     /// The Java setter of a setting native PDF parsing does not read, if one is set.
     pub(crate) fn unread_setting(&self) -> Option<&'static str> {
         [
-            (self.ocr_strategy.is_some(), "setOcrStrategy"),
-            (self.ocr_strategy_auto.is_some(), "setOcrStrategyAuto"),
             (
                 self.extract_inline_images.is_some(),
                 "setExtractInlineImages",

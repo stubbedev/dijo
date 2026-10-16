@@ -47,9 +47,9 @@ impl Format {
 /// A decoded image or page, or why it could not be decoded.
 pub(crate) type Page = Result<GrayImage, String>;
 
-/// The pages of a TIFF, decoded in turn.
+/// The pages of a TIFF of more than one page.
 pub(crate) struct TiffPages<'a> {
-    decoder: Decoder<Cursor<&'a [u8]>>,
+    input: &'a [u8],
     count: usize,
 }
 
@@ -59,12 +59,19 @@ impl TiffPages<'_> {
     }
 
     /// A page, decoded unless it has more than [`MAX_PIXELS`] pixels or is damaged.
-    pub(crate) fn page(&mut self, index: usize) -> Page {
-        self.decoder
+    pub(crate) fn page(&self, index: usize) -> Page {
+        let mut decoder = tiff_decoder(self.input)?;
+        decoder
             .seek_to_image(index)
             .map_err(|e| format!("cannot find page {}: {e}", index + 1))?;
-        tiff_page(&mut self.decoder)
+        tiff_page(&mut decoder)
     }
+}
+
+fn tiff_decoder(input: &[u8]) -> Result<Decoder<Cursor<&[u8]>>, String> {
+    Ok(Decoder::new(Cursor::new(input))
+        .map_err(|e| format!("cannot read the TIFF: {e}"))?
+        .with_limits(tiff::decoder::Limits::unlimited()))
 }
 
 /// An image file's decoded content.
@@ -72,7 +79,7 @@ pub(crate) enum Decoded<'a> {
     /// One image.
     Single(GrayImage),
     /// The pages of a TIFF of more than one page.
-    Pages(Box<TiffPages<'a>>),
+    Pages(TiffPages<'a>),
 }
 
 /// Decodes an image file of a format, or tells why it cannot.
@@ -84,9 +91,7 @@ pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String
             Ok(Decoded::Single(gray(image)))
         }
         Format::Tiff => {
-            let mut decoder = Decoder::new(Cursor::new(input))
-                .map_err(|e| format!("cannot read the TIFF: {e}"))?
-                .with_limits(tiff::decoder::Limits::unlimited());
+            let mut decoder = tiff_decoder(input)?;
             let mut count = 1;
             while decoder.more_images() {
                 decoder
@@ -98,7 +103,7 @@ pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String
                 .seek_to_image(0)
                 .map_err(|e| format!("cannot read the TIFF's first page: {e}"))?;
             if count > 1 {
-                return Ok(Decoded::Pages(Box::new(TiffPages { decoder, count })));
+                return Ok(Decoded::Pages(TiffPages { input, count }));
             }
             Ok(Decoded::Single(tiff_page(&mut decoder)?))
         }
@@ -164,7 +169,12 @@ fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>) -> Page {
                 .map(|sample| (u32::from(sample) * 255 / max) as u8)
                 .collect()
         }
-        ColorType::GrayA(8 | 16) => levels.as_chunks::<2>().0.iter().map(|pixel| pixel[0]).collect(),
+        ColorType::GrayA(8 | 16) => levels
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pixel| pixel[0])
+            .collect(),
         ColorType::RGB(8 | 16) => levels
             .as_chunks::<3>()
             .0

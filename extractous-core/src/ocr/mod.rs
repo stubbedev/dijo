@@ -7,6 +7,7 @@ mod pages;
 mod prepare;
 mod raster;
 mod recognize;
+mod render;
 mod report;
 mod script;
 mod tesseract;
@@ -17,9 +18,10 @@ use std::sync::OnceLock;
 use crate::errors::{Error, ExtractResult};
 use crate::tika::native;
 pub(crate) use decode::{decode, Decoded, Format};
-pub(crate) use pages::{read_side_by_side, FirstPage};
+pub(crate) use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
 pub(crate) use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
+pub(crate) use render::PdfPages;
 pub(crate) use report::KEY as REPORT;
 pub(crate) use tesseract::{OcrError, Tesseract};
 
@@ -62,36 +64,24 @@ pub(crate) fn read_image(
                 learned: learned.filter(|_| settings.auto()),
             })
         }
-        Decoded::Pages(mut pages) => {
+        Decoded::Pages(pages) => {
             let first_page = FirstPage::new(assumed.map(str::to_owned));
-            let count = pages.count();
-            let decoded = (0..count).map(|index| pages.page(index).ok());
-            let read = read_side_by_side(
-                decoded,
-                crate::isolate::processors(),
+            let read = read_pages(
+                pages.count(),
                 &first_page,
-                |page| {
-                    let Some(gray) = page else {
-                        return Ok(None);
+                || (),
+                |(), index, script| {
+                    let Ok(gray) = pages.page(index) else {
+                        return Ok((None, None));
                     };
                     let image = Image::of(&gray, file_size, orientation);
-                    let recognized = recognizer.recognize(&image, first_page.assumed())?;
-                    first_page.settle(recognized.learned.clone());
-                    Ok(Some(recognized.read))
+                    let Recognized { read, learned } = recognizer.recognize(&image, script)?;
+                    Ok((Some(read), learned))
                 },
-                |page| {
-                    let Some(gray) = page else {
-                        return Ok(None);
-                    };
-                    first_page
-                        .later(|script| {
-                            recognizer.recognize(&Image::of(&gray, file_size, orientation), script)
-                        })
-                        .map(|recognized| Some(recognized.read))
-                },
-            );
+                |outputs| std::iter::from_fn(|| outputs.next()).collect::<Result<_, _>>(),
+            )?;
             Ok(ImageRead {
-                pages: ReadPages::Many(read.into_iter().collect::<Result<_, OcrError>>()?),
+                pages: ReadPages::Many(read),
                 learned: first_page.learned().filter(|_| settings.auto()),
             })
         }
