@@ -10,13 +10,17 @@
 //! `en_US` locale with dates in Java's default time zone and the 1900 date system; see
 //! [`crate::formats::data_format`].
 //!
+//! The documents embedded in `MBD` storages follow, handed on as `handleEmbeddedOfficeDoc` hands
+//! them. A workbook before BIFF8, whose stream is named "Book", is read as POI's
+//! `OldExcelExtractor` reads it for Tika's `OldExcelParser`: a paragraph per line of its text.
+//!
 //! An encrypted workbook is decrypted with the password, or failed as Tika's path fails it where
-//! the password does not open it. One in a format before BIFF8, one POI throws on, one with
-//! documents embedded in `MBD` storages, and macros extracted when asked to, are left to Tika:
-//! see [`XlsParser::defers`].
+//! the password does not open it. One POI throws on and macros extracted when asked to are left
+//! to Tika: see [`XlsParser::defers`].
 
 mod factory;
 mod listener;
+mod old;
 mod records;
 mod stream;
 
@@ -26,11 +30,12 @@ use factory::{Event, Records};
 use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settings};
 
 use crate::config::ParserConfigs;
+use crate::formats::auto_detect_reader::lines;
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::Summaries;
+use crate::formats::ole2::{office_document, Handed, Summaries};
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
@@ -43,6 +48,8 @@ const MEDIA_TYPE: &str = "application/vnd.ms-excel";
 const WORKBOOK_ENTRY_NAMES: [&str; 4] = ["Workbook", "WORKBOOK", "BOOK", "WorkBook"];
 /// The entry of a workbook before BIFF8, which Tika reads with its `OldExcelExtractor`.
 const OLD_BOOK_ENTRY: &str = "Book";
+/// The start of the names of the storages documents are embedded in.
+const EMBEDDED_STORAGE_PREFIX: &str = "MBD";
 
 /// Metadata names the Excel extractor sets.
 mod excel {
@@ -58,6 +65,46 @@ mod excel {
 
 pub(crate) struct XlsParser;
 
+/// Tika's `OldExcelParser` of the workbooks of Excel 2 to 4 stored bare, outside a compound
+/// document: the text of `OldExcelExtractor`, a paragraph per line.
+pub(crate) struct OldExcelParser;
+
+impl Parser for OldExcelParser {
+    fn name(&self) -> &'static str {
+        "extractous::OldExcelParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &[
+            "application/vnd.ms-excel.sheet.4",
+            "application/vnd.ms-excel.workspace.4",
+            "application/vnd.ms-excel.sheet.3",
+            "application/vnd.ms-excel.workspace.3",
+            "application/vnd.ms-excel.sheet.2",
+        ]
+    }
+
+    /// Defers workbooks POI throws on and encrypted ones, which POI refuses.
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        _metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        if crate::ole2::is_ole(input) {
+            return Err(Unported(
+                "a compound document typed as a bare old workbook, which POI opens as one"
+                    .to_owned(),
+            )
+            .into());
+        }
+        let text = old::text(input)?;
+        Ok(Box::new(move |xhtml| {
+            write_old(&text, xhtml).map_err(Failure::from)
+        }))
+    }
+}
+
 impl Parser for XlsParser {
     fn name(&self) -> &'static str {
         "extractous::OfficeParser"
@@ -68,9 +115,8 @@ impl Parser for XlsParser {
     }
 
     /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
-    /// throws on, ones before BIFF8, ones with embedded documents, macros extracted when asked
-    /// to, and any workbook when Java's default time zone, which dates are written in, cannot be
-    /// read.
+    /// throws on, macros extracted when asked to, and any workbook when Java's default time
+    /// zone, which dates are written in, cannot be read.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -84,14 +130,28 @@ impl Parser for XlsParser {
     }
 }
 
-/// A workbook read through Tika's listener.
+/// A workbook read: the summary information and its content.
 struct Workbook {
     summaries: Summaries,
+    content: WorkbookContent,
+}
+
+/// What `ExcelExtractor` makes of a workbook.
+enum WorkbookContent {
+    /// A BIFF8 workbook read through Tika's listener.
+    Biff8(Box<Biff8>),
+    /// The text of a workbook before BIFF8, as `OldExcelExtractor.getText` gives it.
+    Old(String),
+}
+
+/// A BIFF8 workbook read through Tika's listener, with the documents its `MBD` storages embed.
+struct Biff8 {
     /// Whether a password was given, which `ExcelExtractor` asks the `PasswordProvider` for
     /// before it reads the workbook, marking the metadata.
     asks_password: bool,
     read: Extracted,
     pictures: Vec<Picture>,
+    storages: Vec<Handed>,
 }
 
 /// A picture of the drawing groups, as `findPictures` hands it to `handleEmbeddedResource`.
@@ -129,17 +189,30 @@ impl Workbook {
             )
             .into());
         }
+        let summaries = Summaries::read(&file, root)?;
         let Some(name) = WORKBOOK_ENTRY_NAMES
             .into_iter()
             .find(|&name| file.child(root, name).is_some())
         else {
-            return Err(Unported(if file.child(root, OLD_BOOK_ENTRY).is_some() {
-                "the workbook is from before BIFF8, which Tika reads with its OldExcelExtractor"
-                    .to_owned()
-            } else {
-                "the compound document has no workbook entry, which Tika fails on".to_owned()
-            })
-            .into());
+            if file.child(root, OLD_BOOK_ENTRY).is_none() {
+                return Err(Unported(
+                    "the compound document has no workbook entry, which Tika fails on".to_owned(),
+                )
+                .into());
+            }
+            let book = file
+                .child_ignoring_case(root, OLD_BOOK_ENTRY)
+                .filter(|&entry| file.kind(entry) == EntryKind::Document)
+                .ok_or_else(|| {
+                    Unported("the old workbook entry is no stream, which POI throws on".to_owned())
+                })?;
+            let stream = file.read(book).map_err(|Unreadable(reason)| {
+                Unported(format!("POI cannot read the old workbook stream: {reason}"))
+            })?;
+            return Ok(Workbook {
+                summaries,
+                content: WorkbookContent::Old(old::text(&stream)?),
+            });
         };
         let entry = file
             .child_ignoring_case(root, name)
@@ -147,33 +220,62 @@ impl Workbook {
         if file.kind(entry) != EntryKind::Document {
             return Err(Unported("the workbook entry is a directory".to_owned()).into());
         }
-        if file.children(root).any(|child| {
-            file.name(child).starts_with("MBD") && file.kind(child) != EntryKind::Document
-        }) {
-            return Err(Unported(
-                "the workbook embeds documents, which this port does not parse".to_owned(),
-            )
-            .into());
-        }
         let stream = file.read(entry).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot read the workbook stream: {reason}"))
         })?;
         let (read, pictures) = read_records(&stream, configs, zone)?;
+        let mut storages = Vec::new();
+        for child in file.children(root) {
+            if file.name(child).starts_with(EMBEDDED_STORAGE_PREFIX)
+                && file.kind(child) != EntryKind::Document
+            {
+                storages.extend(office_document(
+                    &file,
+                    child,
+                    TikaMetadata::new(),
+                    None,
+                    configs,
+                )?);
+            }
+        }
         Ok(Workbook {
-            summaries: Summaries::read(&file, root)?,
-            asks_password: configs.password.is_some(),
-            read,
-            pictures,
+            summaries,
+            content: WorkbookContent::Biff8(Box::new(Biff8 {
+                asks_password: configs.password.is_some(),
+                read,
+                pictures,
+                storages,
+            })),
         })
     }
 
-    /// Writes the sheets as the listener does while it reads the records. Where the output
-    /// stops taking text inside a sheet, Tika's listener stores the failure and reads no more
-    /// records: the sheet is left unclosed, the text outside its cells is written again with
-    /// its text dropped, and the metadata of the sheets is not set.
-    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         self.summaries.write(xhtml.metadata_mut());
         xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+        match self.content {
+            WorkbookContent::Biff8(workbook) => workbook.write(xhtml),
+            WorkbookContent::Old(text) => write_old(&text, xhtml).map_err(Failure::from),
+        }
+    }
+}
+
+/// `OldExcelParser.parse`: each line of the text in a paragraph.
+fn write_old(text: &str, xhtml: &mut Xhtml) -> Result<(), Stop> {
+    for line in lines(text) {
+        xhtml.start_element("p")?;
+        xhtml.characters(line)?;
+        xhtml.end_element("p")?;
+    }
+    Ok(())
+}
+
+impl Biff8 {
+    /// Writes the sheets as the listener does while it reads the records, then the documents of
+    /// the `MBD` storages. Where the output stops taking text inside a sheet, Tika's listener
+    /// stores the failure and reads no more records: the sheet is left unclosed, the text
+    /// outside its cells is written again with its text dropped, and the metadata of the sheets
+    /// is not set.
+    fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         if self.asks_password {
             xhtml.metadata_mut().set(PASSWORD_USED, "true");
         }
@@ -202,6 +304,9 @@ impl Workbook {
             return Err(stop.into());
         }
         self.write_metadata(xhtml.metadata_mut());
+        for storage in self.storages {
+            storage.write(xhtml, Wrapping::PackageEntry)?;
+        }
         Ok(())
     }
 

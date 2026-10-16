@@ -116,6 +116,29 @@ impl<'a> RecordStream<'a> {
         Ok(bytes.try_into().expect("N bytes"))
     }
 
+    /// `read(bytes, 0, length)`: as many of `length` bytes as the record holds, never into the
+    /// records after it.
+    pub(super) fn read_up_to(&mut self, length: usize) -> Read<Vec<u8>> {
+        let available = usize::try_from(self.remaining()).unwrap_or_default();
+        let length = length.min(available);
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        self.read_fully(length)
+    }
+
+    /// The next byte of the record, left to be read again (`mark` and `reset`), failing where
+    /// the record has none.
+    pub(super) fn peek_u8(&self) -> Read<u8> {
+        if self.remaining() < 1 {
+            return thrown("a byte past the end of its record, read on into the next");
+        }
+        self.data
+            .get(self.position)
+            .copied()
+            .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))
+    }
+
     /// `remaining`.
     pub(super) fn remaining(&self) -> i64 {
         self.length.map_or(0, |length| length - self.offset)

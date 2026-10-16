@@ -202,6 +202,7 @@ static PARSERS: &[&dyn Parser] = &[
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &xls::XlsParser,
+    &xls::OldExcelParser,
     &xlsx::XlsxParser,
 ];
 

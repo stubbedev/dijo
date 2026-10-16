@@ -27,6 +27,7 @@ const CONTENT_LENGTH: &str = "Content-Length";
 const OLE10_NATIVE: &str = "\u{1}Ole10Native";
 const OCX_NAME_ENTRY: &str = "\u{3}OCXNAME";
 const OUTLOOK: &str = "application/vnd.ms-outlook";
+const GRAPH: &str = "application/vnd.ms-graph";
 /// The streams `tryToGetMsgTitle` takes a message's title from, in order.
 const MESSAGE_TITLES: [&str; 3] = [
     "__substg1.0_0037001F",
@@ -193,6 +194,13 @@ pub(crate) fn office_document(
             message,
             metadata,
         }))));
+    }
+    if kind == MediaType::named(GRAPH) {
+        return Err(Unported(
+            "an MS Graph storage, which Tika's detection names by its class as the open container \
+             Tika hands on, and by its streams as the bytes our Java parses"
+                .to_owned(),
+        ));
     }
     let storage = file.storage(directory).map_err(unreadable)?;
     let data = write(&storage).map_err(unreadable)?;
@@ -401,6 +409,30 @@ mod tests {
             Handed::Document(embedded) | Handed::Storage(embedded) => Some(embedded),
             Handed::Message(message) => panic!("a document, not {message:?}"),
         }
+    }
+
+    #[test]
+    fn leaves_an_ms_graph_storage_to_tika() {
+        let data = embedding(vec![
+            (units("Workbook"), Node::Document(vec![1; 10])),
+            (
+                units("\u{1}CompObj"),
+                Node::Document(b"..MSGraph.Chart.8..".to_vec()),
+            ),
+        ]);
+        let file = Ole2::open(&data).unwrap();
+        let object = file.child(file.root(), "_123").unwrap();
+        let handed = office_document(
+            &file,
+            object,
+            TikaMetadata::new(),
+            None,
+            &ParserConfigs::default(),
+        );
+        assert!(
+            matches!(&handed, Err(Unported(reason)) if reason.contains("MS Graph")),
+            "{handed:?}"
+        );
     }
 
     #[test]

@@ -92,8 +92,7 @@ pub(super) enum Record {
     Sst(Vec<SharedString>),
     Formula {
         cell: CellRef,
-        value: f64,
-        string_result: bool,
+        cached: Cached,
     },
     String(String),
     Label {
@@ -195,23 +194,8 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
         }
         sid::SST => Record::Sst(read_shared_strings(stream)?),
         sid::FORMULA => {
-            let cell = read_cell(stream)?;
-            let bits = stream.read_i64()?;
-            stream.read_i16()?;
-            let special = special_cached_value(bits)?;
-            stream.read_i32()?;
-            stream.read_i16()?;
-            let available = stream.remaining();
-            stream.read_fully(available.max(0) as usize)?;
-            Record::Formula {
-                cell,
-                value: if special.is_none() {
-                    f64::from_bits(bits as u64)
-                } else {
-                    0.0
-                },
-                string_result: special == Some(0),
-            }
+            let (cell, cached) = read_formula(stream)?;
+            Record::Formula { cell, cached }
         }
         sid::STRING => {
             let length = i32::from(stream.read_u16()?);
@@ -361,25 +345,50 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
     })
 }
 
-fn read_cell(stream: &mut RecordStream<'_>) -> Read<CellRef> {
+pub(super) fn read_cell(stream: &mut RecordStream<'_>) -> Read<CellRef> {
     let row = i32::from(stream.read_u16()?);
     let column = stream.read_u16()? as i16;
     let xf = stream.read_u16()? as i16;
     Ok(CellRef { row, column, xf })
 }
 
-/// `FormulaSpecialCachedValue.create`: the type of a value that is no number, failing on an
-/// unknown one.
-fn special_cached_value(bits: i64) -> Read<Option<i8>> {
-    const MARKER: u64 = 0xFFFF_0000_0000_0000;
-    if bits as u64 & MARKER != MARKER {
-        return Ok(None);
+/// `FormulaRecord`: the formula's cell and its cached result, past the formula itself.
+pub(super) fn read_formula(stream: &mut RecordStream<'_>) -> Read<(CellRef, Cached)> {
+    let cell = read_cell(stream)?;
+    let bits = stream.read_i64()?;
+    stream.read_i16()?;
+    let cached = Cached::read(bits)?;
+    stream.read_i32()?;
+    stream.read_i16()?;
+    let available = stream.remaining();
+    stream.read_fully(available.max(0) as usize)?;
+    Ok((cell, cached))
+}
+
+/// A formula's cached result: a number, or, as `FormulaSpecialCachedValue` holds it, the type
+/// of a value that is none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Cached {
+    Number(f64),
+    Special(i8),
+}
+
+impl Cached {
+    /// The type of a string result.
+    pub(super) const STRING: i8 = 0;
+
+    /// `FormulaSpecialCachedValue.create` of a value's bits, failing on an unknown type.
+    pub(super) fn read(bits: i64) -> Read<Cached> {
+        const MARKER: u64 = 0xFFFF_0000_0000_0000;
+        if bits as u64 & MARKER != MARKER {
+            return Ok(Cached::Number(f64::from_bits(bits as u64)));
+        }
+        let kind = bits as i8;
+        if !(0..=3).contains(&kind) {
+            return thrown(format!("Bad special value code ({kind})"));
+        }
+        Ok(Cached::Special(kind))
     }
-    let kind = bits as i8;
-    if !(0..=3).contains(&kind) {
-        return thrown(format!("Bad special value code ({kind})"));
-    }
-    Ok(Some(kind))
 }
 
 /// `RKUtil.decodeNumber`.
@@ -797,10 +806,10 @@ mod tests {
         formula.extend([0, 0, 0, 0, 0, 0, 0xFF, 0xFF]);
         formula.extend([0; 8]);
         formula.extend([1, 0, 0x1E]);
-        let Record::Formula { string_result, .. } = read(sid::FORMULA, &formula).unwrap() else {
+        let Record::Formula { cached, .. } = read(sid::FORMULA, &formula).unwrap() else {
             panic!("a formula");
         };
-        assert!(string_result);
+        assert_eq!(cached, Cached::Special(Cached::STRING));
     }
 
     #[test]

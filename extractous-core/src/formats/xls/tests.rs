@@ -8,15 +8,7 @@ use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 7] = [
-    ("testEXCEL_5.xls", "before BIFF8"),
-    ("testEXCEL_95.xls", "before BIFF8"),
-    ("testEXCEL_embeddedPDF_windows.xls", "embeds documents"),
-    ("testEXCEL_embeded.xls", "embeds documents"),
-    ("testExcel_embeddedPDF.xls", "embeds documents"),
-    ("testMSChart-govdocs-428996.xls", "embeds documents"),
-    ("testWPSAttachment.xls", "embeds documents"),
-];
+const DEFERRED_CONFORMANCE: [(&str, &str); 1] = [("testMSChart-govdocs-428996.xls", "MS Graph")];
 
 /// The encrypted workbooks, by file name, with the password that opens them.
 const ENCRYPTED: [(&str, &str); 2] = [
@@ -65,7 +57,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     documents.sort();
     let defaults = ParserConfigs::default();
     let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert_eq!(ported.len(), 21);
+    assert_eq!(ported.len(), 27);
     assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }
 
@@ -73,6 +65,22 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
 fn opens_the_repositorys_encrypted_workbook_as_tikas_path_does() {
     let encrypted = PathBuf::from("../test_files/documents/encrypted/tika-password.xls");
     assert_same_as_tika_with_passwords(&[encrypted], TIKA_PARSER, &ENCRYPTED);
+}
+
+#[test]
+#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+fn extracts_what_tikas_old_excel_parser_extracts_from_tikas_test_documents() {
+    let (mut documents, deferred) =
+        parity::documents(&OldExcelParser, &[&parity::conformance_corpus()]);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    documents.sort();
+    assert_eq!(documents.len(), 1);
+    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+    parity::assert_same_as_tika_with(
+        &documents,
+        "org.apache.tika.parser.microsoft.OldExcelParser",
+        &ParserConfigs::default(),
+    );
 }
 
 fn bof(kind: i16) -> Vec<u8> {
