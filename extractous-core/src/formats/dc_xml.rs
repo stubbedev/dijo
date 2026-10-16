@@ -3,7 +3,7 @@
 //! as metadata. The paragraph starts before the XML is read, so the head shows none of it.
 
 use crate::config::ParserConfigs;
-use crate::formats::element_metadata::DublinCore;
+use crate::formats::element_metadata::ElementHandlers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
@@ -48,7 +48,7 @@ impl Parser for DcXmlParser {
             xhtml.start_element("p")?;
             let mut handler = Handlers {
                 xhtml,
-                dublin_core: DublinCore::new(),
+                dublin_core: ElementHandlers::dublin_core(),
             };
             let parsed = xml::parse_sax(input, "the XML document", &mut handler);
             xhtml.end_element("p")?;
@@ -66,7 +66,7 @@ impl Parser for DcXmlParser {
 /// `TextContentHandler` with spaces between elements, teed with the Dublin Core handlers.
 struct Handlers<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
-    dublin_core: DublinCore,
+    dublin_core: ElementHandlers,
 }
 
 impl SaxHandler for Handlers<'_, '_> {
@@ -106,7 +106,7 @@ mod tests {
     fn metadata_of(input: &[u8]) -> TikaMetadata {
         struct Metadata {
             metadata: TikaMetadata,
-            dublin_core: DublinCore,
+            dublin_core: ElementHandlers,
         }
         impl SaxHandler for Metadata {
             fn start_element(
@@ -129,7 +129,7 @@ mod tests {
         }
         let mut handler = Metadata {
             metadata: TikaMetadata::new(),
-            dublin_core: DublinCore::new(),
+            dublin_core: ElementHandlers::dublin_core(),
         };
         xml::parse_sax(input, "test", &mut handler).unwrap();
         handler.metadata

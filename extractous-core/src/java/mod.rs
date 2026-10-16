@@ -374,6 +374,39 @@ pub(crate) fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
+/// Commons Codec's `new Base64().decode(text)`: the text's UTF-8 bytes decoded leniently in the
+/// standard and the URL-safe alphabet at once, everything outside them skipped, up to the first
+/// `=`, the bits of an unfinished unit beyond its whole bytes dropped.
+pub(crate) fn commons_base64_decode(text: &str) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(text.len() / 4 * 3);
+    let mut bits: u32 = 0;
+    let mut count = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'=' => break,
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => continue,
+        };
+        bits = (bits << 6) | u32::from(value);
+        count += 1;
+        if count == 4 {
+            decoded.extend_from_slice(&bits.to_be_bytes()[1..]);
+            bits = 0;
+            count = 0;
+        }
+    }
+    match count {
+        2 => decoded.push((bits >> 4) as u8),
+        3 => decoded.extend_from_slice(&((bits >> 2) as u16).to_be_bytes()),
+        _ => {}
+    }
+    decoded
+}
+
 /// `new String(bytes, ISO_8859_1)`.
 pub(crate) fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| char::from(byte)).collect()
@@ -692,6 +725,19 @@ mod tests {
         assert_eq!(utf8(b"plain"), "plain");
         assert_eq!(utf8(b"K\xC3\xB8ge"), "K\u{F8}ge");
         assert_eq!(utf8(b"A\xC3\xFF"), "A\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
+    fn decodes_base64_as_commons_codec_does() {
+        assert_eq!(commons_base64_decode("SGVq"), b"Hej");
+        assert_eq!(commons_base64_decode("SG\nVq IGRp*"), b"Hej di");
+        assert_eq!(commons_base64_decode("SGVqIGQ="), b"Hej d");
+        assert_eq!(commons_base64_decode("SGVq=IGRp"), b"Hej");
+        assert_eq!(commons_base64_decode("-_-_"), [0xFB, 0xFF, 0xBF]);
+        assert_eq!(commons_base64_decode("+/+/"), [0xFB, 0xFF, 0xBF]);
+        assert_eq!(commons_base64_decode("SGVqI"), b"Hej");
+        assert_eq!(commons_base64_decode("øSGVq"), b"Hej");
+        assert!(commons_base64_decode("").is_empty());
     }
 
     #[test]

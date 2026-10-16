@@ -59,6 +59,7 @@ pub(crate) mod xhtml;
 mod xls;
 mod xlsx;
 pub(crate) mod xml;
+mod xml_2003;
 mod zip_file;
 
 use std::borrow::Cow;
@@ -242,6 +243,8 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WaczParser,
     &xls::XlsParser,
     &xlsx::XlsxParser,
+    &xml_2003::SpreadsheetMlParser,
+    &xml_2003::WordMlParser,
 ];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.

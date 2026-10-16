@@ -2,7 +2,7 @@
 //! `META-INF/container.xml` names, its Dublin Core metadata through Tika's `OPFParser` and
 //! `DcXMLParser`, and its manifest and spine through the `ContentOrderScraper`.
 
-use crate::formats::element_metadata::DublinCore;
+use crate::formats::element_metadata::ElementHandlers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -110,7 +110,7 @@ impl Rendition {
 /// `OPFHandler` after them for a package document.
 struct MetadataHandlers<'m> {
     metadata: &'m mut TikaMetadata,
-    dublin_core: DublinCore,
+    dublin_core: ElementHandlers,
     rendition: Option<Rendition>,
 }
 
@@ -167,7 +167,7 @@ pub(super) fn read_metadata(
     }
     let mut handler = MetadataHandlers {
         metadata,
-        dublin_core: DublinCore::new(),
+        dublin_core: ElementHandlers::dublin_core(),
         rendition: (parser == MetadataParser::Package).then(Rendition::default),
     };
     xml::parse_sax(input, what, &mut handler).map_err(|failure| match failure {

@@ -150,19 +150,30 @@ const DC_XML_ELEMENTS: [(&str, &str, Values); 13] = [
     ("rights", "dc:rights", Values::Bag),
 ];
 
-/// The handlers `DcXMLParser` tees an XML document's events to, one for each Dublin Core
+/// The `ElementMetadataHandler`s a parser tees an XML document's events to, one for each
 /// element it reads.
 #[derive(Debug)]
-pub(crate) struct DublinCore(Vec<ElementMetadata>);
+pub(crate) struct ElementHandlers(Vec<ElementMetadata>);
 
-impl DublinCore {
-    pub(crate) fn new() -> Self {
+impl ElementHandlers {
+    /// One handler for each of the `elements` of `namespace`, as `(element, name, values)`.
+    pub(crate) fn new(
+        namespace: &'static str,
+        elements: &[(&'static str, &'static str, Values)],
+    ) -> Self {
         Self(
-            DC_XML_ELEMENTS
+            elements
                 .iter()
-                .map(|&(element, name, values)| ElementMetadata::dublin_core(element, name, values))
+                .map(|&(element, name, values)| {
+                    ElementMetadata::new(namespace, element, name, values)
+                })
                 .collect(),
         )
+    }
+
+    /// The handlers of `DcXMLParser`, one for each Dublin Core element it reads.
+    pub(crate) fn dublin_core() -> Self {
+        Self::new(DUBLIN_CORE_NS, &DC_XML_ELEMENTS)
     }
 
     pub(crate) fn start(&mut self, namespace: &str, local_name: &str) {
