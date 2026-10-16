@@ -38,6 +38,7 @@ pub(crate) mod parity;
 pub(crate) mod pdf;
 pub(crate) mod plist;
 mod pptx;
+mod prt;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -204,6 +205,7 @@ static PARSERS: &[&dyn Parser] = &[
     &mif::MifParser,
     &ms_owner::MsOwnerFileParser,
     &apple_single::AppleSingleFileParser,
+    &prt::PrtParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
