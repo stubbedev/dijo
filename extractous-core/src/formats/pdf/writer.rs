@@ -557,7 +557,16 @@ impl<'p, 'x, 'h, 'e> DocumentWriter<'p, 'x, 'h, 'e> {
                 pages_fallback.to_string(),
             );
         }
-        self.bookmarks()?;
+        if self
+            .page
+            .xhtml
+            .context()
+            .configs()
+            .pdf
+            .extracts_bookmarks_text()
+        {
+            self.bookmarks()?;
+        }
         self.embedded_documents()?;
         self.acro_form()?;
         let types: Vec<String> = std::mem::take(&mut self.annotation_types)

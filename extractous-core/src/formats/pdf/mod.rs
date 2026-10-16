@@ -386,8 +386,8 @@ mod tests {
     use super::*;
     use crate::config::{PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
     use crate::formats::parity::{
-        assert_same_as_tika_but_ocr, assert_same_as_tika_delegating, conformance_corpus,
-        documents, Scratch,
+        assert_same_as_tika_but_ocr, assert_same_as_tika_delegating,
+        assert_same_as_tika_delegating_with, conformance_corpus, documents, Scratch,
     };
     use std::path::{Path, PathBuf};
 
@@ -705,6 +705,23 @@ mod tests {
             })
             .collect();
         assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn extracts_without_bookmarks_as_tikas_path_does() {
+        let documents: Vec<PathBuf> = ["dutch.pdf", "french.pdf", "report.pdf"]
+            .iter()
+            .map(|name| Path::new("../quality/corpus").join(name))
+            .collect();
+        assert_same_as_tika_delegating_with(
+            &as_paths(&documents),
+            tika_name(),
+            &DELEGATES,
+            &ParserConfigs {
+                pdf: PdfParserConfig::new().set_extract_bookmarks_text(false),
+                ..ParserConfigs::default()
+            },
+        );
     }
 
     /// Reads the pages of the corpora's documents Tika's path reads by OCR as it writes them, the

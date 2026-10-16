@@ -150,6 +150,11 @@ impl PdfParserConfig {
         self.reading_order.unwrap_or(true)
     }
 
+    /// Whether the text of the bookmarks follows the pages', as it does unless told not to.
+    pub(crate) fn extracts_bookmarks_text(&self) -> bool {
+        self.extract_bookmarks_text.unwrap_or(true)
+    }
+
     /// The OCR strategy, as set.
     pub(crate) fn ocr_strategy(&self) -> Option<PdfOcrStrategy> {
         self.ocr_strategy
@@ -174,10 +179,6 @@ impl PdfParserConfig {
             (
                 self.extract_marked_content.is_some(),
                 "setExtractMarkedContent",
-            ),
-            (
-                self.extract_bookmarks_text.is_some(),
-                "setExtractBookmarksText",
             ),
             (
                 self.extract_annotation_text.is_some(),
