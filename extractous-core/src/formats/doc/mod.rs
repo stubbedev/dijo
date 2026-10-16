@@ -7,9 +7,11 @@
 //! cleaned of control characters as our `WordText` cleans it, and the other stories' paragraphs
 //! are given as our substitute for POI's `getParagraphText` gives them.
 //!
-//! A document POI reads differently from this port is left to Tika, as is one before Word 97,
-//! which POI reads as `HWPFOldDocument`, an encrypted one, and macros extracted when asked to:
-//! see [`DocParser::defers`].
+//! A document before Word 97 is read as POI's `HWPFOldDocument` reads it for Tika's
+//! `parseWord6`: a paragraph for each of its paragraphs. An encrypted document is decrypted with
+//! the password, or failed as Tika's path fails it where the password does not open it. A
+//! document POI reads differently from this port is left to Tika, as are macros extracted when
+//! asked to: see [`DocParser::defers`].
 
 mod bins;
 mod bytes;
@@ -18,6 +20,7 @@ mod extractor;
 mod fib;
 mod fields;
 mod lists;
+mod old;
 mod pictures;
 mod props;
 mod range;
@@ -25,7 +28,7 @@ mod sprm;
 mod styles;
 mod text;
 
-use document::Document;
+use document::{Document, Word};
 use extractor::{extract, Extracted, Out};
 
 use crate::config::ParserConfigs;
@@ -52,8 +55,8 @@ impl Parser for DocParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers documents POI or Tika throws on, those before Word 97, encrypted ones, and
-    /// macros extracted when asked to.
+    /// Fails encrypted documents the password does not open, and defers documents POI or Tika
+    /// throws on and macros extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -93,8 +96,10 @@ fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted),
         )
         .into());
     }
-    let document = Document::read(&file, root, configs)?;
-    let extracted = extract(&document, &file, root, configs)?;
+    let extracted = match Document::read(&file, root, configs)? {
+        Word::Modern(document) => extract(&document, &file, root, configs)?,
+        Word::Old(document) => Extracted::paragraphs(document.paragraph_text()),
+    };
     Ok((Summaries::read(&file, root)?, extracted))
 }
 

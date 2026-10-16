@@ -4,7 +4,8 @@
 //! document, failing where it fails.
 
 use super::bins::{
-    character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs, PropertyRun,
+    bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
+    PageNumber, PropertyRun,
 };
 use super::bytes::{index, safely_clone, utf16_units};
 use super::fib::{
@@ -12,6 +13,7 @@ use super::fib::{
 };
 use super::fields::Fields;
 use super::lists::ListTables;
+use super::old::OldDocument;
 use super::styles::StyleSheet;
 use super::text::{ComplexFileTable, Plex};
 use crate::config::ParserConfigs;
@@ -47,6 +49,13 @@ const FRD_SIZE: i32 = 2;
 const BSTORE_CONTAINER: u16 = 0xF001;
 const DG_CONTAINER: u16 = 0xF002;
 
+/// A Word document as Tika's `WordExtractor` reads it: with `HWPFDocument`, or, before Word 97,
+/// with `HWPFOldDocument` in `parseWord6`.
+pub(super) enum Word {
+    Modern(Box<Document>),
+    Old(OldDocument),
+}
+
 /// A document as Tika's extractor reads it.
 pub(super) struct Document {
     pub(super) fib: Fib,
@@ -77,13 +86,14 @@ pub(super) fn unported(Thrown(reason): Thrown) -> Unported {
 
 impl Document {
     /// `new HWPFDocument(directory)`: the document, decrypted with the password where it is
-    /// encrypted; or why it is left to Tika, or fails as Tika's path does where the password
-    /// does not open it.
+    /// encrypted, or, for one before Word 97, on which it throws `OldWordFileFormatException`,
+    /// `new HWPFOldDocument(directory)`; or why it is left to Tika, or fails as Tika's path does
+    /// where the password does not open it.
     pub(super) fn read(
         file: &Ole2<'_>,
         root: EntryId,
         configs: &ParserConfigs,
-    ) -> Result<Document, Declined> {
+    ) -> Result<Word, Declined> {
         let mut main = document_bytes(file, root, WORD_DOCUMENT)?;
         let encryption = encryption(file, root, &main, configs)?;
         if let Some(keys) = &encryption {
@@ -99,12 +109,7 @@ impl Document {
             }
         }
         if fib.n_fib < WORD_97 {
-            return Err(Unported(
-                "the document is from Word 95 or before, which Tika reads with POI's \
-                 Word6Extractor"
-                    .to_owned(),
-            )
-            .into());
+            return Ok(Word::Old(OldDocument::read(&main)?));
         }
         let table_name = if fib.uses_table_one() {
             TABLE_ONE
@@ -135,28 +140,29 @@ impl Document {
             keys.decrypt_chunks(&mut table, RC4_REKEYING_INTERVAL, header);
             keys.decrypt_chunks(&mut data, RC4_REKEYING_INTERVAL, 0);
         }
-        Ok(Self::from_streams(fib, main, table, data).map_err(unported)?)
+        Ok(Word::Modern(Box::new(
+            Self::from_streams(fib, main, table, data).map_err(unported)?,
+        )))
     }
 
     fn from_streams(fib: Fib, main: Vec<u8>, table: Vec<u8>, data: Vec<u8>) -> Read<Document> {
         fib.check_unread_fields(&table)?;
         check_document_properties(&table, fib.offset(field::DOP)?, fib.size(field::DOP)?)?;
         let clx = ComplexFileTable::read(&main, &table, fib.offset(field::CLX)?)?;
-        let characters = character_runs(
-            &main,
+        let character_pages = bin_pages(
             &table,
             fib.offset(field::PLCFBTECHPX)?,
             fib.size(field::PLCFBTECHPX)?,
-            &clx,
+            PageNumber::Int,
         )?;
-        let paragraphs = paragraph_runs(
-            &main,
+        let characters = character_runs(&main, &character_pages, &clx)?;
+        let paragraph_pages = bin_pages(
             &table,
-            &data,
             fib.offset(field::PLCFBTEPAPX)?,
             fib.size(field::PLCFBTEPAPX)?,
-            &clx,
+            PageNumber::Int,
         )?;
+        let paragraphs = paragraph_runs(&main, &data, &paragraph_pages, &clx)?;
         let text = clx.text()?;
         let characters = rebuild_character_runs(characters, &clx)?;
         let paragraphs = rebuild_paragraph_runs(paragraphs, &text, &clx)?;

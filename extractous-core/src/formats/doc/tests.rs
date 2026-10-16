@@ -7,7 +7,7 @@ const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 
 /// The documents this port leaves to Tika, by file name, with a part of the reason.
-const DEFERRED: [(&str, &str); 1] = [("testWORD6.doc", "Word 95")];
+const DEFERRED: [(&str, &str); 0] = [];
 
 /// The encrypted documents, by file name, with the password that opens them.
 const ENCRYPTED: [(&str, &str); 2] = [
@@ -86,6 +86,6 @@ fn extracts_what_tikas_path_extracts_from_the_repositorys_documents() {
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
-    assert_eq!(ported.len(), 41);
+    assert_eq!(ported.len(), 42);
     assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }

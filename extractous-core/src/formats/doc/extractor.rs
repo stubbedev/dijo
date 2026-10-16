@@ -59,6 +59,24 @@ pub(super) struct Extracted {
     pub(super) has_track_changes: bool,
 }
 
+impl Extracted {
+    /// What `parseWord6` writes: an element for each paragraph that is not empty.
+    pub(super) fn paragraphs(paragraphs: Vec<Vec<u16>>) -> Extracted {
+        let mut out = Vec::new();
+        for paragraph in paragraphs.into_iter().filter(|text| !text.is_empty()) {
+            out.extend([Out::Start("p"), Out::Text(paragraph), Out::End("p")]);
+        }
+        Extracted {
+            save_locations: Vec::new(),
+            out,
+            has_comments: false,
+            revision_authors: Vec::new(),
+            has_hidden_text: false,
+            has_track_changes: false,
+        }
+    }
+}
+
 /// `FormattingUtils.Tag`, in the order of its declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tag {
