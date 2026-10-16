@@ -3,6 +3,7 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod access;
 mod apple_single;
 mod archive;
 mod auto_detect_reader;
@@ -198,6 +199,7 @@ pub(crate) trait Parser: Sync {
 }
 
 static PARSERS: &[&dyn Parser] = &[
+    &access::JackcessParser,
     &archive::CompressorParser,
     &archive::PackageParser,
     &archive::RarParser,
