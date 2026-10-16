@@ -376,6 +376,9 @@ mod tests {
     const DEPARTURES: Departures = Departures {
         line_breaks: Some(heading_and_note_ends),
         metadata: &["odf:version"],
+        wrappers: &[],
+        repeated: &[],
+        final_in_head: &[],
     };
 
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {

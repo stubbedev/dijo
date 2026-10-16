@@ -1,7 +1,7 @@
 //! Dates as POI's `DataFormatter` formats them: `DateUtil`'s test for a date format and its
-//! conversion of a cell value to a `Date` in the default time zone, and the `SimpleDateFormat`,
-//! with the `en_US` symbols, that its `ExcelStyleDateFormatter` extends with elapsed hours,
-//! minutes and seconds and one-letter month names.
+//! conversion of a cell value to a `Date` in a time zone and date system, and the
+//! `SimpleDateFormat`, with the `en_US` symbols, that its `ExcelStyleDateFormatter` extends with
+//! elapsed hours, minutes and seconds and one-letter month names.
 
 use std::sync::LazyLock;
 
@@ -27,11 +27,11 @@ const LL_BRACKET: char = '\u{e017}';
 
 /// `ExcelStyleDateFormatter`: a `SimpleDateFormat` whose pattern stands in for Excel's elapsed
 /// times, tenths and hundredths of seconds and one-letter months, filled in from the cell value
-/// last given it.
+/// it formats. POI's fills them in from the value last given it, which a cached formatter may
+/// not have been given for the date it formats (#92).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExcelStyleDateFormatter {
     format: SimpleDateFormat,
-    pub(crate) date_to_be_formatted: f64,
 }
 
 static SECONDS_THOUSANDTHS: LazyLock<Regex> =
@@ -70,12 +70,16 @@ impl ExcelStyleDateFormatter {
             .into_owned();
         Ok(Self {
             format: SimpleDateFormat::new(&processed)?,
-            date_to_be_formatted: 0.0,
         })
     }
 
-    /// `format(Date)`.
-    pub(crate) fn format(&self, epoch_millis: i64, zone: &TimeZone) -> Result<String, FormatError> {
+    /// `format(Date)` of the cell value `value`, the instant `epoch_millis` in `zone`.
+    pub(crate) fn format(
+        &self,
+        value: f64,
+        epoch_millis: i64,
+        zone: &TimeZone,
+    ) -> Result<String, FormatError> {
         let mut text = self.format.format(epoch_millis, zone)?;
         if text.contains(MMMMM_START) {
             text = ONE_LETTER_MONTH.replace_all(&text, "$1").into_owned();
@@ -86,25 +90,25 @@ impl ExcelStyleDateFormatter {
                 .format_f64(f64::from(value))
         };
         if text.contains(H_BRACKET) || text.contains(HH_BRACKET) {
-            let hours = (self.date_to_be_formatted as f32) * 24.0;
+            let hours = (value as f32) * 24.0;
             text = text
                 .replace(H_BRACKET, &down(hours, "0"))
                 .replace(HH_BRACKET, &down(hours, "00"));
         }
         if text.contains(M_BRACKET) || text.contains(MM_BRACKET) {
-            let minutes = (self.date_to_be_formatted as f32) * 24.0 * 60.0;
+            let minutes = (value as f32) * 24.0 * 60.0;
             text = text
                 .replace(M_BRACKET, &down(minutes, "0"))
                 .replace(MM_BRACKET, &down(minutes, "00"));
         }
         if text.contains(S_BRACKET) || text.contains(SS_BRACKET) {
-            let seconds = (self.date_to_be_formatted * 24.0 * 60.0 * 60.0) as f32;
+            let seconds = (value * 24.0 * 60.0 * 60.0) as f32;
             text = text
                 .replace(S_BRACKET, &down(seconds, "0"))
                 .replace(SS_BRACKET, &down(seconds, "00"));
         }
         if text.contains(L_BRACKET) || text.contains(LL_BRACKET) {
-            let fraction = self.date_to_be_formatted - self.date_to_be_formatted.floor();
+            let fraction = value - value.floor();
             let temp = (fraction * 24.0 * 60.0 * 60.0) as f32;
             let millis = temp - (temp as i32) as f32;
             text = text
@@ -196,17 +200,22 @@ pub(crate) fn java_int(value: f64) -> i32 {
     value as i32
 }
 
-/// `DateUtil.getJavaDate(value, false)`: the instant of the cell value in `zone`, the 1900
-/// date system, with Excel's 29 February 1900.
-pub(crate) fn java_date(value: f64, zone: &TimeZone) -> Option<i64> {
+/// `DateUtil.getJavaDate(value, date_1904)`: the instant of the cell value in `zone`, counted
+/// in days from 1 January 1904 when `date_1904`, and otherwise in the 1900 date system, with
+/// Excel's 29 February 1900.
+pub(crate) fn java_date(value: f64, zone: &TimeZone, date_1904: bool) -> Option<i64> {
     if !is_valid_excel_date(value) {
         return None;
     }
     let whole_days = java_int(value.floor());
     let milliseconds = java_int((value - f64::from(whole_days)) * DAY_MILLISECONDS + 0.5);
-    let day_adjust = if whole_days < 61 { 0 } else { -1 };
+    let (year, day_adjust) = match (date_1904, whole_days < 61) {
+        (true, _) => (1904, 1),
+        (false, true) => (1900, 0),
+        (false, false) => (1900, -1),
+    };
     let fields = CalendarFields {
-        year: 1900,
+        year,
         month: 0,
         day: whole_days.wrapping_add(day_adjust),
         hour: 0,
@@ -243,7 +252,7 @@ mod tests {
     #[test]
     fn formats_dates_as_simple_date_format_does() {
         let utc = TimeZone::fixed(0);
-        let millis = java_date(45000.75, &utc).unwrap();
+        let millis = java_date(45000.75, &utc, false).unwrap();
         let format = |pattern: &str| {
             SimpleDateFormat::new(pattern)
                 .unwrap()
@@ -261,9 +270,22 @@ mod tests {
     #[test]
     fn formats_elapsed_times_as_poi_does() {
         let utc = TimeZone::fixed(0);
-        let mut format = ExcelStyleDateFormatter::new("[H]:mm:ss").unwrap();
-        format.date_to_be_formatted = 1.5;
-        let millis = java_date(1.5, &utc).unwrap();
-        assert_eq!(format.format(millis, &utc).unwrap(), "36:00:00");
+        let format = ExcelStyleDateFormatter::new("[H]:mm:ss").unwrap();
+        let millis = java_date(1.5, &utc, false).unwrap();
+        assert_eq!(format.format(1.5, millis, &utc).unwrap(), "36:00:00");
+    }
+
+    #[test]
+    fn counts_days_in_either_date_system() {
+        let utc = TimeZone::fixed(0);
+        let format = SimpleDateFormat::new("yyyy-MM-dd").unwrap();
+        let date = |value: f64, date_1904: bool| {
+            let millis = java_date(value, &utc, date_1904).unwrap();
+            format.format(millis, &utc).unwrap()
+        };
+        assert_eq!(date(0.0, true), "1904-01-01");
+        assert_eq!(date(45000.0, true), "2027-03-16");
+        assert_eq!(date(45000.0, false), "2023-03-15");
+        assert_eq!(date(61.0, false), "1900-03-01");
     }
 }

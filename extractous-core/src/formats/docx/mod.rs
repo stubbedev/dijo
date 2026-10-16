@@ -518,6 +518,21 @@ pub(crate) fn write_general_text_parts(
     extractor::write_general_text_parts(package, parent, kind, class, &mut handler)
 }
 
+/// What one of Tika's text handlers at its defaults, as in [`write_general_text_parts`],
+/// writes for `part` alone.
+pub(crate) fn write_general_text_part(
+    package: &Package,
+    part: usize,
+    links: &HashMap<String, String>,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
+    let mut lists = ListManager::new(None);
+    let inline = InlineParts::default();
+    let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
+    let mut handler = TextHandler::new(body, links, TextOptions::default());
+    extractor::write_general_text_part(package, part, &mut handler)
+}
+
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.
 #[derive(Default)]
 struct Features {

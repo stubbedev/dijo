@@ -191,17 +191,28 @@ pub(crate) fn write_general_text_parts<H: SaxHandler>(
     };
     handler.start_element("", "div", &[div])?;
     for part in parts.flatten() {
-        let mut balancer = Balancer {
-            inner: &mut *handler,
-            open: Vec::new(),
-        };
-        let bytes = package.read(part)?;
-        if let Err(failure) = xml::parse_sax(&bytes, package.name(part), &mut balancer) {
-            balancer.drain()?;
-            return Err(failure);
-        }
+        write_general_text_part(package, part, handler)?;
     }
     handler.end_element("", "div")
+}
+
+/// Hands `handler` the events of `part`, read behind an `XHTMLBalancingHandler`: a failure ends
+/// the extraction, after the elements the part opened are ended.
+pub(crate) fn write_general_text_part<H: SaxHandler>(
+    package: &Package,
+    part: usize,
+    handler: &mut H,
+) -> Result<(), Failure> {
+    let mut balancer = Balancer {
+        inner: handler,
+        open: Vec::new(),
+    };
+    let bytes = package.read(part)?;
+    if let Err(failure) = xml::parse_sax(&bytes, package.name(part), &mut balancer) {
+        balancer.drain()?;
+        return Err(failure);
+    }
+    Ok(())
 }
 
 /// `XHTMLBalancingHandler` over the events of one part: what it opened, to end on a failure.
@@ -331,10 +342,22 @@ pub(crate) fn write_embedded_parts(
     xhtml: &mut Xhtml,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
 ) -> Result<(), Failure> {
+    write_embedded_parts_but(package, main_parts, &|_, _| false, xhtml, anchor)
+}
+
+/// [`write_embedded_parts`] but for the relationships `written` says the document has
+/// written already, by the part they are relationships of.
+pub(crate) fn write_embedded_parts_but(
+    package: &Package,
+    main_parts: &[usize],
+    written: &dyn Fn(usize, &Relationship) -> bool,
+    xhtml: &mut Xhtml,
+    anchor: &dyn Fn(usize, &mut TikaMetadata),
+) -> Result<(), Failure> {
     let mut handled: HashSet<&str> = HashSet::new();
     for &source in main_parts {
         for relationship in &package.parts[source].relationships {
-            if handled.contains(relationship.target_uri()) {
+            if handled.contains(relationship.target_uri()) || written(source, relationship) {
                 continue;
             }
             if !relationship.is_internal() {

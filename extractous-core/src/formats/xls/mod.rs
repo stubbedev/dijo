@@ -5,10 +5,10 @@
 //! groups store as embedded documents, and the hidden sheets, rows, columns, protection and
 //! comment authors as metadata.
 //!
-//! Numbers are written as Tika's listener writes them: dates and the general format with
-//! Tika's `TikaExcelDataFormatter`, other formats with POI's own `DataFormatter`, both in the
-//! `en_US` locale with dates in Java's default time zone and the 1900 date system; see
-//! [`crate::formats::data_format`].
+//! Numbers are written with one formatter, in the `en_US` locale, with dates as their cells
+//! hold them in the workbook's date system; see [`crate::formats::data_format`]. Tika writes
+//! dates and the general format with its `TikaExcelDataFormatter` and other formats with POI's
+//! own `DataFormatter`, dates in Java's default time zone and the 1900 date system (#92, #107).
 //!
 //! The documents embedded in `MBD` storages follow, handed on as `handleEmbeddedOfficeDoc` hands
 //! them. A workbook before BIFF8, whose stream is named "Book", is read as POI's
@@ -39,7 +39,6 @@ use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USED};
-use crate::java::time::TimeZone;
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{EntryKind, Ole2, Unreadable};
 
@@ -125,17 +124,14 @@ impl Parser for XlsParser {
     }
 
     /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
-    /// throws on, macros extracted when asked to, and any workbook when Java's default time
-    /// zone, which dates are written in, cannot be read.
+    /// throws on and macros extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let zone = TimeZone::java_default()
-            .map_err(|reason| format!("Java's default time zone cannot be read: {reason}"))?;
-        let workbook = Workbook::read(input, configs, zone)?;
+        let workbook = Workbook::read(input, configs)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
 }
@@ -173,11 +169,7 @@ struct Picture {
 }
 
 impl Workbook {
-    fn read(
-        input: &[u8],
-        configs: &ParserConfigs,
-        zone: &'static TimeZone,
-    ) -> Result<Self, Declined> {
+    fn read(input: &[u8], configs: &ParserConfigs) -> Result<Self, Declined> {
         if configs.office.extracts_macros() {
             return Err(
                 Unported("macros are extracted, which this port does not do".to_owned()).into(),
@@ -233,7 +225,7 @@ impl Workbook {
         let stream = file.read(entry).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot read the workbook stream: {reason}"))
         })?;
-        let (read, pictures) = read_records(&stream, configs, zone)?;
+        let (read, pictures) = read_records(&stream, configs)?;
         let mut storages = Vec::new();
         for child in file.children(root) {
             if file.name(child).starts_with(EMBEDDED_STORAGE_PREFIX)
@@ -281,27 +273,28 @@ fn write_old(text: &str, xhtml: &mut Xhtml) -> Result<(), Stop> {
 
 impl Biff8 {
     /// Writes the sheets as the listener does while it reads the records, then the documents of
-    /// the `MBD` storages. Where the output stops taking text inside a sheet, Tika's listener
-    /// stores the failure and reads no more records: the sheet is left unclosed, the text
-    /// outside its cells is written again with its text dropped, and the metadata of the sheets
-    /// is not set.
+    /// the `MBD` storages. Where the output stops taking text inside a sheet, the rest of the
+    /// sheets is left out, but the pictures and the metadata of the sheets are not. Tika's
+    /// listener stores the failure and reads no more records: the text outside the sheet's
+    /// cells is written again with its text dropped, and the metadata of the sheets is not set
+    /// (#107).
     fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         if self.asks_password {
             xhtml.metadata_mut().set(PASSWORD_USED, "true");
         }
         let mut stopped = None;
-        let mut outside = &self.read.outside;
         for page in &self.read.pages {
             if let Err(stop) = write_page(page, xhtml) {
                 if stop == Stop::ReaderGone {
                     return Err(stop.into());
                 }
                 stopped = Some(stop);
-                outside = &page.outside;
                 break;
             }
         }
-        write_outside(outside, xhtml)?;
+        if stopped.is_none() {
+            write_outside(&self.read.outside, xhtml)?;
+        }
         for picture in &self.pictures {
             let mut metadata = TikaMetadata::new();
             if !picture.sheets.is_empty() {
@@ -310,10 +303,10 @@ impl Biff8 {
             metadata.set("Content-Type", picture.media_type);
             xhtml.parse_embedded(&picture.data, &metadata, Wrapping::PackageEntry)?;
         }
+        self.write_metadata(xhtml.metadata_mut());
         if let Some(stop) = stopped {
             return Err(stop.into());
         }
-        self.write_metadata(xhtml.metadata_mut());
         for storage in self.storages {
             storage.write(xhtml, Wrapping::PackageEntry)?;
         }
@@ -391,7 +384,6 @@ fn write_out(out: &[Out], xhtml: &mut Xhtml) -> Result<(), Stop> {
 fn read_records(
     stream: &[u8],
     configs: &ParserConfigs,
-    zone: &'static TimeZone,
 ) -> Result<(Extracted, Vec<Picture>), Declined> {
     let config = &configs.office;
     let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
@@ -403,7 +395,7 @@ fn read_records(
     };
     let mut records = Records::new(stream).map_err(throws)?;
     records.decrypt(configs)?;
-    let mut listener = Listener::new(settings, zone);
+    let mut listener = Listener::new(settings);
     while let Some(event) = records.next().map_err(throws)? {
         match event {
             Event::Record { sid, record } => {

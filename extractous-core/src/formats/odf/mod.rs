@@ -415,7 +415,7 @@ mod tests {
 
     /// How many headings and notes Tika's XHTML `xhtml` has: the native parser ends each with a
     /// line break, where Tika ends them in the ODF namespace, which breaks no line (#90).
-    pub(crate) fn heading_and_note_ends(xhtml: &str) -> usize {
+    pub(crate) fn heading_and_note_ends(xhtml: &str, _native: &str) -> usize {
         const NOTES: [&str; 3] = ["class=\"note\"", "class=\"annotation\"", "class=\"notes\""];
         let mut ends = 0;
         let mut paragraphs = Vec::new();
@@ -450,6 +450,9 @@ mod tests {
     pub(crate) const DEPARTURES: Departures = Departures {
         line_breaks: Some(heading_and_note_ends),
         metadata: &[],
+        wrappers: &[],
+        repeated: &[],
+        final_in_head: &[],
     };
 
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
@@ -460,7 +463,8 @@ mod tests {
     fn counts_headings_and_notes_in_xhtml() {
         assert_eq!(
             heading_and_note_ends(
-                "<h1>a</h1><p>b<p class=\"note\"><p>c</p></p></p><h2/><p class=\"notes\"/><p/>"
+                "<h1>a</h1><p>b<p class=\"note\"><p>c</p></p></p><h2/><p class=\"notes\"/><p/>",
+                ""
             ),
             4
         );

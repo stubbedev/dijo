@@ -1,6 +1,7 @@
 //! A worksheet as Tika reads it: `TikaSheetXMLHandler`, POI's event-based sheet reader adapted to
 //! Tika's style, string and comment shims, behind `XSSFSheetInterestingPartsCapturer`, which notes
-//! protection and hidden rows and columns, writing rows and cells as `SheetTextAsHTML` does.
+//! hidden rows and columns, writing rows and cells as `SheetTextAsHTML` does. The capturer's
+//! note of protection is read ahead, by [`super::handlers::Protection`].
 
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -43,7 +44,6 @@ pub(crate) struct SheetSettings {
 /// What `XSSFSheetInterestingPartsCapturer` noted about a sheet.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Captured {
-    pub(crate) protection: bool,
     pub(crate) hidden_row: bool,
     pub(crate) hidden_column: bool,
 }
@@ -433,21 +433,20 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
 
 impl SaxHandler for SheetReader<'_, '_, '_> {
     fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
+        // Tika recognises hidden rows and columns by local name in any namespace (#95).
+        if tag.namespace != SPREADSHEETML_NS {
+            return Ok(());
+        }
         let hidden = || {
             attribute_named(tag.attributes, "hidden")
                 .is_some_and(|value| value == "true" || value == "1")
         };
-        if tag.qualified_name == "sheetProtection" {
-            self.captured.protection = true;
-        }
-        if !self.captured.hidden_row && tag.local_name == "row" && hidden() {
-            self.captured.hidden_row = true;
-        }
-        if !self.captured.hidden_column && tag.local_name == "col" && hidden() {
-            self.captured.hidden_column = true;
-        }
-        if tag.namespace != SPREADSHEETML_NS {
-            return Ok(());
+        match tag.local_name {
+            "row" if !self.captured.hidden_row && hidden() => self.captured.hidden_row = true,
+            "col" if !self.captured.hidden_column && hidden() => {
+                self.captured.hidden_column = true;
+            }
+            _ => {}
         }
         self.start(tag.local_name, tag.attributes)
     }
