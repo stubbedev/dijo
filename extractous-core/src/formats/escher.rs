@@ -152,6 +152,14 @@ pub(crate) struct Escher {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
     Container,
+    /// An `UnknownEscherRecord`, which holds records where its options say so.
+    Unknown,
+    Leaf(Leaf),
+}
+
+/// A class of record that holds no records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leaf {
     Dgg,
     Bse,
     Dg,
@@ -169,7 +177,6 @@ enum Class {
     BitmapBlip,
     Blip,
     SplitMenuColors,
-    Unknown,
 }
 
 /// `IOUtils.safelyClone` from an offset into the data.
@@ -181,29 +188,29 @@ fn clone(data: &[u8], offset: usize, length: i64, max: i64) -> Read<Vec<u8>> {
 fn class_of(options: u16, record_id: u16, factory: Factory) -> Class {
     if factory == Factory::Slides {
         match record_id {
-            kind::PLACEHOLDER => return Class::Placeholder,
-            kind::CLIENT_DATA => return Class::SlidesClientData,
+            kind::PLACEHOLDER => return Class::Leaf(Leaf::Placeholder),
+            kind::CLIENT_DATA => return Class::Leaf(Leaf::SlidesClientData),
             _ => {}
         }
     }
     let known = match record_id {
         0xF000..=0xF005 => Some(Class::Container),
-        kind::DGG => Some(Class::Dgg),
-        kind::BSE => Some(Class::Bse),
-        kind::DG => Some(Class::Dg),
-        kind::SPGR => Some(Class::Spgr),
-        kind::SP => Some(Class::Sp),
-        kind::OPT => Some(Class::Options),
-        kind::TEXTBOX | kind::CLIENT_TEXTBOX => Some(Class::Textbox),
-        kind::CHILD_ANCHOR => Some(Class::ChildAnchor),
-        kind::CLIENT_ANCHOR => Some(Class::ClientAnchor),
-        kind::CLIENT_DATA => Some(Class::ClientData),
-        kind::BLIP_EMF | kind::BLIP_WMF | kind::BLIP_PICT => Some(Class::MetafileBlip),
+        kind::DGG => Some(Class::Leaf(Leaf::Dgg)),
+        kind::BSE => Some(Class::Leaf(Leaf::Bse)),
+        kind::DG => Some(Class::Leaf(Leaf::Dg)),
+        kind::SPGR => Some(Class::Leaf(Leaf::Spgr)),
+        kind::SP => Some(Class::Leaf(Leaf::Sp)),
+        kind::OPT => Some(Class::Leaf(Leaf::Options)),
+        kind::TEXTBOX | kind::CLIENT_TEXTBOX => Some(Class::Leaf(Leaf::Textbox)),
+        kind::CHILD_ANCHOR => Some(Class::Leaf(Leaf::ChildAnchor)),
+        kind::CLIENT_ANCHOR => Some(Class::Leaf(Leaf::ClientAnchor)),
+        kind::CLIENT_DATA => Some(Class::Leaf(Leaf::ClientData)),
+        kind::BLIP_EMF | kind::BLIP_WMF | kind::BLIP_PICT => Some(Class::Leaf(Leaf::MetafileBlip)),
         kind::BLIP_JPEG | kind::BLIP_PNG | kind::BLIP_DIB | kind::BLIP_TIFF => {
-            Some(Class::BitmapBlip)
+            Some(Class::Leaf(Leaf::BitmapBlip))
         }
-        kind::SPLIT_MENU_COLORS => Some(Class::SplitMenuColors),
-        kind::TERTIARY_OPT => Some(Class::TertiaryOptions),
+        kind::SPLIT_MENU_COLORS => Some(Class::Leaf(Leaf::SplitMenuColors)),
+        kind::TERTIARY_OPT => Some(Class::Leaf(Leaf::TertiaryOptions)),
         _ => None,
     };
     if let Some(class) = known {
@@ -214,7 +221,7 @@ fn class_of(options: u16, record_id: u16, factory: Factory) -> Class {
         return Class::Container;
     }
     if (kind::BLIP_START..=kind::BLIP_END).contains(&record_id) {
-        return Class::Blip;
+        return Class::Leaf(Leaf::Blip);
     }
     Class::Unknown
 }
@@ -239,7 +246,7 @@ pub(crate) fn record_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
 
 /// `createRecord` and `fillFields` at `offset`, by `factory`.
 pub(crate) fn made_at(data: &[u8], offset: usize, factory: Factory) -> Read<(Escher, isize)> {
-    fill(data, offset, create(data, offset, factory)?, 0, factory)
+    fill(data, offset, create(data, offset, factory)?, factory)
 }
 
 /// `new EscherContainerRecord().fillFields` at `offset`: the record read as a container
@@ -254,7 +261,7 @@ pub(crate) fn container_made_at(
     offset: usize,
     factory: Factory,
 ) -> Read<(Escher, isize)> {
-    fill(data, offset, Class::Container, 0, factory)
+    fill(data, offset, Class::Container, factory)
 }
 
 /// `AbstractEscherHolderRecord.decode`: the records of a drawing group's data.
@@ -288,18 +295,173 @@ impl Escher {
     }
 }
 
+/// A record's header: its options, its type and the length of its body.
+fn header(data: &[u8], offset: usize) -> Read<(u16, u16, i64)> {
+    let options = i16_at(data, offset)? as u16;
+    let record_id = i16_at(data, offset + 2)? as u16;
+    Ok((options, record_id, i64::from(i32_at(data, offset + 4)?)))
+}
+
 /// `fillFields` of a record of `class` at `offset`: the record, and the length POI says it
 /// read.
-fn fill(
+///
+/// POI recurses into the records a record holds, as deep as 1000 levels; this reads them
+/// with a stack of the records still being filled instead, so that any nesting POI reads fits.
+fn fill(data: &[u8], offset: usize, class: Class, factory: Factory) -> Read<(Escher, isize)> {
+    let mut innermost = match open(data, offset, class, 0, factory)? {
+        Opened::Filled(record, consumed) => return Ok((record, consumed)),
+        Opened::Filling(holder) => holder,
+    };
+    let mut outer: Vec<Filling> = Vec::new();
+    loop {
+        match innermost.next_child(data.len())? {
+            Some(at) => {
+                let class = create(data, at, factory)?;
+                match open(data, at, class, outer.len() + 1, factory)? {
+                    Opened::Filled(child, consumed) => innermost.add(child, consumed)?,
+                    Opened::Filling(holder) => {
+                        outer.push(std::mem::replace(&mut innermost, holder))
+                    }
+                }
+            }
+            None => {
+                let (record, consumed) = innermost.finish();
+                match outer.pop() {
+                    None => return Ok((record, consumed)),
+                    Some(parent) => {
+                        innermost = parent;
+                        innermost.add(record, consumed)?;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A record that holds records, as `fillFields` reads its children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holding {
+    /// An `EscherContainerRecord`, which stops at the end of the data and bounds its children.
+    Container,
+    /// An `UnknownEscherRecord` whose options say it holds records.
+    Unknown,
+}
+
+/// A record whose children are being read: what `fillFields` has read of it so far.
+struct Filling {
+    holding: Holding,
+    record_id: u16,
+    remaining: i64,
+    written: i64,
+    position: i64,
+    children: Vec<Escher>,
+}
+
+impl Filling {
+    /// Where its next child starts, or `None` once it has read them all.
+    fn next_child(&self, available: usize) -> Read<Option<usize>> {
+        if self.remaining <= 0 {
+            return Ok(None);
+        }
+        match self.holding {
+            Holding::Container => Ok(usize::try_from(self.position)
+                .ok()
+                .filter(|&position| position < available)),
+            Holding::Unknown => usize::try_from(self.position)
+                .map(Some)
+                .map_err(|_| Thrown::new("Escher records run back before the data")),
+        }
+    }
+
+    /// Adds a child POI says it read `consumed` bytes of.
+    fn add(&mut self, child: Escher, consumed: isize) -> Read<()> {
+        let consumed = consumed as i64;
+        self.written += consumed;
+        self.position += consumed;
+        self.remaining -= consumed;
+        if self.holding == Holding::Container {
+            if self.children.len() >= MAX_NUMBER_OF_CHILDREN {
+                return thrown("Cannot add more than 100000 child records");
+            }
+            if self.position < 0 {
+                return thrown("Escher records run back before the data");
+            }
+        }
+        self.children.push(child);
+        Ok(())
+    }
+
+    /// The record with its children, and the length POI says it read.
+    fn finish(self) -> (Escher, isize) {
+        let content = match self.holding {
+            Holding::Container => Content::Container,
+            Holding::Unknown => Content::Other,
+        };
+        let record = Escher {
+            record_id: self.record_id,
+            content,
+            children: self.children,
+        };
+        (record, self.written as isize)
+    }
+}
+
+/// A record `fillFields` has begun to read.
+enum Opened {
+    Filled(Escher, isize),
+    /// A record whose children are still to be read.
+    Filling(Filling),
+}
+
+/// Begins `fillFields` of a record of `class` at `offset`, `nesting` levels deep.
+fn open(
     data: &[u8],
     offset: usize,
     class: Class,
     nesting: usize,
     factory: Factory,
-) -> Read<(Escher, isize)> {
-    let options = i16_at(data, offset)? as u16;
-    let record_id = i16_at(data, offset + 2)? as u16;
-    let length = i64::from(i32_at(data, offset + 4)?);
+) -> Read<Opened> {
+    let holding = match class {
+        Class::Leaf(leaf) => {
+            let (record, consumed) = fill_leaf(data, offset, leaf, factory)?;
+            return Ok(Opened::Filled(record, consumed));
+        }
+        Class::Container => Holding::Container,
+        Class::Unknown => Holding::Unknown,
+    };
+    let (options, record_id, length) = header(data, offset)?;
+    let body = offset + 8;
+    if nesting > MAX_NESTED_CHILD_NODES {
+        return thrown("Had more than the limit of 1000 nested child notes");
+    }
+    let remaining = match holding {
+        Holding::Container => length,
+        Holding::Unknown => {
+            let remaining = length.min(data.len() as i64 - body as i64);
+            if options & 0x000F != 0x000F {
+                let remaining = remaining.max(0);
+                clone(data, body, remaining, MAX_LARGE_RECORD)?;
+                return Ok(Opened::Filled(
+                    Escher::other(record_id),
+                    (remaining + 8) as isize,
+                ));
+            }
+            remaining
+        }
+    };
+    Ok(Opened::Filling(Filling {
+        holding,
+        record_id,
+        remaining,
+        written: 8,
+        position: body as i64,
+        children: Vec::new(),
+    }))
+}
+
+/// `fillFields` of a record of `class` at `offset` that holds no records.
+fn fill_leaf(data: &[u8], offset: usize, class: Leaf, factory: Factory) -> Read<(Escher, isize)> {
+    let (options, record_id, length) = header(data, offset)?;
     let body = offset + 8;
     let read = |consumed: i64| consumed as isize;
     let other = || Escher::other(record_id);
@@ -309,73 +471,7 @@ fn fill(
         children: Vec::new(),
     };
     Ok(match class {
-        Class::Container => {
-            if nesting > MAX_NESTED_CHILD_NODES {
-                return thrown("Had more than the limit of 1000 nested child notes");
-            }
-            let mut remaining = length;
-            let mut written: i64 = 8;
-            let mut position = body as i64;
-            let mut children = Vec::new();
-            while remaining > 0 && position < data.len() as i64 {
-                let at = position as usize;
-                let child_class = create(data, at, factory)?;
-                let (child, consumed) = fill(data, at, child_class, nesting + 1, factory)?;
-                written += consumed as i64;
-                position += consumed as i64;
-                remaining -= consumed as i64;
-                if children.len() >= MAX_NUMBER_OF_CHILDREN {
-                    return thrown("Cannot add more than 100000 child records");
-                }
-                children.push(child);
-                if position < 0 {
-                    return thrown("Escher records run back before the data");
-                }
-            }
-            (
-                Escher {
-                    record_id,
-                    content: Content::Container,
-                    children,
-                },
-                read(written),
-            )
-        }
-        Class::Unknown => {
-            if nesting > MAX_NESTED_CHILD_NODES {
-                return thrown("Had more than the limit of 1000 nested child notes");
-            }
-            let available = data.len() as i64 - body as i64;
-            let mut remaining = length.min(available);
-            if options & 0x000F == 0x000F {
-                let mut written: i64 = 8;
-                let mut position = body as i64;
-                let mut children = Vec::new();
-                while remaining > 0 {
-                    let at = usize::try_from(position)
-                        .map_err(|_| Thrown::new("Escher records run back before the data"))?;
-                    let child_class = create(data, at, factory)?;
-                    let (child, consumed) = fill(data, at, child_class, nesting + 1, factory)?;
-                    written += consumed as i64;
-                    position += consumed as i64;
-                    remaining -= consumed as i64;
-                    children.push(child);
-                }
-                (
-                    Escher {
-                        record_id,
-                        content: Content::Other,
-                        children,
-                    },
-                    read(written),
-                )
-            } else {
-                remaining = remaining.max(0);
-                clone(data, body, remaining, MAX_LARGE_RECORD)?;
-                (other(), read(remaining + 8))
-            }
-        }
-        Class::Dgg => {
+        Leaf::Dgg => {
             for at in [0, 8, 12] {
                 i32_at(data, body + at)?;
             }
@@ -394,7 +490,7 @@ fn fill(
             }
             (other(), read(8 + size))
         }
-        Class::Bse => {
+        Leaf::Bse => {
             if body + 36 > data.len() {
                 return thrown("BSE record ends before its fields");
             }
@@ -405,13 +501,12 @@ fn fill(
             let mut blip = None;
             let mut blip_size = 0;
             if remaining > 0 {
-                let blip_class = create(data, body + 36, factory)?;
-                if !matches!(
-                    blip_class,
-                    Class::Blip | Class::BitmapBlip | Class::MetafileBlip
-                ) {
-                    return thrown("Did not have a EscherBlipRecord");
-                }
+                let blip_class = match create(data, body + 36, factory)? {
+                    Class::Leaf(blip @ (Leaf::Blip | Leaf::BitmapBlip | Leaf::MetafileBlip)) => {
+                        blip
+                    }
+                    _ => return thrown("Did not have a EscherBlipRecord"),
+                };
                 let (found, read_length, size) = fill_blip(data, body + 36, blip_class)?;
                 remaining -= read_length;
                 blip_size = size;
@@ -437,7 +532,7 @@ fn fill(
                 read(remaining + 8 + 36 + blip_size),
             )
         }
-        Class::Blip | Class::BitmapBlip | Class::MetafileBlip => {
+        Leaf::Blip | Leaf::BitmapBlip | Leaf::MetafileBlip => {
             let (blip, read_length, _) = fill_blip(data, offset, class)?;
             (
                 Escher {
@@ -448,12 +543,12 @@ fn fill(
                 read(read_length),
             )
         }
-        Class::Dg => {
+        Leaf::Dg => {
             i32_at(data, body)?;
             i32_at(data, body + 4)?;
             (other(), 16)
         }
-        Class::Sp => {
+        Leaf::Sp => {
             let shape = Shape {
                 kind: options >> 4,
                 id: i32_at(data, body)?,
@@ -461,7 +556,7 @@ fn fill(
             };
             (with(Content::Shape(shape)), 16)
         }
-        Class::Spgr | Class::SplitMenuColors => {
+        Leaf::Spgr | Leaf::SplitMenuColors => {
             for at in [0, 4, 8, 12] {
                 i32_at(data, body + at)?;
             }
@@ -473,24 +568,24 @@ fn fill(
             }
             (other(), 24)
         }
-        Class::Options | Class::TertiaryOptions => {
+        Leaf::Options | Leaf::TertiaryOptions => {
             if length < 0 {
                 return thrown(format!("Invalid value for bytesRemaining: {length}"));
             }
             let count = (options & 0xFFF0) >> 4;
             let properties = Options(properties(data, body, count)?);
-            let content = if class == Class::Options {
+            let content = if class == Leaf::Options {
                 Content::Options(properties)
             } else {
                 Content::TertiaryOptions(properties)
             };
             (with(content), read(length + 8))
         }
-        Class::Textbox => {
+        Leaf::Textbox => {
             let text = clone(data, body, length, MAX_SMALL_RECORD)?;
             (with(Content::Textbox(text)), read(length + 8))
         }
-        Class::ChildAnchor => {
+        Leaf::ChildAnchor => {
             let corners = match length {
                 16 => [0, 4, 8, 12].map(|at| i32_at(data, body + at)),
                 8 => [0, 2, 4, 6].map(|at| i16_at(data, body + at).map(i32::from)),
@@ -502,7 +597,7 @@ fn fill(
                 read(8 + length),
             )
         }
-        Class::ClientAnchor => {
+        Leaf::ClientAnchor => {
             let mut size = 0i64;
             let mut corners = None;
             if length != 4 {
@@ -516,17 +611,17 @@ fn fill(
             clone(data, body + size as usize, length - size, MAX_SMALL_RECORD)?;
             (with(Content::ClientAnchor(corners)), read(8 + length))
         }
-        Class::ClientData => {
+        Leaf::ClientData => {
             if length != 0 {
                 clone(data, body, length, MAX_SMALL_RECORD)?;
             }
             (other(), read(8 + length))
         }
-        Class::SlidesClientData => {
+        Leaf::SlidesClientData => {
             let records = clone(data, body, length, MAX_SLIDE_RECORD)?;
             (with(Content::ClientData(records)), read(length + 8))
         }
-        Class::Placeholder => {
+        Leaf::Placeholder => {
             i32_at(data, body)?;
             i16_at(data, body + 6)?;
             (other(), read(length + 8))
@@ -535,13 +630,13 @@ fn fill(
 }
 
 /// A blip record's `fillFields`: the blip, the length POI says it read, and its record size.
-fn fill_blip(data: &[u8], offset: usize, class: Class) -> Read<(Blip, i64, i64)> {
+fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip, i64, i64)> {
     let options = i16_at(data, offset)? as u16;
     let record_id = i16_at(data, offset + 2)? as u16;
     let length = i64::from(i32_at(data, offset + 4)?);
     let body = offset + 8;
     let picture = match class {
-        Class::BitmapBlip => {
+        Leaf::BitmapBlip => {
             if body + 17 > data.len() {
                 return thrown("bitmap blip ends before its fields");
             }
@@ -561,7 +656,7 @@ fn fill_blip(data: &[u8], offset: usize, class: Class) -> Read<(Blip, i64, i64)>
                 record_size,
             ));
         }
-        Class::MetafileBlip => {
+        Leaf::MetafileBlip => {
             let signature: u16 = match record_id {
                 kind::BLIP_EMF => 0x3D40,
                 kind::BLIP_WMF => 0x2160,
@@ -853,6 +948,24 @@ pub(crate) mod tests {
         assert!(decode(&record(0, kind::DGG, &[0; 15])).is_err());
         assert!(decode(&record(0, kind::SPLIT_MENU_COLORS, &[0; 12])).is_err());
         assert!(decode(&record(0x000F, 0xF000, &[0; 4])).is_err());
+    }
+
+    /// `levels` containers, each holding the next, the innermost holding a shape.
+    fn nested(levels: usize) -> Vec<u8> {
+        (0..levels).fold(record(0x0002, kind::SP, &[0; 8]), |inner, _| {
+            record(0x000F, 0xF004, &inner)
+        })
+    }
+
+    #[test]
+    fn reads_as_many_levels_of_nesting_as_poi_does() {
+        let (outer, _) = record_at(&nested(MAX_NESTED_CHILD_NODES + 1), 0).unwrap();
+        let innermost = (0..=MAX_NESTED_CHILD_NODES).fold(&outer, |record, _| &record.children[0]);
+        assert_eq!(innermost.record_id, kind::SP);
+        assert_eq!(
+            record_at(&nested(MAX_NESTED_CHILD_NODES + 2), 0).map(|_| ()),
+            thrown("Had more than the limit of 1000 nested child notes")
+        );
     }
 
     #[test]
