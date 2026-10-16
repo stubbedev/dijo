@@ -463,9 +463,11 @@ mod tests {
     fn fails_on_keys_that_are_not_strings_before_writing() {
         // dd-plist takes any object's `toString` as a key (#104).
         use Item::*;
-        let number_key = bplist(&[Dict(vec![(1, 2)]), Int(7), Ascii("seven")], 0);
-        let failure = body(&number_key).unwrap_err();
-        assert!(failure.contains("is not a string"), "{failure}");
+        for key in [Int(7), Uid(7), Array(vec![])] {
+            let list = bplist(&[Dict(vec![(1, 2)]), key, Ascii("seven")], 0);
+            let failure = body(&list).unwrap_err();
+            assert!(failure.contains("is not a string"), "{failure}");
+        }
     }
 
     #[test]
