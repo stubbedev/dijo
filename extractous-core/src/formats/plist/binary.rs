@@ -4,9 +4,11 @@
 //! object parsed once however often it is referenced; and the `int` casts and array accesses
 //! Java makes, which fail as a `RuntimeException` rather than a `PropertyListFormatException`.
 //!
-//! A port rather than a crate, as dd-plist's object model is what Tika reads and writes: a UID
-//! is named by the number of its object, a dictionary key is any object's `toString`, a
-//! dictionary drops its null values, and strings decode as the JDK decodes them.
+//! A port rather than a crate, as dd-plist's object model is what Tika reads and writes: a
+//! dictionary key is any object's `toString`, a dictionary drops its null values, and strings
+//! decode as the JDK decodes them. Unlike dd-plist, a UID is named by its value, not by the
+//! number of its object, and a UTF-8 string's characters are measured by their real length,
+//! where dd-plist counts two bytes for each multibyte one (#104).
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -62,11 +64,8 @@ pub(crate) enum Object {
     Data(Vec<u8>),
     /// Seconds since 2001-01-01.
     Date(f64),
-    /// A UID, named by the number of its object.
-    Uid {
-        object: i32,
-        value: u128,
-    },
+    /// A UID.
+    Uid(u128),
 }
 
 /// A dictionary's key: the `toString` of its object where the port writes it, else the object.
@@ -166,7 +165,7 @@ impl Object {
             Object::Real(value) if *value == f64::INFINITY => "+infinity".to_owned(),
             Object::Real(value) if *value == f64::NEG_INFINITY => "-infinity".to_owned(),
             Object::Real(value) => java_double_to_string(*value),
-            Object::Uid { object, value } => format!("{value:x} ({object})"),
+            Object::Uid(value) => format!("{value:x} ({value})"),
             Object::Dict(_)
             | Object::Array(_)
             | Object::Set(_)
@@ -324,7 +323,7 @@ impl Parser<'_> {
                         "The NSObject at offset {offset} is a URL, which is not supported."
                     )))
                 }
-                0xE => self.uid(object, offset, 16)?,
+                0xE => self.uid(offset, 16)?,
                 _ => return Err(unsupported()),
             },
             INT_TYPE | REAL_TYPE => {
@@ -378,7 +377,7 @@ impl Parser<'_> {
                         .expect("the JDK's Unicode and ASCII charsets decode natively"),
                 )
             }
-            UID_TYPE => self.uid(object, offset, i32::from(info) + 1)?,
+            UID_TYPE => self.uid(offset, i32::from(info) + 1)?,
             ARRAY_TYPE | ORDERED_SET_TYPE | SET_TYPE => {
                 let (count, header) = self.length_and_offset(info, offset)?;
                 let base = offset + header;
@@ -501,9 +500,8 @@ impl Parser<'_> {
         Ok((value, length_length))
     }
 
-    /// `calculateUtf8StringLength`: the bytes of `characters` characters, counting two for a
-    /// multibyte one whatever its length, and the count itself where the bytes run out or turn
-    /// out malformed; `None` where Java's exact sum overflows.
+    /// `calculateUtf8StringLength`: the bytes of `characters` characters, and the count itself
+    /// where the bytes run out or turn out malformed; `None` where Java's exact sum overflows.
     fn utf8_length(&self, start: i32, characters: i32) -> Option<i32> {
         let mut length: i32 = 0;
         for _ in 0..characters {
@@ -529,19 +527,19 @@ impl Parser<'_> {
             if !complete {
                 return Some(characters);
             }
-            length += 2;
+            length = length.checked_add(following + 1)?;
         }
         Some(length)
     }
 
-    /// `parseUid`: the UID of `length` bytes after the marker, named by its object's number.
-    fn uid(&self, object: i32, offset: i32, length: i32) -> Result<Object, Thrown> {
+    /// `parseUid`: the UID of `length` bytes after the marker.
+    fn uid(&self, offset: i32, length: i32) -> Result<Object, Thrown> {
         let end = self.safe_add(offset, length + 1, "UID")?;
         let value = self
             .slice(offset + 1, end)
             .iter()
             .fold(0u128, |value, &byte| value << 8 | u128::from(byte));
-        Ok(Object::Uid { object, value })
+        Ok(Object::Uid(value))
     }
 }
 
@@ -628,7 +626,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reads_objects_as_dd_plist_does() {
+    fn reads_objects() {
         use Item::*;
         let list = bplist(
             &[
@@ -661,7 +659,10 @@ pub(crate) mod tests {
             entries,
             [
                 ("key".to_owned(), Object::String("second".to_owned())),
-                ("a (6)".to_owned(), Object::String("\u{20AC}u".to_owned())),
+                (
+                    "a (10)".to_owned(),
+                    Object::String("\u{20AC}uro".to_owned())
+                ),
                 (
                     "na\u{ef}ve".to_owned(),
                     Object::String("caf\u{FFFD}\u{FFFD}".to_owned())

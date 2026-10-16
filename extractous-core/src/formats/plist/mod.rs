@@ -236,7 +236,7 @@ fn write(value: &Value, dates: &Dates, xhtml: &mut Xhtml) -> Result<(), Failure>
                 .map_err(|problem| Failure::Malformed(format!("{problem:?}")))?;
             element("date", &text, xhtml)?;
         }
-        Object::Uid { object, .. } => xhtml.element("uid", &object.to_string())?,
+        Object::Uid(value) => xhtml.element("uid", &value.to_string())?,
         number @ (Object::Integer(_) | Object::Real(_) | Object::Boolean(_)) => element(
             "number",
             &number.text().expect("a number has a text"),
@@ -379,9 +379,11 @@ mod tests {
                 Real(-0.0),
                 Bool(false),
                 Ascii("a"),
-                Uid(3),
+                // dd-plist names a UID by its object and mis-measures multibyte UTF-8 (#104),
+                // which `binary`'s tests check the port does not.
+                Int(3),
                 Utf16("Gr\u{fc}\u{df}e \u{1F600}"),
-                Utf8("\u{20AC}uro"),
+                Utf8("euro"),
                 Real(1e300),
                 Dict(vec![(1, 2)]),
             ],
