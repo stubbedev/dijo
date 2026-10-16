@@ -24,6 +24,7 @@ mod jdk_zip;
 mod mail;
 pub(crate) mod media;
 pub(crate) mod metadata;
+mod mif;
 mod mobi;
 mod notebook;
 mod odf;
@@ -198,6 +199,7 @@ static PARSERS: &[&dyn Parser] = &[
     &translation::TmxParser,
     &translation::Xliff12Parser,
     &dif::DifParser,
+    &mif::MifParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,

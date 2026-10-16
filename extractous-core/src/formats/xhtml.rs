@@ -325,7 +325,7 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
-    fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
+    pub(crate) fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
         let frameset = self.frameset();
         self.end_head(frameset)?;
