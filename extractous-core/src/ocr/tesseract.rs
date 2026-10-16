@@ -275,20 +275,21 @@ impl Tesseract {
         extern "C" {
             fn omp_set_num_threads(threads: c_int);
         }
-        let datapath = datapath
-            .to_str()
-            .and_then(|path| CString::new(path).ok())
-            .ok_or_else(|| format!("The language data path {} is not UTF-8", datapath.display()))?;
         Ok(Self::new(
             Api::linked(),
             Some(omp_set_num_threads),
-            Some(datapath),
+            Some(c_path(datapath)?),
         ))
     }
 
-    /// The tesseract of a library, with the language data its program reads.
+    /// The tesseract of a library, with the language data under `datapath`, or else where it
+    /// looks by itself.
     #[cfg(not(feature = "static-image"))]
-    pub(crate) fn loaded(library: &std::path::Path) -> Result<Self, String> {
+    pub(crate) fn loaded(
+        library: &std::path::Path,
+        datapath: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        let datapath = datapath.map(c_path).transpose()?;
         let loaded = unsafe { libloading::Library::new(library) }.map_err(|e| {
             format!(
                 "Loading tesseract's library {} failed: {e}",
@@ -300,7 +301,7 @@ impl Tesseract {
         let set_threads = unsafe { loaded.get::<SetThreads>(b"omp_set_num_threads\0") }
             .ok()
             .map(|symbol| *symbol);
-        Ok(Self::new(api, set_threads, None, loaded))
+        Ok(Self::new(api, set_threads, datapath, loaded))
     }
 
     fn new(
@@ -330,8 +331,8 @@ impl Tesseract {
 
     /// Reads the text in an image with a model, a page segmentation mode and a thresholding,
     /// as `tesseract <image> stdout --psm <mode> -l <model> -c thresholding_method=<method>`
-    /// prints it, with its words' mean confidence. With `poor`, gives the reading up once it
-    /// goes poorly: none then.
+    /// prints it, with its words' mean confidence, within `timeout` when it has one. With
+    /// `poor`, gives the reading up once it goes poorly: none then.
     pub(crate) fn read(
         &self,
         image: Pixels<'_>,
@@ -339,7 +340,7 @@ impl Tesseract {
         segmentation: PageSegMode,
         thresholding: Thresholding,
         poor: Option<Poor>,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<Option<Reading>, OcrError> {
         let engine = self.take(model)?;
         let threads = self.take_threads();
@@ -366,7 +367,7 @@ impl Tesseract {
         segmentation: PageSegMode,
         thresholding: Thresholding,
         poor: Option<Poor>,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<Option<Reading>, OcrError> {
         let api = &self.api;
         let handle = engine.0.as_ptr();
@@ -392,8 +393,10 @@ impl Tesseract {
             );
             (api.set_page_seg_mode)(handle, c_int::from(segmentation.0));
             image.set_on(api, handle);
-            let millis = c_int::try_from(timeout.as_millis()).unwrap_or(c_int::MAX);
-            (api.set_deadline)(monitor.0, millis);
+            if let Some(timeout) = timeout {
+                let millis = c_int::try_from(timeout.as_millis()).unwrap_or(c_int::MAX);
+                (api.set_deadline)(monitor.0, millis);
+            }
             if judge.is_some() {
                 (api.set_cancel)(monitor.0, Some(cancel_when_poor));
                 (api.set_progress)(monitor.0, Some(note_group));
@@ -406,7 +409,7 @@ impl Tesseract {
         let reading = if status < 0 {
             if judge.as_ref().is_some_and(|judge| judge.given_up) {
                 Ok(None)
-            } else if start.elapsed() >= timeout {
+            } else if let Some(timeout) = timeout.filter(|&timeout| start.elapsed() >= timeout) {
                 Err(OcrError::TimedOut {
                     image: image.describe(),
                     millis: timeout.as_millis(),
@@ -600,6 +603,13 @@ impl Drop for Tesseract {
             unsafe { (self.api.delete)(idle.engine.0.as_ptr()) };
         }
     }
+}
+
+/// A path as tesseract's C API takes it.
+fn c_path(path: &std::path::Path) -> Result<CString, String> {
+    path.to_str()
+        .and_then(|text| CString::new(text).ok())
+        .ok_or_else(|| format!("The language data path {} is not UTF-8", path.display()))
 }
 
 /// The models under a directory, in its subdirectories too, named as `-l` names them: their

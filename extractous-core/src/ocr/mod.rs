@@ -104,8 +104,9 @@ pub(crate) fn tesseract_runs() -> bool {
 }
 
 /// The tesseract native readings run, set up once per process: the one linked into the static
-/// executable with the bundled language data, or the library of the `tesseract` on the `PATH`,
-/// which reads the language data that program reads. Why there is none otherwise.
+/// executable with the bundled language data, the bundled library with it, or the library of
+/// the `tesseract` on the `PATH`, which reads the language data that program reads. Why there is
+/// none otherwise, as for a bundled library that offers Tika's path its JNI functions alone.
 pub(crate) fn tesseract() -> Result<&'static Tesseract, String> {
     static TESSERACT: OnceLock<Result<Tesseract, String>> = OnceLock::new();
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)
@@ -120,16 +121,16 @@ fn set_up() -> Result<Tesseract, String> {
 
 #[cfg(not(feature = "static-image"))]
 fn set_up() -> Result<Tesseract, String> {
-    if let Some(library) = native::bundled_tesseract_library() {
-        return Err(format!(
-            "the bundled tesseract library {library} offers Tika's path its functions only"
-        ));
+    if let Some(library) = native::bundled_tesseract_library()? {
+        let tessdata = native::bundled_tessdata()?
+            .ok_or("The build bundles a tesseract library but no language data")?;
+        return Tesseract::loaded(&library, Some(&tessdata));
     }
     let program = program_on_path().ok_or("no tesseract on the PATH")?;
     let program_version = native::tesseract_version()?;
     let mut failures = Vec::new();
     for library in library_candidates(&program) {
-        let tesseract = match Tesseract::loaded(&library) {
+        let tesseract = match Tesseract::loaded(&library, None) {
             Ok(tesseract) => tesseract,
             Err(failure) => {
                 failures.push(failure);

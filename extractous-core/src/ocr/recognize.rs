@@ -66,7 +66,8 @@ enum Language {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OcrSettings {
     language: Language,
-    timeout: Duration,
+    /// The time a run of tesseract may take, or none for no limit.
+    timeout: Option<Duration>,
 }
 
 impl OcrSettings {
@@ -79,7 +80,10 @@ impl OcrSettings {
         let seconds = config.timeout_seconds().unwrap_or(DEFAULT_TIMEOUT_SECONDS);
         Self {
             language,
-            timeout: Duration::from_millis(u64::try_from(seconds).unwrap_or(0) * 1000),
+            timeout: u64::try_from(seconds)
+                .ok()
+                .filter(|&seconds| seconds > 0)
+                .map(Duration::from_secs),
         }
     }
 
@@ -634,6 +638,27 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limits_runs_as_the_configuration_says() {
+        let timeout = |config: TesseractOcrConfig| OcrSettings::of(&config).timeout;
+        assert_eq!(
+            timeout(TesseractOcrConfig::new()),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            timeout(TesseractOcrConfig::new().set_timeout_seconds(5)),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            timeout(TesseractOcrConfig::new().set_timeout_seconds(0)),
+            None
+        );
+        assert_eq!(
+            timeout(TesseractOcrConfig::new().set_timeout_seconds(-1)),
+            None
+        );
+    }
 
     #[test]
     fn counts_words_as_java_splits_them() {
