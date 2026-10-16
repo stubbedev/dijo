@@ -218,6 +218,9 @@ struct BlockGroup {
 /// The tagged writer's state.
 pub(super) struct Tagged<'p> {
     pub(super) reading_order: bool,
+    /// Whether a page with tagged text is written through the tree only when it passes the
+    /// gate, as `MarkedContentConfig.Strategy.AUTO` has it, rather than always, as `TAGS` has.
+    gated: bool,
     index: Option<StructureIndex<'p, ElementSpec>>,
     pdf: &'p Pdf,
     state: State,
@@ -236,12 +239,13 @@ pub(super) struct Tagged<'p> {
 }
 
 impl<'p> Tagged<'p> {
-    pub(super) fn new(pdf: &'p Pdf, reading_order: bool) -> Self {
+    pub(super) fn new(pdf: &'p Pdf, reading_order: bool, gated: bool) -> Self {
         let index = StructureIndex::load(pdf);
         let document_rejection = index.reason;
         let index = document_rejection.is_none().then_some(index);
         Self {
             reading_order,
+            gated,
             index,
             pdf,
             state: State::Idle,
@@ -565,6 +569,9 @@ impl<'p> Tagged<'p> {
         }
         if tagged == 0 {
             return Some("no-tagged-text".to_owned());
+        }
+        if !self.gated {
+            return None;
         }
         if in_block == 0 {
             return Some("no-block-structure".to_owned());

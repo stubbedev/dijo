@@ -11,13 +11,12 @@ use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
 use super::form;
-use super::ocr::OcrCheck;
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
-use super::{jfloat, xfa, Unported};
+use super::{jfloat, xfa, Settings, Unported};
 use crate::formats::handlers::is_blank;
 use crate::formats::xhtml::{Stop, Xhtml};
 
@@ -189,10 +188,7 @@ pub(super) struct DocumentWriter<'p, 'r> {
     pub(super) page: PageWriter<'p, 'r>,
     /// `getCurrentPageNo`.
     page_number: usize,
-    /// Whether untagged pages are put into reading order.
-    reading_order: bool,
-    /// How Tika's path decides whether it OCRs a page, which leaves the document to it.
-    ocr: OcrCheck,
+    settings: Settings,
     annotation_types: BTreeSet<String>,
     annotation_subtypes: BTreeSet<String>,
     total_glyphs: i64,
@@ -206,8 +202,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         pdf: &'p Pdf,
         out: &'r mut Recording,
         tagged: Option<Tagged<'p>>,
-        reading_order: bool,
-        ocr: OcrCheck,
+        settings: Settings,
     ) -> Self {
         let labels = tagged.as_ref().is_some_and(Tagged::has_index);
         if let Some(reason) = tagged.as_ref().and_then(|tagged| tagged.document_rejection) {
@@ -223,8 +218,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 layer_text: None,
             },
             page_number: 0,
-            reading_order,
-            ocr,
+            settings,
             annotation_types: BTreeSet::new(),
             annotation_subtypes: BTreeSet::new(),
             total_glyphs: 0,
@@ -249,7 +243,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         self.page_number += 1;
         self.start_page()?;
         let mut content = self.engine.process_page(page)?;
-        if self.page.tagged.is_none() && self.reading_order {
+        if self.page.tagged.is_none() && self.settings.reading_order {
             for article in content.articles.iter_mut() {
                 reading_order::arrange(article);
             }
@@ -267,7 +261,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         self.page
             .out
             .start_element_with("div", &[("class", "page")])?;
-        if self.ocr.holds_pages() {
+        if self.settings.ocr.holds_pages() {
             self.page.out.hold();
             self.page.layer_text = Some(String::new());
         }
@@ -291,7 +285,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         self.total_unmapped += i64::from(content.unmapped);
         self.annotations(page)?;
         let layer_text = self.page.layer_text.take();
-        self.ocr.deferral(
+        self.settings.ocr.deferral(
             self.page_number,
             content.glyphs,
             content.unmapped,
@@ -356,6 +350,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 }
             }
         }
+        if !self.settings.annotation_text {
+            return Ok(());
+        }
         if matches!(subtype.as_deref(), Some("Link" | "Widget")) {
             if let Some(uri) = action_uri(pdf, annotation) {
                 if !is_blank(&uri) {
@@ -403,7 +400,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 pages_fallback.to_string(),
             );
         }
-        self.bookmarks()?;
+        if self.settings.bookmarks {
+            self.bookmarks()?;
+        }
         self.embedded_documents()?;
         self.acro_form()?;
         let out = &mut *self.page.out;
@@ -536,7 +535,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                     Written::Embedded { attributes, file } => {
                         self.page.start("div", &borrowed(&attributes))?;
                         self.page.end("div")?;
-                        if self.ocr.holds_pages() {
+                        if self.settings.ocr.holds_pages() {
                             return Err(Unported(
                                 "a file an annotation embeds, whose text our \
                                  TextLayerCheckingPdfParser weighs with the page's"

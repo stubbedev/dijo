@@ -364,11 +364,21 @@ pub(crate) fn assert_same_as_tika_delegating(
     tika_name: &str,
     delegates: &[(&str, &str)],
 ) {
+    assert_same_as_tika_delegating_with(documents, tika_name, delegates, &ParserConfigs::default());
+}
+
+/// [`assert_same_as_tika_delegating`] under the settings `configs`.
+pub(crate) fn assert_same_as_tika_delegating_with(
+    documents: &[&Path],
+    tika_name: &str,
+    delegates: &[(&str, &str)],
+    configs: &ParserConfigs,
+) {
     let expected = Expected::Same(Naming {
         tika_name,
         delegates,
     });
-    compare(documents, &ParserConfigs::default(), expected);
+    compare(documents, configs, expected);
 }
 
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.

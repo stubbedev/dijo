@@ -41,7 +41,7 @@ use std::sync::OnceLock;
 
 use lopdf::Document;
 
-use crate::config::ParserConfigs;
+use crate::config::{MarkedContentStrategy, ParserConfigs, PdfParserConfig};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Stop;
@@ -101,6 +101,36 @@ impl Parser for PdfParser {
     }
 }
 
+/// The PDF settings the port reads, as Tika's `PDFParser` and our `TextLayerCheckingPdfParser`
+/// take them.
+#[derive(Debug, Clone, Copy)]
+struct Settings {
+    ocr: OcrCheck,
+    /// Whether untagged pages are put into reading order.
+    reading_order: bool,
+    marked_content: MarkedContentStrategy,
+    bookmarks: bool,
+    annotation_text: bool,
+}
+
+impl Settings {
+    /// The settings `config` sets, or why the port leaves documents to Tika under them.
+    fn of(config: &PdfParserConfig) -> Result<Self, Unported> {
+        if config.extracts_inline_images() {
+            return Err(Unported(
+                "the PDF setting setExtractInlineImages, which the port does not read".to_owned(),
+            ));
+        }
+        Ok(Self {
+            ocr: OcrCheck::of(config, ocr_runs())?,
+            reading_order: config.reads_in_reading_order(),
+            marked_content: config.marked_content(),
+            bookmarks: config.extracts_bookmarks_text(),
+            annotation_text: config.extracts_annotation_text(),
+        })
+    }
+}
+
 /// The document's extraction, recorded from `metadata`, unless the document is left to Tika:
 /// for a setting the port does not read, something in the document it does not do, or a page
 /// Tika would OCR. The document is read once, into the recording, which holds no more of it
@@ -110,18 +140,15 @@ fn record(
     metadata: &TikaMetadata,
     configs: &ParserConfigs,
 ) -> Result<Recording, Declined> {
-    if let Some(setting) = configs.pdf.unread_setting() {
-        return Err(Declined::Deferred(format!(
-            "the PDF setting {setting}, which the port does not read"
-        )));
-    }
-    let loaded = load(input).map_err(|Unported(reason)| Declined::Deferred(reason))?;
+    let deferred = |Unported(reason)| Declined::Deferred(reason);
+    let settings = Settings::of(&configs.pdf).map_err(deferred)?;
+    let loaded = load(input).map_err(deferred)?;
     let mut recording = Recording::new(metadata.clone());
     if ocr_runs() {
         recording.delegate_to(PDF_PARSER);
     }
     let recorded =
-        extract(&loaded, input, configs, &mut recording).map_err(|failure| match failure {
+        extract(&loaded, input, settings, &mut recording).map_err(|failure| match failure {
             WriteFailure::Unported(Unported(reason)) => Declined::Deferred(reason),
             WriteFailure::Stop(Stop::MemoryLimit(limit)) => {
                 Declined::Fails(Error::MemoryLimit(limit))
@@ -254,7 +281,7 @@ impl Access {
 fn extract(
     loaded: &Loaded,
     input: &[u8],
-    configs: &ParserConfigs,
+    settings: Settings,
     out: &mut Recording,
 ) -> Result<(), WriteFailure> {
     let pdf = &loaded.pdf;
@@ -300,10 +327,13 @@ fn extract(
     if is_illustrator(pdf)? {
         out.set("Content-Type", "application/illustrator");
     }
-    let reading_order = configs.pdf.reads_in_reading_order();
-    let tagged = has_marked_content.then(|| Tagged::new(pdf, reading_order));
-    let ocr = OcrCheck::of(ocr_runs());
-    DocumentWriter::new(pdf, out, tagged, reading_order, ocr).write()
+    let tagged = match settings.marked_content {
+        _ if !has_marked_content => None,
+        MarkedContentStrategy::None => None,
+        MarkedContentStrategy::Auto => Some(Tagged::new(pdf, settings.reading_order, true)),
+        MarkedContentStrategy::Tags => Some(Tagged::new(pdf, settings.reading_order, false)),
+    };
+    DocumentWriter::new(pdf, out, tagged, settings).write()
 }
 
 /// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data.
@@ -322,8 +352,10 @@ fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PdfOcrStrategy;
     use crate::formats::parity::{
-        assert_same_as_tika_delegating, conformance_corpus, documents, Scratch,
+        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
+        documents, Scratch,
     };
     use std::path::{Path, PathBuf};
 
@@ -614,6 +646,115 @@ mod tests {
         assert!(listed_where_it_is(&doc, &input, (3, 0)));
         assert!(!listed_where_it_is(&doc, &input, (4, 0)));
         assert!(!listed_where_it_is(&doc, &input, (9, 0)));
+    }
+
+    fn with_pdf(pdf: PdfParserConfig) -> ParserConfigs {
+        ParserConfigs {
+            pdf,
+            ..ParserConfigs::default()
+        }
+    }
+
+    fn corpus_documents(names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|name| {
+                CORPORA
+                    .iter()
+                    .map(|corpus| Path::new(corpus).join(name))
+                    .find(|path| path.exists())
+                    .unwrap_or_else(|| panic!("no corpus holds {name}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn extracts_under_the_settings_the_port_reads_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-settings");
+        let objects = page_objects("BT /F1 12 Tf 72 720 Td (Kort.) Tj ET");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let short = scratch.write("short.pdf", &document(&objects, b"", &[]));
+        let tagged = corpus_documents(&["danish.pdf", "report.pdf", "table.pdf"]);
+        let settings: [(PdfParserConfig, Vec<PathBuf>); 8] = [
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR),
+                [corpus_documents(&["deu-ocr.pdf"]), vec![short.clone()]].concat(),
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::AUTO),
+                corpus_documents(&["notes.pdf"]),
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy_auto("faster, 4"),
+                [corpus_documents(&["notes.pdf"]), vec![short]].concat(),
+            ),
+            (
+                PdfParserConfig::new().set_extract_marked_content(false),
+                tagged.clone(),
+            ),
+            (
+                PdfParserConfig::new().set_extract_marked_content(true),
+                [tagged.clone(), corpus_documents(&["prose-columns.pdf"])].concat(),
+            ),
+            (
+                PdfParserConfig::new().set_extract_bookmarks_text(false),
+                tagged,
+            ),
+            (
+                PdfParserConfig::new().set_extract_annotation_text(false),
+                corpus_documents(&["notes.pdf", "2022_Q3_AAPL.pdf"]),
+            ),
+            (
+                PdfParserConfig::new()
+                    .set_extract_inline_images(false)
+                    .set_extract_unique_inline_images_only(false),
+                corpus_documents(&["danish.pdf"]),
+            ),
+        ];
+        for (pdf, documents) in settings {
+            let configs = with_pdf(pdf);
+            for document in &documents {
+                let input = std::fs::read(document).unwrap();
+                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
+                assert_eq!(deferral, None, "{} under {configs:?}", document.display());
+            }
+            assert_same_as_tika_delegating_with(
+                &as_paths(&documents),
+                tika_name(),
+                &DELEGATES,
+                &configs,
+            );
+        }
+    }
+
+    #[test]
+    fn defers_under_the_settings_the_port_does_not_read() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        for (pdf, start) in [
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY),
+                "the OCR strategy OCR_ONLY",
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION),
+                "the OCR strategy OCR_AND_TEXT_EXTRACTION",
+            ),
+            (
+                PdfParserConfig::new().set_extract_inline_images(true),
+                "the PDF setting setExtractInlineImages",
+            ),
+            (
+                PdfParserConfig::new().set_ocr_strategy_auto("faster , 4"),
+                "the automatic OCR thresholds \"faster , 4\"",
+            ),
+        ] {
+            let deferral = PdfParser
+                .defers(&input, &TikaMetadata::new(), &with_pdf(pdf))
+                .unwrap_or_default();
+            assert!(deferral.starts_with(start), "{deferral}");
+        }
     }
 
     #[test]
