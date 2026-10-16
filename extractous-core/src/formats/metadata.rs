@@ -2,14 +2,30 @@
 //! The order its `names()` lists them in is visible in the XHTML head, so [`TikaMetadata::names`]
 //! reproduces that map's iteration order.
 
-use crate::java::JavaHashMap;
+use crate::java::{is_blank, utf16_length, JavaHashMap};
 use crate::Metadata;
 
+/// `Metadata.MAX_PREFIX_ROUTE_NAME_LENGTH`, in UTF-16 code units.
+const MAX_PREFIX_ROUTE_NAME_LENGTH: usize = 1024;
+/// `Metadata.MAX_PREFIX_ROUTE_NAMES`.
+const MAX_PREFIX_ROUTE_NAMES: usize = 10_000;
+
 /// A document's metadata, in the order Tika's `HashMap` holds it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct TikaMetadata {
     entries: JavaHashMap<Vec<String>>,
+    /// The distinct names [`TikaMetadata::add_prefixed`] has added, which Java keeps in a
+    /// transient field outside the map.
+    prefix_route_names: usize,
 }
+
+impl PartialEq for TikaMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Eq for TikaMetadata {}
 
 impl TikaMetadata {
     pub(crate) fn new() -> Self {
@@ -62,6 +78,23 @@ impl TikaMetadata {
             Some(values) => values.push(value),
             None => self.entries.insert(name, vec![value]),
         }
+    }
+
+    /// `Metadata.add(KeyPrefix, name, value)` for a name taken from the document: the value added
+    /// under `prefix` and `name`, unless the name is blank or longer than Tika allows, or is new
+    /// once the metadata holds as many such names as Tika takes.
+    pub(crate) fn add_prefixed(&mut self, prefix: &str, name: &str, value: impl Into<String>) {
+        if is_blank(name) || utf16_length(name) > MAX_PREFIX_ROUTE_NAME_LENGTH {
+            return;
+        }
+        let key = format!("{prefix}{name}");
+        if self.entries.get(&key).is_none() {
+            if self.prefix_route_names >= MAX_PREFIX_ROUTE_NAMES {
+                return;
+            }
+            self.prefix_route_names += 1;
+        }
+        self.add(&key, value);
     }
 
     /// The names in the order Tika's `Metadata.names()` returns them: the iteration order of a
