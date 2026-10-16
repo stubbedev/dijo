@@ -491,14 +491,28 @@ pub(crate) fn compare_ignore_case(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// `Character.toUpperCase` on a code point: its mapping where that is one character.
+/// `Character.toUpperCase` on a code point: its simple mapping, which is its full mapping where
+/// that is one character, and for the Greek small letters with ypogegrammeni their capitals with
+/// prosgegrammeni.
 fn upper(character: char) -> char {
-    single(character.to_uppercase()).unwrap_or(character)
+    match character {
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            char::from_u32(u32::from(character) + 8).expect("a Greek capital")
+        }
+        '\u{1FB3}' => '\u{1FBC}',
+        '\u{1FC3}' => '\u{1FCC}',
+        '\u{1FF3}' => '\u{1FFC}',
+        _ => single(character.to_uppercase()).unwrap_or(character),
+    }
 }
 
-/// `Character.toLowerCase` on a code point: its mapping where that is one character.
+/// `Character.toLowerCase` on a code point: its simple mapping, which is its full mapping where
+/// that is one character, and `i` for the capital I with dot above.
 fn lower(character: char) -> char {
-    single(character.to_lowercase()).unwrap_or(character)
+    match character {
+        '\u{130}' => 'i',
+        _ => single(character.to_lowercase()).unwrap_or(character),
+    }
 }
 
 fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
@@ -840,6 +854,13 @@ mod tests {
         );
         assert_eq!(compare_ignore_case("_x", "a"), Ordering::Less);
         assert_eq!(compare_ignore_case("ab", "A"), Ordering::Greater);
+        assert_eq!(
+            compare_ignore_case("\u{130}stanbul", "Table1"),
+            Ordering::Less
+        );
+        assert!(equals_ignore_case("\u{130}", "i"));
+        assert!(equals_ignore_case("\u{1FB3}", "\u{1FBC}"));
+        assert!(equals_ignore_case("\u{1F80}", "\u{1F88}"));
     }
 
     #[test]
