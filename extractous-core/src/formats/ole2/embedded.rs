@@ -15,7 +15,7 @@ use crate::formats::Unported;
 use crate::java::equals_ignore_case;
 use crate::java::is_blank;
 use crate::java::to_lower_case;
-use crate::mime::{self, ole_directory_type, MediaType, Origin};
+use crate::mime::{self, ole_container_type, ole_directory_type, MediaType, Origin};
 use crate::ole2::{class_id_string, write, EntryId, EntryKind, Ole2, Unreadable};
 
 const CONTENT_TYPE: &str = "Content-Type";
@@ -110,6 +110,13 @@ pub(crate) fn office_document(
              stored in another, and as a message of its own once handed on"
                 .to_owned(),
         ));
+    }
+    let contained = ole_container_type(file, directory);
+    if contained != detected {
+        return Err(Unported(format!(
+            "an embedded storage Tika hands on as its open container, which its detection names \
+             by its names alone, as {contained}, where its copy is {detected}"
+        )));
     }
     metadata.set(CONTENT_TYPE, kind.to_string());
     if !is_blank(&resource) {

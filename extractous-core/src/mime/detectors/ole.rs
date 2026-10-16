@@ -189,6 +189,19 @@ pub(crate) fn directory_type(file: &OleFile<'_>, directory: EntryId) -> MediaTyp
     by_names(&upper_names(directory), directory)
 }
 
+/// The type `POIFSContainerDetector` names a directory of an open compound document by when a
+/// `TikaInputStream` holds it as its open container, as one from `getFromContainer` does: by
+/// the names of its entries alone, without the directory to look into.
+pub(crate) fn container_type(file: &OleFile<'_>, directory: EntryId) -> MediaType {
+    by_names(
+        &upper_names(Some(Directory {
+            file,
+            id: directory,
+        })),
+        None,
+    )
+}
+
 /// `POIFSContainerDetector`: `None` for a document without the OLE2 signature.
 pub(crate) fn poifs(data: &[u8], file: Option<&OleFile<'_>>) -> Option<MediaType> {
     if !is_ole(data) {

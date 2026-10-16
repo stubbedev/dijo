@@ -26,6 +26,7 @@ mod uri;
 
 #[cfg(test)]
 pub(crate) use crate::ole2::tests::compound as compound_document;
+pub(crate) use detectors::ole::container_type as ole_container_type;
 pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
