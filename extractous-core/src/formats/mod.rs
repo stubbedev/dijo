@@ -25,6 +25,7 @@ mod font;
 pub(crate) mod handlers;
 pub(crate) mod html;
 mod hwpx;
+mod idml;
 mod iwork;
 mod jdk_zip;
 mod list_numbering;
@@ -208,6 +209,7 @@ static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
     &hwpx::HwpxParser,
+    &idml::IdmlParser,
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,

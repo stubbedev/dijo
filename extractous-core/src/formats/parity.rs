@@ -240,6 +240,19 @@ fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
     extracted
 }
 
+/// An extraction, its text in `char_set`, without the metadata `naming` leaves out of the
+/// comparison, in its final metadata and its XHTML head.
+fn without_metadata(mut extracted: Extracted, naming: Naming, char_set: CharSet) -> Extracted {
+    if naming.ignored.is_empty() {
+        return extracted;
+    }
+    extracted
+        .metadata
+        .retain(|(name, _)| !naming.ignored.contains(&name.as_str()));
+    extracted.text = without_head_metadata(extracted.text, char_set, naming.ignored);
+    extracted
+}
+
 /// A string extraction's native result with the embedded documents' parsers and failures that
 /// follow Tika's left out: the native path parses an embedded document whole, while Tika's stops
 /// at the length limit, before the parsers and failures of what comes after it.
@@ -278,17 +291,8 @@ fn without_frames(trace: &str) -> String {
 /// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
 /// without their frames.
 fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
-    let decoded = match char_set {
-        CharSet::UTF_8 | CharSet::US_ASCII => String::from_utf8(text.clone()).ok(),
-        CharSet::UTF_16BE => {
-            let (pairs, rest) = text.as_chunks::<2>();
-            let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_be_bytes(pair)).collect();
-            rest.is_empty()
-                .then(|| String::from_utf16(&units).ok())
-                .flatten()
-        }
-    };
-    let Some(decoded) = decoded.filter(|decoded| decoded.contains(WARNING_META)) else {
+    let Some(decoded) = decoded(&text, char_set).filter(|decoded| decoded.contains(WARNING_META))
+    else {
         return text;
     };
     let mut kept = String::with_capacity(decoded.len());
@@ -303,6 +307,40 @@ fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
         rest = &rest[end..];
     }
     kept.push_str(rest);
+    let mut encoded = Vec::with_capacity(text.len());
+    formats::encode(&kept, char_set, &mut encoded);
+    encoded
+}
+
+/// The text of an extraction in `char_set`, if it decodes.
+fn decoded(text: &[u8], char_set: CharSet) -> Option<String> {
+    match char_set {
+        CharSet::UTF_8 | CharSet::US_ASCII => String::from_utf8(text.to_vec()).ok(),
+        CharSet::UTF_16BE => {
+            let (pairs, rest) = text.as_chunks::<2>();
+            let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_be_bytes(pair)).collect();
+            rest.is_empty()
+                .then(|| String::from_utf16(&units).ok())
+                .flatten()
+        }
+    }
+}
+
+/// The text of an extraction, in `char_set`, without the XHTML head's `meta` elements of the
+/// metadata named in `ignored`.
+fn without_head_metadata(text: Vec<u8>, char_set: CharSet, ignored: &[&str]) -> Vec<u8> {
+    let Some(mut kept) = decoded(&text, char_set) else {
+        return text;
+    };
+    for name in ignored {
+        let element = format!("<meta name=\"{name}\" content=\"");
+        while let Some(start) = kept.find(&element) {
+            let end = kept[start..]
+                .find("/>")
+                .map_or(kept.len(), |end| start + end + 2);
+            kept.replace_range(start..end, "");
+        }
+    }
     let mut encoded = Vec::with_capacity(text.len());
     formats::encode(&kept, char_set, &mut encoded);
     encoded
@@ -397,6 +435,9 @@ struct Naming<'a> {
     tika_name: &'a str,
     /// The Tika names of the parsers it delegates to, each paired after its native name.
     delegates: &'a [(&'a str, &'a str)],
+    /// The metadata left out of the comparison, which Tika's path sets from more than the
+    /// document.
+    ignored: &'a [&'a str],
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -415,8 +456,26 @@ pub(crate) fn assert_same_as_tika_with(
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
+        ignored: &[],
     });
     compare(documents, configs, expected);
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts exactly what Tika's path does under Tika's default settings, but for
+/// the final values of the metadata named in `ignored`, which Tika's path sets from more than
+/// the document: the caller says why.
+pub(crate) fn assert_same_as_tika_ignoring_metadata(
+    documents: &[&Path],
+    tika_name: &str,
+    ignored: &[&str],
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        ignored,
+    });
+    compare(documents, &ParserConfigs::default(), expected);
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -440,6 +499,7 @@ pub(crate) fn assert_same_as_tika_delegating_with(
     let expected = Expected::Same(Naming {
         tika_name,
         delegates,
+        ignored: &[],
     });
     compare(documents, configs, expected);
 }
@@ -473,9 +533,13 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                 let as_expected = match (expected, &tika, &native) {
                     (Expected::Same(naming), Ok(tika), Ok(native)) => {
                         let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                        let tika = comparable(tika.clone(), char_set);
-                        let native =
-                            comparable(as_tika(native.clone(), &names, char_set), char_set);
+                        let tika =
+                            without_metadata(comparable(tika.clone(), char_set), naming, char_set);
+                        let native = without_metadata(
+                            comparable(as_tika(native.clone(), &names, char_set), char_set),
+                            naming,
+                            char_set,
+                        );
                         if entry == "string" {
                             tika == cut_to(native, &tika)
                         } else {
