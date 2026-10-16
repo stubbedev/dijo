@@ -28,8 +28,8 @@
         "width=842, height=779, bitDepth=8, colorType=RGBAlpha, compressionMethod=deflate, filterMethod=adaptive, interlaceMethod=none"
     ],
     "tk:parsed-by-full-set": [
-        "org.apache.tika.parser.image.ImageParser",
-        "ai.yobix.PreparingOcrParser"
+        "extractous::ImageParser",
+        "extractous::PreparingOcrParser"
     ],
     "img:Compression Lossless": [
         "true"
@@ -84,7 +84,7 @@
         "nonpremultipled"
     ],
     "tk:parsed-by": [
-        "org.apache.tika.parser.image.ImageParser",
-        "ai.yobix.PreparingOcrParser"
+        "extractous::ImageParser",
+        "extractous::PreparingOcrParser"
     ]
 }
