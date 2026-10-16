@@ -19,6 +19,33 @@ pub(crate) mod office {
     pub(crate) const OCX_NAME: &str = "msoffice:ocx-name";
     pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
     pub(crate) const RESOURCE_NAME_EXTENSION_INFERRED: &str = "tk:resource-name-extension-inferred";
+    pub(crate) const HAS_HIDDEN_SLIDES: &str = "msoffice:ppt:has-hidden-slides";
+    pub(crate) const NUM_HIDDEN_SLIDES: &str = "msoffice:ppt:num-hidden-slides";
+    pub(crate) const HAS_ANIMATIONS: &str = "msoffice:ppt:has-animations";
+}
+
+/// The names of Tika's `TikaPagedText` properties.
+pub(crate) mod paged {
+    pub(crate) const PAGE_NUMBER: &str = "tk:page:number";
+    pub(crate) const PAGE_NUMBERS: &str = "tk:page:numbers";
+}
+
+/// `PageAnchoring.applyPageMetadata`: the pages a resource is on in order, -1 for none, and the
+/// page when there is one.
+pub(crate) fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
+    let mut sorted = pages.to_vec();
+    sorted.sort_unstable();
+    if sorted.is_empty() {
+        sorted.push(-1);
+    }
+    for page in &sorted {
+        metadata.add(paged::PAGE_NUMBERS, page.to_string());
+    }
+    if let [page] = sorted[..] {
+        if page != -1 {
+            metadata.set(paged::PAGE_NUMBER, page.to_string());
+        }
+    }
 }
 
 /// The longest name `Metadata.add(KeyPrefix, name, value)` takes, in UTF-16 units.

@@ -9,10 +9,10 @@ const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 const DEFERRED: [(&str, &str); 7] = [
     ("testMSG_Appointment.msg", "identity hash codes"),
     ("testMSG_StickyNote.msg", "identity hash codes"),
+    ("testMSG_att_msg.msg", "identity hash codes"),
     ("testMSG_Task.msg", "identity hash codes"),
     ("testMSG_att_doc.msg", "identity hash codes"),
     ("testMSG_forwarded.msg", "identity hash codes"),
-    ("testMSG_att_msg.msg", "embedded Outlook message"),
     ("testMSG_chinese.msg", "partial block"),
 ];
 
@@ -45,6 +45,86 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     documents.extend(deferred);
     documents.sort();
     documents
+}
+
+fn units(name: &str) -> Vec<u16> {
+    name.encode_utf16().collect()
+}
+
+fn unicode(text: &str) -> Vec<u8> {
+    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// A fixed-length property of a properties stream: its type, its id and its value.
+fn property(kind: u16, id: u16, value: &[u8]) -> Vec<u8> {
+    let mut bytes = kind.to_le_bytes().to_vec();
+    bytes.extend(id.to_le_bytes());
+    bytes.extend([6, 0, 0, 0]);
+    let mut padded = value.to_vec();
+    padded.resize(8, 0);
+    bytes.extend(padded);
+    bytes
+}
+
+/// A message from Ann with a text body, which carries a message from Bob stored in its
+/// attachment's storage, its properties stream headed as an embedded message's is.
+fn message_with_a_stored_message() -> Vec<u8> {
+    use crate::ole2::{write, Node, Storage};
+    let document = |name: &str, data: Vec<u8>| (units(name), Node::Document(data));
+    let stored = Storage {
+        class_id: [0; 16],
+        entries: vec![
+            document("__substg1.0_0037001F", unicode("Minutes")),
+            document("__substg1.0_0C1A001F", unicode("Bob")),
+            document(
+                "__substg1.0_1000001F",
+                unicode("The minutes of the meeting"),
+            ),
+            document("__substg1.0_001A001F", unicode("IPM.Note")),
+            document("__properties_version1.0", vec![0; 24]),
+        ],
+    };
+    let mut attachment_properties = vec![0; 8];
+    attachment_properties.extend(property(0x0003, 0x3705, &5i32.to_le_bytes()));
+    let attachment = Storage {
+        class_id: [0; 16],
+        entries: vec![
+            document("__substg1.0_3001001F", unicode("Minutes")),
+            document("__properties_version1.0", attachment_properties),
+            (units("__substg1.0_3701000D"), Node::Storage(stored)),
+        ],
+    };
+    write(&Storage {
+        class_id: [0; 16],
+        entries: vec![
+            document("__substg1.0_0037001F", unicode("Forwarded minutes")),
+            document("__substg1.0_0C1A001F", unicode("Ann")),
+            document("__substg1.0_1000001F", unicode("Here are the minutes")),
+            document("__substg1.0_001A001F", unicode("IPM.Note")),
+            document("__properties_version1.0", vec![0; 32]),
+            (
+                units("__attach_version1.0_#00000000"),
+                Node::Storage(attachment),
+            ),
+        ],
+    })
+    .unwrap()
+}
+
+#[test]
+fn reads_a_stored_message_as_tikas_path_reads_it() {
+    let scratch = parity::Scratch::new("msg-stored-message");
+    let path = scratch.write("stored.msg", &message_with_a_stored_message());
+    assert_eq!(parity::deferral(&MsgParser, &path), None);
+    assert_same_as_tika_with(&[&path], TIKA_PARSER, &ParserConfigs::default());
+    let (text, _) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    assert!(text.contains("The minutes of the meeting"), "{text}");
+    for budget in [u64::MAX, 100] {
+        let spooled = parity::spools_as_tika(&path, budget);
+        assert_eq!(spooled, Ok(1));
+    }
 }
 
 #[test]

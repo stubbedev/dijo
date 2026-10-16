@@ -11,15 +11,15 @@
 //! below the embedded document's parse, the embedding parser's in Tika's path and the native
 //! bridge's in the other, which no native parser runs, and with the random numbers of Tika's
 //! temporary files, and the suffixes the native bridge gives them, masked. A failure the parser
-//! records itself (`embedded-stream-exception`) is compared without its frames, all of them the
-//! Java parser's. In a string extraction, the native path, which parses an embedded document
-//! whole, may go on to more parsers and failures than Tika's, which stops at the length limit;
-//! Tika's must lead the native ones.
+//! records itself (`embedded-stream-exception`), or a warning it records (`warn`), is compared
+//! without its frames, all of them the Java parser's. In a string extraction, the native path,
+//! which parses an embedded document whole, may go on to more parsers and failures than Tika's,
+//! which stops at the length limit; Tika's must lead the native ones.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::config::ParserConfigs;
+use crate::config::{ParserConfigs, Password};
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
@@ -57,14 +57,9 @@ fn tika_stream(path: &str, configs: &ParserConfigs, output: Output, char_set: Ch
         timeout: None,
         embedded: None,
     };
-    let (mut reader, _) = tika::parse_to_stream(
-        isolate().unwrap(),
-        Source::File(path),
-        configs,
-        None,
-        &options,
-    )
-    .map_err(|e| e.to_string())?;
+    let (mut reader, _) =
+        tika::parse_to_stream(isolate().unwrap(), Source::File(path), configs, &options)
+            .map_err(|e| e.to_string())?;
     let mut text = Vec::new();
     reader
         .read_to_end(&mut text)
@@ -81,7 +76,6 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
         Source::File(path),
         i32::try_from(SMALL_LIMIT).unwrap(),
         configs,
-        None,
         output == Output::Xml,
     )
     .map_err(|e| e.to_string())?;
@@ -89,6 +83,19 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
         text: text.into_bytes(),
         metadata: sorted(metadata),
     })
+}
+
+/// The error Tika's path fails with on the document at `path`.
+fn tika_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
+    tika::parse_to_string(
+        isolate().unwrap(),
+        Source::File(path.to_str().unwrap()),
+        i32::try_from(SMALL_LIMIT).unwrap(),
+        configs,
+        false,
+    )
+    .map(|_| ())
+    .expect_err("Tika's path fails on the document")
 }
 
 fn routed(path: &str) -> Routed<'_> {
@@ -417,6 +424,58 @@ pub(crate) fn assert_same_as_tika_with(
         delegates: &[],
     });
     compare(documents, configs, expected);
+}
+
+/// Asserts that of `documents`, each one `passwords` names, by file name with the password that
+/// opens it, fails without a password and with a wrong one as Tika's path fails on it, with the
+/// same error, and extracts with its password as Tika's path extracts it; and that the rest
+/// extract as Tika's path extracts them.
+pub(crate) fn assert_same_as_tika_with_passwords(
+    documents: &[PathBuf],
+    tika_name: &str,
+    passwords: &[(&str, &str)],
+) {
+    let password_of = |document: &Path| {
+        let name = document.file_name().unwrap().to_string_lossy();
+        passwords
+            .iter()
+            .find(|(encrypted, _)| *encrypted == name)
+            .map(|(_, password)| Password::new(*password))
+    };
+    let (encrypted, plain): (Vec<&Path>, Vec<&Path>) = documents
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|document| password_of(document).is_some());
+    assert_same_as_tika_with(&plain, tika_name, &ParserConfigs::default());
+    assert_fails_as_tika(&encrypted);
+    let wrong = ParserConfigs::default().with_password(Some(&Password::new("wrong")));
+    for document in encrypted {
+        let password = password_of(document).expect("an encrypted document");
+        let configs = ParserConfigs::default().with_password(Some(&password));
+        assert_same_as_tika_with(&[document], tika_name, &configs);
+        for configs in [ParserConfigs::default(), wrong.clone()] {
+            assert_eq!(
+                format!("{:?}", native_error(document, &configs)),
+                format!("{:?}", tika_error(document, &configs)),
+                "{document:?}"
+            );
+        }
+    }
+}
+
+/// The error the native parser fails with on the document at `path`.
+fn native_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
+    let routed = routed(path.to_str().unwrap());
+    formats::parse_to_string(
+        routed.parser,
+        &routed.input,
+        &routed.detected,
+        configs,
+        SMALL_LIMIT,
+        Output::Text,
+    )
+    .map(|_| ())
+    .expect_err("the native parser fails on the document")
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -787,7 +846,6 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
         isolate().unwrap(),
         Source::File(path),
         &configs,
-        None,
         &tika_options,
     )
     .and_then(|(mut reader, _)| {
@@ -873,10 +931,24 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                         extracted.metadata
                     )
                 };
+                let differing: Vec<String> = tika
+                    .1
+                    .iter()
+                    .zip(&native.1)
+                    .filter_map(|(tika, native)| {
+                        let at = tika
+                            .content
+                            .iter()
+                            .zip(&native.content)
+                            .position(|(tika, native)| tika != native)?;
+                        Some(format!("{} from byte {at}", tika.name))
+                    })
+                    .collect();
                 Err(format!(
-                    "{path} with a budget of {budget} bytes\n  tika   {}\n  native {}",
+                    "{path} with a budget of {budget} bytes\n  tika   {}\n  native {}\n  contents differ: {}",
                     show(&tika),
-                    show(&native)
+                    show(&native),
+                    differing.join(", ")
                 ))
             }
         }

@@ -371,6 +371,21 @@ impl MimeTypes {
             .map_or("", String::as_str)
     }
 
+    /// `getRegisteredMimeType(type).getExtension()`: the first extension of the registered type
+    /// a name normalizes to, else of its base type where it has parameters, with its dot, or
+    /// nothing for a type that is not registered.
+    pub(crate) fn registered_extension(&self, media_type: &MediaType) -> &str {
+        let normalized = self.registry.normalize(media_type);
+        let id = self.by_type.get(&normalized).or_else(|| {
+            normalized
+                .has_parameters()
+                .then(|| self.by_type.get(&normalized.base_type()))
+                .flatten()
+        });
+        id.and_then(|&id| self.types[id].extensions.first())
+            .map_or("", String::as_str)
+    }
+
     fn media_type(&self, id: TypeId) -> &MediaType {
         &self.types[id].media_type
     }

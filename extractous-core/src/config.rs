@@ -361,6 +361,19 @@ pub(crate) struct ParserConfigs {
     pub(crate) pdf: PdfParserConfig,
     pub(crate) office: OfficeParserConfig,
     pub(crate) ocr: TesseractOcrConfig,
+    /// The password encrypted documents are opened with: one of the extractor's passwords,
+    /// tried once the document fails as encrypted without one.
+    pub(crate) password: Option<Password>,
+}
+
+impl ParserConfigs {
+    /// These settings with `password` to open documents with.
+    pub(crate) fn with_password(&self, password: Option<&Password>) -> ParserConfigs {
+        ParserConfigs {
+            password: password.cloned(),
+            ..self.clone()
+        }
+    }
 }
 
 #[cfg(test)]

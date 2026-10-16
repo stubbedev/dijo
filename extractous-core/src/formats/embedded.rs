@@ -39,6 +39,7 @@ pub(crate) struct ParseContext<'c> {
     spooler: Option<RefCell<Spooler>>,
     file: InputFile,
     ocr_script: RefCell<Option<String>>,
+    write_limit: Option<usize>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -49,6 +50,7 @@ impl<'c> ParseContext<'c> {
             spooler: None,
             file: InputFile::Spooled,
             ocr_script: RefCell::new(None),
+            write_limit: None,
         }
     }
 
@@ -63,6 +65,16 @@ impl<'c> ParseContext<'c> {
             })),
             file: InputFile::Spooled,
             ocr_script: RefCell::new(None),
+            write_limit: None,
+        }
+    }
+
+    /// The extraction with its text limited to `limit` UTF-16 code units, as the write limit of
+    /// Tika's `WriteOutContentHandler`.
+    pub(crate) fn with_write_limit(self, limit: usize) -> Self {
+        Self {
+            write_limit: Some(limit),
+            ..self
         }
     }
 
@@ -89,6 +101,11 @@ impl<'c> ParseContext<'c> {
     /// Remembers the script OCR detection found, for the next images of this extraction.
     pub(crate) fn learn_ocr_script(&self, script: String) {
         *self.ocr_script.borrow_mut() = Some(script);
+    }
+
+    /// The limit of the extraction's text, if it has one.
+    pub(crate) fn write_limit(&self) -> Option<usize> {
+        self.write_limit
     }
 
     /// The embedded documents copied to the spool, in order.

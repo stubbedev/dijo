@@ -6,7 +6,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
-use super::records::{bof, sid, CellRef, Record, SharedString};
+use super::records::{bof, sid, Cached, CellRef, Record, SharedString};
 use crate::formats::data_format::{
     builtin_format, default_number_format, is_a_date_format, DataFormatter, FormatError,
 };
@@ -221,19 +221,20 @@ impl Listener {
                 self.sheet_names.push(name.clone());
             }
             Record::Sst(strings) => self.shared_strings = Some(strings.clone()),
-            Record::Formula {
-                cell,
-                value,
-                string_result,
-            } => {
-                if *string_result {
+            Record::Formula { cell, cached } => match cached {
+                Cached::Special(Cached::STRING) => {
                     self.string_formula = Some(*cell);
                     keeps_string_formula = true;
-                } else {
+                }
+                Cached::Number(value) => {
                     let text = self.format_number(*cell, *value)?;
                     self.add_text_cell(Some(*cell), &text);
                 }
-            }
+                Cached::Special(_) => {
+                    let text = self.format_number(*cell, 0.0)?;
+                    self.add_text_cell(Some(*cell), &text);
+                }
+            },
             Record::String(text) => {
                 if self.previous_sid == sid::FORMULA {
                     self.add_text_cell(self.string_formula, text);

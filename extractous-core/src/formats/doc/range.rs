@@ -89,27 +89,12 @@ impl Document {
 
     /// `new Range(start, end, document)`.
     pub(super) fn range(&self, start: i32, end: i32) -> Read<Span> {
-        if start < 0 {
-            return Err(Thrown(format!(
-                "Range start must not be negative. Given {start}"
-            )));
-        }
-        if end < start {
-            return Err(Thrown(format!(
-                "The end ({end}) must not be before the start ({start})"
-            )));
-        }
-        Ok(Span { start, end })
+        subrange(start, end, None)
     }
 
     /// `new Range(start, end, parent)`, which also checks the range lies within the text.
     pub(super) fn subrange(&self, start: i32, end: i32) -> Read<Span> {
-        let span = self.range(start, end)?;
-        let length = self.text.len() as i64;
-        if i64::from(start) > length || i64::from(end) > length {
-            return Err(Thrown::new("start or end can't be > text length"));
-        }
-        Ok(span)
+        subrange(start, end, Some(self.text.len()))
     }
 
     /// `initParagraphs`: the paragraph runs the range covers, `[first, last)`.
@@ -334,8 +319,30 @@ impl Document {
     }
 }
 
+/// `new Range(start, end, document)`, and, given the length of the text, `new Range(start,
+/// end, parent)`, which also checks the range lies within the text.
+pub(super) fn subrange(start: i32, end: i32, text_length: Option<usize>) -> Read<Span> {
+    if start < 0 {
+        return Err(Thrown(format!(
+            "Range start must not be negative. Given {start}"
+        )));
+    }
+    if end < start {
+        return Err(Thrown(format!(
+            "The end ({end}) must not be before the start ({start})"
+        )));
+    }
+    if let Some(length) = text_length {
+        let length = length as i64;
+        if i64::from(start) > length || i64::from(end) > length {
+            return Err(Thrown::new("start or end can't be > text length"));
+        }
+    }
+    Ok(Span { start, end })
+}
+
 /// `Range.findRange(rpl, start, end)`: the runs a range covers, `[first, last)`.
-fn find_range(runs: &[PropertyRun], span: Span) -> Read<(usize, usize)> {
+pub(super) fn find_range(runs: &[PropertyRun], span: Span) -> Read<(usize, usize)> {
     let start_index = binary_search_start(runs, span.start);
     let mut start_index = start_index;
     while start_index > 0 && runs[(start_index - 1) as usize].start >= span.start {
