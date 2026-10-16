@@ -1,7 +1,11 @@
 //! metadata-extractor's `HeifMetadataReader`: the boxes of a HEIF file read in one pass, the file
 //! type into a `HeifDirectory`, and once a picture handler box is found, the item properties
-//! into another, with the ICC profiles of colour boxes and the Exif of the media data's items.
+//! into it too, with the ICC profiles of colour boxes and the Exif of the media data's items.
 //! The item info and location boxes are also read by Tika's `HeifXmp` to find an XMP item.
+//!
+//! metadata-extractor puts the item properties in a second `HeifDirectory`, ends the `meta` box
+//! 4 bytes past its end, by its version and flags, and reads an item where the stream stands
+//! when that is past the item's offset (#114).
 
 use std::collections::HashMap;
 
@@ -78,6 +82,15 @@ impl<'a> Sequential<'a> {
         let bytes = &self.data[self.position..self.position + count];
         self.position += count;
         Ok(bytes)
+    }
+
+    /// The `count` bytes at `offset` of the data, wherever the reader stands.
+    fn at(&self, offset: i64, count: i32) -> Result<&'a [u8], Stop> {
+        let count = usize::try_from(count).map_err(|_| unported("length below zero"))?;
+        usize::try_from(offset)
+            .ok()
+            .and_then(|start| self.data.get(start..start.checked_add(count)?))
+            .ok_or(Stop::Io)
     }
 
     /// `getBytes` of an `int` count, which Java cannot allocate when negative.
@@ -348,10 +361,9 @@ impl Handler {
         }
     }
 
-    fn new_picture(metadata: &mut Metadata) -> Self {
-        metadata.add(Directory::new(Kind::Heif));
+    fn new_picture(directory: usize) -> Self {
         Self::Picture {
-            directory: metadata.directories.len() - 1,
+            directory,
             item_info: None,
             item_location: None,
         }
@@ -431,10 +443,10 @@ fn process_box(
     metadata: &mut Metadata,
 ) -> Result<Handler, Interrupted> {
     if handler.accepts_container(&found.kind) {
+        let end = found.size + reader.position() as i64 - 8;
         if let Err(stop) = process_container(&found, reader, &mut handler, metadata) {
             return Err(Interrupted::of(handler, stop));
         }
-        let end = found.size + reader.position() as i64 - 8;
         return process_boxes(reader, end, handler, metadata).map_err(Interrupted::Unported);
     }
     if handler.accepts_box(&found.kind) {
@@ -471,7 +483,7 @@ impl Handler {
                     file_type(reader, found, &mut metadata.directories[*directory])?;
                     Ok(None)
                 }
-                "hdlr" if handler_box(reader, found)? => Ok(Some(Self::new_picture(metadata))),
+                "hdlr" if handler_box(reader, found)? => Ok(Some(Self::new_picture(*directory))),
                 _ => Ok(None),
             },
             Self::Picture {
@@ -521,7 +533,10 @@ fn process_container(
                 }
                 if info.item_type.as_deref() == Some("Exif") {
                     let length = extent.length as i32;
-                    let item = reader.int_bytes(length)?;
+                    let item = reader.at(extent.offset, length)?;
+                    if skip >= 0 {
+                        reader.int_bytes(length)?;
+                    }
                     exif_item(item, metadata)?;
                 }
             }

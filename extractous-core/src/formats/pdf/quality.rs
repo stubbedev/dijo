@@ -59,10 +59,25 @@ struct Counts {
     one_letter_arabic_words: u32,
 }
 
+/// How many glyphs without characters a page may show.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Unmapped {
+    /// A share of the page's glyphs, from 0 to 1.
+    Share(f32),
+    /// A number of glyphs.
+    Count(f32),
+}
+
 /// `TextLayerQuality.assess`: the page's `text`, from `glyphs` of which `unmapped` map to no
-/// character, against the unmapped glyphs that make a page garbage, a share of its glyphs below
-/// 1 and a count from 1.
-pub(super) fn assess(text: &str, glyphs: i32, unmapped: i32, unmapped_limit: f32) -> Assessment {
+/// character, against the unmapped glyphs that make a page garbage. Our Java took a limit
+/// below 1 as a share and one from 1 as a count, so that a share of 100% read as one glyph
+/// (#115).
+pub(super) fn assess(
+    text: &str,
+    glyphs: i32,
+    unmapped: i32,
+    unmapped_limit: Unmapped,
+) -> Assessment {
     let counts = count(text);
     if counts.visible == 0 {
         return Assessment {
@@ -70,11 +85,9 @@ pub(super) fn assess(text: &str, glyphs: i32, unmapped: i32, unmapped_limit: f32
             fault: "no-text",
         };
     }
-    let limit = f64::from(unmapped_limit);
-    let unmapped_badness = if unmapped_limit < 1.0 {
-        f64::from(unmapped) / f64::from(glyphs.max(1)) / limit
-    } else {
-        f64::from(unmapped) / limit
+    let unmapped_badness = match unmapped_limit {
+        Unmapped::Share(limit) => f64::from(unmapped) / f64::from(glyphs.max(1)) / f64::from(limit),
+        Unmapped::Count(limit) => f64::from(unmapped) / f64::from(limit),
     };
     let mut assessment = Assessment {
         badness: f64::from(counts.invalid) / f64::from(counts.visible) / INVALID_SHARE,
@@ -224,17 +237,26 @@ mod tests {
     #[test]
     fn judges_text_layers_as_our_java_does() {
         let clean = "Det var en gang en konge, som havde tre døtre og et stort slot ved havet.";
-        let assessment = assess(clean, 70, 0, 10.0);
+        let assessment = assess(clean, 70, 0, Unmapped::Count(10.0));
         assert!(assessment.badness < DOUBTFUL, "{assessment:?}");
-        assert_eq!(assess(" \n\t", 3, 0, 10.0).fault, "no-text");
-        let unmapped = assess(clean, 70, 30, 10.0);
+        assert_eq!(
+            assess(" \n\t", 3, 0, Unmapped::Count(10.0)).fault,
+            "no-text"
+        );
+        let unmapped = assess(clean, 70, 30, Unmapped::Count(10.0));
         assert_eq!((unmapped.badness, unmapped.fault), (3.0, "unmapped-glyphs"));
         let consonants = "bcdfg hjklm npqrs tvwxz bcdfg hjklm npqrs tvwxz bcdfg hjklm npqrs";
-        assert_eq!(assess(consonants, 60, 0, 10.0).fault, "too-few-vowels");
-        let symbols = "#%&*@ #%&*@ #%&*@ abc def ghi jkl";
-        assert_eq!(assess(symbols, 30, 0, 10.0).fault, "symbols");
         assert_eq!(
-            assess("\u{E000}\u{E001} ok", 4, 0, 10.0).fault,
+            assess(consonants, 60, 0, Unmapped::Count(10.0)).fault,
+            "too-few-vowels"
+        );
+        let symbols = "#%&*@ #%&*@ #%&*@ abc def ghi jkl";
+        assert_eq!(
+            assess(symbols, 30, 0, Unmapped::Count(10.0)).fault,
+            "symbols"
+        );
+        assert_eq!(
+            assess("\u{E000}\u{E001} ok", 4, 0, Unmapped::Count(10.0)).fault,
             "invalid-characters"
         );
         assert!(!is_vowel('ø') && is_vowel('é') && is_vowel('Å'));

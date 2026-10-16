@@ -264,6 +264,39 @@ fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
     extracted
 }
 
+/// The parser of our Java path whose document nests the document of the parser it hands an
+/// image to (#114).
+const RECOGNIZED_IMAGE_PARSER: &str = "ai.yobix.RecognizedImageParser";
+
+/// An extraction of [`RECOGNIZED_IMAGE_PARSER`] in `output`, written in `char_set`, without the
+/// whole document that our Java `RecognizedImageParser` writes into its body, and the native
+/// parser does not: its `html` element in XHTML, and the line breaks leading the plain text.
+fn without_nested_document(text: Vec<u8>, output: Output, char_set: CharSet) -> Vec<u8> {
+    let Some(decoded) = decoded(&text, char_set) else {
+        return text;
+    };
+    let kept = match output {
+        Output::Xml => {
+            let Some(start) = decoded.find("<body><html>").map(|at| at + "<body>".len()) else {
+                return text;
+            };
+            let Some(end) = decoded[start..]
+                .find("</html>")
+                .map(|at| start + at + "</html>".len())
+            else {
+                return text;
+            };
+            [&decoded[..start], &decoded[end..]]
+                .concat()
+                .replace("<body></body>", "<body />")
+        }
+        _ => decoded.trim_start_matches('\n').to_owned(),
+    };
+    let mut encoded = Vec::with_capacity(kept.len());
+    formats::encode(&kept, char_set, &mut encoded);
+    encoded
+}
+
 /// A string extraction's native result with the embedded documents' parsers and failures that
 /// follow Tika's left out: the native path parses an embedded document whole, while Tika's stops
 /// at the length limit, before the parsers and failures of what comes after it.
@@ -767,13 +800,17 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             let (tika, native) = match (expected, tika, native) {
                 (Expected::Same(naming), Ok(tika), Ok(native)) => {
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                    let tika =
+                    let mut tika =
                         without_departures(comparable(tika, char_set), char_set, naming.departures);
-                    let native = without_departures(
+                    let mut native = without_departures(
                         comparable(as_tika(native, &names, char_set), char_set),
                         char_set,
                         naming.departures,
                     );
+                    if naming.tika_name == RECOGNIZED_IMAGE_PARSER {
+                        tika.text = without_nested_document(tika.text, output, char_set);
+                        native.text = without_nested_document(native.text, output, char_set);
+                    }
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
                             without_ocr(tika, output, char_set, tika_read),
@@ -1168,6 +1205,39 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
 mod tests {
     use super::*;
+
+    #[test]
+    fn compares_recognized_images_without_their_nested_document() {
+        let tika = "<head>\n<title></title>\n</head>\n<body><html>\n\n<meta name=\"a\" \
+                    content=\"b\" />\n<title></title>\n\n<body /></html></body></html>";
+        let ocr = "<body><html>\n<title></title>\n<body /></html><div class=\"ocr\">x</div></body>";
+        for (char_set, tika, native) in [
+            (
+                CharSet::UTF_8,
+                tika,
+                "<head>\n<title></title>\n</head>\n<body /></html>",
+            ),
+            (
+                CharSet::UTF_16BE,
+                ocr,
+                "<body><div class=\"ocr\">x</div></body>",
+            ),
+        ] {
+            let encoded = |text: &str| {
+                let mut bytes = Vec::new();
+                formats::encode(text, char_set, &mut bytes);
+                bytes
+            };
+            assert_eq!(
+                without_nested_document(encoded(tika), Output::Xml, char_set),
+                encoded(native)
+            );
+        }
+        assert_eq!(
+            without_nested_document(b"\n\n\nx\n".to_vec(), Output::Text, CharSet::UTF_8),
+            b"x\n"
+        );
+    }
 
     #[test]
     fn compares_recorded_warnings_without_their_frames() {
