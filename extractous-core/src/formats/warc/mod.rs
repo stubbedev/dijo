@@ -16,11 +16,13 @@ mod reader;
 mod response;
 mod tables;
 mod text;
+mod wacz;
 
 use headers::Headers;
 use media_type::MediaType;
 use reader::{Record, Stop};
 pub(crate) use response::HttpParser;
+pub(crate) use wacz::WaczParser;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
