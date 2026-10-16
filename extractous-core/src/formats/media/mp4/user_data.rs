@@ -93,15 +93,16 @@ fn item_list<'a>(
     items(reader, length, covers, events)
 }
 
-/// `processIList`: the records of an `ilst` box `length` long, each a field and its `data`
-/// atom, which Tika reads on past the box itself until a record ends them.
+/// `processIList`: the records of an `ilst` box `length` long, header included, each a field and
+/// its `data` atom. Tika counts the records against the whole length, so it reads one more
+/// record past the box, from the box after it (#118).
 fn items<'a>(
     reader: &mut Bytes<'a>,
     length: u64,
     covers: &mut Covers,
     events: &mut Vec<Event<'a>>,
 ) -> Read<()> {
-    let mut read = 0;
+    let mut read = 8;
     while read < length {
         let record_start = reader.position();
         let record_length = u64::from(reader.u32()?);

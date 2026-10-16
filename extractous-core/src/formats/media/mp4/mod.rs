@@ -123,7 +123,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::embedded::EXCEPTION_WARNING;
+    use crate::formats::parity::{
+        assert_same_as_tika_departing, conformance_corpus, documents, ComparedMetadata, Scratch,
+    };
 
     const TIKA_NAME: &str = "org.apache.tika.parser.mp4.MP4Parser";
 
@@ -389,27 +392,75 @@ mod tests {
                 &file(b"crx ", &[movie_header(0, 1000, 2500)], &[]),
             ),
         ];
-        let deferred = [
-            scratch.write(
-                "exif.mp4",
-                &file(
-                    b"mp42",
-                    &[boxed(b"uuid", &[&READER_UUID[..], b"Exif"].concat())],
-                    &[],
-                ),
+        let deferred = [scratch.write(
+            "exif.mp4",
+            &file(
+                b"mp42",
+                &[boxed(b"uuid", &[&READER_UUID[..], b"Exif"].concat())],
+                &[],
             ),
-            scratch.write(
-                "endless.mp4",
-                &file(b"mp42", &[movie_header(1, 1000, i64::MIN)], &[]),
-            ),
-        ];
+        )];
+        // The parse of this one never ends on Tika's path (#118).
+        let endless = file(b"mp42", &[movie_header(1, 1024, i64::MIN)], &[]);
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&endless)
+            .unwrap();
+        assert_eq!(metadata["xmpDM:duration"], ["-9007199254740992.0"]);
         let (parsed, left) = documents(&Mp4Parser, &[scratch.directory()]);
         assert_eq!(left.len(), deferred.len(), "{left:?}");
         assert_eq!(parsed.len(), read.len(), "{parsed:?}");
-        assert_same_as_tika(
+        assert_same_as_tika_departing(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
+            as_tika_reads_it,
         );
+    }
+
+    const END_OF_DATA: &str = "java.io.EOFException: End of data reached.\n";
+    const WARNING_META: &str = r#"<meta name="tk:exception:warn" content=""#;
+
+    /// A native result as Tika's path writes it, without two fixes of #118: Tika reads on from
+    /// where a failed read left its stream, short of what it consumed, so it records the end
+    /// of data once more first; and it reads an `ilst` box past its end, into the box after
+    /// it, which ends the `udta` box before its location.
+    fn as_tika_reads_it(
+        text: &mut String,
+        metadata: &mut ComparedMetadata,
+        tika: &ComparedMetadata,
+    ) {
+        let tika_values = |name: &str| {
+            tika.iter()
+                .find(|(tika_name, _)| tika_name == name)
+                .map(|(_, values)| values.as_slice())
+        };
+        if let (Some(tika_warnings), Some((_, warnings))) = (
+            tika_values(EXCEPTION_WARNING),
+            metadata
+                .iter_mut()
+                .find(|(name, _)| name == EXCEPTION_WARNING),
+        ) {
+            if tika_warnings.first().map(String::as_str) == Some(END_OF_DATA)
+                && tika_warnings[1..] == warnings[..]
+            {
+                warnings.insert(0, END_OF_DATA.to_owned());
+                if let Some(at) = text.find(WARNING_META) {
+                    text.insert_str(at, &format!("{WARNING_META}{END_OF_DATA}\" />\n"));
+                }
+            }
+        }
+        for name in ["geo:lat", "geo:long", "geo:alt"] {
+            if tika_values(name).is_none() {
+                metadata.retain(|(native_name, _)| native_name != name);
+                let meta = format!(r#"<meta name="{name}" content=""#);
+                if let Some(start) = text.find(&meta) {
+                    let end = start
+                        + text[start..]
+                            .find('\n')
+                            .map_or(text.len() - start, |end| end + 1);
+                    text.replace_range(start..end, "");
+                }
+            }
+        }
     }
 
     /// The UUID of an Exif `uuid` box.
@@ -425,6 +476,6 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 18, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
+        assert_same_as_tika_departing(&paths, TIKA_NAME, as_tika_reads_it);
     }
 }
