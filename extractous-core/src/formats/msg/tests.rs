@@ -6,15 +6,7 @@ use crate::formats::parity::{self, assert_same_as_tika_with};
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The messages this port leaves to Tika, by file name, with a part of the reason.
-const DEFERRED: [(&str, &str); 7] = [
-    ("testMSG_Appointment.msg", "identity hash codes"),
-    ("testMSG_StickyNote.msg", "identity hash codes"),
-    ("testMSG_att_msg.msg", "identity hash codes"),
-    ("testMSG_Task.msg", "identity hash codes"),
-    ("testMSG_att_doc.msg", "identity hash codes"),
-    ("testMSG_forwarded.msg", "identity hash codes"),
-    ("testMSG_chinese.msg", "partial block"),
-];
+const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "partial block")];
 
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()

@@ -216,7 +216,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents,
+        Departure, Scratch,
+    };
 
     const TIKA_NAME: &str = "org.apache.tika.parser.mbox.MboxParser";
 
@@ -315,10 +318,32 @@ Body.";
         let scratch = Scratch::new("mbox-limit");
         let (plain, html) = past_the_limit(&scratch);
         assert_same_as_tika(&[&plain], TIKA_NAME);
-        assert_same_as_tika(
+        let departure = Departure {
+            undo: with_the_body_end_tika_leaks,
+            moves_the_cut: false,
+        };
+        assert_same_as_tika_departing(
             &html.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
+            departure,
         );
+        let (xhtml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .set_extract_string_max_length(100)
+            .extract_file_to_string(html[0].to_str().unwrap())
+            .unwrap();
+        assert!(xhtml.ends_with("word </p></div>"), "{xhtml}");
+    }
+
+    /// A native XHTML extraction cut inside an HTML message with the `</body>` Tika's path
+    /// writes there, which the cut HTML parse leaks through the embedded document's handlers
+    /// (#113): the elements still open are closed before it.
+    fn with_the_body_end_tika_leaks(native: &str) -> String {
+        if native.contains("<body>") && !native.contains("</body>") {
+            format!("{native}</body>")
+        } else {
+            native.to_owned()
+        }
     }
 
     #[test]

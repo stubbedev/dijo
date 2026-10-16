@@ -166,24 +166,6 @@ fn unported(Thrown(reason): Thrown) -> Unported {
 }
 
 impl Extracted {
-    /// Whether Tika's head would list the metadata the message sets in an order this port
-    /// cannot know: Tika sets the named properties and the times in the order of hash maps
-    /// keyed by identity, which the head shows where two of them share a bucket of its map.
-    /// `head` is the metadata the document starts from.
-    pub(super) fn has_identity_ordered_head(&self, mut head: TikaMetadata) -> bool {
-        write_metadata(&self.message, &mut head).expect("the metadata was checked");
-        let named: Vec<&str> = head
-            .names()
-            .filter(|name| name.starts_with(named::PROPERTY_PREFIX))
-            .collect();
-        let times: Vec<&str> = TIMES
-            .iter()
-            .map(|&(_, key)| key)
-            .filter(|key| head.get(key).is_some())
-            .collect();
-        head.share_a_bucket(&named) || head.share_a_bucket(&times)
-    }
-
     /// Writes the message as `OutlookExtractor.parse` does.
     pub(super) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         write_metadata(&self.message, xhtml.metadata_mut())

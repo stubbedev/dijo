@@ -321,6 +321,22 @@ fn first_line(exception: &str) -> String {
     format!("{exception}\n")
 }
 
+/// How the failure of the parser named `parser` on a document embedded with `metadata` is
+/// recorded in `tk:exception:embedded-exception` of the document embedding it: the parser, the
+/// embedded document by its resource name or internal path, and the `reason`, on one line.
+/// Tika records the stack trace of the exception its parser throws there (#68).
+pub(crate) fn describe_failure(parser: &str, metadata: &TikaMetadata, reason: &str) -> String {
+    let document = [RESOURCE_NAME, INTERNAL_PATH]
+        .iter()
+        .find_map(|name| metadata.get(name).filter(|value| !value.is_empty()))
+        .map_or_else(
+            || "an embedded document without a name".to_owned(),
+            |name| format!("the embedded document \"{name}\""),
+        );
+    let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{parser} could not parse {document}: {reason}")
+}
+
 /// The name a `package-entry` div is headed with, if the document has one.
 pub(crate) fn heading(metadata: &TikaMetadata) -> Option<&str> {
     metadata.get(RESOURCE_NAME).filter(|name| !name.is_empty())
@@ -435,6 +451,25 @@ mod tests {
         );
         assert!(decode(&bytes[..bytes.len() - 1]).is_err());
         assert!(decode(b"X").is_err());
+    }
+
+    #[test]
+    fn describes_failures_on_one_line() {
+        let mut metadata = TikaMetadata::new();
+        assert_eq!(
+            describe_failure("p", &metadata, "no\n\tgood"),
+            "p could not parse an embedded document without a name: no good"
+        );
+        metadata.set(INTERNAL_PATH, "/a/b.xml");
+        assert_eq!(
+            describe_failure("p", &metadata, "why"),
+            "p could not parse the embedded document \"/a/b.xml\": why"
+        );
+        metadata.set(RESOURCE_NAME, "b.xml");
+        assert_eq!(
+            describe_failure("p", &metadata, "why"),
+            "p could not parse the embedded document \"b.xml\": why"
+        );
     }
 
     #[test]

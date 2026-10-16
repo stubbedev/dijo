@@ -5,6 +5,13 @@
 //! on are compared on their outcome alone: the native parser must fail too. A native parser that
 //! records the parsers its Tika counterpart delegates to is compared under their Tika names too.
 //!
+//! Three things the native path writes in a defined order or chain where Tika's does not are
+//! compared as both can give them: each run of `meta` elements sorted by name, which Tika writes
+//! in the order of its metadata's `HashMap` (#64); the namespace declarations of each start tag
+//! sorted, which Tika writes in the order of a `HashMap` of pending mappings (#87); and the
+//! native string extraction written through Tika's string chain, which leaves anchored blocks
+//! where they cut their paragraph, where the native one holds them back as a stream does (#63).
+//!
 //! Two things of a document's embedded documents, which Tika parses either way, are compared as
 //! they can be: the parsers that read them, each once as Tika's record keeps it, once the native
 //! parser goes by Tika's name; and the stack traces of their failures without the Java frames
@@ -155,15 +162,20 @@ fn native_stream(
     })
 }
 
+/// The native string extraction, through Tika's string chain, which leaves anchored blocks
+/// where they are (#63): the native one holds them back as a stream does, which the comparisons
+/// of the streams cover.
 fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     let routed = routed(path);
-    let (text, metadata) = formats::parse_to_string(
+    let (text, metadata) = formats::parse_to_string_through(
         routed.parser,
         &routed.input,
         &routed.detected,
         configs,
-        SMALL_LIMIT,
-        output,
+        formats::Chain::TikaString {
+            output,
+            max_length: SMALL_LIMIT,
+        },
     )
     .map_err(|e| e.to_string())?
     .unwrap_or_else(|| panic!("{}", deferred(path)));
@@ -240,6 +252,7 @@ const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded
 /// have.
 fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
     extracted.text = without_warning_frames(extracted.text, char_set);
+    extracted.text = in_defined_order(extracted.text, char_set);
     for (name, values) in &mut extracted.metadata {
         if name == PARSED_BY_FULL_SET {
             let mut once: Vec<String> = Vec::with_capacity(values.len());
@@ -260,6 +273,39 @@ fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
         }
     }
     extracted
+}
+
+/// What both paths' failures of an embedded document a native parser failed on are compared
+/// as: the native path records a line of its own (#68) where Tika's records the stack trace of
+/// its parser's exception.
+const NATIVE_FAILURE: &str = "<a failure the native path records itself (#68)>";
+
+/// The two results with each failure of an embedded document the native path records itself,
+/// and Tika's failure in its place, compared as [`NATIVE_FAILURE`].
+fn with_native_failures_masked(tika: &mut Extracted, native: &mut Extracted) {
+    let Some((_, natives)) = native
+        .metadata
+        .iter_mut()
+        .find(|(name, _)| name == EMBEDDED_EXCEPTION)
+    else {
+        return;
+    };
+    let Some((_, tikas)) = tika
+        .metadata
+        .iter_mut()
+        .find(|(name, _)| name == EMBEDDED_EXCEPTION)
+    else {
+        return;
+    };
+    for (native, tika) in natives.iter_mut().zip(tikas.iter_mut()) {
+        let recorded = native.starts_with("extractous::")
+            && native.contains(" could not parse ")
+            && !native.contains('\n');
+        if recorded && tika.contains('\n') {
+            NATIVE_FAILURE.clone_into(native);
+            NATIVE_FAILURE.clone_into(tika);
+        }
+    }
 }
 
 /// A string extraction's native result with the embedded documents' parsers and failures that
@@ -337,6 +383,115 @@ fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
     encoded
 }
 
+/// The text of an extraction, in `char_set`, with what Tika writes in the order of a
+/// `java.util.HashMap` put in the order the native path writes it: each run of `meta` elements,
+/// which Tika writes in the order of its metadata's map and the native head sorted by name
+/// (#64), sorted by name, the values of one name kept in their order; and the namespace
+/// declarations of each start tag, which Tika writes in the order of a map of its pending
+/// mappings and the native path by prefix (#87), sorted by prefix.
+fn in_defined_order(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
+    let Some(decoded) = decoded(&text, char_set).filter(|decoded| decoded.contains('<')) else {
+        return text;
+    };
+    let mut ordered = String::with_capacity(decoded.len());
+    let mut rest = decoded.as_str();
+    let mut metas: Vec<(&str, &str)> = Vec::new();
+    while let Some(at) = rest.find('<') {
+        let end = tag_end(&rest[at..]).map_or(rest.len(), |end| at + end);
+        let tag = &rest[at..end];
+        if at > 0 {
+            flush_metas(&mut metas, &mut ordered);
+            ordered.push_str(&rest[..at]);
+        }
+        if tag.starts_with("<meta ") {
+            let line = if rest[end..].starts_with('\n') {
+                end + 1
+            } else {
+                end
+            };
+            metas.push((attribute(tag, "name").unwrap_or_default(), &rest[at..line]));
+            rest = &rest[line..];
+        } else {
+            flush_metas(&mut metas, &mut ordered);
+            ordered.push_str(&with_sorted_declarations(tag));
+            rest = &rest[end..];
+        }
+    }
+    flush_metas(&mut metas, &mut ordered);
+    ordered.push_str(rest);
+    let mut encoded = Vec::with_capacity(text.len());
+    formats::encode(&ordered, char_set, &mut encoded);
+    encoded
+}
+
+/// Text written in `char_set` with `departure` applied to it, unless it is not valid in it.
+fn departed(text: Vec<u8>, char_set: CharSet, departure: fn(&str) -> String) -> Vec<u8> {
+    let Some(decoded) = decoded(&text, char_set) else {
+        return text;
+    };
+    let mut encoded = Vec::with_capacity(text.len());
+    formats::encode(&departure(&decoded), char_set, &mut encoded);
+    encoded
+}
+
+/// Writes a run of `meta` elements sorted by name, stably.
+fn flush_metas(metas: &mut Vec<(&str, &str)>, ordered: &mut String) {
+    metas.sort_by_key(|(name, _)| *name);
+    for (_, element) in metas.drain(..) {
+        ordered.push_str(element);
+    }
+}
+
+/// Where the tag `text` starts with ends, after its `>`: attribute values hold no `"`, which
+/// both paths escape.
+fn tag_end(text: &str) -> Option<usize> {
+    let mut quoted = false;
+    for (index, character) in text.char_indices() {
+        match character {
+            '"' => quoted = !quoted,
+            '>' if !quoted => return Some(index + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The value of the attribute `name` of a start tag, as written.
+fn attribute<'t>(tag: &'t str, name: &str) -> Option<&'t str> {
+    let marker = format!(" {name}=\"");
+    let start = tag.find(&marker)? + marker.len();
+    let end = start + tag[start..].find('"')?;
+    Some(&tag[start..end])
+}
+
+/// A start tag with the namespace declarations it ends with sorted by prefix.
+fn with_sorted_declarations(tag: &str) -> String {
+    let Some(first) = tag.find(" xmlns") else {
+        return tag.to_owned();
+    };
+    let mut declarations: Vec<&str> = Vec::new();
+    let mut at = first;
+    while tag[at..].starts_with(" xmlns") {
+        let Some(end) = tag[at..].find("=\"").and_then(|open| {
+            tag[at + open + 2..]
+                .find('"')
+                .map(|shut| at + open + 3 + shut)
+        }) else {
+            break;
+        };
+        declarations.push(&tag[at..end]);
+        at = end;
+    }
+    let close = at;
+    declarations.sort_unstable();
+    format!(
+        "{}{}{}",
+        &tag[..first],
+        declarations.concat(),
+        &tag[close..]
+    )
+}
+
 /// The text with the random number and the suffix of each of Tika's temporary files,
 /// `apache-tika-<digits>.<suffix>`, masked: the suffix is the extension of the name the
 /// embedded document's stream was made with, which the native bridge gives it and Tika's path,
@@ -411,7 +566,7 @@ fn describe(outcome: &Outcome) -> String {
 }
 
 /// What Tika's path and the native parser are expected to do with a document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 enum Expected<'a> {
     /// Both extract it identically.
     Same(Naming<'a>),
@@ -420,12 +575,42 @@ enum Expected<'a> {
 }
 
 /// How Tika's path names the parsers of a document the native parser extracts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct Naming<'a> {
     /// The class name of the parser of the document.
     tika_name: &'a str,
     /// The Tika names of the parsers it delegates to, each paired after its native name.
     delegates: &'a [(&'a str, &'a str)],
+    /// A departure of the native parser from Tika's path that a quirk issue names, if the
+    /// comparison expects one.
+    departure: Option<Departure>,
+}
+
+/// Where a native parser departs from Tika's path on purpose, as a comparison undoes it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Departure {
+    /// What undoes the departure in a native text.
+    pub(crate) undo: fn(&str) -> String,
+    /// Whether the departure moves where a string extraction's length limit cuts the text, as
+    /// one in the head does, whose line breaks the limit counts: a string extraction the
+    /// departure changes is then not compared.
+    pub(crate) moves_the_cut: bool,
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts what Tika's path does under Tika's default settings once `departure`
+/// is undone in each native text.
+pub(crate) fn assert_same_as_tika_departing(
+    documents: &[&Path],
+    tika_name: &str,
+    departure: Departure,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departure: Some(departure),
+    });
+    compare(documents, &ParserConfigs::default(), expected);
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -444,6 +629,7 @@ pub(crate) fn assert_same_as_tika_with(
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
+        departure: None,
     });
     compare(documents, configs, expected);
 }
@@ -521,6 +707,7 @@ pub(crate) fn assert_same_as_tika_delegating_with(
     let expected = Expected::Same(Naming {
         tika_name,
         delegates,
+        departure: None,
     });
     compare(documents, configs, expected);
 }
@@ -655,8 +842,16 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             let (tika, native) = match (expected, tika, native) {
                 (Expected::Same(naming), Ok(tika), Ok(native)) => {
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                    let tika = comparable(tika, char_set);
-                    let native = comparable(as_tika(native, &names, char_set), char_set);
+                    let mut tika = comparable(tika, char_set);
+                    let mut native = comparable(as_tika(native, &names, char_set), char_set);
+                    with_native_failures_masked(&mut tika, &mut native);
+                    if let Some(departure) = naming.departure {
+                        let text = departed(native.text.clone(), char_set, departure.undo);
+                        if departure.moves_the_cut && entry == "string" && text != native.text {
+                            continue;
+                        }
+                        native.text = text;
+                    }
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
                             without_ocr(tika, output, char_set, tika_read),
@@ -989,8 +1184,9 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                 ),
                 CharSet::UTF_8,
             );
-            let (tika_extracted, native_extracted) =
+            let (mut tika_extracted, mut native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
+            with_native_failures_masked(&mut tika_extracted, &mut native_extracted);
             let tika = (tika_extracted, spooled(embedded, tika_spool.directory()));
             let native = (
                 native_extracted,
@@ -1085,6 +1281,21 @@ mod tests {
             without_embedding_frames(native),
             "E: no\n\tat P.parse(P.java:1)\n\tat org.apache.tika.parser.AutoDetectParser.parse(A.java:2)\nCaused by: C: why\n\tat Q.q(Q.java:4)\n"
         );
+    }
+
+    #[test]
+    fn puts_metas_and_namespace_declarations_in_a_defined_order() {
+        let tika = "<html xmlns=\"x\">\n<head>\n<meta name=\"b\" content=\"1\" />\n<meta name=\"a\" content=\"2\n/>\" />\n<meta name=\"b\" content=\"0\" />\n<title></title>\n</head>\n<body><div xmlns:z=\"u:z\" xmlns:a=\"u:a\"><p>t</p></div>\n<meta name=\"d\" content=\"\" />\n<meta name=\"c\" content=\"\" />\nx<meta name=\"a\" content=\"\" /></body></html>";
+        let native = "<html xmlns=\"x\">\n<head>\n<meta name=\"a\" content=\"2\n/>\" />\n<meta name=\"b\" content=\"1\" />\n<meta name=\"b\" content=\"0\" />\n<title></title>\n</head>\n<body><div xmlns:a=\"u:a\" xmlns:z=\"u:z\"><p>t</p></div>\n<meta name=\"c\" content=\"\" />\n<meta name=\"d\" content=\"\" />\nx<meta name=\"a\" content=\"\" /></body></html>";
+        for char_set in [CharSet::UTF_8, CharSet::UTF_16BE] {
+            let encoded = |text: &str| {
+                let mut bytes = Vec::new();
+                formats::encode(text, char_set, &mut bytes);
+                bytes
+            };
+            assert_eq!(in_defined_order(encoded(tika), char_set), encoded(native));
+            assert_eq!(in_defined_order(encoded(native), char_set), encoded(native));
+        }
     }
 
     #[test]

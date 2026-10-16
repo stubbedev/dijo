@@ -23,11 +23,14 @@ fn test_extract_bytes_to_stream(file_name: &str, target_dist: f64) {
     let extractor = Extractor::new();
 
     let bytes = fs::read(format!("../test_files/documents/{}", file_name)).unwrap();
-    let (mut stream, metadata) = extractor.extract_bytes(&bytes).unwrap();
+    let (mut stream, _) = extractor.extract_bytes(&bytes).unwrap();
 
     let mut buffer = Vec::new();
     stream.read_to_end(&mut buffer).unwrap();
     let extracted = String::from_utf8_lossy(&buffer);
+    // The metadata returned with the stream is what is known before the parse (#67); the
+    // parse's own comes once the stream is read.
+    let metadata = stream.metadata().unwrap();
 
     // read expected string
     let expected =

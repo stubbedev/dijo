@@ -6,6 +6,10 @@
 //! content, keeps a line break for other block elements, and reads the head's `meta`, `base`,
 //! `link` and `title` and the `lang` of `html`.
 //!
+//! The title is recorded as `dc:title`: the first `title` element's text, then the content of
+//! each `meta` named `title`, wherever it stands. Tika records a meta title after the `title`
+//! element as `html:dc:title` and drops one before it (#86).
+//!
 //! The parser leaves to Tika the documents this would hand to an embedded document extractor
 //! or resolve links against a URL (see [`deferral`]), so it never does either.
 
@@ -163,7 +167,10 @@ struct HtmlHandler<'x, 'h> {
     body_level: usize,
     discard_level: usize,
     title_level: usize,
-    title_set: bool,
+    /// The first `title` element's text, trimmed, once it has ended.
+    element_title: Option<String>,
+    /// The content of each `meta` named `title`, in order.
+    meta_titles: Vec<String>,
 }
 
 /// Writes the document through Tika's handlers.
@@ -174,7 +181,8 @@ pub(super) fn write(dom: &Dom, xhtml: &mut Xhtml) -> Result<(), Stop> {
         body_level: 0,
         discard_level: 0,
         title_level: 0,
-        title_set: false,
+        element_title: None,
+        meta_titles: Vec::new(),
     };
     handler.node(dom, DOCUMENT)
 }
@@ -248,8 +256,6 @@ impl HtmlHandler<'_, '_> {
                 self.start_element_with_mapped_attributes(safe, attributes)?;
             }
         }
-        // Tika clears the title at every start element, so markup inside the title keeps only
-        // its last text (#86).
         Ok(())
     }
 
@@ -278,8 +284,10 @@ impl HtmlHandler<'_, '_> {
         }
         match name.to_lowercase().as_str() {
             "author" => metadata.add("dc:creator", value),
-            "title" if self.title_set => metadata.add("html:dc:title", value),
-            "title" => metadata.add("dc:title", value),
+            "title" => {
+                self.meta_titles.push(value.to_owned());
+                self.set_title();
+            }
             "subject" => metadata.add("dc:subject", value),
             "keywords" => {
                 metadata.add("meta:keyword", value);
@@ -339,15 +347,25 @@ impl HtmlHandler<'_, '_> {
         }
         if self.title_level > 0 {
             self.title_level -= 1;
-            if self.title_level == 0 && !self.title_set {
-                let title = java::trim(&self.title).to_string();
-                self.xhtml.metadata_mut().set("dc:title", title);
-                self.title_set = true;
+            if self.title_level == 0 && self.element_title.is_none() {
+                self.element_title = Some(java::trim(&self.title).to_string());
+                self.set_title();
             }
         }
         self.body_level = self.body_level.saturating_sub(1);
         self.discard_level = self.discard_level.saturating_sub(1);
         Ok(())
+    }
+
+    /// Records the title as it stands: the `title` element's text, then the meta titles.
+    fn set_title(&mut self) {
+        let titles = self
+            .element_title
+            .iter()
+            .chain(&self.meta_titles)
+            .cloned()
+            .collect();
+        self.xhtml.metadata_mut().set_values("dc:title", titles);
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Stop> {
@@ -480,6 +498,35 @@ mod tests {
         assert_eq!(icbm("1.5,2"), None);
         assert_eq!(icbm("1.5 2.5x"), None);
         assert_eq!(icbm("north"), None);
+    }
+
+    /// The title element's text is the title, the meta titles before and after it further
+    /// titles (#86).
+    #[test]
+    fn records_meta_titles_as_further_titles_wherever_they_stand() {
+        let html = b"<html><head><meta name=\"title\" content=\"Early\"><title> Element title \
+                     </title><meta name=\"title\" content=\"Late\"></head><body><p>x</p></body>\
+                     </html>";
+        let (xhtml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(html)
+            .unwrap();
+        assert_eq!(
+            metadata.get("dc:title"),
+            Some(&vec![
+                "Element title".to_owned(),
+                "Early".to_owned(),
+                "Late".to_owned()
+            ])
+        );
+        assert_eq!(metadata.get("html:dc:title"), None);
+        assert!(xhtml.contains("<title>Element title</title>"), "{xhtml}");
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(
+                b"<html><head><meta name=\"title\" content=\"Only\"></head></html>",
+            )
+            .unwrap();
+        assert_eq!(metadata.get("dc:title"), Some(&vec!["Only".to_owned()]));
     }
 
     #[test]

@@ -7,7 +7,6 @@
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Embedded, Stop, Xhtml, XHTML_NAMESPACE};
 use crate::formats::{Failure, Prepared};
-use crate::java::JavaHashMap;
 use crate::java::{is_blank, utf16_length};
 
 /// The block elements [`BlockBreaks`] ends with a line break and [`AnchoredBlocks`] holds back.
@@ -124,6 +123,7 @@ enum Held {
     End(String),
     Characters(String),
     IgnorableWhitespace(String),
+    PrefixMapping(String, String),
 }
 
 /// Writes a block opened in the middle of a paragraph after that paragraph, as our Java
@@ -165,6 +165,9 @@ impl<H: ContentHandler> AnchoredBlocks<H> {
                     self.next.start_element(&name, &borrowed)?;
                 }
                 Held::End(name) => self.next.end_element(&name)?,
+                Held::PrefixMapping(prefix, uri) => {
+                    self.next.start_prefix_mapping(&prefix, &uri)?
+                }
                 Held::Characters(text) => self.next.characters(&text)?,
                 Held::IgnorableWhitespace(text) => self.next.ignorable_whitespace(&text)?,
             }
@@ -179,7 +182,13 @@ impl<H: ContentHandler> ContentHandler for AnchoredBlocks<H> {
         self.next.start_document()
     }
 
+    /// Passes a mapping on, or holds it with a held block, before whose next element it comes.
     fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        if self.holding_depth != 0 {
+            self.held
+                .push(Held::PrefixMapping(prefix.to_owned(), uri.to_owned()));
+            return Ok(());
+        }
         self.next.start_prefix_mapping(prefix, uri)
     }
 
@@ -585,16 +594,33 @@ impl<W: Write> ContentHandler for ToText<W> {
 
 /// Serialises the events as XML, as Tika's `ToXMLContentHandler`: an empty element is written
 /// `<name />`, and a start tag declares, after its attributes, the namespace prefixes mapped
-/// since the previous tag that the elements around it do not declare already.
+/// since the previous start tag that are not in effect already, each prefix once, the default
+/// namespace first and the rest sorted by prefix. Every element is in the XHTML namespace: it is
+/// written unprefixed while the default namespace is XHTML, else under a prefix in effect for
+/// XHTML, which its end tag repeats. Tika keeps the pending mappings in a `HashMap` by namespace
+/// and writes them in its order, may declare one prefix twice on a tag, drops the mappings made
+/// before an end tag, and writes an element under a prefix with an unprefixed end tag (#87).
 pub(crate) struct ToXml<W> {
     out: W,
     prolog: Option<&'static str>,
     in_start_element: bool,
-    /// The prefixes mapped since the last tag, by namespace, as Java's `HashMap` orders them.
-    pending: JavaHashMap<String>,
-    /// For each open element, the prefixes its start tag declared, by namespace.
-    declared: Vec<Vec<(String, String)>>,
+    /// The mappings made since the last start tag, by prefix, each prefix's latest.
+    pending: Vec<(String, String)>,
+    /// The open elements, innermost last.
+    open: Vec<OpenElement>,
 }
+
+/// An element [`ToXml`] has started and not ended yet.
+struct OpenElement {
+    /// The prefix its tags are written with, empty for none.
+    prefix: String,
+    /// The prefixes its start tag declares, each with its namespace.
+    declarations: Vec<(String, String)>,
+}
+
+/// The prefix [`ToXml`] declares for XHTML on an element whose default namespace is not XHTML
+/// and that no prefix in effect maps to it.
+const XHTML_PREFIX: &str = "xhtml";
 
 impl<W: Write> ToXml<W> {
     /// A writer whose document starts with an XML declaration naming `encoding`, when given.
@@ -603,24 +629,44 @@ impl<W: Write> ToXml<W> {
             out,
             prolog: encoding,
             in_start_element: false,
-            pending: JavaHashMap::default(),
-            declared: Vec::new(),
+            pending: Vec::new(),
+            open: Vec::new(),
         }
     }
 
-    /// `ElementInfo.getPrefix`: the prefix the innermost open element that declares `uri` gives
-    /// it, the empty prefix for no namespace, or none when `uri` is not declared.
-    fn prefix(&self, uri: &str) -> Option<&str> {
-        self.declared
+    /// The namespace `prefix`, empty for the default namespace, stands for where the innermost
+    /// open element is: the one the innermost declaration of it gives, else none, which for the
+    /// default namespace is no namespace.
+    fn namespace(&self, prefix: &str) -> Option<&str> {
+        self.open
             .iter()
             .rev()
-            .find_map(|declarations| {
-                declarations
+            .find_map(|element| {
+                element
+                    .declarations
                     .iter()
-                    .find(|(declared, _)| declared == uri)
-                    .map(|(_, prefix)| prefix.as_str())
+                    .find(|(declared, _)| declared == prefix)
+                    .map(|(_, uri)| uri.as_str())
             })
-            .or_else(|| uri.is_empty().then_some(""))
+            .or_else(|| prefix.is_empty().then_some(""))
+    }
+
+    /// The prefix an element is written with where the innermost open element is: none while
+    /// the default namespace is XHTML, else the innermost prefix in effect for XHTML, if any.
+    fn xhtml_prefix(&self) -> Option<String> {
+        if self.namespace("") == Some(XHTML_NAMESPACE) {
+            return Some(String::new());
+        }
+        self.open
+            .iter()
+            .rev()
+            .flat_map(|element| element.declarations.iter())
+            .find(|(prefix, uri)| {
+                !prefix.is_empty()
+                    && uri == XHTML_NAMESPACE
+                    && self.namespace(prefix) == Some(XHTML_NAMESPACE)
+            })
+            .map(|(prefix, _)| prefix.clone())
     }
 
     fn close_start_element(&mut self) -> Result<(), Stop> {
@@ -647,6 +693,14 @@ impl<W: Write> ToXml<W> {
         }
         self.out.write(&text[start..])
     }
+
+    fn write_name(&mut self, prefix: &str, name: &str) -> Result<(), Stop> {
+        if !prefix.is_empty() {
+            self.out.write(prefix)?;
+            self.out.write(":")?;
+        }
+        self.out.write(name)
+    }
 }
 
 impl<W: Write> ContentHandler for ToXml<W> {
@@ -656,42 +710,67 @@ impl<W: Write> ContentHandler for ToXml<W> {
             self.out.write(encoding)?;
             self.out.write("\"?>\n")?;
         }
-        self.declared.clear();
+        self.open.clear();
         self.pending.clear();
         Ok(())
     }
 
     fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
-        if !self.declared.is_empty() && self.prefix(uri) == Some(prefix) {
-            return Ok(());
+        match self
+            .pending
+            .iter_mut()
+            .find(|(pending, _)| pending == prefix)
+        {
+            Some((_, pending)) => uri.clone_into(pending),
+            None => self.pending.push((prefix.to_owned(), uri.to_owned())),
         }
-        self.pending.insert(uri, prefix.to_owned());
         Ok(())
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         self.close_start_element()?;
-        let declarations: Vec<(String, String)> = self
-            .pending
-            .iter()
-            .map(|(uri, prefix)| (uri.to_owned(), prefix.clone()))
+        let mut declarations: Vec<(String, String)> = std::mem::take(&mut self.pending)
+            .into_iter()
+            .filter(|(prefix, uri)| self.namespace(prefix) != Some(uri.as_str()))
             .collect();
-        self.declared.push(declarations);
-        let prefix = self
-            .prefix(XHTML_NAMESPACE)
-            .expect("the document's first element declares the XHTML namespace")
-            .to_owned();
-        let declarations = self
-            .declared
-            .last()
-            .expect("the element was just opened")
-            .clone();
+        declarations.sort();
+        self.open.push(OpenElement {
+            prefix: String::new(),
+            declarations,
+        });
+        let prefix = match self.xhtml_prefix() {
+            Some(prefix) => prefix,
+            None => {
+                let element = self.open.last_mut().expect("the element was just opened");
+                let declared = |prefix: &str| {
+                    element
+                        .declarations
+                        .iter()
+                        .any(|(declared, _)| declared == prefix)
+                };
+                let prefix = if declared("") {
+                    let mut prefix = XHTML_PREFIX.to_owned();
+                    let mut number = 1;
+                    while declared(&prefix) {
+                        prefix = format!("{XHTML_PREFIX}{number}");
+                        number += 1;
+                    }
+                    prefix
+                } else {
+                    String::new()
+                };
+                element
+                    .declarations
+                    .push((prefix.clone(), XHTML_NAMESPACE.to_owned()));
+                element.declarations.sort();
+                prefix
+            }
+        };
+        let element = self.open.last_mut().expect("the element was just opened");
+        element.prefix.clone_from(&prefix);
+        let declarations = element.declarations.clone();
         self.out.write("<")?;
-        if !prefix.is_empty() {
-            self.out.write(&prefix)?;
-            self.out.write(":")?;
-        }
-        self.out.write(name)?;
+        self.write_name(&prefix, name)?;
         for (attribute, value) in attributes {
             self.out.write(" ")?;
             self.out.write(attribute)?;
@@ -699,7 +778,7 @@ impl<W: Write> ContentHandler for ToXml<W> {
             self.write_escaped(value, true)?;
             self.out.write("\"")?;
         }
-        for (uri, prefix) in &declarations {
+        for (prefix, uri) in &declarations {
             self.out.write(" xmlns")?;
             if !prefix.is_empty() {
                 self.out.write(":")?;
@@ -709,20 +788,22 @@ impl<W: Write> ContentHandler for ToXml<W> {
             self.write_escaped(uri, true)?;
             self.out.write("\"")?;
         }
-        self.pending.clear();
         self.in_start_element = true;
         Ok(())
     }
 
     fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.pending.clear();
-        self.declared.pop();
+        let prefix = self
+            .open
+            .pop()
+            .map(|element| element.prefix)
+            .unwrap_or_default();
         if self.in_start_element {
             self.in_start_element = false;
             return self.out.write(" />");
         }
         self.out.write("</")?;
-        self.out.write(name)?;
+        self.write_name(&prefix, name)?;
         self.out.write(">")
     }
 
@@ -929,10 +1010,49 @@ mod tests {
         }
     }
 
+    /// The outputs of the handler-chain reference the port writes differently from Tika's
+    /// handlers on purpose, by script, the chains whose output departs, and the issue that names
+    /// Tika's behaviour: the head in `HashMap` order (#64), anchored blocks left in place by the
+    /// string chains (#63), and namespace declarations in `HashMap` order, doubled, lost, or on
+    /// a prefixed element with an unprefixed end tag (#87). The tests after this one check what
+    /// the port writes for them.
+    const DEPARTURES: &[(&str, &[&str], &str)] = &[
+        ("paragraphs", &XML_CHAINS, "#64"),
+        ("title-language-and-many-values", &XML_CHAINS, "#64"),
+        ("anchored-block-in-paragraph", &STRING_CHAINS, "#63"),
+        ("prefix-mappings-in-the-body", &XML_CHAINS, "#87"),
+        ("xhtml-under-a-prefix", &XML_CHAINS, "#87"),
+        (
+            "prefix-mapping-while-a-block-is-held",
+            &[
+                "stream-xml",
+                "string-text-1000000",
+                "string-xml-1000000",
+                "string-text-40",
+                "string-xml-40",
+            ],
+            "#63, #87",
+        ),
+    ];
+    const XML_CHAINS: [&str; 3] = ["stream-xml", "string-xml-1000000", "string-xml-40"];
+    const STRING_CHAINS: [&str; 4] = [
+        "string-text-1000000",
+        "string-xml-1000000",
+        "string-text-40",
+        "string-xml-40",
+    ];
+
+    fn departs(script: &str, chain_name: &str) -> bool {
+        DEPARTURES
+            .iter()
+            .any(|(departing, chains, _)| *departing == script && chains.contains(&chain_name))
+    }
+
     #[test]
     fn write_what_tikas_handler_chains_write() {
         let scripts = scripts();
         let mut compared = 0;
+        let mut departed = 0;
         let mut differences = Vec::new();
         for line in CHAINS.lines() {
             let fields: Vec<&str> = line.splitn(4, '\t').collect();
@@ -942,14 +1062,148 @@ mod tests {
             let (output, was_stopped) = play(calls, chain(chain_name));
             let expected = unescape(expected);
             compared += 1;
-            if output != expected || was_stopped != (stopped == "true") {
+            let same = output == expected && was_stopped == (stopped == "true");
+            if departs(script, chain_name) {
+                departed += 1;
+                if same {
+                    differences.push(format!("{script} {chain_name} no longer departs"));
+                }
+            } else if !same {
                 differences.push(format!(
                     "{script} {chain_name}: stopped {was_stopped}, expected {stopped}\n  got      {output:?}\n  expected {expected:?}"
                 ));
             }
         }
         assert_eq!(compared, scripts.len() * 6);
+        let listed: usize = DEPARTURES.iter().map(|(_, chains, _)| chains.len()).sum();
+        assert_eq!(departed, listed, "departures not in the reference");
         assert!(differences.is_empty(), "{}", differences.join("\n"));
+    }
+
+    fn played(script: &str, chain_name: &str) -> String {
+        let scripts = scripts();
+        let calls = &scripts.iter().find(|(name, _)| name == script).unwrap().1;
+        play(calls, chain(chain_name)).0
+    }
+
+    /// The head lists the metadata sorted by name, the values of a name in order (#64).
+    #[test]
+    fn heads_list_the_metadata_sorted_by_name() {
+        let head = |script: &str| {
+            let output = played(script, "stream-xml");
+            output
+                .lines()
+                .filter_map(|line| line.strip_prefix("<meta name=\""))
+                .map(|meta| meta[..meta.find('"').unwrap()].to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            head("paragraphs"),
+            [
+                "Content-Length",
+                "Content-Type",
+                "dcterms:created",
+                "tk:parsed-by",
+                "tk:resource-name"
+            ]
+        );
+        assert_eq!(
+            head("title-language-and-many-values"),
+            [
+                "Content-Language",
+                "dc:creator",
+                "dc:creator",
+                "dc:title",
+                "tk:parsed-by",
+                "tk:parsed-by"
+            ]
+        );
+        assert!(played("title-language-and-many-values", "string-xml-1000000")
+            .contains("<meta name=\"dc:creator\" content=\"First\" />\n<meta name=\"dc:creator\" content=\"Second\" />"));
+    }
+
+    /// A string extraction holds anchored blocks back as a stream does (#63).
+    #[test]
+    fn string_chains_hold_anchored_blocks_back() {
+        for script in [
+            "anchored-block-in-paragraph",
+            "prefix-mapping-while-a-block-is-held",
+        ] {
+            assert_eq!(
+                played(script, "string-text-1000000"),
+                played(script, "stream-text")
+            );
+            let streamed = played(script, "stream-xml");
+            let streamed = &streamed[streamed.find("<html").unwrap()..];
+            assert_eq!(played(script, "string-xml-1000000"), streamed);
+        }
+        assert_eq!(
+            played("anchored-block-in-paragraph", "string-text-40"),
+            "The sentence begins and ends here.\nA com"
+        );
+    }
+
+    /// Each prefix is declared once per element, in order of prefix, mappings made before an end
+    /// tag go on the next start tag, and every element stays in XHTML under the qualified name
+    /// its start and end tags share (#87).
+    #[test]
+    fn declares_namespaces_once_in_order_on_well_formed_tags() {
+        let body = |script: &str| {
+            let output = played(script, "stream-xml");
+            output[output.find("<body>").unwrap()..].to_owned()
+        };
+        assert_eq!(
+            body("prefix-mappings-in-the-body"),
+            "<body><p>Before.</p>\n<div xmlns:a=\"urn:a2\" xmlns:b=\"urn:b\" \
+             xmlns:ibooks=\"http://www.apple.com/2011/iBooks\" \
+             xmlns:xlink=\"http://www.w3.org/1999/xlink\"><p xmlns:c=\"urn:c\">Inner.</p>\n</div>\n\
+             <p />\n<p xmlns:lost=\"urn:lost\">After.</p>\n</body></html>"
+        );
+        assert_eq!(
+            body("xhtml-under-a-prefix"),
+            "<body><p>Plain.</p>\n<div xmlns:h=\"http://www.w3.org/1999/xhtml\"><p>Prefixed.</p>\n\
+             </div>\n<p>Plain again.</p>\n</body></html>"
+        );
+        assert_eq!(
+            body("prefix-mapping-while-a-block-is-held"),
+            "<body><p>Anchored before and after.</p><p class=\"note\">the note</p>\n\n\
+             <p xmlns:m=\"urn:m\">Next.</p>\n</body></html>"
+        );
+    }
+
+    /// Where the default namespace is no longer XHTML, elements are written under a prefix
+    /// declared for XHTML, which their end tags repeat (#87).
+    #[test]
+    fn keeps_elements_in_xhtml_when_the_default_namespace_changes() {
+        use super::{ContentHandler, ToXml};
+        let mut out = StringOut::default();
+        {
+            let mut xml = ToXml::new(&mut out, None);
+            xml.start_document().unwrap();
+            xml.start_prefix_mapping("", super::XHTML_NAMESPACE)
+                .unwrap();
+            xml.start_element("html", &[]).unwrap();
+            xml.start_prefix_mapping("", "urn:other").unwrap();
+            xml.start_element("div", &[]).unwrap();
+            xml.start_element("p", &[]).unwrap();
+            xml.characters("text").unwrap();
+            xml.end_element("p").unwrap();
+            xml.end_element("div").unwrap();
+            xml.start_prefix_mapping("h", super::XHTML_NAMESPACE)
+                .unwrap();
+            xml.start_prefix_mapping("", "urn:other").unwrap();
+            xml.start_element("p", &[]).unwrap();
+            xml.end_element("p").unwrap();
+            xml.end_element("html").unwrap();
+            xml.end_document().unwrap();
+        }
+        assert_eq!(
+            out.0,
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\">\
+             <xhtml:div xmlns=\"urn:other\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\
+             <xhtml:p>text</xhtml:p></xhtml:div>\
+             <h:p xmlns=\"urn:other\" xmlns:h=\"http://www.w3.org/1999/xhtml\" /></html>"
+        );
     }
 
     #[test]
