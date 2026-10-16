@@ -322,8 +322,8 @@ fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSe
     }
 
     fn collect(record: &Escher, sheet: usize, map: &mut HashMap<i32, BTreeSet<usize>>) {
-        if let Content::Options(pictures) = &record.content {
-            for &picture in pictures {
+        if let Content::Options(options) = &record.content {
+            for picture in options.pictures() {
                 if picture > 0 {
                     map.entry(picture).or_default().insert(sheet);
                 }

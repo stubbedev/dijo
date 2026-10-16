@@ -1,7 +1,8 @@
-//! The Escher records of Office drawings as POI's `DefaultEscherRecordFactory` makes them and
-//! their `fillFields` read them: containers with their children, stored pictures (BSE records
-//! with their blips), blips, shape options with the picture each shape shows, and every other
-//! record read past as POI reads it, failing where POI throws.
+//! The Escher records of Office drawings as POI's `DefaultEscherRecordFactory`, or for slides its
+//! `HSLFEscherRecordFactory`, makes them and their `fillFields` read them: containers with their
+//! children, stored pictures (BSE records with their blips), blips, shapes, shape options,
+//! anchors, text boxes and client data, and every other record read past as POI reads it,
+//! failing where POI throws.
 
 use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, Read, Thrown};
 
@@ -18,6 +19,8 @@ pub(crate) mod kind {
     pub(crate) const CHILD_ANCHOR: u16 = 0xF00F;
     pub(crate) const CLIENT_ANCHOR: u16 = 0xF010;
     pub(crate) const CLIENT_DATA: u16 = 0xF011;
+    /// The record of a slide's placeholder, which `HSLFEscherRecordFactory` reads as Escher.
+    pub(crate) const PLACEHOLDER: u16 = 0x0BC3;
     pub(crate) const BLIP_START: u16 = 0xF018;
     pub(crate) const BLIP_EMF: u16 = 0xF01A;
     pub(crate) const BLIP_WMF: u16 = 0xF01B;
@@ -38,12 +41,22 @@ pub(crate) mod kind {
 }
 
 /// The property of a shape's options that names the picture it shows.
-const PICTURE_PROPERTY: u16 = 0x0104;
+pub(crate) const PICTURE_PROPERTY: u16 = 0x0104;
 const MAX_NESTED_CHILD_NODES: usize = 1000;
 const MAX_NUMBER_OF_CHILDREN: usize = 100_000;
 const MAX_SMALL_RECORD: i64 = 100_000;
 const MAX_LARGE_RECORD: i64 = 100_000_000;
 const MAX_BLIP: i64 = 104_857_600;
+/// `RecordAtom.getMaxRecordLength`, which bounds the client data of a slide's shape.
+const MAX_SLIDE_RECORD: i64 = 1_000_000;
+
+/// The factory that makes the records: POI's `DefaultEscherRecordFactory`, or for slides its
+/// `HSLFEscherRecordFactory`, which reads a placeholder and the client data of shapes itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Factory {
+    Default,
+    Slides,
+}
 
 /// A picture: the type of its blip record and its data, as `getPicturedata` gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,17 +72,71 @@ pub(crate) struct Stored {
     pub(crate) blip: Option<Blip>,
     /// `getBlipTypeWin32`.
     pub(crate) blip_type: u8,
+    /// `getUid`: the checksum of its picture.
+    pub(crate) uid: [u8; 16],
     /// `getOffset`: where its blip is in the delay stream.
     pub(crate) offset: i32,
+}
+
+/// A property of a shape's options, as `EscherPropertyFactory` makes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Property {
+    /// The property's number, without its flags.
+    pub(crate) number: u16,
+    /// Its value: of a simple property, or the length of a complex one's data.
+    pub(crate) value: i32,
+    /// The data of a complex property (`EscherComplexProperty` or `EscherArrayProperty`).
+    pub(crate) complex: Option<Vec<u8>>,
+}
+
+/// Shape options (`EscherOptRecord` or `EscherTertiaryOptRecord`): their properties in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Options(pub(crate) Vec<Property>);
+
+impl Options {
+    /// `lookup`: the first property of the number.
+    pub(crate) fn lookup(&self, number: u16) -> Option<&Property> {
+        self.0.iter().find(|property| property.number == number)
+    }
+
+    /// The picture numbers of the simple picture properties.
+    pub(crate) fn pictures(&self) -> impl Iterator<Item = i32> + '_ {
+        self.0
+            .iter()
+            .filter(|property| property.number == PICTURE_PROPERTY && property.complex.is_none())
+            .map(|property| property.value)
+    }
+}
+
+/// A shape (`EscherSpRecord`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Shape {
+    /// `getShapeType`: the record's instance.
+    pub(crate) kind: u16,
+    pub(crate) id: i32,
+    pub(crate) flags: i32,
 }
 
 /// What of a record its readers look at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Content {
+    /// An `EscherContainerRecord`.
+    Container,
     Stored(Stored),
     Picture(Blip),
-    /// Shape options (`EscherOptRecord`), with the picture numbers of their simple properties.
-    Options(Vec<i32>),
+    Shape(Shape),
+    Options(Options),
+    TertiaryOptions(Options),
+    /// A client anchor's flag, first column, first x offset and first row, which a slide's
+    /// shape reads as its rectangle; `None` where the record holds 4 bytes, Word's format.
+    ClientAnchor(Option<[i16; 4]>),
+    /// A child anchor's corners.
+    ChildAnchor([i32; 4]),
+    /// The data of a text box.
+    Textbox(Vec<u8>),
+    /// The data of a slide's shape's client data: the slide records `HSLFEscherClientDataRecord`
+    /// holds.
+    ClientData(Vec<u8>),
     Other,
 }
 
@@ -96,6 +163,8 @@ enum Class {
     ChildAnchor,
     ClientAnchor,
     ClientData,
+    SlidesClientData,
+    Placeholder,
     MetafileBlip,
     BitmapBlip,
     Blip,
@@ -108,8 +177,15 @@ fn clone(data: &[u8], offset: usize, length: i64, max: i64) -> Read<Vec<u8>> {
     safely_clone(data, offset as i64, length, max)
 }
 
-/// `DefaultEscherRecordFactory.getConstructor`.
-fn class_of(options: u16, record_id: u16) -> Class {
+/// `getConstructor` of the factory.
+fn class_of(options: u16, record_id: u16, factory: Factory) -> Class {
+    if factory == Factory::Slides {
+        match record_id {
+            kind::PLACEHOLDER => return Class::Placeholder,
+            kind::CLIENT_DATA => return Class::SlidesClientData,
+            _ => {}
+        }
+    }
     let known = match record_id {
         0xF000..=0xF005 => Some(Class::Container),
         kind::DGG => Some(Class::Dgg),
@@ -150,21 +226,35 @@ pub(crate) fn record_id_at(data: &[u8], offset: usize) -> Read<u16> {
 }
 
 /// `createRecord` at `offset`.
-fn create(data: &[u8], offset: usize) -> Read<Class> {
+fn create(data: &[u8], offset: usize, factory: Factory) -> Read<Class> {
     let options = i16_at(data, offset)? as u16;
     let record_id = i16_at(data, offset + 2)? as u16;
-    Ok(class_of(options, record_id))
+    Ok(class_of(options, record_id, factory))
 }
 
 /// `createRecord` and `fillFields` at `offset`: the record, and the length POI says it read.
 pub(crate) fn record_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
-    fill(data, offset, create(data, offset)?, 0)
+    made_at(data, offset, Factory::Default)
+}
+
+/// `createRecord` and `fillFields` at `offset`, by `factory`.
+pub(crate) fn made_at(data: &[u8], offset: usize, factory: Factory) -> Read<(Escher, isize)> {
+    fill(data, offset, create(data, offset, factory)?, 0, factory)
 }
 
 /// `new EscherContainerRecord().fillFields` at `offset`: the record read as a container
 /// whatever its type, and the length POI says it read.
 pub(crate) fn container_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
-    fill(data, offset, Class::Container, 0)
+    container_made_at(data, offset, Factory::Default)
+}
+
+/// `new EscherContainerRecord().fillFields` at `offset`, its children made by `factory`.
+pub(crate) fn container_made_at(
+    data: &[u8],
+    offset: usize,
+    factory: Factory,
+) -> Read<(Escher, isize)> {
+    fill(data, offset, Class::Container, 0, factory)
 }
 
 /// `AbstractEscherHolderRecord.decode`: the records of a drawing group's data.
@@ -200,13 +290,24 @@ impl Escher {
 
 /// `fillFields` of a record of `class` at `offset`: the record, and the length POI says it
 /// read.
-fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Escher, isize)> {
+fn fill(
+    data: &[u8],
+    offset: usize,
+    class: Class,
+    nesting: usize,
+    factory: Factory,
+) -> Read<(Escher, isize)> {
     let options = i16_at(data, offset)? as u16;
     let record_id = i16_at(data, offset + 2)? as u16;
     let length = i64::from(i32_at(data, offset + 4)?);
     let body = offset + 8;
     let read = |consumed: i64| consumed as isize;
     let other = || Escher::other(record_id);
+    let with = |content| Escher {
+        record_id,
+        content,
+        children: Vec::new(),
+    };
     Ok(match class {
         Class::Container => {
             if nesting > MAX_NESTED_CHILD_NODES {
@@ -218,8 +319,8 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
             let mut children = Vec::new();
             while remaining > 0 && position < data.len() as i64 {
                 let at = position as usize;
-                let child_class = create(data, at)?;
-                let (child, consumed) = fill(data, at, child_class, nesting + 1)?;
+                let child_class = create(data, at, factory)?;
+                let (child, consumed) = fill(data, at, child_class, nesting + 1, factory)?;
                 written += consumed as i64;
                 position += consumed as i64;
                 remaining -= consumed as i64;
@@ -234,7 +335,7 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
             (
                 Escher {
                     record_id,
-                    content: Content::Other,
+                    content: Content::Container,
                     children,
                 },
                 read(written),
@@ -253,8 +354,8 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
                 while remaining > 0 {
                     let at = usize::try_from(position)
                         .map_err(|_| Thrown::new("Escher records run back before the data"))?;
-                    let child_class = create(data, at)?;
-                    let (child, consumed) = fill(data, at, child_class, nesting + 1)?;
+                    let child_class = create(data, at, factory)?;
+                    let (child, consumed) = fill(data, at, child_class, nesting + 1, factory)?;
                     written += consumed as i64;
                     position += consumed as i64;
                     remaining -= consumed as i64;
@@ -298,12 +399,13 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
                 return thrown("BSE record ends before its fields");
             }
             let blip_type = data[body];
+            let uid: [u8; 16] = data[body + 2..body + 18].try_into().expect("16 bytes");
             let blip_offset = i32_at(data, body + 28)?;
             let mut remaining = length - 36;
             let mut blip = None;
             let mut blip_size = 0;
             if remaining > 0 {
-                let blip_class = create(data, body + 36)?;
+                let blip_class = create(data, body + 36, factory)?;
                 if !matches!(
                     blip_class,
                     Class::Blip | Class::BitmapBlip | Class::MetafileBlip
@@ -327,6 +429,7 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
                     content: Content::Stored(Stored {
                         blip,
                         blip_type,
+                        uid,
                         offset: blip_offset,
                     }),
                     children: Vec::new(),
@@ -345,10 +448,18 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
                 read(read_length),
             )
         }
-        Class::Dg | Class::Sp => {
+        Class::Dg => {
             i32_at(data, body)?;
             i32_at(data, body + 4)?;
             (other(), 16)
+        }
+        Class::Sp => {
+            let shape = Shape {
+                kind: options >> 4,
+                id: i32_at(data, body)?,
+                flags: i32_at(data, body + 4)?,
+            };
+            (with(Content::Shape(shape)), 16)
         }
         Class::Spgr | Class::SplitMenuColors => {
             for at in [0, 4, 8, 12] {
@@ -367,52 +478,58 @@ fn fill(data: &[u8], offset: usize, class: Class, nesting: usize) -> Read<(Esche
                 return thrown(format!("Invalid value for bytesRemaining: {length}"));
             }
             let count = (options & 0xFFF0) >> 4;
-            let pictures = picture_properties(data, body, count)?;
+            let properties = Options(properties(data, body, count)?);
             let content = if class == Class::Options {
-                Content::Options(pictures)
+                Content::Options(properties)
             } else {
-                Content::Other
+                Content::TertiaryOptions(properties)
             };
-            (
-                Escher {
-                    record_id,
-                    content,
-                    children: Vec::new(),
-                },
-                read(length + 8),
-            )
+            (with(content), read(length + 8))
         }
         Class::Textbox => {
-            clone(data, body, length, MAX_SMALL_RECORD)?;
-            (other(), read(length + 8))
+            let text = clone(data, body, length, MAX_SMALL_RECORD)?;
+            (with(Content::Textbox(text)), read(length + 8))
         }
         Class::ChildAnchor => {
-            let fields = match length {
-                16 => 16,
-                8 => 8,
+            let corners = match length {
+                16 => [0, 4, 8, 12].map(|at| i32_at(data, body + at)),
+                8 => [0, 2, 4, 6].map(|at| i16_at(data, body + at).map(i32::from)),
                 _ => return thrown("Invalid EscherChildAnchorRecord - neither 8 nor 16 bytes."),
             };
-            if body + fields > data.len() {
-                return thrown("child anchor ends before its fields");
-            }
-            (other(), read(8 + fields as i64))
+            let [x1, y1, x2, y2] = corners;
+            (
+                with(Content::ChildAnchor([x1?, y1?, x2?, y2?])),
+                read(8 + length),
+            )
         }
         Class::ClientAnchor => {
             let mut size = 0i64;
+            let mut corners = None;
             if length != 4 {
                 size = if length >= 18 { 18 } else { 8 };
                 if body + size as usize > data.len() {
                     return thrown("client anchor ends before its fields");
                 }
+                let [flag, col1, dx1, row1] = [0, 2, 4, 6].map(|at| i16_at(data, body + at));
+                corners = Some([flag?, col1?, dx1?, row1?]);
             }
             clone(data, body + size as usize, length - size, MAX_SMALL_RECORD)?;
-            (other(), read(8 + length))
+            (with(Content::ClientAnchor(corners)), read(8 + length))
         }
         Class::ClientData => {
             if length != 0 {
                 clone(data, body, length, MAX_SMALL_RECORD)?;
             }
             (other(), read(8 + length))
+        }
+        Class::SlidesClientData => {
+            let records = clone(data, body, length, MAX_SLIDE_RECORD)?;
+            (with(Content::ClientData(records)), read(length + 8))
+        }
+        Class::Placeholder => {
+            i32_at(data, body)?;
+            i16_at(data, body + 6)?;
+            (other(), read(length + 8))
         }
     })
 }
@@ -541,46 +658,50 @@ enum Holder {
     Other,
 }
 
-/// `EscherPropertyFactory.createProperties`: the picture numbers of the simple picture
-/// properties, after reading past the complex data as POI does.
-fn picture_properties(data: &[u8], offset: usize, count: u16) -> Read<Vec<i32>> {
-    enum Property {
+/// `EscherPropertyFactory.createProperties`: the properties, past whose complex data POI reads
+/// as it does.
+fn properties(data: &[u8], offset: usize, count: u16) -> Read<Vec<Property>> {
+    #[derive(Clone, Copy)]
+    enum Kind {
         Simple,
-        Complex(i64),
-        Array(i64),
+        Complex,
+        Array,
     }
+    let mut kinds = Vec::with_capacity(usize::from(count));
     let mut properties = Vec::with_capacity(usize::from(count));
-    let mut pictures = Vec::new();
     let mut position = offset;
     for _ in 0..count {
         let id = i16_at(data, position)? as u16;
         let value = i32_at(data, position + 2)?;
         let number = id & 0x3FFF;
         let complex = id & 0x8000 != 0;
-        let property = match holder(number) {
-            Holder::Simple => Property::Simple,
+        let kind = match holder(number) {
+            Holder::Simple => Kind::Simple,
             holder if complex => {
                 if !(0..=MAX_LARGE_RECORD).contains(&i64::from(value)) {
                     return thrown(format!("Tried to allocate an array of length {value}"));
                 }
                 if holder == Holder::Array {
-                    Property::Array(i64::from(value))
+                    Kind::Array
                 } else {
-                    Property::Complex(i64::from(value))
+                    Kind::Complex
                 }
             }
-            _ => Property::Simple,
+            _ => Kind::Simple,
         };
-        if matches!(property, Property::Simple) && number == PICTURE_PROPERTY {
-            pictures.push(value);
-        }
-        properties.push(property);
+        kinds.push(kind);
+        properties.push(Property {
+            number,
+            value,
+            complex: None,
+        });
         position += 6;
     }
-    for property in properties {
-        match property {
-            Property::Simple => {}
-            Property::Complex(length) => {
+    for (property, kind) in properties.iter_mut().zip(kinds) {
+        let length = i64::from(property.value);
+        match kind {
+            Kind::Simple => {}
+            Kind::Complex => {
                 let left = data.len() as i64 - position as i64;
                 if left < length {
                     return thrown(format!(
@@ -588,9 +709,12 @@ fn picture_properties(data: &[u8], offset: usize, count: u16) -> Read<Vec<i32>> 
                          only {left} bytes left"
                     ));
                 }
+                let start = position;
                 position += length as usize;
+                property.complex = Some(data[start..position].to_vec());
             }
-            Property::Array(length) => {
+            Kind::Array => {
+                property.complex = Some(Vec::new());
                 if length == 0 {
                     continue;
                 }
@@ -613,7 +737,7 @@ fn picture_properties(data: &[u8], offset: usize, count: u16) -> Read<Vec<i32>> 
             }
         }
     }
-    Ok(pictures)
+    Ok(properties)
 }
 
 /// `HSSFPictureData.getMimeType`: the media type of a blip by its record type.
@@ -680,6 +804,7 @@ pub(crate) mod tests {
                     data: data.to_vec(),
                 }),
                 blip_type: 5,
+                uid: [0; 16],
                 offset: 0,
             })
         };
@@ -699,7 +824,11 @@ pub(crate) mod tests {
         assert_eq!(length, 30);
         assert_eq!(
             records.children[0].children[0].content,
-            Content::Options(vec![3])
+            Content::Options(Options(vec![Property {
+                number: PICTURE_PROPERTY,
+                value: 3,
+                complex: None
+            }]))
         );
     }
 
