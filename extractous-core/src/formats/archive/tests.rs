@@ -19,8 +19,8 @@ use crate::compress::zlib::tests::zlib;
 use crate::compress::zstd::tests::zstd;
 use crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI;
 use crate::formats::parity::{
-    assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents,
-    ComparedMetadata, Departure, Scratch,
+    assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Departure,
+    Scratch,
 };
 use crate::formats::Parser;
 
@@ -35,37 +35,6 @@ const SEVEN_Z_PARSER: &str = "org.apache.tika.parser.pkg.SevenZParser";
 const FOREIGN_PARAGRAPHS: &str = "holds a document whose parser ends paragraphs outside the \
                                   XHTML namespace, which EventRecorder drops, so their replay \
                                   ends each with a line break";
-
-/// The metadata of the ZIP integrity check.
-const INTEGRITY_CHECK: [&str; 4] = [
-    "zip:integrity-check-result",
-    "zip:duplicate-entry-names",
-    "zip:local-header-only-entries",
-    "zip:central-directory-only-entries",
-];
-
-/// A native ZIP result as Tika's path writes it, with the integrity check as late as Tika runs
-/// it (#99): after the document has ended, so not in its head, and not at all when the parse
-/// failed, as at the write limit.
-fn as_tika_checks_zips(
-    text: &mut String,
-    metadata: &mut ComparedMetadata,
-    tika: &ComparedMetadata,
-) {
-    for name in INTEGRITY_CHECK {
-        let meta = format!(r#"<meta name="{name}" content=""#);
-        while let Some(start) = text.find(&meta) {
-            let end = start
-                + text[start..]
-                    .find('\n')
-                    .map_or(text.len() - start, |end| end + 1);
-            text.replace_range(start..end, "");
-        }
-    }
-    if !tika.iter().any(|(name, _)| name == INTEGRITY_CHECK[0]) {
-        metadata.retain(|(name, _)| !INTEGRITY_CHECK.contains(&name.as_str()));
-    }
-}
 
 /// Asserts parity on the documents of `parser` under `roots` it neither defers nor names in
 /// `limited`, each of which it must parse, and returns the names of those it defers.

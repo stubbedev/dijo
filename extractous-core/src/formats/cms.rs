@@ -569,10 +569,35 @@ mod tests {
         let (parsed, deferred) = documents(&CmsParser, &[scratch.directory()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), read.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
+        assert_same_as_tika_reading(&read.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    /// Asserts parity on `documents`, those whose content is generic XML with that parser's
+    /// departures from Tika's (#105) normalised.
+    fn assert_same_as_tika_reading(documents: &[&Path]) {
+        let read_as_xml = |path: &&Path| {
+            let (_, metadata) = crate::Extractor::new()
+                .extract_file_to_string(path.to_str().unwrap())
+                .unwrap();
+            ["tk:parsed-by", "tk:parsed-by-full-set"]
+                .iter()
+                .filter_map(|name| metadata.get(*name))
+                .flatten()
+                .any(|parser| parser.contains("DcXMLParser"))
+        };
+        let (xml, rest): (Vec<&Path>, Vec<&Path>) = documents
+            .iter()
+            .copied()
+            .partition(|path| read_as_xml(&path));
+        assert_same_as_tika(&rest, TIKA_NAME);
+        if !xml.is_empty() {
+            crate::formats::parity::assert_same_as_tika_normalising(
+                &xml,
+                TIKA_NAME,
+                crate::formats::dc_xml::without_unread_dublin_core,
+                crate::formats::dc_xml::without_head,
+            );
+        }
     }
 
     #[test]
@@ -580,7 +605,7 @@ mod tests {
         let (parsed, deferred) = documents(&CmsParser, &[Path::new("../test_files/documents")]);
         assert!(deferred.is_empty(), "{deferred:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
+        assert_same_as_tika_reading(&paths);
     }
 
     /// Tika's CMS test documents the native path leaves to Tika's: digested data typed as a
@@ -607,7 +632,7 @@ mod tests {
         assert!(DETACHED
             .iter()
             .all(|name| rest.iter().any(|path| path.ends_with(name))));
-        assert_same_as_tika(&rest, TIKA_NAME);
+        assert_same_as_tika_reading(&rest);
         assert_fails_as_tika(&enveloped);
         let error = crate::Extractor::new()
             .extract_file_to_string(enveloped[0].to_str().unwrap())

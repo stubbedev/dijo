@@ -499,8 +499,40 @@ pub(crate) fn assert_same_as_tika_departing(
         documents,
         &ParserConfigs::default(),
         expected,
-        Some(departure),
+        Some((departure, None)),
     );
+}
+
+/// A rewrite of the decoded text of both results, for a fix whose departure cannot be undone
+/// from the native result alone: it names the issue, and normalises only what that fix changes.
+pub(crate) type Normalisation = fn(&mut String);
+
+/// [`assert_same_as_tika_departing`], with both texts then rewritten by `normalise`.
+pub(crate) fn assert_same_as_tika_normalising(
+    documents: &[&Path],
+    tika_name: &str,
+    departure: Departure,
+    normalise: Normalisation,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+    });
+    compare(
+        documents,
+        &ParserConfigs::default(),
+        expected,
+        Some((departure, Some(normalise))),
+    );
+}
+
+/// The result `extracted`, its text in `char_set`, with the text rewritten by `normalise`.
+fn normalised(mut extracted: Extracted, char_set: CharSet, normalise: Normalisation) -> Extracted {
+    let mut text = decoded(&extracted.text, char_set).expect("text in its character set");
+    normalise(&mut text);
+    extracted.text.clear();
+    formats::encode(&text, char_set, &mut extracted.text);
+    extracted
 }
 
 /// The native result `native`, its text in `char_set`, rewritten by `departure` beside Tika's
@@ -693,7 +725,7 @@ fn compare(
     documents: &[&Path],
     configs: &ParserConfigs,
     expected: Expected,
-    departure: Option<Departure>,
+    departure: Option<(Departure, Option<Normalisation>)>,
 ) {
     let mut differences = Vec::new();
     for document in documents {
@@ -732,9 +764,18 @@ fn compare(
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
                     let tika = comparable(tika, char_set);
                     let native = comparable(as_tika(native, &names, char_set), char_set);
-                    let native = match departure {
-                        Some(departure) => departed(native, &tika, char_set, departure),
-                        None => native,
+                    let (tika, native) = match departure {
+                        Some((departure, normalise)) => {
+                            let native = departed(native, &tika, char_set, departure);
+                            match normalise {
+                                Some(normalise) => (
+                                    normalised(tika, char_set, normalise),
+                                    normalised(native, char_set, normalise),
+                                ),
+                                None => (tika, native),
+                            }
+                        }
+                        None => (tika, native),
                     };
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
@@ -999,6 +1040,16 @@ fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> 
 /// metadata, and the same files, named, typed, numbered and cut alike. Where the two differ, or
 /// one path fails and the other does not, what differs.
 pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
+    spools_as_tika_departing(path, budget, None)
+}
+
+/// [`spools_as_tika`], with the native result rewritten by `departure`, and both texts then by
+/// its normalisation, if any.
+pub(crate) fn spools_as_tika_departing(
+    path: &Path,
+    budget: u64,
+    departure: Option<(Departure, Option<Normalisation>)>,
+) -> Result<usize, String> {
     let path = path.to_str().unwrap();
     let configs = ParserConfigs::default();
     let tika_spool = Scratch::new("spool-tika");
@@ -1071,6 +1122,20 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                 ),
                 CharSet::UTF_8,
             );
+            let (tika_extracted, native_extracted) = match departure {
+                Some((departure, normalise)) => {
+                    let native =
+                        departed(native_extracted, &tika_extracted, CharSet::UTF_8, departure);
+                    match normalise {
+                        Some(normalise) => (
+                            normalised(tika_extracted, CharSet::UTF_8, normalise),
+                            normalised(native, CharSet::UTF_8, normalise),
+                        ),
+                        None => (tika_extracted, native),
+                    }
+                }
+                None => (tika_extracted, native_extracted),
+            };
             let (tika_extracted, native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
             let tika = (tika_extracted, spooled(embedded, tika_spool.directory()));

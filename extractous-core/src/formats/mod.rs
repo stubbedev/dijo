@@ -1071,7 +1071,11 @@ mod tests {
         for name in ["nested.zip", "science-exploration-1p.pptx", "vodafone.xlsx"] {
             let path = std::path::PathBuf::from("../test_files/documents").join(name);
             for budget in [u64::MAX, 3000] {
-                let spooled = crate::formats::parity::spools_as_tika(&path, budget);
+                // The ZIP's integrity check now reaches its head (#99).
+                let departure = (name == "nested.zip")
+                    .then_some((crate::formats::archive::as_tika_checks_zips as _, None));
+                let spooled =
+                    crate::formats::parity::spools_as_tika_departing(&path, budget, departure);
                 assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
             }
         }
@@ -1102,8 +1106,24 @@ mod tests {
                 if exceptions.iter().any(|(exception, _)| *exception == name) {
                     continue;
                 }
+                // The fixes of #99 and #105 depart from Tika's path systematically.
+                let departure: Option<(crate::formats::parity::Departure, _)> = match parser.name()
+                {
+                    "extractous::ZipParser" => {
+                        Some((crate::formats::archive::as_tika_checks_zips, None))
+                    }
+                    "extractous::DcXMLParser" => Some((
+                        crate::formats::dc_xml::without_unread_dublin_core,
+                        Some(
+                            crate::formats::dc_xml::without_head
+                                as crate::formats::parity::Normalisation,
+                        ),
+                    )),
+                    _ => None,
+                };
                 for budget in [u64::MAX, 3000] {
-                    match crate::formats::parity::spools_as_tika(&path, budget) {
+                    match crate::formats::parity::spools_as_tika_departing(&path, budget, departure)
+                    {
                         Ok(0) => {}
                         Ok(_) => spooling += 1,
                         Err(difference) => differences.push(difference),
