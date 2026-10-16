@@ -1,11 +1,14 @@
 //! What ports of Tika code need from Java itself to give Java's results: the iteration order of
 //! a `java.util.HashMap` with string keys, `Integer.parseInt`, `Long.parseLong`,
-//! `Double.parseDouble`, `Math.round`, `String.trim` and `String.strip`.
+//! `Double.parseDouble`, `Math.round`, `String.trim`, `String.strip` and `System.lineSeparator`.
 
 use std::collections::HashMap;
 
-use crate::formats::handlers::is_java_whitespace;
-use crate::unicode::decimal_digit;
+pub(crate) use crate::mime::java_trim as trim;
+use crate::unicode::{decimal_digit, is_whitespace};
+
+/// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
+pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
@@ -250,8 +253,14 @@ pub(crate) fn url_decode(text: &str) -> Option<String> {
     Some(decoded)
 }
 
-/// `Integer.parseInt(text, 16)` for the two characters of an escape.
+/// `Integer.parseInt(text, 16)` for the two characters of an escape, which must not be negative.
 fn parse_hex(text: &str) -> Option<i32> {
+    parse_hex_int(text).filter(|&value| value >= 0)
+}
+
+/// `Integer.parseInt(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
+/// reads them, in range.
+pub(crate) fn parse_hex_int(text: &str) -> Option<i32> {
     let (negative, digits) = match text.chars().next()? {
         '-' => (true, &text[1..]),
         '+' => (false, &text[1..]),
@@ -260,11 +269,14 @@ fn parse_hex(text: &str) -> Option<i32> {
     if digits.is_empty() {
         return None;
     }
-    let magnitude = digits.chars().try_fold(0i32, |value, character| {
-        Some(value * 16 + i32::try_from(hex_digit(character)?).ok()?)
-    })?;
-    let value = if negative { -magnitude } else { magnitude };
-    (value >= 0).then_some(value)
+    let mut magnitude: i64 = 0;
+    for character in digits.chars() {
+        magnitude = magnitude * 16 + i64::from(hex_digit(character)?);
+        if magnitude > i64::from(i32::MAX) + 1 {
+            return None;
+        }
+    }
+    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
 /// `Long.parseLong(text)`: an optional sign and decimal digits of any script, in range.
@@ -319,14 +331,9 @@ pub(crate) fn split(text: &str, separator: char) -> Vec<&str> {
     pieces
 }
 
-/// `String.trim()`: without the characters up to U+0020 at either end.
-pub(crate) fn trim(text: &str) -> &str {
-    text.trim_matches(|character| character <= ' ')
-}
-
 /// `String.strip()`: without the whitespace `Character.isWhitespace` sees at either end.
 pub(crate) fn strip(text: &str) -> &str {
-    text.trim_matches(is_java_whitespace)
+    text.trim_matches(is_whitespace)
 }
 
 /// The double `Double.parseDouble(text)` gives, or `None` where it throws.

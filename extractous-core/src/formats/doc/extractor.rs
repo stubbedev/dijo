@@ -13,7 +13,6 @@ use super::pictures::{has_picture, Pictures};
 use super::range::{CharacterRun, Paragraph, Span};
 use crate::config::OfficeParserConfig;
 use crate::formats::embedded::{Wrapping, RESOURCE_NAME};
-use crate::formats::handlers::is_java_whitespace;
 use crate::formats::java::{parse_int, JavaHashMap};
 use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
 use crate::formats::metadata::TikaMetadata;
@@ -21,6 +20,7 @@ use crate::formats::ole2::{office_document, Embedded};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::Unported;
 use crate::ole2::{EntryId, EntryKind, Ole2};
+use crate::unicode::is_whitespace;
 
 const FIELD_BEGIN: u16 = 0x13;
 const FIELD_SEPARATOR: u16 = 0x14;
@@ -157,7 +157,7 @@ fn is_blank_paragraph(text: &[u16]) -> bool {
 /// `StringUtils.isBlank` over UTF-16 units.
 fn is_blank(text: &[u16]) -> bool {
     text.iter()
-        .all(|&unit| char::from_u32(u32::from(unit)).is_some_and(is_java_whitespace))
+        .all(|&unit| char::from_u32(u32::from(unit)).is_some_and(is_whitespace))
 }
 
 /// Our `WordText.clean`: anchors of pictures, drawings, notes and comments dropped, tabs kept,

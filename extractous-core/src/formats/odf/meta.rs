@@ -6,12 +6,13 @@
 use std::borrow::Cow;
 
 use crate::formats::element_metadata::{set_unless_equal, ElementMetadata, Values};
-use crate::formats::handlers::{is_java_whitespace, utf16_length};
+use crate::formats::handlers::utf16_length;
 use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{normalized_namespace, META_NS, OFFICE_NS};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::unicode::is_whitespace;
 
 const SUBJECT: &str = "dc:subject";
 const DESCRIPTION: &str = "dc:description";
@@ -116,7 +117,7 @@ impl UserDefined {
             return;
         };
         if value.is_empty()
-            || name.chars().all(is_java_whitespace)
+            || name.chars().all(is_whitespace)
             || utf16_length(name) > MAX_USER_DEFINED_NAME_LENGTH
         {
             return;

@@ -21,8 +21,7 @@ use crate::formats::handlers::{is_blank, utf16_length};
 use crate::formats::java::trim;
 use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::mime::java::to_lower_case;
 use crate::text::charset::Charset;
 
@@ -221,35 +220,26 @@ impl Parser for MboxParser {
         &["application/mbox"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        messages(input)
-            .err()
-            .map(|unported| unported.reason().to_owned())
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let metadata = xhtml.metadata_mut();
-        metadata.set("Content-Type", "application/mbox");
-        metadata.set("Content-Encoding", CHARSET);
-        let messages = messages(input)
-            .map_err(|unported| Failure::Malformed(unported.reason().to_owned()))?
-            .ok_or_else(|| {
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let messages =
+            messages(input).map_err(|unported| Declined::Deferred(unported.reason().to_owned()))?;
+        Ok(Box::new(move |xhtml| {
+            let metadata = xhtml.metadata_mut();
+            metadata.set("Content-Type", "application/mbox");
+            metadata.set("Content-Encoding", CHARSET);
+            let messages = messages.ok_or_else(|| {
                 Failure::Malformed("The mailbox has no first line to read".to_owned())
             })?;
-        for message in messages {
-            xhtml.parse_embedded(&message.bytes, &message.metadata, Wrapping::PackageEntry)?;
-        }
-        Ok(())
+            for message in messages {
+                xhtml.parse_embedded(&message.bytes, &message.metadata, Wrapping::PackageEntry)?;
+            }
+            Ok(())
+        }))
     }
 }
 

@@ -12,8 +12,7 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Parser, Prepared};
 use crate::mime::MediaType;
 
 /// The bytes `CmsParser` reads the content type from.
@@ -244,49 +243,32 @@ impl Parser for CmsParser {
         &["application/pkcs7-mime", SIGNATURE]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        if let Err(why) = header_content_type(input) {
-            return Some(why.to_owned());
-        }
-        if encryption(input).is_some() {
-            return None;
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        header_content_type(input).map_err(|why| Declined::Deferred(why.to_owned()))?;
+        if let Some(name) = encryption(input) {
+            return Err(Declined::Fails(Error::Encrypted(format!(
+                "S/MIME (CMS {name}) data; decrypting it needs the recipient's private key"
+            ))));
         }
         if !typed_as_signature(metadata) {
-            return Some("CMS data Tika's Pkcs7Parser reads".to_owned());
+            return Err(Declined::Deferred(
+                "CMS data Tika's Pkcs7Parser reads".to_owned(),
+            ));
         }
         match encapsulates_content(input) {
-            Some(false) => None,
-            Some(true) => Some("signed data that encapsulates its content".to_owned()),
-            None => Some("CMS data the port does not read as Bouncy Castle does".to_owned()),
+            Some(false) => Ok(Box::new(|_| Ok(()))),
+            Some(true) => Err(Declined::Deferred(
+                "signed data that encapsulates its content".to_owned(),
+            )),
+            None => Err(Declined::Deferred(
+                "CMS data the port does not read as Bouncy Castle does".to_owned(),
+            )),
         }
-    }
-
-    fn fails_before_starting(
-        &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        encryption(input).map(|name| {
-            Error::Encrypted(format!(
-                "S/MIME (CMS {name}) data; decrypting it needs the recipient's private key"
-            ))
-        })
-    }
-
-    /// A detached signature: an empty document.
-    fn parse(
-        &self,
-        _input: &[u8],
-        _configs: &ParserConfigs,
-        _xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        Ok(())
     }
 }
 

@@ -34,6 +34,13 @@ fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
+/// The text a successful extraction with `args` writes.
+fn extracted(args: &[&str]) -> String {
+    let output = extractous(args);
+    assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+    stdout(&output)
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
 }
@@ -975,25 +982,21 @@ fn licenses_prints_the_licence_and_third_party_notices() {
 #[test]
 fn text_is_normalised_unless_raw() {
     let input = document("unnormalized.txt");
-    let normalised = stdout(&extractous(&[&input]));
+    let normalised = extracted(&[&input]);
     assert!(normalised
         .starts_with("The final office report on caf\u{e9} extraction.\n\nEnd of file.\n"));
 
-    let raw = stdout(&extractous(&["--raw", &input]));
+    let raw = extracted(&["--raw", &input]);
     assert!(raw.contains(
         "The \u{fb01}nal o\u{fb03}ce\u{a0}\u{a0}report on cafe\u{301} extrac\u{ad}tion."
     ));
     assert!(raw.contains("End\u{200b} of  file."));
 
-    let keep_ligatures = stdout(&extractous(&[
-        "--no-normalize",
-        "ligatures,whitespace",
-        &input,
-    ]));
+    let keep_ligatures = extracted(&["--no-normalize", "ligatures,whitespace", &input]);
     assert!(keep_ligatures
         .contains("The \u{fb01}nal o\u{fb03}ce\u{a0}\u{a0}report on caf\u{e9} extraction."));
 
-    let json = stdout(&extractous(&["--format", "json", &input]));
+    let json = extracted(&["--format", "json", &input]);
     let document: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(document["text"]
         .as_str()
@@ -1160,7 +1163,7 @@ fn a_heap_cap_fails_one_extraction_and_not_the_next() {
     assert!(capped[0]["errors"][0]["message"]
         .as_str()
         .unwrap()
-        .contains("OutOfMemoryError"));
+        .contains("exceeded its memory budget of 67108864 bytes"));
     assert_eq!(capped[1]["status"], "complete");
 }
 
@@ -1240,7 +1243,7 @@ fn page_records(args: &[&str], input: &str) -> Vec<serde_json::Value> {
     let mut all = vec!["--format", "pages"];
     all.extend_from_slice(args);
     all.push(input);
-    stdout(&extractous(&all))
+    extracted(&all)
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .filter(|record| record["page"].is_number())
@@ -1332,7 +1335,7 @@ fn assert_text_layer_replaced(pdf: &str, fault: &str, ocr_text: &str, layer_text
         serde_json::json!([{ "page": 1, "fault": fault }])
     );
 
-    let kept = stdout(&extractous(&["--ocr", "never", pdf]));
+    let kept = extracted(&["--ocr", "never", pdf]);
     assert!(kept.contains(layer_text), "{kept}");
 }
 
@@ -1364,7 +1367,7 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
     let right = "that no ships passed. The next morning,";
     let position = |text: &str, line: &str| text.find(line).unwrap();
 
-    let read = stdout(&extractous(&["--ocr", "never", pdf]));
+    let read = extracted(&["--ocr", "never", pdf]);
     assert!(position(&read, title) < position(&read, left), "{read}");
     assert!(position(&read, left) < position(&read, right), "{read}");
 
@@ -1373,7 +1376,7 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
         &["--ocr", "never", "--raw", pdf],
         &["--ocr", "never", "--format", "xhtml", pdf],
     ] {
-        let drawn = stdout(&extractous(args));
+        let drawn = extracted(args);
         assert!(position(&drawn, right) < position(&drawn, left), "{args:?}");
         assert!(position(&drawn, left) < position(&drawn, title), "{args:?}");
     }
@@ -1383,13 +1386,13 @@ fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
 fn pdf_bookmarks_are_left_out_unless_asked_for() {
     let pdf = "../quality/corpus/prose.pdf";
     let title = "The Lighthouse Keeper's Ledger";
-    let text = stdout(&extractous(&["--ocr", "never", pdf]));
+    let text = extracted(&["--ocr", "never", pdf]);
     assert_eq!(text.matches(title).count(), 1, "{text}");
     for args in [
         &["--ocr", "never", "--no-normalize", "bookmarks", pdf][..],
         &["--ocr", "never", "--raw", pdf],
     ] {
-        let kept = stdout(&extractous(args));
+        let kept = extracted(args);
         assert_eq!(kept.matches(title).count(), 2, "{args:?}: {kept}");
     }
 }
@@ -1397,7 +1400,7 @@ fn pdf_bookmarks_are_left_out_unless_asked_for() {
 #[test]
 fn a_page_written_vertically_is_read_column_by_column() {
     let pdf = "../quality/corpus/japanese-vertical.pdf";
-    let text = stdout(&extractous(&["--ocr", "never", pdf]));
+    let text = extracted(&["--ocr", "never", pdf]);
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("灯台守の記録"), "{text}");
     assert!(
@@ -1408,13 +1411,7 @@ fn a_page_written_vertically_is_read_column_by_column() {
         "{text}"
     );
 
-    let drawn = stdout(&extractous(&[
-        "--ocr",
-        "never",
-        "--no-normalize",
-        "reading-order",
-        pdf,
-    ]));
+    let drawn = extracted(&["--ocr", "never", "--no-normalize", "reading-order", pdf]);
     assert!(drawn.starts_with("灯\n台\n守\n"), "{drawn}");
 }
 
@@ -1425,7 +1422,7 @@ fn notes_text(extension: &str) -> Vec<String> {
         &["--ocr", "never", "--no-normalize", "headers", &path],
     ]
     .iter()
-    .map(|args| stdout(&extractous(args)))
+    .map(|args| extracted(args))
     .collect()
 }
 
@@ -1457,7 +1454,7 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
     for extension in ["odt", "docx", "doc"] {
         let path = format!("../quality/corpus/revisions.{extension}");
         for args in [&[path.as_str()][..], &["--no-normalize", "headers", &path]] {
-            let text = stdout(&extractous(args));
+            let text = extracted(args);
             let sentence = text
                 .find("Historians found that the plain entries told a richer story.")
                 .unwrap_or_else(|| panic!("{extension} {args:?}: {text}"));
@@ -1867,7 +1864,7 @@ fn source_code_is_extracted() {
 #[test]
 fn subtitles_are_read_for_their_spoken_text() {
     for name in ["subtitles.srt", "subtitles.vtt", "subtitles.ass"] {
-        let text = stdout(&extractous(&[&document(name)]));
+        let text = extracted(&[&document(name)]);
         assert!(text.contains("Every evening at dusk"), "{name}: {text}");
         assert!(text.contains("the keeper climbed"), "{name}: {text}");
         for noise in [
@@ -1922,11 +1919,7 @@ fn apple_mail_messages_are_read_as_email() {
 
 #[test]
 fn iwork_documents_from_2013_on_are_read_for_their_text() {
-    let pages = stdout(&extractous(&[
-        "--ocr",
-        "never",
-        &document("pages2013.pages"),
-    ]));
+    let pages = extracted(&["--ocr", "never", &document("pages2013.pages")]);
     for expected in [
         "Some plain text to parse.",
         "A text box with text.",
@@ -1935,11 +1928,7 @@ fn iwork_documents_from_2013_on_are_read_for_their_text() {
     ] {
         assert!(pages.contains(expected), "{pages}");
     }
-    let keynote = stdout(&extractous(&[
-        "--ocr",
-        "never",
-        &document("keynote2018.key"),
-    ]));
+    let keynote = extracted(&["--ocr", "never", &document("keynote2018.key")]);
     assert!(keynote.contains("Open in Libreoffice 6.2"), "{keynote}");
 }
 

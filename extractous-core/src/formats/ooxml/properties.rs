@@ -75,23 +75,49 @@ impl Instant {
     }
 }
 
-/// The metadata of the package, written to `metadata` as `SAXBasedMetadataExtractor.extract`
-/// writes it.
-pub(crate) fn extract(package: &Package, metadata: &mut TikaMetadata) -> Result<(), Unported> {
-    if let Some(core) = core_properties(package)? {
-        core.write(metadata);
+/// The core, extended and custom properties of a package, read as
+/// `SAXBasedMetadataExtractor.extract` reads them.
+pub(crate) struct Properties {
+    core: Option<CoreProperties>,
+    extended: Option<ExtendedProperties>,
+    custom: Option<CustomProperties>,
+}
+
+impl Properties {
+    /// Reads the properties of `package`, or what of them this port does not write as Tika
+    /// does.
+    pub(crate) fn read(package: &Package) -> Result<Self, Unported> {
+        let core = core_properties(package)?;
+        let extended = match package_part(package, EXTENDED_PROPERTIES) {
+            Some(part) => read_quietly(package, part, ExtendedProperties::default())?,
+            None => None,
+        };
+        let custom = match package_part(package, CUSTOM_PROPERTIES) {
+            Some(part) => read_quietly(package, part, CustomProperties::default())?,
+            None => None,
+        };
+        if let Some(unported) = custom.as_ref().and_then(|custom| custom.unported.as_ref()) {
+            return Err(Unported(unported.clone()));
+        }
+        Ok(Self {
+            core,
+            extended,
+            custom,
+        })
     }
-    if let Some(part) = package_part(package, EXTENDED_PROPERTIES) {
-        if let Some(extended) = read_quietly(package, part, ExtendedProperties::default())? {
+
+    /// Writes the properties to `metadata`, as `SAXBasedMetadataExtractor.extract` does.
+    pub(crate) fn write(&self, metadata: &mut TikaMetadata) {
+        if let Some(core) = &self.core {
+            core.write(metadata);
+        }
+        if let Some(extended) = &self.extended {
             extended.write(metadata);
         }
-    }
-    if let Some(part) = package_part(package, CUSTOM_PROPERTIES) {
-        if let Some(custom) = read_quietly(package, part, CustomProperties::default())? {
-            custom.write(metadata)?;
+        if let Some(custom) = &self.custom {
+            custom.write(metadata);
         }
     }
-    Ok(())
 }
 
 fn unreadable(package: &Package, part: usize) -> Unported {
@@ -604,10 +630,8 @@ impl CustomProperties {
         }
     }
 
-    fn write(&self, metadata: &mut TikaMetadata) -> Result<(), Unported> {
-        if let Some(unported) = &self.unported {
-            return Err(Unported(unported.clone()));
-        }
+    /// Writes the properties, once [`Properties::read`] has found them all ported.
+    fn write(&self, metadata: &mut TikaMetadata) {
         for (name, value) in &self.values {
             let value = if self.dates.contains(name) {
                 parse_offset_date_time(value).map_or_else(|| value.clone(), Instant::format)
@@ -616,7 +640,6 @@ impl CustomProperties {
             };
             metadata.add_prefixed(USER_DEFINED_PREFIX, name, value);
         }
-        Ok(())
     }
 }
 

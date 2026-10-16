@@ -30,6 +30,7 @@ pub(crate) use crate::ole2::tests::compound as compound_document;
 pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
+pub(crate) use java::trim as java_trim;
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 

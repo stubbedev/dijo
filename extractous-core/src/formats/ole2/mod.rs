@@ -9,4 +9,4 @@ mod reader;
 mod summary;
 
 pub(crate) use embedded::{office_document, Embedded};
-pub(crate) use summary::{add_multi, parse_summaries};
+pub(crate) use summary::{add_multi, Summaries};

@@ -19,7 +19,7 @@ use crate::formats::embedded::Wrapping;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const MEDIA_TYPES: [&str; 4] = [
     "application/x-bplist",
@@ -233,47 +233,24 @@ impl Parser for PListParser {
         &MEDIA_TYPES
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        match read(input) {
-            Err(Problem::Unread(why)) => Some(why.to_owned()),
-            _ => None,
-        }
-    }
-
-    fn fails_before_starting(
-        &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        match read(input) {
-            Err(Problem::Failed(reason)) => {
-                Some(Error::ParseError(format!("problem parsing root: {reason}")))
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let (root, dates) = read(input).map_err(|problem| match problem {
+            Problem::Unread(why) => Declined::Deferred(why.to_owned()),
+            Problem::Failed(reason) => {
+                Declined::Fails(Error::ParseError(format!("problem parsing root: {reason}")))
             }
-            _ => None,
-        }
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let (root, dates) = read(input).map_err(|problem| {
-            Failure::Malformed(format!(
-                "the property list is not read natively: {problem:?}"
-            ))
         })?;
-        xhtml.start_element("plist")?;
-        write(&root, &dates, xhtml)?;
-        xhtml.end_element("plist")?;
-        Ok(())
+        Ok(Box::new(move |xhtml| {
+            xhtml.start_element("plist")?;
+            write(&root, &dates, xhtml)?;
+            xhtml.end_element("plist")?;
+            Ok(())
+        }))
     }
 }
 

@@ -33,9 +33,9 @@ use crate::formats::metadata::office::{
     COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
 };
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::parse_summaries;
+use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser, Unported};
+use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{Ole2, Unreadable};
 
@@ -54,40 +54,24 @@ impl Parser for DocParser {
 
     /// Defers documents POI or Tika throws on, those before Word 97, encrypted ones, and
     /// macros extracted when asked to.
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        read(input, &configs.office)
-            .and_then(|(file, _)| {
-                let mut metadata = TikaMetadata::new();
-                parse_summaries(&file, file.root(), &mut metadata)
-            })
-            .err()
-            .map(|Unported(reason)| reason)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let (file, extracted) =
-            read(input, &configs.office).map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        parse_summaries(&file, file.root(), xhtml.metadata_mut())
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        write(extracted, xhtml)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let (summaries, extracted) =
+            read(input, &configs.office).map_err(|Unported(reason)| reason)?;
+        Ok(Box::new(move |xhtml| {
+            summaries.write(xhtml.metadata_mut());
+            write(extracted, xhtml)
+        }))
     }
 }
 
-/// The compound document and what Tika's extractor makes of the Word document in it.
-fn read<'a>(
-    input: &'a [u8],
-    config: &OfficeParserConfig,
-) -> Result<(Ole2<'a>, Extracted), Unported> {
+/// The summary information and what Tika's extractor makes of the Word document in a compound
+/// document.
+fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Extracted), Unported> {
     if config.extracts_macros() {
         return Err(Unported(
             "macros are extracted, which this port does not do".to_owned(),
@@ -109,7 +93,7 @@ fn read<'a>(
     }
     let document = Document::read(&file, root)?;
     let extracted = extract(&document, &file, root, config)?;
-    Ok((file, extracted))
+    Ok((Summaries::read(&file, root)?, extracted))
 }
 
 /// Writes the document as Tika's extractor does while it reads it. Where the output stops

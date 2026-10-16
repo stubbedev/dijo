@@ -45,40 +45,59 @@ mod pid {
     pub(super) const CODEPAGE: u32 = 1;
 }
 
-/// `SummaryExtractor.parseSummaries(directory)`.
-pub(crate) fn parse_summaries(
-    file: &Ole2<'_>,
-    directory: EntryId,
-    metadata: &mut TikaMetadata,
-) -> Result<(), Unported> {
-    for name in [SUMMARY_INFORMATION, DOCUMENT_SUMMARY_INFORMATION] {
-        let Some(entry) = file
-            .children(directory)
-            .find(|&child| file.name(child).to_uppercase() == name)
-        else {
-            continue;
-        };
-        if file.kind(entry) != EntryKind::Document {
-            continue;
+/// The property sets of a directory's summary information streams, read and checked to be
+/// ported, which [`Summaries::write`] writes as `SummaryExtractor.parseSummaries` does.
+#[derive(Debug, Clone)]
+pub(crate) struct Summaries(Vec<PropertySet>);
+
+impl Summaries {
+    /// `SummaryExtractor.parseSummaries(directory)`'s reading: the property sets POI reads, or
+    /// why Tika's path should read them.
+    pub(crate) fn read(file: &Ole2<'_>, directory: EntryId) -> Result<Summaries, Unported> {
+        let mut sets = Vec::new();
+        for name in [SUMMARY_INFORMATION, DOCUMENT_SUMMARY_INFORMATION] {
+            let Some(entry) = file
+                .children(directory)
+                .find(|&child| file.name(child).to_uppercase() == name)
+            else {
+                continue;
+            };
+            if file.kind(entry) != EntryKind::Document {
+                continue;
+            }
+            let Ok(stream) = file.read(entry) else {
+                continue;
+            };
+            if let Some(set) = property_set::read(&stream)? {
+                sets.push(set);
+            }
         }
-        let Ok(stream) = file.read(entry) else {
-            continue;
-        };
-        let Some(set) = property_set::read(&stream)? else {
-            continue;
-        };
-        let parsed = if set.is_summary_information() {
-            parse_summary_information(set.first_section(), metadata)
-        } else if set.is_document_summary_information() {
-            parse_document_summary_information(&set, metadata)
-        } else {
-            Ok(())
-        };
-        if let Err(Fault::Unported(reason)) = parsed {
-            return Err(Unported(reason));
-        }
+        let summaries = Summaries(sets);
+        summaries.write_checked(&mut TikaMetadata::new())?;
+        Ok(summaries)
     }
-    Ok(())
+
+    /// Writes the properties into `metadata`, as `parseSummaries` does.
+    pub(crate) fn write(&self, metadata: &mut TikaMetadata) {
+        self.write_checked(metadata)
+            .expect("summaries read are ported");
+    }
+
+    fn write_checked(&self, metadata: &mut TikaMetadata) -> Result<(), Unported> {
+        for set in &self.0 {
+            let parsed = if set.is_summary_information() {
+                parse_summary_information(set.first_section(), metadata)
+            } else if set.is_document_summary_information() {
+                parse_document_summary_information(set, metadata)
+            } else {
+                Ok(())
+            };
+            if let Err(Fault::Unported(reason)) = parsed {
+                return Err(Unported(reason));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `SummaryExtractor.addMulti`: the values separated by semicolons, each not blank and not
@@ -501,7 +520,7 @@ mod tests {
             return Ok(vec!["!unreadable".to_owned()]);
         };
         let mut metadata = TikaMetadata::new();
-        parse_summaries(&file, file.root(), &mut metadata)?;
+        Summaries::read(&file, file.root())?.write(&mut metadata);
         let mut names: Vec<&str> = metadata.names().collect();
         names.sort_unstable();
         Ok(names

@@ -29,11 +29,11 @@ use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::parse_summaries;
+use crate::formats::ole2::Summaries;
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
-use crate::formats::{Failure, Parser, Unported};
+use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{EntryKind, Ole2, Unreadable};
 
@@ -69,46 +69,23 @@ impl Parser for XlsParser {
     /// Defers workbooks POI or Tika throws on, encrypted ones, ones before BIFF8, ones with
     /// embedded documents, macros extracted when asked to, and any workbook when Java's default
     /// time zone, which dates are written in, cannot be read.
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        let zone = match TimeZone::java_default() {
-            Ok(zone) => zone,
-            Err(reason) => {
-                return Some(format!("Java's default time zone cannot be read: {reason}"))
-            }
-        };
-        Workbook::read(input, &configs.office, zone)
-            .and_then(|workbook| {
-                let mut metadata = TikaMetadata::new();
-                parse_summaries(&workbook.file, workbook.file.root(), &mut metadata)?;
-                Ok(())
-            })
-            .err()
-            .map(|Unported(reason)| reason)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let zone = TimeZone::java_default().map_err(|reason| {
-            Failure::Malformed(format!("Java's default time zone cannot be read: {reason}"))
-        })?;
-        let workbook = Workbook::read(input, &configs.office, zone)
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        workbook.write(xhtml)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let zone = TimeZone::java_default()
+            .map_err(|reason| format!("Java's default time zone cannot be read: {reason}"))?;
+        let workbook =
+            Workbook::read(input, &configs.office, zone).map_err(|Unported(reason)| reason)?;
+        Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
 }
 
 /// A workbook read through Tika's listener.
-struct Workbook<'a> {
-    file: Ole2<'a>,
+struct Workbook {
+    summaries: Summaries,
     read: Extracted,
     pictures: Vec<Picture>,
 }
@@ -121,9 +98,9 @@ struct Picture {
     sheets: BTreeSet<usize>,
 }
 
-impl<'a> Workbook<'a> {
+impl Workbook {
     fn read(
-        input: &'a [u8],
+        input: &[u8],
         config: &OfficeParserConfig,
         zone: &'static TimeZone,
     ) -> Result<Self, Unported> {
@@ -175,7 +152,7 @@ impl<'a> Workbook<'a> {
         })?;
         let (read, pictures) = read_records(&stream, config, zone)?;
         Ok(Workbook {
-            file,
+            summaries: Summaries::read(&file, root)?,
             read,
             pictures,
         })
@@ -186,8 +163,7 @@ impl<'a> Workbook<'a> {
     /// records: the sheet is left unclosed, the text outside its cells is written again with
     /// its text dropped, and the metadata of the sheets is not set.
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        parse_summaries(&self.file, self.file.root(), xhtml.metadata_mut())
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
+        self.summaries.write(xhtml.metadata_mut());
         xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
         let mut stopped = None;
         let mut outside = &self.read.outside;

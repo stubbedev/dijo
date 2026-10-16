@@ -1,0 +1,1386 @@
+# string	sid	name; charset	charset	gid	sid	name; encoding	encoding	code	name
+string	0	.notdef
+string	1	space
+string	2	exclam
+string	3	quotedbl
+string	4	numbersign
+string	5	dollar
+string	6	percent
+string	7	ampersand
+string	8	quoteright
+string	9	parenleft
+string	10	parenright
+string	11	asterisk
+string	12	plus
+string	13	comma
+string	14	hyphen
+string	15	period
+string	16	slash
+string	17	zero
+string	18	one
+string	19	two
+string	20	three
+string	21	four
+string	22	five
+string	23	six
+string	24	seven
+string	25	eight
+string	26	nine
+string	27	colon
+string	28	semicolon
+string	29	less
+string	30	equal
+string	31	greater
+string	32	question
+string	33	at
+string	34	A
+string	35	B
+string	36	C
+string	37	D
+string	38	E
+string	39	F
+string	40	G
+string	41	H
+string	42	I
+string	43	J
+string	44	K
+string	45	L
+string	46	M
+string	47	N
+string	48	O
+string	49	P
+string	50	Q
+string	51	R
+string	52	S
+string	53	T
+string	54	U
+string	55	V
+string	56	W
+string	57	X
+string	58	Y
+string	59	Z
+string	60	bracketleft
+string	61	backslash
+string	62	bracketright
+string	63	asciicircum
+string	64	underscore
+string	65	quoteleft
+string	66	a
+string	67	b
+string	68	c
+string	69	d
+string	70	e
+string	71	f
+string	72	g
+string	73	h
+string	74	i
+string	75	j
+string	76	k
+string	77	l
+string	78	m
+string	79	n
+string	80	o
+string	81	p
+string	82	q
+string	83	r
+string	84	s
+string	85	t
+string	86	u
+string	87	v
+string	88	w
+string	89	x
+string	90	y
+string	91	z
+string	92	braceleft
+string	93	bar
+string	94	braceright
+string	95	asciitilde
+string	96	exclamdown
+string	97	cent
+string	98	sterling
+string	99	fraction
+string	100	yen
+string	101	florin
+string	102	section
+string	103	currency
+string	104	quotesingle
+string	105	quotedblleft
+string	106	guillemotleft
+string	107	guilsinglleft
+string	108	guilsinglright
+string	109	fi
+string	110	fl
+string	111	endash
+string	112	dagger
+string	113	daggerdbl
+string	114	periodcentered
+string	115	paragraph
+string	116	bullet
+string	117	quotesinglbase
+string	118	quotedblbase
+string	119	quotedblright
+string	120	guillemotright
+string	121	ellipsis
+string	122	perthousand
+string	123	questiondown
+string	124	grave
+string	125	acute
+string	126	circumflex
+string	127	tilde
+string	128	macron
+string	129	breve
+string	130	dotaccent
+string	131	dieresis
+string	132	ring
+string	133	cedilla
+string	134	hungarumlaut
+string	135	ogonek
+string	136	caron
+string	137	emdash
+string	138	AE
+string	139	ordfeminine
+string	140	Lslash
+string	141	Oslash
+string	142	OE
+string	143	ordmasculine
+string	144	ae
+string	145	dotlessi
+string	146	lslash
+string	147	oslash
+string	148	oe
+string	149	germandbls
+string	150	onesuperior
+string	151	logicalnot
+string	152	mu
+string	153	trademark
+string	154	Eth
+string	155	onehalf
+string	156	plusminus
+string	157	Thorn
+string	158	onequarter
+string	159	divide
+string	160	brokenbar
+string	161	degree
+string	162	thorn
+string	163	threequarters
+string	164	twosuperior
+string	165	registered
+string	166	minus
+string	167	eth
+string	168	multiply
+string	169	threesuperior
+string	170	copyright
+string	171	Aacute
+string	172	Acircumflex
+string	173	Adieresis
+string	174	Agrave
+string	175	Aring
+string	176	Atilde
+string	177	Ccedilla
+string	178	Eacute
+string	179	Ecircumflex
+string	180	Edieresis
+string	181	Egrave
+string	182	Iacute
+string	183	Icircumflex
+string	184	Idieresis
+string	185	Igrave
+string	186	Ntilde
+string	187	Oacute
+string	188	Ocircumflex
+string	189	Odieresis
+string	190	Ograve
+string	191	Otilde
+string	192	Scaron
+string	193	Uacute
+string	194	Ucircumflex
+string	195	Udieresis
+string	196	Ugrave
+string	197	Yacute
+string	198	Ydieresis
+string	199	Zcaron
+string	200	aacute
+string	201	acircumflex
+string	202	adieresis
+string	203	agrave
+string	204	aring
+string	205	atilde
+string	206	ccedilla
+string	207	eacute
+string	208	ecircumflex
+string	209	edieresis
+string	210	egrave
+string	211	iacute
+string	212	icircumflex
+string	213	idieresis
+string	214	igrave
+string	215	ntilde
+string	216	oacute
+string	217	ocircumflex
+string	218	odieresis
+string	219	ograve
+string	220	otilde
+string	221	scaron
+string	222	uacute
+string	223	ucircumflex
+string	224	udieresis
+string	225	ugrave
+string	226	yacute
+string	227	ydieresis
+string	228	zcaron
+string	229	exclamsmall
+string	230	Hungarumlautsmall
+string	231	dollaroldstyle
+string	232	dollarsuperior
+string	233	ampersandsmall
+string	234	Acutesmall
+string	235	parenleftsuperior
+string	236	parenrightsuperior
+string	237	twodotenleader
+string	238	onedotenleader
+string	239	zerooldstyle
+string	240	oneoldstyle
+string	241	twooldstyle
+string	242	threeoldstyle
+string	243	fouroldstyle
+string	244	fiveoldstyle
+string	245	sixoldstyle
+string	246	sevenoldstyle
+string	247	eightoldstyle
+string	248	nineoldstyle
+string	249	commasuperior
+string	250	threequartersemdash
+string	251	periodsuperior
+string	252	questionsmall
+string	253	asuperior
+string	254	bsuperior
+string	255	centsuperior
+string	256	dsuperior
+string	257	esuperior
+string	258	isuperior
+string	259	lsuperior
+string	260	msuperior
+string	261	nsuperior
+string	262	osuperior
+string	263	rsuperior
+string	264	ssuperior
+string	265	tsuperior
+string	266	ff
+string	267	ffi
+string	268	ffl
+string	269	parenleftinferior
+string	270	parenrightinferior
+string	271	Circumflexsmall
+string	272	hyphensuperior
+string	273	Gravesmall
+string	274	Asmall
+string	275	Bsmall
+string	276	Csmall
+string	277	Dsmall
+string	278	Esmall
+string	279	Fsmall
+string	280	Gsmall
+string	281	Hsmall
+string	282	Ismall
+string	283	Jsmall
+string	284	Ksmall
+string	285	Lsmall
+string	286	Msmall
+string	287	Nsmall
+string	288	Osmall
+string	289	Psmall
+string	290	Qsmall
+string	291	Rsmall
+string	292	Ssmall
+string	293	Tsmall
+string	294	Usmall
+string	295	Vsmall
+string	296	Wsmall
+string	297	Xsmall
+string	298	Ysmall
+string	299	Zsmall
+string	300	colonmonetary
+string	301	onefitted
+string	302	rupiah
+string	303	Tildesmall
+string	304	exclamdownsmall
+string	305	centoldstyle
+string	306	Lslashsmall
+string	307	Scaronsmall
+string	308	Zcaronsmall
+string	309	Dieresissmall
+string	310	Brevesmall
+string	311	Caronsmall
+string	312	Dotaccentsmall
+string	313	Macronsmall
+string	314	figuredash
+string	315	hypheninferior
+string	316	Ogoneksmall
+string	317	Ringsmall
+string	318	Cedillasmall
+string	319	questiondownsmall
+string	320	oneeighth
+string	321	threeeighths
+string	322	fiveeighths
+string	323	seveneighths
+string	324	onethird
+string	325	twothirds
+string	326	zerosuperior
+string	327	foursuperior
+string	328	fivesuperior
+string	329	sixsuperior
+string	330	sevensuperior
+string	331	eightsuperior
+string	332	ninesuperior
+string	333	zeroinferior
+string	334	oneinferior
+string	335	twoinferior
+string	336	threeinferior
+string	337	fourinferior
+string	338	fiveinferior
+string	339	sixinferior
+string	340	seveninferior
+string	341	eightinferior
+string	342	nineinferior
+string	343	centinferior
+string	344	dollarinferior
+string	345	periodinferior
+string	346	commainferior
+string	347	Agravesmall
+string	348	Aacutesmall
+string	349	Acircumflexsmall
+string	350	Atildesmall
+string	351	Adieresissmall
+string	352	Aringsmall
+string	353	AEsmall
+string	354	Ccedillasmall
+string	355	Egravesmall
+string	356	Eacutesmall
+string	357	Ecircumflexsmall
+string	358	Edieresissmall
+string	359	Igravesmall
+string	360	Iacutesmall
+string	361	Icircumflexsmall
+string	362	Idieresissmall
+string	363	Ethsmall
+string	364	Ntildesmall
+string	365	Ogravesmall
+string	366	Oacutesmall
+string	367	Ocircumflexsmall
+string	368	Otildesmall
+string	369	Odieresissmall
+string	370	OEsmall
+string	371	Oslashsmall
+string	372	Ugravesmall
+string	373	Uacutesmall
+string	374	Ucircumflexsmall
+string	375	Udieresissmall
+string	376	Yacutesmall
+string	377	Thornsmall
+string	378	Ydieresissmall
+string	379	001.000
+string	380	001.001
+string	381	001.002
+string	382	001.003
+string	383	Black
+string	384	Bold
+string	385	Book
+string	386	Light
+string	387	Medium
+string	388	Regular
+string	389	Roman
+string	390	Semibold
+charset	ISOAdobe	0	0	.notdef
+charset	ISOAdobe	1	1	space
+charset	ISOAdobe	2	2	exclam
+charset	ISOAdobe	3	3	quotedbl
+charset	ISOAdobe	4	4	numbersign
+charset	ISOAdobe	5	5	dollar
+charset	ISOAdobe	6	6	percent
+charset	ISOAdobe	7	7	ampersand
+charset	ISOAdobe	8	8	quoteright
+charset	ISOAdobe	9	9	parenleft
+charset	ISOAdobe	10	10	parenright
+charset	ISOAdobe	11	11	asterisk
+charset	ISOAdobe	12	12	plus
+charset	ISOAdobe	13	13	comma
+charset	ISOAdobe	14	14	hyphen
+charset	ISOAdobe	15	15	period
+charset	ISOAdobe	16	16	slash
+charset	ISOAdobe	17	17	zero
+charset	ISOAdobe	18	18	one
+charset	ISOAdobe	19	19	two
+charset	ISOAdobe	20	20	three
+charset	ISOAdobe	21	21	four
+charset	ISOAdobe	22	22	five
+charset	ISOAdobe	23	23	six
+charset	ISOAdobe	24	24	seven
+charset	ISOAdobe	25	25	eight
+charset	ISOAdobe	26	26	nine
+charset	ISOAdobe	27	27	colon
+charset	ISOAdobe	28	28	semicolon
+charset	ISOAdobe	29	29	less
+charset	ISOAdobe	30	30	equal
+charset	ISOAdobe	31	31	greater
+charset	ISOAdobe	32	32	question
+charset	ISOAdobe	33	33	at
+charset	ISOAdobe	34	34	A
+charset	ISOAdobe	35	35	B
+charset	ISOAdobe	36	36	C
+charset	ISOAdobe	37	37	D
+charset	ISOAdobe	38	38	E
+charset	ISOAdobe	39	39	F
+charset	ISOAdobe	40	40	G
+charset	ISOAdobe	41	41	H
+charset	ISOAdobe	42	42	I
+charset	ISOAdobe	43	43	J
+charset	ISOAdobe	44	44	K
+charset	ISOAdobe	45	45	L
+charset	ISOAdobe	46	46	M
+charset	ISOAdobe	47	47	N
+charset	ISOAdobe	48	48	O
+charset	ISOAdobe	49	49	P
+charset	ISOAdobe	50	50	Q
+charset	ISOAdobe	51	51	R
+charset	ISOAdobe	52	52	S
+charset	ISOAdobe	53	53	T
+charset	ISOAdobe	54	54	U
+charset	ISOAdobe	55	55	V
+charset	ISOAdobe	56	56	W
+charset	ISOAdobe	57	57	X
+charset	ISOAdobe	58	58	Y
+charset	ISOAdobe	59	59	Z
+charset	ISOAdobe	60	60	bracketleft
+charset	ISOAdobe	61	61	backslash
+charset	ISOAdobe	62	62	bracketright
+charset	ISOAdobe	63	63	asciicircum
+charset	ISOAdobe	64	64	underscore
+charset	ISOAdobe	65	65	quoteleft
+charset	ISOAdobe	66	66	a
+charset	ISOAdobe	67	67	b
+charset	ISOAdobe	68	68	c
+charset	ISOAdobe	69	69	d
+charset	ISOAdobe	70	70	e
+charset	ISOAdobe	71	71	f
+charset	ISOAdobe	72	72	g
+charset	ISOAdobe	73	73	h
+charset	ISOAdobe	74	74	i
+charset	ISOAdobe	75	75	j
+charset	ISOAdobe	76	76	k
+charset	ISOAdobe	77	77	l
+charset	ISOAdobe	78	78	m
+charset	ISOAdobe	79	79	n
+charset	ISOAdobe	80	80	o
+charset	ISOAdobe	81	81	p
+charset	ISOAdobe	82	82	q
+charset	ISOAdobe	83	83	r
+charset	ISOAdobe	84	84	s
+charset	ISOAdobe	85	85	t
+charset	ISOAdobe	86	86	u
+charset	ISOAdobe	87	87	v
+charset	ISOAdobe	88	88	w
+charset	ISOAdobe	89	89	x
+charset	ISOAdobe	90	90	y
+charset	ISOAdobe	91	91	z
+charset	ISOAdobe	92	92	braceleft
+charset	ISOAdobe	93	93	bar
+charset	ISOAdobe	94	94	braceright
+charset	ISOAdobe	95	95	asciitilde
+charset	ISOAdobe	96	96	exclamdown
+charset	ISOAdobe	97	97	cent
+charset	ISOAdobe	98	98	sterling
+charset	ISOAdobe	99	99	fraction
+charset	ISOAdobe	100	100	yen
+charset	ISOAdobe	101	101	florin
+charset	ISOAdobe	102	102	section
+charset	ISOAdobe	103	103	currency
+charset	ISOAdobe	104	104	quotesingle
+charset	ISOAdobe	105	105	quotedblleft
+charset	ISOAdobe	106	106	guillemotleft
+charset	ISOAdobe	107	107	guilsinglleft
+charset	ISOAdobe	108	108	guilsinglright
+charset	ISOAdobe	109	109	fi
+charset	ISOAdobe	110	110	fl
+charset	ISOAdobe	111	111	endash
+charset	ISOAdobe	112	112	dagger
+charset	ISOAdobe	113	113	daggerdbl
+charset	ISOAdobe	114	114	periodcentered
+charset	ISOAdobe	115	115	paragraph
+charset	ISOAdobe	116	116	bullet
+charset	ISOAdobe	117	117	quotesinglbase
+charset	ISOAdobe	118	118	quotedblbase
+charset	ISOAdobe	119	119	quotedblright
+charset	ISOAdobe	120	120	guillemotright
+charset	ISOAdobe	121	121	ellipsis
+charset	ISOAdobe	122	122	perthousand
+charset	ISOAdobe	123	123	questiondown
+charset	ISOAdobe	124	124	grave
+charset	ISOAdobe	125	125	acute
+charset	ISOAdobe	126	126	circumflex
+charset	ISOAdobe	127	127	tilde
+charset	ISOAdobe	128	128	macron
+charset	ISOAdobe	129	129	breve
+charset	ISOAdobe	130	130	dotaccent
+charset	ISOAdobe	131	131	dieresis
+charset	ISOAdobe	132	132	ring
+charset	ISOAdobe	133	133	cedilla
+charset	ISOAdobe	134	134	hungarumlaut
+charset	ISOAdobe	135	135	ogonek
+charset	ISOAdobe	136	136	caron
+charset	ISOAdobe	137	137	emdash
+charset	ISOAdobe	138	138	AE
+charset	ISOAdobe	139	139	ordfeminine
+charset	ISOAdobe	140	140	Lslash
+charset	ISOAdobe	141	141	Oslash
+charset	ISOAdobe	142	142	OE
+charset	ISOAdobe	143	143	ordmasculine
+charset	ISOAdobe	144	144	ae
+charset	ISOAdobe	145	145	dotlessi
+charset	ISOAdobe	146	146	lslash
+charset	ISOAdobe	147	147	oslash
+charset	ISOAdobe	148	148	oe
+charset	ISOAdobe	149	149	germandbls
+charset	ISOAdobe	150	150	onesuperior
+charset	ISOAdobe	151	151	logicalnot
+charset	ISOAdobe	152	152	mu
+charset	ISOAdobe	153	153	trademark
+charset	ISOAdobe	154	154	Eth
+charset	ISOAdobe	155	155	onehalf
+charset	ISOAdobe	156	156	plusminus
+charset	ISOAdobe	157	157	Thorn
+charset	ISOAdobe	158	158	onequarter
+charset	ISOAdobe	159	159	divide
+charset	ISOAdobe	160	160	brokenbar
+charset	ISOAdobe	161	161	degree
+charset	ISOAdobe	162	162	thorn
+charset	ISOAdobe	163	163	threequarters
+charset	ISOAdobe	164	164	twosuperior
+charset	ISOAdobe	165	165	registered
+charset	ISOAdobe	166	166	minus
+charset	ISOAdobe	167	167	eth
+charset	ISOAdobe	168	168	multiply
+charset	ISOAdobe	169	169	threesuperior
+charset	ISOAdobe	170	170	copyright
+charset	ISOAdobe	171	171	Aacute
+charset	ISOAdobe	172	172	Acircumflex
+charset	ISOAdobe	173	173	Adieresis
+charset	ISOAdobe	174	174	Agrave
+charset	ISOAdobe	175	175	Aring
+charset	ISOAdobe	176	176	Atilde
+charset	ISOAdobe	177	177	Ccedilla
+charset	ISOAdobe	178	178	Eacute
+charset	ISOAdobe	179	179	Ecircumflex
+charset	ISOAdobe	180	180	Edieresis
+charset	ISOAdobe	181	181	Egrave
+charset	ISOAdobe	182	182	Iacute
+charset	ISOAdobe	183	183	Icircumflex
+charset	ISOAdobe	184	184	Idieresis
+charset	ISOAdobe	185	185	Igrave
+charset	ISOAdobe	186	186	Ntilde
+charset	ISOAdobe	187	187	Oacute
+charset	ISOAdobe	188	188	Ocircumflex
+charset	ISOAdobe	189	189	Odieresis
+charset	ISOAdobe	190	190	Ograve
+charset	ISOAdobe	191	191	Otilde
+charset	ISOAdobe	192	192	Scaron
+charset	ISOAdobe	193	193	Uacute
+charset	ISOAdobe	194	194	Ucircumflex
+charset	ISOAdobe	195	195	Udieresis
+charset	ISOAdobe	196	196	Ugrave
+charset	ISOAdobe	197	197	Yacute
+charset	ISOAdobe	198	198	Ydieresis
+charset	ISOAdobe	199	199	Zcaron
+charset	ISOAdobe	200	200	aacute
+charset	ISOAdobe	201	201	acircumflex
+charset	ISOAdobe	202	202	adieresis
+charset	ISOAdobe	203	203	agrave
+charset	ISOAdobe	204	204	aring
+charset	ISOAdobe	205	205	atilde
+charset	ISOAdobe	206	206	ccedilla
+charset	ISOAdobe	207	207	eacute
+charset	ISOAdobe	208	208	ecircumflex
+charset	ISOAdobe	209	209	edieresis
+charset	ISOAdobe	210	210	egrave
+charset	ISOAdobe	211	211	iacute
+charset	ISOAdobe	212	212	icircumflex
+charset	ISOAdobe	213	213	idieresis
+charset	ISOAdobe	214	214	igrave
+charset	ISOAdobe	215	215	ntilde
+charset	ISOAdobe	216	216	oacute
+charset	ISOAdobe	217	217	ocircumflex
+charset	ISOAdobe	218	218	odieresis
+charset	ISOAdobe	219	219	ograve
+charset	ISOAdobe	220	220	otilde
+charset	ISOAdobe	221	221	scaron
+charset	ISOAdobe	222	222	uacute
+charset	ISOAdobe	223	223	ucircumflex
+charset	ISOAdobe	224	224	udieresis
+charset	ISOAdobe	225	225	ugrave
+charset	ISOAdobe	226	226	yacute
+charset	ISOAdobe	227	227	ydieresis
+charset	ISOAdobe	228	228	zcaron
+charset	Expert	0	0	.notdef
+charset	Expert	1	1	space
+charset	Expert	2	229	exclamsmall
+charset	Expert	3	230	Hungarumlautsmall
+charset	Expert	4	231	dollaroldstyle
+charset	Expert	5	232	dollarsuperior
+charset	Expert	6	233	ampersandsmall
+charset	Expert	7	234	Acutesmall
+charset	Expert	8	235	parenleftsuperior
+charset	Expert	9	236	parenrightsuperior
+charset	Expert	10	237	twodotenleader
+charset	Expert	11	238	onedotenleader
+charset	Expert	12	13	comma
+charset	Expert	13	14	hyphen
+charset	Expert	14	15	period
+charset	Expert	15	99	fraction
+charset	Expert	16	239	zerooldstyle
+charset	Expert	17	240	oneoldstyle
+charset	Expert	18	241	twooldstyle
+charset	Expert	19	242	threeoldstyle
+charset	Expert	20	243	fouroldstyle
+charset	Expert	21	244	fiveoldstyle
+charset	Expert	22	245	sixoldstyle
+charset	Expert	23	246	sevenoldstyle
+charset	Expert	24	247	eightoldstyle
+charset	Expert	25	248	nineoldstyle
+charset	Expert	26	27	colon
+charset	Expert	27	28	semicolon
+charset	Expert	28	249	commasuperior
+charset	Expert	29	250	threequartersemdash
+charset	Expert	30	251	periodsuperior
+charset	Expert	31	252	questionsmall
+charset	Expert	32	253	asuperior
+charset	Expert	33	254	bsuperior
+charset	Expert	34	255	centsuperior
+charset	Expert	35	256	dsuperior
+charset	Expert	36	257	esuperior
+charset	Expert	37	258	isuperior
+charset	Expert	38	259	lsuperior
+charset	Expert	39	260	msuperior
+charset	Expert	40	261	nsuperior
+charset	Expert	41	262	osuperior
+charset	Expert	42	263	rsuperior
+charset	Expert	43	264	ssuperior
+charset	Expert	44	265	tsuperior
+charset	Expert	45	266	ff
+charset	Expert	46	109	fi
+charset	Expert	47	110	fl
+charset	Expert	48	267	ffi
+charset	Expert	49	268	ffl
+charset	Expert	50	269	parenleftinferior
+charset	Expert	51	270	parenrightinferior
+charset	Expert	52	271	Circumflexsmall
+charset	Expert	53	272	hyphensuperior
+charset	Expert	54	273	Gravesmall
+charset	Expert	55	274	Asmall
+charset	Expert	56	275	Bsmall
+charset	Expert	57	276	Csmall
+charset	Expert	58	277	Dsmall
+charset	Expert	59	278	Esmall
+charset	Expert	60	279	Fsmall
+charset	Expert	61	280	Gsmall
+charset	Expert	62	281	Hsmall
+charset	Expert	63	282	Ismall
+charset	Expert	64	283	Jsmall
+charset	Expert	65	284	Ksmall
+charset	Expert	66	285	Lsmall
+charset	Expert	67	286	Msmall
+charset	Expert	68	287	Nsmall
+charset	Expert	69	288	Osmall
+charset	Expert	70	289	Psmall
+charset	Expert	71	290	Qsmall
+charset	Expert	72	291	Rsmall
+charset	Expert	73	292	Ssmall
+charset	Expert	74	293	Tsmall
+charset	Expert	75	294	Usmall
+charset	Expert	76	295	Vsmall
+charset	Expert	77	296	Wsmall
+charset	Expert	78	297	Xsmall
+charset	Expert	79	298	Ysmall
+charset	Expert	80	299	Zsmall
+charset	Expert	81	300	colonmonetary
+charset	Expert	82	301	onefitted
+charset	Expert	83	302	rupiah
+charset	Expert	84	303	Tildesmall
+charset	Expert	85	304	exclamdownsmall
+charset	Expert	86	305	centoldstyle
+charset	Expert	87	306	Lslashsmall
+charset	Expert	88	307	Scaronsmall
+charset	Expert	89	308	Zcaronsmall
+charset	Expert	90	309	Dieresissmall
+charset	Expert	91	310	Brevesmall
+charset	Expert	92	311	Caronsmall
+charset	Expert	93	312	Dotaccentsmall
+charset	Expert	94	313	Macronsmall
+charset	Expert	95	314	figuredash
+charset	Expert	96	315	hypheninferior
+charset	Expert	97	316	Ogoneksmall
+charset	Expert	98	317	Ringsmall
+charset	Expert	99	318	Cedillasmall
+charset	Expert	100	158	onequarter
+charset	Expert	101	155	onehalf
+charset	Expert	102	163	threequarters
+charset	Expert	103	319	questiondownsmall
+charset	Expert	104	320	oneeighth
+charset	Expert	105	321	threeeighths
+charset	Expert	106	322	fiveeighths
+charset	Expert	107	323	seveneighths
+charset	Expert	108	324	onethird
+charset	Expert	109	325	twothirds
+charset	Expert	110	326	zerosuperior
+charset	Expert	111	150	onesuperior
+charset	Expert	112	164	twosuperior
+charset	Expert	113	169	threesuperior
+charset	Expert	114	327	foursuperior
+charset	Expert	115	328	fivesuperior
+charset	Expert	116	329	sixsuperior
+charset	Expert	117	330	sevensuperior
+charset	Expert	118	331	eightsuperior
+charset	Expert	119	332	ninesuperior
+charset	Expert	120	333	zeroinferior
+charset	Expert	121	334	oneinferior
+charset	Expert	122	335	twoinferior
+charset	Expert	123	336	threeinferior
+charset	Expert	124	337	fourinferior
+charset	Expert	125	338	fiveinferior
+charset	Expert	126	339	sixinferior
+charset	Expert	127	340	seveninferior
+charset	Expert	128	341	eightinferior
+charset	Expert	129	342	nineinferior
+charset	Expert	130	343	centinferior
+charset	Expert	131	344	dollarinferior
+charset	Expert	132	345	periodinferior
+charset	Expert	133	346	commainferior
+charset	Expert	134	347	Agravesmall
+charset	Expert	135	348	Aacutesmall
+charset	Expert	136	349	Acircumflexsmall
+charset	Expert	137	350	Atildesmall
+charset	Expert	138	351	Adieresissmall
+charset	Expert	139	352	Aringsmall
+charset	Expert	140	353	AEsmall
+charset	Expert	141	354	Ccedillasmall
+charset	Expert	142	355	Egravesmall
+charset	Expert	143	356	Eacutesmall
+charset	Expert	144	357	Ecircumflexsmall
+charset	Expert	145	358	Edieresissmall
+charset	Expert	146	359	Igravesmall
+charset	Expert	147	360	Iacutesmall
+charset	Expert	148	361	Icircumflexsmall
+charset	Expert	149	362	Idieresissmall
+charset	Expert	150	363	Ethsmall
+charset	Expert	151	364	Ntildesmall
+charset	Expert	152	365	Ogravesmall
+charset	Expert	153	366	Oacutesmall
+charset	Expert	154	367	Ocircumflexsmall
+charset	Expert	155	368	Otildesmall
+charset	Expert	156	369	Odieresissmall
+charset	Expert	157	370	OEsmall
+charset	Expert	158	371	Oslashsmall
+charset	Expert	159	372	Ugravesmall
+charset	Expert	160	373	Uacutesmall
+charset	Expert	161	374	Ucircumflexsmall
+charset	Expert	162	375	Udieresissmall
+charset	Expert	163	376	Yacutesmall
+charset	Expert	164	377	Thornsmall
+charset	Expert	165	378	Ydieresissmall
+charset	ExpertSubset	0	0	.notdef
+charset	ExpertSubset	1	1	space
+charset	ExpertSubset	2	231	dollaroldstyle
+charset	ExpertSubset	3	232	dollarsuperior
+charset	ExpertSubset	4	235	parenleftsuperior
+charset	ExpertSubset	5	236	parenrightsuperior
+charset	ExpertSubset	6	237	twodotenleader
+charset	ExpertSubset	7	238	onedotenleader
+charset	ExpertSubset	8	13	comma
+charset	ExpertSubset	9	14	hyphen
+charset	ExpertSubset	10	15	period
+charset	ExpertSubset	11	99	fraction
+charset	ExpertSubset	12	239	zerooldstyle
+charset	ExpertSubset	13	240	oneoldstyle
+charset	ExpertSubset	14	241	twooldstyle
+charset	ExpertSubset	15	242	threeoldstyle
+charset	ExpertSubset	16	243	fouroldstyle
+charset	ExpertSubset	17	244	fiveoldstyle
+charset	ExpertSubset	18	245	sixoldstyle
+charset	ExpertSubset	19	246	sevenoldstyle
+charset	ExpertSubset	20	247	eightoldstyle
+charset	ExpertSubset	21	248	nineoldstyle
+charset	ExpertSubset	22	27	colon
+charset	ExpertSubset	23	28	semicolon
+charset	ExpertSubset	24	249	commasuperior
+charset	ExpertSubset	25	250	threequartersemdash
+charset	ExpertSubset	26	251	periodsuperior
+charset	ExpertSubset	27	253	asuperior
+charset	ExpertSubset	28	254	bsuperior
+charset	ExpertSubset	29	255	centsuperior
+charset	ExpertSubset	30	256	dsuperior
+charset	ExpertSubset	31	257	esuperior
+charset	ExpertSubset	32	258	isuperior
+charset	ExpertSubset	33	259	lsuperior
+charset	ExpertSubset	34	260	msuperior
+charset	ExpertSubset	35	261	nsuperior
+charset	ExpertSubset	36	262	osuperior
+charset	ExpertSubset	37	263	rsuperior
+charset	ExpertSubset	38	264	ssuperior
+charset	ExpertSubset	39	265	tsuperior
+charset	ExpertSubset	40	266	ff
+charset	ExpertSubset	41	109	fi
+charset	ExpertSubset	42	110	fl
+charset	ExpertSubset	43	267	ffi
+charset	ExpertSubset	44	268	ffl
+charset	ExpertSubset	45	269	parenleftinferior
+charset	ExpertSubset	46	270	parenrightinferior
+charset	ExpertSubset	47	272	hyphensuperior
+charset	ExpertSubset	48	300	colonmonetary
+charset	ExpertSubset	49	301	onefitted
+charset	ExpertSubset	50	302	rupiah
+charset	ExpertSubset	51	305	centoldstyle
+charset	ExpertSubset	52	314	figuredash
+charset	ExpertSubset	53	315	hypheninferior
+charset	ExpertSubset	54	158	onequarter
+charset	ExpertSubset	55	155	onehalf
+charset	ExpertSubset	56	163	threequarters
+charset	ExpertSubset	57	320	oneeighth
+charset	ExpertSubset	58	321	threeeighths
+charset	ExpertSubset	59	322	fiveeighths
+charset	ExpertSubset	60	323	seveneighths
+charset	ExpertSubset	61	324	onethird
+charset	ExpertSubset	62	325	twothirds
+charset	ExpertSubset	63	326	zerosuperior
+charset	ExpertSubset	64	150	onesuperior
+charset	ExpertSubset	65	164	twosuperior
+charset	ExpertSubset	66	169	threesuperior
+charset	ExpertSubset	67	327	foursuperior
+charset	ExpertSubset	68	328	fivesuperior
+charset	ExpertSubset	69	329	sixsuperior
+charset	ExpertSubset	70	330	sevensuperior
+charset	ExpertSubset	71	331	eightsuperior
+charset	ExpertSubset	72	332	ninesuperior
+charset	ExpertSubset	73	333	zeroinferior
+charset	ExpertSubset	74	334	oneinferior
+charset	ExpertSubset	75	335	twoinferior
+charset	ExpertSubset	76	336	threeinferior
+charset	ExpertSubset	77	337	fourinferior
+charset	ExpertSubset	78	338	fiveinferior
+charset	ExpertSubset	79	339	sixinferior
+charset	ExpertSubset	80	340	seveninferior
+charset	ExpertSubset	81	341	eightinferior
+charset	ExpertSubset	82	342	nineinferior
+charset	ExpertSubset	83	343	centinferior
+charset	ExpertSubset	84	344	dollarinferior
+charset	ExpertSubset	85	345	periodinferior
+charset	ExpertSubset	86	346	commainferior
+encoding	Standard	0	.notdef
+encoding	Standard	1	.notdef
+encoding	Standard	2	.notdef
+encoding	Standard	3	.notdef
+encoding	Standard	4	.notdef
+encoding	Standard	5	.notdef
+encoding	Standard	6	.notdef
+encoding	Standard	7	.notdef
+encoding	Standard	8	.notdef
+encoding	Standard	9	.notdef
+encoding	Standard	10	.notdef
+encoding	Standard	11	.notdef
+encoding	Standard	12	.notdef
+encoding	Standard	13	.notdef
+encoding	Standard	14	.notdef
+encoding	Standard	15	.notdef
+encoding	Standard	16	.notdef
+encoding	Standard	17	.notdef
+encoding	Standard	18	.notdef
+encoding	Standard	19	.notdef
+encoding	Standard	20	.notdef
+encoding	Standard	21	.notdef
+encoding	Standard	22	.notdef
+encoding	Standard	23	.notdef
+encoding	Standard	24	.notdef
+encoding	Standard	25	.notdef
+encoding	Standard	26	.notdef
+encoding	Standard	27	.notdef
+encoding	Standard	28	.notdef
+encoding	Standard	29	.notdef
+encoding	Standard	30	.notdef
+encoding	Standard	31	.notdef
+encoding	Standard	32	space
+encoding	Standard	33	exclam
+encoding	Standard	34	quotedbl
+encoding	Standard	35	numbersign
+encoding	Standard	36	dollar
+encoding	Standard	37	percent
+encoding	Standard	38	ampersand
+encoding	Standard	39	quoteright
+encoding	Standard	40	parenleft
+encoding	Standard	41	parenright
+encoding	Standard	42	asterisk
+encoding	Standard	43	plus
+encoding	Standard	44	comma
+encoding	Standard	45	hyphen
+encoding	Standard	46	period
+encoding	Standard	47	slash
+encoding	Standard	48	zero
+encoding	Standard	49	one
+encoding	Standard	50	two
+encoding	Standard	51	three
+encoding	Standard	52	four
+encoding	Standard	53	five
+encoding	Standard	54	six
+encoding	Standard	55	seven
+encoding	Standard	56	eight
+encoding	Standard	57	nine
+encoding	Standard	58	colon
+encoding	Standard	59	semicolon
+encoding	Standard	60	less
+encoding	Standard	61	equal
+encoding	Standard	62	greater
+encoding	Standard	63	question
+encoding	Standard	64	at
+encoding	Standard	65	A
+encoding	Standard	66	B
+encoding	Standard	67	C
+encoding	Standard	68	D
+encoding	Standard	69	E
+encoding	Standard	70	F
+encoding	Standard	71	G
+encoding	Standard	72	H
+encoding	Standard	73	I
+encoding	Standard	74	J
+encoding	Standard	75	K
+encoding	Standard	76	L
+encoding	Standard	77	M
+encoding	Standard	78	N
+encoding	Standard	79	O
+encoding	Standard	80	P
+encoding	Standard	81	Q
+encoding	Standard	82	R
+encoding	Standard	83	S
+encoding	Standard	84	T
+encoding	Standard	85	U
+encoding	Standard	86	V
+encoding	Standard	87	W
+encoding	Standard	88	X
+encoding	Standard	89	Y
+encoding	Standard	90	Z
+encoding	Standard	91	bracketleft
+encoding	Standard	92	backslash
+encoding	Standard	93	bracketright
+encoding	Standard	94	asciicircum
+encoding	Standard	95	underscore
+encoding	Standard	96	quoteleft
+encoding	Standard	97	a
+encoding	Standard	98	b
+encoding	Standard	99	c
+encoding	Standard	100	d
+encoding	Standard	101	e
+encoding	Standard	102	f
+encoding	Standard	103	g
+encoding	Standard	104	h
+encoding	Standard	105	i
+encoding	Standard	106	j
+encoding	Standard	107	k
+encoding	Standard	108	l
+encoding	Standard	109	m
+encoding	Standard	110	n
+encoding	Standard	111	o
+encoding	Standard	112	p
+encoding	Standard	113	q
+encoding	Standard	114	r
+encoding	Standard	115	s
+encoding	Standard	116	t
+encoding	Standard	117	u
+encoding	Standard	118	v
+encoding	Standard	119	w
+encoding	Standard	120	x
+encoding	Standard	121	y
+encoding	Standard	122	z
+encoding	Standard	123	braceleft
+encoding	Standard	124	bar
+encoding	Standard	125	braceright
+encoding	Standard	126	asciitilde
+encoding	Standard	127	.notdef
+encoding	Standard	128	.notdef
+encoding	Standard	129	.notdef
+encoding	Standard	130	.notdef
+encoding	Standard	131	.notdef
+encoding	Standard	132	.notdef
+encoding	Standard	133	.notdef
+encoding	Standard	134	.notdef
+encoding	Standard	135	.notdef
+encoding	Standard	136	.notdef
+encoding	Standard	137	.notdef
+encoding	Standard	138	.notdef
+encoding	Standard	139	.notdef
+encoding	Standard	140	.notdef
+encoding	Standard	141	.notdef
+encoding	Standard	142	.notdef
+encoding	Standard	143	.notdef
+encoding	Standard	144	.notdef
+encoding	Standard	145	.notdef
+encoding	Standard	146	.notdef
+encoding	Standard	147	.notdef
+encoding	Standard	148	.notdef
+encoding	Standard	149	.notdef
+encoding	Standard	150	.notdef
+encoding	Standard	151	.notdef
+encoding	Standard	152	.notdef
+encoding	Standard	153	.notdef
+encoding	Standard	154	.notdef
+encoding	Standard	155	.notdef
+encoding	Standard	156	.notdef
+encoding	Standard	157	.notdef
+encoding	Standard	158	.notdef
+encoding	Standard	159	.notdef
+encoding	Standard	160	.notdef
+encoding	Standard	161	exclamdown
+encoding	Standard	162	cent
+encoding	Standard	163	sterling
+encoding	Standard	164	fraction
+encoding	Standard	165	yen
+encoding	Standard	166	florin
+encoding	Standard	167	section
+encoding	Standard	168	currency
+encoding	Standard	169	quotesingle
+encoding	Standard	170	quotedblleft
+encoding	Standard	171	guillemotleft
+encoding	Standard	172	guilsinglleft
+encoding	Standard	173	guilsinglright
+encoding	Standard	174	fi
+encoding	Standard	175	fl
+encoding	Standard	176	.notdef
+encoding	Standard	177	endash
+encoding	Standard	178	dagger
+encoding	Standard	179	daggerdbl
+encoding	Standard	180	periodcentered
+encoding	Standard	181	.notdef
+encoding	Standard	182	paragraph
+encoding	Standard	183	bullet
+encoding	Standard	184	quotesinglbase
+encoding	Standard	185	quotedblbase
+encoding	Standard	186	quotedblright
+encoding	Standard	187	guillemotright
+encoding	Standard	188	ellipsis
+encoding	Standard	189	perthousand
+encoding	Standard	190	.notdef
+encoding	Standard	191	questiondown
+encoding	Standard	192	.notdef
+encoding	Standard	193	grave
+encoding	Standard	194	acute
+encoding	Standard	195	circumflex
+encoding	Standard	196	tilde
+encoding	Standard	197	macron
+encoding	Standard	198	breve
+encoding	Standard	199	dotaccent
+encoding	Standard	200	dieresis
+encoding	Standard	201	.notdef
+encoding	Standard	202	ring
+encoding	Standard	203	cedilla
+encoding	Standard	204	.notdef
+encoding	Standard	205	hungarumlaut
+encoding	Standard	206	ogonek
+encoding	Standard	207	caron
+encoding	Standard	208	emdash
+encoding	Standard	209	.notdef
+encoding	Standard	210	.notdef
+encoding	Standard	211	.notdef
+encoding	Standard	212	.notdef
+encoding	Standard	213	.notdef
+encoding	Standard	214	.notdef
+encoding	Standard	215	.notdef
+encoding	Standard	216	.notdef
+encoding	Standard	217	.notdef
+encoding	Standard	218	.notdef
+encoding	Standard	219	.notdef
+encoding	Standard	220	.notdef
+encoding	Standard	221	.notdef
+encoding	Standard	222	.notdef
+encoding	Standard	223	.notdef
+encoding	Standard	224	.notdef
+encoding	Standard	225	AE
+encoding	Standard	226	.notdef
+encoding	Standard	227	ordfeminine
+encoding	Standard	228	.notdef
+encoding	Standard	229	.notdef
+encoding	Standard	230	.notdef
+encoding	Standard	231	.notdef
+encoding	Standard	232	Lslash
+encoding	Standard	233	Oslash
+encoding	Standard	234	OE
+encoding	Standard	235	ordmasculine
+encoding	Standard	236	.notdef
+encoding	Standard	237	.notdef
+encoding	Standard	238	.notdef
+encoding	Standard	239	.notdef
+encoding	Standard	240	.notdef
+encoding	Standard	241	ae
+encoding	Standard	242	.notdef
+encoding	Standard	243	.notdef
+encoding	Standard	244	.notdef
+encoding	Standard	245	dotlessi
+encoding	Standard	246	.notdef
+encoding	Standard	247	.notdef
+encoding	Standard	248	lslash
+encoding	Standard	249	oslash
+encoding	Standard	250	oe
+encoding	Standard	251	germandbls
+encoding	Standard	252	.notdef
+encoding	Standard	253	.notdef
+encoding	Standard	254	.notdef
+encoding	Standard	255	.notdef
+encoding	Expert	0	.notdef
+encoding	Expert	1	.notdef
+encoding	Expert	2	.notdef
+encoding	Expert	3	.notdef
+encoding	Expert	4	.notdef
+encoding	Expert	5	.notdef
+encoding	Expert	6	.notdef
+encoding	Expert	7	.notdef
+encoding	Expert	8	.notdef
+encoding	Expert	9	.notdef
+encoding	Expert	10	.notdef
+encoding	Expert	11	.notdef
+encoding	Expert	12	.notdef
+encoding	Expert	13	.notdef
+encoding	Expert	14	.notdef
+encoding	Expert	15	.notdef
+encoding	Expert	16	.notdef
+encoding	Expert	17	.notdef
+encoding	Expert	18	.notdef
+encoding	Expert	19	.notdef
+encoding	Expert	20	.notdef
+encoding	Expert	21	.notdef
+encoding	Expert	22	.notdef
+encoding	Expert	23	.notdef
+encoding	Expert	24	.notdef
+encoding	Expert	25	.notdef
+encoding	Expert	26	.notdef
+encoding	Expert	27	.notdef
+encoding	Expert	28	.notdef
+encoding	Expert	29	.notdef
+encoding	Expert	30	.notdef
+encoding	Expert	31	.notdef
+encoding	Expert	32	space
+encoding	Expert	33	exclamsmall
+encoding	Expert	34	Hungarumlautsmall
+encoding	Expert	35	.notdef
+encoding	Expert	36	dollaroldstyle
+encoding	Expert	37	dollarsuperior
+encoding	Expert	38	ampersandsmall
+encoding	Expert	39	Acutesmall
+encoding	Expert	40	parenleftsuperior
+encoding	Expert	41	parenrightsuperior
+encoding	Expert	42	twodotenleader
+encoding	Expert	43	onedotenleader
+encoding	Expert	44	comma
+encoding	Expert	45	hyphen
+encoding	Expert	46	period
+encoding	Expert	47	fraction
+encoding	Expert	48	zerooldstyle
+encoding	Expert	49	oneoldstyle
+encoding	Expert	50	twooldstyle
+encoding	Expert	51	threeoldstyle
+encoding	Expert	52	fouroldstyle
+encoding	Expert	53	fiveoldstyle
+encoding	Expert	54	sixoldstyle
+encoding	Expert	55	sevenoldstyle
+encoding	Expert	56	eightoldstyle
+encoding	Expert	57	nineoldstyle
+encoding	Expert	58	colon
+encoding	Expert	59	semicolon
+encoding	Expert	60	commasuperior
+encoding	Expert	61	threequartersemdash
+encoding	Expert	62	periodsuperior
+encoding	Expert	63	questionsmall
+encoding	Expert	64	.notdef
+encoding	Expert	65	asuperior
+encoding	Expert	66	bsuperior
+encoding	Expert	67	centsuperior
+encoding	Expert	68	dsuperior
+encoding	Expert	69	esuperior
+encoding	Expert	70	.notdef
+encoding	Expert	71	.notdef
+encoding	Expert	72	.notdef
+encoding	Expert	73	isuperior
+encoding	Expert	74	.notdef
+encoding	Expert	75	.notdef
+encoding	Expert	76	lsuperior
+encoding	Expert	77	msuperior
+encoding	Expert	78	nsuperior
+encoding	Expert	79	osuperior
+encoding	Expert	80	.notdef
+encoding	Expert	81	.notdef
+encoding	Expert	82	rsuperior
+encoding	Expert	83	ssuperior
+encoding	Expert	84	tsuperior
+encoding	Expert	85	.notdef
+encoding	Expert	86	ff
+encoding	Expert	87	fi
+encoding	Expert	88	fl
+encoding	Expert	89	ffi
+encoding	Expert	90	ffl
+encoding	Expert	91	parenleftinferior
+encoding	Expert	92	.notdef
+encoding	Expert	93	parenrightinferior
+encoding	Expert	94	Circumflexsmall
+encoding	Expert	95	hyphensuperior
+encoding	Expert	96	Gravesmall
+encoding	Expert	97	Asmall
+encoding	Expert	98	Bsmall
+encoding	Expert	99	Csmall
+encoding	Expert	100	Dsmall
+encoding	Expert	101	Esmall
+encoding	Expert	102	Fsmall
+encoding	Expert	103	Gsmall
+encoding	Expert	104	Hsmall
+encoding	Expert	105	Ismall
+encoding	Expert	106	Jsmall
+encoding	Expert	107	Ksmall
+encoding	Expert	108	Lsmall
+encoding	Expert	109	Msmall
+encoding	Expert	110	Nsmall
+encoding	Expert	111	Osmall
+encoding	Expert	112	Psmall
+encoding	Expert	113	Qsmall
+encoding	Expert	114	Rsmall
+encoding	Expert	115	Ssmall
+encoding	Expert	116	Tsmall
+encoding	Expert	117	Usmall
+encoding	Expert	118	Vsmall
+encoding	Expert	119	Wsmall
+encoding	Expert	120	Xsmall
+encoding	Expert	121	Ysmall
+encoding	Expert	122	Zsmall
+encoding	Expert	123	colonmonetary
+encoding	Expert	124	onefitted
+encoding	Expert	125	rupiah
+encoding	Expert	126	Tildesmall
+encoding	Expert	127	.notdef
+encoding	Expert	128	.notdef
+encoding	Expert	129	.notdef
+encoding	Expert	130	.notdef
+encoding	Expert	131	.notdef
+encoding	Expert	132	.notdef
+encoding	Expert	133	.notdef
+encoding	Expert	134	.notdef
+encoding	Expert	135	.notdef
+encoding	Expert	136	.notdef
+encoding	Expert	137	.notdef
+encoding	Expert	138	.notdef
+encoding	Expert	139	.notdef
+encoding	Expert	140	.notdef
+encoding	Expert	141	.notdef
+encoding	Expert	142	.notdef
+encoding	Expert	143	.notdef
+encoding	Expert	144	.notdef
+encoding	Expert	145	.notdef
+encoding	Expert	146	.notdef
+encoding	Expert	147	.notdef
+encoding	Expert	148	.notdef
+encoding	Expert	149	.notdef
+encoding	Expert	150	.notdef
+encoding	Expert	151	.notdef
+encoding	Expert	152	.notdef
+encoding	Expert	153	.notdef
+encoding	Expert	154	.notdef
+encoding	Expert	155	.notdef
+encoding	Expert	156	.notdef
+encoding	Expert	157	.notdef
+encoding	Expert	158	.notdef
+encoding	Expert	159	.notdef
+encoding	Expert	160	.notdef
+encoding	Expert	161	exclamdownsmall
+encoding	Expert	162	centoldstyle
+encoding	Expert	163	Lslashsmall
+encoding	Expert	164	.notdef
+encoding	Expert	165	.notdef
+encoding	Expert	166	Scaronsmall
+encoding	Expert	167	Zcaronsmall
+encoding	Expert	168	Dieresissmall
+encoding	Expert	169	Brevesmall
+encoding	Expert	170	Caronsmall
+encoding	Expert	171	.notdef
+encoding	Expert	172	Dotaccentsmall
+encoding	Expert	173	.notdef
+encoding	Expert	174	.notdef
+encoding	Expert	175	Macronsmall
+encoding	Expert	176	.notdef
+encoding	Expert	177	.notdef
+encoding	Expert	178	figuredash
+encoding	Expert	179	hypheninferior
+encoding	Expert	180	.notdef
+encoding	Expert	181	.notdef
+encoding	Expert	182	Ogoneksmall
+encoding	Expert	183	Ringsmall
+encoding	Expert	184	Cedillasmall
+encoding	Expert	185	.notdef
+encoding	Expert	186	.notdef
+encoding	Expert	187	.notdef
+encoding	Expert	188	onequarter
+encoding	Expert	189	onehalf
+encoding	Expert	190	threequarters
+encoding	Expert	191	questiondownsmall
+encoding	Expert	192	oneeighth
+encoding	Expert	193	threeeighths
+encoding	Expert	194	fiveeighths
+encoding	Expert	195	seveneighths
+encoding	Expert	196	onethird
+encoding	Expert	197	twothirds
+encoding	Expert	198	.notdef
+encoding	Expert	199	.notdef
+encoding	Expert	200	zerosuperior
+encoding	Expert	201	onesuperior
+encoding	Expert	202	twosuperior
+encoding	Expert	203	threesuperior
+encoding	Expert	204	foursuperior
+encoding	Expert	205	fivesuperior
+encoding	Expert	206	sixsuperior
+encoding	Expert	207	sevensuperior
+encoding	Expert	208	eightsuperior
+encoding	Expert	209	ninesuperior
+encoding	Expert	210	zeroinferior
+encoding	Expert	211	oneinferior
+encoding	Expert	212	twoinferior
+encoding	Expert	213	threeinferior
+encoding	Expert	214	fourinferior
+encoding	Expert	215	fiveinferior
+encoding	Expert	216	sixinferior
+encoding	Expert	217	seveninferior
+encoding	Expert	218	eightinferior
+encoding	Expert	219	nineinferior
+encoding	Expert	220	centinferior
+encoding	Expert	221	dollarinferior
+encoding	Expert	222	periodinferior
+encoding	Expert	223	commainferior
+encoding	Expert	224	Agravesmall
+encoding	Expert	225	Aacutesmall
+encoding	Expert	226	Acircumflexsmall
+encoding	Expert	227	Atildesmall
+encoding	Expert	228	Adieresissmall
+encoding	Expert	229	Aringsmall
+encoding	Expert	230	AEsmall
+encoding	Expert	231	Ccedillasmall
+encoding	Expert	232	Egravesmall
+encoding	Expert	233	Eacutesmall
+encoding	Expert	234	Ecircumflexsmall
+encoding	Expert	235	Edieresissmall
+encoding	Expert	236	Igravesmall
+encoding	Expert	237	Iacutesmall
+encoding	Expert	238	Icircumflexsmall
+encoding	Expert	239	Idieresissmall
+encoding	Expert	240	Ethsmall
+encoding	Expert	241	Ntildesmall
+encoding	Expert	242	Ogravesmall
+encoding	Expert	243	Oacutesmall
+encoding	Expert	244	Ocircumflexsmall
+encoding	Expert	245	Otildesmall
+encoding	Expert	246	Odieresissmall
+encoding	Expert	247	OEsmall
+encoding	Expert	248	Oslashsmall
+encoding	Expert	249	Ugravesmall
+encoding	Expert	250	Uacutesmall
+encoding	Expert	251	Ucircumflexsmall
+encoding	Expert	252	Udieresissmall
+encoding	Expert	253	Yacutesmall
+encoding	Expert	254	Thornsmall
+encoding	Expert	255	Ydieresissmall
