@@ -1,8 +1,9 @@
 //! A sheet's header or footer as extractous's Tika writes it: POI's `HeaderFooterHelper` splits
 //! it into its left, centre and right sections at the `&L`, `&C` and `&R` codes,
 //! `ExcelExtractor._extractHeaderFooter` joins them with tabs and ends them with a line break,
-//! and our substitution of `extractHeaderFooter` strips the other codes with HSSF's
-//! `HeaderFooter.stripFields`, then the white space at either end.
+//! and our substitution of `extractHeaderFooter` strips the other codes as HSSF's
+//! `HeaderFooter.stripFields` does, then the white space at either end. Unlike POI, an escaped
+//! `&&` is never read as the start of a code (#94).
 
 use std::sync::LazyLock;
 
@@ -32,15 +33,32 @@ const LEFT: &str = "&L";
 const CENTER: &str = "&C";
 const RIGHT: &str = "&R";
 
+/// Where `code` first stands in `text` as a code, not after the `&` of an escaped `&&`.
+fn find_code(text: &str, code: &str) -> Option<usize> {
+    let mut at = 0;
+    while let Some(found) = text[at..].find('&') {
+        let found = at + found;
+        if text[found..].starts_with("&&") {
+            at = found + 2;
+        } else if text[found..].starts_with(code) {
+            return Some(found);
+        } else {
+            at = found + 1;
+        }
+    }
+    None
+}
+
 /// `HeaderFooterHelper.getParts`: the left, centre and right sections, each from its code to
-/// the next code after it, found from the end.
+/// the next code after it, found from the end. An escaped `&&` followed by `L`, `C` or `R` is
+/// text, where POI takes it for a code.
 fn sections(text: &str) -> [&str; 3] {
     let mut sections = [""; 3];
     let mut text = text;
     loop {
-        let left = text.find(LEFT);
-        let center = text.find(CENTER);
-        let right = text.find(RIGHT);
+        let left = find_code(text, LEFT);
+        let center = find_code(text, CENTER);
+        let right = find_code(text, RIGHT);
         let position = |found: Option<usize>| found.map_or(-1, |at| at as isize);
         let (l, c, r) = (position(left), position(center), position(right));
         if l < 0 && c < 0 && r < 0 {
@@ -66,19 +84,41 @@ pub(crate) fn extract(text: &str) -> String {
     strip_fields(&joined).trim_matches(is_whitespace).to_owned()
 }
 
-/// `HeaderFooter.stripFields`: the fixed codes removed until none is left, then those with
-/// arguments, then `&&` made `&`.
+/// The codes `HeaderFooter.stripFields` removes, read in one pass from the start: an escaped
+/// `&&` is `&`, and the fixed codes and those with arguments are removed. `stripFields` removes
+/// the codes before it unescapes, so the `&A` of `Q&&A` is taken for a code (#94).
 fn strip_fields(text: &str) -> String {
-    let mut text = text.to_owned();
-    for field in FIELDS {
-        while let Some(at) = text.find(field) {
-            text.replace_range(at..at + field.len(), "");
+    let mut stripped = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        stripped.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if rest.starts_with("&&") {
+            stripped.push('&');
+            rest = &rest[2..];
+            continue;
+        }
+        let code = FIELDS
+            .iter()
+            .find(|field| rest.starts_with(**field))
+            .map(|field| field.len())
+            .or_else(|| {
+                ARGUMENT_FIELDS
+                    .iter()
+                    .filter_map(|pattern| pattern.find(rest))
+                    .find(|found| found.start() == 0)
+                    .map(|found| found.end())
+            });
+        match code {
+            Some(len) => rest = &rest[len..],
+            None => {
+                stripped.push('&');
+                rest = &rest[1..];
+            }
         }
     }
-    for pattern in ARGUMENT_FIELDS.iter() {
-        text = pattern.replace_all(&text, "").into_owned();
-    }
-    text.replace("&&", "&")
+    stripped.push_str(rest);
+    stripped
 }
 
 /// `_extractHeaderFooter(new HeaderFooterFromString(text))`: the sections joined by tabs where
@@ -115,10 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn strips_fields_as_extractous_does() {
+    fn strips_fields_and_unescapes_ampersands() {
         assert_eq!(extract("&C&12&A"), "");
         assert_eq!(extract("&C&12Page &P"), "Page");
-        assert_eq!(extract("&L&\"Arial,Bold\"Q&&A &KFF0000red"), "Q& red");
-        assert_eq!(extract("&C&&AA"), "");
+        assert_eq!(extract("&L&\"Arial,Bold\"Q&&A &KFF0000red"), "Q&A red");
+        assert_eq!(extract("&C&&AA"), "&AA");
+        assert_eq!(extract("&CQ&&&A"), "Q&");
+        assert_eq!(extract("&CQ&&Rules"), "Q&Rules");
     }
 }

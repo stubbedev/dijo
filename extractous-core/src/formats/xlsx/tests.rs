@@ -625,12 +625,42 @@ fn extracts_what_tikas_path_extracts_from_snippets_with_other_settings() {
         office: config,
         ..ParserConfigs::default()
     };
+    // Missing rows are not compared: Tika writes an empty row for every row before each row
+    // (#93), which `writes_each_missing_row_once` checks the port does not.
     for configs in [
-        office(OfficeParserConfig::new().set_include_missing_rows(true)),
         office(OfficeParserConfig::new().set_include_headers_and_footers(false)),
         office(OfficeParserConfig::new().set_include_shape_based_content(false)),
         office(OfficeParserConfig::new().set_concatenate_phonetic_runs(false)),
     ] {
         assert_snippets_same_as_tika(&snippets(), &configs);
     }
+}
+
+#[test]
+fn writes_each_missing_row_once() {
+    use crate::config::OfficeParserConfig;
+    let gaps = workbook(
+        &[sheet(
+            "Gaps",
+            cells(&[
+                "<row r=\"1\"><c r=\"A1\"><v>1</v></c></row>",
+                "<row r=\"4\"><c r=\"A4\"><v>4</v></c></row>",
+                "<row r=\"5\"><c r=\"A5\"><v>5</v></c></row>",
+            ]),
+        )],
+        &[],
+        "",
+        &[],
+        Vec::new(),
+    );
+    let rows = |missing: bool| {
+        let (xml, _) = crate::Extractor::new()
+            .set_office_config(OfficeParserConfig::new().set_include_missing_rows(missing))
+            .set_xml_output(true)
+            .extract_bytes_to_string(&gaps)
+            .unwrap();
+        xml.matches("<tr>").count()
+    };
+    assert_eq!(rows(false), 3);
+    assert_eq!(rows(true), 5);
 }

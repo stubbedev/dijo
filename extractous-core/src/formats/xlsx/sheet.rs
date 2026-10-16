@@ -54,6 +54,7 @@ pub(crate) struct SheetOutput {
     settings: SheetSettings,
     pub(crate) headers: Vec<String>,
     pub(crate) footers: Vec<String>,
+    last_seen_row: i32,
     last_seen_column: i32,
 }
 
@@ -63,15 +64,19 @@ impl SheetOutput {
             settings,
             headers: Vec::new(),
             footers: Vec::new(),
+            last_seen_row: -1,
             last_seen_column: -1,
         }
     }
 
-    /// `startRow`: with missing rows asked for, an empty row for each row before this one, as
-    /// `lastSeenRow`, which is never updated, leaves every row from the first missing.
+    /// `startRow`: with missing rows asked for, an empty row for each row missing between the
+    /// last row written and this one. Tika never updates its `lastSeenRow`, so each row is
+    /// preceded by an empty row for every row before it (#93).
     fn start_row(&mut self, row: i32, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let missing = row.saturating_sub(self.last_seen_row.saturating_add(1));
+        self.last_seen_row = self.last_seen_row.max(row);
         if self.settings.missing_rows {
-            for _ in 0..row.max(0) {
+            for _ in 0..missing.max(0) {
                 xhtml.start_element("tr")?;
                 xhtml.start_element("td")?;
                 xhtml.end_element("td")?;
@@ -402,7 +407,7 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
                 self.comment_cells.pop_front();
                 return Ok(());
             }
-            let comparison = peek.java_compare(&address);
+            let comparison = peek.compare(&address);
             let up_to_row = peek.row <= self.row;
             let passed =
                 (comparison == Ordering::Greater && check == CommentCheck::EndOfRow && up_to_row)

@@ -131,7 +131,8 @@ impl WorkbookMetadata {
                 }
                 Hidden::VeryHidden(Some(name)) => {
                     metadata.set(meta::HAS_VERY_HIDDEN_SHEETS, "true");
-                    metadata.set(meta::VERY_HIDDEN_SHEET_NAMES, name.clone());
+                    // Tika sets the name, so only the last very hidden sheet survives (#95).
+                    metadata.add(meta::VERY_HIDDEN_SHEET_NAMES, name.clone());
                 }
                 Hidden::Hidden(None) | Hidden::VeryHidden(None) => {}
             }
@@ -212,8 +213,8 @@ impl SaxHandler for Persons {
     ignore_rest!();
 }
 
-/// `ThreadedCommentHandler`: each comment's text in a `threaded-comment` div. Once a `text`
-/// element has started, all character data is kept, as the handler never stops keeping it.
+/// `ThreadedCommentHandler`: each comment's text in a `threaded-comment` div, the character
+/// data of its `text` element alone.
 pub(crate) struct ThreadedComments<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
     text: String,
@@ -245,6 +246,9 @@ impl SaxHandler for ThreadedComments<'_, '_> {
 
     fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
         if local_name == "text" {
+            // Tika's handler goes on collecting after the first `text`, so all later comment
+            // text runs into the next one (#93).
+            self.in_text = false;
             self.xhtml
                 .start_element_with("div", &[("class", "threaded-comment")])?;
             self.xhtml.start_element("p")?;
