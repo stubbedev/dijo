@@ -270,7 +270,7 @@ fn encryption(
     let info = EncryptionInfo::read(header, mode).map_err(|unopened| unopened.unported())?;
     info.verify(crypt::password(configs))
         .map(Some)
-        .ok_or_else(|| Declined::Fails(crypt::encrypted(WRONG_PASSWORD)))
+        .ok_or_else(|| Declined::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))
 }
 
 /// `lKey` of the FIB's base: the length of the encryption header at the table stream's start,

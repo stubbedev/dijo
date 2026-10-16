@@ -41,6 +41,7 @@ pub(crate) mod plist;
 mod poi;
 mod ppt;
 mod pptx;
+mod protected;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -195,6 +196,7 @@ static PARSERS: &[&dyn Parser] = &[
     &plist::PListParser,
     &ppt::PptParser,
     &pptx::PptxParser,
+    &protected::ProtectedParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,

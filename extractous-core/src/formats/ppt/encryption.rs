@@ -55,7 +55,7 @@ impl Encryption {
         }
         let key = info
             .verify(crypt::password(configs))
-            .ok_or_else(|| Declined::Fails(crypt::encrypted(WRONG_PASSWORD)))?;
+            .ok_or_else(|| Declined::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))?;
         Ok(Encryption { atom, key })
     }
 

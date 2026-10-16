@@ -128,6 +128,9 @@ pub(crate) struct Xhtml<'h> {
     embedding: Embedding<'h>,
     /// What learns the metadata the head shows, once it is written.
     on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
+    /// How many XHTML handlers the content passes through: more than one while a parser writes
+    /// that another parser hands its handler on to.
+    layers: usize,
 }
 
 impl<'h> Xhtml<'h> {
@@ -163,6 +166,7 @@ impl<'h> Xhtml<'h> {
             ended: false,
             embedding: Embedding::new(context),
             on_head,
+            layers: 1,
         };
         let result = xhtml
             .start_document()
@@ -234,7 +238,9 @@ impl<'h> Xhtml<'h> {
             self.end_head(false)?;
         }
         if INDENT.contains(&name) {
-            self.handler.ignorable_whitespace("\t")?;
+            for _ in 0..self.layers {
+                self.handler.ignorable_whitespace("\t")?;
+            }
         }
         self.safe_start_element(name, attributes)
     }
@@ -252,7 +258,9 @@ impl<'h> Xhtml<'h> {
         }
         self.handler.end_element(name)?;
         if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
-            self.newline()?;
+            for _ in 0..self.layers {
+                self.newline()?;
+            }
         }
         Ok(())
     }
@@ -419,6 +427,19 @@ impl<'h> Xhtml<'h> {
             self.embedding.absorb_parsers(metadata);
         }
         self.write_embedded(embedded::decode(&parsed.events)?, wrapping, parsed.outcome)
+    }
+
+    /// Has `write` write content as a parser that this document's parser calls itself and
+    /// hands its handler on to through `EmbeddedContentHandler(BodyContentHandler(xhtml))`, the
+    /// other parser writing through an XHTML handler of its own: its body goes into this one as
+    /// it is written, its metadata is this document's, and the line breaks after block elements
+    /// and the tabs before indented ones, which each of the two handlers writes, are written
+    /// twice.
+    pub(crate) fn write_nested<T>(&mut self, write: impl FnOnce(&mut Xhtml) -> T) -> T {
+        self.layers += 1;
+        let written = write(self);
+        self.layers -= 1;
+        written
     }
 
     /// Parses a storage of a compound document embedded in this one with a native parser, as

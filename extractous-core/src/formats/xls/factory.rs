@@ -150,10 +150,10 @@ impl<'a> Records<'a> {
             } else {
                 "Supplied"
             };
-            Declined::Fails(crypt::encrypted(&format!(
+            Declined::Fails(crypt::encrypted(Some(&format!(
                 "org.apache.poi.EncryptedDocumentException: {given} password is invalid for \
                  salt/verifier/verifierHash"
-            )))
+            ))))
         })?;
         decrypt_records(&keys, self.stream.data_mut(), start);
         Ok(())

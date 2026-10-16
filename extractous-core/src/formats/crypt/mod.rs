@@ -1,8 +1,12 @@
 //! The encryption of Office documents as POI's `poifs.crypt` reads and opens it
 //! ([MS-OFFCRYPTO]): an `EncryptionInfo`, its verifier checked against a password, and the keys
 //! that decrypt the document: the RC4 keys of Office 97's binary RC4 and of CryptoAPI for the
-//! binary formats. The ciphers and hashes are RustCrypto's.
+//! binary formats, and the AES keys of the standard and agile encryption of OOXML packages. The
+//! ciphers and hashes are RustCrypto's.
 
+mod agile;
+
+use aes::cipher::BlockCipherDecrypt;
 use md5::Md5;
 use rc4::{KeyInit, Rc4, StreamCipher};
 use sha1::{Digest, Sha1};
@@ -12,11 +16,19 @@ use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
 use crate::formats::Unported;
 
+use agile::{Agile, AgileKey};
+
 /// `Decryptor.DEFAULT_PASSWORD`, which Office encrypts a document with when it is only to be
 /// write protected.
 pub(crate) const DEFAULT_PASSWORD: &str = "VelvetSweatshop";
 /// The most UTF-16 units of a password binary RC4 and CryptoAPI hash.
 const MAX_PASSWORD_UNITS: usize = 255;
+/// `StandardEncryptionVerifier.SPIN_COUNT`.
+const STANDARD_SPIN_COUNT: u32 = 50_000;
+/// The name of the stream an OOXML package is encrypted in.
+pub(crate) const ENCRYPTED_PACKAGE: &str = "EncryptedPackage";
+/// The name of the stream its encryption is described in.
+pub(crate) const ENCRYPTION_INFO: &str = "EncryptionInfo";
 
 /// The password POI opens an encrypted document with: the one given, else the one Office
 /// encrypts a document with that is only write protected (`Biff8EncryptionKey`'s current user
@@ -29,13 +41,15 @@ pub(crate) fn password(configs: &ParserConfigs) -> &str {
         .map_or(DEFAULT_PASSWORD, Password::expose)
 }
 
-/// The error Tika's path fails with where a parser wraps the exception `cause` POI throws in a
-/// Tika `EncryptedDocumentException`, as our Java reports it.
-pub(crate) fn encrypted(cause: &str) -> Error {
-    Error::Encrypted(format!(
-        "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: Unable to \
-         process: document is encrypted <- caused by {cause}"
-    ))
+/// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`,
+/// wrapping the exception `cause` POI throws where there is one, as our Java reports it.
+pub(crate) fn encrypted(cause: Option<&str>) -> Error {
+    let thrown = "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: \
+                  Unable to process: document is encrypted";
+    Error::Encrypted(match cause {
+        Some(cause) => format!("{thrown} <- caused by {cause}"),
+        None => thrown.to_owned(),
+    })
 }
 
 /// The hash algorithms the encryptions use (`HashAlgorithm`).
@@ -64,6 +78,29 @@ impl Hash {
             Hash::Sha256 => run::<Sha256>(parts),
             Hash::Sha384 => run::<Sha384>(parts),
             Hash::Sha512 => run::<Sha512>(parts),
+        }
+    }
+
+    /// `hashSize`.
+    fn size(self) -> usize {
+        match self {
+            Hash::Md5 => 16,
+            Hash::Sha1 => 20,
+            Hash::Sha256 => 32,
+            Hash::Sha384 => 48,
+            Hash::Sha512 => 64,
+        }
+    }
+
+    /// `HashAlgorithm.fromEcmaId(String)`, as the agile descriptor names it.
+    fn from_ecma_name(name: &str) -> Result<Hash, Unopened> {
+        match name {
+            "SHA1" => Ok(Hash::Sha1),
+            "SHA256" => Ok(Hash::Sha256),
+            "SHA384" => Ok(Hash::Sha384),
+            "SHA512" => Ok(Hash::Sha512),
+            "MD5" => Ok(Hash::Md5),
+            _ => Err(Unopened::Thrown("hash algorithm not found".to_owned())),
         }
     }
 
@@ -99,14 +136,30 @@ impl Unopened {
     }
 }
 
-/// `StringUtil.getToUnicodeLE` of a password as Java holds it, cut to `MAX_PASSWORD_UNITS`
-/// UTF-16 units.
-fn password_bytes(password: &str) -> Vec<u8> {
+/// `StringUtil.getToUnicodeLE` of a password as Java holds it, cut to `limit` UTF-16 units
+/// where given.
+fn password_bytes(password: &str, limit: Option<usize>) -> Vec<u8> {
     password
         .encode_utf16()
-        .take(MAX_PASSWORD_UNITS)
+        .take(limit.unwrap_or(usize::MAX))
         .flat_map(u16::to_le_bytes)
         .collect()
+}
+
+/// `CryptoFunctions.hashPassword`: the salted hash of the password, hashed again with each
+/// iteration's number before it.
+fn hash_password(password: &str, hash: Hash, salt: &[u8], spin_count: u32) -> Vec<u8> {
+    let mut hashed = hash.digest(&[salt, &password_bytes(password, None)]);
+    for iteration in 0..spin_count {
+        hashed = hash.digest(&[&iteration.to_le_bytes(), &hashed]);
+    }
+    hashed
+}
+
+/// `CryptoFunctions.generateKey`: the hash of a password hash and a block key, filled with
+/// 0x36 to `size`.
+fn generate_key(password_hash: &[u8], hash: Hash, block_key: &[u8], size: usize) -> Vec<u8> {
+    filled(&hash.digest(&[password_hash, block_key]), size, 0x36)
 }
 
 /// `getBlockX`: `bytes` cut or filled with `fill` to `size`.
@@ -170,7 +223,52 @@ pub(crate) enum Mode {
     Unset,
 }
 
-/// The encryption `EncryptionInfo` reads.
+/// Any encryption `new EncryptionInfo(input, mode)` reads.
+enum AnyEncryption {
+    BinaryRc4(BinaryRc4),
+    CryptoApi(CryptoApi),
+    Standard(Standard),
+    Agile(Agile),
+}
+
+/// `new EncryptionInfo(input, mode)`.
+fn read_encryption(data: &[u8], mode: Mode) -> Result<AnyEncryption, Unopened> {
+    if mode == Mode::Xor {
+        return Err(Unopened::Unported(
+            "XOR obfuscation, which this port does not decrypt".to_owned(),
+        ));
+    }
+    let mut input = Input { data, at: 0 };
+    let major = input.u16()?;
+    let minor = input.u16()?;
+    match (major, minor) {
+        (1, 1) => Ok(AnyEncryption::BinaryRc4(BinaryRc4::read(&mut input)?)),
+        (2..=4, 2) => {
+            let aes = input.i32()? & 0x20 != 0;
+            input.i32()?;
+            let header = Header::read(&mut input)?;
+            let verifier = Verifier::read(&mut input, &header)?;
+            if mode == Mode::CryptoApi || !aes {
+                Ok(AnyEncryption::CryptoApi(CryptoApi::new(header, verifier)?))
+            } else if major == 2 {
+                Err(Unopened::Unported(
+                    "standard encryption of version 2, for which POI has no decryptor".to_owned(),
+                ))
+            } else {
+                Ok(AnyEncryption::Standard(Standard::new(header, verifier)?))
+            }
+        }
+        (4, 4) => {
+            input.i32()?;
+            Ok(AnyEncryption::Agile(Agile::read(&data[input.at..])?))
+        }
+        _ => Err(Unopened::Thrown(format!(
+            "Unknown encryption: version major: {major} / version minor: {minor}"
+        ))),
+    }
+}
+
+/// The RC4 encryption of a binary document, as `EncryptionInfo` reads it.
 #[derive(Debug, Clone)]
 pub(crate) enum EncryptionInfo {
     BinaryRc4(BinaryRc4),
@@ -178,36 +276,83 @@ pub(crate) enum EncryptionInfo {
 }
 
 impl EncryptionInfo {
-    /// `new EncryptionInfo(input, mode)`.
+    /// `new EncryptionInfo(input, mode)` of a binary document.
     pub(crate) fn read(data: &[u8], mode: Mode) -> Result<EncryptionInfo, Unopened> {
-        if mode == Mode::Xor {
-            return Err(Unopened::Unported(
-                "XOR obfuscation, which this port does not decrypt".to_owned(),
-            ));
+        match read_encryption(data, mode)? {
+            AnyEncryption::BinaryRc4(rc4) => Ok(EncryptionInfo::BinaryRc4(rc4)),
+            AnyEncryption::CryptoApi(api) => Ok(EncryptionInfo::CryptoApi(api)),
+            AnyEncryption::Standard(_) | AnyEncryption::Agile(_) => Err(Unopened::Unported(
+                "a binary document encrypted with AES, which this port does not decrypt".to_owned(),
+            )),
         }
-        let mut input = Input { data, at: 0 };
-        let major = input.u16()?;
-        let minor = input.u16()?;
-        match (major, minor) {
-            (1, 1) => Ok(EncryptionInfo::BinaryRc4(BinaryRc4::read(&mut input)?)),
-            (2..=4, 2) => {
-                let aes = input.i32()? & 0x20 != 0;
-                if aes && mode != Mode::CryptoApi {
+    }
+}
+
+/// The AES encryption of an OOXML package, as `EncryptionInfo` reads its stream.
+#[derive(Debug, Clone)]
+pub(crate) enum PackageEncryption {
+    Standard(Standard),
+    Agile(Agile),
+}
+
+impl PackageEncryption {
+    /// `new EncryptionInfo(directory)`: the encryption its `EncryptionInfo` stream describes.
+    pub(crate) fn read(data: &[u8]) -> Result<PackageEncryption, Unopened> {
+        match read_encryption(data, Mode::Unset)? {
+            AnyEncryption::Standard(standard) => Ok(PackageEncryption::Standard(standard)),
+            AnyEncryption::Agile(agile) => Ok(PackageEncryption::Agile(agile)),
+            AnyEncryption::BinaryRc4(_) | AnyEncryption::CryptoApi(_) => Err(Unopened::Unported(
+                "an OOXML package encrypted with RC4, which this port does not decrypt".to_owned(),
+            )),
+        }
+    }
+
+    /// `Decryptor.verifyPassword`: the key of the package, where the password opens it.
+    pub(crate) fn verify(&self, password: &str) -> Result<Option<PackageKey>, Unopened> {
+        Ok(match self {
+            PackageEncryption::Standard(standard) => {
+                standard.verify(password)?.map(PackageKey::Standard)
+            }
+            PackageEncryption::Agile(agile) => agile.verify(password)?.map(PackageKey::Agile),
+        })
+    }
+}
+
+/// The key of an OOXML package.
+#[derive(Debug, Clone)]
+pub(crate) enum PackageKey {
+    Standard(AesKey),
+    Agile(AgileKey),
+}
+
+impl PackageKey {
+    /// `Decryptor.getDataStream(directory)` read whole: the package the `EncryptedPackage`
+    /// stream holds, past the length it starts with.
+    pub(crate) fn decrypt(&self, stream: &[u8]) -> Result<Vec<u8>, Unopened> {
+        let length = stream
+            .get(..8)
+            .map(|bytes| i64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+            .ok_or_else(|| Unopened::Thrown("the encrypted package has no length".to_owned()))?;
+        let length = usize::try_from(length).map_err(|_| {
+            Unopened::Unported("an encrypted package of a negative length".to_owned())
+        })?;
+        let encrypted = &stream[8..];
+        match self {
+            PackageKey::Standard(key) => {
+                let needed = (length / 16 + 1) * 16;
+                let read = &encrypted[..needed.min(encrypted.len())];
+                if !read.len().is_multiple_of(16) || read.len() < length {
                     return Err(Unopened::Unported(
-                        "standard encryption, which this port does not decrypt".to_owned(),
+                        "an encrypted package shorter than its length, which Java's cipher \
+                         stream fails on"
+                            .to_owned(),
                     ));
                 }
-                input.i32()?;
-                let header = Header::read(&mut input)?;
-                let verifier = Verifier::read(&mut input, &header)?;
-                Ok(EncryptionInfo::CryptoApi(CryptoApi::new(header, verifier)?))
+                let mut plain = key.decrypt_ecb(read);
+                plain.truncate(length);
+                Ok(plain)
             }
-            (4, 4) => Err(Unopened::Unported(
-                "agile encryption, which this port does not decrypt".to_owned(),
-            )),
-            _ => Err(Unopened::Thrown(format!(
-                "Unknown encryption: version major: {major} / version minor: {minor}"
-            ))),
+            PackageKey::Agile(key) => key.decrypt(encrypted, length),
         }
     }
 }
@@ -454,7 +599,7 @@ impl BinaryRc4 {
 
     /// `BinaryRC4Decryptor.verifyPassword`: the secret key, where the password opens it.
     fn verify(&self, password: &str) -> Option<BinaryRc4Key> {
-        let hashed = Hash::Md5.digest(&[&password_bytes(password)]);
+        let hashed = Hash::Md5.digest(&[&password_bytes(password, Some(MAX_PASSWORD_UNITS))]);
         let mut repeated = Vec::with_capacity(16 * (5 + self.salt.len()));
         for _ in 0..16 {
             repeated.extend_from_slice(&hashed[..5]);
@@ -475,14 +620,9 @@ impl BinaryRc4 {
 pub(crate) struct BinaryRc4Key(Vec<u8>);
 
 impl BlockKeys for BinaryRc4Key {
-    /// `initCipherForBlock`: the MD5 of the secret key and the block's number
-    /// (`CryptoFunctions.generateKey`).
+    /// `initCipherForBlock`: the MD5 of the secret key and the block's number.
     fn block(&self, block: u32) -> Rc4Key {
-        Rc4Key(filled(
-            &Hash::Md5.digest(&[&self.0, &block.to_le_bytes()]),
-            16,
-            0x36,
-        ))
+        Rc4Key(generate_key(&self.0, Hash::Md5, &block.to_le_bytes(), 16))
     }
 }
 
@@ -513,9 +653,10 @@ impl CryptoApi {
 
     /// `CryptoAPIDecryptor.verifyPassword`: the secret key, where the password opens it.
     fn verify(&self, password: &str) -> Option<CryptoApiKey> {
-        let secret = self
-            .hash
-            .digest(&[&self.verifier.salt, &password_bytes(password)]);
+        let secret = self.hash.digest(&[
+            &self.verifier.salt,
+            &password_bytes(password, Some(MAX_PASSWORD_UNITS)),
+        ]);
         let key = CryptoApiKey {
             secret,
             hash: self.hash,
@@ -563,6 +704,143 @@ impl BlockKeys for CryptoApiKey {
     }
 }
 
+/// Standard encryption of an OOXML package: AES, its key derived with SHA-1.
+#[derive(Debug, Clone)]
+pub(crate) struct Standard {
+    key_bits: i32,
+    verifier: Verifier,
+}
+
+impl Standard {
+    fn new(header: Header, verifier: Verifier) -> Result<Standard, Unopened> {
+        if header.cipher == Cipher::Rc4 || header.hash != Hash::Sha1 {
+            return Err(Unopened::Unported(
+                "standard encryption with a cipher or hash other than AES and SHA-1, which this \
+                 port does not decrypt"
+                    .to_owned(),
+            ));
+        }
+        Ok(Standard {
+            key_bits: header.key_bits,
+            verifier,
+        })
+    }
+
+    /// `StandardDecryptor.verifyPassword`: the AES key, where the password opens it.
+    fn verify(&self, password: &str) -> Result<Option<AesKey>, Unopened> {
+        let hashed = hash_password(
+            password,
+            Hash::Sha1,
+            &self.verifier.salt,
+            STANDARD_SPIN_COUNT,
+        );
+        let final_hash = generate_key(&hashed, Hash::Sha1, &0u32.to_le_bytes(), Hash::Sha1.size());
+        let fill_and_xor = |fill: u8| {
+            let mut buffer = [fill; 64];
+            for (byte, hashed) in buffer.iter_mut().zip(&final_hash) {
+                *byte ^= hashed;
+            }
+            Hash::Sha1.digest(&[&buffer])
+        };
+        let mut derived = fill_and_xor(0x36);
+        derived.extend(fill_and_xor(0x5C));
+        let key = AesKey::new(&block_of(&derived, self.key_bits as usize / 8))?;
+        let verifier = key.decrypt_ecb_whole(&self.verifier.verifier)?;
+        let verifier_hash = key.decrypt_ecb_whole(&self.verifier.verifier_hash)?;
+        let opened = Hash::Sha1.digest(&[&verifier]) == verifier_hash[..Hash::Sha1.size()];
+        Ok(opened.then_some(key))
+    }
+}
+
+/// An AES key of one of the three sizes.
+#[derive(Clone)]
+pub(crate) enum AesKey {
+    Aes128(aes::Aes128),
+    Aes192(aes::Aes192),
+    Aes256(aes::Aes256),
+}
+
+impl std::fmt::Debug for AesKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AesKey(<secret>)")
+    }
+}
+
+impl AesKey {
+    /// The key of `key`'s bytes, failing as Java's cipher does on a length AES does not take.
+    fn new(key: &[u8]) -> Result<AesKey, Unopened> {
+        use aes::cipher::KeyInit as _;
+        let invalid = |_| Unopened::Thrown("Invalid AES key length".to_owned());
+        Ok(match key.len() {
+            16 => AesKey::Aes128(aes::Aes128::new_from_slice(key).map_err(invalid)?),
+            24 => AesKey::Aes192(aes::Aes192::new_from_slice(key).map_err(invalid)?),
+            32 => AesKey::Aes256(aes::Aes256::new_from_slice(key).map_err(invalid)?),
+            length => {
+                return Err(Unopened::Thrown(format!(
+                    "Invalid AES key length: {length} bytes"
+                )))
+            }
+        })
+    }
+
+    fn decrypt_block(&self, block: &mut [u8; 16]) {
+        let block: &mut aes::Block = block.into();
+        match self {
+            AesKey::Aes128(cipher) => cipher.decrypt_block(block),
+            AesKey::Aes192(cipher) => cipher.decrypt_block(block),
+            AesKey::Aes256(cipher) => cipher.decrypt_block(block),
+        }
+    }
+
+    /// AES/ECB/NoPadding of `data`'s whole blocks.
+    fn decrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
+        let mut out = data.to_vec();
+        for chunk in out.as_chunks_mut::<16>().0 {
+            self.decrypt_block(chunk);
+        }
+        out
+    }
+
+    /// AES/ECB/NoPadding's `doFinal`, failing as Java's does on data of no whole number of
+    /// blocks.
+    fn decrypt_ecb_whole(&self, data: &[u8]) -> Result<Vec<u8>, Unopened> {
+        whole_blocks(data)?;
+        Ok(self.decrypt_ecb(data))
+    }
+
+    /// AES/CBC/NoPadding of `data`'s whole blocks with the IV.
+    fn decrypt_cbc(&self, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+        let mut out = data.to_vec();
+        let mut previous = *iv;
+        for chunk in out.as_chunks_mut::<16>().0 {
+            let cipher_text = *chunk;
+            self.decrypt_block(chunk);
+            for (byte, mask) in chunk.iter_mut().zip(&previous) {
+                *byte ^= mask;
+            }
+            previous = cipher_text;
+        }
+        out
+    }
+
+    /// AES/CBC/NoPadding's `doFinal`, failing as Java's does on data of no whole number of
+    /// blocks.
+    fn decrypt_cbc_whole(&self, iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, Unopened> {
+        whole_blocks(data)?;
+        Ok(self.decrypt_cbc(iv, data))
+    }
+}
+
+/// Fails as a Java cipher without padding fails on data of no whole number of blocks.
+fn whole_blocks(data: &[u8]) -> Result<(), Unopened> {
+    if !data.len().is_multiple_of(16) {
+        return Err(Unopened::Thrown(
+            "Input length not multiple of 16 bytes".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,7 +848,8 @@ mod tests {
     /// CryptoAPI's encryption of a verifier with `password`, as Office writes it.
     fn crypto_api(password: &str, key_bits: i32) -> CryptoApi {
         let salt = [9; 16];
-        let secret = Hash::Sha1.digest(&[&salt, &password_bytes(password)]);
+        let secret =
+            Hash::Sha1.digest(&[&salt, &password_bytes(password, Some(MAX_PASSWORD_UNITS))]);
         let key = CryptoApiKey {
             secret,
             hash: Hash::Sha1,
@@ -613,8 +892,42 @@ mod tests {
     }
 
     #[test]
+    fn hashes_passwords_as_poi_does() {
+        let hashed = hash_password("a", Hash::Sha1, &[1; 16], 2);
+        let first = Hash::Sha1.digest(&[&[1; 16], &[b'a', 0]]);
+        let second = Hash::Sha1.digest(&[&0u32.to_le_bytes(), &first]);
+        let third = Hash::Sha1.digest(&[&1u32.to_le_bytes(), &second]);
+        assert_eq!(hashed, third);
+        assert_eq!(generate_key(&[1], Hash::Md5, &[2], 20)[16..], [0x36; 4]);
+    }
+
+    #[test]
+    fn decrypts_aes_in_the_modes_the_encryptions_use() {
+        use aes::cipher::{BlockCipherEncrypt, KeyInit};
+        let key = [7u8; 16];
+        let cipher = aes::Aes128::new_from_slice(&key).unwrap();
+        let mut block = aes::Block::from([3u8; 16]);
+        cipher.encrypt_block(&mut block);
+        let aes = AesKey::new(&key).unwrap();
+        assert_eq!(aes.decrypt_ecb_whole(&block).unwrap(), [3u8; 16]);
+        let iv = [5u8; 16];
+        let mut chained = [3u8; 16];
+        for (byte, mask) in chained.iter_mut().zip(&iv) {
+            *byte ^= mask;
+        }
+        let mut chained = aes::Block::from(chained);
+        cipher.encrypt_block(&mut chained);
+        assert_eq!(aes.decrypt_cbc_whole(&iv, &chained).unwrap(), [3u8; 16]);
+        assert!(aes.decrypt_ecb_whole(&[0; 15]).is_err());
+        assert!(AesKey::new(&[0; 20]).is_err());
+    }
+
+    #[test]
     fn hashes_at_most_255_units_of_a_password() {
-        assert_eq!(password_bytes(&"a".repeat(300)).len(), 510);
+        assert_eq!(
+            password_bytes(&"a".repeat(300), Some(MAX_PASSWORD_UNITS)).len(),
+            510
+        );
     }
 
     #[test]
@@ -636,15 +949,15 @@ mod tests {
             Err(Unopened::Thrown(_))
         ));
         assert!(matches!(
-            EncryptionInfo::read(&[3, 0, 2, 0, 0x24, 0, 0, 0], Mode::Unset),
-            Err(Unopened::Unported(reason)) if reason.contains("standard")
+            PackageEncryption::read(&[3, 0, 2, 0, 0x24, 0, 0, 0]),
+            Err(Unopened::Thrown(_))
         ));
     }
 
     /// Binary RC4's encryption of a verifier with `password`, as Office writes it.
     fn binary_rc4(password: &str) -> BinaryRc4 {
         let salt = [9u8; 16];
-        let hashed = Hash::Md5.digest(&[&password_bytes(password)]);
+        let hashed = Hash::Md5.digest(&[&password_bytes(password, Some(MAX_PASSWORD_UNITS))]);
         let mut repeated = Vec::new();
         for _ in 0..16 {
             repeated.extend_from_slice(&hashed[..5]);

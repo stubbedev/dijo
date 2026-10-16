@@ -656,6 +656,7 @@ dependencies = [
 name = "extractous-core"
 version = "0.2.1"
 dependencies = [
+ "aes",
  "ar",
  "bytemuck",
  "bzip2",

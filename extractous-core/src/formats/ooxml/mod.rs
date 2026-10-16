@@ -4,8 +4,8 @@
 //! core, extended and custom properties as Tika's metadata.
 //!
 //! An encrypted document is no ZIP archive but an OLE2 file, which Tika's detection names
-//! `application/x-tika-ooxml-protected`, so it never reaches a native parser; were it to,
-//! [`Package::open`] would leave it to Tika as an archive it cannot read.
+//! `application/x-tika-ooxml-protected`; the protected parser decrypts it and hands the package
+//! to the parser of its format.
 
 pub(crate) mod extractor;
 mod package;
