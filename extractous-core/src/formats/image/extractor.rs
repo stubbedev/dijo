@@ -31,7 +31,7 @@ const ICC_MAB: i32 = 0x6D41_4220;
 const ICC_MBA: i32 = 0x6D42_4120;
 
 pub(crate) const COMMENTS: Property = bag("w:Comments");
-const DESCRIPTION: Property = bag("dc:description");
+pub(crate) const DESCRIPTION: Property = bag("dc:description");
 const TITLE: Property = xmp::DC_TITLE;
 const CREATOR: Property = xmp::DC_CREATOR;
 const SUBJECT: Property = xmp::DC_SUBJECT;

@@ -120,7 +120,7 @@ fn fails_on_jpegs_tika_fails_on() {
 }
 
 #[test]
-fn reads_local_webps_as_tika_does() {
+fn reads_local_webps_and_photoshop_images_as_tika_does() {
     let deferred = same_as_tika(
         &RecognizedImageParser,
         "ai.yobix.RecognizedImageParser",
@@ -223,9 +223,102 @@ fn reads_tikas_test_pngs_and_gifs_as_tika_does() {
     println!("deferred: {deferred:?}");
 }
 
+/// A Photoshop file of `version` with these image resources and no image data.
+fn photoshop(version: u8, resources: &[u8]) -> Vec<u8> {
+    [
+        &b"8BPS"[..],
+        &[
+            0, version, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 2, 0, 8, 0, 3,
+        ],
+        &[0, 0, 0, 0],
+        &(resources.len() as u32).to_be_bytes(),
+        resources,
+    ]
+    .concat()
+}
+
+#[test]
+fn reads_photoshop_captions_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-psd");
+    let caption = scratch.write(
+        "caption.psd",
+        &photoshop(1, b"8BIM\x03\xF0A\x00\x00\x00\x00\x05Hi\xE9!\x00\x008BIM\x04\x0B\x00\x00\x00\x00\x00\x01X\x00"),
+    );
+    assert_same_as_tika_delegating_with(
+        &[&caption],
+        "ai.yobix.RecognizedImageParser",
+        &DELEGATES,
+        &skipping_ocr(),
+    );
+}
+
+#[test]
+fn fails_on_photoshop_images_tika_fails_on() {
+    let scratch = crate::formats::parity::Scratch::new("image-psd-fails");
+    let header = photoshop;
+    let documents = [
+        scratch.write("version.psd", &header(3, &[])),
+        scratch.write(
+            "signature.psd",
+            &header(1, b"8BIX\x04\x24\x00\x00\x00\x00\x00\x00"),
+        ),
+        scratch.write(
+            "caption.psd",
+            &header(1, b"8BIM\x03\xF0\x00\x00\x00\x00\x00\x00"),
+        ),
+    ];
+    let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+    assert_fails_as_tika_with(&paths, &skipping_ocr());
+}
+
+#[test]
+fn reads_images_tika_has_no_parser_for_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-recognized");
+    scratch.write("tiny.pbm", b"P4\n8 2\n\xaa\x55");
+    scratch.write("tiny.pgm", b"P5\n2 2\n255\n\x00\xff\xff\x00");
+    scratch.write(
+        "tiny.pam",
+        b"P7\nWIDTH 2\nHEIGHT 2\nDEPTH 1\nMAXVAL 255\nTUPLTYPE GRAYSCALE\nENDHDR\n\x00\xff\xff\x00",
+    );
+    let pcx_header = [
+        &[10, 5, 1, 8, 0, 0, 0, 0, 1, 0, 1, 0, 72, 0, 72, 0][..],
+        &[0; 48],
+        &[0, 1, 2, 0, 1, 0],
+        &[0; 58],
+    ]
+    .concat();
+    scratch.write(
+        "tiny.pcx",
+        &[&pcx_header[..], &[0xC2, 0, 0xC2, 0xFF]].concat(),
+    );
+    scratch.write(
+        "tiny.tga",
+        &[
+            0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 8, 0, 0, 255, 255, 0,
+        ],
+    );
+    let (parsed, deferred) = documents_with(
+        &RecognizedImageParser,
+        &[scratch.directory()],
+        &skipping_ocr(),
+    );
+    assert_eq!(
+        (parsed.len(), deferred.len()),
+        (5, 0),
+        "{parsed:?} {deferred:?}"
+    );
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_delegating_with(
+        &paths,
+        "ai.yobix.RecognizedImageParser",
+        &DELEGATES,
+        &skipping_ocr(),
+    );
+}
+
 #[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
-fn reads_tikas_test_webps_as_tika_does() {
+fn reads_tikas_test_webps_and_photoshop_images_as_tika_does() {
     let roots = conformance_roots();
     let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
     let deferred = same_as_tika(

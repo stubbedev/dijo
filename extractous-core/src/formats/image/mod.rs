@@ -12,6 +12,7 @@ mod image_xmp;
 mod imageio;
 mod metadata_extractor;
 mod motion_photo;
+mod psd;
 #[cfg(test)]
 mod tests;
 
@@ -243,9 +244,28 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
     })
 }
 
-/// Our Java `RecognizedImageParser` over Tika's `WebPParser`: the WebP parser writes a document
+/// Our Java `RecognizedImageParser`: the parser Tika has for the image's type writes a document
 /// of its own into the image's, and the image is then handed to the OCR enricher.
 pub(crate) struct RecognizedImageParser;
+
+/// The parser Tika has for a type `RecognizedImageParser` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recognized {
+    WebP,
+    Photoshop,
+    /// `EmptyParser`, for the types Tika has no parser of.
+    Empty,
+}
+
+impl Recognized {
+    fn of(content_type: &str) -> Self {
+        match content_type.split(';').next().unwrap_or_default().trim() {
+            "image/webp" => Self::WebP,
+            "image/vnd.adobe.photoshop" => Self::Photoshop,
+            _ => Self::Empty,
+        }
+    }
+}
 
 impl Parser for RecognizedImageParser {
     fn name(&self) -> &'static str {
@@ -253,7 +273,16 @@ impl Parser for RecognizedImageParser {
     }
 
     fn media_types(&self) -> &'static [&'static str] {
-        &["image/webp"]
+        &[
+            "image/webp",
+            "image/vnd.adobe.photoshop",
+            "image/x-portable-bitmap",
+            "image/x-portable-graymap",
+            "image/x-portable-anymap",
+            "image/x-portable-arbitrarymap",
+            "image/vnd.zbrush.pcx",
+            "image/x-tga",
+        ]
     }
 
     fn prepare<'a>(
@@ -262,26 +291,26 @@ impl Parser for RecognizedImageParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let recognizer = enriched(metadata.get("Content-Type").unwrap_or_default());
+        let content_type = metadata.get("Content-Type").unwrap_or_default();
+        let recognizer = enriched(content_type);
         without_ocr(recognizer, configs)?;
-        let zone = java_zone()?;
         let mut read = metadata.clone();
-        image_xmp::extract_webp(input, &mut read)?;
-        let mut directories = Metadata::default();
-        match webp::read(input, &mut directories) {
-            Ok(()) => {}
-            Err(webp::RiffError::Processing(message)) => {
-                return Err(fails(format!("Can't process Riff data: {message}")))
+        let file_directory = match Recognized::of(content_type) {
+            Recognized::WebP => Some(webp_metadata(input, &mut read)?),
+            Recognized::Photoshop => {
+                psd::read(input, &mut read).map_err(|error| match error {
+                    psd::PsdError::Fails(message) => fails(message),
+                    psd::PsdError::Unported(unported) => unported.into(),
+                })?;
+                None
             }
-            Err(webp::RiffError::End(bounds)) => return Err(fails(bounds.0)),
-            Err(webp::RiffError::Unported(unported)) => return Err(unported.into()),
-        }
-        let mut target = Target::new(&mut read);
-        extractor::handle(&directories, &mut target, zone)?;
-        let prefix_route_names = target.prefix_route_names();
+            Recognized::Empty => None,
+        };
         Ok(Box::new(move |xhtml| {
             *xhtml.metadata_mut() = read;
-            add_file_directory(xhtml, input.len(), true, zone, prefix_route_names)?;
+            if let Some((zone, prefix_route_names)) = file_directory {
+                add_file_directory(xhtml, input.len(), true, zone, prefix_route_names)?;
+            }
             let context = xhtml.context();
             let metadata = xhtml.metadata_mut().clone();
             let (_, _, nested) =
@@ -298,6 +327,28 @@ impl Parser for RecognizedImageParser {
             Ok(())
         }))
     }
+}
+
+/// `WebPParser`'s metadata: its XMP, then metadata-extractor's directories, which end with the
+/// file's, in the zone and after the prefix route names this gives.
+fn webp_metadata(
+    input: &[u8],
+    read: &mut TikaMetadata,
+) -> Result<(&'static TimeZone, usize), Declined> {
+    let zone = java_zone()?;
+    image_xmp::extract_webp(input, read)?;
+    let mut directories = Metadata::default();
+    match webp::read(input, &mut directories) {
+        Ok(()) => {}
+        Err(webp::RiffError::Processing(message)) => {
+            return Err(fails(format!("Can't process Riff data: {message}")))
+        }
+        Err(webp::RiffError::End(bounds)) => return Err(fails(bounds.0)),
+        Err(webp::RiffError::Unported(unported)) => return Err(unported.into()),
+    }
+    let mut target = Target::new(read);
+    extractor::handle(&directories, &mut target, zone)?;
+    Ok((zone, target.prefix_route_names()))
 }
 
 /// The directory of the file metadata-extractor reads, when it reads one, copied as the last of
