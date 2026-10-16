@@ -607,7 +607,7 @@ impl Parser<'_> {
         debug_assert!(literal.is_ascii());
         let rest = self.rest().as_bytes();
         let compared = rest.len().min(literal.len());
-        if rest[..compared] != literal.as_bytes()[..compared] {
+        if !rest.iter().zip(literal.as_bytes()).all(|(a, b)| a == b) {
             return Ok(false);
         }
         if compared < literal.len() {
@@ -1348,6 +1348,11 @@ impl Parser<'_> {
                 None => return emit(data, TextKind::Data),
                 Some('<') => {
                     emit(data, TextKind::Data)?;
+                    if self.rest().as_bytes().get(1).is_some_and(|&byte| {
+                        byte == b'/' || (byte.is_ascii() && is_name_start(char::from(byte)))
+                    }) {
+                        return Ok(());
+                    }
                     if self.skip("<!--")? {
                         self.comment()?;
                     } else if self.skip("<![CDATA[")? {
