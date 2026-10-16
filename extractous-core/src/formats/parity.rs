@@ -19,6 +19,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::config::ParserConfigs;
+use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
 use crate::tika::{self, Source};
@@ -202,15 +203,20 @@ fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extr
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
+/// Where the XHTML head writes a recorded warning.
+const WARNING_META: &str = "<meta name=\"tk:exception:warn\" content=\"";
 /// The first frame below an embedded document's parse in Tika's path, where the embedding
 /// parser hands it to the embedded document extractor.
 const TIKA_EMBEDDING_FRAME: &str = "\tat org.apache.tika.parser.DelegatingParser.parse(";
 /// The first frame below an embedded document's parse in the native path.
 const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded(";
 
-/// An extraction as the two paths are compared on it: each parser of the full set once, and
-/// the failures of embedded documents without the frames that embedded them.
-fn comparable(mut extracted: Extracted) -> Extracted {
+/// An extraction, its text in `char_set`, as the two paths are compared on it: each parser of
+/// the full set once, the failures of embedded documents without the frames that embedded them,
+/// and the exceptions a parser records without their frames, which a native parser does not
+/// have.
+fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
+    extracted.text = without_warning_frames(extracted.text, char_set);
     for (name, values) in &mut extracted.metadata {
         if name == PARSED_BY_FULL_SET {
             let mut once: Vec<String> = Vec::with_capacity(values.len());
@@ -224,12 +230,9 @@ fn comparable(mut extracted: Extracted) -> Extracted {
             for value in values.iter_mut() {
                 *value = without_temporary_names(&without_embedding_frames(value));
             }
-        } else if name == EMBEDDED_STREAM_EXCEPTION {
+        } else if name == EMBEDDED_STREAM_EXCEPTION || name == EXCEPTION_WARNING {
             for value in values.iter_mut() {
-                *value = value
-                    .split_inclusive('\n')
-                    .filter(|line| !line.starts_with('\t'))
-                    .collect();
+                *value = without_frames(value);
             }
         }
     }
@@ -261,6 +264,47 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     }
     native.metadata.retain(|(_, values)| !values.is_empty());
     native
+}
+
+/// A Java stack trace without its frames.
+fn without_frames(trace: &str) -> String {
+    trace
+        .split_inclusive('\n')
+        .filter(|line| !line.starts_with('\t'))
+        .collect()
+}
+
+/// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
+/// without their frames.
+fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
+    let decoded = match char_set {
+        CharSet::UTF_8 | CharSet::US_ASCII => String::from_utf8(text.clone()).ok(),
+        CharSet::UTF_16BE => {
+            let (pairs, rest) = text.as_chunks::<2>();
+            let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_be_bytes(pair)).collect();
+            rest.is_empty()
+                .then(|| String::from_utf16(&units).ok())
+                .flatten()
+        }
+    };
+    let Some(decoded) = decoded.filter(|decoded| decoded.contains(WARNING_META)) else {
+        return text;
+    };
+    let mut kept = String::with_capacity(decoded.len());
+    let mut rest = decoded.as_str();
+    while let Some(at) = rest.find(WARNING_META) {
+        let start = at + WARNING_META.len();
+        let end = rest[start..]
+            .find('"')
+            .map_or(rest.len(), |end| start + end);
+        kept.push_str(&rest[..start]);
+        kept.push_str(&without_frames(&rest[start..end]));
+        rest = &rest[end..];
+    }
+    kept.push_str(rest);
+    let mut encoded = Vec::with_capacity(text.len());
+    formats::encode(&kept, char_set, &mut encoded);
+    encoded
 }
 
 /// The text with the random number of each of Tika's temporary files, `apache-tika-<digits>`,
@@ -413,8 +457,9 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                 let as_expected = match (expected, &tika, &native) {
                     (Expected::Same(naming), Ok(tika), Ok(native)) => {
                         let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                        let tika = comparable(tika.clone());
-                        let native = comparable(as_tika(native.clone(), &names, char_set));
+                        let tika = comparable(tika.clone(), char_set);
+                        let native =
+                            comparable(as_tika(native.clone(), &names, char_set), char_set);
                         if entry == "string" {
                             tika == cut_to(native, &tika)
                         } else {
@@ -638,18 +683,21 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                 .map(|(native, tika)| (native.as_str(), tika.as_str()))
                 .collect();
             let tika = (
-                comparable(Extracted { text, metadata }),
+                comparable(Extracted { text, metadata }, CharSet::UTF_8),
                 spooled(embedded, tika_spool.directory()),
             );
             let native = (
-                comparable(as_tika(
-                    Extracted {
-                        text: native_text,
-                        metadata: native_metadata,
-                    },
-                    &names,
+                comparable(
+                    as_tika(
+                        Extracted {
+                            text: native_text,
+                            metadata: native_metadata,
+                        },
+                        &names,
+                        CharSet::UTF_8,
+                    ),
                     CharSet::UTF_8,
-                )),
+                ),
                 spooled(native_embedded, native_spool.directory()),
             );
             if native == tika {
@@ -693,6 +741,27 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
 mod tests {
     use super::*;
+
+    #[test]
+    fn compares_recorded_warnings_without_their_frames() {
+        let tika = "<head>\n<meta name=\"tk:exception:warn\" content=\"java.io.EOFException: End of data reached.\n\tat R.getByte(R.java:62)\n\tat P.parse(P.java:139)\n\" />\n<meta name=\"dc:title\" content=\"a\n\tb\" />\n</head>";
+        let native = "<head>\n<meta name=\"tk:exception:warn\" content=\"java.io.EOFException: End of data reached.\n\" />\n<meta name=\"dc:title\" content=\"a\n\tb\" />\n</head>";
+        for char_set in [CharSet::UTF_8, CharSet::US_ASCII, CharSet::UTF_16BE] {
+            let encoded = |text: &str| {
+                let mut bytes = Vec::new();
+                formats::encode(text, char_set, &mut bytes);
+                bytes
+            };
+            assert_eq!(
+                without_warning_frames(encoded(tika), char_set),
+                encoded(native)
+            );
+        }
+        assert_eq!(
+            without_frames("E: m\n\tat P.parse(P.java:1)\nCaused by: C\n\t... 2 more\n"),
+            "E: m\nCaused by: C\n"
+        );
+    }
 
     #[test]
     fn compares_embedded_failures_without_the_embedding_frames() {

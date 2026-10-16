@@ -189,6 +189,7 @@ static PARSERS: &[&dyn Parser] = &[
     &media::AudioParser,
     &media::FlvParser,
     &media::Mp3Parser,
+    &media::Mp4Parser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,

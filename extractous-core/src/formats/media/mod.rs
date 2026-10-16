@@ -1,6 +1,6 @@
 //! Audio and video files, as Tika's audio and video module reads their metadata: MP3 ([`mp3`]),
-//! Flash video ([`flv`]), WAVE, AU and AIFF ([`audio`]), MIDI ([`midi`]), and Ogg Vorbis, Opus
-//! and FLAC ([`ogg`]). What its parsers share lives here: `CoverArt`, which hands a file's
+//! MP4, QuickTime and 3GPP ([`mp4`]), Flash video ([`flv`]), WAVE, AU and AIFF ([`audio`]), MIDI
+//! ([`midi`]), and Ogg Vorbis, Opus and FLAC ([`ogg`]). What its parsers share lives here: `CoverArt`, which hands a file's
 //! pictures to the embedded document extractor, and `NumberAndTotal`, which reads a track or
 //! disc number.
 
@@ -8,12 +8,14 @@ mod audio;
 mod flv;
 mod midi;
 mod mp3;
+mod mp4;
 mod ogg;
 
 pub(crate) use audio::AudioParser;
 pub(crate) use flv::FlvParser;
 pub(crate) use midi::MidiParser;
 pub(crate) use mp3::Mp3Parser;
+pub(crate) use mp4::Mp4Parser;
 pub(crate) use ogg::{FlacParser, OpusParser, VorbisParser};
 
 use crate::formats::embedded::{ResourceType, Wrapping};

@@ -5,6 +5,7 @@
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
+use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Parser, Prepared};
 use crate::java::JavaHashMap;
@@ -13,8 +14,6 @@ use crate::java::JavaHashMap;
 const UNSUPPORTED: &str = "An UnsupportedAudioFileException was thrown.  This could mean that \
                            the underlying parser hit an EndOfFileException or that the file is \
                            unsupported. ¯\\_(ツ)_/¯";
-/// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
-const WARNING: &str = "tk:exception:warn";
 /// `AudioSystem.NOT_SPECIFIED`.
 const NOT_SPECIFIED: i32 = -1;
 
@@ -761,7 +760,7 @@ impl Parser for AudioParser {
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             let Some(format) = format else {
-                metadata.add(WARNING, UNSUPPORTED);
+                metadata.add(EXCEPTION_WARNING, UNSUPPORTED);
                 return Ok(());
             };
             metadata.set("Content-Type", format.kind.content_type());
