@@ -101,6 +101,13 @@ pub(crate) struct MagicMatch {
     pub(crate) end: usize,
 }
 
+/// What a matching window holds `offset` bytes into it, by [`MagicMatch::anchor`].
+enum Anchor<'a> {
+    Run { offset: usize, bytes: &'a [u8] },
+    Byte { offset: usize, byte: u8 },
+    EitherByte { offset: usize, bytes: [u8; 2] },
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum Kind {
     Bytes,
@@ -145,13 +152,29 @@ impl MagicMatch {
                 }
                 let last = self.end.min(data.len() - length);
                 let at = |i: usize| self.matches_at(&data[i..i + length]);
-                let starts = &data[self.begin..=last];
-                match self.first_bytes() {
-                    Some((only, None)) => {
-                        memchr::memchr_iter(only, starts).any(|i| at(self.begin + i))
+                if self.begin == last {
+                    return at(last);
+                }
+                match self.anchor() {
+                    Some(Anchor::Run { offset, bytes }) => {
+                        let window = &data[self.begin + offset..last + offset + bytes.len()];
+                        let finder = memchr::memmem::Finder::new(bytes);
+                        let mut from = 0;
+                        while let Some(found) = finder.find(&window[from..]) {
+                            if at(self.begin + from + found) {
+                                return true;
+                            }
+                            from += found + 1;
+                        }
+                        false
                     }
-                    Some((one, Some(other))) => {
-                        memchr::memchr2_iter(one, other, starts).any(|i| at(self.begin + i))
+                    Some(Anchor::Byte { offset, byte }) => {
+                        let window = &data[self.begin + offset..=last + offset];
+                        memchr::memchr_iter(byte, window).any(|i| at(self.begin + i))
+                    }
+                    Some(Anchor::EitherByte { offset, bytes }) => {
+                        let window = &data[self.begin + offset..=last + offset];
+                        memchr::memchr2_iter(bytes[0], bytes[1], window).any(|i| at(self.begin + i))
                     }
                     None => (self.begin..=last).any(at),
                 }
@@ -159,20 +182,48 @@ impl MagicMatch {
         }
     }
 
-    /// The one or two bytes a window that matches can start with, where the first byte is
-    /// compared whole: the pattern's, and its upper case where case is ignored.
-    fn first_bytes(&self) -> Option<(u8, Option<u8>)> {
-        let (&first, &mask) = (self.pattern.first()?, self.mask.first()?);
-        if mask != 0xFF {
-            return None;
-        }
+    /// What a window that matches must hold at a place in it, which finds the candidate windows
+    /// of a range: where case counts, the longest run of bytes compared whole; where case is
+    /// ignored, the first byte compared whole, in either case if it is a letter.
+    fn anchor(&self) -> Option<Anchor<'static>> {
         match self.kind {
-            Kind::Bytes => Some((first, None)),
-            Kind::IgnoreCase if first.is_ascii_lowercase() => {
-                Some((first, Some(first.to_ascii_uppercase())))
+            Kind::Bytes => {
+                let mut best: Option<(usize, usize)> = None;
+                let mut start = 0;
+                for (index, &mask) in self.mask.iter().chain([&0]).enumerate() {
+                    if mask == 0xFF {
+                        continue;
+                    }
+                    if index > start && best.is_none_or(|(_, length)| index - start > length) {
+                        best = Some((start, index - start));
+                    }
+                    start = index + 1;
+                }
+                let (offset, length) = best?;
+                let bytes = &self.pattern[offset..offset + length];
+                Some(match bytes {
+                    [byte] => Anchor::Byte {
+                        offset,
+                        byte: *byte,
+                    },
+                    _ => Anchor::Run { offset, bytes },
+                })
             }
-            Kind::IgnoreCase if !first.is_ascii_uppercase() => Some((first, None)),
-            Kind::IgnoreCase | Kind::Regex(_) => None,
+            Kind::IgnoreCase => {
+                let offset = self.mask.iter().position(|&mask| mask == 0xFF)?;
+                let byte = self.pattern[offset];
+                if byte.is_ascii_lowercase() {
+                    Some(Anchor::EitherByte {
+                        offset,
+                        bytes: [byte, byte.to_ascii_uppercase()],
+                    })
+                } else if byte.is_ascii_uppercase() {
+                    None
+                } else {
+                    Some(Anchor::Byte { offset, byte })
+                }
+            }
+            Kind::Regex(_) => None,
         }
     }
 
@@ -328,6 +379,11 @@ mod tests {
         let m = clause("string", "0:8", "AB", Some("0xDFFF"));
         assert!(m.clause.eval(&Haystack::new(b"....aB")));
         assert!(!m.clause.eval(&Haystack::new(b"....aC")));
+        let m = clause("string", "0:4", "aa\\x00c", Some("0xFFFF00FF"));
+        assert!(m.clause.eval(&Haystack::new(b"aaaxc")));
+        assert!(!m.clause.eval(&Haystack::new(b"aaaxd")));
+        let m = clause("stringignorecase", "0:8", "x<html", Some("0x00FFFFFFFFFF"));
+        assert!(m.clause.eval(&Haystack::new(b"....?<HTml")));
     }
 
     #[test]
