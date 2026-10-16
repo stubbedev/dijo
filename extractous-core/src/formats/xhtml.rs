@@ -332,7 +332,7 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
-    fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
+    pub(crate) fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
         let frameset = self.frameset();
         self.end_head(frameset)?;
@@ -385,6 +385,26 @@ impl<'h> Xhtml<'h> {
         } else {
             character
         }
+    }
+
+    /// Starts `name` in the handler under the XHTML, as a parser does that writes to the content
+    /// handler it was given rather than to its `XHTMLContentHandler`: in no namespace, without a
+    /// tab, and without ending the head.
+    pub(crate) fn raw_start_element(&mut self, name: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.start_element(name, &[])
+    }
+
+    /// Ends `name` in the handler under the XHTML, without a line break.
+    pub(crate) fn raw_end_element(&mut self, name: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.end_element(name)
+    }
+
+    /// Writes `text` to the handler under the XHTML, the characters XML cannot hold as they are.
+    pub(crate) fn raw_characters(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.characters(text)
     }
 
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
@@ -441,6 +461,18 @@ impl<'h> Xhtml<'h> {
         metadata: &TikaMetadata,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
+        self.parse_embedded_opened(data, metadata, wrapping, Opened::WithMetadata)
+    }
+
+    /// [`Xhtml::parse_embedded`] of a document whose `TikaInputStream` the parser `opened` as
+    /// given.
+    pub(crate) fn parse_embedded_opened(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        opened: Opened,
+    ) -> Result<(), Failure> {
         within_budget()?;
         if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
             return Ok(());
@@ -455,7 +487,7 @@ impl<'h> Xhtml<'h> {
         }
         let mut open = Vec::new();
         let configs = self.embedding.context().configs();
-        let ended = match formats::route_embedded(data, metadata, Opened::WithMetadata, configs) {
+        let ended = match formats::route_embedded(data, metadata, opened, configs) {
             Some(route) => self.parse_natively(route, data, metadata, &mut open),
             None => self.parse_with_tika(data, metadata, &mut open),
         };

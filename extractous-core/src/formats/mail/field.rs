@@ -1,8 +1,9 @@
 //! Header fields as mime4j 0.8.15 reads them: `RawFieldParser`'s tokens, values, comments and
 //! quoted strings over a field's bytes, and `RawField`, a field's name and unfolded body.
 
-use super::codec::{decode_encoded_words, decode_utf8};
+use super::codec::decode_encoded_words;
 use super::Unported;
+use crate::java;
 
 /// `CharsetUtil.isWhitespace`.
 pub(super) fn is_whitespace(byte: u8) -> bool {
@@ -181,7 +182,7 @@ pub(super) fn copy_content(
         pos += 1;
     }
     cursor.pos = pos;
-    dst.push_str(&decode_utf8(&buf[start..pos]));
+    dst.push_str(&java::utf8(&buf[start..pos]));
 }
 
 /// `RawFieldParser.copyQuotedContent`: a quoted string's content, escapes resolved but for a
@@ -215,7 +216,7 @@ pub(super) fn copy_quoted_content(
             raw.push(current);
         }
     }
-    let decoded = decode_utf8(&raw);
+    let decoded = java::utf8(&raw);
     if decoded.starts_with("=?") {
         dst.push_str(&decode_encoded_words(&decoded)?);
     } else {
@@ -287,7 +288,7 @@ impl RawField {
         if self.raw.len() > start + 1 && is_whitespace(self.raw[start]) {
             start += 1;
         }
-        unfold(&decode_utf8(&self.raw[start.min(self.raw.len())..]))
+        unfold(&java::utf8(&self.raw[start.min(self.raw.len())..]))
     }
 }
 

@@ -2,8 +2,7 @@
 //! The order its `names()` lists them in is visible in the XHTML head, so [`TikaMetadata::names`]
 //! reproduces that map's iteration order.
 
-use crate::java::JavaHashMap;
-use crate::java::{is_blank, utf16_length};
+use crate::java::{is_blank, utf16_length, JavaHashMap};
 use crate::Metadata;
 
 /// Office's `USER_DEFINED` key prefix, of a document's custom properties.

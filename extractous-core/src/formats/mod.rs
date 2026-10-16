@@ -3,18 +3,24 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod apple_single;
 mod archive;
 mod auto_detect_reader;
 mod cms;
 pub(crate) mod data_format;
+mod dbf;
 mod dc_xml;
+mod dif;
 mod doc;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
 mod epub;
 mod escher;
+mod executable;
+mod feed;
 mod fiction_book;
+mod font;
 pub(crate) mod handlers;
 mod html;
 mod hwpx;
@@ -23,8 +29,11 @@ mod iwork;
 mod jdk_zip;
 mod list_numbering;
 mod mail;
+pub(crate) mod media;
 pub(crate) mod metadata;
+mod mif;
 mod mobi;
+mod ms_owner;
 mod msg;
 mod notebook;
 mod odf;
@@ -34,15 +43,18 @@ mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
-mod pdf;
+pub(crate) mod pdf;
 pub(crate) mod plist;
 mod poi;
 mod pptx;
+mod prt;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
 mod subtitle;
 mod text;
+mod translation;
+mod warc;
 pub(crate) mod xhtml;
 mod xls;
 mod xlsx;
@@ -196,6 +208,9 @@ static PARSERS: &[&dyn Parser] = &[
     &dc_xml::DcXmlParser,
     &doc::DocParser,
     &docx::DocxParser,
+    &feed::FeedParser,
+    &font::AdobeFontMetricParser,
+    &font::TrueTypeParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
     &image::HeifParser,
@@ -207,6 +222,24 @@ static PARSERS: &[&dyn Parser] = &[
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,
+    &media::FlacParser,
+    &media::OpusParser,
+    &media::VorbisParser,
+    &media::MidiParser,
+    &media::AudioParser,
+    &media::FlvParser,
+    &media::Mp3Parser,
+    &media::Mp4Parser,
+    &executable::ExecutableParser,
+    &executable::UniversalExecutableParser,
+    &translation::TmxParser,
+    &translation::Xliff12Parser,
+    &dif::DifParser,
+    &mif::MifParser,
+    &ms_owner::MsOwnerFileParser,
+    &apple_single::AppleSingleFileParser,
+    &prt::PrtParser,
+    &dbf::DbfParser,
     &mobi::MobiParser,
     &msg::MsgParser,
     &notebook::NotebookParser,
@@ -222,6 +255,9 @@ static PARSERS: &[&dyn Parser] = &[
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &xls::XlsParser,
+    &warc::WarcParser,
+    &warc::HttpParser,
+    &warc::WaczParser,
     &xlsx::XlsxParser,
 ];
 

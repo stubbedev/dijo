@@ -27,6 +27,8 @@ const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
+/// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
+pub(crate) const EXCEPTION_WARNING: &str = "tk:exception:warn";
 
 /// What the parses of one extraction share, as Tika's `ParseContext` does: the parser settings,
 /// whether its embedded documents are parsed or spooled, and the script OCR last found in its
@@ -287,10 +289,19 @@ pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
 /// `class: message`: the first line of the stack trace Tika records, without the frames of the
 /// Java parser, which the native one replaces.
 pub(crate) fn record_stream_exception(metadata: &mut TikaMetadata, exception: &str) {
-    metadata.add(
-        EMBEDDED_STREAM_EXCEPTION,
-        format!("{exception}{LINE_SEPARATOR}"),
-    );
+    metadata.add(EMBEDDED_STREAM_EXCEPTION, first_line(exception));
+}
+
+/// `EmbeddedDocumentUtil.recordException` of an exception a parser makes itself, `class:
+/// message`: the first line of the stack trace Tika records as a warning, without the frames of
+/// the Java parser, which the native one replaces.
+pub(crate) fn record_exception(metadata: &mut TikaMetadata, exception: &str) {
+    metadata.add(EXCEPTION_WARNING, first_line(exception));
+}
+
+/// The first line of the stack trace `printStackTrace` writes of `exception`.
+fn first_line(exception: &str) -> String {
+    format!("{exception}{LINE_SEPARATOR}")
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.
