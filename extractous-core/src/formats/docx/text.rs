@@ -198,6 +198,11 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
         }
     }
 
+    /// Resolves links by `relationships` from here on, those of the next part read.
+    pub(crate) fn set_relationships(&mut self, relationships: &'r HashMap<String, String>) {
+        self.relationships = relationships;
+    }
+
     fn linked(&self, id: Option<&str>) -> Option<&'r str> {
         let relationships: &'r HashMap<String, String> = self.relationships;
         id.and_then(|id| relationships.get(id)).map(String::as_str)
