@@ -3,20 +3,24 @@ use std::path::{Path, PathBuf};
 use super::records::sid;
 use super::stream::tests::record;
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_reading_by_ocr};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 8] = [
+const DEFERRED_CONFORMANCE: [(&str, &str); 4] = [
     ("testEXCEL_5.xls", "before BIFF8"),
     ("testEXCEL_95.xls", "before BIFF8"),
-    ("testEXCEL_embeddedPDF_windows.xls", "embeds documents"),
-    ("testEXCEL_embeded.xls", "embeds documents"),
     ("testEXCEL_protected_passtika.xls", "encrypted"),
-    ("testExcel_embeddedPDF.xls", "embeds documents"),
-    ("testMSChart-govdocs-428996.xls", "embeds documents"),
-    ("testWPSAttachment.xls", "embeds documents"),
+    ("testMSChart-govdocs-428996.xls", "by its names alone"),
+];
+
+/// The workbooks of Tika's own tests with pictures OCR finds text in, which the quality corpus
+/// scores rather than parity.
+const READ_BY_OCR: [&str; 3] = [
+    "testEXCEL_1img.xls",
+    "testEXCEL_embeded.xls",
+    "testEXCEL_extra_metadata.xls",
 ];
 
 fn file_name(path: &Path) -> String {
@@ -60,9 +64,9 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     documents.sort();
     let defaults = ParserConfigs::default();
     let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert_eq!(ported.len(), 20);
+    assert_eq!(ported.len(), 24);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, &defaults);
+    assert_same_as_tika_reading_by_ocr(&documents, TIKA_PARSER, &defaults, &READ_BY_OCR);
 }
 
 fn bof(kind: i16) -> Vec<u8> {

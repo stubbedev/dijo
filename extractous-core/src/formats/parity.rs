@@ -19,7 +19,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::config::ParserConfigs;
+use crate::config::{ParserConfigs, TesseractOcrConfig};
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
@@ -419,6 +419,33 @@ pub(crate) fn assert_same_as_tika_with(
         delegates: &[],
     });
     compare(documents, configs, expected);
+}
+
+/// [`assert_same_as_tika_with`], but for the documents named in `read_by_ocr`, whose pictures
+/// OCR finds text in, which the quality corpus scores rather than parity: those are compared
+/// with OCR skipped, and with OCR but for the text it reads.
+pub(crate) fn assert_same_as_tika_reading_by_ocr(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+    read_by_ocr: &[&str],
+) {
+    let (read, others): (Vec<&Path>, Vec<&Path>) = documents.iter().partition(|document| {
+        document
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| read_by_ocr.contains(&name))
+    });
+    assert_same_as_tika_with(&others, tika_name, configs);
+    if read.is_empty() {
+        return;
+    }
+    let without_ocr = ParserConfigs {
+        ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+        ..configs.clone()
+    };
+    assert_same_as_tika_with(&read, tika_name, &without_ocr);
+    assert_same_as_tika_but_ocr(&read, tika_name, &[], configs);
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with

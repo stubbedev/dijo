@@ -3,16 +3,16 @@
 //! records through POI's event model into Tika's `TikaHSSFListener`, a page per sheet with its
 //! cells in a table and the text found outside the cells after it, the pictures the drawing
 //! groups store as embedded documents, and the hidden sheets, rows, columns, protection and
-//! comment authors as metadata.
+//! comment authors as metadata, then the documents embedded in `MBD` storages.
 //!
 //! Numbers are written as Tika's listener writes them: dates and the general format with
 //! Tika's `TikaExcelDataFormatter`, other formats with POI's own `DataFormatter`, both in the
 //! `en_US` locale with dates in Java's default time zone and the 1900 date system; see
 //! [`crate::formats::data_format`].
 //!
-//! An encrypted workbook, one in a format before BIFF8, one POI throws on, one with documents
-//! embedded in `MBD` storages, and macros extracted when asked to, are left to Tika: see
-//! [`XlsParser::defers`].
+//! An encrypted workbook, one in a format before BIFF8, one POI throws on, one with an `MBD`
+//! storage Tika fails to hand on, and macros extracted when asked to, are left to Tika: see
+//! [`XlsParser::prepare`].
 
 mod factory;
 mod listener;
@@ -28,7 +28,7 @@ use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::Summaries;
+use crate::formats::ole2::{office_document, Embedded, Summaries};
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
@@ -71,9 +71,9 @@ impl Parser for XlsParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers workbooks POI or Tika throws on, encrypted ones, ones before BIFF8, ones with
-    /// embedded documents, macros extracted when asked to, and any workbook when Java's default
-    /// time zone, which dates are written in, cannot be read.
+    /// Defers workbooks POI or Tika throws on, encrypted ones, ones before BIFF8, ones with an
+    /// embedded document Tika fails to hand on, macros extracted when asked to, and any workbook
+    /// when Java's default time zone, which dates are written in, cannot be read.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -93,6 +93,8 @@ struct Workbook {
     summaries: Summaries,
     read: Extracted,
     pictures: Vec<Picture>,
+    /// The documents of the `MBD` storages, as `handleEmbeddedOfficeDoc` hands them on.
+    embedded: Vec<Embedded>,
 }
 
 /// A picture of the drawing groups, as `findPictures` hands it to `handleEmbeddedResource`.
@@ -145,21 +147,21 @@ impl Workbook {
         if file.kind(entry) != EntryKind::Document {
             return Err(Unported("the workbook entry is a directory".to_owned()));
         }
-        if file.children(root).any(|child| {
-            file.name(child).starts_with("MBD") && file.kind(child) != EntryKind::Document
-        }) {
-            return Err(Unported(
-                "the workbook embeds documents, which this port does not parse".to_owned(),
-            ));
-        }
         let stream = file.read(entry).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot read the workbook stream: {reason}"))
         })?;
         let (read, pictures) = read_records(&stream, config, zone)?;
+        let mut embedded = Vec::new();
+        for child in file.children(root) {
+            if file.name(child).starts_with("MBD") && file.kind(child) != EntryKind::Document {
+                embedded.extend(office_document(&file, child, TikaMetadata::new(), None)?);
+            }
+        }
         Ok(Workbook {
             summaries: Summaries::read(&file, root)?,
             read,
             pictures,
+            embedded,
         })
     }
 
@@ -195,6 +197,9 @@ impl Workbook {
             return Err(stop.into());
         }
         self.write_metadata(xhtml.metadata_mut());
+        for Embedded { data, metadata } in &self.embedded {
+            xhtml.parse_embedded(data, metadata, Wrapping::PackageEntry)?;
+        }
         Ok(())
     }
 

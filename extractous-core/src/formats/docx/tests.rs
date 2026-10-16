@@ -4,11 +4,10 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::*;
-use crate::config::TesseractOcrConfig;
 use crate::formats::embedded::ParseContext;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
-use crate::formats::parity::{self, assert_same_as_tika_but_ocr, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_reading_by_ocr};
 use crate::formats::{Chain, Output, StringOut};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
@@ -143,20 +142,8 @@ fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
 }
 
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
-    let (read_by_ocr, others): (Vec<&Path>, Vec<&Path>) = documents
-        .iter()
-        .map(PathBuf::as_path)
-        .partition(|document| READ_BY_OCR.contains(&file_name(document).as_str()));
-    assert_same_as_tika_with(&others, TIKA_PARSER, configs);
-    if read_by_ocr.is_empty() {
-        return;
-    }
-    let without_ocr = ParserConfigs {
-        ocr: TesseractOcrConfig::new().set_skip_ocr(true),
-        ..configs.clone()
-    };
-    assert_same_as_tika_with(&read_by_ocr, TIKA_PARSER, &without_ocr);
-    assert_same_as_tika_but_ocr(&read_by_ocr, TIKA_PARSER, &[], configs);
+    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_reading_by_ocr(&documents, TIKA_PARSER, configs, &READ_BY_OCR);
 }
 
 #[test]
