@@ -7,6 +7,7 @@ mod apple_single;
 mod archive;
 mod auto_detect_reader;
 mod cms;
+mod dbf;
 mod dc_xml;
 mod dif;
 mod docx;
@@ -206,6 +207,7 @@ static PARSERS: &[&dyn Parser] = &[
     &ms_owner::MsOwnerFileParser,
     &apple_single::AppleSingleFileParser,
     &prt::PrtParser,
+    &dbf::DbfParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
