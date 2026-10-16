@@ -19,6 +19,7 @@ mod hwpx;
 mod iwork;
 mod jdk_zip;
 mod mail;
+mod media;
 pub(crate) mod metadata;
 mod mobi;
 mod notebook;
@@ -178,6 +179,7 @@ static PARSERS: &[&dyn Parser] = &[
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,
+    &media::Mp3Parser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
