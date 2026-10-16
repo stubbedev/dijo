@@ -431,8 +431,7 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika_departing, conformance_corpus, documents,
-        Departure, Scratch,
+        assert_fails_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
     };
 
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
@@ -460,11 +459,7 @@ mod tests {
     }
 
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
-        let departure = Departure {
-            undo: without_content_length,
-            moves_the_cut: true,
-        };
-        assert_same_as_tika_departing(documents, tika_name, departure);
+        assert_same_as_tika_departing(documents, tika_name, without_content_length);
     }
 
     #[test]

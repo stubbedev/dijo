@@ -1113,10 +1113,20 @@ mod tests {
                 "testPSD_xmp.psd",
                 crate::formats::parity::PSD_PROFILE_AWT_REJECTS,
             ),
+            (
+                "testHTML_metadata_two_titles.html",
+                "a meta title after the title element is a further dc:title (#86)",
+            ),
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;
-        for parser in PARSERS {
+        // The head of CMS content shows its Content-Length, which Tika's path does not give it
+        // (#113); CMS content is parsed in place, never spooled, and its comparison with Tika's
+        // is cms.rs's.
+        for parser in PARSERS
+            .iter()
+            .filter(|parser| parser.name() != cms::CmsParser.name())
+        {
             let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
             for path in parsed {
                 let name = path.file_name().unwrap().to_string_lossy();

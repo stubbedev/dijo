@@ -214,9 +214,24 @@ mod tests {
             "deferred"
         );
         assert!(parsed.len() >= 31, "{} documents", parsed.len());
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+        let (departing, paths): (Vec<&Path>, Vec<&Path>) = parsed
+            .iter()
+            .map(PathBuf::as_path)
+            .partition(|path| path.ends_with(TWO_TITLES));
+        assert_eq!(departing.len(), 1);
         assert_same_as_tika(&paths, TIKA_NAME);
+        let (_, metadata) = crate::Extractor::new()
+            .extract_file_to_string(departing[0].to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            metadata.get("dc:title"),
+            Some(&vec!["ActualTitle".to_owned(), "OldMetaTitle".to_owned()])
+        );
     }
+
+    /// The document of Tika's tests with a `meta` title after its `title` element, which Tika
+    /// records as `html:dc:title` and the port as a further `dc:title` (#86).
+    const TWO_TITLES: &str = "testHTML_metadata_two_titles.html";
 
     #[test]
     fn decodes_with_a_byte_order_mark_over_the_detection() {

@@ -123,7 +123,7 @@ fn reads_a_stored_message_as_tikas_path_reads_it() {
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
-    assert_eq!(ported.len(), 5);
+    assert_eq!(ported.len(), 11);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_with(&documents, TIKA_PARSER, &ParserConfigs::default());
 }

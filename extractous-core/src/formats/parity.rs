@@ -308,6 +308,30 @@ fn with_native_failures_masked(tika: &mut Extracted, native: &mut Extracted) {
     }
 }
 
+/// A native XHTML string extraction cut by the length limit with the end tags Tika's ends with
+/// after it, when they close its `body`: an HTML document embedded in Tika's, or parsed inline,
+/// that the limit stops in its body ends its own document, whose `</body>` leaks into the
+/// embedding document and closes the elements open there (#113). The native path leaves them
+/// open, as a cut does anywhere else.
+fn with_the_body_end_tika_leaks(native: Vec<u8>, tika: &[u8]) -> Vec<u8> {
+    let Some(tail) = tika.strip_prefix(native.as_slice()) else {
+        return native;
+    };
+    let Ok(tail) = std::str::from_utf8(tail) else {
+        return native;
+    };
+    let only_end_tags = tail.split_inclusive('>').all(|tag| {
+        tag.strip_prefix("</")
+            .and_then(|tag| tag.strip_suffix('>'))
+            .is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()))
+    });
+    if only_end_tags && tail.contains("</body>") {
+        tika.to_vec()
+    } else {
+        native
+    }
+}
+
 /// A string extraction's native result with the embedded documents' parsers and failures that
 /// follow Tika's left out: the native path parses an embedded document whole, while Tika's stops
 /// at the length limit, before the parsers and failures of what comes after it.
@@ -395,7 +419,7 @@ fn in_defined_order(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
     };
     let mut ordered = String::with_capacity(decoded.len());
     let mut rest = decoded.as_str();
-    let mut metas: Vec<(&str, &str)> = Vec::new();
+    let mut metas: Vec<(&str, &str, bool)> = Vec::new();
     while let Some(at) = rest.find('<') {
         let end = tag_end(&rest[at..]).map_or(rest.len(), |end| at + end);
         let tag = &rest[at..end];
@@ -404,13 +428,9 @@ fn in_defined_order(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
             ordered.push_str(&rest[..at]);
         }
         if tag.starts_with("<meta ") {
-            let line = if rest[end..].starts_with('\n') {
-                end + 1
-            } else {
-                end
-            };
-            metas.push((attribute(tag, "name").unwrap_or_default(), &rest[at..line]));
-            rest = &rest[line..];
+            let line_ended = rest[end..].starts_with('\n');
+            metas.push((attribute(tag, "name").unwrap_or_default(), tag, line_ended));
+            rest = &rest[end + usize::from(line_ended)..];
         } else {
             flush_metas(&mut metas, &mut ordered);
             ordered.push_str(&with_sorted_declarations(tag));
@@ -434,13 +454,26 @@ fn departed(text: Vec<u8>, char_set: CharSet, departure: fn(&str) -> String) -> 
     encoded
 }
 
-/// Writes a run of `meta` elements sorted by name, stably.
-fn flush_metas(metas: &mut Vec<(&str, &str)>, ordered: &mut String) {
-    metas.sort_by_key(|(name, _)| *name);
-    for (_, element) in metas.drain(..) {
+/// Writes a run of `meta` elements, each with whether a line break follows it, sorted by name,
+/// stably. A run some element of which no line break follows is one a string extraction's
+/// length limit, which counts the line breaks, stopped: which elements the head has then
+/// depends on their order, so the run is written as [`CUT_HEAD`].
+fn flush_metas(metas: &mut Vec<(&str, &str, bool)>, ordered: &mut String) {
+    if metas.iter().any(|(_, _, line_ended)| !line_ended) {
+        metas.clear();
+        ordered.push_str(CUT_HEAD);
+        return;
+    }
+    metas.sort_by_key(|(name, _, _)| *name);
+    for (_, element, _) in metas.drain(..) {
         ordered.push_str(element);
+        ordered.push('\n');
     }
 }
+
+/// What a run of `meta` elements the length limit stopped in is compared as (#64).
+const CUT_HEAD: &str =
+    "<!-- a head the length limit stopped, its meta elements in its own order -->";
 
 /// Where the tag `text` starts with ends, after its `>`: attribute values hold no `"`, which
 /// both paths escape.
@@ -581,29 +614,20 @@ struct Naming<'a> {
     tika_name: &'a str,
     /// The Tika names of the parsers it delegates to, each paired after its native name.
     delegates: &'a [(&'a str, &'a str)],
-    /// A departure of the native parser from Tika's path that a quirk issue names, if the
-    /// comparison expects one.
-    departure: Option<Departure>,
-}
-
-/// Where a native parser departs from Tika's path on purpose, as a comparison undoes it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Departure {
-    /// What undoes the departure in a native text.
-    pub(crate) undo: fn(&str) -> String,
-    /// Whether the departure moves where a string extraction's length limit cuts the text, as
-    /// one in the head does, whose line breaks the limit counts: a string extraction the
-    /// departure changes is then not compared.
-    pub(crate) moves_the_cut: bool,
+    /// What undoes, in the native text, a departure in the head of the native parser from
+    /// Tika's path that a quirk issue names, if the comparison expects one.
+    departure: Option<fn(&str) -> String>,
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, extracts what Tika's path does under Tika's default settings once `departure`
-/// is undone in each native text.
+/// undoes, in each native text, where the native parser's head departs from Tika's path on
+/// purpose. A string extraction the departure changes is not compared: its length limit counts
+/// the line breaks of the head, so the departure moves where the text is cut.
 pub(crate) fn assert_same_as_tika_departing(
     documents: &[&Path],
     tika_name: &str,
-    departure: Departure,
+    departure: fn(&str) -> String,
 ) {
     let expected = Expected::Same(Naming {
         tika_name,
@@ -846,8 +870,8 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                     let mut native = comparable(as_tika(native, &names, char_set), char_set);
                     with_native_failures_masked(&mut tika, &mut native);
                     if let Some(departure) = naming.departure {
-                        let text = departed(native.text.clone(), char_set, departure.undo);
-                        if departure.moves_the_cut && entry == "string" && text != native.text {
+                        let text = departed(native.text.clone(), char_set, departure);
+                        if entry == "string" && text != native.text {
                             continue;
                         }
                         native.text = text;
@@ -858,7 +882,8 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                             without_ocr(native, output, char_set, native_read),
                         ),
                         None if entry == "string" => {
-                            let native = cut_to(native, &tika);
+                            let mut native = cut_to(native, &tika);
+                            native.text = with_the_body_end_tika_leaks(native.text, &tika.text);
                             (tika, native)
                         }
                         None => (tika, native),
@@ -1285,8 +1310,8 @@ mod tests {
 
     #[test]
     fn puts_metas_and_namespace_declarations_in_a_defined_order() {
-        let tika = "<html xmlns=\"x\">\n<head>\n<meta name=\"b\" content=\"1\" />\n<meta name=\"a\" content=\"2\n/>\" />\n<meta name=\"b\" content=\"0\" />\n<title></title>\n</head>\n<body><div xmlns:z=\"u:z\" xmlns:a=\"u:a\"><p>t</p></div>\n<meta name=\"d\" content=\"\" />\n<meta name=\"c\" content=\"\" />\nx<meta name=\"a\" content=\"\" /></body></html>";
-        let native = "<html xmlns=\"x\">\n<head>\n<meta name=\"a\" content=\"2\n/>\" />\n<meta name=\"b\" content=\"1\" />\n<meta name=\"b\" content=\"0\" />\n<title></title>\n</head>\n<body><div xmlns:a=\"u:a\" xmlns:z=\"u:z\"><p>t</p></div>\n<meta name=\"c\" content=\"\" />\n<meta name=\"d\" content=\"\" />\nx<meta name=\"a\" content=\"\" /></body></html>";
+        let tika = "<html xmlns=\"x\">\n<head>\n<meta name=\"b\" content=\"1\" />\n<meta name=\"a\" content=\"2\n/>\" />\n<meta name=\"b\" content=\"0\" />\n<title></title>\n</head>\n<body><div xmlns:z=\"u:z\" xmlns:a=\"u:a\"><p>t</p></div>\n<meta name=\"d\" content=\"\" />\n<meta name=\"c\" content=\"\" />\nx<meta name=\"a\" content=\"\" />\n</body></html>";
+        let native = "<html xmlns=\"x\">\n<head>\n<meta name=\"a\" content=\"2\n/>\" />\n<meta name=\"b\" content=\"1\" />\n<meta name=\"b\" content=\"0\" />\n<title></title>\n</head>\n<body><div xmlns:a=\"u:a\" xmlns:z=\"u:z\"><p>t</p></div>\n<meta name=\"c\" content=\"\" />\n<meta name=\"d\" content=\"\" />\nx<meta name=\"a\" content=\"\" />\n</body></html>";
         for char_set in [CharSet::UTF_8, CharSet::UTF_16BE] {
             let encoded = |text: &str| {
                 let mut bytes = Vec::new();
@@ -1296,6 +1321,26 @@ mod tests {
             assert_eq!(in_defined_order(encoded(tika), char_set), encoded(native));
             assert_eq!(in_defined_order(encoded(native), char_set), encoded(native));
         }
+        let cut = |first: &str, second: &str| {
+            format!("<head>\n<meta name=\"{first}\" content=\"\" />\n<meta name=\"{second}\" content=\"\" />")
+        };
+        let ordered = |text: String| in_defined_order(text.into_bytes(), CharSet::UTF_8);
+        assert_eq!(ordered(cut("b", "c")), ordered(cut("a", "d")));
+        assert_eq!(
+            ordered(cut("b", "c")),
+            format!("<head>\n{CUT_HEAD}").into_bytes()
+        );
+    }
+
+    #[test]
+    fn takes_the_end_tags_tikas_leaked_body_end_writes_after_a_cut() {
+        let native = b"<body><table><tr><td>Thank".to_vec();
+        let tika = b"<body><table><tr><td>Thank</td></tr></table></body></html>";
+        assert_eq!(with_the_body_end_tika_leaks(native.clone(), tika), tika);
+        let closed = b"<body><table><tr><td>Thank</td></tr></table>";
+        assert_eq!(with_the_body_end_tika_leaks(native.clone(), closed), native);
+        let more = b"<body><table><tr><td>Thank you</td></tr></table></body>";
+        assert_eq!(with_the_body_end_tika_leaks(native.clone(), more), native);
     }
 
     #[test]
