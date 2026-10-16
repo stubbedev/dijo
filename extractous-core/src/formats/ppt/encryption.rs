@@ -5,7 +5,7 @@
 use rc4::StreamCipher;
 
 use crate::config::ParserConfigs;
-use crate::formats::crypt::{self, BlockKeys, CryptoApiKey, EncryptionInfo};
+use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Rc4Keys};
 use crate::formats::{Declined, Unported};
 
 /// `BLIB_STORE_ENTRY_PARTS`: the fields of a blip store entry, each of which POI decrypts from
@@ -34,7 +34,7 @@ fn unported(reason: &str) -> Unported {
 pub(super) struct Encryption {
     /// Where its `DocumentEncryptionAtom` is in the document stream.
     pub(super) atom: i32,
-    key: CryptoApiKey,
+    key: Rc4Keys,
 }
 
 impl Encryption {
@@ -46,8 +46,14 @@ impl Encryption {
         info: &EncryptionInfo,
         configs: &ParserConfigs,
     ) -> Result<Encryption, Declined> {
-        let EncryptionInfo::CryptoApi(api) = info;
-        let key = api
+        if !matches!(info, EncryptionInfo::CryptoApi(_)) {
+            return Err(Unported(
+                "a presentation encrypted with binary RC4, which this port does not decrypt"
+                    .to_owned(),
+            )
+            .into());
+        }
+        let key = info
             .verify(crypt::password(configs))
             .ok_or_else(|| Declined::Fails(crypt::encrypted(WRONG_PASSWORD)))?;
         Ok(Encryption { atom, key })
@@ -163,7 +169,7 @@ mod tests {
     fn encryption() -> Encryption {
         Encryption {
             atom: 0,
-            key: CryptoApiKey::of_secret(&[7; 20]),
+            key: Rc4Keys::CryptoApi(crypt::CryptoApiKey::of_secret(&[7; 20])),
         }
     }
 

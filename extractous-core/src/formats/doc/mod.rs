@@ -60,7 +60,7 @@ impl Parser for DocParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, extracted) = read(input, configs).map_err(|Unported(reason)| reason)?;
+        let (summaries, extracted) = read(input, configs)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             write(extracted, xhtml)
@@ -70,12 +70,12 @@ impl Parser for DocParser {
 
 /// The summary information and what Tika's extractor makes of the Word document in a compound
 /// document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Unported> {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Declined> {
     let config = &configs.office;
     if config.extracts_macros() {
-        return Err(Unported(
-            "macros are extracted, which this port does not do".to_owned(),
-        ));
+        return Err(
+            Unported("macros are extracted, which this port does not do".to_owned()).into(),
+        );
     }
     let file = Ole2::open(input).map_err(|Unreadable(reason)| {
         Unported(format!("POI cannot open the compound document: {reason}"))
@@ -83,15 +83,17 @@ fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted),
     if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
         return Err(Unported(format!(
             "POI reads the compound document from a stream differently: {reason}"
-        )));
+        ))
+        .into());
     }
     let root = file.root();
     if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
         return Err(Unported(
             "the compound document is no Word document to POI's container detection".to_owned(),
-        ));
+        )
+        .into());
     }
-    let document = Document::read(&file, root)?;
+    let document = Document::read(&file, root, configs)?;
     let extracted = extract(&document, &file, root, configs)?;
     Ok((Summaries::read(&file, root)?, extracted))
 }

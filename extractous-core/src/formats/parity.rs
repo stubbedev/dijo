@@ -19,7 +19,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::config::ParserConfigs;
+use crate::config::{ParserConfigs, Password};
 use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
 use crate::tika::{self, Source};
@@ -85,7 +85,7 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
 }
 
 /// The error Tika's path fails with on the document at `path`.
-pub(crate) fn tika_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
+fn tika_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
     tika::parse_to_string(
         isolate().unwrap(),
         Source::File(path.to_str().unwrap()),
@@ -368,6 +368,58 @@ pub(crate) fn assert_same_as_tika_with(
         delegates: &[],
     });
     compare(documents, configs, expected);
+}
+
+/// Asserts that of `documents`, each one `passwords` names, by file name with the password that
+/// opens it, fails without a password and with a wrong one as Tika's path fails on it, with the
+/// same error, and extracts with its password as Tika's path extracts it; and that the rest
+/// extract as Tika's path extracts them.
+pub(crate) fn assert_same_as_tika_with_passwords(
+    documents: &[PathBuf],
+    tika_name: &str,
+    passwords: &[(&str, &str)],
+) {
+    let password_of = |document: &Path| {
+        let name = document.file_name().unwrap().to_string_lossy();
+        passwords
+            .iter()
+            .find(|(encrypted, _)| *encrypted == name)
+            .map(|(_, password)| Password::new(*password))
+    };
+    let (encrypted, plain): (Vec<&Path>, Vec<&Path>) = documents
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|document| password_of(document).is_some());
+    assert_same_as_tika_with(&plain, tika_name, &ParserConfigs::default());
+    assert_fails_as_tika(&encrypted);
+    let wrong = ParserConfigs::default().with_password(Some(&Password::new("wrong")));
+    for document in encrypted {
+        let password = password_of(document).expect("an encrypted document");
+        let configs = ParserConfigs::default().with_password(Some(&password));
+        assert_same_as_tika_with(&[document], tika_name, &configs);
+        for configs in [ParserConfigs::default(), wrong.clone()] {
+            assert_eq!(
+                format!("{:?}", native_error(document, &configs)),
+                format!("{:?}", tika_error(document, &configs)),
+                "{document:?}"
+            );
+        }
+    }
+}
+
+/// The error the native parser fails with on the document at `path`.
+fn native_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
+    let routed = routed(path.to_str().unwrap());
+    formats::parse_to_string(
+        routed.parser,
+        &routed.input,
+        &routed.detected,
+        configs,
+        SMALL_LIMIT,
+        Output::Text,
+    )
+    .map(|_| ())
+    .expect_err("the native parser fails on the document")
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with

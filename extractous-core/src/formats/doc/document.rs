@@ -1,19 +1,24 @@
-//! POI's `HWPFDocument`: the streams of a Word 97–2003 document read into its text, its
-//! character, paragraph and section runs, its styles and lists, the tables Tika's extractor
-//! reads, and every other structure POI reads on opening the document, failing where it fails.
+//! POI's `HWPFDocument`: the streams of a Word 97–2003 document, decrypted where it is
+//! encrypted, read into its text, its character, paragraph and section runs, its styles and
+//! lists, the tables Tika's extractor reads, and every other structure POI reads on opening the
+//! document, failing where it fails.
 
 use super::bins::{
     character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs, PropertyRun,
 };
 use super::bytes::{index, safely_clone, utf16_units};
-use super::fib::{field, is_encrypted, Fib, Story};
+use super::fib::{
+    field, is_encrypted, Fib, Story, ENCRYPTION_KEY_LENGTH, OBFUSCATED, TABLE_ONE_FLAG,
+};
 use super::fields::Fields;
 use super::lists::ListTables;
 use super::styles::StyleSheet;
 use super::text::{ComplexFileTable, Plex};
+use crate::config::ParserConfigs;
+use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys};
 use crate::formats::escher::{self, Escher};
 use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown};
-use crate::formats::Unported;
+use crate::formats::{Declined, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 const WORD_DOCUMENT: &str = "WordDocument";
@@ -25,6 +30,15 @@ const OBJECT_POOL: &str = "ObjectPool";
 const WORD_97: i16 = 106;
 /// `HWPFDocument.getMaxRecordLength`.
 const MAX_RECORD_LENGTH: i64 = 100_000;
+/// `FIB_BASE_LEN`: the bytes of the main stream that stay plain in an encrypted document.
+const FIB_BASE: usize = 68;
+/// `RC4_REKEYING_INTERVAL`: the bytes each block key decrypts.
+const RC4_REKEYING_INTERVAL: usize = 512;
+/// The exception POI throws where the password does not open the document.
+const WRONG_PASSWORD: &str = "org.apache.poi.EncryptedDocumentException: document is encrypted, \
+                              password is invalid - use \
+                              Biff8EncryptionKey.setCurrentUserPasswort() to set password before \
+                              opening";
 const DOP_SIZE: i32 = 500;
 const SED_SIZE: i32 = 12;
 const FSPA_SIZE: i32 = 26;
@@ -62,20 +76,26 @@ pub(super) fn unported(Thrown(reason): Thrown) -> Unported {
 }
 
 impl Document {
-    /// `new HWPFDocument(directory)`: the document, or why it is left to Tika.
-    pub(super) fn read(file: &Ole2<'_>, root: EntryId) -> Result<Document, Unported> {
-        let main = document_bytes(file, root, WORD_DOCUMENT)?;
-        if is_encrypted(&main).map_err(unported)? {
-            return Err(Unported(
-                "the document is encrypted, which Tika decrypts with a password".to_owned(),
-            ));
+    /// `new HWPFDocument(directory)`: the document, decrypted with the password where it is
+    /// encrypted; or why it is left to Tika, or fails as Tika's path does where the password
+    /// does not open it.
+    pub(super) fn read(
+        file: &Ole2<'_>,
+        root: EntryId,
+        configs: &ParserConfigs,
+    ) -> Result<Document, Declined> {
+        let mut main = document_bytes(file, root, WORD_DOCUMENT)?;
+        let encryption = encryption(file, root, &main, configs)?;
+        if let Some(keys) = &encryption {
+            keys.decrypt_chunks(&mut main, RC4_REKEYING_INTERVAL, FIB_BASE);
         }
         let fib = Fib::read(&main).map_err(unported)?;
         if let Some(pool) = file.child_ignoring_case(root, OBJECT_POOL) {
             if file.kind(pool) == EntryKind::Document {
                 return Err(Unported(
                     "the document's object pool is no directory, which POI throws on".to_owned(),
-                ));
+                )
+                .into());
             }
         }
         if fib.n_fib < WORD_97 {
@@ -83,7 +103,8 @@ impl Document {
                 "the document is from Word 95 or before, which Tika reads with POI's \
                  Word6Extractor"
                     .to_owned(),
-            ));
+            )
+            .into());
         }
         let table_name = if fib.uses_table_one() {
             TABLE_ONE
@@ -93,14 +114,28 @@ impl Document {
         if file.child_ignoring_case(root, table_name).is_none() {
             return Err(Unported(format!(
                 "the document has no table stream {table_name}, which POI throws on"
-            )));
+            ))
+            .into());
         }
-        let table = document_bytes(file, root, table_name)?;
-        let data = match file.child_ignoring_case(root, DATA) {
+        let mut table = document_bytes(file, root, table_name)?;
+        let mut data = match file.child_ignoring_case(root, DATA) {
             Some(_) => document_bytes(file, root, DATA)?,
             None => Vec::new(),
         };
-        Self::from_streams(fib, main, table, data).map_err(unported)
+        if let Some(keys) = &encryption {
+            let header = encryption_header_length(&main)?;
+            if table.len() < header {
+                return Err(Unported(
+                    "the table stream is shorter than its plain encryption header, which POI \
+                     throws on"
+                        .to_owned(),
+                )
+                .into());
+            }
+            keys.decrypt_chunks(&mut table, RC4_REKEYING_INTERVAL, header);
+            keys.decrypt_chunks(&mut data, RC4_REKEYING_INTERVAL, 0);
+        }
+        Ok(Self::from_streams(fib, main, table, data).map_err(unported)?)
     }
 
     fn from_streams(fib: Fib, main: Vec<u8>, table: Vec<u8>, data: Vec<u8>) -> Read<Document> {
@@ -207,6 +242,46 @@ impl Document {
 }
 
 /// `getDocumentEntryBytes`: the stream named in any case, read whole.
+/// `getEncryptionInfo` and its password check: the keys of an encrypted document, `None` for one
+/// that is not, failing as Tika's path does where the password does not open it.
+fn encryption(
+    file: &Ole2<'_>,
+    root: EntryId,
+    main: &[u8],
+    configs: &ParserConfigs,
+) -> Result<Option<Rc4Keys>, Declined> {
+    if !is_encrypted(main).map_err(unported)? {
+        return Ok(None);
+    }
+    let flags = u16_at(main, 0xA).map_err(unported)?;
+    let table_name = if flags & TABLE_ONE_FLAG != 0 {
+        TABLE_ONE
+    } else {
+        TABLE_ZERO
+    };
+    let header_length = encryption_header_length(main)?;
+    let table = document_bytes(file, root, table_name)?;
+    let header = &table[..header_length.min(table.len())];
+    let mode = if flags & OBFUSCATED != 0 {
+        Mode::Xor
+    } else {
+        Mode::Unset
+    };
+    let info = EncryptionInfo::read(header, mode).map_err(|unopened| unopened.unported())?;
+    info.verify(crypt::password(configs))
+        .map(Some)
+        .ok_or_else(|| Declined::Fails(crypt::encrypted(WRONG_PASSWORD)))
+}
+
+/// `lKey` of the FIB's base: the length of the encryption header at the table stream's start,
+/// which stays plain.
+fn encryption_header_length(main: &[u8]) -> Result<usize, Unported> {
+    let length = i32_at(main, ENCRYPTION_KEY_LENGTH).map_err(unported)?;
+    usize::try_from(length).map_err(|_| {
+        Unported("a negative encryption header length, which POI throws on".to_owned())
+    })
+}
+
 fn document_bytes(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unported> {
     let entry = file
         .child_ignoring_case(root, name)

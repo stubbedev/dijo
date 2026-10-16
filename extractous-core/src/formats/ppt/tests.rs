@@ -1,8 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::config::Password;
-use crate::formats::parity::{self, assert_fails_as_tika, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
@@ -47,41 +46,6 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     documents
 }
 
-/// Asserts that the encrypted presentations among `documents` fail as Tika's path fails on them
-/// without a password and with a wrong one, and that the right one opens them as it opens them;
-/// and that the rest extract as Tika's path extracts them.
-fn assert_same_as_tika_with_passwords(documents: &[PathBuf]) {
-    let (encrypted, plain): (Vec<&Path>, Vec<&Path>) = documents
-        .iter()
-        .map(PathBuf::as_path)
-        .partition(|document| password_of(document).is_some());
-    assert_same_as_tika_with(&plain, TIKA_PARSER, &ParserConfigs::default());
-    assert_fails_as_tika(&encrypted);
-    let wrong = ParserConfigs::default().with_password(Some(&Password::new("wrong")));
-    for document in encrypted {
-        let password = Password::new(password_of(document).expect("an encrypted presentation"));
-        let configs = ParserConfigs::default().with_password(Some(&password));
-        assert_same_as_tika_with(&[document], TIKA_PARSER, &configs);
-        let input = std::fs::read(document).unwrap();
-        for configs in [ParserConfigs::default(), wrong.clone()] {
-            let native = match read(&input, &configs) {
-                Err(Declined::Fails(error)) => format!("{error:?}"),
-                other => panic!("{document:?} does not fail: {:?}", other.map(|_| ())),
-            };
-            let tika = format!("{:?}", parity::tika_error(document, &configs));
-            assert_eq!(native, tika);
-        }
-    }
-}
-
-fn password_of(document: &Path) -> Option<&'static str> {
-    let name = file_name(document);
-    ENCRYPTED
-        .iter()
-        .find(|(encrypted, _)| *encrypted == name)
-        .map(|(_, password)| *password)
-}
-
 #[test]
 fn defers_macros_when_they_are_extracted() {
     let configs = ParserConfigs {
@@ -107,7 +71,7 @@ fn opens_the_repositorys_encrypted_presentation_as_tikas_path_does() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
     let ported = ported(&corpus(&roots));
     assert_eq!(ported.len(), 1, "{ported:?}");
-    assert_same_as_tika_with_passwords(&ported);
+    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }
 
 #[test]
@@ -115,5 +79,5 @@ fn opens_the_repositorys_encrypted_presentation_as_tikas_path_does() {
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
     assert_eq!(ported.len(), 21);
-    assert_same_as_tika_with_passwords(&ported);
+    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }

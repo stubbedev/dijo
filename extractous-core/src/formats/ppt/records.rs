@@ -3,7 +3,7 @@
 //! and the drawing group as Escher, each constructor's own checks, and the exceptions they throw,
 //! which POI passes over for a record that claims more bytes than its source holds.
 
-use crate::formats::crypt::EncryptionInfo;
+use crate::formats::crypt::{EncryptionInfo, Mode};
 use crate::formats::escher::{self, Escher, Factory};
 use crate::formats::poi::{i16_at, i32_at, safely_clone, u16_at, u8_at, Read, Thrown};
 use crate::formats::Unported;
@@ -620,7 +620,8 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
             let body = source
                 .get(start as usize + 8..source.len().min((start + length) as usize))
                 .unwrap_or_default();
-            let info = EncryptionInfo::read(body).map_err(|unopened| unopened.unported())?;
+            let info = EncryptionInfo::read(body, Mode::CryptoApi)
+                .map_err(|unopened| unopened.unported())?;
             Body::Encryption(Box::new(info))
         }
         _ => {

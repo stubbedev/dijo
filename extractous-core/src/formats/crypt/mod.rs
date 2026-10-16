@@ -1,8 +1,9 @@
 //! The encryption of Office documents as POI's `poifs.crypt` reads and opens it
 //! ([MS-OFFCRYPTO]): an `EncryptionInfo`, its verifier checked against a password, and the keys
-//! that decrypt the document: the RC4 keys of CryptoAPI for the binary formats. The ciphers and
-//! hashes are RustCrypto's.
+//! that decrypt the document: the RC4 keys of Office 97's binary RC4 and of CryptoAPI for the
+//! binary formats. The ciphers and hashes are RustCrypto's.
 
+use md5::Md5;
 use rc4::{KeyInit, Rc4, StreamCipher};
 use sha1::{Digest, Sha1};
 use sha2::{Sha256, Sha384, Sha512};
@@ -14,7 +15,7 @@ use crate::formats::Unported;
 /// `Decryptor.DEFAULT_PASSWORD`, which Office encrypts a document with when it is only to be
 /// write protected.
 const DEFAULT_PASSWORD: &str = "VelvetSweatshop";
-/// The most UTF-16 units of a password CryptoAPI hashes.
+/// The most UTF-16 units of a password binary RC4 and CryptoAPI hash.
 const MAX_PASSWORD_UNITS: usize = 255;
 
 /// The password POI opens an encrypted document with: the one given, else the one Office
@@ -40,6 +41,7 @@ pub(crate) fn encrypted(cause: &str) -> Error {
 /// The hash algorithms the encryptions use (`HashAlgorithm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hash {
+    Md5,
     Sha1,
     Sha256,
     Sha384,
@@ -57,6 +59,7 @@ impl Hash {
             digest.finalize().to_vec()
         }
         match self {
+            Hash::Md5 => run::<Md5>(parts),
             Hash::Sha1 => run::<Sha1>(parts),
             Hash::Sha256 => run::<Sha256>(parts),
             Hash::Sha384 => run::<Sha384>(parts),
@@ -106,12 +109,17 @@ fn password_bytes(password: &str) -> Vec<u8> {
         .collect()
 }
 
-/// `getBlock0`: `bytes` cut or filled with zeros to `size`.
-fn block_of(bytes: &[u8], size: usize) -> Vec<u8> {
-    let mut out = vec![0; size];
+/// `getBlockX`: `bytes` cut or filled with `fill` to `size`.
+fn filled(bytes: &[u8], size: usize, fill: u8) -> Vec<u8> {
+    let mut out = vec![fill; size];
     let length = size.min(bytes.len());
     out[..length].copy_from_slice(&bytes[..length]);
     out
+}
+
+/// `getBlock0`.
+fn block_of(bytes: &[u8], size: usize) -> Vec<u8> {
+    filled(bytes, size, 0)
 }
 
 /// A cursor over the bytes of an `EncryptionInfo`, failing as `LittleEndianInput` does.
@@ -151,24 +159,44 @@ impl Input<'_> {
     }
 }
 
+/// The encryption a format asks `EncryptionInfo` to read (`preferredEncryptionMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// CryptoAPI wherever the version is CryptoAPI's or standard encryption's.
+    CryptoApi,
+    /// XOR obfuscation, whose info has no version.
+    Xor,
+    /// What the version and flags say.
+    Unset,
+}
+
 /// The encryption `EncryptionInfo` reads.
 #[derive(Debug, Clone)]
 pub(crate) enum EncryptionInfo {
+    BinaryRc4(BinaryRc4),
     CryptoApi(CryptoApi),
 }
 
 impl EncryptionInfo {
-    /// `new EncryptionInfo(input, EncryptionMode.cryptoAPI)`, as the binary formats read it.
-    pub(crate) fn read(data: &[u8]) -> Result<EncryptionInfo, Unopened> {
+    /// `new EncryptionInfo(input, mode)`.
+    pub(crate) fn read(data: &[u8], mode: Mode) -> Result<EncryptionInfo, Unopened> {
+        if mode == Mode::Xor {
+            return Err(Unopened::Unported(
+                "XOR obfuscation, which this port does not decrypt".to_owned(),
+            ));
+        }
         let mut input = Input { data, at: 0 };
         let major = input.u16()?;
         let minor = input.u16()?;
         match (major, minor) {
-            (1, 1) => Err(Unopened::Unported(
-                "Office 97's binary RC4 encryption, which this port does not decrypt".to_owned(),
-            )),
+            (1, 1) => Ok(EncryptionInfo::BinaryRc4(BinaryRc4::read(&mut input)?)),
             (2..=4, 2) => {
-                input.i32()?;
+                let aes = input.i32()? & 0x20 != 0;
+                if aes && mode != Mode::CryptoApi {
+                    return Err(Unopened::Unported(
+                        "standard encryption, which this port does not decrypt".to_owned(),
+                    ));
+                }
                 input.i32()?;
                 let header = Header::read(&mut input)?;
                 let verifier = Verifier::read(&mut input, &header)?;
@@ -318,6 +346,96 @@ impl Rc4Key {
 /// What decrypts the blocks of a binary document: a block's RC4 key.
 pub(crate) trait BlockKeys {
     fn block(&self, block: u32) -> Rc4Key;
+
+    /// What `ChunkedCipherInputStream` reads of `data` in chunks of `chunk` bytes, each
+    /// decrypted with the key of its number from its start, the bytes before `from` read plain
+    /// (`readPlain`).
+    fn decrypt_chunks(&self, data: &mut [u8], chunk: usize, from: usize) {
+        for (number, bytes) in data.chunks_mut(chunk).enumerate() {
+            let start = number * chunk;
+            let mut cipher = self.block(number as u32).cipher();
+            let plain = from.saturating_sub(start).min(bytes.len());
+            cipher.apply_keystream(&mut vec![0; plain]);
+            cipher.apply_keystream(&mut bytes[plain..]);
+        }
+    }
+}
+
+/// The key of a binary document's RC4 encryption.
+#[derive(Debug, Clone)]
+pub(crate) enum Rc4Keys {
+    BinaryRc4(BinaryRc4Key),
+    CryptoApi(CryptoApiKey),
+}
+
+impl BlockKeys for Rc4Keys {
+    fn block(&self, block: u32) -> Rc4Key {
+        match self {
+            Rc4Keys::BinaryRc4(key) => key.block(block),
+            Rc4Keys::CryptoApi(key) => key.block(block),
+        }
+    }
+}
+
+impl EncryptionInfo {
+    /// `Decryptor.verifyPassword`: the key, where the password opens the encryption.
+    pub(crate) fn verify(&self, password: &str) -> Option<Rc4Keys> {
+        match self {
+            EncryptionInfo::BinaryRc4(rc4) => rc4.verify(password).map(Rc4Keys::BinaryRc4),
+            EncryptionInfo::CryptoApi(api) => api.verify(password).map(Rc4Keys::CryptoApi),
+        }
+    }
+}
+
+/// Office 97's binary RC4 (`BinaryRC4EncryptionVerifier`): MD5 for its keys.
+#[derive(Debug, Clone)]
+pub(crate) struct BinaryRc4 {
+    salt: [u8; 16],
+    verifier: [u8; 16],
+    verifier_hash: [u8; 16],
+}
+
+impl BinaryRc4 {
+    fn read(input: &mut Input) -> Result<BinaryRc4, Unopened> {
+        Ok(BinaryRc4 {
+            salt: input.array()?,
+            verifier: input.array()?,
+            verifier_hash: input.array()?,
+        })
+    }
+
+    /// `BinaryRC4Decryptor.verifyPassword`: the secret key, where the password opens it.
+    fn verify(&self, password: &str) -> Option<BinaryRc4Key> {
+        let hashed = Hash::Md5.digest(&[&password_bytes(password)]);
+        let mut repeated = Vec::with_capacity(16 * (5 + self.salt.len()));
+        for _ in 0..16 {
+            repeated.extend_from_slice(&hashed[..5]);
+            repeated.extend_from_slice(&self.salt);
+        }
+        let key = BinaryRc4Key(Hash::Md5.digest(&[&repeated])[..5].to_vec());
+        let mut cipher = key.block(0).cipher();
+        let mut verifier = self.verifier;
+        cipher.apply_keystream(&mut verifier);
+        let mut verifier_hash = self.verifier_hash;
+        cipher.apply_keystream(&mut verifier_hash);
+        (Hash::Md5.digest(&[&verifier]) == verifier_hash).then_some(key)
+    }
+}
+
+/// The secret key of binary RC4.
+#[derive(Debug, Clone)]
+pub(crate) struct BinaryRc4Key(Vec<u8>);
+
+impl BlockKeys for BinaryRc4Key {
+    /// `initCipherForBlock`: the MD5 of the secret key and the block's number
+    /// (`CryptoFunctions.generateKey`).
+    fn block(&self, block: u32) -> Rc4Key {
+        Rc4Key(filled(
+            &Hash::Md5.digest(&[&self.0, &block.to_le_bytes()]),
+            16,
+            0x36,
+        ))
+    }
 }
 
 /// CryptoAPI's RC4 encryption (`CryptoAPIEncryptionHeader` and its verifier).
@@ -344,7 +462,7 @@ impl CryptoApi {
     }
 
     /// `CryptoAPIDecryptor.verifyPassword`: the secret key, where the password opens it.
-    pub(crate) fn verify(&self, password: &str) -> Option<CryptoApiKey> {
+    fn verify(&self, password: &str) -> Option<CryptoApiKey> {
         let secret = self
             .hash
             .digest(&[&self.verifier.salt, &password_bytes(password)]);
@@ -451,16 +569,67 @@ mod tests {
     #[test]
     fn reads_what_poi_reads_of_an_encryption_info() {
         assert!(matches!(
-            EncryptionInfo::read(&[1, 0, 1, 0]),
+            EncryptionInfo::read(&[1, 0, 1, 0], Mode::Unset),
+            Err(Unopened::Thrown(_))
+        ));
+        assert!(matches!(
+            EncryptionInfo::read(&[1, 0, 1, 0], Mode::Xor),
             Err(Unopened::Unported(_))
         ));
         assert!(matches!(
-            EncryptionInfo::read(&[9, 0, 9, 0]),
+            EncryptionInfo::read(&[9, 0, 9, 0], Mode::CryptoApi),
             Err(Unopened::Thrown(reason)) if reason.contains("Unknown encryption")
         ));
         assert!(matches!(
-            EncryptionInfo::read(&[2, 0, 2, 0, 0]),
+            EncryptionInfo::read(&[2, 0, 2, 0, 0], Mode::CryptoApi),
             Err(Unopened::Thrown(_))
         ));
+        assert!(matches!(
+            EncryptionInfo::read(&[3, 0, 2, 0, 0x24, 0, 0, 0], Mode::Unset),
+            Err(Unopened::Unported(reason)) if reason.contains("standard")
+        ));
+    }
+
+    /// Binary RC4's encryption of a verifier with `password`, as Office writes it.
+    fn binary_rc4(password: &str) -> BinaryRc4 {
+        let salt = [9u8; 16];
+        let hashed = Hash::Md5.digest(&[&password_bytes(password)]);
+        let mut repeated = Vec::new();
+        for _ in 0..16 {
+            repeated.extend_from_slice(&hashed[..5]);
+            repeated.extend_from_slice(&salt);
+        }
+        let key = BinaryRc4Key(Hash::Md5.digest(&[&repeated])[..5].to_vec());
+        let mut encrypted = [4u8; 16].to_vec();
+        encrypted.extend(Hash::Md5.digest(&[&[4u8; 16]]));
+        key.block(0).decrypt(&mut encrypted);
+        BinaryRc4 {
+            salt,
+            verifier: encrypted[..16].try_into().unwrap(),
+            verifier_hash: encrypted[16..].try_into().unwrap(),
+        }
+    }
+
+    #[test]
+    fn opens_binary_rc4_with_the_right_password_only() {
+        let rc4 = binary_rc4("pw");
+        assert!(rc4.verify("pw").is_some());
+        assert!(rc4.verify("other").is_none());
+    }
+
+    #[test]
+    fn decrypts_each_chunk_with_its_blocks_key_past_the_plain_bytes() {
+        let key = CryptoApiKey::of_secret(&[3; 20]);
+        let mut data = vec![0u8; 1100];
+        key.decrypt_chunks(&mut data, 512, 68);
+        let stream = |block: u32, length: usize| {
+            let mut bytes = vec![0; length];
+            key.block(block).decrypt(&mut bytes);
+            bytes
+        };
+        assert_eq!(data[..68], [0; 68]);
+        assert_eq!(data[68..512], stream(0, 512)[68..]);
+        assert_eq!(data[512..1024], stream(1, 512)[..]);
+        assert_eq!(data[1024..], stream(2, 76)[..]);
     }
 }
