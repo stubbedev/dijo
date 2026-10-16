@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 use lopdf::{Dictionary, Object};
 
 use super::cos::{name_string, Pdf};
+use super::position::GlyphText;
 use super::Unported;
 
 const ENCODINGS: &str = include_str!("../../../models/pdf/encodings.tsv");
@@ -446,9 +447,9 @@ impl GlyphList {
 
     /// `GlyphList.toUnicode`: the name's text, without a `.suffix`, or of a `uniXXXX` or
     /// `uXXXX` name.
-    pub(super) fn to_unicode(&self, name: &str) -> Option<String> {
+    pub(super) fn to_unicode(&self, name: &str) -> Option<GlyphText> {
         if let Some(unicode) = self.name_to_unicode.get(name) {
-            return Some(unicode.clone());
+            return Some(GlyphText::new(unicode));
         }
         if let Some(dot) = name.find('.').filter(|&dot| dot > 0) {
             return self.to_unicode(&name[..dot]);
@@ -465,7 +466,7 @@ impl GlyphList {
         if (0xD800..0xE000).contains(&code) {
             return None;
         }
-        char::from_u32(code).map(String::from)
+        char::from_u32(code).map(GlyphText::from)
     }
 }
 
