@@ -113,6 +113,26 @@ fn reads_tikas_test_heif_images_as_tika_does() {
     println!("deferred: {deferred:?}");
 }
 
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_heif_images_with_tesseract_as_tikas_path_does() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let configs = automatic_language();
+    let (parsed, deferred) = documents_with(&HeifParser, &roots, &configs);
+    let reasons: Vec<_> = deferred
+        .iter()
+        .map(|path| (path, deferral(&HeifParser, path)))
+        .collect();
+    println!("read: {parsed:?}\ndeferred: {reasons:?}");
+    reads_with_tesseract_as_tikas_path_does(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &parsed,
+        &configs,
+    );
+}
+
 /// The images of the quality corpus with the given names.
 fn corpus(files: &[&str]) -> Vec<PathBuf> {
     files
@@ -178,6 +198,26 @@ fn reads_right_to_left_scans_with_tesseract_as_tikas_path_does() {
             &configs,
         );
     }
+}
+
+#[test]
+fn reads_jbig2_and_jpeg_2000_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &corpus(&["prose-scan.jb2", "prose-scan.jp2"]),
+        &automatic_language(),
+    );
+}
+
+#[test]
+fn reads_heic_and_avif_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &corpus(&["prose-scan.heic", "prose-scan.avif"]),
+        &automatic_language(),
+    );
 }
 
 #[test]

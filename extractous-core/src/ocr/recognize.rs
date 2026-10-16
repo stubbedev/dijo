@@ -80,6 +80,11 @@ impl OcrSettings {
         }
     }
 
+    /// The time a run of tesseract, or of a program decoding an image for it, may take.
+    pub(crate) fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     /// Whether each image's script is detected, and its first script is learned.
     pub(crate) fn auto(&self) -> bool {
         self.language == Language::Auto

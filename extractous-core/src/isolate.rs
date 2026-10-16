@@ -70,6 +70,15 @@ impl IsolateSettings {
 static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
 static SETTINGS: OnceLock<IsolateSettings> = OnceLock::new();
 
+/// Where temporary files go: the directory the settings name, or the system's.
+#[cfg(not(feature = "static-image"))]
+pub(crate) fn temp_dir() -> PathBuf {
+    SETTINGS
+        .get()
+        .and_then(|settings| settings.temp_dir.clone())
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 /// The process-wide isolate, created on first use.
 pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
     ISOLATE

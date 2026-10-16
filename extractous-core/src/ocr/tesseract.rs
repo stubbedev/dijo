@@ -47,6 +47,10 @@ macro_rules! c_api {
             $($field: unsafe extern "C" fn($($argument),*) $(-> $result)?,)*
         }
 
+        /// The names of the functions readings call, which a bundled library exports.
+        #[cfg(test)]
+        const SYMBOLS: &[&str] = &[$(stringify!($symbol)),*];
+
         #[cfg(feature = "static-image")]
         mod linked {
             use super::*;
@@ -634,6 +638,14 @@ impl Drop for MonitorGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ci/tesseract-jni` builds the bundled library to export the functions this module calls,
+    /// which it lists in `c-api.txt`.
+    #[test]
+    fn the_bundled_library_exports_every_function_readings_call() {
+        let exported = std::fs::read_to_string("../ci/tesseract-jni/c-api.txt").unwrap();
+        assert_eq!(exported.lines().collect::<Vec<_>>(), SYMBOLS);
+    }
 
     #[test]
     fn turns_as_tesseract_reports_rotation() {

@@ -6,7 +6,7 @@
 //! The enricher reads the image with tesseract, natively too; with OCR skipped it records itself
 //! but reads nothing.
 
-mod enricher;
+pub(super) mod enricher;
 mod extractor;
 mod image_xmp;
 mod imageio;
@@ -220,6 +220,7 @@ impl Parser for ImageParser {
             "image/vnd.wap.wbmp",
             "image/vnd.microsoft.icon",
             "image/x-xcf",
+            "image/x-jbig2",
             "image/jp2",
             "image/jpx",
         ]
@@ -259,6 +260,11 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
             Err(imageio::gif::GifError::Image(cause)) => return Err(parse_error(&cause)),
             Err(imageio::gif::GifError::Runtime(cause)) => return Err(fails(cause)),
         },
+        "image/x-jbig2" => imageio::jbig2::read(input).map_err(|reason| {
+            Unported::new(format!(
+                "a JBIG2 image jbig2-imageio reads otherwise than the port: {reason}"
+            ))
+        })?,
         "image/bmp" | "image/vnd.wap.wbmp" => {
             return Err(Unported::new(format!(
                 "an image of {content_type}, which Tika's ImageIO reads with the JDK's reader or \

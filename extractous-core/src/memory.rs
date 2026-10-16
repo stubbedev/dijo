@@ -151,6 +151,11 @@ pub(crate) fn overrun() -> Option<u64> {
 /// A global allocator that counts what each extraction allocates against its budget, around
 /// the allocator `A` that allocates. Each allocation of 4 KiB or more keeps the budget
 /// it was charged to just before the memory it returns.
+///
+/// Its functions are never inlined: LLVM takes the memory an allocation returns for the whole
+/// object, so where link-time optimisation inlines `dealloc` into the code that allocated, its
+/// read of the budget before that memory is out of bounds, and LLVM compiled a `String`'s drop
+/// in `formats::image` into a panic.
 pub struct CountingAllocator<A>(pub A);
 
 /// Whether an allocation of `size` bytes keeps its budget.
@@ -235,6 +240,7 @@ impl<A: GlobalAlloc> CountingAllocator<A> {
 }
 
 unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
+    #[inline(never)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if !is_large(layout.size()) {
             return Self::small(unsafe { self.0.alloc(layout) }, layout.size());
@@ -245,6 +251,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         unsafe { self.register(self.0.alloc(block), offset, layout.size()) }
     }
 
+    #[inline(never)]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         if !is_large(layout.size()) {
             return Self::small(unsafe { self.0.alloc_zeroed(layout) }, layout.size());
@@ -255,6 +262,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         unsafe { self.register(self.0.alloc_zeroed(block), offset, layout.size()) }
     }
 
+    #[inline(never)]
     unsafe fn dealloc(&self, memory: *mut u8, layout: Layout) {
         if !is_large(layout.size()) {
             unsafe { self.0.dealloc(memory, layout) };
@@ -269,6 +277,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         }
     }
 
+    #[inline(never)]
     unsafe fn realloc(&self, memory: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         match (is_large(layout.size()), is_large(new_size)) {
             (false, false) => {

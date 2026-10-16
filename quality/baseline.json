@@ -1196,6 +1196,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-scan.jp2": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-scan.pbm": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

@@ -12,6 +12,7 @@ pub(crate) mod data_format;
 mod dbf;
 mod dc_xml;
 mod dif;
+mod djvu;
 mod doc;
 mod docx;
 mod element_metadata;
@@ -238,6 +239,7 @@ static PARSERS: &[&dyn Parser] = &[
     &translation::TmxParser,
     &translation::Xliff12Parser,
     &dif::DifParser,
+    &djvu::DjvuParser,
     &mif::MifParser,
     &ms_owner::MsOwnerFileParser,
     &apple_single::AppleSingleFileParser,
