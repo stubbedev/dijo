@@ -55,6 +55,7 @@ mod text;
 mod tnef;
 mod translation;
 mod warc;
+mod wordperfect;
 pub(crate) mod xhtml;
 mod xls;
 mod xlsx;
@@ -241,19 +242,27 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,
+    &wordperfect::QuattroProParser,
+    &wordperfect::WordPerfectParser,
     &xls::XlsParser,
     &xlsx::XlsxParser,
     &xml_2003::SpreadsheetMlParser,
     &xml_2003::WordMlParser,
 ];
 
-/// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
+/// The native parser for `media_type`, if any, as Tika's `CompositeParser` looks one up: for
+/// the type with its parameters, such as a version, then for the type without them, such as
+/// `charset`.
 fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
-    let base = media_type.split(';').next().unwrap_or_default().trim();
-    PARSERS
-        .iter()
-        .copied()
-        .find(|parser| parser.media_types().contains(&base))
+    let full = media_type.trim();
+    let base = full.split(';').next().unwrap_or_default().trim();
+    let serving = |name: &str| {
+        PARSERS
+            .iter()
+            .copied()
+            .find(|parser| parser.media_types().contains(&name))
+    };
+    serving(full).or_else(|| serving(base))
 }
 
 /// Whether any format has a native parser yet, which decides whether routing needs a detection.
