@@ -125,13 +125,7 @@ pub(crate) type Deferral = String;
 #[derive(Debug)]
 pub(crate) enum Declined {
     /// Tika's path should extract it.
-    Deferred(
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "only the tests ask why a document is deferred")
-        )]
-        Deferral,
-    ),
+    Deferred(Deferral),
     /// Tika's parser throws this on it before it starts the document: the extraction fails at
     /// once, without output, as Tika's path does.
     Fails(Error),
@@ -226,6 +220,7 @@ static PARSERS: &[&dyn Parser] = &[
     &executable::UniversalExecutableParser,
     &translation::TmxParser,
     &translation::Xliff12Parser,
+    &translation::XlzParser,
     &dif::DifParser,
     &mif::MifParser,
     &ms_owner::MsOwnerFileParser,

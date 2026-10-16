@@ -81,6 +81,10 @@ pub(crate) trait ContentHandler {
     fn characters(&mut self, text: &str) -> Result<(), Stop>;
     fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop>;
     fn end_document(&mut self) -> Result<(), Stop>;
+
+    /// The metadata of the document an `XHTMLContentHandler` is about to start the head of,
+    /// for a handler that shares it with the document it writes into.
+    fn head_metadata(&mut self, _metadata: &TikaMetadata) {}
 }
 
 impl<H: ContentHandler + ?Sized> ContentHandler for &mut H {
@@ -110,6 +114,10 @@ impl<H: ContentHandler + ?Sized> ContentHandler for &mut H {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         (**self).end_document()
+    }
+
+    fn head_metadata(&mut self, metadata: &TikaMetadata) {
+        (**self).head_metadata(metadata);
     }
 }
 
@@ -162,6 +170,49 @@ impl ContentHandler for Embedded<'_, '_> {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         Ok(())
+    }
+}
+
+/// The handler of a document a parser writes into the `XHTMLContentHandler` of the document
+/// it parses, as a parser does that hands that handler, shielded from `endDocument`, to another
+/// parser with the same metadata: every event of the nested document, its `html`, `body` and
+/// head elements included, is written into `outer` as an element of the XHTML, and the metadata
+/// the nested document's head shows is the outer document's too, as the two share it.
+pub(crate) struct Nested<'a, 'h> {
+    pub(crate) outer: &'a mut Xhtml<'h>,
+}
+
+impl ContentHandler for Nested<'_, '_> {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.outer.start_prefix_mapping(prefix, uri)
+    }
+
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        self.outer.start_element_with(name, attributes)
+    }
+
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.outer.end_element(name)
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        self.outer.characters_chunk(text)
+    }
+
+    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        self.outer.ignorable_whitespace(text)
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn head_metadata(&mut self, metadata: &TikaMetadata) {
+        *self.outer.metadata_mut() = metadata.clone();
     }
 }
 
@@ -658,6 +709,7 @@ impl<'h> Xhtml<'h> {
             return Ok(());
         }
         self.head = Head::Started;
+        self.handler.head_metadata(&self.metadata);
         let language = self.metadata.get("Content-Language").map(str::to_owned);
         match language {
             Some(language) => self.safe_start_element("html", &[("lang", &language)])?,

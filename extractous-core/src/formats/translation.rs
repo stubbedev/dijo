@@ -3,8 +3,10 @@
 //! languages and tools as metadata, and the units counted once the document has ended.
 
 use crate::config::ParserConfigs;
+use crate::errors::Error;
+use crate::formats::jdk_zip::{self, Refusal};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
+use crate::formats::xhtml::{Nested, Xhtml};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java;
@@ -346,6 +348,80 @@ impl SaxHandler for Xliff<'_, '_> {
     }
 }
 
+/// Tika's `XLZParser`: each entry of the archive named with `.xlf`, in the archive's order,
+/// parsed by the XLIFF 1.2 parser into the document's handler, shielded from its end, so each
+/// writes its own `html`, head and `body` into the document, with the metadata they share.
+pub(crate) struct XlzParser;
+
+impl Parser for XlzParser {
+    fn name(&self) -> &'static str {
+        "extractous::XLZParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.xliff.XLZParser"
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &["application/x-xliff+zip"]
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let refused = |refusal| match refusal {
+            Refusal::Unread(reason) => Declined::Deferred(reason.to_owned()),
+            Refusal::Failed(reason) => Declined::Fails(Error::ParseError(reason)),
+        };
+        let zip = jdk_zip::open(input).map_err(refused)?;
+        let mut documents = Vec::new();
+        for entry in zip
+            .entries()
+            .iter()
+            .filter(|entry| entry.name.contains(".xlf"))
+        {
+            let document = jdk_zip::read_whole(&zip, entry).map_err(refused)?;
+            if let Err(Declined::Deferred(reason)) =
+                Xliff12Parser.prepare(&document, metadata, configs)
+            {
+                return Err(Declined::Deferred(format!("{}: {reason}", entry.name)));
+            }
+            documents.push(document);
+        }
+        if documents.is_empty() {
+            return Err(Declined::Deferred(
+                "no XLIFF entry, of which Tika's path starts no document".to_owned(),
+            ));
+        }
+        let start = metadata.clone();
+        Ok(Box::new(move |xhtml| {
+            let context = xhtml.context();
+            for document in &documents {
+                let prepared = Xliff12Parser
+                    .prepare(document, &start, configs)
+                    .map_err(|_| {
+                        Failure::Malformed("the XLIFF entry is not prepared".to_owned())
+                    })?;
+                let shared = std::mem::take(xhtml.metadata_mut());
+                let mut nested = Nested { outer: &mut *xhtml };
+                let (shared, _, result) = Xhtml::write(&mut nested, shared, context, prepared);
+                *xhtml.metadata_mut() = shared;
+                result?;
+            }
+            Ok(())
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -415,10 +491,49 @@ mod tests {
         assert_fails_as_tika(&[broken_tmx.as_path(), broken_xliff.as_path()]);
     }
 
+    /// An XLZ archive of `entries`, each a name and its content.
+    fn xlz(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn extracts_xlz_archives_as_tikas_path_does() {
+        let scratch = Scratch::new("xlz");
+        let second = XLIFF.replace("ordbog.properties", "andet.properties");
+        let archive = scratch.write(
+            "ordbog.xlz",
+            &xlz(&[
+                ("ordbog.xlf", XLIFF),
+                ("noter.txt", "ikke XLIFF"),
+                ("mappe/andet.xlf", &second),
+            ]),
+        );
+        let empty = scratch.write("tom.xlz", &xlz(&[("noter.txt", "ikke XLIFF")]));
+        let spaced = scratch.write(
+            "spaced.xlz",
+            &xlz(&[(
+                "ordbog.xlf",
+                &XLIFF.replace("approved=\"yes\"", "xml:space=\"preserve\""),
+            )]),
+        );
+        let (parsed, deferred) = documents(&XlzParser, &[scratch.directory()]);
+        assert_eq!(deferred, [spaced, empty]);
+        assert_eq!(parsed, std::slice::from_ref(&archive));
+        assert_same_as_tika(&[archive.as_path()], XlzParser.tika_name());
+    }
+
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_translations_as_tikas_path_does() {
-        for parser in [&TmxParser as &dyn Parser, &Xliff12Parser] {
+        for parser in [&TmxParser as &dyn Parser, &Xliff12Parser, &XlzParser] {
             let (parsed, deferred) = documents(parser, &[&conformance_corpus()]);
             assert!(deferred.is_empty(), "{deferred:?}");
             assert_eq!(parsed.len(), 1, "{parsed:?}");
