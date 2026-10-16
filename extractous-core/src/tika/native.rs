@@ -379,6 +379,21 @@ fn make_executable(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The language data the build bundled, unpacked, or none when it bundled none.
+#[cfg(feature = "static-image")]
+pub(crate) fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
+    if OCR_FILES.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(unpacked()?.join(OCR_MODELS)))
+}
+
+/// The tesseract library the build bundled for Tika's path, if it bundled one.
+#[cfg(not(feature = "static-image"))]
+pub(crate) fn bundled_tesseract_library() -> Option<&'static str> {
+    OCR_TESSERACT_LIBRARY
+}
+
 /// The version of the tesseract the build runs: the bundled library, or without a bundle the
 /// program on the PATH.
 #[cfg(not(feature = "static-image"))]

@@ -3,10 +3,10 @@
 //! flow, the XMP `ImageXmp` reads first, metadata-extractor's directories copied by
 //! `ImageMetadataExtractor`, and the video of a motion photo as an embedded document.
 //!
-//! An image the enricher would read with tesseract is left to Tika's path until OCR is ported:
-//! with OCR skipped, the enricher runs and records itself but reads nothing, which the port
-//! does too.
+//! The enricher reads the image with tesseract, natively too; with OCR skipped it records itself
+//! but reads nothing.
 
+mod enricher;
 mod extractor;
 mod image_xmp;
 mod imageio;
@@ -26,6 +26,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Stop, Xhtml};
 use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepared, Unported};
 use crate::java::time::TimeZone;
+use enricher::Enricher;
 use extractor::Target;
 use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
 
@@ -70,16 +71,6 @@ const MIN_PIXELS: i32 = 2;
 fn enriched(content_type: &str) -> bool {
     let base = content_type.split(';').next().unwrap_or_default().trim();
     crate::ocr::tesseract_runs() && OCR_TYPES.contains(&base)
-}
-
-/// Defers an image the enricher would read, until OCR is ported.
-fn without_ocr(enricher: bool, configs: &ParserConfigs) -> Result<(), Unported> {
-    if enricher && !configs.ocr.skips_ocr() {
-        return Err(Unported::new(
-            "an image Tika's path reads with tesseract, whose OCR the port does not do yet",
-        ));
-    }
-    Ok(())
 }
 
 fn java_zone() -> Result<&'static TimeZone, Unported> {
@@ -374,8 +365,6 @@ impl Parser for RecognizedImageParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let content_type = metadata.get("Content-Type").unwrap_or_default();
-        let recognizer = enriched(content_type);
-        without_ocr(recognizer, configs)?;
         let mut read = metadata.clone();
         let file_directory = match Recognized::of(content_type) {
             Recognized::WebP => Some(webp_metadata(input, &mut read)?),
@@ -388,6 +377,7 @@ impl Parser for RecognizedImageParser {
             }
             Recognized::Empty => None,
         };
+        let enricher = Enricher::of(enriched(content_type), content_type, input, configs)?;
         Ok(Box::new(move |xhtml| {
             *xhtml.metadata_mut() = read;
             if let Some((zone, prefix_route_names)) = file_directory {
@@ -403,10 +393,7 @@ impl Parser for RecognizedImageParser {
                     |_| Ok::<(), Stop>(()),
                 );
             nested?;
-            if recognizer {
-                enrich(xhtml);
-            }
-            Ok(())
+            enricher.enrich(xhtml, input.len())
         }))
     }
 }
@@ -476,19 +463,18 @@ fn prepare<'a>(
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Declined> {
-    let enricher = enriched(metadata.get("Content-Type").unwrap_or_default());
-    without_ocr(enricher, configs)?;
+    let content_type = metadata.get("Content-Type").unwrap_or_default();
+    let enriched = enriched(content_type);
     let zone = java_zone()?;
     let read = extract_metadata(format, input, metadata.clone(), zone)?;
     let trailer = motion_photo::trailer(&read.metadata, input)?;
+    let enricher = Enricher::of(enriched, content_type, input, configs)?;
     Ok(Box::new(move |xhtml| {
         *xhtml.metadata_mut() = read.metadata;
         if read.reads_file {
-            add_file_directory(xhtml, input.len(), enricher, zone, read.prefix_route_names)?;
+            add_file_directory(xhtml, input.len(), enriched, zone, read.prefix_route_names)?;
         }
-        if enricher {
-            enrich(xhtml);
-        }
+        enricher.enrich(xhtml, input.len())?;
         if let Some(trailer) = trailer {
             xhtml.parse_embedded(
                 &input[trailer.start..],
@@ -612,16 +598,4 @@ fn temporary_name() -> String {
         "apache-tika-{}.tmp",
         RandomState::new().hash_one(SystemTime::now())
     )
-}
-
-/// `GuardedEnricher.parse` with OCR skipped: the enricher is recorded unless the image is too
-/// small for it, and reads nothing.
-fn enrich(xhtml: &mut Xhtml) {
-    let metadata = xhtml.metadata_mut();
-    let dimension = |name: &str| metadata.get(name).and_then(crate::java::parse_int);
-    let too_small = dimension(extractor::IMAGE_WIDTH.name).is_some_and(|width| width < MIN_PIXELS)
-        || dimension(extractor::IMAGE_LENGTH.name).is_some_and(|height| height < MIN_PIXELS);
-    if !too_small {
-        xhtml.delegate_to(PREPARING_OCR_PARSER);
-    }
 }

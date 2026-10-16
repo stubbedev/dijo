@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::config::TesseractOcrConfig;
 use crate::formats::parity::{
-    assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
-    documents_with,
+    assert_fails_as_tika_with, assert_same_as_tika_but_ocr, assert_same_as_tika_delegating_with,
+    conformance_corpus, deferral, documents_with,
 };
 
 fn skipping_ocr() -> ParserConfigs {
@@ -113,20 +113,100 @@ fn reads_tikas_test_heif_images_as_tika_does() {
     println!("deferred: {deferred:?}");
 }
 
+/// Reads images of the quality corpus with tesseract as Tika's path writes them, the OCR text
+/// aside, and reads text in each that Tika's path reads text in.
+fn reads_with_tesseract_as_tikas_path_does(
+    parser: &dyn Parser,
+    tika_name: &str,
+    files: &[&str],
+    configs: &ParserConfigs,
+) {
+    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
+    let paths: Vec<PathBuf> = files
+        .iter()
+        .map(|file| Path::new("../quality/corpus").join(file))
+        .collect();
+    for path in &paths {
+        assert!(
+            deferral(parser, path).is_none(),
+            "{} is deferred: {:?}",
+            path.display(),
+            deferral(parser, path)
+        );
+    }
+    let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    let texts = assert_same_as_tika_but_ocr(&paths, tika_name, &TIKA_DELEGATES, configs);
+    for (path, (tika, native)) in paths.iter().zip(texts) {
+        assert_eq!(
+            tika.trim().is_empty(),
+            native.trim().is_empty(),
+            "{}: {tika:?} against {native:?}",
+            path.display()
+        );
+    }
+}
+
+fn automatic_language() -> ParserConfigs {
+    ParserConfigs {
+        ocr: TesseractOcrConfig::new().set_language(TesseractOcrConfig::AUTO_LANGUAGE),
+        ..ParserConfigs::default()
+    }
+}
+
 #[test]
-fn defers_images_tika_reads_with_tesseract() {
-    let jpeg = std::fs::read("../quality/corpus/prose-photo-perspective.jpg").unwrap();
-    let mut metadata = TikaMetadata::new();
-    metadata.set("Content-Type", "image/jpeg");
-    let deferred = JpegParser.defers(&jpeg, &metadata, &ParserConfigs::default());
-    assert_eq!(
-        deferred.is_some(),
-        crate::ocr::tesseract_runs(),
-        "{deferred:?}"
+fn reads_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &[
+            "danish-scan.png",
+            "prose-scan-rotated.png",
+            "greek-scan.png",
+        ],
+        &automatic_language(),
     );
-    assert!(JpegParser
-        .defers(&jpeg, &metadata, &skipping_ocr())
-        .is_none());
+}
+
+#[test]
+fn reads_scans_in_the_configured_language_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &["prose-scan-150dpi.png"],
+        &ParserConfigs::default(),
+    );
+}
+
+#[test]
+fn reads_photos_and_tiff_pages_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &JpegParser,
+        "org.apache.tika.parser.image.JpegParser",
+        &["prose-photo-perspective.jpg"],
+        &automatic_language(),
+    );
+    reads_with_tesseract_as_tikas_path_does(
+        &TiffParser,
+        "org.apache.tika.parser.image.TiffParser",
+        &["report-scan.tif"],
+        &automatic_language(),
+    );
+}
+
+#[test]
+fn reads_images_tesseract_reads_as_they_are_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &RecognizedImageParser,
+        "ai.yobix.RecognizedImageParser",
+        &[
+            "prose-scan.webp",
+            "prose-scan.pbm",
+            "prose-scan.psd",
+            "prose-scan.pcx",
+            "prose-scan.tga",
+        ],
+        &automatic_language(),
+    );
 }
 
 #[test]

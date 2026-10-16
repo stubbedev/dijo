@@ -6,7 +6,7 @@
 mod archive;
 mod auto_detect_reader;
 mod cms;
-mod data_format;
+pub(crate) mod data_format;
 mod dc_xml;
 mod doc;
 mod docx;
