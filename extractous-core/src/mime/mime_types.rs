@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use super::java_regex::{Anchor, JavaRegex};
+use super::java_regex::{Anchor, JavaRegex, Text};
 use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
 use super::media_type::MediaType;
 use super::registry::Registry;
@@ -644,7 +644,7 @@ impl Patterns {
         let key = GlobKey(JavaString(glob));
         let previous = self.globs.get(&key).map(|(previous, _)| *previous);
         if replaces(previous, id, types, registry, &key.0 .0)? {
-            let regex = JavaRegex::compile(&key.0 .0, Anchor::Matches)?;
+            let regex = JavaRegex::compile(&key.0 .0, Anchor::Matches, Text::Unicode)?;
             self.globs.insert(key, (id, regex));
         }
         Ok(())
@@ -737,6 +737,23 @@ mod tests {
         assert!(types.types.len() > 1600, "{} types", types.types.len());
         assert!(types.magics.len() > 800, "{} magics", types.magics.len());
         assert!(types.xmls.len() > 30, "{} root types", types.xmls.len());
+    }
+
+    #[test]
+    fn compiles_every_regex_of_the_tables() {
+        let types = mime_types();
+        let mut regexes = 0;
+        let mut force = |regex: &JavaRegex| {
+            regex.force();
+            regexes += 1;
+        };
+        for magic in &types.magics {
+            magic.clause.for_each_regex(&mut force);
+        }
+        for (_, regex) in types.patterns.globs.values() {
+            force(regex);
+        }
+        assert!(regexes > 40, "{regexes} regexes");
     }
 
     #[test]
