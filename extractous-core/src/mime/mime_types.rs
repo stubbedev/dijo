@@ -3,7 +3,7 @@
 //! document's first 64 KiB and its resource name.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use super::java_regex::{Anchor, JavaRegex, Text};
@@ -12,6 +12,7 @@ use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
 use super::uri;
+use crate::hash::FastMap;
 use crate::java::{self, JavaString};
 use crate::xml::{self, Attribute, Event, Flow, XmlError};
 
@@ -63,7 +64,7 @@ pub(crate) fn mime_types() -> &'static MimeTypes {
 pub(crate) struct MimeTypes {
     registry: Registry,
     types: Vec<MimeType>,
-    by_type: HashMap<MediaType, TypeId>,
+    by_type: FastMap<MediaType, TypeId>,
     magics: Vec<Magic>,
     xmls: Vec<TypeId>,
     patterns: Patterns,
@@ -104,7 +105,7 @@ impl MimeTypes {
         let mut types = MimeTypes {
             registry: Registry::default(),
             types: Vec::new(),
-            by_type: HashMap::new(),
+            by_type: FastMap::default(),
             magics: Vec::new(),
             xmls: Vec::new(),
             patterns: Patterns::new(),
@@ -550,8 +551,8 @@ impl PartialOrd for GlobKey {
 
 /// Tika's `Patterns`: exact names, extensions and globs.
 struct Patterns {
-    names: HashMap<String, TypeId>,
-    extensions: HashMap<String, TypeId>,
+    names: FastMap<String, TypeId>,
+    extensions: FastMap<String, TypeId>,
     globs: BTreeMap<GlobKey, (TypeId, JavaRegex)>,
     min_extension: usize,
     max_extension: usize,
@@ -582,8 +583,8 @@ fn replaces(
 impl Patterns {
     fn new() -> Patterns {
         Patterns {
-            names: HashMap::new(),
-            extensions: HashMap::new(),
+            names: FastMap::default(),
+            extensions: FastMap::default(),
             globs: BTreeMap::new(),
             min_extension: usize::MAX,
             max_extension: 0,

@@ -11,7 +11,7 @@ use lopdf::{Dictionary, Object, Stream};
 
 use super::afm::{FontMetrics, Standard14};
 use super::cff::{self, Cff};
-use super::cmap::{self, CMap, CMapError, CodeMap};
+use super::cmap::{self, CMap, CMapError};
 use super::content::{Lexer, Token};
 use super::cos::{as_dict, float_value, int_value, name_string, Identity, Pdf};
 use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
@@ -20,6 +20,7 @@ use super::matrix::Matrix;
 use super::truetype::{self, TrueType};
 use super::type1::{self, BuiltIn, Type1};
 use super::Unported;
+use crate::hash::FastMap;
 
 /// `PDFontDescriptor`, as far as text extraction reads it.
 #[derive(Debug, Clone)]
@@ -376,11 +377,11 @@ struct SimpleFont {
 #[derive(Debug)]
 struct CidFont {
     descriptor: Option<Descriptor>,
-    widths: CodeMap<i32, f32>,
+    widths: FastMap<i32, f32>,
     width_order: Vec<(i32, f32)>,
     default_width: f32,
     dw2: [f32; 2],
-    vertical: CodeMap<i32, (f32, f32, f32)>,
+    vertical: FastMap<i32, (f32, f32, f32)>,
     vertical_ranges: Vec<(i32, i32, f32, f32, f32)>,
     kind: CidKind,
     cid_to_gid: Option<Vec<u32>>,
@@ -1942,11 +1943,11 @@ impl CidFont {
             descriptor: pdf
                 .dict(dict, b"FontDescriptor")
                 .map(|fd| Descriptor::read(pdf, fd)),
-            widths: CodeMap::default(),
+            widths: FastMap::default(),
             width_order: Vec::new(),
             default_width: pdf.get(dict, b"DW").and_then(float_value).unwrap_or(1000.0),
             dw2: [880.0, -1000.0],
-            vertical: CodeMap::default(),
+            vertical: FastMap::default(),
             vertical_ranges: Vec::new(),
             kind: CidKind::TrueType(Program::Fallback),
             cid_to_gid: None,
