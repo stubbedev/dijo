@@ -39,6 +39,7 @@ pub(crate) mod reference;
 mod rtf;
 mod subtitle;
 mod text;
+mod translation;
 mod warc;
 pub(crate) mod xhtml;
 pub(crate) mod xlsx;
@@ -193,6 +194,8 @@ static PARSERS: &[&dyn Parser] = &[
     &media::Mp4Parser,
     &executable::ExecutableParser,
     &executable::UniversalExecutableParser,
+    &translation::TmxParser,
+    &translation::Xliff12Parser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
