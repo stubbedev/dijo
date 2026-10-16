@@ -842,28 +842,36 @@ pub(crate) fn parse_to_stream(
         &decision,
         deadline,
         "The native parser's thread ended before it prepared its document",
-    )?;
-    if !prepared {
-        return Ok(None);
+    );
+    match prepared {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
+        Err(Error::Timeout) => {
+            stream.outcome = Some(Err(Error::Timeout));
+            return Ok(Some((stream, detected_metadata)));
+        }
+        Err(error) => return Err(error),
     }
     let mut head = None;
-    let first = loop {
-        match stream.next_message()? {
-            Message::Head(metadata) => head = Some(metadata),
-            message => break message,
-        }
-    };
-    if let Message::Done {
-        tail,
-        outcome: Err(error),
-        ..
-    } = &first
-    {
-        if tail.is_empty() {
-            return Err(copy(error));
+    loop {
+        match stream.next_message() {
+            Ok(Message::Head(metadata)) => head = Some(metadata),
+            Ok(Message::Done {
+                tail,
+                outcome: Err(error),
+                ..
+            }) if tail.is_empty() => return Err(error),
+            Ok(message) => {
+                stream.accept(message);
+                break;
+            }
+            Err(Error::Timeout) => {
+                stream.outcome = Some(Err(Error::Timeout));
+                break;
+            }
+            Err(error) => return Err(error),
         }
     }
-    stream.accept(first);
     let metadata = match (&stream.outcome, head) {
         (Some(Ok(metadata)), _) => metadata.clone(),
         (_, Some(head)) => head,
@@ -962,8 +970,11 @@ impl Read for NativeStream {
                     Err(error) => Err(io::Error::other(copy(error))),
                 };
             }
-            let message = self.next_message().map_err(io::Error::other)?;
-            self.accept(message);
+            match self.next_message() {
+                Ok(message) => self.accept(message),
+                Err(Error::Timeout) => self.outcome = Some(Err(Error::Timeout)),
+                Err(error) => return Err(io::Error::other(error)),
+            }
         }
         let count = buf.len().min(self.chunk.len() - self.position);
         buf[..count].copy_from_slice(&self.chunk[self.position..self.position + count]);
