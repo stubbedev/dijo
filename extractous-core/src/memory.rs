@@ -104,6 +104,11 @@ pub(crate) fn overrun() -> Option<u64> {
 /// A global allocator that counts what each extraction allocates against its budget, around
 /// the allocator `A` that allocates. Each allocation keeps the budget it was charged to just
 /// before the memory it returns.
+///
+/// Its functions are never inlined: LLVM takes the memory an allocation returns for the whole
+/// object, so where link-time optimisation inlines `dealloc` into the code that allocated, its
+/// read of the budget before that memory is out of bounds, and LLVM compiled a `String`'s drop
+/// in `formats::image` into a panic.
 pub struct CountingAllocator<A>(pub A);
 
 /// Where the memory returned for `layout` starts in the block allocated for it, and the layout
@@ -149,6 +154,7 @@ impl<A> CountingAllocator<A> {
 }
 
 unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
+    #[inline(never)]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let Some((offset, block)) = block(layout) else {
             return ptr::null_mut();
@@ -156,6 +162,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         unsafe { self.register(self.0.alloc(block), offset, layout.size()) }
     }
 
+    #[inline(never)]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let Some((offset, block)) = block(layout) else {
             return ptr::null_mut();
@@ -163,6 +170,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         unsafe { self.register(self.0.alloc_zeroed(block), offset, layout.size()) }
     }
 
+    #[inline(never)]
     unsafe fn dealloc(&self, memory: *mut u8, layout: Layout) {
         let (offset, block) = block(layout).expect("the layout was allocated");
         let budget = unsafe { slot(memory).read() };
@@ -172,6 +180,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         }
     }
 
+    #[inline(never)]
     unsafe fn realloc(&self, memory: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let (offset, block) = block(layout).expect("the layout was allocated");
         let Some(new_block_size) = new_size.checked_add(offset) else {
