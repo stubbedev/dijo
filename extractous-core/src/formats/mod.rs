@@ -38,6 +38,7 @@ pub(crate) mod parity;
 mod pdf;
 pub(crate) mod plist;
 mod poi;
+mod ppt;
 mod pptx;
 #[cfg(test)]
 pub(crate) mod reference;
@@ -185,6 +186,7 @@ static PARSERS: &[&dyn Parser] = &[
     &open_pgp::OpenPgpParser,
     &pdf::PdfParser,
     &plist::PListParser,
+    &ppt::PptParser,
     &pptx::PptxParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
@@ -473,7 +475,7 @@ pub(crate) fn parse_to_string(
         };
         prepared_within_budget(parser)?;
         let mut out = StringOut::default();
-        let context = ParseContext::new(configs);
+        let context = ParseContext::new(configs).with_write_limit(max_length);
         let (metadata, result) = Chain::String { output, max_length }
             .write_to(&mut out, |handler| {
                 run(parser, prepared, metadata, &context, handler, None)

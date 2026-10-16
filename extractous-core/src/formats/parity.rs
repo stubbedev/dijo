@@ -11,10 +11,10 @@
 //! below the embedded document's parse, the embedding parser's in Tika's path and the native
 //! bridge's in the other, which no native parser runs, and with the random numbers of Tika's
 //! temporary files, and the suffixes the native bridge gives them, masked. A failure the parser
-//! records itself (`embedded-stream-exception`) is compared without its frames, all of them the
-//! Java parser's. In a string extraction, the native path, which parses an embedded document
-//! whole, may go on to more parsers and failures than Tika's, which stops at the length limit;
-//! Tika's must lead the native ones.
+//! records itself (`embedded-stream-exception`), or a warning it records (`warn`), is compared
+//! without its frames, all of them the Java parser's. In a string extraction, the native path,
+//! which parses an embedded document whole, may go on to more parsers and failures than Tika's,
+//! which stops at the length limit; Tika's must lead the native ones.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -185,6 +185,7 @@ fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extr
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
+const WARNING: &str = "tk:exception:warn";
 /// The first frame below an embedded document's parse in Tika's path, where the embedding
 /// parser hands it to the embedded document extractor.
 const TIKA_EMBEDDING_FRAME: &str = "\tat org.apache.tika.parser.DelegatingParser.parse(";
@@ -207,7 +208,7 @@ fn comparable(mut extracted: Extracted) -> Extracted {
             for value in values.iter_mut() {
                 *value = without_temporary_names(&without_embedding_frames(value));
             }
-        } else if name == EMBEDDED_STREAM_EXCEPTION {
+        } else if name == EMBEDDED_STREAM_EXCEPTION || name == WARNING {
             for value in values.iter_mut() {
                 *value = value
                     .split_inclusive('\n')

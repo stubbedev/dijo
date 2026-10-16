@@ -34,6 +34,7 @@ const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception"
 pub(crate) struct ParseContext<'c> {
     configs: &'c ParserConfigs,
     spooler: Option<RefCell<Spooler>>,
+    write_limit: Option<usize>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -42,6 +43,7 @@ impl<'c> ParseContext<'c> {
         Self {
             configs,
             spooler: None,
+            write_limit: None,
         }
     }
 
@@ -54,11 +56,26 @@ impl<'c> ParseContext<'c> {
                 budget: spool.byte_budget,
                 spooled: Vec::new(),
             })),
+            write_limit: None,
+        }
+    }
+
+    /// The extraction with its text limited to `limit` UTF-16 code units, as the write limit of
+    /// Tika's `WriteOutContentHandler`.
+    pub(crate) fn with_write_limit(self, limit: usize) -> Self {
+        Self {
+            write_limit: Some(limit),
+            ..self
         }
     }
 
     pub(crate) fn configs(&self) -> &'c ParserConfigs {
         self.configs
+    }
+
+    /// The limit of the extraction's text, if it has one.
+    pub(crate) fn write_limit(&self) -> Option<usize> {
+        self.write_limit
     }
 
     /// The embedded documents copied to the spool, in order.
