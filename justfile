@@ -202,6 +202,18 @@ xlsx-reference:
     java -Duser.language=en -Duser.country=US -Duser.timezone=Europe/Copenhagen \
         -cp "$jars/mime/*" "$fixtures/FormatReference.java" "$fixtures"
 
+# Regenerate what Tika's SummaryExtractor reads from the OLE2 documents among the test files and
+# Tika's own test documents, which the Rust port of HPSF is tested against.
+ole2-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/ole2
+    java -cp "$jars/mime/*" "$fixtures/SummaryReference.java" "$fixtures/summaries.tsv.gz" \
+        documents=test_files/documents corpus="$CONFORMANCE_CORPUS"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]

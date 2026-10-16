@@ -87,6 +87,21 @@ pub(crate) fn prepare(
     }))
 }
 
+/// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units.
+pub(crate) fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Deferral> {
+    let dom = tree_builder::parse(html, Source::String);
+    if let Some(reason) = handler::deferral(&dom, None) {
+        return Err(reason.to_owned());
+    }
+    Ok(Box::new(move |xhtml| {
+        let Err(stop) = handler::write(&dom, xhtml) else {
+            return Ok(());
+        };
+        xhtml.end_document()?;
+        Err(stop.into())
+    }))
+}
+
 /// Writes the document as `JSoupParser.parse` does, which ends the document even when writing
 /// it fails; `previous` is the `Content-Type` the metadata held before.
 fn write(document: &Document, previous: Option<&str>, xhtml: &mut Xhtml) -> Result<(), Failure> {

@@ -14,11 +14,11 @@ use binary::{Key, Object, Value};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
+use crate::formats::data_format::date_format::SimpleDateFormat;
 use crate::formats::embedded::Wrapping;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::xlsx::format::date_format::SimpleDateFormat;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const MEDIA_TYPES: [&str; 4] = [

@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::formats::xlsx::format::DOT;
+use crate::formats::data_format::DOT;
 use crate::unicode::is_whitespace;
 
 /// The fixed codes `HeaderFooter.MarkupTag` lists, in its order.

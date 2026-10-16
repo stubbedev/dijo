@@ -26,8 +26,9 @@ mod text;
 mod uri;
 
 #[cfg(test)]
-pub(crate) use detectors::ole::tests::compound as compound_document;
-pub(crate) use detectors::ole::{is_ole10_native, Lookup, OleFile};
+pub(crate) use crate::ole2::tests::compound as compound_document;
+pub(crate) use detectors::ole::directory_type as ole_directory_type;
+pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use java::trim as java_trim;
 pub(crate) use media_type::MediaType;
@@ -123,6 +124,21 @@ impl Written {
     }
 }
 
+/// `MimeTypes.forName(type).getExtension()` of the default types: the first extension of the
+/// type, with its dot, or nothing.
+pub(crate) fn extension(media_type: &MediaType) -> &'static str {
+    mime_types().extension(media_type)
+}
+
+/// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an
+/// archive or compression format by its first bytes, or `application/octet-stream`.
+pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
+    match zip::detect(data) {
+        zip::Detected::Zip(found) => found.media_type,
+        zip::Detected::Other(found) => found.unwrap_or_else(|| MediaType::named(OCTET_STREAM)),
+    }
+}
+
 /// `DefaultDetector.detect` on a document, as `TikaNativeMain.detect` runs it.
 pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     let types = mime_types();
@@ -142,7 +158,7 @@ pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, Detec
     let ole_header = ole::is_ole(data);
     let ole_file = if ole_header {
         written.spool(origin);
-        ole::OleFile::open(data)
+        ole::OleFile::open(data).ok()
     } else {
         None
     };

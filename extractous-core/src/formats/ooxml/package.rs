@@ -13,10 +13,7 @@ use super::uri::{self, Resolution};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::central_directory_records;
 use crate::formats::Failure;
-
-/// Why this port leaves a package to Tika.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unported(pub(crate) String);
+pub(crate) use crate::formats::Unported;
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const TYPES_NAMESPACE: &str = "http://schemas.openxmlformats.org/package/2006/content-types";

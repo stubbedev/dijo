@@ -7,7 +7,7 @@
 //! package, and the thumbnail.
 //!
 //! Numbers are written as POI's `DataFormatter` writes them in the `en_US` locale, with Tika's
-//! general format and dates in Java's default time zone: see [`format`].
+//! general format and dates in Java's default time zone: see [`crate::formats::data_format`].
 //!
 //! A workbook embedding an OLE object, which Tika opens as a compound file, is left to Tika, as
 //! is a package POI would read in a degraded way or refuse, one with a part whose XML Tika
@@ -15,7 +15,6 @@
 //! [`Workbook::prepare`].
 
 mod cell;
-pub(crate) mod format;
 mod handlers;
 mod header_footer;
 mod parts;
@@ -31,6 +30,7 @@ use parts::{Comments, SharedStrings, Styles};
 use sheet::{SheetOutput, SheetReader, SheetSettings};
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::formats::data_format::DataFormatter;
 use crate::formats::docx;
 use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
@@ -439,7 +439,7 @@ impl<'a> Workbook<'a> {
         zone: &'static TimeZone,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        let mut formatter = format::DataFormatter::new(zone);
+        let mut formatter = DataFormatter::new(zone);
         let settings = SheetSettings {
             headers_and_footers: self.config.includes_headers_and_footers(),
             missing_rows: self.config.includes_missing_rows(),
@@ -597,7 +597,7 @@ impl<'a> Workbook<'a> {
 
 /// `PageAnchoring.applySheetMetadata`: the sheets an embedded picture is drawn on, and the
 /// sheet where it is one.
-fn write_sheet_numbers(sheets: &BTreeSet<usize>, metadata: &mut TikaMetadata) {
+pub(crate) fn write_sheet_numbers(sheets: &BTreeSet<usize>, metadata: &mut TikaMetadata) {
     for sheet in sheets {
         metadata.add(excel::SHEET_NUMBERS, sheet.to_string());
     }

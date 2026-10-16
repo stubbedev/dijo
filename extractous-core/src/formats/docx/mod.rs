@@ -81,8 +81,7 @@ const MAIN_PART_KINDS: [&str; 6] = [
 mod name {
     pub(super) use crate::formats::ooxml::extractor::name::*;
 
-    pub(super) const HAS_HIDDEN_TEXT: &str = "msoffice:doc:has-hidden-text";
-    pub(super) const HAS_TRACK_CHANGES: &str = "msoffice:has-track-changes";
+    pub(super) use crate::formats::metadata::office::{HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES};
     pub(super) const HAS_ATTACHED_TEMPLATE: &str = "msoffice:doc:has-attached-template";
     pub(super) const HAS_SUBDOCUMENTS: &str = "msoffice:doc:has-subdocuments";
     pub(super) const HAS_MAIL_MERGE: &str = "msoffice:doc:has-mail-merge";

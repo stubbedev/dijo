@@ -33,6 +33,7 @@ pub mod memory;
 static ALLOCATOR: memory::CountingAllocator<std::alloc::System> =
     memory::CountingAllocator(std::alloc::System);
 mod mime;
+mod ole2;
 pub mod text;
 pub mod unicode;
 mod xml;

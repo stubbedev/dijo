@@ -54,6 +54,16 @@ impl<V> JavaHashMap<V> {
         map
     }
 
+    /// An empty map whose table `new HashSet<>(collection)` sizes for a collection of `size`
+    /// elements: `new HashMap<>(max((int) (size / .75f) + 1, 16))`.
+    pub(crate) fn for_hash_set(size: usize) -> Self {
+        let requested = ((size as f32 / 0.75) as usize + 1).max(INITIAL_CAPACITY);
+        Self {
+            initial_capacity: requested.next_power_of_two(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -134,6 +144,18 @@ impl<V> JavaHashMap<V> {
         order
             .into_iter()
             .map(|(_, entry)| (entry.key.as_str(), &entry.value))
+    }
+
+    /// Whether two of `keys` share a bucket of the table, where Java iterates them in the order
+    /// they were inserted.
+    pub(crate) fn share_a_bucket(&self, keys: &[&str]) -> bool {
+        let mask = self.capacity.saturating_sub(1);
+        let mut buckets: Vec<usize> = keys
+            .iter()
+            .map(|key| spread(string_hash(key)) as usize & mask)
+            .collect();
+        buckets.sort_unstable();
+        buckets.windows(2).any(|pair| pair[0] == pair[1])
     }
 
     fn insert_new(&mut self, key: &str, value: V) {
@@ -306,6 +328,19 @@ pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
         && a.chars()
             .zip(b.chars())
             .all(|(x, y)| x == y || upper(x) == upper(y) || lower(upper(x)) == lower(upper(y)))
+}
+
+/// `String.split` on one character that is no regex metacharacter: the pieces without the
+/// empty ones at the end, and none for a text of separators only.
+pub(crate) fn split(text: &str, separator: char) -> Vec<&str> {
+    let mut pieces: Vec<&str> = text.split(separator).collect();
+    while pieces.len() > 1 && pieces.last().is_some_and(|piece| piece.is_empty()) {
+        pieces.pop();
+    }
+    if pieces == [""] && !text.is_empty() {
+        pieces.clear();
+    }
+    pieces
 }
 
 /// `String.strip()`: without the whitespace `Character.isWhitespace` sees at either end.

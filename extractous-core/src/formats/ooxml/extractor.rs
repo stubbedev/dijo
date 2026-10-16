@@ -16,7 +16,8 @@ use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
-use crate::mime::{is_ole10_native, Lookup, OleFile};
+use crate::mime::is_ole10_native;
+use crate::ole2::{Ole2, Unreadable};
 
 /// Relationship types, as POI's `PackageRelationshipTypes`, `XSSFRelation` and `XWPFRelation`
 /// and Tika name them.
@@ -60,10 +61,10 @@ pub(crate) mod name {
     pub(crate) const HAS_SIGNATURE: &str = "tk:has-signature";
     pub(crate) const HAS_UNREFERENCED_PARTS: &str = "msoffice:has-unreferenced-parts";
     pub(crate) const UNREFERENCED_PART_NAMES: &str = "msoffice:unreferenced-part-names";
-    pub(crate) const HAS_COMMENTS: &str = "msoffice:has-comments";
-    pub(crate) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
     pub(crate) const HAS_EXTERNAL_OLE_OBJECTS: &str = "msoffice:has-external-ole-objects";
-    pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+    pub(crate) use crate::formats::metadata::office::{
+        COMMENT_PERSONS, HAS_COMMENTS, ORIGINAL_RESOURCE_NAME,
+    };
 }
 
 pub(crate) const OLE_OBJECT_TYPE: &str = "application/vnd.openxmlformats-officedocument.oleObject";
@@ -434,20 +435,21 @@ fn read_ole_object(package: &Package, part: usize) -> Result<OleObject, Unported
     let bytes = package
         .read(part)
         .map_err(|_| fails("the part cannot be read".to_owned()))?;
-    let file = OleFile::open(&bytes)
-        .ok_or_else(|| fails("POI cannot open it as a compound document".to_owned()))?;
+    let file = Ole2::open_stream(&bytes).map_err(|Unreadable(reason)| {
+        fails(format!(
+            "POI cannot open it as a compound document: {reason}"
+        ))
+    })?;
     if let Some(entry) = package_entry_name(&file) {
         return file
-            .root_document(entry, Lookup::Exact)
+            .root_document(entry)
             .map(OleObject::Entry)
             .map_err(fails);
     }
     if !is_ole10_native(&file) {
         return Ok(OleObject::Whole);
     }
-    let record = file
-        .root_document(OLE10_NATIVE, Lookup::IgnoringCase)
-        .map_err(fails)?;
+    let record = file.root_document(OLE10_NATIVE).map_err(fails)?;
     if record.len() > ole10_native::MAX_RECORD_LENGTH as usize {
         return Err(fails(format!(
             "its record of {} bytes is longer than POI reads",
@@ -462,7 +464,7 @@ fn read_ole_object(package: &Package, part: usize) -> Result<OleObject, Unported
 }
 
 /// `getPackageEntryName`: the stream of an OLE 2.0 object that holds its document.
-fn package_entry_name(file: &OleFile<'_>) -> Option<&'static str> {
+fn package_entry_name(file: &Ole2<'_>) -> Option<&'static str> {
     let names: &[&'static str] = if file.has_root_entry("\u{1}Ole") {
         &["Package", "CONTENTS", "package"]
     } else {

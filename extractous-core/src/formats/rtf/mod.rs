@@ -4,9 +4,14 @@
 //! pictures or embedded objects Tika would parse as documents of their own is left to Tika.
 
 mod charsets;
+mod compressed;
 mod embedded;
 mod extractor;
+mod html;
 mod input;
+
+pub(crate) use compressed::decompress;
+pub(crate) use html::decapsulate;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::ParseContext;
@@ -52,7 +57,7 @@ impl Parser for RtfParser {
 }
 
 /// Why Tika's path should extract `input` rather than this parser, if it should.
-fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
+pub(crate) fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
     let undated = TimeZone::java_default().is_err();
     let read_ahead = input.iter().enumerate().any(|(at, &byte)| {
         let rest = &input[at + 1..];
@@ -70,6 +75,19 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
     match result {
         Err(Interrupt::Deferred(deferral)) => Some(deferral.reason().to_owned()),
         Ok(()) | Err(Interrupt::Failed(_) | Interrupt::Unchecked(_)) => None,
+    }
+}
+
+/// `RTFParser.parseInline` of `input`, which [`deferral`] passed, into another
+/// document's `xhtml`, its header's metadata into fresh metadata.
+pub(crate) fn write_inline(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    match extractor::extract_inline(input, xhtml, TikaMetadata::new()) {
+        Ok(()) => Ok(()),
+        Err(Interrupt::Failed(failure) | Interrupt::Unchecked(failure)) => Err(failure),
+        Err(Interrupt::Deferred(deferral)) => Err(Failure::Malformed(format!(
+            "The RTF document has {}, which leaves it to Tika",
+            deferral.reason()
+        ))),
     }
 }
 

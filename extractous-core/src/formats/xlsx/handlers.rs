@@ -18,7 +18,7 @@ const RELATIONSHIPS_NS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 mod meta {
-    pub(super) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+    pub(super) use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
     pub(super) const HAS_HIDDEN_SHEETS: &str = "msoffice:excel:has-hidden-sheets";
     pub(super) const HIDDEN_SHEET_NAMES: &str = "msoffice:excel:hidden-sheet-names";
     pub(super) const HAS_VERY_HIDDEN_SHEETS: &str = "msoffice:excel:has-very-hidden-sheets";

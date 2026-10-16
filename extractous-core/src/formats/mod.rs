@@ -6,11 +6,14 @@
 mod archive;
 mod auto_detect_reader;
 mod cms;
+mod data_format;
 mod dc_xml;
+mod doc;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
 mod epub;
+mod escher;
 mod fiction_book;
 pub(crate) mod handlers;
 mod html;
@@ -19,18 +22,22 @@ mod iwork;
 pub(crate) mod java;
 pub(crate) mod java_time;
 mod jdk_zip;
+mod list_numbering;
 mod mail;
 pub(crate) mod metadata;
 mod mobi;
+mod msg;
 mod notebook;
 mod odf;
 mod ole10_native;
+mod ole2;
 mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
 mod pdf;
 pub(crate) mod plist;
+mod poi;
 mod pptx;
 #[cfg(test)]
 pub(crate) mod reference;
@@ -38,6 +45,7 @@ mod rtf;
 mod subtitle;
 mod text;
 pub(crate) mod xhtml;
+mod xls;
 mod xlsx;
 pub(crate) mod xml;
 mod zip_file;
@@ -66,6 +74,10 @@ use xhtml::{ContentHandler, Stop, Xhtml};
 const CHUNK_BYTES: usize = 8192;
 /// The chunks a streamed extraction writes ahead of its reader.
 const CHUNKS_AHEAD: usize = 16;
+
+/// Why a native parser leaves a document to Tika: what of it the port does not reproduce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unported(pub(crate) String);
 
 /// Why a native parser did not finish its document.
 #[derive(Debug)]
@@ -156,6 +168,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::ZipParser,
     &cms::CmsParser,
     &dc_xml::DcXmlParser,
+    &doc::DocParser,
     &docx::DocxParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
@@ -164,6 +177,7 @@ static PARSERS: &[&dyn Parser] = &[
     &mail::EmlxParser,
     &mail::MboxParser,
     &mobi::MobiParser,
+    &msg::MsgParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
     &odf::OpenDocumentParser,
@@ -176,6 +190,7 @@ static PARSERS: &[&dyn Parser] = &[
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &xls::XlsParser,
     &xlsx::XlsxParser,
 ];
 
