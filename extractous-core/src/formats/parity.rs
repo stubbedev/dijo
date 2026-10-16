@@ -94,7 +94,7 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
 fn routed(path: &str) -> Routed<'_> {
     formats::route(Source::File(path))
         .unwrap()
-        .unwrap_or_else(|| panic!("{path} has no native parser"))
+        .unwrap_or_else(|unrouted| panic!("{path} has no native parser: {unrouted:?}"))
 }
 
 fn deferred(path: &str) -> String {

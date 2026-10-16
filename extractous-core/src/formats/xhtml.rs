@@ -488,8 +488,16 @@ impl<'h> Xhtml<'h> {
         let mut open = Vec::new();
         let configs = self.embedding.context().configs();
         let ended = match formats::route_embedded(data, metadata, opened, configs) {
-            Some(route) => self.parse_natively(route, data, metadata, &mut open),
-            None => self.parse_with_tika(data, metadata, &mut open),
+            Ok(route) => self.parse_natively(route, data, metadata, &mut open),
+            #[cfg_attr(
+                not(test),
+                expect(unused_variables, reason = "only the tests record why")
+            )]
+            Err(bridged) => {
+                #[cfg(test)]
+                formats::audit::bridged(bridged);
+                self.parse_with_tika(data, metadata, &mut open)
+            }
         };
         let (clean, failure) = match ended {
             Ended::Clean => (true, None),
@@ -600,6 +608,8 @@ impl<'h> Xhtml<'h> {
             Err(Failure::Malformed(reason)) => reason,
             Err(Failure::Extraction(error)) => error.to_string(),
         };
+        #[cfg(test)]
+        formats::audit::reparsed(parser.name(), &reason);
         let tika = match self.parse_with_tika_quietly(data, metadata) {
             Ok(tika) => tika,
             Err(failure) => return Ended::Failed(failure),

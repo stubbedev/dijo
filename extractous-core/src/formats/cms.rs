@@ -366,8 +366,9 @@ fn with_content<'a>(
     content: Vec<u8>,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Deferral> {
-    let (parser, start) = formats::embedded_parser(&content, &TikaMetadata::new(), Opened::Alone)
-        .ok_or_else(|| "content Tika's path parses".to_owned())?;
+    let (parser, start) =
+        formats::embedded_parser(&content, &TikaMetadata::new(), Opened::Alone)
+            .map_err(|unrouted| format!("content Tika's path parses: {unrouted:?}"))?;
     if parser.prepare(&content, &start, configs).is_err() {
         return Err(format!("content {} declines", parser.name()));
     }

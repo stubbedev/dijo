@@ -5,6 +5,8 @@
 
 mod apple_single;
 mod archive;
+#[cfg(test)]
+pub(crate) mod audit;
 mod auto_detect_reader;
 mod cms;
 pub(crate) mod data_format;
@@ -261,18 +263,15 @@ static PARSERS: &[&dyn Parser] = &[
     &xlsx::XlsxParser,
 ];
 
-/// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
-fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
+/// The native parser for `media_type` (parameters such as `charset` are ignored), or why
+/// there is none.
+fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unrouted> {
     let base = media_type.split(';').next().unwrap_or_default().trim();
     PARSERS
         .iter()
         .copied()
         .find(|parser| parser.media_types().contains(&base))
-}
-
-/// Whether any format has a native parser yet, which decides whether routing needs a detection.
-fn any_parsers() -> bool {
-    !PARSERS.is_empty()
+        .ok_or_else(|| Unrouted::Unparsed(media_type.to_owned()))
 }
 
 /// What a document is and what Tika knows about it before its parser runs: the metadata of the
@@ -302,30 +301,61 @@ pub(crate) struct Routed<'a> {
     pub(crate) input: Cow<'a, [u8]>,
 }
 
-/// Routes a document to its native parser, if its format has one. The document is detected in
-/// Rust, without the JVM, so a document a native parser reads never starts it. Documents read
-/// from a URL, files too large to read whole for their detection, and, while the Java heap is
-/// capped, every document in a program that does not count its allocations, where a native
-/// extraction cannot be held to the cap, stay with Tika. The parser itself may still leave the document to
-/// Tika, when [`parse_to_string`] or [`parse_to_stream`] has it prepare the document.
+/// Why a document goes to Tika's path without a native parser preparing it.
+#[derive(Debug)]
+pub(crate) enum Unrouted {
+    /// It is read from a URL, which Tika fetches.
+    Url,
+    /// The Java heap is capped in a program that does not count its allocations, where a native
+    /// extraction cannot be held to the cap.
+    Unbudgeted,
+    /// It is a file larger than [`MAX_DETECTED_FILE`].
+    TooLarge,
+    /// It is an embedded document without content, which Tika's zero-byte check fails.
+    Empty,
+    /// Tika's detection throws on it.
+    Undetected,
+    /// No native parser reads the type it is parsed as.
+    Unparsed(
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "only the tests ask which types have no native parser"
+            )
+        )]
+        String,
+    ),
+}
+
+/// Routes a document to its native parser, if its format has one, or says why it stays with
+/// Tika. The document is detected in Rust, without the JVM, so a document a native parser reads
+/// never starts it. Documents read from a URL, files too large to read whole for their
+/// detection, and, while the Java heap is capped, every document in a program that does not
+/// count its allocations, where a native extraction cannot be held to the cap, stay with Tika.
+/// The parser itself may still leave the document to Tika, when [`parse_to_string`] or
+/// [`parse_to_stream`] has it prepare the document.
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
-pub(crate) fn route(source: Source<'_>) -> ExtractResult<Option<Routed<'_>>> {
-    let unbudgeted = heap_cap().is_some() && !memory::counting();
-    if matches!(source, Source::Url(_)) || !any_parsers() || unbudgeted {
-        return Ok(None);
+pub(crate) fn route(source: Source<'_>) -> ExtractResult<Result<Routed<'_>, Unrouted>> {
+    if matches!(source, Source::Url(_)) {
+        return Ok(Err(Unrouted::Url));
+    }
+    if heap_cap().is_some() && !memory::counting() {
+        return Ok(Err(Unrouted::Unbudgeted));
     }
     let Some(input) = detection_input(source)? else {
-        return Ok(None);
+        return Ok(Err(Unrouted::TooLarge));
     };
     let Ok(detected) = Detected::detect(source, &input) else {
-        return Ok(None);
+        return Ok(Err(Unrouted::Undetected));
     };
-    let Some(parser) = parser_for(&detected.media_type) else {
-        return Ok(None);
+    let parser = match parser_for(&detected.media_type) {
+        Ok(parser) => parser,
+        Err(unrouted) => return Ok(Err(unrouted)),
     };
-    Ok(Some(Routed {
+    Ok(Ok(Routed {
         parser,
         detected,
         input,
@@ -353,44 +383,81 @@ pub(crate) struct EmbeddedRoute<'a> {
     pub(crate) prepared: Prepared<'a>,
 }
 
+/// Why a document embedded in one a native parser reads goes to Tika's path.
+#[derive(Debug)]
+pub(crate) enum Bridged {
+    /// No native parser prepares it.
+    Unrouted(
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "only the tests ask why no native parser prepares it"
+            )
+        )]
+        Unrouted,
+    ),
+    /// Its native parser, of this name, declines it: Tika's path parses one the parser defers,
+    /// and records the failure of one Tika's parser fails before it starts, which only that
+    /// path can tell.
+    Declined(
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "only the tests ask which parser declines a document"
+            )
+        )]
+        &'static str,
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "only the tests ask why a parser declines a document"
+            )
+        )]
+        Declined,
+    ),
+}
+
 /// The native parser of a document embedded in one a native parser reads, with the metadata it
 /// starts from, given its `data`, the `metadata` its embedding parser gives it and how its
 /// stream was `opened`, as Tika's `AutoDetectParser` and `CompositeParser` route it: detected
 /// with the resource name and `Content-Type` of its metadata as hints, then parsed by the parser
-/// of the type the metadata overrides the parser with, else of the detected type. `None` when
-/// that parser is not native, the document is empty, which Tika's zero-byte check fails, or
-/// Tika's detection throws on it.
+/// of the type the metadata overrides the parser with, else of the detected type. Otherwise why
+/// Tika's path parses it: that parser is not native, the document is empty, which Tika's
+/// zero-byte check fails, or Tika's detection throws on it.
 pub(crate) fn embedded_parser(
     data: &[u8],
     metadata: &TikaMetadata,
     opened: Opened,
-) -> Option<(&'static dyn Parser, TikaMetadata)> {
+) -> Result<(&'static dyn Parser, TikaMetadata), Unrouted> {
     if data.is_empty() {
-        return None;
+        return Err(Unrouted::Empty);
     }
-    let detected = Detected::detect_embedded(data, metadata, opened).ok()?;
-    let parser = parser_for(
-        metadata
-            .get(PARSER_OVERRIDE)
-            .unwrap_or(&detected.media_type),
-    )?;
+    let detected =
+        Detected::detect_embedded(data, metadata, opened).map_err(|_| Unrouted::Undetected)?;
+    let parsed_as = metadata
+        .get(PARSER_OVERRIDE)
+        .unwrap_or(&detected.media_type);
+    let parser = parser_for(parsed_as)?;
     let start = detected.metadata_for(parser);
-    Some((parser, start))
+    Ok((parser, start))
 }
 
 /// Routes a document embedded in one a native parser reads to its [`embedded_parser`], and
-/// returns what that parser prepared, if it takes the document. Otherwise Tika's path parses
-/// the document, as it does one the parser defers and one Tika's parser fails before it starts,
-/// as only Tika's path records that failure.
+/// returns what that parser prepared, if it takes the document, or why Tika's path parses it.
 pub(crate) fn route_embedded<'a>(
     data: &'a [u8],
     metadata: &TikaMetadata,
     opened: Opened,
     configs: &'a ParserConfigs,
-) -> Option<EmbeddedRoute<'a>> {
-    let (parser, start) = embedded_parser(data, metadata, opened)?;
-    let prepared = parser.prepare(data, &start, configs).ok()?;
-    Some(EmbeddedRoute {
+) -> Result<EmbeddedRoute<'a>, Bridged> {
+    let (parser, start) = embedded_parser(data, metadata, opened).map_err(Bridged::Unrouted)?;
+    let prepared = parser
+        .prepare(data, &start, configs)
+        .map_err(|declined| Bridged::Declined(parser.name(), declined))?;
+    Ok(EmbeddedRoute {
         parser,
         start,
         prepared,
