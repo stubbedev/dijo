@@ -260,26 +260,22 @@ fn parse_hex(text: &str) -> Option<i32> {
 /// `Integer.parseInt(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
 /// reads them, in range.
 pub(crate) fn parse_hex_int(text: &str) -> Option<i32> {
-    let (negative, digits) = match text.chars().next()? {
-        '-' => (true, &text[1..]),
-        '+' => (false, &text[1..]),
-        _ => (false, text),
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let mut magnitude: i64 = 0;
-    for character in digits.chars() {
-        magnitude = magnitude * 16 + i64::from(hex_digit(character)?);
-        if magnitude > i64::from(i32::MAX) + 1 {
-            return None;
-        }
-    }
-    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
+    parse_signed(text, 16, hex_digit).and_then(|value| i32::try_from(value).ok())
+}
+
+/// `Long.parseLong(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
+/// reads them, in range.
+pub(crate) fn parse_hex_long(text: &str) -> Option<i64> {
+    parse_signed(text, 16, hex_digit)
 }
 
 /// `Long.parseLong(text)`: an optional sign and decimal digits of any script, in range.
 pub(crate) fn parse_long(text: &str) -> Option<i64> {
+    parse_signed(text, 10, digit)
+}
+
+/// An optional sign and digits of `radix` as `value` reads them, as a `long`.
+fn parse_signed(text: &str, radix: i128, value: fn(char) -> Option<u32>) -> Option<i64> {
     let (negative, digits) = match text.chars().next()? {
         '-' => (true, &text[1..]),
         '+' => (false, &text[1..]),
@@ -290,7 +286,7 @@ pub(crate) fn parse_long(text: &str) -> Option<i64> {
     }
     let mut magnitude: i128 = 0;
     for character in digits.chars() {
-        magnitude = magnitude * 10 + i128::from(digit(character)?);
+        magnitude = magnitude * radix + i128::from(value(character)?);
         if magnitude > i128::from(i64::MAX) + 1 {
             return None;
         }
