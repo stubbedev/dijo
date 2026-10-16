@@ -2,6 +2,10 @@
 //! them to listeners. RK and MulRK records become number records, DBCell records are dropped,
 //! the drawing group records after the first and their continuations join it, and a `CONTINUE`
 //! record goes where the record before it takes it, failing after one that takes none.
+//!
+//! The records read ahead, to find whether the workbook is encrypted, are handed on as the
+//! others are. POI hands them on as read: an RK record as such, and a MulRK record, which no
+//! listener takes, not at all (#107).
 
 use std::collections::VecDeque;
 
@@ -87,18 +91,18 @@ impl<'a> Records<'a> {
         let first = read_record(&mut stream)?;
         let has_bof = matches!(first, Record::Bof { .. });
         let mut last = first.clone();
-        unread.push_back((stream.sid(), first));
+        unread.extend(cells(stream.sid(), first)?);
         let mut measured_before = measured;
         if has_bof && stream.has_next_record()? {
             stream.next_record()?;
             last = read_record(&mut stream)?;
-            unread.push_back((stream.sid(), last.clone()));
+            unread.extend(cells(stream.sid(), last.clone())?);
             if last == Record::WriteProtect && stream.has_next_record()? {
                 measured += WRITE_PROTECT_SIZE;
                 measured_before = measured;
                 stream.next_record()?;
                 last = read_record(&mut stream)?;
-                unread.push_back((stream.sid(), last.clone()));
+                unread.extend(cells(stream.sid(), last.clone())?);
             }
             if last == Record::Eof {
                 return thrown("Nothing between BOF and EOF");
@@ -206,37 +210,8 @@ impl<'a> Records<'a> {
                 return Ok(Some((record_sid, record)));
             }
             Record::DbCell => return Ok(None),
-            Record::Rk { cell, value } => {
-                return Ok(Some((sid::NUMBER, Record::Number { cell, value })))
-            }
-            Record::MulRk {
-                row,
-                first_column,
-                last_column,
-                values,
-            } => {
-                let columns = i32::from(last_column) - i32::from(first_column) + 1;
-                if columns < 0 {
-                    return thrown(format!(
-                        "Cannot create RKRecords with negative number of columns: {columns}"
-                    ));
-                }
-                if columns as usize > values.len() || columns == 0 {
-                    return thrown("a MulRK record names more columns than it holds");
-                }
-                let mut numbers =
-                    values
-                        .iter()
-                        .take(columns as usize)
-                        .enumerate()
-                        .map(|(k, &(xf, value))| {
-                            let cell = CellRef {
-                                row,
-                                column: (k as i32 + i32::from(first_column)) as i16,
-                                xf,
-                            };
-                            (sid::NUMBER, Record::Number { cell, value })
-                        });
+            Record::Rk { .. } | Record::MulRk { .. } => {
+                let mut numbers = cells(record_sid, record)?.into_iter();
                 let first = numbers.next();
                 self.unread.extend(numbers);
                 return Ok(first);
@@ -266,6 +241,44 @@ impl<'a> Records<'a> {
         }
         self.last = last_of(&record);
         Ok(Some((record_sid, record)))
+    }
+}
+
+/// The records POI hands on for `record` of type `record_sid`: a number record for an RK
+/// record, one for each cell of a MulRK record, and any other record as it is.
+fn cells(record_sid: u16, record: Record) -> Read<Vec<(u16, Record)>> {
+    match record {
+        Record::Rk { cell, value } => Ok(vec![(sid::NUMBER, Record::Number { cell, value })]),
+        Record::MulRk {
+            row,
+            first_column,
+            last_column,
+            values,
+        } => {
+            let columns = i32::from(last_column) - i32::from(first_column) + 1;
+            if columns < 0 {
+                return thrown(format!(
+                    "Cannot create RKRecords with negative number of columns: {columns}"
+                ));
+            }
+            if columns as usize > values.len() || columns == 0 {
+                return thrown("a MulRK record names more columns than it holds");
+            }
+            Ok(values
+                .iter()
+                .take(columns as usize)
+                .enumerate()
+                .map(|(k, &(xf, value))| {
+                    let cell = CellRef {
+                        row,
+                        column: (k as i32 + i32::from(first_column)) as i16,
+                        xf,
+                    };
+                    (sid::NUMBER, Record::Number { cell, value })
+                })
+                .collect())
+        }
+        record => Ok(vec![(record_sid, record)]),
     }
 }
 
@@ -364,11 +377,21 @@ mod tests {
     }
 
     #[test]
-    fn hands_on_the_records_read_ahead_as_read() {
+    fn hands_on_the_records_read_ahead_as_the_others() {
         let mut data = bof_alone(0x10);
         data.extend(record(sid::RK, &[3, 0, 1, 0, 15, 0, 2, 0, 0, 0]));
         let delivered = events(&data).unwrap();
-        assert!(matches!(delivered[1], Event::Record { sid: sid::RK, .. }));
+        assert_eq!(delivered[1], number(1, 0.0));
+        let mut data = bof_alone(0x10);
+        let mut mul_rk = vec![3, 0, 1, 0];
+        for value in [2, 3] {
+            mul_rk.extend([15, 0]);
+            mul_rk.extend(((value << 2) | 2i32).to_le_bytes());
+        }
+        mul_rk.extend([2, 0]);
+        data.extend(record(sid::MUL_RK, &mul_rk));
+        let delivered = events(&data).unwrap();
+        assert_eq!(delivered[1..], [number(1, 2.0), number(2, 3.0)]);
         let mut data = bof_alone(0x10);
         data.extend(record(sid::EOF, &[]));
         assert!(events(&data).is_err());

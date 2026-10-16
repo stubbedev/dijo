@@ -8,14 +8,17 @@ use std::collections::HashMap;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{external_reference, name};
 use crate::formats::xhtml::Xhtml;
+use crate::formats::xlsx::SPREADSHEETML_NS;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
 use crate::java::is_blank;
-use crate::java::{equals_ignore_case, trim};
+use crate::java::trim;
 
 /// The namespace of relationship ids.
 const RELATIONSHIPS_NS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+/// The namespace of Excel 2010's absolute path of the workbook.
+const ABSOLUTE_PATH_NS: &str = "http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac";
 
 mod meta {
     pub(super) use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
@@ -54,8 +57,9 @@ pub(crate) struct SheetRef {
     pub(crate) id: String,
 }
 
-/// `XSSFReader.XMLSheetRefReader`: each `sheet` element with a name and an id, whichever
-/// namespace and case they are in, the sheets with an empty id dropped.
+/// `XSSFReader.XMLSheetRefReader`: each SpreadsheetML `sheet` element with a name and a
+/// relationship id, the sheets with an empty id dropped. POI matches the element and its
+/// attributes by local name, in any namespace and case (#95).
 #[derive(Debug, Default)]
 pub(crate) struct SheetRefs {
     pub(crate) sheets: Vec<SheetRef>,
@@ -64,30 +68,46 @@ pub(crate) struct SheetRefs {
 impl SaxHandler for SheetRefs {
     fn start_element(
         &mut self,
-        _namespace: &str,
+        namespace: &str,
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        if !equals_ignore_case(local_name, "sheet") {
+        if namespace != SPREADSHEETML_NS || local_name != "sheet" {
             return Ok(());
         }
-        let mut name = None;
-        let mut id = None;
-        for attribute in attributes {
-            if equals_ignore_case(&attribute.local_name, "name") {
-                name = Some(attribute.value.clone());
-            } else if equals_ignore_case(&attribute.local_name, "id") {
-                id = Some(attribute.value.clone());
+        let name = attribute(attributes, "", "name");
+        let id = attribute(attributes, RELATIONSHIPS_NS, "id");
+        if let (Some(name), Some(id)) = (name, id) {
+            if !id.is_empty() {
+                self.sheets.push(SheetRef {
+                    name: name.to_owned(),
+                    id: id.to_owned(),
+                });
             }
-            if let (Some(name), Some(id)) = (&name, &id) {
-                if !id.is_empty() {
-                    self.sheets.push(SheetRef {
-                        name: name.clone(),
-                        id: id.clone(),
-                    });
-                }
-                break;
-            }
+        }
+        Ok(())
+    }
+
+    ignore_rest!();
+}
+
+/// Whether a sheet is protected, as `XSSFSheetInterestingPartsCapturer` notes it: whether it
+/// has a SpreadsheetML `sheetProtection`. Tika takes any element of the qualified name
+/// `sheetProtection` for one (#95).
+#[derive(Debug, Default)]
+pub(crate) struct Protection {
+    pub(crate) protected: bool,
+}
+
+impl SaxHandler for Protection {
+    fn start_element(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        _attributes: &[Attribute],
+    ) -> Result<(), Failure> {
+        if namespace == SPREADSHEETML_NS && local_name == "sheetProtection" {
+            self.protected = true;
         }
         Ok(())
     }
@@ -102,12 +122,15 @@ enum Hidden {
     VeryHidden(Option<String>),
 }
 
-/// `WorkbookMetadataHandler`: the workbook's original path, hidden sheets and code name.
+/// `WorkbookMetadataHandler`: the workbook's original path, hidden sheets and code name, from
+/// their elements and attributes by namespace. Tika matches them by local name alone (#95).
 #[derive(Debug, Default)]
 pub(crate) struct WorkbookMetadata {
     path: Option<String>,
     hidden: Vec<Hidden>,
     code_name: Option<String>,
+    /// Whether the workbook counts its dates from 1904, which Tika does not read (#92).
+    pub(crate) date_1904: bool,
 }
 
 impl WorkbookMetadata {
@@ -146,26 +169,28 @@ impl WorkbookMetadata {
 impl SaxHandler for WorkbookMetadata {
     fn start_element(
         &mut self,
-        _namespace: &str,
+        namespace: &str,
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        match local_name {
-            "absPath" => {
-                if let Some(url) = local_attribute(attributes, "url") {
+        match (namespace, local_name) {
+            (ABSOLUTE_PATH_NS, "absPath") => {
+                if let Some(url) = attribute(attributes, "", "url") {
                     self.path = Some(url.to_owned());
                 }
             }
-            "sheet" => {
-                let name = local_attribute(attributes, "name").map(str::to_owned);
-                match local_attribute(attributes, "state") {
+            (SPREADSHEETML_NS, "sheet") => {
+                let name = attribute(attributes, "", "name").map(str::to_owned);
+                match attribute(attributes, "", "state") {
                     Some("hidden") => self.hidden.push(Hidden::Hidden(name)),
                     Some("veryHidden") => self.hidden.push(Hidden::VeryHidden(name)),
                     _ => {}
                 }
             }
-            "workbookPr" => {
-                if let Some(code_name) = local_attribute(attributes, "codeName") {
+            (SPREADSHEETML_NS, "workbookPr") => {
+                self.date_1904 =
+                    matches!(attribute(attributes, "", "date1904"), Some("1" | "true"));
+                if let Some(code_name) = attribute(attributes, "", "codeName") {
                     if !is_blank(code_name) {
                         self.code_name = Some(code_name.to_owned());
                     }
@@ -269,7 +294,7 @@ impl SaxHandler for ThreadedComments<'_, '_> {
 }
 
 /// `DrawingShapeHandler`: the text of each shape's text body as a paragraph, and the links of
-/// shapes whose relationship the drawings of the sheets so far named.
+/// shapes whose relationship their drawing names.
 pub(crate) struct DrawingShapes<'x, 'h, 'l> {
     xhtml: &'x mut Xhtml<'h>,
     hyperlinks: &'l HashMap<String, String>,

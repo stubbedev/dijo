@@ -72,12 +72,33 @@ const MEDIA_TYPES: [&str; 34] = [
 ];
 
 /// Tika's `NSNormalizerContentHandler`: a namespace of OpenOffice.org 1 in its OpenDocument
-/// form. Tika maps the namespaces of elements only, never those of attributes.
+/// form.
 pub(crate) fn normalized_namespace(namespace: &str) -> Cow<'_, str> {
     match namespace.strip_prefix(OLD_NS) {
         Some(rest) => Cow::Owned(format!("{NEW_NS}{rest}:1.0")),
         None => Cow::Borrowed(namespace),
     }
+}
+
+/// `attributes` with their OpenOffice.org 1 namespaces in OpenDocument form, as their
+/// elements'. Tika's `NSNormalizerContentHandler` passes the attributes on as written, so the
+/// handlers never find those of OpenOffice.org 1 documents (#90).
+pub(crate) fn normalized_attributes(attributes: &[Attribute]) -> Cow<'_, [Attribute]> {
+    if !attributes
+        .iter()
+        .any(|attribute| attribute.namespace.starts_with(OLD_NS))
+    {
+        return Cow::Borrowed(attributes);
+    }
+    Cow::Owned(
+        attributes
+            .iter()
+            .map(|attribute| Attribute {
+                namespace: normalized_namespace(&attribute.namespace).into_owned(),
+                ..attribute.clone()
+            })
+            .collect(),
+    )
 }
 
 /// What Tika's `OpenDocumentParser` does with an entry of the archive, by its name.
@@ -347,11 +368,7 @@ fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Re
             }
             EntryKind::Body => {
                 let bytes = archive.read(entry)?;
-                let mut body = body::Body::new(
-                    xhtml,
-                    configs.office.includes_deleted_content(),
-                    body::Namespaces::Normalized,
-                );
+                let mut body = body::Body::new(xhtml, configs.office.includes_deleted_content());
                 xml::parse_sax(&bytes, entry.name(), &mut body)?;
             }
             EntryKind::Embedded => {
@@ -374,7 +391,7 @@ mod tests {
     use super::*;
     use crate::config::OfficeParserConfig;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_with, conformance_corpus,
+        assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, Adjustments,
         Scratch,
     };
     use std::io::Cursor;
@@ -396,6 +413,63 @@ mod tests {
             .collect()
     }
 
+    /// How many headings and notes Tika's XHTML `xhtml` has: the native parser ends each with a
+    /// line break, where Tika ends them in the ODF namespace, which breaks no line (#90).
+    pub(crate) fn heading_and_note_ends(xhtml: &str, _native: &str) -> usize {
+        const NOTES: [&str; 3] = ["class=\"note\"", "class=\"annotation\"", "class=\"notes\""];
+        let mut ends = 0;
+        let mut paragraphs = Vec::new();
+        let mut rest = xhtml;
+        while let Some(at) = rest.find('<') {
+            let tag_end = rest[at..].find('>').map_or(rest.len(), |end| at + end + 1);
+            let tag = &rest[at..tag_end];
+            rest = &rest[tag_end..];
+            let name: String = tag
+                .trim_start_matches(['<', '/'])
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            let heading = matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6");
+            let note = name == "p" && NOTES.iter().any(|class| tag.contains(class));
+            if tag.starts_with("</") {
+                if heading || (name == "p" && paragraphs.pop() == Some(true)) {
+                    ends += 1;
+                }
+            } else if tag.ends_with("/>") {
+                if heading || note {
+                    ends += 1;
+                }
+            } else if name == "p" {
+                paragraphs.push(note);
+            }
+        }
+        ends
+    }
+
+    /// How the native parser departs from Tika's path: it ends headings and notes as blocks.
+    pub(crate) const DEPARTURES: Adjustments = Adjustments {
+        line_breaks: Some(heading_and_note_ends),
+        metadata: &[],
+        wrappers: &[],
+        repeated: &[],
+        final_in_head: &[],
+    };
+
+    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
+        assert_same_as_tika_adjusting(documents, tika_name, &ParserConfigs::default(), DEPARTURES);
+    }
+
+    #[test]
+    fn counts_headings_and_notes_in_xhtml() {
+        assert_eq!(
+            heading_and_note_ends(
+                "<h1>a</h1><p>b<p class=\"note\"><p>c</p></p></p><h2/><p class=\"notes\"/><p/>",
+                ""
+            ),
+            4
+        );
+    }
+
     #[test]
     fn extracts_what_tikas_path_extracts() {
         assert_same_as_tika(&paths(&DOCUMENTS), TIKA_NAME);
@@ -408,19 +482,14 @@ mod tests {
 
     /// Tika's own test documents of this format, as `(directory, name)` in the directory
     /// `CONFORMANCE_CORPUS` names, which `just conformance` prepares.
-    const CONFORMANCE: [(&str, &str); 27] = [
-        (INTEGRATION, "test-columnar.ods"),
+    const CONFORMANCE: [(&str, &str); 21] = [
         (INTEGRATION, "testPhoneNumberExtractor.odt"),
-        (INTEGRATION, "testStarOffice-6.0-writer.sxw"),
-        (INTEGRATION, "testStarOffice-6.0-writer-template.stw"),
         (MISC_OFFICE, "testFooter.ods"),
         (MISC_OFFICE, "testFooter.odt"),
         (MISC_OFFICE, "testMasterFooter.odp"),
         (MISC_OFFICE, "testNPEOpenDocument.odt"),
-        (MISC_OFFICE, "testODFwithOOo3.odt"),
         (MISC_OFFICE, "testODPMacro.odp"),
         (MISC_OFFICE, "testODTNoMeta.odt"),
-        (MISC_OFFICE, "testODP_NPE.odp"),
         (MISC_OFFICE, "testODSMacro.ods"),
         (MISC_OFFICE, "testODTEmbeddedImageLink.odt"),
         (MISC_OFFICE, "testODTEmbedded.odt"),
@@ -429,13 +498,50 @@ mod tests {
         (MISC_OFFICE, "testODTStyles2.odt"),
         (MISC_OFFICE, "testODTStyles3.odt"),
         (MISC_OFFICE, "testODT_svgTitleInStyledSpan.odt"),
-        (MISC_OFFICE, "testOpenOffice2.odf"),
         (MISC_OFFICE, "testOpenOffice2.odt"),
         (MISC_OFFICE, "testStyles.odt"),
         (MISC_OFFICE, "versions/LibreOfficeCalc_ods_1.3.ods"),
         (MISC_OFFICE, "versions/LibreOfficeDraw_odg_1.3.odg"),
         (MISC_OFFICE, "versions/LibreOfficeImpress_odp_1.3.odp"),
         (MISC_OFFICE, "versions/LibreOfficeWriter_odt_1.3.odt"),
+    ];
+
+    /// Tika's own test documents the native parser reads differently from Tika's path on
+    /// purpose (#90), as `(directory, name, XHTML it writes)`: spaces as `text:c` counts them,
+    /// keywords each a value of their own, and the attributes of OpenOffice.org 1 documents.
+    const CONFORMANCE_DEPARTING: [(&str, &str, &[&str]); 6] = [
+        (
+            INTEGRATION,
+            "test-columnar.ods",
+            &["<p>This is row            0 of           10</p>"],
+        ),
+        (
+            INTEGRATION,
+            "testStarOffice-6.0-writer.sxw",
+            &[
+                "<meta name=\"odf:version\" content=\"1.0\" />",
+                "<h1 />\n<p>Example Text",
+            ],
+        ),
+        (
+            INTEGRATION,
+            "testStarOffice-6.0-writer-template.stw",
+            &["<meta name=\"meta:page-count\" content=\"1\" />"],
+        ),
+        (
+            MISC_OFFICE,
+            "testODFwithOOo3.odt",
+            &[
+                "<meta name=\"meta:keyword\" content=\"Lucene\" />",
+                "<meta name=\"dc:subject\" content=\"Tika\" />",
+            ],
+        ),
+        (MISC_OFFICE, "testODP_NPE.odp", &["  "]),
+        (
+            MISC_OFFICE,
+            "testOpenOffice2.odf",
+            &["<meta name=\"meta:keyword\" content=\"fox\" />"],
+        ),
     ];
 
     /// Tika's own test documents of this format that Tika's path keeps, and why.
@@ -452,6 +558,12 @@ mod tests {
             .collect();
         let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika(&documents, TIKA_NAME);
+        for (directory, name, texts) in CONFORMANCE_DEPARTING {
+            let (xml, _) = extract(&std::fs::read(corpus.join(directory).join(name)).unwrap());
+            for text in texts {
+                assert!(xml.contains(text), "{name}: {text:?} in {xml}");
+            }
+        }
     }
 
     #[test]
@@ -470,9 +582,9 @@ mod tests {
         }
     }
 
-    const NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#;
-    const TEXT: &str = "application/vnd.oasis.opendocument.text";
-    const MANIFEST: (&str, &str) = (
+    pub(super) const NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#;
+    pub(super) const TEXT: &str = "application/vnd.oasis.opendocument.text";
+    pub(super) const MANIFEST: (&str, &str) = (
         "META-INF/manifest.xml",
         r#"<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/></manifest:manifest>"#,
     );
@@ -484,7 +596,7 @@ mod tests {
     }
 
     /// An OpenDocument file of `entries`, stored in that order after the `mimetype`.
-    fn document(media_type: &str, entries: &[(&str, &str)]) -> Vec<u8> {
+    pub(super) fn document(media_type: &str, entries: &[(&str, &str)]) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options =
             zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -502,7 +614,7 @@ mod tests {
         let text = content(
             &r#"<office:text><text:sequence-decls><text:sequence-decl text:name="Table"/></text:sequence-decls><text:tracked-changes><text:changed-region text:id="c1"><text:deletion><text:p>gone words</text:p></text:deletion></text:changed-region></text:tracked-changes>
 <text:h text:outline-level="2">Heading <text:span text:style-name="T1">bold</text:span> two</text:h><text:h>Plain heading</text:h><text:h text:outline-level="9">Deep</text:h><text:h text:outline-level="0">Zero</text:h>
-<text:p text:style-name="P1">Bold paragraph <text:span text:style-name="T2">italic under</text:span><text:span text:style-name="T3">semi</text:span> end<text:tab/>tab<text:s text:c="3"/>space<text:line-break/>next</text:p>
+<text:p text:style-name="P1">Bold paragraph <text:span text:style-name="T2">italic under</text:span><text:span text:style-name="T3">semi</text:span> end<text:tab/>tab<text:s/>space<text:line-break/>next</text:p>
 <text:p>Before note<text:note text:id="n1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Note text</text:p></text:note-body></text:note>@GAP@after note &amp; more &#x263A; 😀 a]b</text:p>
 <text:p>Link <text:a xlink:href="http://example.com/" xlink:title="Ex"><text:span text:style-name="T1">styled link</text:span></text:a> after</text:p>
 <text:list text:style-name="L1"><text:list-item><text:p>One</text:p><text:list><text:list-item><text:p>Nested</text:p></text:list-item></text:list></text:list-item><text:list-item><text:p>Two</text:p></text:list-item></text:list><text:list text:style-name="L2"><text:list-item><text:p>Bullet</text:p></text:list-item></text:list><text:list><text:list-item><text:p>Unstyled</text:p></text:list-item></text:list>
@@ -521,7 +633,7 @@ mod tests {
             r#"<office:chart><table:table><table:table-row><table:table-cell><text:p>Chart cell</text:p></table:table-cell></table:table-row></table:table></office:chart>"#,
         );
         let meta = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} office:version="1.3"><office:meta><meta:generator>Test</meta:generator><dc:title>Elements</dc:title><meta:initial-creator>Anna</meta:initial-creator><dc:creator>Bo</dc:creator><meta:keyword>hav</meta:keyword><meta:keyword>sten</meta:keyword><dc:subject>Lys</dc:subject><dc:language>da-DK</dc:language><dc:date>2026-01-02T03:04:05</dc:date><meta:creation-date>2026-01-01T00:00:00</meta:creation-date><meta:editing-duration>PT1M</meta:editing-duration><meta:editing-cycles>3</meta:editing-cycles><meta:user-defined meta:name="Info 1">Tekst</meta:user-defined><meta:user-defined meta:name="Info 1">Mere</meta:user-defined><meta:document-statistic meta:page-count="2" meta:paragraph-count="9" meta:word-count="40" meta:character-count="200" meta:table-count="1" meta:image-count="2" meta:object-count="1"/></office:meta></office:document-meta>"#
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} office:version="1.3"><office:meta><meta:generator>Test</meta:generator><dc:title>Elements</dc:title><meta:initial-creator>Anna</meta:initial-creator><dc:creator>Bo</dc:creator><meta:keyword>hav</meta:keyword><dc:subject>Lys</dc:subject><dc:language>da-DK</dc:language><dc:date>2026-01-02T03:04:05</dc:date><meta:creation-date>2026-01-01T00:00:00</meta:creation-date><meta:editing-duration>PT1M</meta:editing-duration><meta:editing-cycles>3</meta:editing-cycles><meta:user-defined meta:name="Info 1">Tekst</meta:user-defined><meta:user-defined meta:name="Info 1">Mere</meta:user-defined><meta:document-statistic meta:page-count="2" meta:paragraph-count="9" meta:word-count="40" meta:character-count="200" meta:table-count="1" meta:image-count="2" meta:object-count="1"/></office:meta></office:document-meta>"#
         );
         let scratch = Scratch::new("odf-elements");
         let documents = [
@@ -566,7 +678,7 @@ mod tests {
                     ),
                     (
                         "meta.xml",
-                        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="http://openoffice.org/2000/office" xmlns:meta="http://openoffice.org/2000/meta" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.0"><office:meta><meta:generator>StarOffice</meta:generator><dc:title>Old</dc:title><meta:document-statistic meta:page-count="1"/></office:meta></office:document-meta>"#,
+                        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="http://openoffice.org/2000/office" xmlns:meta="http://openoffice.org/2000/meta" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><meta:generator>StarOffice</meta:generator><dc:title>Old</dc:title></office:meta></office:document-meta>"#,
                     ),
                     MANIFEST,
                 ],
@@ -595,34 +707,6 @@ mod tests {
                 ),
             ),
             scratch.write(
-                "font-weight.odt",
-                &document(
-                    TEXT,
-                    &[
-                        (
-                            "content.xml",
-                            &content(r#"<office:text><text:p>x</text:p></office:text>"#)
-                                .replace(r#"fo:font-weight="600""#, r#"fo:font-weight="6x""#),
-                        ),
-                        MANIFEST,
-                    ],
-                ),
-            ),
-            scratch.write(
-                "empty-font-weight.odt",
-                &document(
-                    TEXT,
-                    &[
-                        (
-                            "content.xml",
-                            &content(r#"<office:text><text:p>x</text:p></office:text>"#)
-                                .replace(r#"fo:font-weight="600""#, r#"fo:font-weight="""#),
-                        ),
-                        MANIFEST,
-                    ],
-                ),
-            ),
-            scratch.write(
                 "meta.odt",
                 &document(
                     TEXT,
@@ -636,6 +720,63 @@ mod tests {
         ];
         let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
         assert_fails_as_tika(&paths);
+    }
+
+    /// The XHTML and metadata the native parser extracts from `input`.
+    fn extract(input: &[u8]) -> (String, crate::Metadata) {
+        crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(input)
+            .unwrap()
+    }
+
+    /// What Tika's path gets wrong and the native parser does not (#90): headings and notes end
+    /// as blocks, `text:c` counts spaces, malformed style values are ignored rather than failing
+    /// the document, keywords and creators are values of their own, and the attributes of
+    /// OpenOffice.org 1 documents are read.
+    #[test]
+    fn reads_what_tikas_path_misreads() {
+        let text = content(
+            r#"<office:text><text:h text:outline-level="x">Heading</text:h><text:p>a<text:s text:c="3"/>b<text:note><text:note-body><text:p>Note</text:p></text:note-body></text:note>after</text:p><text:p><text:span text:style-name="T3">semi</text:span><text:span text:style-name="T1">bold</text:span></text:p></office:text>"#,
+        )
+        .replace(r#"fo:font-weight="600""#, r#"fo:font-weight="6x""#);
+        let meta = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES}><office:meta><dc:creator>Bo</dc:creator><meta:initial-creator>Anna</meta:initial-creator><meta:keyword>hav</meta:keyword><meta:keyword>sten</meta:keyword></office:meta></office:document-meta>"#
+        );
+        let input = document(
+            TEXT,
+            &[("content.xml", &text), ("meta.xml", &meta), MANIFEST],
+        );
+        let (xml, metadata) = extract(&input);
+        assert!(
+            xml.contains(
+                "<h1><b><u>Heading</u></b></h1>\n<p>a   b<p class=\"note\"> Note </p>\nafter</p>\n\
+                 <p><i>semi</i><b>bold</b></p>"
+            ),
+            "{xml}"
+        );
+        assert_eq!(metadata["dc:creator"], ["Bo", "Anna"]);
+        assert_eq!(metadata["meta:keyword"], ["hav", "sten"]);
+        assert_eq!(metadata["dc:subject"], ["hav", "sten"]);
+
+        let old = document(
+            "application/vnd.sun.xml.writer",
+            &[
+                (
+                    "content.xml",
+                    r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="http://openoffice.org/2000/office" xmlns:style="http://openoffice.org/2000/style" xmlns:text="http://openoffice.org/2000/text" xmlns:fo="http://www.w3.org/1999/XSL/Format"><office:automatic-styles><text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style></office:automatic-styles><office:body><text:list text:style-name="L1"><text:list-item><text:p>One</text:p></text:list-item></text:list></office:body></office:document-content>"#,
+                ),
+                (
+                    "meta.xml",
+                    r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="http://openoffice.org/2000/office" xmlns:meta="http://openoffice.org/2000/meta" office:version="1.0"><office:meta><meta:document-statistic meta:page-count="1"/></office:meta></office:document-meta>"#,
+                ),
+                MANIFEST,
+            ],
+        );
+        let (xml, metadata) = extract(&old);
+        assert!(xml.contains("<ol>\t<li><p>One</p>\n</li>\n</ol>"), "{xml}");
+        assert_eq!(metadata["odf:version"], ["1.0"]);
+        assert_eq!(metadata["meta:page-count"], ["1"]);
     }
 
     #[test]
@@ -766,10 +907,11 @@ mod tests {
             office: OfficeParserConfig::new().set_include_deleted_content(true),
             ..ParserConfigs::default()
         };
-        assert_same_as_tika_with(
+        assert_same_as_tika_adjusting(
             &paths(&["../quality/corpus/revisions.odt"]),
             TIKA_NAME,
             &configs,
+            DEPARTURES,
         );
     }
 }

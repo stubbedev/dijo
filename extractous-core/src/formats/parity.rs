@@ -25,6 +25,10 @@
 //! which parses an embedded document whole, may go on to more parsers and failures than Tika's,
 //! which stops at the length limit; Tika's must lead the native ones.
 //!
+//! Where a native parser departs from Tika's path on purpose, fixing one of Tika's quirks, a
+//! test names the departure, and exactly that is taken out before the results are compared:
+//! see [`Departure`], [`NativeRewrite`] and [`Adjustments`].
+//!
 //! What OCR reads is not compared, the quality corpus scores it instead: the text in each div of
 //! class `ocr`, in the XHTML and where it stands in the plain text, and the values of the
 //! reports of how each image was read. The rest of a document OCR reads is compared exactly, in
@@ -950,7 +954,283 @@ pub(crate) fn assert_same_as_tika_with(
         delegates: &[],
         departures: &[],
     });
-    compare(documents, configs, expected, None);
+    compare(documents, configs, expected, None, Adjustments::default());
+}
+
+/// What a native parser writes differently from Tika's path on purpose, where it fixes one of
+/// Tika's quirks, which a comparison takes out of the native result before comparing it.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Adjustments {
+    /// Counts, in Tika's and the native parser's streamed UTF-8 XHTML of a document, the line
+    /// breaks the native parser adds after blocks that Tika's path does not end as blocks or
+    /// does not write. Up to that many line breaks where Tika's text and XHTML have none are
+    /// taken out of the native ones, exactly that many where the output is not cut by the
+    /// length limit, and nothing else.
+    pub(crate) line_breaks: Option<fn(&str, &str) -> usize>,
+    /// Metadata the native parser sets where Tika's path sets none: left out of the native
+    /// metadata, and its `meta` element out of the XHTML head, where Tika's has no value under it.
+    pub(crate) metadata: &'static [&'static str],
+    /// The start tags of elements the native parser wraps around what Tika's path writes
+    /// unwrapped: taken out of the native XHTML with their end tags.
+    pub(crate) wrappers: &'static [&'static str],
+    /// The starts of empty elements Tika's path writes more often than the native parser, which
+    /// writes each once: as many of each as Tika's XHTML has more are taken out of it.
+    pub(crate) repeated: &'static [&'static str],
+    /// Metadata the native parser has its final value of when it writes the XHTML head, where
+    /// Tika's path writes the head with a value it changes later: Tika's `meta` element of it
+    /// is compared with its final value, and where the length limit cut the output before Tika
+    /// changed it, Tika's value is taken as the native one.
+    pub(crate) final_in_head: &'static [&'static str],
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts exactly what Tika's path does under the settings `configs`, but for
+/// its `adjustments`.
+pub(crate) fn assert_same_as_tika_adjusting(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+    adjustments: Adjustments,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures: &[],
+    });
+    compare(documents, configs, expected, None, adjustments);
+}
+
+/// Tika's and the native result without their `adjustments` from each other: the metadata
+/// Tika's path leaves unset, with its `meta` element in the XHTML head, the native wrappers,
+/// Tika's repeated elements, and `line_breaks`, those the XHTML says the native parser adds,
+/// where they are its only other difference.
+fn without_adjustments(
+    mut tika: Extracted,
+    mut native: Extracted,
+    char_set: CharSet,
+    cut: Option<Output>,
+    line_breaks: usize,
+    adjustments: Adjustments,
+) -> (Extracted, Extracted) {
+    let unset: Vec<&str> = adjustments
+        .metadata
+        .iter()
+        .copied()
+        .filter(|name| !tika.metadata.iter().any(|(tika_name, _)| tika_name == name))
+        .collect();
+    native
+        .metadata
+        .retain(|(name, _)| !unset.contains(&name.as_str()));
+    let (Some(mut native_text), Some(mut tika_text)) = (
+        decoded(&native.text, char_set),
+        decoded(&tika.text, char_set),
+    ) else {
+        return (tika, native);
+    };
+    for wrapper in adjustments.wrappers {
+        native_text = without_wrapper(&native_text, wrapper);
+    }
+    for name in adjustments.final_in_head {
+        // Cut by the length limit, Tika's value is the one it had where the limit stopped it.
+        let native_values = native
+            .metadata
+            .iter()
+            .find(|(native_name, _)| native_name == name)
+            .map(|(_, values)| values.clone());
+        if let (Some(_), Some(values)) = (cut, native_values) {
+            if let Some((_, tika_values)) = tika
+                .metadata
+                .iter_mut()
+                .find(|(tika_name, _)| tika_name == name)
+            {
+                *tika_values = values;
+            }
+        }
+        let Some((_, values)) = tika
+            .metadata
+            .iter()
+            .find(|(tika_name, _)| tika_name == name)
+        else {
+            continue;
+        };
+        let [value] = values.as_slice() else {
+            continue;
+        };
+        let element = format!("<meta name=\"{name}\" content=\"");
+        if let Some(start) = tika_text.find(&element).map(|at| at + element.len()) {
+            if let Some(end) = tika_text[start..].find('"') {
+                tika_text.replace_range(start..start + end, value);
+            }
+        }
+    }
+    for start in adjustments.repeated {
+        tika_text = without_repeats(&tika_text, &native_text, start);
+    }
+    tika.text = encoded_as(&tika_text, char_set);
+    // Each `meta` element is followed by a line break, which the length limit counts.
+    let mut spent = 0;
+    for name in unset {
+        let element = format!("<meta name=\"{name}\" content=\"");
+        if let Some(start) = native_text.find(&element) {
+            if let Some(end) = native_text[start..].find("/>\n") {
+                native_text.replace_range(start..start + end + "/>\n".len(), "");
+                spent += 1;
+            }
+        }
+    }
+    let text = without_line_breaks(&native_text, &tika_text, cut, line_breaks, spent)
+        .unwrap_or(native_text);
+    native.text = encoded_as(&text, char_set);
+    (tika, native)
+}
+
+/// `text` written in `char_set`.
+fn encoded_as(text: &str, char_set: CharSet) -> Vec<u8> {
+    match char_set {
+        CharSet::UTF_16BE => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+        CharSet::UTF_8 | CharSet::US_ASCII => text.as_bytes().to_vec(),
+    }
+}
+
+/// `xhtml` without each element that starts with `start`, its content kept: the start tag and
+/// the end tag that matches it.
+fn without_wrapper(xhtml: &str, start: &str) -> String {
+    let name: String = start
+        .trim_start_matches('<')
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let (open, close) = (format!("<{name}"), format!("</{name}>"));
+    let mut text = xhtml.to_owned();
+    while let Some(at) = text.find(start) {
+        let mut depth = 0;
+        let mut index = at + start.len();
+        let end = loop {
+            let next_open = text[index..].find(&open).map(|found| index + found);
+            let Some(next_close) = text[index..].find(&close).map(|found| index + found) else {
+                return text;
+            };
+            match next_open {
+                Some(next_open) if next_open < next_close => {
+                    depth += 1;
+                    index = next_open + open.len();
+                }
+                _ if depth > 0 => {
+                    depth -= 1;
+                    index = next_close + close.len();
+                }
+                _ => break next_close,
+            }
+        };
+        text.replace_range(end..end + close.len(), "");
+        text.replace_range(at..at + start.len(), "");
+    }
+    text
+}
+
+/// `tika` without as many of each empty element starting with `start` as it has more than
+/// `native`, the first of them.
+fn without_repeats(tika: &str, native: &str, start: &str) -> String {
+    let elements = |xhtml: &str| -> Vec<String> {
+        let mut found = Vec::new();
+        let mut rest = xhtml;
+        while let Some(at) = rest.find(start) {
+            let Some(end) = rest[at..].find("/>") else {
+                break;
+            };
+            found.push(rest[at..at + end + 2].to_owned());
+            rest = &rest[at + end + 2..];
+        }
+        found
+    };
+    let native_elements = elements(native);
+    let mut text = tika.to_owned();
+    let mut seen: Vec<String> = Vec::new();
+    for element in elements(tika) {
+        if seen.contains(&element) {
+            continue;
+        }
+        let in_native = native_elements.iter().filter(|e| **e == element).count();
+        let more = tika
+            .matches(element.as_str())
+            .count()
+            .saturating_sub(in_native);
+        for _ in 0..more {
+            if let Some(at) = text.find(element.as_str()) {
+                text.replace_range(at..at + element.len(), "");
+            }
+        }
+        seen.push(element);
+    }
+    text
+}
+
+/// The native text without the `line_breaks` it has more than Tika's, when they are all that
+/// differs: exactly that many, or, where the length limit `cut` the output, up to that many. A
+/// cut native text ends early by as many characters as it has line breaks more, and `spent`
+/// more, which went to departing metadata: where it ends, Tika's may go on with as many
+/// characters, which are taken as Tika's, while the native one only ends its open elements.
+fn without_line_breaks(
+    native: &str,
+    tika: &str,
+    cut: Option<Output>,
+    line_breaks: usize,
+    spent: usize,
+) -> Option<String> {
+    if line_breaks == 0 && (cut.is_none() || spent == 0) {
+        return None;
+    }
+    let mut kept = String::with_capacity(native.len());
+    let mut tika_chars = tika.char_indices().peekable();
+    let mut removed = 0;
+    let mut native_chars = native.char_indices().peekable();
+    while let Some(&(at, c)) = native_chars.peek() {
+        match tika_chars.peek() {
+            Some(&(_, t)) if t == c => {
+                kept.push(c);
+                tika_chars.next();
+                native_chars.next();
+            }
+            _ if c == '\n' && removed < line_breaks => {
+                removed += 1;
+                native_chars.next();
+            }
+            _ if cut.is_some() && is_closing_tags(&native[at..]) => break,
+            _ => return None,
+        }
+    }
+    let left = tika_chars.peek().map_or("", |&(at, _)| &tika[at..]);
+    let aligned = match cut {
+        Some(output) => {
+            let mut in_tag = false;
+            let text = left.chars().filter(|&c| {
+                let markup = output == Output::Xml && (in_tag || c == '<');
+                in_tag = markup && c != '>';
+                !markup
+            });
+            text.count() <= removed + spent
+        }
+        None => left.is_empty() && removed == line_breaks,
+    };
+    aligned.then(|| kept + left)
+}
+
+/// Whether `text` holds nothing but end tags.
+fn is_closing_tags(text: &str) -> bool {
+    let mut rest = text;
+    while !rest.is_empty() {
+        let Some(tag) = rest.strip_prefix("</") else {
+            return false;
+        };
+        let Some(end) = tag.find('>') else {
+            return false;
+        };
+        if tag[..end].contains('<') {
+            return false;
+        }
+        rest = &tag[end + 1..];
+    }
+    true
 }
 
 /// The metadata of an extraction, as the two paths are compared on it.
@@ -978,6 +1258,7 @@ pub(crate) fn assert_same_as_tika_rewriting(
         &ParserConfigs::default(),
         expected,
         Some((rewrite, None)),
+        Adjustments::default(),
     );
 }
 
@@ -1002,6 +1283,7 @@ pub(crate) fn assert_same_as_tika_normalising(
         &ParserConfigs::default(),
         expected,
         Some((rewrite, Some(normalise))),
+        Adjustments::default(),
     );
 }
 
@@ -1061,7 +1343,13 @@ pub(crate) fn assert_same_as_tika_departing(
         delegates: &[],
         departures,
     });
-    compare(documents, &ParserConfigs::default(), expected, None);
+    compare(
+        documents,
+        &ParserConfigs::default(),
+        expected,
+        None,
+        Adjustments::default(),
+    );
 }
 
 /// Asserts that of `documents`, each one `passwords` names, by file name with the password that
@@ -1139,7 +1427,7 @@ pub(crate) fn assert_same_as_tika_delegating_with(
         delegates,
         departures: &[],
     });
-    compare(documents, configs, expected, None);
+    compare(documents, configs, expected, None, Adjustments::default());
 }
 
 /// Where a div of class `ocr` starts, the text OCR read in it following.
@@ -1292,7 +1580,13 @@ pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
 
 /// [`assert_fails_as_tika`] under the settings `configs`.
 pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
-    compare(documents, configs, Expected::Failure, None);
+    compare(
+        documents,
+        configs,
+        Expected::Failure,
+        None,
+        Adjustments::default(),
+    );
 }
 
 fn compare(
@@ -1300,6 +1594,7 @@ fn compare(
     configs: &ParserConfigs,
     expected: Expected,
     rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+    adjustments: Adjustments,
 ) {
     let mut differences = Vec::new();
     for document in documents {
@@ -1322,6 +1617,17 @@ fn compare(
                 .collect(),
         };
         comparisons.extend(rest.into_iter().map(|way| extracted(path, configs, way)));
+        let line_breaks = match (
+            &comparisons[0].3,
+            &comparisons[0].4,
+            adjustments.line_breaks,
+        ) {
+            (Ok(tika), Ok(native), Some(count)) => count(
+                &String::from_utf8_lossy(&tika.text),
+                &String::from_utf8_lossy(&native.text),
+            ),
+            _ => 0,
+        };
         if let Some((tika, native)) = &ocr {
             for (tika, native) in tika.iter().zip(native) {
                 if !tika.trim().is_empty() && native.trim().is_empty() {
@@ -1371,6 +1677,14 @@ fn compare(
                         }
                         None => (tika, native),
                     };
+                    let (tika, native) = without_adjustments(
+                        tika,
+                        native,
+                        char_set,
+                        (entry == "string").then_some(output),
+                        line_breaks,
+                        adjustments,
+                    );
                     if tika == native {
                         continue;
                     }
