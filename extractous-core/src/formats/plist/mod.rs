@@ -1,10 +1,11 @@
 //! Property lists, as Tika's `PListParser` writes what dd-plist 1.30 reads of them, binary
 //! ([`binary`]) and XML ([`xml`]): the object tree as `plist`, `dict`, `key`, `array`, `string`,
 //! `number`, `data`, `date` and `uid` elements, the bytes of each data object also handed to the
-//! embedded document extractor. An XML list whose root is a dictionary is typed by its keys.
-//! Sets, keys that are not strings, numbers or UIDs, trees that share objects so often that
-//! writing them out would not end, dates far from ours, and what [`xml`] leaves out stay on
-//! Tika's path. ASCII property lists have no media type of their own in Tika, which detects
+//! embedded document extractor, and each null as an empty `null` element, where Tika drops a
+//! null in a dictionary and fails on one elsewhere after starting the list (#104). An XML list
+//! whose root is a dictionary is typed by its keys. Sets, trees that share objects so often
+//! that writing them out would not end, dates far from ours, and what [`xml`] leaves out stay
+//! on Tika's path. ASCII property lists have no media type of their own in Tika, which detects
 //! them as text, so they never reach `PListParser`.
 
 pub(crate) mod binary;
@@ -105,12 +106,14 @@ fn check(
     match &**object {
         Object::Dict(dict) => {
             for (key, value) in dict.entries() {
-                if matches!(key, Key::Object(_)) {
-                    return Err(Problem::Unread(
-                        "a key that is not a string, a number or a UID",
+                if let Key::Other(_) = key {
+                    return Err(Problem::Failed(
+                        "a dictionary key is not a string, which dd-plist names by its \
+                         toString"
+                            .to_owned(),
                     ));
                 }
-                add(check(&Some(value.clone()), dates, counts)?)?;
+                add(check(value, dates, counts)?)?;
             }
         }
         Object::Array(items) => {
@@ -184,12 +187,12 @@ fn read(input: &[u8]) -> Result<(Value, Dates), Problem> {
     Ok((root, dates))
 }
 
-/// `parseObject` of `PListParser`.
+/// `parseObject` of `PListParser`, with a null written as an empty `null` element.
 fn write(value: &Value, dates: &Dates, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let Some(object) = value else {
-        return Err(Failure::Malformed(
-            "NullPointerException: a null object in the property list".to_owned(),
-        ));
+        xhtml.start_element("null")?;
+        xhtml.end_element("null")?;
+        return Ok(());
     };
     let element = |name: &str, text: &str, xhtml: &mut Xhtml| -> Result<(), Failure> {
         xhtml.start_element(name)?;
@@ -201,13 +204,13 @@ fn write(value: &Value, dates: &Dates, xhtml: &mut Xhtml) -> Result<(), Failure>
         Object::Dict(dict) => {
             xhtml.start_element("dict")?;
             for (key, value) in dict.entries() {
-                let Key::Text(key) = key else {
+                let Key::String(key) = key else {
                     return Err(Failure::Malformed(
                         "a key the port does not write".to_owned(),
                     ));
                 };
                 xhtml.element("key", key)?;
-                write(&Some(value.clone()), dates, xhtml)?;
+                write(value, dates, xhtml)?;
             }
             xhtml.end_element("dict")?;
         }
@@ -350,10 +353,7 @@ mod tests {
                     (11, 12),
                     (13, 14),
                     (15, 16),
-                    (17, 20),
-                    (18, 19),
                     (1, 21),
-                    (22, 23),
                 ]),
                 Ascii("name"),
                 Ascii("Ada"),
@@ -379,8 +379,9 @@ mod tests {
                 Real(-0.0),
                 Bool(false),
                 Ascii("a"),
-                // dd-plist names a UID by its object and mis-measures multibyte UTF-8 (#104),
-                // which `binary`'s tests check the port does not.
+                // dd-plist names a UID by its object, mis-measures multibyte UTF-8, takes keys
+                // of any object and drops null values (#104), which `binary`'s tests and
+                // `writes_nulls_as_empty_values` check the port does not.
                 Int(3),
                 Utf16("Gr\u{fc}\u{df}e \u{1F600}"),
                 Utf8("euro"),
@@ -389,19 +390,82 @@ mod tests {
             ],
             0,
         );
-        let null_in_array = bplist(&[Array(vec![1, 2]), Ascii("before"), Null], 0);
         let set = bplist(&[Set(vec![1]), Ascii("member")], 0);
         let read = [scratch.write("typical.bplist", &typical)];
-        let failing = [scratch.write("null-in-array.bplist", &null_in_array)];
         let deferred_set = scratch.write("set.bplist", &set);
         let (parsed, deferred) = documents(&PListParser, &[scratch.directory()]);
         assert_eq!(deferred, [deferred_set]);
-        assert_eq!(parsed.len(), read.len() + failing.len());
+        assert_eq!(parsed.len(), read.len());
         assert_same_as_tika(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
         );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    /// The body the native path writes of the property list `input`, or how it fails.
+    fn body(input: &[u8]) -> Result<String, String> {
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(input)
+            .map_err(|error| error.to_string())?;
+        let start = xml.find("<plist>").expect("a plist element");
+        let end = xml.find("</plist>").expect("the plist's end") + "</plist>".len();
+        Ok(xml[start..end].to_owned())
+    }
+
+    #[test]
+    fn writes_nulls_as_empty_values() {
+        // dd-plist drops a null in a dictionary, and Tika fails on one in an array after
+        // starting the list (#104).
+        use Item::*;
+        let null = "<null />";
+        let dict = bplist(
+            &[
+                Dict(vec![(1, 2), (3, 4)]),
+                Ascii("a"),
+                Null,
+                Ascii("b"),
+                Int(1),
+            ],
+            0,
+        );
+        assert_eq!(
+            body(&dict),
+            Ok(format!(
+                "<plist><dict><key>a</key>{null}<key>b</key><number>1</number></dict></plist>"
+            ))
+        );
+        let array = bplist(&[Array(vec![1, 2]), Ascii("before"), Null], 0);
+        assert_eq!(
+            body(&array),
+            Ok(format!(
+                "<plist><array><string>before</string>{null}</array></plist>"
+            ))
+        );
+        let xml = |body: &str| {
+            format!("<?xml version=\"1.0\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">{body}</plist>")
+        };
+        assert_eq!(
+            body(
+                xml("<dict><key>k</key><string>v</string><key>k</key><unknown/></dict>").as_bytes()
+            ),
+            Ok(format!("<plist><dict><key>k</key>{null}</dict></plist>"))
+        );
+        assert_eq!(
+            body(xml("<array><string>a</string><unknown/></array>").as_bytes()),
+            Ok(format!(
+                "<plist><array><string>a</string>{null}</array></plist>"
+            ))
+        );
+    }
+
+    #[test]
+    fn fails_on_keys_that_are_not_strings_before_writing() {
+        // dd-plist takes any object's `toString` as a key (#104).
+        use Item::*;
+        let number_key = bplist(&[Dict(vec![(1, 2)]), Int(7), Ascii("seven")], 0);
+        let failure = body(&number_key).unwrap_err();
+        assert!(failure.contains("is not a string"), "{failure}");
     }
 
     #[test]
@@ -420,7 +484,7 @@ mod tests {
                      ZWRkZWQgdGV4dA==\n  </data>\n  <key>array</key>\n  <array>\n    <true/>\n    <false/>\n    \
                      <integer>87</integer>\n    <integer>0x1f</integer>\n    <integer>yes</integer>\n    \
                      <real>3.14159</real>\n    <real>-infinity</real>\n    <real> 2</real>\n    <string/>\n  \
-                     </array>\n  <key>keyA</key>\n  <unknown/>\n  <key>nested</key>\n  <dict/>\n</dict>",
+                     </array>\n  <key>nested</key>\n  <dict/>\n</dict>",
                 )
                 .as_bytes(),
             ),
@@ -447,10 +511,6 @@ mod tests {
             scratch.write("odd.plist", list("<dict><key>k</key></dict>").as_bytes()),
             scratch.write("number.plist", list("<integer>1x</integer>").as_bytes()),
             scratch.write("data.plist", list("<data>QQ</data>").as_bytes()),
-            scratch.write(
-                "null.plist",
-                list("<array><string>a</string><unknown/></array>").as_bytes(),
-            ),
         ];
         let deferred_entity =
             scratch.write("entity.plist", list("<string>&e;</string>").as_bytes());

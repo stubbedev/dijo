@@ -5,10 +5,12 @@
 //! Java makes, which fail as a `RuntimeException` rather than a `PropertyListFormatException`.
 //!
 //! A port rather than a crate, as dd-plist's object model is what Tika reads and writes: a
-//! dictionary key is any object's `toString`, a dictionary drops its null values, and strings
-//! decode as the JDK decodes them. Unlike dd-plist, a UID is named by its value, not by the
-//! number of its object, and a UTF-8 string's characters are measured by their real length,
-//! where dd-plist counts two bytes for each multibyte one (#104).
+//! dictionary is keyed by its keys' `toString`, whatever their objects, which the detector
+//! follows and the parser refuses, and strings decode as the JDK decodes them. Unlike dd-plist,
+//! a UID is named by its value, not by the number of its object; a UTF-8 string's characters
+//! are measured by their real length, where dd-plist counts two bytes for each multibyte one;
+//! and a dictionary keeps its null values, which dd-plist drops, though the detector still
+//! looks only at keys with values (#104).
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -68,19 +70,32 @@ pub(crate) enum Object {
     Uid(u128),
 }
 
-/// A dictionary's key: the `toString` of its object where the port writes it, else the object.
+/// A dictionary's key: a string, or another object, which dd-plist keys by its `toString`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Key {
-    Text(String),
-    Object(Rc<Object>),
+    String(String),
+    Other(Rc<Object>),
 }
 
-/// An `NSDictionary`: its entries in the order of a `LinkedHashMap`, a key put again keeping
-/// its place and taking the new value, a null value not put.
+impl Key {
+    /// The key's `toString` where the port has it.
+    fn name(&self) -> Option<String> {
+        match self {
+            Self::String(text) => Some(text.clone()),
+            Self::Other(object) => object.text(),
+        }
+    }
+}
+
+/// An `NSDictionary`: its entries in the order of a `LinkedHashMap` keyed by their keys'
+/// `toString`, a key put again keeping its place and taking the new value, null values
+/// included.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Dict {
-    entries: Vec<(Key, Rc<Object>)>,
+    entries: Vec<(Key, Value)>,
     positions: HashMap<String, usize>,
+    /// The keys put with a value, the keys of dd-plist's dictionary.
+    valued: HashSet<String>,
 }
 
 /// What a property list holds, as `BPListDetector.detectOnKeys` tells it by the keys of its root
@@ -117,26 +132,26 @@ impl ListKind {
 
 impl Dict {
     pub(super) fn put(&mut self, key: Key, value: Value) {
-        let Some(value) = value else {
-            return;
-        };
-        if let Key::Text(text) = &key {
-            if let Some(&position) = self.positions.get(text) {
+        if let Some(name) = key.name() {
+            if value.is_some() {
+                self.valued.insert(name.clone());
+            }
+            if let Some(&position) = self.positions.get(&name) {
                 self.entries[position].1 = value;
                 return;
             }
-            self.positions.insert(text.clone(), self.entries.len());
+            self.positions.insert(name, self.entries.len());
         }
         self.entries.push((key, value));
     }
 
-    pub(crate) fn entries(&self) -> &[(Key, Rc<Object>)] {
+    pub(crate) fn entries(&self) -> &[(Key, Value)] {
         &self.entries
     }
 
-    /// Whether `key` is a key of the dictionary.
+    /// Whether `key` is a key of dd-plist's dictionary: put with a value.
     fn contains(&self, key: &str) -> bool {
-        self.positions.contains_key(key)
+        self.valued.contains(key)
     }
 
     /// `BPListDetector.detectOnKeys` of the dictionary's keys.
@@ -413,9 +428,9 @@ impl Parser<'_> {
                         ))
                     })?;
                     let value = self.object(stack, value_reference)?;
-                    let key = match key.text() {
-                        Some(text) => Key::Text(text),
-                        None => Key::Object(key),
+                    let key = match &*key {
+                        Object::String(text) => Key::String(text.clone()),
+                        _ => Key::Other(key),
                     };
                     dict.put(key, value);
                 }
@@ -633,10 +648,10 @@ pub(crate) mod tests {
                 Dict(vec![(1, 2), (3, 4), (1, 5), (6, 7), (8, 9)]),
                 Ascii("key"),
                 Ascii("first"),
-                Int(7),
+                Ascii("empty"),
                 Null,
                 Ascii("second"),
-                Uid(10),
+                Ascii("named"),
                 Utf8("\u{20AC}uro"),
                 Utf8("na\u{ef}ve"),
                 Ascii("caf\u{e9}"),
@@ -647,29 +662,30 @@ pub(crate) mod tests {
         let Object::Dict(dict) = &*root else {
             panic!("{root:?}");
         };
-        let entries: Vec<(String, Object)> = dict
+        let entries: Vec<(String, Option<Object>)> = dict
             .entries()
             .iter()
             .map(|(key, value)| match key {
-                Key::Text(text) => (text.clone(), (**value).clone()),
-                Key::Object(object) => panic!("{object:?}"),
+                Key::String(text) => (text.clone(), value.as_deref().cloned()),
+                Key::Other(object) => panic!("{object:?}"),
             })
             .collect();
         assert_eq!(
             entries,
             [
-                ("key".to_owned(), Object::String("second".to_owned())),
+                ("key".to_owned(), Some(Object::String("second".to_owned()))),
+                ("empty".to_owned(), None),
                 (
-                    "a (10)".to_owned(),
-                    Object::String("\u{20AC}uro".to_owned())
+                    "named".to_owned(),
+                    Some(Object::String("\u{20AC}uro".to_owned()))
                 ),
                 (
                     "na\u{ef}ve".to_owned(),
-                    Object::String("caf\u{FFFD}\u{FFFD}".to_owned())
+                    Some(Object::String("caf\u{FFFD}\u{FFFD}".to_owned()))
                 ),
             ]
         );
-        assert!(!dict.contains("7"));
+        assert!(!dict.contains("empty"));
     }
 
     #[test]
