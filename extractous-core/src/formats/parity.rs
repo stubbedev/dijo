@@ -289,14 +289,30 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
-/// A string extraction's results with both texts cut to the shorter when it begins the other:
-/// the native text was cut at the length limit before a [`Departure`] rewrote it, so it ends
-/// earlier or later than Tika's.
+/// A string extraction's results with both texts cut where they part, when what follows in
+/// one of them is only end tags and white space: the native text was cut at the length limit
+/// before a [`Departure`] rewrote it, and what the departure undoes counts towards the limit,
+/// so the text ends earlier or later than Tika's, its open elements then ended.
 fn cut_texts(mut tika: Extracted, mut native: Extracted) -> (Extracted, Extracted) {
-    let length = tika.text.len().min(native.text.len());
-    if tika.text[..length] == native.text[..length] {
-        tika.text.truncate(length);
-        native.text.truncate(length);
+    let common = tika
+        .text
+        .iter()
+        .zip(&native.text)
+        .take_while(|(tika, native)| tika == native)
+        .count();
+    let only_end_tags = |rest: &[u8]| {
+        let mut rest = std::str::from_utf8(rest).unwrap_or("x").trim_start();
+        while let Some(tag) = rest.strip_prefix("</") {
+            let Some(end) = tag.find('>') else {
+                return false;
+            };
+            rest = tag[end + 1..].trim_start();
+        }
+        rest.is_empty()
+    };
+    if only_end_tags(&tika.text[common..]) || only_end_tags(&native.text[common..]) {
+        tika.text.truncate(common);
+        native.text.truncate(common);
     }
     (tika, native)
 }
@@ -460,10 +476,13 @@ pub(crate) fn assert_same_as_tika_with(
     compare(documents, configs, expected, None);
 }
 
+/// The metadata of an extraction, as the two paths are compared on it.
+pub(crate) type ComparedMetadata = Vec<(String, Vec<String>)>;
+
 /// A rewrite of a native result, its decoded text and its metadata, into what Tika's path
-/// writes, undoing a fix that departs from Tika's path systematically: it names the issue of
-/// the quirk, and undoes only what that fix changes.
-pub(crate) type Departure = fn(&mut String, &mut Vec<(String, Vec<String>)>);
+/// writes, given Tika's metadata, undoing a fix that departs from Tika's path systematically:
+/// it names the issue of the quirk, and undoes only what that fix changes.
+pub(crate) type Departure = fn(&mut String, &mut ComparedMetadata, &ComparedMetadata);
 
 /// [`assert_same_as_tika`], with each native result rewritten by `departure` before it is
 /// compared.
@@ -484,10 +503,16 @@ pub(crate) fn assert_same_as_tika_departing(
     );
 }
 
-/// The native result `native`, its text in `char_set`, rewritten by `departure`.
-fn departed(mut native: Extracted, char_set: CharSet, departure: Departure) -> Extracted {
+/// The native result `native`, its text in `char_set`, rewritten by `departure` beside Tika's
+/// result `tika`.
+fn departed(
+    mut native: Extracted,
+    tika: &Extracted,
+    char_set: CharSet,
+    departure: Departure,
+) -> Extracted {
     let mut text = decoded(&native.text, char_set).expect("text the native path wrote");
-    departure(&mut text, &mut native.metadata);
+    departure(&mut text, &mut native.metadata, &tika.metadata);
     native.text.clear();
     formats::encode(&text, char_set, &mut native.text);
     native
@@ -708,7 +733,7 @@ fn compare(
                     let tika = comparable(tika, char_set);
                     let native = comparable(as_tika(native, &names, char_set), char_set);
                     let native = match departure {
-                        Some(departure) => departed(native, char_set, departure),
+                        Some(departure) => departed(native, &tika, char_set, departure),
                         None => native,
                     };
                     let (tika, native) = match &ocr {

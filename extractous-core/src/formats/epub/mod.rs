@@ -463,7 +463,7 @@ mod tests {
     }
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
-        conformance_corpus, documents, Scratch,
+        conformance_corpus, documents, ComparedMetadata, Scratch,
     };
     use std::io::{Cursor, Write};
     use std::path::{Path, PathBuf};
@@ -509,7 +509,11 @@ mod tests {
     /// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
     /// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
     /// as Tika's last `dc:date` wins.
-    fn as_tika_writes_it(text: &mut String, metadata: &mut Vec<(String, Vec<String>)>) {
+    fn as_tika_writes_it(
+        text: &mut String,
+        metadata: &mut ComparedMetadata,
+        _tika: &ComparedMetadata,
+    ) {
         let dates = ["dcterms:issued", "dcterms:modified"];
         if metadata.iter().any(|(name, _)| name == "dcterms:created") {
             metadata.retain(|(name, _)| !dates.contains(&name.as_str()));
