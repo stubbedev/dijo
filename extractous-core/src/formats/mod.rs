@@ -6,6 +6,7 @@
 mod apple_single;
 mod archive;
 mod auto_detect_reader;
+mod chm;
 mod cms;
 mod data_format;
 mod dbf;
@@ -193,6 +194,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::PackageParser,
     &archive::SevenZParser,
     &archive::ZipParser,
+    &chm::ChmParser,
     &cms::CmsParser,
     &dc_xml::DcXmlParser,
     &doc::DocParser,

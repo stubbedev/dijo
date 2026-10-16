@@ -671,6 +671,7 @@ dependencies = [
  "lopdf",
  "lz4_flex",
  "lzma-rust2",
+ "lzxd",
  "object",
  "quick-xml",
  "regex",
@@ -1223,6 +1224,12 @@ checksum = "fde178a3caf126c440fa15628147772d8ee590a39477d711353fbe2e58a73a5b"
 dependencies = [
  "sha2",
 ]
+
+[[package]]
+name = "lzxd"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c17f346186eccb574ba5581acefc514f0c70a642db4f96e245034a0a158a7168"
 
 [[package]]
 name = "md-5"
