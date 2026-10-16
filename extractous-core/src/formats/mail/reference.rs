@@ -76,6 +76,50 @@ fn answer(kind: &str, value: &str) -> Result<Option<String>, Unported> {
     })
 }
 
+/// The reference's values the port reads differently from mime4j on purpose, by the issue that
+/// names mime4j's behaviour.
+const DEPARTURES: &[(&str, &str, &str)] = &[
+    ("cdisp", "inline; filename=a/b.txt", "#75"),
+    ("cdisp", "inline; filename=a/b.tt", "#75"),
+    ("cdisp", "inline; filename=a/b.taxt", "#75"),
+    ("cdisp", "inline; filename=a/b.txxt", "#75"),
+    ("cdisp", "INLINE; FILENAME=A/B.TXT", "#75"),
+    ("cdisp", "inline; filename=a/b.t", "#75"),
+    ("cdisp", "attachment; filename=\"Szőlő.pdf\"", "#75"),
+    ("cdisp", "attachment; filename=\"szőlő.pdf\"", "#75"),
+    ("cdisp", "attachment; fileame=\"Szőlő.pdf\"", "#75"),
+    ("cdisp", "attachment; fileőname=\"Szőlő.pdf\"", "#75"),
+    (
+        "cdisp",
+        "attachment; filename=\"Szőname=\"Szőlő.pdf\"",
+        "#75",
+    ),
+    ("ctype", "text/plain; a=1; name=\"Ā\"; b=2", "#75"),
+    ("ctype", "text/plain; a=1; name=\"Ā\"; b=", "#75"),
+    ("ctype", "text/plain; a=1; name=\"Ā\"; b=[2", "#75"),
+    ("ctype", "text/plain; a=1; name=\"Ā\"; b=22", "#75"),
+    ("ctype", "text/plain; a=1; name=\"ā\"; b=2", "#75"),
+    (
+        "ctype",
+        "multipart/őalternative; boundary=\"_=ExampleMailer=_0123456789abcdef\"",
+        "#75",
+    ),
+    (
+        "cdisp",
+        "Attachment; filename*0*=utf-8''caf%C3%A9; file=utf-8''caf%C3%A9; filename*1=.txt; size=12",
+        "#76",
+    ),
+    (
+        "cdisp",
+        "attachment; filename=a+b.txt; name=utf-8''x",
+        "#76",
+    ),
+    ("words", "=?utf-8?b?w6k?=", "#72"),
+    ("words", "=?UTF-8?B?W6K?=", "#72"),
+    ("words", "=?shift_jis?b?k/qW4zq?=", "#72"),
+    ("words", "=?shift_jis?b?k/qWe4e4zq?=", "#72"),
+];
+
 #[test]
 fn reads_headers_as_mime4j_and_tika_do() {
     let mut reference = String::new();
@@ -84,6 +128,7 @@ fn reads_headers_as_mime4j_and_tika_do() {
         .expect("the reference decompresses");
     let mut mismatches = Vec::new();
     let mut unported = Vec::new();
+    let mut departed = Vec::new();
     let mut count = 0;
     for line in reference.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
@@ -93,6 +138,13 @@ fn reads_headers_as_mime4j_and_tika_do() {
         count += 1;
         let value = text(value);
         let expected = (expected != "null").then(|| text(expected));
+        if let Some(departure) = DEPARTURES
+            .iter()
+            .find(|(departed, input, _)| *departed == kind && *input == value)
+        {
+            departed.push(departure);
+            continue;
+        }
         match answer(kind, &value) {
             Ok(actual) if actual == expected => {}
             Ok(actual) => mismatches.push(format!(
@@ -102,6 +154,11 @@ fn reads_headers_as_mime4j_and_tika_do() {
         }
     }
     assert!(count > 600, "the reference has {count} values");
+    assert_eq!(
+        departed.len(),
+        DEPARTURES.len(),
+        "departures not in the reference"
+    );
     assert!(
         mismatches.is_empty(),
         "{} of {count} values differ:\n{}",

@@ -164,7 +164,9 @@ const EMLX_COUNT_LINE_MAX: usize = 11;
 const PLIST_START: &[u8] = b"<?xml";
 
 /// `RFC822Parser.stripEmlxFraming`: after a first line of digits, optionally padded with
-/// spaces, the message, bounded by the count when the property list starts where it says.
+/// spaces, the message bounded by the count, when Apple Mail's property list starts where the
+/// count says. Tika strips such a first line from any message, even without the property
+/// list, so a message that starts with a number on its own line loses it (#83).
 fn strip_emlx_framing(input: &[u8]) -> &[u8] {
     let mut count: u64 = 0;
     let mut digits = 0;
@@ -193,7 +195,7 @@ fn strip_emlx_framing(input: &[u8]) -> &[u8] {
         .and_then(|count| rest.get(count..count.checked_add(PLIST_START.len())?));
     match plist {
         Some(start) if start == PLIST_START => &rest[..count as usize],
-        _ => rest,
+        _ => input,
     }
 }
 
@@ -242,7 +244,7 @@ fn prepare_message(
             Item::StartEntry => Part::StartEntry,
             Item::EndEntry => Part::EndEntry,
             Item::Inline(Inline::Text(content)) => Part::Inline(
-                text::prepare(&content, &TikaMetadata::new())
+                text::prepare_plain(&content)
                     .map_err(|reason| format!("a text part defers: {reason}"))?,
             ),
             Item::Inline(Inline::Html(content)) => Part::Inline(
@@ -325,9 +327,10 @@ mod tests {
     }
 
     #[test]
-    fn strips_emlx_framing_as_rfc822_parser_does() {
+    fn strips_emlx_framing_with_its_property_list() {
         assert_eq!(strip_emlx_framing(b"5\nabcde<?xml x"), b"abcde");
-        assert_eq!(strip_emlx_framing(b"5   \nabcdefg"), b"abcdefg");
+        assert_eq!(strip_emlx_framing(b"5   \nabcdefg"), b"5   \nabcdefg");
+        assert_eq!(strip_emlx_framing(b"2\nab<?xml"), b"ab");
         assert_eq!(strip_emlx_framing(b"From: x\n"), b"From: x\n");
         assert_eq!(strip_emlx_framing(b"5 6\nab"), b"5 6\nab");
     }

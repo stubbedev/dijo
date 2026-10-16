@@ -32,24 +32,30 @@ fn base64_value(byte: u8) -> Option<u32> {
     }
 }
 
-/// What `Base64InputStream` reads from `input`: every byte outside the alphabet skipped, and
-/// everything from the first pad on dropped, with one or two bytes from the sextets before it;
-/// sextets that end the input short of a quantum are dropped.
+/// Base64 decoded leniently: every byte outside the alphabet skipped, a pad ending the quantum
+/// before it, so that concatenated blocks all decode, and the sextets of a short last quantum
+/// decoded as far as they go. mime4j's `Base64InputStream` drops everything from the first pad
+/// on and a short last quantum (#72).
 pub(super) fn decode_base64(input: &[u8]) -> Vec<u8> {
+    fn flush(out: &mut Vec<u8>, data: u32, sextets: u32) {
+        match sextets {
+            2 => out.push((data >> 4) as u8),
+            3 => {
+                out.push((data >> 10) as u8);
+                out.push((data >> 2) as u8);
+            }
+            _ => {}
+        }
+    }
     let mut out = Vec::with_capacity(input.len() / 4 * 3);
     let mut data = 0u32;
     let mut sextets = 0;
     for &byte in input {
         if byte == BASE64_PAD {
-            match sextets {
-                2 => out.push((data >> 4) as u8),
-                3 => {
-                    out.push((data >> 10) as u8);
-                    out.push((data >> 2) as u8);
-                }
-                _ => {}
-            }
-            return out;
+            flush(&mut out, data, sextets);
+            data = 0;
+            sextets = 0;
+            continue;
         }
         let Some(value) = base64_value(byte) else {
             continue;
@@ -62,7 +68,18 @@ pub(super) fn decode_base64(input: &[u8]) -> Vec<u8> {
             sextets = 0;
         }
     }
+    flush(&mut out, data, sextets);
     out
+}
+
+/// An encoded word's base64 decoded as [`decode_base64`] decodes it, up to the first pad: an
+/// encoded word holds one block, so what follows its padding is not text.
+fn decode_base64_word(input: &[u8]) -> Vec<u8> {
+    let end = input
+        .iter()
+        .position(|&byte| byte == BASE64_PAD)
+        .unwrap_or(input.len());
+    decode_base64(&input[..end])
 }
 
 fn hex_value(byte: Option<u8>) -> Option<u8> {
@@ -337,7 +354,11 @@ pub(crate) fn decode_encoded_words(body: &str) -> Result<String, Unported> {
         }
         match decode_word(charset, current_encoding, encoded) {
             Some(bytes) => words.out.extend_from_slice(&bytes),
-            None => words.text.push_str(&body[start..text_end + 2]),
+            None => {
+                // DecoderUtil writes the word before the bytes still pending (#74).
+                words.flush()?;
+                words.text.push_str(&body[start..text_end + 2]);
+            }
         }
     }
     words.flush()?;
@@ -383,69 +404,49 @@ fn decode_word(charset: &str, encoding: &str, encoded: &str) -> Option<Vec<u8>> 
             &encoded.replace('_', "=20"),
         )))
     } else if encoding.eq_ignore_ascii_case("B") {
-        Some(decode_base64(&ascii(encoded)))
+        Some(decode_base64_word(&ascii(encoded)))
     } else {
         None
     }
 }
 
-/// Why `URLDecoder.decode` throws.
+/// Why a percent-encoded value does not decode: an unknown charset or a malformed escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct UrlDecodeError;
 
-/// `URLDecoder.decode(value, charset)`: `+` a space and runs of `%XX` escapes decoded as bytes
-/// of `charset`. A hexadecimal pair may carry a sign, as `Integer.parseInt` reads it.
-pub(super) fn url_decode(
+/// An RFC 2231 extended value's runs of `%XX` escapes decoded as bytes of `charset`, every
+/// other character, `+` included, kept as it is. mime4j decodes with `URLDecoder`, which makes
+/// `+` a space and reads a sign in an escape (#76).
+pub(super) fn percent_decode(
     value: &str,
     charset: &str,
 ) -> Result<Result<String, UrlDecodeError>, Unported> {
-    let Some(charset) = (!charset.is_empty()).then(|| lookup(charset)).flatten() else {
+    let Some(charset) = lookup(charset) else {
         return Ok(Err(UrlDecodeError));
     };
-    let chars: Vec<char> = value.chars().collect();
+    let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '+' => {
-                out.push(' ');
-                i += 1;
-            }
-            '%' => {
-                let mut bytes = Vec::new();
-                while i + 2 < chars.len() && chars[i] == '%' {
-                    let Some(byte) = parse_hex_pair(chars[i + 1], chars[i + 2]) else {
-                        return Ok(Err(UrlDecodeError));
-                    };
-                    bytes.push(byte);
-                    i += 3;
-                }
-                if i < chars.len() && chars[i] == '%' {
-                    return Ok(Err(UrlDecodeError));
-                }
-                out.push_str(&decode(charset, &bytes)?);
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
+    let mut rest = value;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        let start = value.len() - rest.len() + at;
+        let mut end = start;
+        let mut decoded = Vec::new();
+        while bytes.get(end) == Some(&b'%') {
+            let (Some(high), Some(low)) = (
+                hex_value(bytes.get(end + 1).copied()),
+                hex_value(bytes.get(end + 2).copied()),
+            ) else {
+                return Ok(Err(UrlDecodeError));
+            };
+            decoded.push(high * 16 + low);
+            end += 3;
         }
+        out.push_str(&decode(charset, &decoded)?);
+        rest = &value[end..];
     }
+    out.push_str(rest);
     Ok(Ok(out))
-}
-
-/// `Integer.parseInt` of two characters in base 16, as a byte, or `None` for what it rejects
-/// or a negative value.
-fn parse_hex_pair(first: char, second: char) -> Option<u8> {
-    let digit = |c: char| c.to_digit(16);
-    match first {
-        '+' => digit(second).map(|d| d as u8),
-        '-' => match digit(second)? {
-            0 => Some(0),
-            _ => None,
-        },
-        _ => Some((digit(first)? * 16 + digit(second)?) as u8),
-    }
 }
 
 #[cfg(test)]
@@ -453,11 +454,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decodes_base64_as_mime4j_does() {
+    fn decodes_base64_leniently() {
         assert_eq!(decode_base64(b"aGVs\r\nbG8="), b"hello");
-        assert_eq!(decode_base64(b"aGVsbG8=IGlnbm9yZWQ="), b"hello");
-        assert_eq!(decode_base64(b"aGVsbA"), b"hel");
-        assert_eq!(decode_base64(b"a*G=Vs"), b"h");
+        assert_eq!(decode_base64(b"aGVsbG8=IGlnbm9yZWQ="), b"hello ignored");
+        assert_eq!(decode_base64(b"aGVsbA"), b"hell");
+        assert_eq!(decode_base64(b"a*G=Vs"), b"hV");
+        assert_eq!(decode_base64(b"aGk=\r\naGk="), b"hihi");
     }
 
     #[test]
@@ -480,17 +482,18 @@ mod tests {
         assert_eq!(decode("=?x-unknown?q?a?= z"), "=?x-unknown?q?a?= z");
         assert_eq!(decode("=?utf-8?x?a?="), "=?utf-8?x?a?=");
         assert_eq!(decode("broken =?utf-8 x"), "broken =?utf-8 x");
+        assert_eq!(decode("=?utf-8?b?w6k?="), "é");
+        assert_eq!(decode("=?utf-8?b?w6k=extra?="), "é");
     }
 
     #[test]
-    fn url_decodes_as_java_does() {
-        let decode = |text: &str| url_decode(text, "UTF-8").unwrap();
-        assert_eq!(decode("a+b%C3%A9"), Ok("a bé".to_owned()));
-        assert_eq!(decode("%+1%41"), Ok("\u{1}A".to_owned()));
+    fn percent_decodes_extended_values() {
+        let decode = |text: &str| percent_decode(text, "UTF-8").unwrap();
+        assert_eq!(decode("a+b%C3%A9"), Ok("a+bé".to_owned()));
         assert_eq!(decode("%4"), Err(UrlDecodeError));
-        assert_eq!(decode("%-1"), Err(UrlDecodeError));
+        assert_eq!(decode("%+1"), Err(UrlDecodeError));
         assert_eq!(
-            url_decode("x", "no-such-charset").unwrap(),
+            percent_decode("x", "no-such-charset").unwrap(),
             Err(UrlDecodeError)
         );
     }

@@ -311,16 +311,17 @@ impl Handler<'_> {
         }
     }
 
-    /// `score`: how good an alternative is, text the worst and HTML the best of the bodies, and
-    /// any other body or a multipart better still.
+    /// How good an alternative is: HTML the best of the bodies, then RTF, then plain text, and
+    /// a multipart, which may hold the HTML with its images, better still. A body that is not
+    /// text ranks with one without a type, below plain text: Tika ranks it above HTML, so an
+    /// alternative of HTML and an image shows the image (#81).
     fn score(&self, part: usize) -> i32 {
         match &self.arena[part] {
             Part::Body(metadata, _) => match metadata.get("Content-Type") {
-                None => 0,
                 Some(kind) if kind.eq_ignore_ascii_case("text/plain") => 1,
                 Some(kind) if kind.eq_ignore_ascii_case("application/rtf") => 2,
                 Some(kind) if kind.eq_ignore_ascii_case("text/html") => 3,
-                Some(_) => 4,
+                _ => 0,
             },
             Part::Multipart { .. } => 4,
         }
