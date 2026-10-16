@@ -4,8 +4,8 @@
     ],
     "tk:parsed-by-full-set": [
         "extractous::OOXMLParser",
-        "org.apache.tika.parser.image.ImageParser",
-        "ai.yobix.PreparingOcrParser"
+        "extractous::ImageParser",
+        "extractous::PreparingOcrParser"
     ],
     "Content-Length": [
         "12541"

@@ -30,15 +30,15 @@
         "1"
     ],
     "tk:parsed-by-full-set": [
-        "org.apache.tika.parser.image.ImageParser",
-        "ai.yobix.PreparingOcrParser"
+        "extractous::ImageParser",
+        "extractous::PreparingOcrParser"
     ],
     "img:Data PlanarConfiguration": [
         "PixelInterleaved"
     ],
     "tk:parsed-by": [
-        "org.apache.tika.parser.image.ImageParser",
-        "ai.yobix.PreparingOcrParser"
+        "extractous::ImageParser",
+        "extractous::PreparingOcrParser"
     ],
     "img:Chroma BlackIsZero": [
         "true"
