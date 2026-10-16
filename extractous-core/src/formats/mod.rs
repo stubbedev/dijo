@@ -13,13 +13,14 @@ pub(crate) mod embedded;
 mod epub;
 mod feed;
 mod fiction_book;
+mod font;
 pub(crate) mod handlers;
 mod html;
 mod hwpx;
 mod iwork;
 mod jdk_zip;
 mod mail;
-mod media;
+pub(crate) mod media;
 pub(crate) mod metadata;
 mod mobi;
 mod notebook;
@@ -29,7 +30,7 @@ mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
-mod pdf;
+pub(crate) mod pdf;
 pub(crate) mod plist;
 mod pptx;
 #[cfg(test)]
@@ -173,6 +174,8 @@ static PARSERS: &[&dyn Parser] = &[
     &dc_xml::DcXmlParser,
     &docx::DocxParser,
     &feed::FeedParser,
+    &font::AdobeFontMetricParser,
+    &font::TrueTypeParser,
     &fiction_book::FictionBookParser,
     &html::JSoupParser,
     &hwpx::HwpxParser,
