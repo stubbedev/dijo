@@ -55,6 +55,7 @@ impl Matrix {
     }
 
     /// `Matrix.multiply`: `self × other`, failing as PDFBox does on a value that is not finite.
+    #[inline]
     pub(super) fn multiply(&self, other: &Matrix) -> Result<Matrix, Unported> {
         Ok(Matrix(checked(multiply(&self.0, &other.0))?))
     }
@@ -66,6 +67,7 @@ impl Matrix {
     }
 
     /// `Matrix.translate(tx, ty)`.
+    #[inline]
     pub(super) fn translate(&mut self, tx: f32, ty: f32) -> Result<(), Unported> {
         let m = &mut self.0;
         m[4] += tx * m[0] + ty * m[2];
@@ -127,10 +129,13 @@ fn checked(values: [f32; 6]) -> Result<[f32; 6], Unported> {
     if values.iter().all(|value| value.is_finite()) {
         Ok(values)
     } else {
-        Err(Unported(
-            "a transformation matrix becomes infinite, which PDFBox throws on".to_owned(),
-        ))
+        Err(infinite())
     }
+}
+
+#[cold]
+fn infinite() -> Unported {
+    Unported("a transformation matrix becomes infinite, which PDFBox throws on".to_owned())
 }
 
 #[cfg(test)]
