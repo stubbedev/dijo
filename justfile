@@ -328,6 +328,26 @@ fuzz seconds="300":
 throughput:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test bench --no-capture
 
+# Built optimised with debug assertions and overflow checks kept, reusing the prebuilt native
+# library; arguments, such as `-E 'test(/xlsx/)'`, go to nextest.
+# Compare every native parser with Tika's path on Tika's own test documents.
+[unix]
+[positional-arguments]
+parity *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    target={{justfile_directory()}}/target
+    for libs in "$target"/debug/build/extractous-core-*/out/libs "$target"/release/build/extractous-core-*/out/libs; do
+        [ -f "$libs/.fingerprint" ] || continue
+        seed="$target/parity/build/extractous-core-seed-$(cat "$libs/.fingerprint")/out/libs"
+        if [ ! -f "$seed/.fingerprint" ]; then
+            mkdir -p "$seed"
+            cp -a "$libs/." "$seed/"
+        fi
+    done
+    cargo nextest run --package extractous-core --lib --cargo-profile parity --run-ignored only "$@"
+
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
 # any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.
 [unix]
