@@ -7,11 +7,38 @@ use std::collections::{BTreeMap, HashMap};
 
 pub(crate) mod date;
 
-use crate::formats::metadata::MetadataSink;
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
 use crate::formats::Unported;
 use crate::java::time::format_instant;
+
+/// Where the properties of an XMP packet are written: a document's metadata, or a recording
+/// of what its extraction writes.
+pub(crate) trait Sink {
+    fn get(&self, name: &str) -> Option<&str>;
+    fn values(&self, name: &str) -> &[String];
+    fn set(&mut self, name: &str, value: String);
+    fn add(&mut self, name: &str, value: String);
+}
+
+impl Sink for TikaMetadata {
+    fn get(&self, name: &str) -> Option<&str> {
+        TikaMetadata::get(self, name)
+    }
+
+    fn values(&self, name: &str) -> &[String] {
+        TikaMetadata::values(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: String) {
+        TikaMetadata::set(self, name, value);
+    }
+
+    fn add(&mut self, name: &str, value: String) {
+        TikaMetadata::add(self, name, value);
+    }
+}
 
 const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const META: &str = "adobe:ns:meta/";
@@ -542,8 +569,8 @@ fn value_for(property: &Property, value: &str) -> Result<String, Unported> {
 }
 
 /// `Metadata.set(Property, String)`.
-pub(crate) fn set(metadata: &mut impl MetadataSink, property: &Property, value: &str) {
-    metadata.set(property.name, value);
+pub(crate) fn set(metadata: &mut dyn Sink, property: &Property, value: &str) {
+    metadata.set(property.name, value.to_owned());
     for secondary in property.secondary {
         set(metadata, secondary, value);
     }
@@ -552,7 +579,7 @@ pub(crate) fn set(metadata: &mut impl MetadataSink, property: &Property, value: 
 /// `Metadata.add(Property, String)`: unported where Tika throws on a second value of a
 /// single-valued property.
 pub(crate) fn add(
-    metadata: &mut impl MetadataSink,
+    metadata: &mut dyn Sink,
     property: &Property,
     value: &str,
 ) -> Result<(), Unported> {
@@ -571,9 +598,9 @@ pub(crate) fn add(
         return Ok(());
     }
     if metadata.values(property.name).is_empty() {
-        metadata.set(property.name, value);
+        metadata.set(property.name, value.to_owned());
     } else if property.multi {
-        metadata.add(property.name, value);
+        metadata.add(property.name, value.to_owned());
     } else {
         return Err(Unported(format!(
             "a second value for the single-valued property {}, which Tika throws on",
@@ -584,11 +611,7 @@ pub(crate) fn add(
 }
 
 /// `emit`.
-fn emit(
-    metadata: &mut impl MetadataSink,
-    property: &Property,
-    value: &str,
-) -> Result<(), Unported> {
+fn emit(metadata: &mut dyn Sink, property: &Property, value: &str) -> Result<(), Unported> {
     let value = value_for(property, value)?;
     if property.multi {
         add(metadata, property, &value)
@@ -611,7 +634,7 @@ pub(crate) fn as_is(value: &str) -> String {
 /// exception, with its stack trace, in the metadata.
 pub(crate) fn extract(
     packet: &[u8],
-    metadata: &mut impl MetadataSink,
+    metadata: &mut dyn Sink,
     decode: Decoder,
 ) -> Result<(), Unported> {
     let mut flattener = Flattener::default();
@@ -642,7 +665,7 @@ fn history_index(path: &str) -> Option<i32> {
 }
 
 /// `XmpExtractor.map`.
-fn map(leaves: &[Leaf], metadata: &mut impl MetadataSink, decode: Decoder) -> Result<(), Unported> {
+fn map(leaves: &[Leaf], metadata: &mut dyn Sink, decode: Decoder) -> Result<(), Unported> {
     emit_history(leaves, metadata, decode)?;
     emit_lang_alternatives(leaves, metadata, decode)?;
     for leaf in leaves {
@@ -653,11 +676,7 @@ fn map(leaves: &[Leaf], metadata: &mut impl MetadataSink, decode: Decoder) -> Re
     Ok(())
 }
 
-fn emit_history(
-    leaves: &[Leaf],
-    metadata: &mut impl MetadataSink,
-    decode: Decoder,
-) -> Result<(), Unported> {
+fn emit_history(leaves: &[Leaf], metadata: &mut dyn Sink, decode: Decoder) -> Result<(), Unported> {
     let mut events: BTreeMap<i32, HashMap<&'static str, String>> = BTreeMap::new();
     for leaf in leaves.iter().filter(|leaf| is_history_event(leaf)) {
         let Some(index) = history_index(&leaf.path).filter(|&index| index >= 0) else {
@@ -694,7 +713,7 @@ fn emit_history(
 
 fn emit_lang_alternatives(
     leaves: &[Leaf],
-    metadata: &mut impl MetadataSink,
+    metadata: &mut dyn Sink,
     decode: Decoder,
 ) -> Result<(), Unported> {
     let mut keys: Vec<(String, String)> = Vec::new();
@@ -746,11 +765,7 @@ fn emit_lang_alternatives(
     Ok(())
 }
 
-fn map_leaf(
-    leaf: &Leaf,
-    metadata: &mut impl MetadataSink,
-    decode: Decoder,
-) -> Result<(), Unported> {
+fn map_leaf(leaf: &Leaf, metadata: &mut dyn Sink, decode: Decoder) -> Result<(), Unported> {
     let namespace = leaf.namespace.as_str();
     let local = leaf.local_name();
     if namespace == XMLNS_XML || dropped(namespace, local) {
@@ -818,7 +833,7 @@ mod tests {
 
     #[test]
     fn maps_xmp_as_tika_does() {
-        let mut metadata = crate::formats::metadata::TikaMetadata::new();
+        let mut metadata = TikaMetadata::new();
         extract(PACKET, &mut metadata, as_is).unwrap();
         assert_eq!(metadata.get("xmp:CreatorTool"), Some("Writer"));
         assert_eq!(metadata.get("xmp:CreateDate"), Some("2026-10-13T19:30:18Z"));

@@ -106,6 +106,9 @@ pub(crate) fn parse_sax(
             Event::Text(text, TextKind::Data) => {
                 for_each_sax_piece(text, |piece| handler.characters(piece))
             }
+            Event::Text("", TextKind::CData)
+            | Event::Comment(_)
+            | Event::ProcessingInstruction(..) => Ok(()),
             Event::Text(text, TextKind::CData | TextKind::Reference) => handler.characters(text),
         };
         match handled {

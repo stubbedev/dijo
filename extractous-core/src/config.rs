@@ -320,6 +320,18 @@ impl TesseractOcrConfig {
     pub(crate) fn skips_ocr(&self) -> bool {
         self.skip_ocr.unwrap_or(false)
     }
+
+    /// The language set, if one is: tesseract's models joined by `+`, or
+    /// [`TesseractOcrConfig::AUTO_LANGUAGE`].
+    pub(crate) fn language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    /// The whole seconds a tesseract run may take, if set; Tika's `TesseractOCRConfig` allows
+    /// 120.
+    pub(crate) fn timeout_seconds(&self) -> Option<i32> {
+        self.timeout_seconds
+    }
 }
 
 /// A password for encrypted documents. It never appears in `Debug` output.

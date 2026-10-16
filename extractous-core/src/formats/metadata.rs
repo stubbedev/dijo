@@ -2,8 +2,7 @@
 //! The order its `names()` lists them in is visible in the XHTML head, so [`TikaMetadata::names`]
 //! reproduces that map's iteration order.
 
-use crate::java::JavaHashMap;
-use crate::java::{is_blank, utf16_length};
+use crate::java::{is_blank, utf16_length, JavaHashMap};
 use crate::Metadata;
 
 /// Office's `USER_DEFINED` key prefix, of a document's custom properties.
@@ -26,37 +25,6 @@ pub(crate) mod office {
 const MAX_PREFIX_ROUTE_NAME_LENGTH: usize = 1024;
 /// The most names `Metadata.add(KeyPrefix, name, value)` adds to one metadata.
 const MAX_PREFIX_ROUTE_NAMES: usize = 10_000;
-
-/// What the extractors shared between parsers write metadata into: [`TikaMetadata`] itself, or
-/// a parser's record of what it writes there.
-pub(crate) trait MetadataSink {
-    /// The first value of `name`, as Tika's `Metadata.get`.
-    fn get(&self, name: &str) -> Option<&str>;
-    /// Every value of `name`, as Tika's `Metadata.getValues`.
-    fn values(&self, name: &str) -> &[String];
-    /// Tika's `Metadata.set`.
-    fn set(&mut self, name: &str, value: impl Into<String>);
-    /// Tika's `Metadata.add`.
-    fn add(&mut self, name: &str, value: impl Into<String>);
-}
-
-impl MetadataSink for TikaMetadata {
-    fn get(&self, name: &str) -> Option<&str> {
-        TikaMetadata::get(self, name)
-    }
-
-    fn values(&self, name: &str) -> &[String] {
-        TikaMetadata::values(self, name)
-    }
-
-    fn set(&mut self, name: &str, value: impl Into<String>) {
-        TikaMetadata::set(self, name, value);
-    }
-
-    fn add(&mut self, name: &str, value: impl Into<String>) {
-        TikaMetadata::add(self, name, value);
-    }
-}
 
 /// A document's metadata, in the order Tika's `HashMap` holds it.
 #[derive(Debug, Clone, Default)]

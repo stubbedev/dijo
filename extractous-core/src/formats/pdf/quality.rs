@@ -18,7 +18,8 @@ const MIXED_SCRIPT_SHARE: f64 = 0.3;
 const NATURAL_VOWEL_SHARE: f64 = 0.32;
 const GARBAGE_VOWEL_SHARE: f64 = 0.16;
 const ONE_LETTER_ARABIC_SHARE: f64 = 0.3;
-const GARBAGE: f64 = 1.0;
+/// A text layer this bad or worse is garbage, which OCR text replaces.
+pub(super) const GARBAGE: f64 = 1.0;
 const MIN_SAMPLE_CHARACTERS: u32 = 20;
 const MIN_SAMPLE_WORDS: u32 = 10;
 const MIN_SAMPLE_LATIN_LETTERS: u32 = 50;

@@ -9,7 +9,7 @@
         "4"
     ],
     "tk:parsed-by-full-set": [
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        "extractous::OfficeParser"
     ],
     "dcterms:modified": [
         "2024-07-11T19:20:35Z"
@@ -18,7 +18,7 @@
         "Normal.dotm"
     ],
     "tk:parsed-by": [
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        "extractous::OfficeParser"
     ],
     "extended-properties:TotalTime": [
         "1210000000"

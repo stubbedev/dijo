@@ -161,7 +161,10 @@ impl MimeTypes {
                         types.start(&mut reading, name.qualified_name(), attributes)
                     }
                     Event::End(name) => types.end(&mut reading, name.qualified_name()),
-                    Event::Text(..) | Event::DocumentType => Ok(()),
+                    Event::Text(..)
+                    | Event::DocumentType
+                    | Event::Comment(_)
+                    | Event::ProcessingInstruction(..) => Ok(()),
                 };
                 match outcome {
                     Ok(()) => Flow::Continue,
@@ -365,23 +368,6 @@ impl MimeTypes {
         self.by_type
             .get(&self.registry.normalize(media_type))
             .and_then(|&id| self.types[id].extensions.first())
-            .map_or("", String::as_str)
-    }
-
-    /// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type
-    /// a name normalizes to, of its base type when it has parameters, or nothing.
-    pub(crate) fn extension_for_name(&self, name: &str) -> &str {
-        let Some(media_type) = MediaType::parse(name) else {
-            return "";
-        };
-        let normalized = self.registry.normalize(&media_type);
-        let id = self.by_type.get(&normalized).copied().or_else(|| {
-            normalized
-                .has_parameters()
-                .then(|| self.by_type.get(&normalized.base_type()).copied())
-                .flatten()
-        });
-        id.and_then(|id| self.types[id].extensions.first())
             .map_or("", String::as_str)
     }
 
@@ -615,7 +601,8 @@ impl Patterns {
             )? {
                 self.names.insert(pattern.to_owned(), id);
             }
-        } else if let Some(extension) = glob_extension(pattern) {
+        } else if pattern.starts_with('*') && !pattern[1..].contains(wild) {
+            let extension = &pattern[1..];
             if replaces(
                 self.extensions.get(extension).copied(),
                 id,
@@ -678,14 +665,6 @@ impl Patterns {
             .find(|(_, regex)| regex.is_match(name))
             .map(|(id, _)| *id)
     }
-}
-
-/// The extension of a glob `Patterns` keeps as one, `*.ext` without further wildcards.
-fn glob_extension(pattern: &str) -> Option<&str> {
-    let wild = |c: char| matches!(c, '*' | '?' | '[');
-    pattern
-        .strip_prefix('*')
-        .filter(|extension| !extension.contains(wild))
 }
 
 /// `Patterns.compile`: a glob as a Java regex.
@@ -818,19 +797,6 @@ mod tests {
             Some(("http://www.w3.org/2000/svg".to_owned(), "svg".to_owned()))
         );
         assert_eq!(root_element(b"<!-- \xE9 --><svg/>"), None);
-    }
-
-    #[test]
-    fn names_the_extensions_of_types_as_tika_does() {
-        let types = mime_types();
-        assert_eq!(types.extension_for_name("video/mp4"), ".mp4");
-        assert_eq!(types.extension_for_name("image/jpeg"), ".jpg");
-        assert_eq!(
-            types.extension_for_name("text/plain; charset=UTF-8"),
-            ".txt"
-        );
-        assert_eq!(types.extension_for_name("application/x-no-such-type"), "");
-        assert_eq!(types.extension_for_name("not a type"), "");
     }
 
     #[test]

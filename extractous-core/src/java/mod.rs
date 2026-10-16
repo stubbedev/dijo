@@ -18,6 +18,7 @@ pub(crate) mod time;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use crate::text::charset::Charset;
 use crate::unicode::{decimal_digit, is_whitespace};
 
 /// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
@@ -286,26 +287,22 @@ fn parse_hex(text: &str) -> Option<i32> {
 /// `Integer.parseInt(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
 /// reads them, in range.
 pub(crate) fn parse_hex_int(text: &str) -> Option<i32> {
-    let (negative, digits) = match text.chars().next()? {
-        '-' => (true, &text[1..]),
-        '+' => (false, &text[1..]),
-        _ => (false, text),
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let mut magnitude: i64 = 0;
-    for character in digits.chars() {
-        magnitude = magnitude * 16 + i64::from(hex_digit(character)?);
-        if magnitude > i64::from(i32::MAX) + 1 {
-            return None;
-        }
-    }
-    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
+    parse_signed(text, 16, hex_digit).and_then(|value| i32::try_from(value).ok())
+}
+
+/// `Long.parseLong(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
+/// reads them, in range.
+pub(crate) fn parse_hex_long(text: &str) -> Option<i64> {
+    parse_signed(text, 16, hex_digit)
 }
 
 /// `Long.parseLong(text)`: an optional sign and decimal digits of any script, in range.
 pub(crate) fn parse_long(text: &str) -> Option<i64> {
+    parse_signed(text, 10, digit)
+}
+
+/// An optional sign and digits of `radix` as `value` reads them, as a `long`.
+fn parse_signed(text: &str, radix: i128, value: fn(char) -> Option<u32>) -> Option<i64> {
     let (negative, digits) = match text.chars().next()? {
         '-' => (true, &text[1..]),
         '+' => (false, &text[1..]),
@@ -316,7 +313,7 @@ pub(crate) fn parse_long(text: &str) -> Option<i64> {
     }
     let mut magnitude: i128 = 0;
     for character in digits.chars() {
-        magnitude = magnitude * 10 + i128::from(digit(character)?);
+        magnitude = magnitude * radix + i128::from(value(character)?);
         if magnitude > i128::from(i64::MAX) + 1 {
             return None;
         }
@@ -324,19 +321,99 @@ pub(crate) fn parse_long(text: &str) -> Option<i64> {
     i64::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
+/// `Base64.getMimeDecoder().decode(text)`: the text's ISO-8859-1 bytes, a character beyond it
+/// as `?`, decoded with everything outside the alphabet skipped, up to padding that must close a
+/// unit; `None` where Java throws.
+pub(crate) fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
+    let value = |byte: u8| -> Option<u32> {
+        match byte {
+            b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+            b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let bytes: Vec<u8> = text
+        .chars()
+        .map(|character| u8::try_from(character).unwrap_or(b'?'))
+        .collect();
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    let mut bits: u32 = 0;
+    let mut shift: i32 = 18;
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        at += 1;
+        if byte == b'=' {
+            if (shift == 6 && bytes.get(at).copied() != Some(b'=')) || shift == 18 {
+                return None;
+            }
+            if shift == 6 {
+                at += 1;
+            }
+            break;
+        }
+        let Some(digit) = value(byte) else {
+            continue;
+        };
+        bits |= digit << shift;
+        shift -= 6;
+        if shift < 0 {
+            decoded.extend_from_slice(&bits.to_be_bytes()[1..]);
+            shift = 18;
+            bits = 0;
+        }
+    }
+    match shift {
+        6 => decoded.push(bits.to_be_bytes()[1]),
+        0 => decoded.extend_from_slice(&bits.to_be_bytes()[1..3]),
+        12 => return None,
+        _ => {}
+    }
+    if bytes[at..].iter().any(|&byte| value(byte).is_some()) {
+        return None;
+    }
+    Some(decoded)
+}
+
+/// `new String(bytes, ISO_8859_1)`, without a copy for ASCII bytes it owns.
+pub(crate) fn latin1(bytes: impl Into<Vec<u8>>) -> String {
+    let bytes = bytes.into();
+    if bytes.is_ascii() {
+        return String::from_utf8(bytes).expect("ASCII is UTF-8");
+    }
+    bytes.iter().map(|&byte| char::from(byte)).collect()
+}
+
+/// `new String(bytes, US_ASCII)`: a byte beyond ASCII as U+FFFD.
+pub(crate) fn ascii(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&byte| {
+            if byte.is_ascii() {
+                char::from(byte)
+            } else {
+                char::REPLACEMENT_CHARACTER
+            }
+        })
+        .collect()
+}
+
+/// `new String(bytes, UTF_8)`: malformed input replaced as the JDK's decoder replaces it.
+pub(crate) fn utf8(bytes: &[u8]) -> String {
+    if bytes.is_ascii() {
+        return latin1(bytes);
+    }
+    Charset::named("UTF-8")
+        .decode(bytes)
+        .expect("the JDK decoders decode UTF-8")
+}
+
 /// `String.equalsIgnoreCase`: the same length, and each pair of characters the same, or the same
 /// once both are upper-cased, or once those are lower-cased, each by its one-character mapping.
 pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
-    fn upper(character: char) -> char {
-        single(character.to_uppercase()).unwrap_or(character)
-    }
-    fn lower(character: char) -> char {
-        single(character.to_lowercase()).unwrap_or(character)
-    }
-    fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
-        let first = mapped.next()?;
-        mapped.next().is_none().then_some(first)
-    }
     a.chars().count() == b.chars().count()
         && a.chars()
             .zip(b.chars())
@@ -354,6 +431,42 @@ pub(crate) fn split(text: &str, separator: char) -> Vec<&str> {
         pieces.clear();
     }
     pieces
+}
+
+/// `String.CASE_INSENSITIVE_ORDER`: the first characters that differ once each is upper-cased
+/// and that lower-cased, by their one-character mappings, decide; else the shorter string comes
+/// first.
+pub(crate) fn compare_ignore_case(a: &str, b: &str) -> Ordering {
+    let mut left = a.chars();
+    let mut right = b.chars();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let (x, y) = (lower(upper(x)), lower(upper(y)));
+                if x != y {
+                    return x.cmp(&y);
+                }
+            }
+        }
+    }
+}
+
+/// `Character.toUpperCase` on a code point: its mapping where that is one character.
+fn upper(character: char) -> char {
+    single(character.to_uppercase()).unwrap_or(character)
+}
+
+/// `Character.toLowerCase` on a code point: its mapping where that is one character.
+fn lower(character: char) -> char {
+    single(character.to_lowercase()).unwrap_or(character)
+}
+
+fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
+    let first = mapped.next()?;
+    mapped.next().is_none().then_some(first)
 }
 
 /// `String.trim()`: without the characters up to U+0020 at either end.
@@ -581,6 +694,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decodes_bytes_as_new_string_does() {
+        assert_eq!(latin1(b"\xA9xyz"), "\u{A9}xyz");
+        assert_eq!(ascii(b"\xA9xyz"), "\u{FFFD}xyz");
+        assert_eq!(utf8(b"plain"), "plain");
+        assert_eq!(utf8(b"K\xC3\xB8ge"), "K\u{F8}ge");
+        assert_eq!(utf8(b"A\xC3\xFF"), "A\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
     fn hashes_strings_as_java_does() {
         assert_eq!(string_hash(""), 0);
         assert_eq!(string_hash("Content-Type") as i32, 949_037_134);
@@ -619,6 +741,20 @@ mod tests {
         assert_eq!(parse_int("2147483648"), None);
         assert_eq!(parse_int("٣"), Some(3));
         assert_eq!(parse_int("𝟗"), None);
+        assert_eq!(parse_hex_long("-7fffffffffffffff"), Some(-i64::MAX));
+        assert_eq!(parse_hex_long("8000000000000000"), None);
+        assert_eq!(parse_hex_long("1F"), Some(31));
+        assert_eq!(
+            base64_mime_decode("SGVs\r\nbG8=").as_deref(),
+            Some(b"Hello".as_slice())
+        );
+        assert_eq!(
+            base64_mime_decode("QQ==!").as_deref(),
+            Some(b"A".as_slice())
+        );
+        assert_eq!(base64_mime_decode("QQ=").as_deref(), None);
+        assert_eq!(base64_mime_decode("Q").as_deref(), None);
+        assert_eq!(base64_mime_decode("QUJD=QQ").as_deref(), None);
         assert_eq!(parse_int(" 1"), None);
         assert_eq!(parse_int("-"), None);
         assert_eq!(parse_long("9223372036854775807"), Some(i64::MAX));
@@ -644,6 +780,16 @@ mod tests {
         assert!(equals_ignore_case("rootfıle", "ROOTFILE"));
         assert!(!equals_ignore_case("item", "items"));
         assert!(!equals_ignore_case("straße", "STRASSE"));
+        assert_eq!(
+            compare_ignore_case("Content-Type", "content-type"),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_ignore_case("WARC-Date", "warc-type"),
+            Ordering::Less
+        );
+        assert_eq!(compare_ignore_case("_x", "a"), Ordering::Less);
+        assert_eq!(compare_ignore_case("ab", "A"), Ordering::Greater);
     }
 
     #[test]

@@ -30,8 +30,7 @@ pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;
-pub(crate) use mime_types::mime_types;
-use mime_types::MIN_LENGTH;
+use mime_types::{mime_types, MIN_LENGTH};
 
 /// What Tika knows of a document before it detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

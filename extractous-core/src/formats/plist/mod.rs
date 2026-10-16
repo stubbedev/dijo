@@ -1,11 +1,14 @@
-//! Binary property lists, as Tika's `PListParser` writes what dd-plist 1.30 reads of them
-//! ([`binary`]): the object tree as `plist`, `dict`, `key`, `array`, `string`, `number`,
-//! `data`, `date` and `uid` elements, the bytes of each data object also handed to the embedded
-//! document extractor. XML and ASCII property lists, sets, keys that are not strings, numbers
-//! or UIDs, trees that share objects so often that writing them out would not end, and dates
-//! far from ours stay on Tika's path.
+//! Property lists, as Tika's `PListParser` writes what dd-plist 1.30 reads of them, binary
+//! ([`binary`]) and XML ([`xml`]): the object tree as `plist`, `dict`, `key`, `array`, `string`,
+//! `number`, `data`, `date` and `uid` elements, the bytes of each data object also handed to the
+//! embedded document extractor. An XML list whose root is a dictionary is typed by its keys.
+//! Sets, keys that are not strings, numbers or UIDs, trees that share objects so often that
+//! writing them out would not end, dates far from ours, and what [`xml`] leaves out stay on
+//! Tika's path. ASCII property lists have no media type of their own in Tika, which detects
+//! them as text, so they never reach `PListParser`.
 
 pub(crate) mod binary;
+mod xml;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -21,12 +24,15 @@ use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::TimeZone;
 
-const MEDIA_TYPES: [&str; 4] = [
+const MEDIA_TYPES: [&str; 5] = [
     "application/x-bplist",
     "application/x-bplist-itunes",
     "application/x-bplist-memgraph",
     "application/x-bplist-webarchive",
+    XML_PLIST,
 ];
+/// The type Tika detects an XML property list as, by its root element.
+const XML_PLIST: &str = "application/x-plist";
 const MAGIC: &[u8] = b"bplist";
 /// Milliseconds from the Java epoch to dd-plist's, 2001-01-01.
 const EPOCH: i64 = 978_307_200_000;
@@ -122,15 +128,58 @@ fn check(
     Ok(count)
 }
 
+/// The formats `PropertyListParser.determineType` tells apart by the first character after
+/// any byte order mark and white space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Binary,
+    Xml,
+    Other,
+}
+
+/// `PropertyListParser.determineType`, for the lists Tika's detection sends to `PListParser`:
+/// binary ones start with their magic, XML ones with markup after any byte order mark and
+/// white space.
+fn format(input: &[u8]) -> Format {
+    if input.starts_with(MAGIC) {
+        return Format::Binary;
+    }
+    let boms: [&[u8]; 5] = [
+        &[0x00, 0x00, 0xFE, 0xFF],
+        &[0xFF, 0xFE, 0x00, 0x00],
+        &[0xEF, 0xBB, 0xBF],
+        &[0xFE, 0xFF],
+        &[0xFF, 0xFE],
+    ];
+    let unmarked = boms
+        .iter()
+        .find_map(|bom| input.strip_prefix(*bom))
+        .unwrap_or(input);
+    match unmarked
+        .iter()
+        .find(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0C))
+    {
+        Some(b'<') => Format::Xml,
+        _ => Format::Other,
+    }
+}
+
 /// The root of `input` and the writer of its dates, or why the port does not write it.
 fn read(input: &[u8]) -> Result<(Value, Dates), Problem> {
-    if !input.starts_with(MAGIC) {
-        return Err(Problem::Unread("a property list that is not binary"));
-    }
+    let root = match format(input) {
+        Format::Binary => binary::parse(input).map_err(|thrown| match thrown {
+            binary::Thrown::Format(reason) | binary::Thrown::Runtime(reason) => {
+                Problem::Failed(reason)
+            }
+        })?,
+        Format::Xml => xml::parse(input)?,
+        Format::Other => {
+            return Err(Problem::Unread(
+                "a property list that is neither binary nor XML",
+            ))
+        }
+    };
     let dates = Dates::new()?;
-    let root = binary::parse(input).map_err(|thrown| match thrown {
-        binary::Thrown::Format(reason) | binary::Thrown::Runtime(reason) => Problem::Failed(reason),
-    })?;
     check(&root, &dates, &mut HashMap::new())?;
     Ok((root, dates))
 }
@@ -251,6 +300,12 @@ impl Parser for PListParser {
             }
         })?;
         Ok(Box::new(move |xhtml| {
+            let metadata = xhtml.metadata_mut();
+            if let (Some(XML_PLIST), Some(Object::Dict(dict))) =
+                (metadata.get("Content-Type"), root.as_deref())
+            {
+                metadata.set("Content-Type", dict.kind().xml_type());
+            }
             xhtml.start_element("plist")?;
             write(&root, &dates, xhtml)?;
             xhtml.end_element("plist")?;
@@ -340,6 +395,66 @@ mod tests {
         let (parsed, deferred) = documents(&PListParser, &[scratch.directory()]);
         assert_eq!(deferred, [deferred_set]);
         assert_eq!(parsed.len(), read.len() + failing.len());
+        assert_same_as_tika(
+            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
+            TIKA_NAME,
+        );
+        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn extracts_xml_property_lists_as_tikas_path_does() {
+        let scratch = Scratch::new("xml-plist");
+        let header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
+                      \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n";
+        let list = |body: &str| format!("{header}<plist version=\"1.0\">\n{body}\n</plist>\n");
+        let read = [
+            scratch.write(
+                "typical.plist",
+                list(
+                    "<dict>\n  <key>keyA</key>\n  <string>valueA</string>\n  <key>key&amp;B</key>\n  \
+                     <string>value&amp;B <![CDATA[<b>]]><!-- c --> f\u{f8}r</string>\n  <key>date</key>\n  \
+                     <date>2011-11-28T09:21:30Z</date>\n  <key>data</key>\n  <data>\n  SGVsbG8gZW1i\n  \
+                     ZWRkZWQgdGV4dA==\n  </data>\n  <key>array</key>\n  <array>\n    <true/>\n    <false/>\n    \
+                     <integer>87</integer>\n    <integer>0x1f</integer>\n    <integer>yes</integer>\n    \
+                     <real>3.14159</real>\n    <real>-infinity</real>\n    <real> 2</real>\n    <string/>\n  \
+                     </array>\n  <key>keyA</key>\n  <unknown/>\n  <key>nested</key>\n  <dict/>\n</dict>",
+                )
+                .as_bytes(),
+            ),
+            scratch.write(
+                "webarchive.plist",
+                list("<dict><key>WebMainResource</key><dict/></dict>").as_bytes(),
+            ),
+            scratch.write(
+                "itunes.plist",
+                list(
+                    "<dict><key>Playlists</key><array/><key>Tracks</key><dict/>\
+                     <key>Music Folder</key><string>m</string></dict>",
+                )
+                .as_bytes(),
+            ),
+            scratch.write("array.plist", list("<array><string>a</string></array>").as_bytes()),
+            scratch.write(
+                "no-doctype.plist",
+                b"<?xml version=\"1.0\"?>\n<plist><dict><key>k</key><integer>1</integer></dict></plist>",
+            ),
+        ];
+        let failing = [
+            scratch.write("empty.plist", list("").as_bytes()),
+            scratch.write("odd.plist", list("<dict><key>k</key></dict>").as_bytes()),
+            scratch.write("number.plist", list("<integer>1x</integer>").as_bytes()),
+            scratch.write("data.plist", list("<data>QQ</data>").as_bytes()),
+            scratch.write(
+                "null.plist",
+                list("<array><string>a</string><unknown/></array>").as_bytes(),
+            ),
+        ];
+        let deferred_entity =
+            scratch.write("entity.plist", list("<string>&e;</string>").as_bytes());
+        let (parsed, deferred) = documents(&PListParser, &[scratch.directory()]);
+        assert_eq!(deferred, [deferred_entity]);
+        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
         assert_same_as_tika(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,

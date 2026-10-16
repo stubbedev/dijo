@@ -89,6 +89,16 @@ pub(crate) fn heap_cap() -> Option<u64> {
         .map(NonZeroU64::get)
 }
 
+/// The processors this process may use: its share of the machine, or all of the machine's, or
+/// one when the machine does not tell how many it has.
+pub(crate) fn processors() -> usize {
+    SETTINGS
+        .get()
+        .and_then(|settings| settings.processors)
+        .or_else(|| std::thread::available_parallelism().ok())
+        .map_or(1, NonZeroUsize::get)
+}
+
 /// Whether the process has created its isolate, which nothing but Tika's path needs.
 #[cfg(test)]
 pub(crate) fn isolate_created() -> bool {

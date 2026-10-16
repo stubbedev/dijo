@@ -1,7 +1,7 @@
 //! POI's `Ole10Native`: the record an OLE 1.0 object keeps its document in, the content of its
 //! `\1Ole10Native` stream, read as `new Ole10Native(data, 0)` reads it and failing where it fails.
 
-use crate::text::charset::Charset;
+use crate::java;
 
 /// `Ole10Native`'s default `MAX_RECORD_LENGTH`.
 pub(crate) const MAX_RECORD_LENGTH: i32 = 100_000_000;
@@ -96,9 +96,7 @@ fn read_ascii_z(stream: &mut Stream<'_>) -> Result<String, Unread> {
     for _ in 0..MAX_STRING_LENGTH {
         if stream.read_byte()? == 0 {
             let bytes = &stream.buf[as_index(start)..as_index(stream.pos - 1)];
-            return Ok(Charset::named("UTF-8")
-                .decode(bytes)
-                .expect("the JDK's UTF-8 is ported"));
+            return Ok(java::utf8(bytes));
         }
     }
     Err(Unread::Invalid)

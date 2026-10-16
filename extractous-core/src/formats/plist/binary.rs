@@ -84,8 +84,40 @@ pub(crate) struct Dict {
     positions: HashMap<String, usize>,
 }
 
+/// What a property list holds, as `BPListDetector.detectOnKeys` tells it by the keys of its root
+/// dictionary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListKind {
+    Memgraph,
+    WebArchive,
+    Itunes,
+    Plain,
+}
+
+impl ListKind {
+    /// The media type of a binary property list of this kind.
+    pub(crate) fn binary_type(self) -> &'static str {
+        match self {
+            Self::Memgraph => "application/x-bplist-memgraph",
+            Self::WebArchive => "application/x-bplist-webarchive",
+            Self::Itunes => "application/x-bplist-itunes",
+            Self::Plain => "application/x-bplist",
+        }
+    }
+
+    /// The media type of an XML property list of this kind, `detectXMLOnKeys`.
+    pub(crate) fn xml_type(self) -> &'static str {
+        match self {
+            Self::Memgraph => "application/x-plist-memgraph",
+            Self::WebArchive => "application/x-plist-webarchive",
+            Self::Itunes => "application/x-plist-itunes",
+            Self::Plain => "application/x-plist",
+        }
+    }
+}
+
 impl Dict {
-    fn put(&mut self, key: Key, value: Value) {
+    pub(super) fn put(&mut self, key: Key, value: Value) {
         let Some(value) = value else {
             return;
         };
@@ -104,8 +136,22 @@ impl Dict {
     }
 
     /// Whether `key` is a key of the dictionary.
-    pub(crate) fn contains(&self, key: &str) -> bool {
+    fn contains(&self, key: &str) -> bool {
         self.positions.contains_key(key)
+    }
+
+    /// `BPListDetector.detectOnKeys` of the dictionary's keys.
+    pub(crate) fn kind(&self) -> ListKind {
+        let has = |key: &str| self.contains(key);
+        if has("nodes") && has("edges") && has("graphEncodingVersion") {
+            ListKind::Memgraph
+        } else if has("WebMainResource") {
+            ListKind::WebArchive
+        } else if has("Playlists") && has("Tracks") && has("Music Folder") {
+            ListKind::Itunes
+        } else {
+            ListKind::Plain
+        }
     }
 }
 
