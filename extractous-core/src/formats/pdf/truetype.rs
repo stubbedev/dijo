@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use super::Unported;
+use crate::text::charset::Charset;
 
 /// `WGL4Names.MAC_GLYPH_NAMES`: the glyph names of the standard Macintosh ordering.
 const MAC_GLYPH_NAMES: [&str; 258] = [
@@ -273,6 +274,8 @@ const MAC_GLYPH_NAMES: [&str; 258] = [
 pub(super) const PLATFORM_UNICODE: u16 = 0;
 pub(super) const PLATFORM_MACINTOSH: u16 = 1;
 pub(super) const PLATFORM_WINDOWS: u16 = 3;
+/// `NameRecord.PLATFORM_ISO`.
+const PLATFORM_ISO: u16 = 2;
 pub(super) const ENCODING_UNICODE_1_0: u16 = 0;
 pub(super) const ENCODING_UNICODE_1_1: u16 = 1;
 pub(super) const ENCODING_UNICODE_2_0_BMP: u16 = 3;
@@ -284,12 +287,12 @@ pub(super) const ENCODING_WIN_UNICODE_FULL: u16 = 10;
 
 /// Why FontBox fails to read a font program, which makes the font damaged to PDFBox.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Damaged;
+pub(crate) struct Damaged;
 
 /// What reading a font program gives: the font, the font damaged as FontBox finds it, or a font
 /// FontBox reads in a way the port does not follow.
 #[derive(Debug)]
-pub(super) enum Read {
+pub(crate) enum Read {
     Font(TrueType),
     Damaged(Damaged),
     Unported(String),
@@ -358,9 +361,31 @@ impl CmapSubtable {
     }
 }
 
-/// A TrueType font program, as far as text extraction reads it.
+/// The `head` table's version and dates, as FontBox's `HeaderTable` reads them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Header {
+    /// `read32Fixed`, in `float` arithmetic.
+    pub(crate) version: f32,
+    /// Seconds since 1904-01-01, as `readInternationalDate` reads them.
+    pub(crate) created: i64,
+    pub(crate) modified: i64,
+}
+
+/// A record of the `name` table, as FontBox's `NamingTable` reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NameRecord {
+    pub(crate) name_id: u16,
+    /// The string, decoded as its platform and encoding say; `None` where its offset lies past
+    /// the table.
+    pub(crate) string: Option<String>,
+}
+
+/// A TrueType font program, as far as text extraction and Tika's `TrueTypeParser` read it.
 #[derive(Debug)]
-pub(super) struct TrueType {
+pub(crate) struct TrueType {
+    pub(crate) header: Header,
+    /// The name records in the table's order; empty without a `name` table.
+    pub(crate) names: Vec<NameRecord>,
     pub(super) units_per_em: u16,
     bbox: [i16; 4],
     pub(super) num_glyphs: u16,
@@ -415,6 +440,11 @@ impl Data<'_> {
     }
 
     /// `read32Fixed`: a 16.16 number as FontBox computes it, in `float`.
+    fn i64(&mut self) -> Result<i64, Damaged> {
+        let bytes = self.take(8)?;
+        Ok(i64::from_be_bytes(bytes.try_into().expect("eight bytes")))
+    }
+
     fn fixed(&mut self) -> Result<f32, Damaged> {
         let integer = f32::from(self.i16()?);
         let fraction = f32::from(self.u16()?) / 65536.0;
@@ -443,6 +473,21 @@ impl TrueType {
             );
         }
         match Self::parse(bytes, Source::Embedded) {
+            Ok(font) => Read::Font(font),
+            Err(Parsing::Damaged(damaged)) => Read::Damaged(damaged),
+            Err(Parsing::Unported(reason)) => Read::Unported(reason),
+        }
+    }
+
+    /// `new TTFParser().parse` of a font file, as Tika's `TrueTypeParser` reads one.
+    pub(crate) fn read_file(bytes: &[u8]) -> Read {
+        if bytes.starts_with(b"ttcf") || bytes.starts_with(b"OTTO") {
+            return Read::Unported(
+                "a TrueType collection or PostScript-outlined font, which the port does not read"
+                    .to_owned(),
+            );
+        }
+        match Self::parse(bytes, Source::Bundled) {
             Ok(font) => Read::Font(font),
             Err(Parsing::Damaged(damaged)) => Read::Damaged(damaged),
             Err(Parsing::Unported(reason)) => Read::Unported(reason),
@@ -483,9 +528,14 @@ impl TrueType {
         let table = |tag: &[u8; 4]| tables.get(tag).copied();
         let head = table(b"head").ok_or(Parsing::Damaged(Damaged))?;
         data.seek(head.offset);
-        data.take(18)?;
+        let version = data.fixed()?;
+        data.take(14)?;
         let units_per_em = data.u16()?;
-        data.take(16)?;
+        let header = Header {
+            version,
+            created: data.i64()?,
+            modified: data.i64()?,
+        };
         let bbox = [data.i16()?, data.i16()?, data.i16()?, data.i16()?];
         data.take(6)?;
         let index_to_loc_format = data.i16()?;
@@ -501,6 +551,8 @@ impl TrueType {
             data.take(26)?;
         }
         let mut font = TrueType {
+            header,
+            names: Vec::new(),
             units_per_em,
             bbox,
             num_glyphs,
@@ -553,7 +605,7 @@ impl TrueType {
             }
         }
         if let Some(name) = table(b"name") {
-            read_name(&mut data, name)?;
+            font.names = read_name(&mut data, name)?;
         }
         if let Some(os2) = table(b"OS/2") {
             read_os2(&mut data, os2)?;
@@ -679,27 +731,50 @@ impl From<Damaged> for Parsing {
     }
 }
 
-/// `NamingTable.read`: the name records, and their strings within the table.
-fn read_name(data: &mut Data, name: Table) -> Result<(), Damaged> {
+/// `NamingTable.read`: the name records, and their strings within the table, each decoded with
+/// the charset `getCharset` picks for its platform and encoding.
+fn read_name(data: &mut Data, name: Table) -> Result<Vec<NameRecord>, Damaged> {
     data.seek(name.offset);
     data.take(2)?;
     let count = usize::from(data.u16()?);
     data.take(2)?;
-    let mut strings = Vec::with_capacity(count);
+    let mut headers = Vec::with_capacity(count);
     for _ in 0..count {
-        data.take(8)?;
+        let platform = data.u16()?;
+        let encoding = data.u16()?;
+        data.u16()?;
+        let name_id = data.u16()?;
         let length = usize::from(data.u16()?);
         let offset = usize::from(data.u16()?);
-        strings.push((offset, length));
+        headers.push((platform, encoding, name_id, offset, length));
     }
-    for (offset, length) in strings {
+    let mut records = Vec::with_capacity(count);
+    for (platform, encoding, name_id, offset, length) in headers {
         if offset > name.length {
+            records.push(NameRecord {
+                name_id,
+                string: None,
+            });
             continue;
         }
         data.seek(name.offset + 6 + count * 12 + offset);
-        data.take(length)?;
+        let bytes = data.take(length)?;
+        let charset = match (platform, encoding) {
+            (PLATFORM_WINDOWS, ENCODING_WIN_SYMBOL | ENCODING_WIN_UNICODE_BMP)
+            | (PLATFORM_UNICODE, _) => "UTF-16",
+            (PLATFORM_ISO, 0) => "US-ASCII",
+            (PLATFORM_ISO, 1) => "UTF-16BE",
+            _ => "ISO-8859-1",
+        };
+        let string = Charset::named(charset)
+            .decode(bytes)
+            .expect("the JDK decoders decode the name table's charsets");
+        records.push(NameRecord {
+            name_id,
+            string: Some(string),
+        });
     }
-    Ok(())
+    Ok(records)
 }
 
 /// `OS2WindowsMetricsTable.read`: the fields every version has, the later ones read only as far

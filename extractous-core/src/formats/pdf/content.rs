@@ -5,6 +5,7 @@
 use lopdf::{Dictionary, Object, StringFormat};
 
 use super::Unported;
+use crate::java;
 
 /// `BaseParser.MAX_RECURSION_DEPTH`.
 const MAX_RECURSION_DEPTH: usize = 500;
@@ -241,7 +242,7 @@ impl<'a> Lexer<'a> {
                 Ok(Some(if word == b"null" {
                     Token::Operand(Object::Null)
                 } else {
-                    Token::Operator(latin1(word))
+                    Token::Operator(java::latin1(&word))
                 }))
             }
             b't' | b'f' => {
@@ -253,7 +254,7 @@ impl<'a> Lexer<'a> {
                 };
                 Ok(Some(match boolean {
                     Some(boolean) => Token::Operand(Object::Boolean(boolean)),
-                    None => Token::Operator(latin1(word)),
+                    None => Token::Operator(java::latin1(&word)),
                 }))
             }
             b'0'..=b'9' | b'-' | b'+' | b'.' => self.stream_number().map(Some),
@@ -262,7 +263,7 @@ impl<'a> Lexer<'a> {
                 if word == b"BI" {
                     self.inline_image()?;
                 }
-                Ok(Some(Token::Operator(latin1(word))))
+                Ok(Some(Token::Operator(java::latin1(&word))))
             }
             b'I' => {
                 let first = self.read();
@@ -282,7 +283,7 @@ impl<'a> Lexer<'a> {
                 Ok(Some(Token::Operand(Object::Null)))
             }
             _ => {
-                let operator = latin1(self.read_operator());
+                let operator = java::latin1(&self.read_operator());
                 let trimmed = operator.trim_matches(|c: char| c <= ' ');
                 if trimmed.is_empty() {
                     return Ok(None);
@@ -907,14 +908,6 @@ pub(super) fn parse_literal(bytes: &[u8]) -> Option<Vec<u8>> {
         Ok(Object::String(string, _)) => Some(string),
         _ => None,
     }
-}
-
-/// Bytes read as ISO-8859-1, as PDFBox's parsers read operator names.
-fn latin1(bytes: Vec<u8>) -> String {
-    if bytes.is_ascii() {
-        return String::from_utf8(bytes).expect("ASCII is UTF-8");
-    }
-    bytes.iter().map(|&b| char::from(b)).collect()
 }
 
 /// The reference `COSParser` reads for the object `number` of `generation`, which `lopdf` holds

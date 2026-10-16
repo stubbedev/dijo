@@ -2,7 +2,7 @@
 //! the whole list parsed as dd-plist's `BinaryPropertyListParser` parses it. A list it rejects
 //! makes Tika's detection fail.
 
-use crate::formats::plist::binary::{self, Object};
+use crate::formats::plist::binary::{self, ListKind, Object};
 use crate::mime::media_type::MediaType;
 
 use super::Thrown;
@@ -18,21 +18,10 @@ pub(crate) fn detect(data: &[u8]) -> Result<Option<MediaType>, Thrown> {
         binary::Thrown::Runtime(_) => Thrown::Runtime,
     })?;
     let kind = match root.as_deref() {
-        Some(Object::Dict(dict)) => {
-            let has = |key: &str| dict.contains(key);
-            if has("nodes") && has("edges") && has("graphEncodingVersion") {
-                "application/x-bplist-memgraph"
-            } else if has("WebMainResource") {
-                "application/x-bplist-webarchive"
-            } else if has("Playlists") && has("Tracks") && has("Music Folder") {
-                "application/x-bplist-itunes"
-            } else {
-                "application/x-bplist"
-            }
-        }
-        _ => "application/x-bplist",
+        Some(Object::Dict(dict)) => dict.kind(),
+        _ => ListKind::Plain,
     };
-    Ok(Some(MediaType::named(kind)))
+    Ok(Some(MediaType::named(kind.binary_type())))
 }
 
 #[cfg(test)]

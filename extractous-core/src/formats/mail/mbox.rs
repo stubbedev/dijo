@@ -19,10 +19,10 @@ use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::is_blank;
 use crate::java::time::format_instant;
 use crate::java::to_lower_case;
 use crate::java::trim;
-use crate::java::{is_blank, utf16_length};
 use crate::text::charset::Charset;
 
 const RECORD_DIVIDER: &[u8] = b"From ";
@@ -32,10 +32,6 @@ const MESSAGE: &str = "message/rfc822";
 const HEADER_PREFIX: &str = "mbox:";
 /// The bytes the JDK's windows-1252 decoder reads as U+FFFD, which its encoder writes as `?`.
 const UNDEFINED: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
-/// `Metadata.MAX_PREFIX_ROUTE_NAME_LENGTH`, in UTF-16 code units.
-const MAX_HEADER_NAME_LENGTH: usize = 1024;
-/// `Metadata.MAX_PREFIX_ROUTE_NAMES`.
-const MAX_HEADER_NAMES: usize = 10_000;
 
 /// A message of the mailbox: its bytes and the metadata the extractor is handed with them.
 struct Message {
@@ -66,12 +62,14 @@ fn messages(input: &[u8]) -> Result<Option<Vec<Message>>, Unported> {
             }
             continue;
         }
-        let mut metadata = Headers::new();
-        metadata.add_header("from", decode(&current[RECORD_DIVIDER.len()..]));
-        metadata.metadata.set("Content-Type", MESSAGE);
-        metadata
-            .metadata
-            .set("tk:content-type-parser-override", MESSAGE);
+        let mut metadata = TikaMetadata::new();
+        metadata.add_prefixed(
+            HEADER_PREFIX,
+            "from",
+            decode(&current[RECORD_DIVIDER.len()..]),
+        );
+        metadata.set("Content-Type", MESSAGE);
+        metadata.set("tk:content-type-parser-override", MESSAGE);
         let Some(mut line) = lines.next() else {
             break;
         };
@@ -106,12 +104,9 @@ fn messages(input: &[u8]) -> Result<Option<Vec<Message>>, Unported> {
             }
         };
         for header in &waiting {
-            metadata.save(header)?;
+            save(&mut metadata, header)?;
         }
-        messages.push(Message {
-            bytes,
-            metadata: metadata.metadata,
-        });
+        messages.push(Message { bytes, metadata });
         match next {
             Some(next) => current = next,
             None => break,
@@ -120,72 +115,40 @@ fn messages(input: &[u8]) -> Result<Option<Vec<Message>>, Unported> {
     Ok(Some(messages))
 }
 
-/// A message's metadata, with the count of header names its `mbox:` prefix route has added.
-struct Headers {
-    metadata: TikaMetadata,
-    names: usize,
-}
-
-impl Headers {
-    fn new() -> Self {
-        Self {
-            metadata: TikaMetadata::new(),
-            names: 0,
+/// `saveHeaderInMetadata`.
+fn save(metadata: &mut TikaMetadata, line: &str) -> Result<(), Unported> {
+    let Some((tag, content)) = header(line) else {
+        return Ok(());
+    };
+    let tag = to_lower_case(tag);
+    match tag.as_str() {
+        "from" => {
+            metadata.set("dc:creator", content);
+            set_person_and_email(content, metadata);
         }
+        "to" | "cc" | "bcc" => {
+            if let Some(address) = bracketed_address(content) {
+                metadata.add("message:recipient-address", address);
+            } else if content.contains('@') {
+                metadata.add("message:recipient-address", content);
+            }
+            metadata.add(&format!("message:{tag}"), content);
+        }
+        "subject" => metadata.add("dc:subject", content),
+        "date" => {
+            if let Some(millis) = parse_date_lenient(content)? {
+                metadata.set("dcterms:created", format_instant(millis));
+            }
+        }
+        "message-id" => metadata.set("dc:identifier", content),
+        "in-reply-to" => metadata.set("dc:relation", content),
+        "content-type" => {
+            metadata.set("Content-Type", content);
+            metadata.set("dc:format", content);
+        }
+        _ => metadata.add_prefixed(HEADER_PREFIX, &tag, content),
     }
-
-    /// `Metadata.add(EMAIL_HEADER, name, value)`: no blank or overlong name, and no new name
-    /// past the most the route takes.
-    fn add_header(&mut self, name: &str, value: String) {
-        if is_blank(name) || utf16_length(name) > MAX_HEADER_NAME_LENGTH {
-            return;
-        }
-        let key = format!("{HEADER_PREFIX}{name}");
-        if self.metadata.values(&key).is_empty() {
-            if self.names >= MAX_HEADER_NAMES {
-                return;
-            }
-            self.names += 1;
-        }
-        self.metadata.add(&key, value);
-    }
-
-    /// `saveHeaderInMetadata`.
-    fn save(&mut self, line: &str) -> Result<(), Unported> {
-        let Some((tag, content)) = header(line) else {
-            return Ok(());
-        };
-        let tag = to_lower_case(tag);
-        let metadata = &mut self.metadata;
-        match tag.as_str() {
-            "from" => {
-                metadata.set("dc:creator", content);
-                set_person_and_email(content, metadata);
-            }
-            "to" | "cc" | "bcc" => {
-                if let Some(address) = bracketed_address(content) {
-                    metadata.add("message:recipient-address", address);
-                } else if content.contains('@') {
-                    metadata.add("message:recipient-address", content);
-                }
-                metadata.add(&format!("message:{tag}"), content);
-            }
-            "subject" => metadata.add("dc:subject", content),
-            "date" => {
-                if let Some(millis) = parse_date_lenient(content)? {
-                    metadata.set("dcterms:created", format_instant(millis));
-                }
-            }
-            "message-id" => metadata.set("dc:identifier", content),
-            "in-reply-to" => metadata.set("dc:relation", content),
-            "content-type" => {
-                metadata.set("Content-Type", content);
-                metadata.set("dc:format", content);
-            }
-            _ => self.add_header(&tag, content.to_owned()),
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 /// The groups of `([^ ]+):[ \t]*(.*)` matching all of `line`: the name up to the last colon

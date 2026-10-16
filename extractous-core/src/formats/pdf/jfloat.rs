@@ -51,7 +51,7 @@ pub(super) fn round(value: f32) -> i32 {
 }
 
 /// `Float.toString`.
-pub(super) fn float_to_string(value: f32) -> String {
+pub(crate) fn float_to_string(value: f32) -> String {
     java_decimal(format!("{value:e}"), f64::from(value).abs())
 }
 
