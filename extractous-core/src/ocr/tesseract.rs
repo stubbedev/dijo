@@ -3,13 +3,12 @@
 //! reads. An engine per model is loaded once and reused by one reading at a time, as our Java
 //! `LinkedTesseract` keeps them, so that reading an image starts no process and loads no model.
 //!
-//! A reading can be given up while it goes poorly, as `LinkedTesseract`'s can: tesseract hands
-//! its progress monitor each group of words before it recognizes it, and the monitor judges the
-//! words recognized before that group once there are enough of them.
+//! A reading runs to its end, as the `tesseract` program's does: the C API offers no safe way to
+//! judge the words recognized so far while recognition runs, since a result iterator orders
+//! right-to-left words by results the words not yet recognized do not have.
 
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{c_char, c_float, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::fmt;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,8 +23,6 @@ const OSD_MODEL: &str = "osd";
 const MAX_READING_THREADS: usize = 4;
 /// The extension of a model's file.
 const MODEL_EXTENSION: &str = ".traineddata";
-/// `RIL_WORD` of `TessPageIteratorLevel`.
-const WORD: c_int = 3;
 /// `PSM_OSD_ONLY`.
 const OSD_ONLY: c_int = 0;
 /// `L_SEVERITY_NONE`: Leptonica reports nothing.
@@ -40,19 +37,6 @@ struct BaseApi {
 struct Monitor {
     _opaque: [u8; 0],
 }
-
-#[repr(C)]
-struct ResultIterator {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-struct PageIterator {
-    _opaque: [u8; 0],
-}
-
-type CancelFn = unsafe extern "C" fn(*mut c_void, c_int) -> bool;
-type ProgressFn = unsafe extern "C" fn(*mut Monitor, c_int, c_int, c_int, c_int) -> bool;
 
 /// Declares the C functions readings call, once: as the static executable links them, and as a
 /// table of pointers a loaded library resolves.
@@ -113,17 +97,8 @@ c_api! {
     available_languages = TessBaseAPIGetAvailableLanguagesAsVector(*const BaseApi)
         -> *mut *mut c_char;
     delete_text_array = TessDeleteTextArray(*mut *mut c_char);
-    iterator = TessBaseAPIGetIterator(*mut BaseApi) -> *mut ResultIterator;
-    delete_iterator = TessResultIteratorDelete(*mut ResultIterator);
-    next = TessResultIteratorNext(*mut ResultIterator, c_int) -> c_int;
-    confidence = TessResultIteratorConfidence(*const ResultIterator, c_int) -> c_float;
-    page_iterator = TessResultIteratorGetPageIterator(*mut ResultIterator) -> *mut PageIterator;
-    bounding_box = TessPageIteratorBoundingBox(
-        *const PageIterator, c_int, *mut c_int, *mut c_int, *mut c_int, *mut c_int) -> c_int;
     create_monitor = TessMonitorCreate() -> *mut Monitor;
     delete_monitor = TessMonitorDelete(*mut Monitor);
-    set_cancel = TessMonitorSetCancelFunc(*mut Monitor, Option<CancelFn>);
-    set_progress = TessMonitorSetProgressFunc(*mut Monitor, Option<ProgressFn>);
     set_deadline = TessMonitorSetDeadlineMSecs(*mut Monitor, c_int);
     set_message_severity = setMsgSeverity(c_int) -> c_int;
 }
@@ -185,14 +160,6 @@ impl Pixels<'_> {
 pub(crate) struct Reading {
     pub(crate) text: String,
     pub(crate) confidence: i32,
-}
-
-/// A reading going badly: once `after_words` of its words are read, their mean confidence is
-/// below `below_confidence`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Poor {
-    pub(crate) after_words: usize,
-    pub(crate) below_confidence: i32,
 }
 
 /// What orientation and script detection found in an image.
@@ -331,34 +298,23 @@ impl Tesseract {
 
     /// Reads the text in an image with a model, a page segmentation mode and a thresholding,
     /// as `tesseract <image> stdout --psm <mode> -l <model> -c thresholding_method=<method>`
-    /// prints it, with its words' mean confidence, within `timeout` when it has one. With
-    /// `poor`, gives the reading up once it goes poorly: none then.
+    /// prints it, with its words' mean confidence, within `timeout` when it has one.
     pub(crate) fn read(
         &self,
         image: Pixels<'_>,
         model: &str,
         segmentation: PageSegMode,
         thresholding: Thresholding,
-        poor: Option<Poor>,
         timeout: Option<Duration>,
-    ) -> Result<Option<Reading>, OcrError> {
+    ) -> Result<Reading, OcrError> {
         let engine = self.take(model)?;
         let threads = self.take_threads();
-        let result = self.recognize(
-            &engine,
-            image,
-            model,
-            segmentation,
-            thresholding,
-            poor,
-            timeout,
-        );
+        let result = self.recognize(&engine, image, model, segmentation, thresholding, timeout);
         drop(threads);
         self.release(model, engine);
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn recognize(
         &self,
         engine: &Engine,
@@ -366,9 +322,8 @@ impl Tesseract {
         model: &str,
         segmentation: PageSegMode,
         thresholding: Thresholding,
-        poor: Option<Poor>,
         timeout: Option<Duration>,
-    ) -> Result<Option<Reading>, OcrError> {
+    ) -> Result<Reading, OcrError> {
         let api = &self.api;
         let handle = engine.0.as_ptr();
         let failed = || OcrError::Failed {
@@ -376,15 +331,6 @@ impl Tesseract {
             model: model.to_owned(),
         };
         let monitor = MonitorGuard::new(api);
-        let mut judge = poor.map(|poor| Judge {
-            api,
-            handle,
-            poor,
-            height: image.height as c_int,
-            groups: Vec::new(),
-            judged: false,
-            given_up: false,
-        });
         unsafe {
             (api.set_variable)(
                 handle,
@@ -397,28 +343,19 @@ impl Tesseract {
                 let millis = c_int::try_from(timeout.as_millis()).unwrap_or(c_int::MAX);
                 (api.set_deadline)(monitor.0, millis);
             }
-            if judge.is_some() {
-                (api.set_cancel)(monitor.0, Some(cancel_when_poor));
-                (api.set_progress)(monitor.0, Some(note_group));
-            }
         }
         let start = Instant::now();
-        let judging = judge.as_mut().map(Judging::start);
         let status = unsafe { (api.recognize)(handle, monitor.0) };
-        drop(judging);
         let reading = if status < 0 {
-            if judge.as_ref().is_some_and(|judge| judge.given_up) {
-                Ok(None)
-            } else if let Some(timeout) = timeout.filter(|&timeout| start.elapsed() >= timeout) {
-                Err(OcrError::TimedOut {
+            match timeout.filter(|&timeout| start.elapsed() >= timeout) {
+                Some(timeout) => Err(OcrError::TimedOut {
                     image: image.describe(),
                     millis: timeout.as_millis(),
-                })
-            } else {
-                Err(failed())
+                }),
+                None => Err(failed()),
             }
         } else {
-            unsafe { text_of(api, handle) }.ok_or_else(failed).map(Some)
+            unsafe { text_of(api, handle) }.ok_or_else(failed)
         };
         unsafe { (api.clear)(handle) };
         reading
@@ -691,154 +628,6 @@ impl<'a> MonitorGuard<'a> {
 impl Drop for MonitorGuard<'_> {
     fn drop(&mut self) {
         unsafe { (self.1.delete_monitor)(self.0) };
-    }
-}
-
-/// A box in an image's own coordinates, top down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Box {
-    left: c_int,
-    top: c_int,
-    right: c_int,
-    bottom: c_int,
-}
-
-impl Box {
-    fn contains(&self, other: &Box) -> bool {
-        self.left <= other.left
-            && self.top <= other.top
-            && other.right <= self.right
-            && other.bottom <= self.bottom
-    }
-}
-
-thread_local! {
-    /// The judge of the reading this thread runs, which tesseract's monitor callbacks report to.
-    static JUDGE: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
-}
-
-/// Judges a reading as tesseract recognizes it, group of words by group: the boxes of the
-/// groups it was handed so far, the last of them the one it recognizes next, and whether it
-/// judged the reading and gave it up.
-struct Judge<'a> {
-    api: &'a Api,
-    handle: *mut BaseApi,
-    poor: Poor,
-    height: c_int,
-    groups: Vec<Box>,
-    judged: bool,
-    given_up: bool,
-}
-
-impl Judge<'_> {
-    /// The confidences, from 0 to 100, of the words recognized so far, in reading order up to
-    /// the first that lies in the group tesseract recognizes next, in no group it recognized
-    /// before, or in a group before the last one found. Only a recognized word has a
-    /// confidence; no other is asked for one.
-    unsafe fn read_so_far(&self) -> Vec<i32> {
-        let Some((next, recognized)) = self.groups.split_last() else {
-            return Vec::new();
-        };
-        let api = self.api;
-        let iterator = (api.iterator)(self.handle);
-        if iterator.is_null() {
-            return Vec::new();
-        }
-        let page = (api.page_iterator)(iterator);
-        let mut confidences = Vec::new();
-        let mut group = 0;
-        while let Some(word) = word_box(api, page) {
-            if next.contains(&word) {
-                break;
-            }
-            let Some(found) =
-                (group..recognized.len()).find(|&index| recognized[index].contains(&word))
-            else {
-                break;
-            };
-            group = found;
-            confidences.push(((api.confidence)(iterator, WORD) as i32).clamp(0, 100));
-            if (api.next)(iterator, WORD) == 0 {
-                break;
-            }
-        }
-        (api.delete_iterator)(iterator);
-        confidences
-    }
-
-    /// Whether the reading is to be given up, judged once, as soon as enough words are
-    /// recognized.
-    unsafe fn gives_up(&mut self) -> bool {
-        if self.judged {
-            return false;
-        }
-        let confidences = self.read_so_far();
-        if confidences.len() < self.poor.after_words {
-            return false;
-        }
-        self.judged = true;
-        let sum: i64 = confidences.iter().map(|&c| i64::from(c)).sum();
-        self.given_up = sum < i64::from(self.poor.below_confidence) * confidences.len() as i64;
-        self.given_up
-    }
-}
-
-/// The box of the word a page iterator is at, in the image's coordinates.
-unsafe fn word_box(api: &Api, page: *const PageIterator) -> Option<Box> {
-    let (mut left, mut top, mut right, mut bottom) = (0, 0, 0, 0);
-    ((api.bounding_box)(page, WORD, &mut left, &mut top, &mut right, &mut bottom) != 0).then_some(
-        Box {
-            left,
-            top,
-            right,
-            bottom,
-        },
-    )
-}
-
-/// The judge of the reading running on this thread, while one is judged.
-unsafe fn current_judge<'a>() -> Option<&'a mut Judge<'a>> {
-    JUDGE.with(Cell::get).cast::<Judge<'a>>().as_mut()
-}
-
-/// Notes the box of the group of words tesseract recognizes next, turned top down.
-unsafe extern "C" fn note_group(
-    _monitor: *mut Monitor,
-    left: c_int,
-    right: c_int,
-    top: c_int,
-    bottom: c_int,
-) -> bool {
-    if let Some(judge) = current_judge() {
-        let height = judge.height;
-        judge.groups.push(Box {
-            left,
-            top: height - top,
-            right,
-            bottom: height - bottom,
-        });
-    }
-    false
-}
-
-/// Gives a reading up once enough of its words are recognized with too little confidence.
-unsafe extern "C" fn cancel_when_poor(_this: *mut c_void, _groups: c_int) -> bool {
-    current_judge().is_some_and(|judge| judge.gives_up())
-}
-
-/// Makes a judge the one this thread's monitor callbacks report to, while it lives.
-struct Judging;
-
-impl Judging {
-    fn start(judge: &mut Judge<'_>) -> Self {
-        JUDGE.with(|current| current.set((judge as *mut Judge<'_>).cast()));
-        Self
-    }
-}
-
-impl Drop for Judging {
-    fn drop(&mut self) {
-        JUDGE.with(|current| current.set(std::ptr::null_mut()));
     }
 }
 

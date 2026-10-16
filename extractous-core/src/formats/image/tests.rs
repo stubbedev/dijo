@@ -164,6 +164,23 @@ fn reads_scans_with_tesseract_as_tikas_path_does() {
 }
 
 #[test]
+fn reads_right_to_left_scans_with_tesseract_as_tikas_path_does() {
+    let scan = [PathBuf::from("../test_files/documents/ara-ocr.png")];
+    let arabic = ParserConfigs {
+        ocr: TesseractOcrConfig::new().set_language("ara"),
+        ..ParserConfigs::default()
+    };
+    for configs in [automatic_language(), arabic] {
+        reads_with_tesseract_as_tikas_path_does(
+            &ImageParser,
+            "org.apache.tika.parser.image.ImageParser",
+            &scan,
+            &configs,
+        );
+    }
+}
+
+#[test]
 fn reads_scans_in_the_configured_language_as_tikas_path_does() {
     reads_with_tesseract_as_tikas_path_does(
         &ImageParser,
