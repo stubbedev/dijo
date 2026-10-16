@@ -24,10 +24,8 @@ fn ported(documents: &[PathBuf]) -> Vec<PathBuf> {
     let mut unexpected = Vec::new();
     for document in documents {
         let name = file_name(document);
-        let input = std::fs::read(document).unwrap();
         let expected = DEFERRED.iter().find(|(deferred, _)| *deferred == name);
-        let deferral = DocParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
-        match (deferral, expected) {
+        match (parity::deferral(&DocParser, document), expected) {
             (None, None) => ported.push(document.clone()),
             (Some(reason), Some((_, why))) if reason.contains(why) => {}
             (reason, expected) => {

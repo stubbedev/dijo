@@ -460,6 +460,20 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
+/// Why `parser` defers the document at `path` to Tika, given the metadata the detection
+/// starts it from, if it does.
+pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
+    let name = path.to_str().unwrap();
+    let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
+    let detected = formats::Detected::detect(Source::File(name), &input)
+        .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
+    parser.defers(
+        &input,
+        &detected.metadata_for(parser),
+        &ParserConfigs::default(),
+    )
+}
+
 /// The non-empty files under `roots` whose detected type `parser` reads, split into
 /// those it parses and those it defers to Tika.
 pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
@@ -493,14 +507,7 @@ pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, 
         if !parser.media_types().contains(&base) {
             continue;
         }
-        if parser
-            .defers(
-                &input,
-                &detected.metadata_for(parser),
-                &ParserConfigs::default(),
-            )
-            .is_some()
-        {
+        if deferral(parser, &file).is_some() {
             deferred.push(file);
         } else {
             parsed.push(file);
