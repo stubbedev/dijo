@@ -48,8 +48,8 @@
         "266240"
     ],
     "tk:parsed-by-full-set": [
-        "ai.yobix.TextLayerCheckingPdfParser",
-        "org.apache.tika.parser.pdf.PDFParser"
+        "extractous::TextLayerCheckingPdfParser",
+        "extractous::PDFParser"
     ],
     "Content-Type": [
         "application/pdf"
@@ -152,8 +152,8 @@
         "true"
     ],
     "tk:parsed-by": [
-        "ai.yobix.TextLayerCheckingPdfParser",
-        "org.apache.tika.parser.pdf.PDFParser"
+        "extractous::TextLayerCheckingPdfParser",
+        "extractous::PDFParser"
     ],
     "pdf:annotation-subtypes": [
         "Link"
