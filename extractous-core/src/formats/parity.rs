@@ -612,7 +612,6 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
     let native_spool = Scratch::new("spool-native");
     let routed = routed(path);
-    let native_name = routed.parser.name();
     let options = StreamOptions {
         char_set: CharSet::UTF_8,
         output: Output::Xml,
@@ -641,12 +640,20 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
 
     match (tika, native) {
         (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
-            let tika_name = metadata
+            let parsed_by = |metadata: &[(String, Vec<String>)]| -> Vec<String> {
+                metadata
+                    .iter()
+                    .find(|(name, _)| name == "tk:parsed-by")
+                    .map(|(_, values)| values.clone())
+                    .unwrap_or_else(|| panic!("{path:?}: an extraction without tk:parsed-by"))
+            };
+            let native_parsers = parsed_by(&native_metadata);
+            let tika_parsers = parsed_by(&metadata);
+            let names: Vec<(&str, &str)> = native_parsers
                 .iter()
-                .find(|(name, _)| name == "tk:parsed-by")
-                .and_then(|(_, values)| values.first())
-                .cloned()
-                .unwrap_or_default();
+                .zip(&tika_parsers)
+                .map(|(native, tika)| (native.as_str(), tika.as_str()))
+                .collect();
             let tika = (
                 comparable(Extracted { text, metadata }),
                 spooled(embedded, tika_spool.directory()),
@@ -657,7 +664,7 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                         text: native_text,
                         metadata: native_metadata,
                     },
-                    &[(native_name, tika_name.as_str())],
+                    &names,
                     CharSet::UTF_8,
                 )),
                 spooled(native_embedded, native_spool.directory()),
