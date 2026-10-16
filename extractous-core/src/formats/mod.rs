@@ -26,6 +26,7 @@ pub(crate) mod media;
 pub(crate) mod metadata;
 mod mif;
 mod mobi;
+mod ms_owner;
 mod notebook;
 mod odf;
 mod ole10_native;
@@ -200,6 +201,7 @@ static PARSERS: &[&dyn Parser] = &[
     &translation::Xliff12Parser,
     &dif::DifParser,
     &mif::MifParser,
+    &ms_owner::MsOwnerFileParser,
     &mobi::MobiParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
