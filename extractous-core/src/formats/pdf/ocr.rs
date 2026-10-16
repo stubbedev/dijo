@@ -11,7 +11,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use super::quality::{self, Assessment};
+use super::quality::{self, Assessment, Unmapped};
 use super::Unported;
 use crate::config::{PdfOcrStrategy, PdfParserConfig};
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -27,21 +27,22 @@ const REJECTED_TEXT_LAYER: &str = "extractous:rejected-text-layer";
 const WARNING: &str = "tk:exception:warn";
 
 /// `PagesConfig.Auto`: a page of at most `total_chars` glyphs is OCRed, and so is one with more
-/// glyphs without characters than `unmapped`, a share of the page's glyphs below 1 and a count
-/// from 1.
+/// glyphs without characters than `unmapped`. Our `PdfConfig` and Tika's `limit < 1` check
+/// took a limit below 1 as a share of the page's glyphs and one from 1 as a count, so that
+/// `100%` read as one glyph (#115).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Thresholds {
     total_chars: i32,
-    unmapped: f32,
+    unmapped: Unmapped,
 }
 
 /// `PagesConfig.Auto.defaults()`, which `better` keeps.
 const DEFAULT: Thresholds = Thresholds {
     total_chars: 10,
-    unmapped: 10.0,
+    unmapped: Unmapped::Count(10.0),
 };
 /// The unmapped glyphs `faster` takes: a tenth of the page's.
-const FASTER_UNMAPPED: f32 = 0.1;
+const FASTER_UNMAPPED: Unmapped = Unmapped::Share(0.1);
 
 impl Thresholds {
     /// `PdfConfig.setOcrStrategyAuto`: `better`, `faster` or `unmapped[%][,characters]`, as its
@@ -66,9 +67,9 @@ impl Thresholds {
                     if share > 100.0 {
                         return None;
                     }
-                    share / 100.0
+                    Unmapped::Share(share / 100.0)
                 }
-                None => digits(head)? as f32,
+                None => Unmapped::Count(digits(head)? as f32),
             },
         };
         Some(Self {
@@ -82,10 +83,9 @@ impl Thresholds {
         if glyphs <= self.total_chars {
             return true;
         }
-        if self.unmapped < 1.0 {
-            unmapped as f32 / glyphs as f32 > self.unmapped
-        } else {
-            unmapped as f32 > self.unmapped
+        match self.unmapped {
+            Unmapped::Share(share) => unmapped as f32 / glyphs as f32 > share,
+            Unmapped::Count(count) => unmapped as f32 > count,
         }
     }
 }
@@ -193,7 +193,7 @@ impl OcrCheck {
     }
 
     /// The unmapped glyphs that make a page garbage, which OCR text is weighed against.
-    fn unmapped(self) -> f32 {
+    fn unmapped(self) -> Unmapped {
         match self {
             Self::Never => DEFAULT.unmapped,
             Self::Wanted(thresholds) | Self::Assessed(thresholds) => thresholds.unmapped,
@@ -214,7 +214,7 @@ enum Reader {
 pub(super) struct PageOcr {
     /// The pages to read, by their index, in order.
     pages: Vec<usize>,
-    unmapped: f32,
+    unmapped: Unmapped,
     reader: Reader,
     document: Arc<Vec<u8>>,
 }
@@ -460,17 +460,18 @@ impl PageHook<'_, '_, '_> {
 mod tests {
     use super::*;
 
-    fn parsed(setting: &str) -> Option<(i32, f32)> {
+    fn parsed(setting: &str) -> Option<(i32, Unmapped)> {
         Thresholds::parse(setting).map(|thresholds| (thresholds.total_chars, thresholds.unmapped))
     }
 
     #[test]
     fn reads_the_thresholds_as_our_pdf_config_does() {
-        assert_eq!(parsed("better"), Some((10, 10.0)));
-        assert_eq!(parsed(" faster,\t5 "), Some((5, 0.1)));
-        assert_eq!(parsed("25%"), Some((10, 0.25)));
-        assert_eq!(parsed("100%,0"), Some((0, 1.0)));
-        assert_eq!(parsed("7"), Some((10, 7.0)));
+        assert_eq!(parsed("better"), Some((10, Unmapped::Count(10.0))));
+        assert_eq!(parsed(" faster,\t5 "), Some((5, Unmapped::Share(0.1))));
+        assert_eq!(parsed("25%"), Some((10, Unmapped::Share(0.25))));
+        assert_eq!(parsed("100%,0"), Some((0, Unmapped::Share(1.0))));
+        assert_eq!(parsed("7"), Some((10, Unmapped::Count(7.0))));
+        assert_eq!(parsed("1"), Some((10, Unmapped::Count(1.0))));
         assert_eq!(parsed("faster , 5"), None);
         assert_eq!(parsed("101%"), None);
         assert_eq!(parsed("1000"), None);
@@ -486,13 +487,17 @@ mod tests {
         assert!(DEFAULT.ocr_wanted(11, 11));
         let share = Thresholds {
             total_chars: 10,
-            unmapped: 0.25,
+            unmapped: Unmapped::Share(0.25),
         };
         assert!(!share.ocr_wanted(100, 25));
         assert!(share.ocr_wanted(100, 26));
+        // Our Java read 100% as one glyph, wanting OCR for two (#115).
         let whole = Thresholds::parse("100%").unwrap();
-        assert!(!whole.ocr_wanted(100, 1));
-        assert!(whole.ocr_wanted(100, 2));
+        assert!(!whole.ocr_wanted(100, 2));
+        assert!(!whole.ocr_wanted(100, 100));
+        let one = Thresholds::parse("1").unwrap();
+        assert!(!one.ocr_wanted(100, 1));
+        assert!(one.ocr_wanted(100, 2));
     }
 
     #[test]
