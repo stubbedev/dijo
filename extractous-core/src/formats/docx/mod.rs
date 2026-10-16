@@ -3,9 +3,11 @@
 //! main document with its headers, notes, comments, diagrams, charts and footers, the glossary,
 //! links to what lies outside the package and the thumbnail.
 //!
-//! Tika parses the pictures, embedded objects and attachments of a document recursively, with
-//! OCR, so a document holding any is left to Tika, as is a package POI would read in a degraded
-//! way or refuse, and one using what this port does not read: see [`DocxParser::defers_with`].
+//! The pictures, embedded objects and attachments of a document are parsed recursively, as
+//! Tika parses them, unless the document embeds an OLE object in its text, whose name Tika's
+//! `EmbeddedPartMetadata` may take from the icon of its picture: such a document is left to
+//! Tika, as is a package POI would read in a degraded way or refuse, and one using what this port
+//! does not read: see [`DocxParser::prepare`].
 
 pub(crate) mod body;
 pub(crate) mod notes;
@@ -26,7 +28,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
+use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler, StartTag};
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::JavaHashMap;
 
@@ -113,9 +115,9 @@ impl Parser for DocxParser {
         ]
     }
 
-    /// Defers documents with pictures, embedded objects or attachments Tika parses, macros it
-    /// extracts when asked to, parts whose XML Tika reports failing on, and packages POI does
-    /// not open as this port does.
+    /// Defers documents whose text embeds OLE objects, whose embedded files Tika may name from
+    /// the objects' icons, macros it extracts when asked to, parts whose XML Tika reports
+    /// failing on, and packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -218,14 +220,15 @@ impl<'a> Document<'a> {
     /// story's numbering, styles, notes and comments, and the first story's features and
     /// settings. The parts written as they are read are only checked here.
     fn prepare(self) -> Result<Read<'a>, Unported> {
-        for &source in &self.main_parts() {
-            for relationship in self.relationships(source) {
-                extractor::check_embedded(&self.package, self.config, source, relationship, true)?;
-            }
-        }
         let mut stories = Vec::new();
         for (index, &story) in self.stories.iter().chain(&self.glossaries).enumerate() {
             stories.push(self.read_story(story, index == 0 && !self.stories.is_empty())?);
+        }
+        let named = stories.iter().any(|story| story.embeds_ole_objects);
+        for &source in &self.main_parts() {
+            for relationship in self.relationships(source) {
+                extractor::check_embedded(&self.package, self.config, source, relationship, named)?;
+            }
         }
         let properties = Properties::read(&self.package)?;
         Ok(Read {
@@ -245,11 +248,14 @@ impl<'a> Document<'a> {
         };
         let inline = self.inline_parts(story)?;
         let mut security = None;
+        let mut embeds_ole_objects = false;
         for part in self.streamed_parts(story) {
             if first && part == story {
-                security = Some(self.read_whole(part, Features::default())?);
+                let read = self.read_whole(part, OleEmbeds::new(Features::default()))?;
+                embeds_ole_objects |= read.found;
+                security = Some(read.inner);
             } else {
-                self.read_whole(part, Ignore)?;
+                embeds_ole_objects |= self.read_whole(part, OleEmbeds::new(Ignore))?.found;
             }
         }
         let numbering = match Package::first_related(relationships, kind::NUMBERING) {
@@ -269,6 +275,7 @@ impl<'a> Document<'a> {
             numbering,
             styles,
             inline,
+            embeds_ole_objects,
             security: security.map(|features| Security {
                 features,
                 settings,
@@ -306,6 +313,7 @@ impl<'a> Document<'a> {
             styles,
             inline,
             security,
+            ..
         } = parts;
         let relationships = self.relationships(story);
         let mut lists = ListManager::new(numbering);
@@ -445,6 +453,9 @@ struct StoryParts {
     numbering: Option<Numbering>,
     styles: Option<Styles>,
     inline: InlineParts,
+    /// Whether a part `handlePart` reads embeds an OLE object, for which Tika's body handler
+    /// may record an `EmbeddedPartMetadata`.
+    embeds_ole_objects: bool,
     security: Option<Security>,
 }
 
@@ -516,6 +527,59 @@ pub(crate) fn write_general_text_parts(
     let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
     let mut handler = TextHandler::new(body, links, TextOptions::default());
     extractor::write_general_text_parts(package, parent, kind, class, &mut handler)
+}
+
+/// A handler passing a part on to `inner`, finding whether it embeds an OLE object, an
+/// `OLEObject` of the type `Embed`, whose relationship Tika's `OOXMLTikaBodyPartHandler` records
+/// an `EmbeddedPartMetadata` for when it names a program or follows a picture.
+struct OleEmbeds<H> {
+    inner: H,
+    found: bool,
+}
+
+impl<H: SaxHandler> OleEmbeds<H> {
+    fn new(inner: H) -> Self {
+        Self {
+            inner,
+            found: false,
+        }
+    }
+
+    fn note(&mut self, local_name: &str, attributes: &[Attribute]) {
+        self.found |= local_name == "OLEObject"
+            && attributes
+                .iter()
+                .any(|attribute| attribute.local_name == "Type" && attribute.value == "Embed");
+    }
+}
+
+impl<H: SaxHandler> SaxHandler for OleEmbeds<H> {
+    fn start_element(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        attributes: &[Attribute],
+    ) -> Result<(), Failure> {
+        self.note(local_name, attributes);
+        self.inner.start_element(namespace, local_name, attributes)
+    }
+
+    fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
+        self.inner.end_element(namespace, local_name)
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Failure> {
+        self.inner.characters(text)
+    }
+
+    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
+        self.note(tag.local_name, tag.attributes);
+        self.inner.start_tag(tag)
+    }
+
+    fn document_type(&mut self) -> Result<(), Failure> {
+        self.inner.document_type()
+    }
 }
 
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.

@@ -284,14 +284,14 @@ fn embedding(package: &Package, relationship: &Relationship) -> Option<(usize, E
 /// What of `handleEmbeddedPart`'s work on one relationship of a main part this port does not
 /// do: following an internal relationship POI names no part for, which Tika records failing on;
 /// reading an OLE object Tika records failing to read; and extracting macros when asked to.
-/// With `files`, for an extractor whose `EmbeddedPartMetadata` is not ported, also parsing an
-/// embedded file or OLE object.
+/// With `named`, where the extractor may have recorded an `EmbeddedPartMetadata` for the
+/// relationship, which this port does not, also parsing an embedded file or OLE object.
 pub(crate) fn check_embedded(
     package: &Package,
     config: &OfficeParserConfig,
     source: usize,
     relationship: &Relationship,
-    files: bool,
+    named: bool,
 ) -> Result<(), Unported> {
     if relationship.is_internal() && !relationship.names_a_part() {
         return Err(Unported(format!(
@@ -305,7 +305,7 @@ pub(crate) fn check_embedded(
         return Ok(());
     };
     let unported = (embedding == Embedding::Macros && config.extracts_macros())
-        || (files && matches!(embedding, Embedding::File(_) | Embedding::OleObject));
+        || (named && matches!(embedding, Embedding::File(_) | Embedding::OleObject));
     if unported {
         return Err(Unported(format!(
             "{} embeds {} ({}), which Tika parses",

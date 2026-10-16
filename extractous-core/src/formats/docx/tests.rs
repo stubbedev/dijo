@@ -4,17 +4,17 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::*;
+use crate::config::TesseractOcrConfig;
 use crate::formats::embedded::ParseContext;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
-use crate::formats::parity::{self, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_but_ocr, assert_same_as_tika_with};
 use crate::formats::{Chain, Output, StringOut};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
 /// The Word documents of the corpora in the repository that this port leaves to Tika, with why.
-const DEFERRED: [(&str, &str); 4] = [
-    ("issue2-v2.docx", "embeds /word/media/image1.png"),
+const DEFERRED: [(&str, &str); 3] = [
     ("issue6-visio.docx", "embeds /word/media/image1.emf"),
     (
         "zh-math-answers.docx",
@@ -27,21 +27,15 @@ const DEFERRED: [(&str, &str); 4] = [
 ];
 
 /// The Word documents of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 19] = [
+const DEFERRED_CONFORMANCE: [(&str, &str); 12] = [
     ("EmbeddedDocument.docx", "embeds /word/media/image1.emf"),
     ("EmbeddedOutlook.docx", "embeds /word/media/image1.emf"),
     ("EmbeddedPDF.docx", "embeds /word/media/image1.emf"),
-    ("headerPic.docx", "embeds /word/media/image1.jpeg"),
-    ("testAltChunkHTML.docx", "embeds /word/htmlDoc.html"),
-    ("testAltChunkMHT.docx", "embeds /word/htmlDoc.mht"),
-    ("testOCR.docx", "embeds /word/media/image1.png"),
     (
         "testPDFEmbeddingAndEmbedded.docx",
         "embeds /word/media/image1.emf",
     ),
-    ("testWORD_1img.docx", "embeds /word/media/image1.png"),
     ("testWORD_2006ml.docx", "embeds /word/media/image1.emf"),
-    ("testWORD_3imgs.docx", "embeds /word/media/image2.png"),
     (
         "testWORD_EMFAndAttachments.docx",
         "embeds /word/media/image1.emf",
@@ -49,10 +43,6 @@ const DEFERRED_CONFORMANCE: [(&str, &str); 19] = [
     (
         "testWORD_embedded_pdf.docx",
         "embeds /word/media/image1.emf",
-    ),
-    (
-        "testWORD_embedded_pics.docx",
-        "embeds /word/media/image2.jpeg",
     ),
     (
         "testWORD_embeded.docx",
@@ -71,6 +61,14 @@ const DEFERRED_CONFORMANCE: [(&str, &str); 19] = [
         "test_recursive_embedded_npe.docx",
         "embeds /word/media/image1.emf",
     ),
+];
+
+/// The Word documents of Tika's own tests with pictures OCR finds text in, which the quality
+/// corpus scores rather than parity: compared with OCR skipped, and with OCR but for its text.
+const READ_BY_OCR: [&str; 3] = [
+    "headerPic.docx",
+    "testWORD_1img.docx",
+    "testWORD_3imgs.docx",
 ];
 
 /// Documents with tracked changes, notes, comments, lists, tables, headers, text boxes and
@@ -145,8 +143,20 @@ fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
 }
 
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
-    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, configs);
+    let (read_by_ocr, others): (Vec<&Path>, Vec<&Path>) = documents
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|document| READ_BY_OCR.contains(&file_name(document).as_str()));
+    assert_same_as_tika_with(&others, TIKA_PARSER, configs);
+    if read_by_ocr.is_empty() {
+        return;
+    }
+    let without_ocr = ParserConfigs {
+        ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+        ..configs.clone()
+    };
+    assert_same_as_tika_with(&read_by_ocr, TIKA_PARSER, &without_ocr);
+    assert_same_as_tika_but_ocr(&read_by_ocr, TIKA_PARSER, &[], configs);
 }
 
 #[test]
@@ -244,21 +254,26 @@ fn reads_a_plain_document() {
     assert!(text_of(&input, &ParserConfigs::default()).contains("<p>Hej verden</p>"));
 }
 
+/// A paragraph embedding the OLE object of the relationship `rId9`, naming its program.
+const OLE_OBJECT: &str = "<w:p><w:r><w:object><o:OLEObject \
+     xmlns:o=\"urn:schemas-microsoft-com:office:office\" Type=\"Embed\" \
+     ProgID=\"Excel.Sheet.12\" r:id=\"rId9\"/></w:object></w:r></w:p>";
+
 #[test]
-fn defers_pictures_attachments_and_chunks_tika_parses() {
+fn defers_files_an_ole_object_may_name() {
     for (kind, target) in [
         (kind::IMAGE, "media/image1.png"),
         (kind::PACKAGE, "embeddings/a.xlsx"),
         (kind::ALTERNATE_FORMAT_CHUNK, "chunk.html"),
         (kind::AUDIO, "media/a.wav"),
     ] {
-        let input = document(
-            "<w:p/>",
-            &relationship("rId9", kind, target),
-            &[(&format!("word/{target}"), "application/octet-stream", b"x")],
-        );
+        let part = format!("word/{target}");
+        let parts: [(&str, &str, &[u8]); 1] = [(&part, "application/octet-stream", b"x")];
+        let plain = document("<w:p/>", &relationship("rId9", kind, target), &parts);
+        assert_eq!(defers(&plain), None, "{kind}");
+        let named = document(OLE_OBJECT, &relationship("rId9", kind, target), &parts);
         assert!(
-            defers(&input).is_some_and(|reason| reason.contains("which Tika parses")),
+            defers(&named).is_some_and(|reason| reason.contains("which Tika parses")),
             "{kind}"
         );
     }
