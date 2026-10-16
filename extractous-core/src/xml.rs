@@ -111,8 +111,16 @@ pub(crate) enum Event<'a> {
     DocumentType,
     Start(&'a Name, &'a [Attribute]),
     End(&'a Name),
-    /// Text inside an element, in the pieces of markup and references it comes in.
+    /// Text inside an element, in the pieces of markup and references it comes in. A CDATA
+    /// section is reported even when it is empty, as SAX's `startCDATA` and `endCDATA` report
+    /// it; other text only when it is not.
     Text(&'a str, TextKind),
+    /// A comment outside the document type declaration, its text between `<!--` and `-->`.
+    Comment(&'a str),
+    /// A processing instruction outside the document type declaration other than the XML
+    /// declaration: its target, and its data from the first character after the spaces that
+    /// follow the target.
+    ProcessingInstruction(&'a str, &'a str),
 }
 
 /// Whether the handler wants the parse to go on.
@@ -769,9 +777,9 @@ impl Parser<'_> {
                 Some(_) => return fatal("content is not allowed in prolog"),
             }
             if self.skip("<!--")? {
-                self.comment()?;
+                self.report_comment(handler)?;
             } else if self.skip("<?")? {
-                self.processing_instruction()?;
+                self.report_processing_instruction(handler)?;
             } else if self.skip("<!DOCTYPE")? {
                 if seen_doctype {
                     return fatal("a second DOCTYPE");
@@ -797,9 +805,9 @@ impl Parser<'_> {
                 Some(_) => return fatal("content after the root element"),
             }
             if self.skip("<!--")? {
-                self.comment()?;
+                self.report_comment(handler)?;
             } else if self.skip("<?")? {
-                self.processing_instruction()?;
+                self.report_processing_instruction(handler)?;
             } else {
                 return fatal("markup after the root element");
             }
@@ -877,15 +885,17 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn comment(&mut self) -> Result<()> {
-        self.until("--", "a comment")?;
+    /// Reads a comment after its `<!--`: where its text lies.
+    fn comment(&mut self) -> Result<std::ops::Range<usize>> {
+        let text = self.until("--", "a comment")?;
         if self.skip(">")? {
-            return Ok(());
+            return Ok(text);
         }
         malformed("-- inside a comment")
     }
 
-    fn processing_instruction(&mut self) -> Result<()> {
+    /// Reads a processing instruction after its `<?`: its target, and where its data lies.
+    fn processing_instruction(&mut self) -> Result<(String, std::ops::Range<usize>)> {
         let target = self.name("a processing instruction")?;
         if target.eq_ignore_ascii_case("xml") {
             return malformed("the processing instruction target xml is reserved");
@@ -894,11 +904,37 @@ impl Parser<'_> {
             return malformed("a colon in a processing instruction target");
         }
         if self.skip("?>")? {
-            return Ok(());
+            return Ok((target, self.position..self.position));
         }
         self.require_spaces("after a processing instruction target")?;
-        self.until("?>", "a processing instruction")?;
-        Ok(())
+        let data = self.until("?>", "a processing instruction")?;
+        Ok((target, data))
+    }
+
+    /// Reads a comment or processing instruction outside the document type declaration, its
+    /// start already read, and hands it to `handler`.
+    fn report_comment(
+        &mut self,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(), Stop> {
+        let text = self.comment()?;
+        match handler(Event::Comment(&self.text.text[text])) {
+            Flow::Continue => Ok(()),
+            Flow::Stop => Err(Stop::Handler),
+        }
+    }
+
+    /// Reads a processing instruction outside the document type declaration, its `<?` already
+    /// read, and hands it to `handler`.
+    fn report_processing_instruction(
+        &mut self,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<(), Stop> {
+        let (target, data) = self.processing_instruction()?;
+        match handler(Event::ProcessingInstruction(&target, &self.text.text[data])) {
+            Flow::Continue => Ok(()),
+            Flow::Stop => Err(Stop::Handler),
+        }
     }
 
     fn quoted(&mut self, what: &str) -> Result<String> {
@@ -1333,8 +1369,13 @@ impl Parser<'_> {
         &mut self,
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
-        let mut emit = |text: &str, kind: TextKind| -> std::result::Result<(), Stop> {
-            if text.is_empty() || handler(Event::Text(text, kind)) == Flow::Continue {
+        let emit = |handler: &mut dyn FnMut(Event<'_>) -> Flow,
+                    text: &str,
+                    kind: TextKind|
+         -> std::result::Result<(), Stop> {
+            if (text.is_empty() && kind != TextKind::CData)
+                || handler(Event::Text(text, kind)) == Flow::Continue
+            {
                 Ok(())
             } else {
                 Err(Stop::Handler)
@@ -1345,16 +1386,16 @@ impl Parser<'_> {
             self.character_data()?;
             let data = &self.text.text[data_start..self.position];
             match self.peek()? {
-                None => return emit(data, TextKind::Data),
+                None => return emit(handler, data, TextKind::Data),
                 Some('<') => {
-                    emit(data, TextKind::Data)?;
+                    emit(handler, data, TextKind::Data)?;
                     if self.skip("<!--")? {
-                        self.comment()?;
+                        self.report_comment(handler)?;
                     } else if self.skip("<![CDATA[")? {
                         let section = self.until("]]>", "a CDATA section")?;
-                        emit(&self.text.text[section], TextKind::CData)?;
+                        emit(handler, &self.text.text[section], TextKind::CData)?;
                     } else if self.skip("<?")? {
-                        self.processing_instruction()?;
+                        self.report_processing_instruction(handler)?;
                     } else if self.peek_at(1)? == Some('/')
                         || self.peek_at(1)?.is_some_and(is_name_start)
                     {
@@ -1364,12 +1405,12 @@ impl Parser<'_> {
                     }
                 }
                 Some('&') => {
-                    emit(data, TextKind::Data)?;
+                    emit(handler, data, TextKind::Data)?;
                     self.position += 1;
                     let reference = self.reference()?;
                     let mut expansion = String::new();
                     let expanded = self.expand_in_content(reference, &mut expansion, 0);
-                    emit(&expansion, TextKind::Reference)?;
+                    emit(handler, &expansion, TextKind::Reference)?;
                     expanded?;
                 }
                 Some(_) => unreachable!("character data runs up to markup or a reference"),
@@ -1757,10 +1798,35 @@ mod tests {
                 Event::End(name) => format!("</{}>", name.local_name()),
                 Event::Text(text, _) => text.to_owned(),
                 Event::DocumentType => "<!DOCTYPE>".to_owned(),
+                Event::Comment(text) => format!("<!--{text}-->"),
+                Event::ProcessingInstruction(target, data) => format!("<?{target}|{data}?>"),
             });
             Flow::Continue
         });
         (events, result)
+    }
+
+    #[test]
+    fn reports_comments_instructions_and_empty_cdata_sections() {
+        let (events, result) = events(
+            b"<?xml version='1.0'?><!--a--><?pi  x ?><r>t<!-- b --><?q?><![CDATA[]]>&amp;</r><!---->",
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            events,
+            [
+                "<!--a-->",
+                "<?pi|x ?>",
+                "<r>",
+                "t",
+                "<!-- b -->",
+                "<?q|?>",
+                "",
+                "&",
+                "</r>",
+                "<!---->"
+            ]
+        );
     }
 
     #[test]
