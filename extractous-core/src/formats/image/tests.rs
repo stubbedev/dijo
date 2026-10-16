@@ -660,6 +660,12 @@ fn reads_apple_maker_notes_as_tika_does() {
 /// picture handler, an image item and an Exif item, the image's properties, and the media data
 /// of both items.
 fn iphone_heic() -> Vec<u8> {
+    heic(false)
+}
+
+/// A HEIF image as [`iphone_heic`], or with `exif_first` the Exif item in a free box before
+/// the meta box.
+fn heic(exif_first: bool) -> Vec<u8> {
     let file_type = bmff(b"ftyp", &[&b"heic"[..], &[0; 4], b"mif1heic"].concat());
     let exif = [&6u32.to_be_bytes()[..], b"Exif\0\0", &iphone_exif()].concat();
     let image = b"not an image".to_vec();
@@ -730,6 +736,18 @@ fn iphone_heic() -> Vec<u8> {
             .concat(),
         )
     };
+    if exif_first {
+        let free = bmff(b"free", &exif);
+        let exif_at = (file_type.len() + 8) as u32;
+        let media_at = (file_type.len() + free.len() + meta(0, 0).len() + 8) as u32;
+        return [
+            file_type,
+            free,
+            meta(media_at, exif_at),
+            bmff(b"mdat", &image),
+        ]
+        .concat();
+    }
     let media_at = (file_type.len() + meta(0, 0).len() + 8) as u32;
     let exif_at = media_at + image.len() as u32;
     [
@@ -751,5 +769,39 @@ fn reads_heif_images_as_tika_does() {
         "org.apache.tika.parser.image.HeifParser",
         &TIKA_DELEGATES,
         &skipping_ocr(),
+    );
+}
+
+#[test]
+fn reads_the_exif_item_of_a_heif_image_wherever_it_stands() {
+    // The Exif item before the media data, where metadata-extractor reads the image as the
+    // Exif (#114).
+    let swapped = heic(true);
+    let (_, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&swapped)
+        .unwrap();
+    assert_eq!(
+        metadata.get("tiff:Model").map(Vec::as_slice),
+        Some(&["iPhone 8".to_owned()][..]),
+        "{metadata:?}"
+    );
+}
+
+#[test]
+fn describes_an_image_read_from_memory_by_its_size_alone() {
+    let input = std::fs::read("../quality/corpus/prose-scan.webp").unwrap();
+    let (_, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&input)
+        .unwrap();
+    // Tika describes the temporary file it spools the image to (#114).
+    assert_eq!(
+        metadata.get("img:File Size").map(Vec::as_slice),
+        Some(&[format!("{} bytes", input.len())][..]),
+        "{metadata:?}"
+    );
+    assert!(!metadata.contains_key("img:File Name"), "{metadata:?}");
+    assert!(
+        !metadata.contains_key("img:File Modified Date"),
+        "{metadata:?}"
     );
 }

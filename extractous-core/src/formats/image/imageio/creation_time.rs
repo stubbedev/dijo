@@ -75,19 +75,6 @@ fn valid(fields: Fields) -> bool {
         && (0..=59).contains(&second)
 }
 
-/// The ISO day of the week, Monday as zero.
-fn day_of_week([year, month, day, ..]: Fields) -> usize {
-    let (year, month) = if month < 3 {
-        (i64::from(year) - 1, i64::from(month) + 12)
-    } else {
-        (i64::from(year), i64::from(month))
-    };
-    let zeller = (i64::from(day) + 13 * (month + 1) / 5 + year + year / 4 - year / 100
-        + year / 400)
-        .rem_euclid(7);
-    ((zeller + 5) % 7) as usize
-}
-
 /// `HH:mm` with optional `:ss`.
 fn time(text: &str) -> Option<[i32; 3]> {
     let parts: Vec<&str> = text.split(':').collect();
@@ -102,17 +89,15 @@ fn time(text: &str) -> Option<[i32; 3]> {
 }
 
 /// The form `RFC_1123_DATE_TIME` prints, `[Ddd, ]d MMM yyyy HH:mm[:ss] (+HHMM|GMT)`, in any
-/// case: none when the text is not of it, no time when its day of the week is not the date's,
-/// which the resolver's cross check rejects, and unported when its values are ones the `SMART`
-/// resolver would adjust or reject.
+/// case: none when the text is not of it, and unported when its values are ones the `SMART`
+/// resolver would adjust or reject. A day of the week that is not the date's is passed over,
+/// where the resolver's cross check rejects the text, giving no time (#114).
 fn rfc_1123(text: &str) -> Option<Result<Option<Fields>, Unported>> {
-    let (weekday, rest) = match DAYS.iter().position(|day| {
+    let weekday = DAYS.iter().any(|day| {
         text.get(..5)
             .is_some_and(|start| start.eq_ignore_ascii_case(&format!("{day}, ")))
-    }) {
-        Some(index) => (Some(index), &text[5..]),
-        None => (None, text),
-    };
+    });
+    let rest = if weekday { &text[5..] } else { text };
     let parts: Vec<&str> = rest.split(' ').collect();
     let [day, month, year, clock, offset] = parts.as_slice() else {
         return None;
@@ -142,9 +127,7 @@ fn rfc_1123(text: &str) -> Option<Result<Option<Fields>, Unported>> {
     if !valid(fields) {
         return Some(Err(unported(text)));
     }
-    Some(Ok((weekday
-        .is_none_or(|weekday| weekday == day_of_week(fields)))
-    .then_some(fields)))
+    Some(Ok(Some(fields)))
 }
 
 /// The form `ISO_DATE_TIME` prints without a zone region, `yyyy-MM-dd'T'HH:mm[:ss[.fraction]]`
@@ -240,7 +223,14 @@ mod tests {
         assert_eq!(parse("Mon 04 Nov 2024 10:16:25 AM CET").unwrap(), None);
         assert_eq!(parse("2024-02-30T10:16:25Z").unwrap(), None);
         assert_eq!(parse("").unwrap(), None);
-        assert_eq!(parse("Mon, 05 Nov 2024 10:16:25 +0100").unwrap(), None);
+    }
+
+    #[test]
+    fn reads_the_time_whatever_its_day_of_the_week() {
+        assert_eq!(
+            parse("Mon, 05 Nov 2024 10:16:25 +0100").unwrap(),
+            Some([2024, 11, 5, 10, 16, 25])
+        );
     }
 
     #[test]
