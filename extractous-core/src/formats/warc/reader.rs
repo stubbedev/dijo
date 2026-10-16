@@ -4,7 +4,6 @@
 //! after it skipped.
 
 use super::headers::{Headers, NotSole};
-use super::http::ascii;
 use super::ragel::{Flow, ERROR};
 use super::tables::{WARC, WARC_FIRST_FINAL, WARC_START};
 use super::text::TextBuffer;
@@ -247,7 +246,7 @@ impl Header {
             3 => self.buffer.end_text(),
             4 => self.buffer.fold(),
             5 => {
-                self.name = Some(ascii(self.buffer.pushed()));
+                self.name = Some(java::ascii(self.buffer.pushed()));
                 self.buffer.restart();
             }
             6 => {
@@ -278,7 +277,7 @@ impl Header {
                 self.buffer.restart();
             }
             8 => {
-                let address = ascii(self.buffer.pushed());
+                let address = java::ascii(self.buffer.pushed());
                 self.set("WARC-IP-Address", address);
                 self.buffer.restart();
             }
@@ -295,7 +294,7 @@ impl Header {
                 self.buffer.restart();
             }
             11 => {
-                let length = ascii(self.buffer.pushed());
+                let length = java::ascii(self.buffer.pushed());
                 self.set("Content-Length", length);
                 self.buffer.restart();
             }

@@ -13,12 +13,14 @@ mod http;
 mod media_type;
 mod ragel;
 mod reader;
+mod response;
 mod tables;
 mod text;
 
 use headers::Headers;
 use media_type::MediaType;
 use reader::{Record, Stop};
+pub(crate) use response::HttpParser;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;

@@ -22,6 +22,14 @@ pub(super) struct HttpResponse {
     pub(super) size: i64,
 }
 
+/// The status line and headers of a response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Head {
+    pub(super) status: i32,
+    pub(super) reason: Option<String>,
+    pub(super) headers: Headers,
+}
+
 /// Why the response is not read as jwarc reads it without an `IOException`, which Tika records
 /// with its stack trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,29 +40,43 @@ pub(super) enum Unread {
     CutChunks,
 }
 
-/// `HttpResponse.parse` of `block`, the record's block, with a lenient parser.
-pub(super) fn parse(block: &[u8]) -> Result<HttpResponse, Unread> {
-    let keys: Vec<i32> = block.iter().map(|&byte| i32::from(byte)).collect();
+/// The status line and headers of a response as jwarc's lenient `HttpParser` reads them from
+/// the start of `message`, and where they end in it; the error a `ParsingException` reports.
+pub(super) fn head(message: &[u8]) -> Result<(Head, usize), Unread> {
+    let keys: Vec<i32> = message.iter().map(|&byte| i32::from(byte)).collect();
     let mut state = Parsing::default();
     let mut cs = HTTP_EN_HTTP_RESPONSE_LENIENT;
     let end = HTTP
         .exec(&mut cs, &keys, 0, true, &mut |action, p| {
-            Ok::<_, ()>(state.act(action, block.get(p).copied()))
+            Ok::<_, ()>(state.act(action, message.get(p).copied()))
         })
         .expect("the HTTP actions never fail");
     if cs == ERROR {
         return Err(Unread::Header);
     }
+    Ok((
+        Head {
+            status: state.status,
+            reason: state.reason,
+            headers: state.headers,
+        },
+        end,
+    ))
+}
+
+/// `HttpResponse.parse` of `block`, the record's block, with a lenient parser.
+pub(super) fn parse(block: &[u8]) -> Result<HttpResponse, Unread> {
+    let (head, end) = head(block)?;
     let rest = &block[end..];
-    let (body, size) = if state.headers.contains("Transfer-Encoding", "chunked") {
+    let (body, size) = if head.headers.contains("Transfer-Encoding", "chunked") {
         (dechunk(rest)?, -1)
     } else {
         (rest.to_vec(), rest.len() as i64)
     };
     Ok(HttpResponse {
-        status: state.status,
-        reason: state.reason,
-        headers: state.headers,
+        status: head.status,
+        reason: head.reason,
+        headers: head.headers,
         body,
         size,
     })
@@ -90,7 +112,7 @@ impl Parsing {
             9 => return Flow::Break,
             10 => self.buffer.fold(),
             11 => {
-                let name = ascii(self.buffer.pushed());
+                let name = java::ascii(self.buffer.pushed());
                 self.name = Some(java::trim(&name).to_owned());
                 self.buffer.restart();
             }
@@ -105,20 +127,6 @@ impl Parsing {
         }
         Flow::Continue
     }
-}
-
-/// `new String(bytes, US_ASCII)`: a byte beyond ASCII as U+FFFD.
-pub(super) fn ascii(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&byte| {
-            if byte.is_ascii() {
-                char::from(byte)
-            } else {
-                char::REPLACEMENT_CHARACTER
-            }
-        })
-        .collect()
 }
 
 /// What `ChunkedBody` reads of `rest`, leniently: the chunks' data up to the last chunk, or,

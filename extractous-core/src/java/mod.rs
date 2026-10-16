@@ -357,6 +357,20 @@ pub(crate) fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| char::from(byte)).collect()
 }
 
+/// `new String(bytes, US_ASCII)`: a byte beyond ASCII as U+FFFD.
+pub(crate) fn ascii(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&byte| {
+            if byte.is_ascii() {
+                char::from(byte)
+            } else {
+                char::REPLACEMENT_CHARACTER
+            }
+        })
+        .collect()
+}
+
 /// `new String(bytes, UTF_8)`: malformed input replaced as the JDK's decoder replaces it.
 pub(crate) fn utf8(bytes: &[u8]) -> String {
     if bytes.is_ascii() {
@@ -639,6 +653,7 @@ mod tests {
     #[test]
     fn decodes_bytes_as_new_string_does() {
         assert_eq!(latin1(b"\xA9xyz"), "\u{A9}xyz");
+        assert_eq!(ascii(b"\xA9xyz"), "\u{FFFD}xyz");
         assert_eq!(utf8(b"plain"), "plain");
         assert_eq!(utf8(b"K\xC3\xB8ge"), "K\u{F8}ge");
         assert_eq!(utf8(b"A\xC3\xFF"), "A\u{FFFD}\u{FFFD}");
