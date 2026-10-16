@@ -94,6 +94,16 @@ fn reads_tikas_test_tiffs_as_tika_does() {
 }
 
 #[test]
+fn reads_local_heif_images_as_tika_does() {
+    let deferred = same_as_tika(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &local_roots(),
+    );
+    assert!(deferred.is_empty(), "{deferred:?}");
+}
+
+#[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
 fn reads_tikas_test_heif_images_as_tika_does() {
     let roots = conformance_roots();
