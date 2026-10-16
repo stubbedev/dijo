@@ -6,10 +6,11 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::ops::Range;
 
 use super::jfloat;
 use super::matrix::Matrix;
-use super::position::{is_right_to_left, TextPosition};
+use super::position::{is_left_to_right, is_right_to_left, TextPosition};
 use super::structure::Label;
 
 const SAME_LINE: f32 = 0.5;
@@ -70,37 +71,52 @@ fn order_lines_from_the_left(glyphs: &mut [TextPosition]) {
 /// `mergeFontRuns`: the runs of glyphs in one font, each in its order, merged by taking next
 /// the glyph furthest left among the runs' next glyphs, from the earlier run on a tie.
 fn merge_font_runs(line: &mut [TextPosition]) {
-    let mut runs: Vec<Vec<TextPosition>> = Vec::new();
+    let mut runs: Vec<Range<usize>> = Vec::new();
     for (index, glyph) in line.iter().enumerate() {
         if index == 0 || glyph.font.identity != line[index - 1].font.identity {
-            runs.push(Vec::new());
+            runs.push(index..index);
         }
         if let Some(run) = runs.last_mut() {
-            run.push(glyph.clone());
+            run.end = index + 1;
         }
     }
     if runs.len() < 2 {
         return;
     }
-    let mut next = vec![0usize; runs.len()];
-    for slot in line.iter_mut() {
+    let mut merged = Vec::with_capacity(line.len());
+    for _ in 0..line.len() {
         let mut leftmost: Option<usize> = None;
         for run in 0..runs.len() {
-            if next[run] < runs[run].len() {
-                let better = match leftmost {
-                    None => true,
-                    Some(best) => {
-                        runs[run][next[run]].x_dir_adj() < runs[best][next[best]].x_dir_adj()
-                    }
-                };
-                if better {
-                    leftmost = Some(run);
-                }
+            if runs[run].is_empty() {
+                continue;
+            }
+            let better = leftmost.is_none_or(|best| {
+                line[runs[run].start].x_dir_adj() < line[runs[best].start].x_dir_adj()
+            });
+            if better {
+                leftmost = Some(run);
             }
         }
         let run = leftmost.unwrap_or_else(|| unreachable!("a glyph is left in some run"));
-        *slot = runs[run][next[run]].clone();
-        next[run] += 1;
+        merged.push(runs[run].start);
+        runs[run].start += 1;
+    }
+    permute(line, merged);
+}
+
+/// Puts `items[order[i]]` at `i` for every `i`, `order` being a permutation of the indices.
+fn permute<T>(items: &mut [T], mut order: Vec<usize>) {
+    for start in 0..order.len() {
+        let mut current = start;
+        loop {
+            let next = order[current];
+            order[current] = current;
+            if next == start {
+                break;
+            }
+            items.swap(current, next);
+            current = next;
+        }
     }
 }
 
@@ -149,11 +165,6 @@ fn is_right_to_left_page(blocks: &[Block]) -> bool {
     balance > 0
 }
 
-/// Whether `Character.getDirectionality` is `DIRECTIONALITY_LEFT_TO_RIGHT`.
-fn is_left_to_right(c: char) -> bool {
-    matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::L)
-}
-
 /// `isWrittenVertically`.
 fn is_written_vertically(glyphs: &[TextPosition]) -> bool {
     let mut down = 0;
@@ -199,7 +210,6 @@ fn turn_columns_into_lines(glyphs: &mut [TextPosition]) {
             width,
             glyph.width_of_space(),
             glyph.unicode.clone(),
-            glyph.char_codes.clone(),
             std::rc::Rc::clone(&glyph.font),
             glyph.font_size(),
             glyph.font_size_in_pt() as i32,
@@ -411,4 +421,19 @@ fn precedes(blocks: &[Block], band: &[usize], one: usize, other: usize, rtl: boo
             && between.overlaps_horizontally(b)
             && between.is_between_vertically(a, b)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permutes_in_place() {
+        let mut items = ['a', 'b', 'c', 'd', 'e'];
+        permute(&mut items, vec![2, 0, 1, 4, 3]);
+        assert_eq!(items, ['c', 'a', 'b', 'e', 'd']);
+        let mut same = ['x', 'y'];
+        permute(&mut same, vec![0, 1]);
+        assert_eq!(same, ['x', 'y']);
+    }
 }

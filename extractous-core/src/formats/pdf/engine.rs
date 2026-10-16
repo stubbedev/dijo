@@ -80,7 +80,6 @@ pub(super) struct Engine<'p> {
     pdf: &'p Pdf,
     fonts: HashMap<Identity, Rc<Font>>,
     default_font: Option<Rc<Font>>,
-    heights: HashMap<Identity, f32>,
     unshared: usize,
     /// Whether glyphs are labelled with their marked content, as Tika's tagged writer does
     /// when the document has a usable structure tree.
@@ -127,7 +126,6 @@ impl<'p> Engine<'p> {
             pdf,
             fonts: HashMap::new(),
             default_font: None,
-            heights: HashMap::new(),
             unshared: 0,
             labels,
             damaged_font: false,
@@ -207,16 +205,6 @@ impl<'p> Engine<'p> {
         let font = Rc::new(Font::load(self.pdf, Identity::Unshared(0), &dict)?);
         self.default_font = Some(Rc::clone(&font));
         Ok(font)
-    }
-
-    /// `LegacyPDFStreamEngine.computeFontHeight`, once per font.
-    fn font_height(&mut self, font: &Font) -> Result<f32, Unported> {
-        if let Some(height) = self.heights.get(&font.identity) {
-            return Ok(*height);
-        }
-        let height = font.height()?;
-        self.heights.insert(font.identity, height);
-        Ok(height)
     }
 }
 
@@ -780,10 +768,11 @@ impl<'p> Run<'p, '_> {
         code: u32,
         displacement: (f32, f32),
     ) -> Result<(), Unported> {
-        let state = self.state().clone();
+        let state = self.state();
         let font_size = state.text.font_size;
         let horizontal_scaling = state.text.horizontal_scaling / 100.0;
         let text_matrix = state.text_matrix.unwrap_or_default();
+        let ctm = state.ctm;
         let mut displacement_x = displacement.0;
         if font.is_vertical() {
             displacement_x = font.width(code)? / 1000.0;
@@ -797,11 +786,11 @@ impl<'p> Run<'p, '_> {
         let ty = displacement.1 * font_size;
         let next = Matrix::translation(tx, ty)
             .multiply(&text_matrix)?
-            .multiply(&state.ctm)?;
+            .multiply(&ctm)?;
         let mut next_x = next.translate_x();
         let mut next_y = next.translate_y();
         let dx_display = next_x - rendering.translate_x();
-        let font_height = self.engine.font_height(font)?;
+        let font_height = font.height()?;
         let dy_display = font_height * rendering.scaling_factor_y();
         let glyph_to_text = match font.type3_matrix() {
             Some(matrix) => matrix.scale_x(),
@@ -852,7 +841,6 @@ impl<'p> Run<'p, '_> {
             dx_display,
             space_width_display.abs(),
             unicode,
-            vec![code],
             Rc::clone(font),
             font_size,
             (font_size * text_matrix.scaling_factor_x()) as i32,

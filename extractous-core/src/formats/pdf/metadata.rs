@@ -7,13 +7,13 @@ use lopdf::Object;
 
 use super::cos::{name_string, text_string, Pdf};
 use super::jfloat;
+use super::recording::Recording;
 use super::xmp::{
     self, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
 };
 use super::{date, Unported};
 use crate::formats::handlers::is_blank;
 use crate::formats::java_time::format_instant;
-use crate::formats::metadata::TikaMetadata;
 
 const STARTXREF: &[u8] = b"startxref";
 /// `StartXRefScanner.MAX_LENGTH_LONG`.
@@ -195,7 +195,7 @@ impl LineReader<'_> {
 /// `PDMetadataExtractor.addMetadata(Metadata, Property, String)`: a decoded, non-blank value,
 /// added once, and only as a further value of a property that takes several.
 fn add_metadata(
-    metadata: &mut TikaMetadata,
+    metadata: &mut Recording,
     property: &Property,
     value: Option<&str>,
 ) -> Result<(), Unported> {
@@ -220,7 +220,7 @@ fn xmp_decode(value: &str) -> String {
 }
 
 /// `PDMetadataExtractor.addMetadata(Metadata, Property, Calendar)`.
-fn add_date(metadata: &mut TikaMetadata, name: &str, millis: Option<i64>) {
+fn add_date(metadata: &mut Recording, name: &str, millis: Option<i64>) {
     if let Some(millis) = millis {
         metadata.set(name, format_instant(millis));
     }
@@ -238,7 +238,7 @@ fn info_date(pdf: &Pdf, info: &lopdf::Dictionary, key: &[u8]) -> Result<Option<i
 /// the document information and the version.
 pub(super) fn document(
     pdf: &Pdf,
-    metadata: &mut TikaMetadata,
+    metadata: &mut Recording,
     version: f32,
     acro_form_fields: bool,
 ) -> Result<(), Unported> {
@@ -370,7 +370,7 @@ pub(super) fn document(
 }
 
 /// `PDFParser.addFormat`: another value of `dc:format`, set as an array.
-fn add_format(metadata: &mut TikaMetadata, value: String) {
+fn add_format(metadata: &mut Recording, value: String) {
     let mut values = metadata.values("dc:format").to_vec();
     values.push(value);
     metadata.reset_values("dc:format", values);
@@ -378,7 +378,7 @@ fn add_format(metadata: &mut TikaMetadata, value: String) {
 
 /// `PDMetadataExtractor.addMetadata(Metadata, KeyPrefix, String, COSBase)`: a custom entry of
 /// the document information dictionary, an array's items as they are held, unresolved.
-fn custom(metadata: &mut TikaMetadata, name: &str, value: &Object) -> Result<(), Unported> {
+fn custom(metadata: &mut Recording, name: &str, value: &Object) -> Result<(), Unported> {
     match value {
         Object::Array(items) => {
             for item in items {
@@ -406,7 +406,7 @@ fn custom(metadata: &mut TikaMetadata, name: &str, value: &Object) -> Result<(),
     Ok(())
 }
 
-fn custom_text(metadata: &mut TikaMetadata, name: &str, value: &str) {
+fn custom_text(metadata: &mut Recording, name: &str, value: &str) {
     if is_blank(name) || is_blank(value) {
         return;
     }
