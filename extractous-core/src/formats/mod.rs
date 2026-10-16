@@ -335,14 +335,16 @@ impl Detected {
     }
 }
 
-fn run(
+fn run<'h>(
     parser: &dyn Parser,
     prepared: Prepared<'_>,
     metadata: TikaMetadata,
-    context: &ParseContext,
-    handler: &mut dyn ContentHandler,
+    context: &'h ParseContext<'h>,
+    handler: &'h mut dyn ContentHandler,
+    on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
+    let (mut metadata, record, result) =
+        Xhtml::write_reporting_head(handler, metadata, context, on_head, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
     (metadata, result)
@@ -474,7 +476,7 @@ pub(crate) fn parse_to_string(
         let context = ParseContext::new(configs);
         let (metadata, result) = Chain::String { output, max_length }
             .write_to(&mut out, |handler| {
-                run(parser, prepared, metadata, &context, handler)
+                run(parser, prepared, metadata, &context, handler, None)
             });
         match result {
             Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
@@ -486,6 +488,9 @@ pub(crate) fn parse_to_string(
 }
 
 enum Message {
+    /// The metadata the document's head shows, sent once the head is written, before the
+    /// content after it.
+    Head(Metadata),
     /// A full chunk of output, written while the parse goes on.
     Chunk(Vec<u8>),
     /// The output after the last full chunk, how the parse ended, and the embedded documents
@@ -618,8 +623,19 @@ pub(crate) fn parse_to_stream(
                     Some(spool) => ParseContext::spooling(&configs, spool),
                     None => ParseContext::new(&configs),
                 };
+                let head_sender = sender.clone();
+                let mut on_head = |metadata: &TikaMetadata| {
+                    let _ = head_sender.send(Message::Head(metadata.to_map()));
+                };
                 let (metadata, result) = chain.write_to(&mut out, |handler| {
-                    run(parser, prepared, metadata, &context, handler)
+                    run(
+                        parser,
+                        prepared,
+                        metadata,
+                        &context,
+                        handler,
+                        Some(&mut on_head),
+                    )
                 });
                 let outcome = match result {
                     Ok(()) => Ok(metadata.to_map()),
@@ -656,7 +672,13 @@ pub(crate) fn parse_to_stream(
     if !prepared {
         return Ok(None);
     }
-    let first = stream.next_message()?;
+    let mut head = None;
+    let first = loop {
+        match stream.next_message()? {
+            Message::Head(metadata) => head = Some(metadata),
+            message => break message,
+        }
+    };
     if let Message::Done {
         tail,
         outcome: Err(error),
@@ -668,9 +690,10 @@ pub(crate) fn parse_to_stream(
         }
     }
     stream.accept(first);
-    let metadata = match &stream.outcome {
-        Some(Ok(metadata)) => metadata.clone(),
-        _ => detected_metadata,
+    let metadata = match (&stream.outcome, head) {
+        (Some(Ok(metadata)), _) => metadata.clone(),
+        (_, Some(head)) => head,
+        (_, None) => detected_metadata,
     };
     Ok(Some((stream, metadata)))
 }
@@ -703,6 +726,7 @@ impl NativeStream {
 
     fn accept(&mut self, message: Message) {
         match message {
+            Message::Head(_) => return,
             Message::Chunk(chunk) => self.chunk = chunk,
             Message::Done {
                 tail,
