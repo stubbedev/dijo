@@ -1,11 +1,11 @@
 //! EPUB books (and iBooks), as Tika's `EpubParser` reads them under extractous's substitution of
 //! which manifest items it parses as embedded documents: the package document's Dublin Core
 //! metadata, layout and version, the `mimetype` and `metadata.xml`, then each XHTML content
-//! document of the spine, read as XML and written body by body, and then, in the order of Java's
-//! `HashMap` of manifest ids, the items outside the spine our `EpubEmbedded` admits, such as
-//! pictures and fonts, each in an `embedded` div. Without a package document, or with an empty
-//! spine, Tika writes every HTML and XML entry it can and fails. Encrypted books, and books with
-//! elements outside XHTML in a content document's body, are left to Tika.
+//! document of the spine, read as XML and written body by body, a malformed one reported and
+//! skipped, and then, in manifest order, the items outside the spine our `EpubEmbedded` admits,
+//! such as pictures and fonts, each in an `embedded` div. Without a package document, or with an
+//! empty spine, Tika writes every HTML and XML entry it can and fails. Encrypted books, and books
+//! with elements outside XHTML in a content document's body, are left to Tika.
 
 mod content;
 mod package;
@@ -230,11 +230,15 @@ fn write_embedded(
         return Ok(());
     }
     let bytes = book.read(&entry).map_err(Thrown::Io)?;
+    // Tika tests the `href` for `fonts` in its case only (#88).
     let font = item
         .media_type
         .as_deref()
         .is_some_and(|media| media.contains("font"))
-        || item.href.starts_with("fonts");
+        || item
+            .href
+            .get(..5)
+            .is_some_and(|start| start.eq_ignore_ascii_case("fonts"));
     xhtml.start_element_with("div", &[("class", "embedded")])?;
     xhtml.parse_embedded(
         &bytes,
@@ -249,7 +253,9 @@ fn write_embedded(
     Ok(())
 }
 
-/// `bufferedParseZipFile` along the package document.
+/// `bufferedParseZipFile` along the package document. A malformed content document is
+/// reported as a warning and skipped: Tika fails the whole book on it, after writing everything
+/// else (#89).
 fn read_package(
     book: &mut Book,
     root: &ZipEntry,
@@ -259,10 +265,9 @@ fn read_package(
     let relative = relative_path(&root.name).to_owned();
     book.extract_metadata(xhtml.metadata_mut())?;
     let mut processed: HashSet<&str> = HashSet::new();
-    let mut malformed = None;
     let mut missing = 0;
     for id in &contents.spine {
-        let Some(item) = contents.items.get(id) else {
+        let Some(item) = contents.item(id) else {
             continue;
         };
         if !is_content_document(item) {
@@ -275,18 +280,26 @@ fn read_package(
         let written = write_content_document(book, &entry, xhtml);
         processed.insert(id);
         if let Some(failure) = written? {
-            malformed.get_or_insert(failure);
+            let failure = match failure {
+                Failure::Malformed(reason) => reason,
+                other => format!("{other:?}"),
+            };
+            embedded::record_exception(
+                xhtml.metadata_mut(),
+                &format!(
+                    "org.apache.tika.exception.TikaException: EPUB: the content document {} is \
+                     malformed: {failure}",
+                    entry.name
+                ),
+            );
         }
     }
     let cover = contents.cover();
-    for (id, item) in contents.items.iter() {
-        if processed.contains(id) || !parses_as_embedded(item.media_type.as_deref()) {
+    for (id, item) in &contents.items {
+        if processed.contains(id.as_str()) || !parses_as_embedded(item.media_type.as_deref()) {
             continue;
         }
-        write_embedded(book, &relative, item, cover == Some(id), xhtml)?;
-    }
-    if let Some(failure) = malformed {
-        return Err(Thrown::Other(failure));
+        write_embedded(book, &relative, item, cover == Some(id.as_str()), xhtml)?;
     }
     if missing > 0 {
         return Err(Thrown::Io(Failure::Malformed(format!(
@@ -366,7 +379,7 @@ fn prepare<'a>(
             contents
                 .spine
                 .iter()
-                .filter_map(|id| contents.items.get(id))
+                .filter_map(|id| contents.item(id))
                 .filter(|item| is_content_document(item))
                 .filter_map(|item| book.named(&format!("{relative}{}", item.href)))
                 .collect()
@@ -449,7 +462,8 @@ mod tests {
         EpubParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
     }
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Scratch,
     };
     use std::io::{Cursor, Write};
     use std::path::{Path, PathBuf};
@@ -491,10 +505,73 @@ mod tests {
         )
     }
 
+    /// A native result as Tika's path writes it, without the fixes of #89 that real books
+    /// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
+    /// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
+    /// as Tika's last `dc:date` wins.
+    fn as_tika_writes_it(text: &mut String, metadata: &mut Vec<(String, Vec<String>)>) {
+        let dates = ["dcterms:issued", "dcterms:modified"];
+        if metadata.iter().any(|(name, _)| name == "dcterms:created") {
+            metadata.retain(|(name, _)| !dates.contains(&name.as_str()));
+            for date in dates {
+                let meta = format!(r#"<meta name="{date}" content=""#);
+                while let Some(start) = text.find(&meta) {
+                    let end = start + text[start..].find('\n').unwrap() + 1;
+                    text.replace_range(start..end, "");
+                }
+            }
+        }
+        let mut rewritten = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find('<') {
+            let end = start
+                + rest[start..]
+                    .find('>')
+                    .map_or(rest.len() - start, |end| end + 1);
+            rewritten.push_str(&rest[..start]);
+            let tag = &rest[start..end];
+            if tag.contains(" xml:lang=\"") {
+                rewritten.push_str(&with_one_lang(tag));
+            } else {
+                rewritten.push_str(tag);
+            }
+            rest = &rest[end..];
+        }
+        rewritten.push_str(rest);
+        *text = rewritten;
+    }
+
+    /// The start tag `tag` with `xml:lang` named `lang`, and only the first `lang` kept.
+    fn with_one_lang(tag: &str) -> String {
+        let mut kept = String::with_capacity(tag.len());
+        let mut seen = false;
+        let mut rest = tag;
+        while let Some(at) = rest.find(" xml:lang=\"").or_else(|| rest.find(" lang=\"")) {
+            let at = [rest.find(" xml:lang=\""), rest.find(" lang=\"")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(at);
+            let value_start = at + rest[at..].find('"').expect("the attribute's quote") + 1;
+            // A text cut at the length limit may end inside the value.
+            let Some(value_end) = rest[value_start..].find('"').map(|end| value_start + end) else {
+                break;
+            };
+            kept.push_str(&rest[..at]);
+            if !seen {
+                kept.push_str(&format!(r#" lang="{}""#, &rest[value_start..value_end]));
+                seen = true;
+            }
+            rest = &rest[value_end + 1..];
+        }
+        kept.push_str(rest);
+        kept
+    }
+
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
-        assert_same_as_tika(&documents, TIKA_NAME);
+        assert_same_as_tika_departing(&documents, TIKA_NAME, as_tika_writes_it);
     }
 
     #[test]
@@ -503,14 +580,13 @@ mod tests {
         let opf = package(
             "2.0",
             r#"<dc:title>Fyret</dc:title><dc:creator>Anna</dc:creator><dc:creator>Bo</dc:creator><dc:subject>Lys</dc:subject><dc:date>2026-01-02</dc:date><dc:language>da</dc:language><meta name="cover" content=" cover "/>"#,
-            r#"<item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/><item id="ch2" href="chapter%202+b.html"/><item id="cover" href="cover.png" media-type="image/png"/><item id="notes" href="notes.txt" media-type="text/plain"/><item id="css" href="style.css" media-type="text/css"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="gone" href="missing.txt" media-type="text/plain"/><item id="font" href="fonts/a.otf" media-type="application/vnd.ms-opentype"/>"#,
+            r#"<item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/><item id="ch2" href="chapter%202%20b.html"/><item id="cover" href="cover.png" media-type="image/png"/><item id="notes" href="notes.txt" media-type="text/plain"/><item id="css" href="style.css" media-type="text/css"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="gone" href="missing.txt" media-type="text/plain"/><item id="font" href="fonts/a.otf" media-type="application/vnd.ms-opentype"/>"#,
             r#"<itemref idref="ch1"/><itemref idref="notes"/><itemref idref="ch2"/><itemref idref="unknown"/>"#,
         );
         let first = chapter(
-            r#"Loose text<p epub:type="chapter" xml:lang="da" lang="en" class="c">Hver aften &amp; nat&#x21; <!-- skipped --><?pi skipped?></p><section xmlns:x="urn:x"><h1>Overskrift</h1><ul><li>en</li><li>to</li></ul><table><tr><td>a</td><td>b</td></tr></table></section><h:p xmlns:h="http://www.w3.org/1999/xhtml">Prefixed</h:p><p>Efter</p>"#,
+            r#"Loose text<p epub:type="chapter" lang="en" class="c">Hver aften &amp; nat&#x21; <!-- skipped --><?pi skipped?></p><section xmlns:x="urn:x"><h1>Overskrift</h1><ul><li>en</li><li>to</li></ul><table><tr><td>a</td><td>b</td></tr></table></section><h:p xmlns:h="http://www.w3.org/1999/xhtml">Prefixed</h:p><p>Efter</p>"#,
         );
         let second = r#"<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><div><p>Anden</p></div></body></html>"#;
-        let unnamespaced = r#"<html><body><p>Never written</p></body></html>"#;
         let documents = [
             scratch.write(
                 "epub2.epub",
@@ -545,7 +621,7 @@ mod tests {
                         ),
                     ),
                     ("OEBPS/a.xhtml", &chapter("<p>A</p>")),
-                    ("OEBPS/b.html", unnamespaced),
+                    ("OEBPS/b.html", second),
                     ("OEBPS/pic.png", "not a picture"),
                 ]),
             ),
@@ -601,16 +677,6 @@ mod tests {
         let opf = package("2.0", "<dc:title>Fejl</dc:title>", manifest, spine);
         let documents = [
             scratch.write(
-                "malformed-chapter.epub",
-                &book(&[
-                    MIMETYPE_ENTRY,
-                    CONTAINER_ENTRY,
-                    ("OEBPS/content.opf", &opf),
-                    ("OEBPS/a.xhtml", &chapter("<p>open <b>bold</p>")),
-                    ("OEBPS/b.xhtml", &chapter("<p>After the failure</p>")),
-                ]),
-            ),
-            scratch.write(
                 "missing-chapter.epub",
                 &book(&[
                     MIMETYPE_ENTRY,
@@ -649,25 +715,222 @@ mod tests {
                     ("OEBPS/a.xhtml", &chapter("<p>Never</p>")),
                 ]),
             ),
-            scratch.write(
-                "bad-href.epub",
-                &book(&[
-                    MIMETYPE_ENTRY,
-                    CONTAINER_ENTRY,
-                    (
-                        "OEBPS/content.opf",
-                        &package(
-                            "2.0",
-                            "",
-                            r#"<item id="a" href="a%2.xhtml" media-type="application/xhtml+xml"/>"#,
-                            r#"<itemref idref="a"/>"#,
-                        ),
-                    ),
-                ]),
-            ),
         ];
         let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
         assert_fails_as_tika(&paths);
+    }
+
+    /// The XHTML and metadata the native path extracts from the book `entries`.
+    fn extract(entries: &[(&str, &str)]) -> (String, crate::Metadata) {
+        let input = book(entries);
+        assert_eq!(deferral(&input), None);
+        crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&input)
+            .unwrap()
+    }
+
+    #[test]
+    fn writes_embedded_items_in_manifest_order() {
+        // Tika writes them in the order of a `HashMap` of their ids (#88).
+        let names = ["zeta", "alpha", "mid", "b", "a"];
+        let manifest: String = names
+            .iter()
+            .map(|name| format!(r#"<item id="{name}" href="{name}.txt" media-type="text/plain"/>"#))
+            .collect();
+        let opf = package(
+            "2.0",
+            "",
+            &format!(
+                r#"<item id="c" href="c.xhtml" media-type="application/xhtml+xml"/>{manifest}"#
+            ),
+            r#"<itemref idref="c"/>"#,
+        );
+        let chapter = chapter("<p>C</p>");
+        let texts: Vec<(String, String)> = names
+            .iter()
+            .map(|name| (format!("OEBPS/{name}.txt"), format!("Text of {name}.")))
+            .collect();
+        let mut entries = vec![
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", opf.as_str()),
+            ("OEBPS/c.xhtml", chapter.as_str()),
+        ];
+        entries.extend(
+            texts
+                .iter()
+                .map(|(name, text)| (name.as_str(), text.as_str())),
+        );
+        let (xhtml, _) = extract(&entries);
+        let positions: Vec<usize> = names
+            .iter()
+            .map(|name| xhtml.find(&format!("Text of {name}.")).unwrap())
+            .collect();
+        assert!(positions.is_sorted(), "{xhtml}");
+    }
+
+    #[test]
+    fn decodes_hrefs_as_uris_and_skips_only_a_broken_one() {
+        // Tika decodes them as form data, `+` a space, and fails the book on a broken escape
+        // (#88).
+        let opf = package(
+            "2.0",
+            "",
+            r#"<item id="a" href="a+b%20c.xhtml" media-type="application/xhtml+xml"/><item id="bad" href="a%2.xhtml" media-type="application/xhtml+xml"/><item id="signed" href="%+41.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/><itemref idref="bad"/><itemref idref="signed"/>"#,
+        );
+        let (xhtml, _) = extract(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a+b c.xhtml", &chapter("<p>Plus kept</p>")),
+            ("OEBPS/a%2.xhtml", &chapter("<p>Broken</p>")),
+            ("OEBPS/A.xhtml", &chapter("<p>Signed</p>")),
+        ]);
+        assert!(xhtml.contains("Plus kept"), "{xhtml}");
+        assert!(!xhtml.contains("Broken"), "{xhtml}");
+        assert!(!xhtml.contains("Signed"), "{xhtml}");
+        assert_eq!(
+            package::percent_decode("%C3%A6+x"),
+            Some("\u{e6}+x".to_owned())
+        );
+        assert_eq!(package::percent_decode("%4"), None);
+        assert_eq!(package::percent_decode("%+1"), None);
+        assert_eq!(package::percent_decode("%C3"), None);
+    }
+
+    #[test]
+    fn takes_the_first_usable_rootfile_matched_exactly() {
+        // Tika takes the last `rootfile`, matched ignoring case, and one without a `full-path`
+        // leaves the book without a package document (#88).
+        let container = |rootfiles: &str| {
+            format!(
+                r#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>{rootfiles}</rootfiles></container>"#
+            )
+        };
+        let root = |rootfiles: &str| package::root(container(rootfiles).as_bytes()).unwrap();
+        assert_eq!(
+            root(r#"<rootfile/><rootfile full-path="a.opf"/><rootfile full-path="b.opf"/>"#),
+            Some("a.opf".to_owned())
+        );
+        assert_eq!(root(r#"<ROOTFILE full-path="a.opf"/>"#), None);
+        assert_eq!(root(r#"<rootfıle full-path="a.opf"/>"#), None);
+    }
+
+    #[test]
+    fn matches_package_elements_exactly() {
+        // Tika matches `itemRef`, `manifest` and the others ignoring case (#88): an `ITEM` is
+        // not a manifest item.
+        let opf = package(
+            "2.0",
+            "",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><ITEM id="b" href="b.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/><itemref idref="b"/>"#,
+        );
+        let (xhtml, _) = extract(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a.xhtml", &chapter("<p>Item</p>")),
+            ("OEBPS/b.xhtml", &chapter("<p>Upper case</p>")),
+        ]);
+        assert!(xhtml.contains("Item"), "{xhtml}");
+        assert!(!xhtml.contains("Upper case"), "{xhtml}");
+    }
+
+    #[test]
+    fn reports_a_malformed_chapter_and_reads_the_rest() {
+        // Tika fails the whole book on it, after writing everything else (#89).
+        let opf = package(
+            "2.0",
+            "",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/><itemref idref="b"/>"#,
+        );
+        let (xhtml, metadata) = extract(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a.xhtml", &chapter("<p>open <b>bold</p>")),
+            ("OEBPS/b.xhtml", &chapter("<p>After the failure</p>")),
+        ]);
+        assert!(xhtml.contains("open <b>bold</b>"), "{xhtml}");
+        assert!(xhtml.contains("After the failure"), "{xhtml}");
+        let warnings = &metadata[embedded::EXCEPTION_WARNING];
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("the content document OEBPS/a.xhtml is malformed"),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn reads_content_documents_without_the_xhtml_namespace() {
+        // Tika writes nothing of them (#89).
+        let opf = package(
+            "2.0",
+            "",
+            r#"<item id="a" href="a.html" media-type="text/html"/>"#,
+            r#"<itemref idref="a"/>"#,
+        );
+        let (xhtml, _) = extract(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a.html", "<html><body><p>Written</p></body></html>"),
+        ]);
+        assert!(xhtml.contains("<p>Written</p>"), "{xhtml}");
+    }
+
+    #[test]
+    fn keeps_both_language_attributes() {
+        // Tika keeps only the first of `xml:lang` and `lang` (#89).
+        let opf = package(
+            "2.0",
+            "",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/>"#,
+        );
+        let (xhtml, _) = extract(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            (
+                "OEBPS/a.xhtml",
+                &chapter(r#"<p xml:lang="da" lang="en" epub:type="x">Sprog</p>"#),
+            ),
+        ]);
+        assert!(
+            xhtml.contains(r#"<p xml:lang="da" lang="en" type="x">Sprog</p>"#),
+            "{xhtml}"
+        );
+    }
+
+    #[test]
+    fn names_dates_by_their_event() {
+        // Tika makes every `dc:date` `dcterms:created` (#89).
+        let metadata = |dates: &str| {
+            let opf = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" xmlns:opf="http://www.idpf.org/2007/opf" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{dates}</metadata><manifest><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="a"/></spine></package>"#
+            );
+            extract(&[
+                MIMETYPE_ENTRY,
+                CONTAINER_ENTRY,
+                ("OEBPS/content.opf", &opf),
+                ("OEBPS/a.xhtml", &chapter("<p>a</p>")),
+            ])
+            .1
+        };
+        let dates = metadata(
+            r#"<dc:date opf:event="creation">2001</dc:date><dc:date opf:event="publication">2002</dc:date><dc:date opf:event="modification">2003</dc:date>"#,
+        );
+        assert_eq!(dates["dcterms:created"], ["2001"]);
+        assert_eq!(dates["dcterms:issued"], ["2002"]);
+        assert_eq!(dates["dcterms:modified"], ["2003"]);
+        let dates = metadata(r#"<dc:date> 2004 </dc:date>"#);
+        assert_eq!(dates["dcterms:created"], ["2004"]);
+        assert!(!dates.contains_key("dcterms:issued"));
     }
 
     #[test]
@@ -738,7 +1001,21 @@ mod tests {
             .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["testiBooks.ibooks"]);
-        let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&parsed, TIKA_NAME);
+        // Its pictures outside the spine come in manifest order, which Tika's `HashMap` of
+        // their ids does not keep (#88).
+        let (reordered, parsed): (Vec<&Path>, Vec<&Path>) = parsed
+            .iter()
+            .map(PathBuf::as_path)
+            .partition(|path| path.ends_with("testEPUB_multi-metadata-vals.epub"));
+        assert_same_as_tika_departing(&parsed, TIKA_NAME, as_tika_writes_it);
+        let [reordered] = reordered[..] else {
+            panic!("{reordered:?}");
+        };
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(reordered.to_str().unwrap())
+            .unwrap();
+        let heading = |name: &str| xml.find(&format!("<h1>{name}</h1>")).unwrap();
+        assert!(heading("epub/images/logo.png") < heading("epub/images/titlepage.png"));
     }
 }

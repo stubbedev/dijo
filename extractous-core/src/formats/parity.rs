@@ -289,6 +289,18 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
     native
 }
 
+/// A string extraction's results with both texts cut to the shorter when it begins the other:
+/// the native text was cut at the length limit before a [`Departure`] rewrote it, so it ends
+/// earlier or later than Tika's.
+fn cut_texts(mut tika: Extracted, mut native: Extracted) -> (Extracted, Extracted) {
+    let length = tika.text.len().min(native.text.len());
+    if tika.text[..length] == native.text[..length] {
+        tika.text.truncate(length);
+        native.text.truncate(length);
+    }
+    (tika, native)
+}
+
 /// A Java stack trace without its frames, its lines ended by `\n`: Java ends them with the
 /// platform's line separator, the native parsers with `\n` everywhere (#108).
 fn without_frames(trace: &str) -> String {
@@ -445,7 +457,40 @@ pub(crate) fn assert_same_as_tika_with(
         tika_name,
         delegates: &[],
     });
-    compare(documents, configs, expected);
+    compare(documents, configs, expected, None);
+}
+
+/// A rewrite of a native result, its decoded text and its metadata, into what Tika's path
+/// writes, undoing a fix that departs from Tika's path systematically: it names the issue of
+/// the quirk, and undoes only what that fix changes.
+pub(crate) type Departure = fn(&mut String, &mut Vec<(String, Vec<String>)>);
+
+/// [`assert_same_as_tika`], with each native result rewritten by `departure` before it is
+/// compared.
+pub(crate) fn assert_same_as_tika_departing(
+    documents: &[&Path],
+    tika_name: &str,
+    departure: Departure,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+    });
+    compare(
+        documents,
+        &ParserConfigs::default(),
+        expected,
+        Some(departure),
+    );
+}
+
+/// The native result `native`, its text in `char_set`, rewritten by `departure`.
+fn departed(mut native: Extracted, char_set: CharSet, departure: Departure) -> Extracted {
+    let mut text = decoded(&native.text, char_set).expect("text the native path wrote");
+    departure(&mut text, &mut native.metadata);
+    native.text.clear();
+    formats::encode(&text, char_set, &mut native.text);
+    native
 }
 
 /// Asserts that of `documents`, each one `passwords` names, by file name with the password that
@@ -522,7 +567,7 @@ pub(crate) fn assert_same_as_tika_delegating_with(
         tika_name,
         delegates,
     });
-    compare(documents, configs, expected);
+    compare(documents, configs, expected, None);
 }
 
 /// Where a div of class `ocr` starts, the text OCR read in it following.
@@ -616,10 +661,15 @@ pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
 
 /// [`assert_fails_as_tika`] under the settings `configs`.
 pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
-    compare(documents, configs, Expected::Failure);
+    compare(documents, configs, Expected::Failure, None);
 }
 
-fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
+fn compare(
+    documents: &[&Path],
+    configs: &ParserConfigs,
+    expected: Expected,
+    departure: Option<Departure>,
+) {
     let mut differences = Vec::new();
     for document in documents {
         let path = document.to_str().unwrap();
@@ -657,6 +707,10 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
                     let tika = comparable(tika, char_set);
                     let native = comparable(as_tika(native, &names, char_set), char_set);
+                    let native = match departure {
+                        Some(departure) => departed(native, char_set, departure),
+                        None => native,
+                    };
                     let (tika, native) = match &ocr {
                         Some((tika_read, native_read)) => (
                             without_ocr(tika, output, char_set, tika_read),
@@ -664,7 +718,10 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
                         ),
                         None if entry == "string" => {
                             let native = cut_to(native, &tika);
-                            (tika, native)
+                            match departure {
+                                Some(_) => cut_texts(tika, native),
+                                None => (tika, native),
+                            }
                         }
                         None => (tika, native),
                     };

@@ -21,12 +21,19 @@ enum Place {
     Outside,
 }
 
+/// Whether an element of `namespace` is XHTML: in its namespace, or in none, as a content
+/// document without the XHTML namespace has it. Tika's `BodyContentHandler` matches the XHTML
+/// namespace only, so such a document yields no text (#89).
+fn is_xhtml(namespace: &str) -> bool {
+    namespace == XHTML_NAMESPACE || namespace.is_empty()
+}
+
 impl Place {
     /// Where an element of `namespace` and `local_name` opened inside `parent` lies.
     fn of(parent: Option<Place>, namespace: &str, local_name: &str) -> Self {
         match parent {
-            None if namespace == XHTML_NAMESPACE && local_name == "html" => Self::Html,
-            Some(Self::Html) if namespace == XHTML_NAMESPACE && local_name == "body" => Self::Body,
+            None if is_xhtml(namespace) && local_name == "html" => Self::Html,
+            Some(Self::Html) if is_xhtml(namespace) && local_name == "body" => Self::Body,
             Some(Self::Body | Self::Inside) => Self::Inside,
             None | Some(Self::Html | Self::Outside) => Self::Outside,
         }
@@ -48,13 +55,22 @@ fn prefix_mapping(declaration: &Attribute) -> (&str, &str) {
     (prefix, declaration.value.as_str())
 }
 
+/// The namespace of the `xml` prefix.
+const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+
 /// The attributes as the `EpubNormalizingHandler` passes them on, by local name: where one has a
-/// prefix, only the first of each local name.
+/// prefix, only the first of each local name. Attributes of the `xml` prefix keep it, so
+/// `xml:lang` and `lang` are both kept: Tika collapses them into the first (#89).
 fn normalized(attributes: &[Attribute]) -> Vec<(&str, &str)> {
     let mut kept: Vec<(&str, &str)> = Vec::with_capacity(attributes.len());
     for attribute in attributes {
-        if !kept.iter().any(|(name, _)| *name == attribute.local_name) {
-            kept.push((&attribute.local_name, &attribute.value));
+        let name = if attribute.namespace == XML_NAMESPACE {
+            attribute.qualified_name.as_str()
+        } else {
+            attribute.local_name.as_str()
+        };
+        if !kept.iter().any(|(kept, _)| *kept == name) {
+            kept.push((name, &attribute.value));
         }
     }
     kept
@@ -102,7 +118,7 @@ impl SaxHandler for ContentDocument<'_, '_> {
         if place != Place::Inside {
             return Ok(());
         }
-        if namespace != XHTML_NAMESPACE {
+        if !is_xhtml(namespace) {
             return Err(Failure::Malformed(format!(
                 "The content document has the element {local_name} in {namespace:?}, outside \
                  XHTML, which only Tika's path writes"
@@ -189,7 +205,7 @@ pub(super) fn holds_foreign_elements(input: &[u8], what: &str) -> bool {
         ) -> Result<(), Failure> {
             let place = Place::of(self.open.last().copied(), namespace, local_name);
             self.open.push(place);
-            if place == Place::Inside && namespace != XHTML_NAMESPACE {
+            if place == Place::Inside && !is_xhtml(namespace) {
                 self.found = true;
                 return Err(Failure::Malformed(format!("<{local_name}> found")));
             }
