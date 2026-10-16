@@ -7,9 +7,9 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::html;
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::strip;
 use crate::text::charset::Charset;
 
 const PALM_DATABASE_HEADER: i32 = 78;
@@ -315,6 +315,11 @@ pub(crate) struct MobiParser;
 impl Parser for MobiParser {
     fn name(&self) -> &'static str {
         "extractous::MobiParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.MobiParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

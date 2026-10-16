@@ -10,9 +10,9 @@
 //! or resolve links against a URL (see [`deferral`]), so it never does either.
 
 use super::dom::{Attribute, Dom, NodeData, NodeId, DOCUMENT};
-use crate::formats::handlers::is_blank;
-use crate::formats::java::trim as java_trim;
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::java;
+use crate::java::is_blank;
 use crate::mime::MediaType;
 
 const URI_ATTRIBUTES: [&str; 4] = ["src", "href", "longdesc", "cite"];
@@ -233,7 +233,7 @@ impl HtmlHandler<'_, '_> {
                     self.xhtml.end_element("base")?;
                     self.xhtml
                         .metadata_mut()
-                        .set("Content-Location", java_trim(href));
+                        .set("Content-Location", java::trim(href));
                 }
             } else if name == "LINK" {
                 self.start_element_with_mapped_attributes("link", attributes)?;
@@ -305,11 +305,11 @@ impl HtmlHandler<'_, '_> {
                 } else {
                     &attribute.value
                 };
-                java_trim(value).to_string()
+                java::trim(value).to_string()
             } else if name == "object"
                 && matches!(attribute.name.as_str(), "codebase" | "data" | "classid")
             {
-                java_trim(&attribute.value).to_string()
+                java::trim(&attribute.value).to_string()
             } else {
                 attribute.value.clone()
             };
@@ -336,7 +336,7 @@ impl HtmlHandler<'_, '_> {
         if self.title_level > 0 {
             self.title_level -= 1;
             if self.title_level == 0 && !self.title_set {
-                let title = java_trim(&self.title).to_string();
+                let title = java::trim(&self.title).to_string();
                 self.xhtml.metadata_mut().set("dc:title", title);
                 self.title_set = true;
             }
@@ -402,7 +402,7 @@ fn icbm(value: &str) -> Option<(&str, &str)> {
 /// the resource name), which takes Java's `URL`. Decided over the tree, as `HtmlHandler` meets
 /// the nodes.
 pub(super) fn deferral(dom: &Dom, resource_name: Option<&str>) -> Option<&'static str> {
-    if resource_name.is_some_and(|name| has_scheme(java_trim(name))) {
+    if resource_name.is_some_and(|name| has_scheme(java::trim(name))) {
         return Some("the resource name is a URL that links would be resolved against");
     }
     let mut scan = Scan::default();
@@ -432,14 +432,14 @@ impl Scan {
         if self.body_level == 0
             && self.discard_level == 0
             && name == "BASE"
-            && value(&attributes, "href").is_some_and(|href| has_scheme(java_trim(href)))
+            && value(&attributes, "href").is_some_and(|href| has_scheme(java::trim(href)))
         {
             return Some("a base element sets a URL that links would be resolved against");
         }
         if self.body_level > 0
             && self.discard_level == 0
             && name == "OBJECT"
-            && value(&attributes, "codebase").is_some_and(|base| has_scheme(java_trim(base)))
+            && value(&attributes, "codebase").is_some_and(|base| has_scheme(java::trim(base)))
         {
             return Some("an object's codebase is a URL that its data would be resolved against");
         }

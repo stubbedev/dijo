@@ -97,10 +97,10 @@ pub(crate) fn load_node(target: &mut Target, node: &Node, parents: &str, add_thi
 
 /// `ImageParser.normalize`: trimmed, and booleans in lower case.
 fn normalize(value: &str) -> String {
-    let value = crate::formats::java::trim(value);
-    if crate::formats::java::equals_ignore_case(value, "true") {
+    let value = crate::java::trim(value);
+    if crate::java::equals_ignore_case(value, "true") {
         "true".to_owned()
-    } else if crate::formats::java::equals_ignore_case(value, "false") {
+    } else if crate::java::equals_ignore_case(value, "false") {
         "false".to_owned()
     } else {
         value.to_owned()

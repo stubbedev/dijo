@@ -7,9 +7,6 @@ use crate::formats::parity::{
     documents_with,
 };
 
-/// The OCR enricher's names, the port's paired with Tika's.
-const DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
-
 fn skipping_ocr() -> ParserConfigs {
     ParserConfigs {
         ocr: TesseractOcrConfig::new().set_skip_ocr(true),
@@ -43,7 +40,7 @@ fn same_as_tika(parser: &dyn Parser, tika_name: &str, roots: &[&Path]) -> Vec<Pa
     let configs = skipping_ocr();
     let (parsed, deferred) = documents_with(parser, roots, &configs);
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_delegating_with(&paths, tika_name, &DELEGATES, &configs);
+    assert_same_as_tika_delegating_with(&paths, tika_name, &TIKA_DELEGATES, &configs);
     deferred
 }
 
@@ -199,7 +196,7 @@ fn reads_images_imageio_has_no_reader_for_as_tika_does() {
     assert_same_as_tika_delegating_with(
         &paths,
         "org.apache.tika.parser.image.ImageParser",
-        &DELEGATES,
+        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -270,7 +267,7 @@ fn reads_photoshop_captions_as_tika_does() {
     assert_same_as_tika_delegating_with(
         &[&caption],
         "ai.yobix.RecognizedImageParser",
-        &DELEGATES,
+        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -334,7 +331,7 @@ fn reads_images_tika_has_no_parser_for_as_tika_does() {
     assert_same_as_tika_delegating_with(
         &paths,
         "ai.yobix.RecognizedImageParser",
-        &DELEGATES,
+        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -497,7 +494,7 @@ fn reads_apple_maker_notes_as_tika_does() {
     assert_same_as_tika_delegating_with(
         &[&jpeg],
         "org.apache.tika.parser.image.JpegParser",
-        &DELEGATES,
+        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -595,7 +592,7 @@ fn reads_heif_images_as_tika_does() {
     assert_same_as_tika_delegating_with(
         &[&heic],
         "org.apache.tika.parser.image.HeifParser",
-        &DELEGATES,
+        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }

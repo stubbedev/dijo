@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use super::java;
+use crate::java;
 
 /// A media type such as `application/pdf` or `application/x-quattro-pro; version=9`, held in
 /// the form Tika's `MediaType.toString()` prints.

@@ -7,10 +7,10 @@ use std::collections::HashMap;
 
 use super::body::{Body, ParagraphProperties};
 use super::W_NAMESPACE;
-use crate::formats::java::{parse_int, trim as java_trim};
 use crate::formats::xhtml::Stop;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::{parse_int, trim as java_trim};
 
 const MC_NAMESPACE: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const O_NAMESPACE: &str = "urn:schemas-microsoft-com:office:office";

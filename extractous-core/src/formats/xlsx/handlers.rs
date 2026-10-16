@@ -5,20 +5,20 @@
 
 use std::collections::HashMap;
 
-use crate::formats::handlers::is_blank;
-use crate::formats::java::{equals_ignore_case, trim};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{external_reference, name};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::is_blank;
+use crate::java::{equals_ignore_case, trim};
 
 /// The namespace of relationship ids.
 const RELATIONSHIPS_NS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 mod meta {
-    pub(super) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+    pub(super) use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
     pub(super) const HAS_HIDDEN_SHEETS: &str = "msoffice:excel:has-hidden-sheets";
     pub(super) const HIDDEN_SHEET_NAMES: &str = "msoffice:excel:hidden-sheet-names";
     pub(super) const HAS_VERY_HIDDEN_SHEETS: &str = "msoffice:excel:has-very-hidden-sheets";

@@ -4,7 +4,7 @@
 use super::descriptions::{base, decimal, named, Described};
 use super::reader::Reader;
 use super::{java_string, Directory, Kind, Metadata, Unported, Value};
-use crate::formats::java_text::printf;
+use crate::formats::data_format::printf;
 use crate::text::charset::Charset;
 
 const TAG_PROFILE_BYTE_COUNT: i32 = 0x0000;
@@ -43,7 +43,7 @@ pub(crate) fn read_jpeg_segments(
     let mut buffer: Option<Vec<u8>> = None;
     for segment in segments {
         if segment.len() < JPEG_PREAMBLE.len()
-            || !crate::formats::java::equals_ignore_case(
+            || !crate::java::equals_ignore_case(
                 &java_string(&segment[..JPEG_PREAMBLE.len()], None),
                 JPEG_PREAMBLE,
             )

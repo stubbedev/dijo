@@ -8,9 +8,9 @@ use crate::formats::xml::attribute_named;
 
 use super::cell::CellAddress;
 use super::SPREADSHEETML_NS;
-use crate::formats::java::parse_int;
 use crate::formats::xml::{Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::parse_int;
 
 /// `XSSFStylesShim`: the number format of each cell style.
 #[derive(Debug, Default)]
@@ -46,10 +46,9 @@ impl Styles {
         if index == -1 {
             return None;
         }
-        self.formats
-            .get(&index)
-            .cloned()
-            .or_else(|| super::format::builtin_format(i32::from(index)).map(str::to_owned))
+        self.formats.get(&index).cloned().or_else(|| {
+            crate::formats::data_format::builtin_format(i32::from(index)).map(str::to_owned)
+        })
     }
 }
 

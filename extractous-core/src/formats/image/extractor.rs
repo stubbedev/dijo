@@ -3,13 +3,13 @@
 //! or its Exif directory's name, then the page count, the JPEG comment, the camera's Exif
 //! fields, the dimensions, the GPS position and the IPTC fields Tika maps.
 
-use crate::formats::java_text::decimal::Rounding;
-use crate::formats::java_text::decimal_format::DecimalFormat;
-use crate::formats::java_time::{self, TimeZone};
+use crate::formats::data_format::decimal::Rounding;
+use crate::formats::data_format::decimal_format::DecimalFormat;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xlsx::format::date_format::SimpleDateFormat;
 use crate::formats::xmp::{self, bag, text, Property};
 use crate::formats::Unported;
+use crate::java::simple_date_format::SimpleDateFormat;
+use crate::java::time::{self, TimeZone};
 
 use super::metadata_extractor::dates::parse_gps_date;
 use super::metadata_extractor::exif::tags::*;
@@ -253,10 +253,10 @@ fn copy_unknown_fields(directory: &Directory, target: &mut Target) -> Result<(),
         let Some(description) = directory.description(tag)? else {
             continue;
         };
-        let mut value = crate::formats::java::trim(&description).to_owned();
-        if crate::formats::java::equals_ignore_case(&value, "true") {
+        let mut value = crate::java::trim(&description).to_owned();
+        if crate::java::equals_ignore_case(&value, "true") {
             value = "true".to_owned();
-        } else if crate::formats::java::equals_ignore_case(&value, "false") {
+        } else if crate::java::equals_ignore_case(&value, "false") {
             value = "false".to_owned();
         }
         if directory.kind.is_exif() {
@@ -285,7 +285,7 @@ fn page_number(directory: &Directory, metadata: &mut TikaMetadata) {
     if pages.len() > 1 {
         let current = metadata
             .get(EXIF_PAGE_COUNT.name)
-            .and_then(crate::formats::java::parse_int);
+            .and_then(crate::java::parse_int);
         if current.is_none_or(|current| current < pages[1]) {
             xmp::set(metadata, &EXIF_PAGE_COUNT, &pages[1].to_string());
         }
@@ -379,7 +379,7 @@ fn exif_dates(directory: &Directory, metadata: &mut TikaMetadata, zone: &TimeZon
 /// A rational as `Double.toString` of its value, or the tag's text when it is not a rational.
 fn rational_or_text(directory: &Directory, tag: i32) -> Option<String> {
     match directory.object(tag)? {
-        Value::Rational(rational) => Some(crate::formats::java_text::dtoa::java_double_to_string(
+        Value::Rational(rational) => Some(crate::java::dtoa::java_double_to_string(
             rational.double_value(),
         )),
         _ => directory.string(tag),
@@ -538,7 +538,7 @@ fn gps(directory: &Directory, metadata: &mut TikaMetadata) -> Result<(), Unporte
         xmp::set(metadata, &LONGITUDE, &format(location.longitude));
     }
     if let Some(millis) = gps_date(directory) {
-        xmp::set(metadata, &GEO_TIMESTAMP, &java_time::format_instant(millis));
+        xmp::set(metadata, &GEO_TIMESTAMP, &time::format_instant(millis));
     }
     if let Some(altitude) = directory.rational(GPS_ALTITUDE) {
         let mut metres = altitude.double_value();

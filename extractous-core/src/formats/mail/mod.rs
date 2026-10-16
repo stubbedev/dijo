@@ -28,22 +28,22 @@ mod structured;
 #[cfg(test)]
 mod synthetic;
 
+pub(crate) use codec::decode_encoded_words;
 use handler::{read, Inline, Item, Problem};
 pub(crate) use mbox::MboxParser;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
-use crate::formats::handlers::Body;
+use crate::formats::handlers::parse_inline;
 use crate::formats::html;
-use crate::formats::java::parse_long;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text;
-use crate::formats::xhtml::{ContentHandler, Stop, Xhtml};
 use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::java::parse_long;
 
 /// What the port leaves to Tika.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Unported {
+pub(crate) enum Unported {
     /// A charset the JDK knows and the native decoders do not decode.
     Charset,
     /// A time zone named by a region or a name, which java.time resolves with its time-zone
@@ -74,6 +74,11 @@ impl Parser for Rfc822Parser {
         "extractous::RFC822Parser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.mail.RFC822Parser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["message/rfc822"]
     }
@@ -91,6 +96,11 @@ impl Parser for Rfc822Parser {
 impl Parser for EmlxParser {
     fn name(&self) -> &'static str {
         "extractous::EmlxParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.EmlxParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -262,52 +272,6 @@ fn prepare_message(
         }
         Ok(())
     }))
-}
-
-/// `handleInlineBodyPart`: a part its parser `prepared` from fresh metadata, parsed into the
-/// message's body, through an `EmbeddedContentHandler` and a `BodyContentHandler`.
-fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    let context = xhtml.context();
-    let mut forward = Forward { outer: xhtml };
-    let mut body = Body::new(&mut forward);
-    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);
-    result
-}
-
-/// The events of a part parsed inline, passed on to the message's own `XHTMLContentHandler`,
-/// without the start and end of the part's document.
-struct Forward<'a, 'h> {
-    outer: &'a mut Xhtml<'h>,
-}
-
-impl ContentHandler for Forward<'_, '_> {
-    fn start_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
-        self.outer.start_prefix_mapping(prefix, uri)
-    }
-
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        self.outer.start_element_with(name, attributes)
-    }
-
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.outer.end_element(name)
-    }
-
-    fn characters(&mut self, text: &str) -> Result<(), Stop> {
-        self.outer.characters(text)
-    }
-
-    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
-        self.outer.ignorable_whitespace(text)
-    }
-
-    fn end_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

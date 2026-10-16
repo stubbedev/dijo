@@ -4,7 +4,7 @@
 //! JDK's `FloatingDecimal` and `BigDecimal`s from their exact digits.
 
 use super::decimal::{BigDecimal, Rounding};
-use super::dtoa;
+use crate::java::dtoa;
 
 const MAXIMUM_INTEGER_DIGITS: i64 = i32::MAX as i64;
 const DOUBLE_INTEGER_DIGITS: i64 = 309;

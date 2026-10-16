@@ -22,15 +22,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
-use crate::formats::java_time::TimeZone;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Stop, Xhtml};
 use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepared, Unported};
+use crate::java::time::TimeZone;
 use extractor::Target;
 use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
 
 /// The name the port records the OCR enricher under, as Tika records `ai.yobix.PreparingOcrParser`.
 pub(crate) const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
+/// The OCR enricher's names, the port's paired with Tika's.
+#[cfg(test)]
+const TIKA_DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
 
 /// The types `PreparingOcrParser` reads, for which Tika's image parsers run it as their enricher:
 /// those of `TesseractParser`, of `RecognizedImageParser`, the ones decoded for tesseract and the
@@ -105,6 +108,16 @@ impl Parser for JpegParser {
         "extractous::JpegParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.JpegParser"
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &TIKA_DELEGATES
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["image/jpeg"]
     }
@@ -127,6 +140,16 @@ impl Parser for TiffParser {
         "extractous::TiffParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.TiffParser"
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &TIKA_DELEGATES
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &["image/tiff"]
     }
@@ -147,6 +170,16 @@ pub(crate) struct HeifParser;
 impl Parser for HeifParser {
     fn name(&self) -> &'static str {
         "extractous::HeifParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.HeifParser"
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &TIKA_DELEGATES
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -176,6 +209,16 @@ pub(crate) struct ImageParser;
 impl Parser for ImageParser {
     fn name(&self) -> &'static str {
         "extractous::ImageParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.ImageParser"
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &TIKA_DELEGATES
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -299,6 +342,16 @@ impl Recognized {
 impl Parser for RecognizedImageParser {
     fn name(&self) -> &'static str {
         "extractous::RecognizedImageParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.RecognizedImageParser"
+    }
+
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &TIKA_DELEGATES
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -565,7 +618,7 @@ fn temporary_name() -> String {
 /// small for it, and reads nothing.
 fn enrich(xhtml: &mut Xhtml) {
     let metadata = xhtml.metadata_mut();
-    let dimension = |name: &str| metadata.get(name).and_then(crate::formats::java::parse_int);
+    let dimension = |name: &str| metadata.get(name).and_then(crate::java::parse_int);
     let too_small = dimension(extractor::IMAGE_WIDTH.name).is_some_and(|width| width < MIN_PIXELS)
         || dimension(extractor::IMAGE_LENGTH.name).is_some_and(|height| height < MIN_PIXELS);
     if !too_small {

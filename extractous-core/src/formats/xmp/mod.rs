@@ -7,11 +7,11 @@ use std::collections::{BTreeMap, HashMap};
 
 pub(crate) mod date;
 
-use crate::formats::java_time::format_instant;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
 use crate::formats::Unported;
+use crate::java::time::format_instant;
 
 const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const META: &str = "adobe:ns:meta/";
@@ -353,7 +353,7 @@ impl Flattener {
     fn emit_attributes(&mut self, attributes: &[Attribute], value_frame: bool) {
         let base = self.path();
         for attribute in attributes {
-            let value = crate::formats::java::trim(&attribute.value);
+            let value = crate::java::trim(&attribute.value);
             if value.is_empty() {
                 continue;
             }
@@ -502,7 +502,7 @@ impl SaxHandler for Flattener {
         let Some(frame) = self.frames.pop() else {
             return Ok(());
         };
-        let text = crate::formats::java::trim(&frame.text);
+        let text = crate::java::trim(&frame.text);
         if !text.is_empty() && (frame.children == 0 || frame.has_value) {
             self.add(Leaf {
                 namespace: frame.namespace.clone(),
@@ -524,7 +524,7 @@ impl SaxHandler for Flattener {
 
 /// `XmpDates.normalize`: a date's instant as Tika writes dates, if PDFBox reads it.
 fn normalize_date(raw: &str) -> Result<Option<String>, Unported> {
-    let trimmed = crate::formats::java::trim(raw);
+    let trimmed = crate::java::trim(raw);
     if trimmed.is_empty() {
         return Ok(None);
     }
@@ -634,7 +634,7 @@ fn is_lang_alternative(leaf: &Leaf) -> bool {
 fn history_index(path: &str) -> Option<i32> {
     let start = path.find("History[")? + "History[".len();
     let end = start + path[start..].find(']')?;
-    crate::formats::java::parse_int(&path[start..end])
+    crate::java::parse_int(&path[start..end])
 }
 
 /// `XmpExtractor.map`.

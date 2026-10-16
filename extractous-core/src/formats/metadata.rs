@@ -2,14 +2,46 @@
 //! The order its `names()` lists them in is visible in the XHTML head, so [`TikaMetadata::names`]
 //! reproduces that map's iteration order.
 
-use crate::formats::java::JavaHashMap;
+use crate::java::JavaHashMap;
+use crate::java::{is_blank, utf16_length};
 use crate::Metadata;
 
+/// Office's `USER_DEFINED` key prefix, of a document's custom properties.
+pub(crate) const USER_DEFINED_PREFIX: &str = "custom:";
+
+/// The names of Tika's `Office` properties and the core properties the Office extractors of
+/// several formats set.
+pub(crate) mod office {
+    pub(crate) const HAS_COMMENTS: &str = "msoffice:has-comments";
+    pub(crate) const COMMENT_PERSONS: &str = "msoffice:comment-person-display-name";
+    pub(crate) const HAS_HIDDEN_TEXT: &str = "msoffice:doc:has-hidden-text";
+    pub(crate) const HAS_TRACK_CHANGES: &str = "msoffice:has-track-changes";
+    pub(crate) const EMBEDDED_STORAGE_CLASS_ID: &str = "msoffice:embedded-storage-class-id";
+    pub(crate) const OCX_NAME: &str = "msoffice:ocx-name";
+    pub(crate) const ORIGINAL_RESOURCE_NAME: &str = "tk:orig-resource-name";
+    pub(crate) const RESOURCE_NAME_EXTENSION_INFERRED: &str = "tk:resource-name-extension-inferred";
+}
+
+/// The longest name `Metadata.add(KeyPrefix, name, value)` takes, in UTF-16 units.
+const MAX_PREFIX_ROUTE_NAME_LENGTH: usize = 1024;
+/// The most names `Metadata.add(KeyPrefix, name, value)` adds to one metadata.
+const MAX_PREFIX_ROUTE_NAMES: usize = 10_000;
+
 /// A document's metadata, in the order Tika's `HashMap` holds it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct TikaMetadata {
     entries: JavaHashMap<Vec<String>>,
+    /// The names added under a prefix so far, which Tika counts per metadata.
+    prefix_route_names: usize,
 }
+
+impl PartialEq for TikaMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Eq for TikaMetadata {}
 
 impl TikaMetadata {
     pub(crate) fn new() -> Self {
@@ -64,10 +96,33 @@ impl TikaMetadata {
         }
     }
 
+    /// Appends `value` to `name` under `prefix`, as Tika's `Metadata.add(KeyPrefix, name,
+    /// value)` does with names taken from a document: a blank name, or one longer than 1024
+    /// UTF-16 units, is passed over, as is a new name once the metadata has 10,000.
+    pub(crate) fn add_prefixed(&mut self, prefix: &str, name: &str, value: impl Into<String>) {
+        if is_blank(name) || utf16_length(name) > MAX_PREFIX_ROUTE_NAME_LENGTH {
+            return;
+        }
+        let key = format!("{prefix}{name}");
+        if self.entries.get(&key).is_none() {
+            if self.prefix_route_names >= MAX_PREFIX_ROUTE_NAMES {
+                return;
+            }
+            self.prefix_route_names += 1;
+        }
+        self.add(&key, value);
+    }
+
     /// The names in the order Tika's `Metadata.names()` returns them: the iteration order of a
     /// `java.util.HashMap` that saw the same insertions.
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|(name, _)| name)
+    }
+
+    /// Whether two of `names` share a bucket of Tika's `HashMap`, where it iterates them in the
+    /// order they were first set.
+    pub(crate) fn share_a_bucket(&self, names: &[&str]) -> bool {
+        self.entries.share_a_bucket(names)
     }
 
     /// Every name with each of its values, in the order the names were first set.

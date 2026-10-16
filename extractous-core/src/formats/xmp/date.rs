@@ -3,8 +3,8 @@
 //! PDFBox reads them. A date PDFBox would go on to try its `SimpleDateFormat` patterns or a time
 //! zone name on is unported.
 
-use crate::formats::java_time::{CalendarFields, TimeZone};
 use crate::formats::Unported;
+use crate::java::time::{CalendarFields, TimeZone};
 
 const MILLIS_PER_MINUTE: i64 = 60_000;
 const MILLIS_PER_HOUR: i64 = 60 * MILLIS_PER_MINUTE;
@@ -78,7 +78,7 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        _ if crate::formats::java_time::civil::is_leap_year(year) => 29,
+        _ if crate::java::time::civil::is_leap_year(year) => 29,
         _ => 28,
     }
 }
@@ -98,7 +98,7 @@ pub(crate) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
 
 /// [`to_calendar`], with the offset of the zone the date gives, UTC where it gives none.
 pub(crate) fn to_zoned(text: &str) -> Result<Option<Zoned>, Unported> {
-    if crate::formats::java::trim(text).is_empty() {
+    if crate::java::trim(text).is_empty() {
         return Ok(None);
     }
     let chars: Vec<char> = text.chars().collect();
@@ -108,7 +108,7 @@ pub(crate) fn to_zoned(text: &str) -> Result<Option<Zoned>, Unported> {
     };
     cursor.skip_optionals(" ");
     cursor.skip("D:");
-    if crate::formats::java::trim(text) == "D:" {
+    if crate::java::trim(text) == "D:" {
         return Ok(None);
     }
     cursor.skip_optionals(" ");
@@ -210,7 +210,7 @@ fn time_zone(cursor: &mut Cursor) -> Result<Option<i64>, Unported> {
         return Ok(Some(0));
     }
     let rest: String = cursor.text[initial..].iter().collect();
-    if crate::formats::java::trim(&rest).is_empty() {
+    if crate::java::trim(&rest).is_empty() {
         cursor.index = initial;
         return Ok(None);
     }
@@ -222,7 +222,7 @@ fn time_zone(cursor: &mut Cursor) -> Result<Option<i64>, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::java_time::format_instant;
+    use crate::java::time::format_instant;
 
     fn formatted(text: &str) -> Option<String> {
         to_calendar(text).unwrap().map(format_instant)

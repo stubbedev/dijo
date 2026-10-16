@@ -3,8 +3,8 @@
 //! metadata parsers, such as `DcXMLParser` and `OpenDocumentMetaParser`, tee their events to one
 //! for each Dublin Core element they read.
 
-use crate::formats::java;
 use crate::formats::metadata::TikaMetadata;
+use crate::java;
 
 /// The Dublin Core namespace.
 pub(crate) const DUBLIN_CORE_NS: &str = "http://purl.org/dc/elements/1.1/";

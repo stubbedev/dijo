@@ -9,13 +9,13 @@ use std::collections::HashMap;
 use crate::compress::zip::file::ZipFile;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::handlers::is_blank;
-use crate::formats::java::strip;
 use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::is_blank;
+use crate::java::strip;
 
 const CONTAINER: &str = "META-INF/container.xml";
 const FURNITURE: [&str; 3] = ["header", "footer", "masterPage"];
@@ -321,6 +321,11 @@ pub(crate) struct HwpxParser;
 impl Parser for HwpxParser {
     fn name(&self) -> &'static str {
         "extractous::HwpxParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.HwpxParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

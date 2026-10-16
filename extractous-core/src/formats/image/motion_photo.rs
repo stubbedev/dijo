@@ -2,7 +2,7 @@
 //! declares by its length (`Container:Directory`) or its offset from the end (`MicroVideo`),
 //! typed by its content and parsed as an embedded document.
 
-use crate::formats::embedded::{RESOURCE_NAME, RESOURCE_TYPE};
+use crate::formats::embedded::{ResourceType, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Unported;
 use crate::mime::{self, Origin};
@@ -28,8 +28,20 @@ struct Declaration {
     mime: Option<String>,
 }
 
+/// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type a
+/// name normalizes to, of its base type when it has parameters, or nothing.
+fn extension_for(name: &str) -> &'static str {
+    let Some(media_type) = mime::MediaType::parse(name) else {
+        return "";
+    };
+    match mime::extension(&media_type) {
+        "" if media_type.has_parameters() => mime::extension(&media_type.base_type()),
+        extension => extension,
+    }
+}
+
 fn positive_long(value: Option<&str>) -> Option<i64> {
-    crate::formats::java::parse_long(crate::formats::java::trim(value?)).filter(|value| *value > 0)
+    crate::java::parse_long(crate::java::trim(value?)).filter(|value| *value > 0)
 }
 
 fn declaration(metadata: &TikaMetadata) -> Option<Declaration> {
@@ -97,7 +109,7 @@ pub(crate) fn trailer(metadata: &TikaMetadata, input: &[u8]) -> Result<Option<Tr
         .is_some_and(|mime| !mime.starts_with(&format!("{}/", detected.kind())));
     let extension = match &declared.mime {
         None => "",
-        Some(mime) => mime::mime_types().extension(if from_detection {
+        Some(mime) => extension_for(if from_detection {
             detected.as_str()
         } else {
             mime
@@ -110,9 +122,21 @@ pub(crate) fn trailer(metadata: &TikaMetadata, input: &[u8]) -> Result<Option<Tr
     }
     trailer.set("Content-Type", detected.as_str());
     trailer.set("Content-Length", declared.length.to_string());
-    trailer.set(RESOURCE_TYPE, "ATTACHMENT");
+    ResourceType::Attachment.set(&mut trailer);
     Ok(Some(Trailer {
         start,
         metadata: trailer,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn names_the_extensions_of_types_as_tika_does() {
+        assert_eq!(super::extension_for("video/mp4"), ".mp4");
+        assert_eq!(super::extension_for("image/jpeg"), ".jpg");
+        assert_eq!(super::extension_for("text/plain; charset=UTF-8"), ".txt");
+        assert_eq!(super::extension_for("application/x-no-such-type"), "");
+        assert_eq!(super::extension_for("not a type"), "");
+    }
 }

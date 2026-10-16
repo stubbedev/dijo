@@ -6,13 +6,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use super::java::{self, JavaString};
 use super::java_regex::{Anchor, JavaRegex};
 use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
 use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
 use super::uri;
+use crate::java::{self, JavaString};
 use crate::xml::{self, Attribute, Event, Flow, XmlError};
 
 const TIKA_MIMETYPES: &str = include_str!("../../models/tika-mimetypes.xml");
@@ -29,7 +29,7 @@ struct MimeType {
     media_type: MediaType,
     interpreted: bool,
     root_xml: Vec<(String, String)>,
-    /// The extensions of its `*.ext` globs, in their order, as `MimeType.addExtension` keeps them.
+    /// The extensions of its extension patterns, with their dots, in the order they were read.
     extensions: Vec<String>,
 }
 
@@ -235,9 +235,10 @@ impl MimeTypes {
             "glob" => {
                 if let Some(pattern) = attribute(attributes, "pattern") {
                     let regex = attribute(attributes, "isregex") == Some("true");
-                    self.patterns
-                        .add(pattern, regex, current, &self.types, &self.registry)?;
-                    if let Some(extension) = (!regex).then(|| glob_extension(pattern)).flatten() {
+                    let extension =
+                        self.patterns
+                            .add(pattern, regex, current, &self.types, &self.registry)?;
+                    if let Some(extension) = extension {
                         let extensions = &mut self.types[current].extensions;
                         if !extensions.iter().any(|known| known == extension) {
                             extensions.push(extension.to_owned());
@@ -357,20 +358,12 @@ impl MimeTypes {
         &self.registry
     }
 
-    /// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type
-    /// a name normalizes to, of its base type when it has parameters, or nothing.
-    pub(crate) fn extension(&self, name: &str) -> &str {
-        let Some(media_type) = MediaType::parse(name) else {
-            return "";
-        };
-        let normalized = self.registry.normalize(&media_type);
-        let id = self.by_type.get(&normalized).copied().or_else(|| {
-            normalized
-                .has_parameters()
-                .then(|| self.by_type.get(&normalized.base_type()).copied())
-                .flatten()
-        });
-        id.and_then(|id| self.types[id].extensions.first())
+    /// `forName(type).getExtension()`: the first extension of the type a name normalizes to,
+    /// with its dot, or nothing for a type without one or one `forName` would make anew.
+    pub(crate) fn extension(&self, media_type: &MediaType) -> &str {
+        self.by_type
+            .get(&self.registry.normalize(media_type))
+            .and_then(|&id| self.types[id].extensions.first())
             .map_or("", String::as_str)
     }
 
@@ -447,30 +440,45 @@ impl MimeTypes {
     }
 
     /// `MimeTypes.detect`: the magic of `prefix`, the first [`MIN_LENGTH`] bytes of a
-    /// document, refined by the type its resource name implies.
-    pub(crate) fn detect(&self, prefix: &[u8], resource_name: Option<&str>) -> MediaType {
-        let mut possible = self.by_magic(prefix);
+    /// document, refined by the type its resource name implies, then by the `Content-Type` its
+    /// metadata names.
+    pub(crate) fn detect(
+        &self,
+        prefix: &[u8],
+        resource_name: Option<&str>,
+        content_type: Option<&str>,
+    ) -> MediaType {
+        let mut possible: Vec<MediaType> = self
+            .by_magic(prefix)
+            .into_iter()
+            .map(|id| self.media_type(id).clone())
+            .collect();
         if let Some(hint) = resource_name.and_then(uri::name_hint) {
             let hinted = self.by_name(&hint.name);
             if !(hint.http && self.types[hinted].interpreted) {
-                possible = self.apply_hint(possible, hinted);
+                possible = self.apply_hint(possible, self.media_type(hinted));
             }
         }
-        self.media_type(possible[0]).clone()
+        if let Some(hint) = content_type.and_then(MediaType::parse) {
+            let known = self.by_type.get(&self.registry.normalize(&hint));
+            let hint = known.map_or(hint, |&id| self.media_type(id).clone());
+            possible = self.apply_hint(possible, &hint);
+        }
+        possible.swap_remove(0)
     }
 
-    fn apply_hint(&self, possible: Vec<TypeId>, hint: TypeId) -> Vec<TypeId> {
+    /// `applyHint`: the hint alone when it is, or specializes, one of the possible types (a
+    /// text-based message never specializing plain text), else the possible types.
+    fn apply_hint(&self, possible: Vec<MediaType>, hint: &MediaType) -> Vec<MediaType> {
         let message = MediaType::named("text/x-tika-text-based-message");
-        let hint_type = self.media_type(hint);
-        for &id in &possible {
-            let kind = self.media_type(id);
-            if hint == id
-                || (self.registry.is_specialization_of(hint_type, kind)
+        let specializes = |kind: &MediaType| {
+            hint == kind
+                || (self.registry.is_specialization_of(hint, kind)
                     && !(kind.as_str() == "text/plain"
-                        && self.registry.is_specialization_of(hint_type, &message)))
-            {
-                return vec![hint];
-            }
+                        && self.registry.is_specialization_of(hint, &message)))
+        };
+        if possible.iter().any(specializes) {
+            return vec![hint.clone()];
         }
         possible
     }
@@ -511,8 +519,8 @@ struct GlobKey(JavaString);
 
 impl Ord for GlobKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        java::utf16_len(&other.0 .0)
-            .cmp(&java::utf16_len(&self.0 .0))
+        java::utf16_length(&other.0 .0)
+            .cmp(&java::utf16_length(&self.0 .0))
             .then_with(|| self.0.cmp(&other.0))
     }
 }
@@ -565,16 +573,18 @@ impl Patterns {
         }
     }
 
-    fn add(
+    /// `Patterns.add`: the extension of an extension pattern, which the type takes too.
+    fn add<'p>(
         &mut self,
-        pattern: &str,
+        pattern: &'p str,
         regex: bool,
         id: TypeId,
         types: &[MimeType],
         registry: &Registry,
-    ) -> Result<(), String> {
+    ) -> Result<Option<&'p str>, String> {
         if regex {
-            return self.add_glob(pattern.to_owned(), id, types, registry);
+            self.add_glob(pattern.to_owned(), id, types, registry)?;
+            return Ok(None);
         }
         let wild = |c: char| matches!(c, '*' | '?' | '[');
         if !pattern.contains(wild) {
@@ -587,7 +597,8 @@ impl Patterns {
             )? {
                 self.names.insert(pattern.to_owned(), id);
             }
-        } else if let Some(extension) = glob_extension(pattern) {
+        } else if pattern.starts_with('*') && !pattern[1..].contains(wild) {
+            let extension = &pattern[1..];
             if replaces(
                 self.extensions.get(extension).copied(),
                 id,
@@ -596,14 +607,15 @@ impl Patterns {
                 pattern,
             )? {
                 self.extensions.insert(extension.to_owned(), id);
-                let length = java::utf16_len(extension);
+                let length = java::utf16_length(extension);
                 self.min_extension = self.min_extension.min(length);
                 self.max_extension = self.max_extension.max(length);
             }
+            return Ok(Some(extension));
         } else {
             self.add_glob(compile_glob(pattern), id, types, registry)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     fn add_glob(
@@ -634,7 +646,7 @@ impl Patterns {
                 units += c.len_utf16();
                 suffixes.push((units, &name[index..]));
             }
-            let longest = self.max_extension.min(java::utf16_len(name));
+            let longest = self.max_extension.min(java::utf16_length(name));
             for (length, suffix) in suffixes.into_iter().rev() {
                 if length > longest || length < self.min_extension {
                     continue;
@@ -649,14 +661,6 @@ impl Patterns {
             .find(|(_, regex)| regex.is_match(name))
             .map(|(id, _)| *id)
     }
-}
-
-/// The extension of a glob `Patterns` keeps as one, `*.ext` without further wildcards.
-fn glob_extension(pattern: &str) -> Option<&str> {
-    let wild = |c: char| matches!(c, '*' | '?' | '[');
-    pattern
-        .strip_prefix('*')
-        .filter(|extension| !extension.contains(wild))
 }
 
 /// `Patterns.compile`: a glob as a Java regex.
@@ -682,7 +686,25 @@ mod tests {
     use super::*;
 
     fn detect(data: &[u8], name: Option<&str>) -> String {
-        mime_types().detect(data, name).to_string()
+        mime_types().detect(data, name, None).to_string()
+    }
+
+    #[test]
+    fn names_the_extension_of_a_type() {
+        let types = mime_types();
+        assert_eq!(
+            types.extension(&MediaType::named("application/pdf")),
+            ".pdf"
+        );
+        assert_eq!(
+            types.extension(&MediaType::named("application/msword")),
+            ".doc"
+        );
+        assert_eq!(types.extension(&MediaType::named("text/rtf")), ".rtf");
+        assert_eq!(
+            types.extension(&MediaType::named("application/x-unheard-of")),
+            ""
+        );
     }
 
     #[test]
@@ -754,16 +776,6 @@ mod tests {
             Some(("http://www.w3.org/2000/svg".to_owned(), "svg".to_owned()))
         );
         assert_eq!(root_element(b"<!-- \xE9 --><svg/>"), None);
-    }
-
-    #[test]
-    fn names_the_extensions_of_types_as_tika_does() {
-        let types = mime_types();
-        assert_eq!(types.extension("video/mp4"), ".mp4");
-        assert_eq!(types.extension("image/jpeg"), ".jpg");
-        assert_eq!(types.extension("text/plain; charset=UTF-8"), ".txt");
-        assert_eq!(types.extension("application/x-no-such-type"), "");
-        assert_eq!(types.extension("not a type"), "");
     }
 
     #[test]

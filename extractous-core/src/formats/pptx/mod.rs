@@ -16,14 +16,14 @@ use crate::formats::docx::notes::InlineParts;
 use crate::formats::docx::numbering::ListManager;
 use crate::formats::docx::text::{TextHandler, TextOptions};
 use crate::formats::docx::write_general_text_parts;
-use crate::formats::handlers::is_blank;
-use crate::formats::java::JavaHashMap;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::is_blank;
+use crate::java::JavaHashMap;
 
 /// Relationship types, as POI's `XSLFRelation` and Tika name them.
 mod kind {
@@ -103,6 +103,11 @@ pub(crate) struct PptxParser;
 impl Parser for PptxParser {
     fn name(&self) -> &'static str {
         "extractous::OOXMLParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

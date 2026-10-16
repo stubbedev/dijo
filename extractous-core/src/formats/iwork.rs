@@ -15,12 +15,12 @@ use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::compress::zip::Content;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
-use crate::formats::handlers::is_blank;
-use crate::formats::java::{parse_long, strip};
 use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
-use crate::mime::java::{is_line_terminator, JavaString};
+use crate::java::is_blank;
+use crate::java::{is_line_terminator, JavaString};
+use crate::java::{parse_long, strip};
 use crate::text::charset::Charset;
 
 const TYPES: [&str; 7] = [
@@ -428,6 +428,11 @@ pub(crate) struct IworkArchiveParser;
 impl Parser for IworkArchiveParser {
     fn name(&self) -> &'static str {
         "extractous::IworkArchiveParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.IworkArchiveParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

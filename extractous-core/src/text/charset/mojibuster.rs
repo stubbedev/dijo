@@ -131,7 +131,7 @@ fn iso2022_verified(probe: &[u8]) -> Option<Charset> {
             cjk += 1;
         }
     }
-    let units = decoded.encode_utf16().count();
+    let units = crate::java::utf16_length(&decoded);
     (cjk >= ISO2022_MIN_CJK && replacements as f64 <= units as f64 * ISO2022_MAX_REPLACEMENT_RATE)
         .then_some(charset)
 }

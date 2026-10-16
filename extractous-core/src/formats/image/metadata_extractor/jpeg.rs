@@ -182,7 +182,7 @@ pub(crate) fn read(segments: &Segments, metadata: &mut Metadata) -> Result<(), U
     }
     for segment in segments.of(APPE) {
         if segment.len() == 12
-            && crate::formats::java::equals_ignore_case(&java_string(&segment[..5], None), "Adobe")
+            && crate::java::equals_ignore_case(&java_string(&segment[..5], None), "Adobe")
         {
             read_adobe(segment, metadata);
         }

@@ -4,8 +4,8 @@
 
 use std::cmp::Ordering;
 
-use crate::formats::java::{is_digit, parse_int};
 use crate::formats::Failure;
+use crate::java::{is_digit, parse_int};
 
 fn invalid(what: &str, reference: &str) -> Failure {
     Failure::Malformed(format!(

@@ -6,9 +6,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::formats::java::{digit, parse_double};
-use crate::formats::java_time::{self, CalendarFields, TimeZone};
-use crate::formats::xlsx::format::date_format::SimpleDateFormat;
+use crate::java::simple_date_format::SimpleDateFormat;
+use crate::java::time::{self, CalendarFields, TimeZone};
+use crate::java::{digit, parse_double};
 
 /// The patterns `getDate` tries, in its order.
 const PATTERNS: [&str; 12] = [
@@ -149,7 +149,7 @@ impl Parsed {
 fn strict(parsed: Parsed, zone: &TimeZone) -> Option<i64> {
     let fields = parsed.calendar()?;
     let millis = fields.epoch_millis(zone);
-    let local = java_time::local_fields(millis, zone);
+    let local = time::local_fields(millis, zone);
     let matches = !local.before_christ
         && local.year == i64::from(fields.year)
         && local.month == i64::from(fields.month)
@@ -264,9 +264,9 @@ pub(crate) fn parse_text_date(text: &str, zone: &TimeZone) -> Option<i64> {
 pub(crate) fn parse_gps_date(date: &str, hours: i32, minutes: i32, seconds: f64) -> Option<i64> {
     let text = format!(
         "{date} {}:{}:{} UTC",
-        crate::formats::java_text::printf::integer(i64::from(hours), 2),
-        crate::formats::java_text::printf::integer(i64::from(minutes), 2),
-        crate::formats::java_text::printf::fixed(seconds, 2, 3, true)
+        crate::formats::data_format::printf::integer(i64::from(hours), 2),
+        crate::formats::data_format::printf::integer(i64::from(minutes), 2),
+        crate::formats::data_format::printf::fixed(seconds, 2, 3, true)
     );
     let parts = compile("yyyy:MM:dd HH:mm:ss.S");
     let parsed = parse_fields(&text, &parts)?;
@@ -314,7 +314,7 @@ pub(crate) fn describe_date(millis: i64, zone: &TimeZone) -> String {
 /// `Date.toString` as the native image writes it: `EEE MMM dd HH:mm:ss`, the zone named by its
 /// offset (`+02:00`), and the year.
 pub(crate) fn date_to_string(millis: i64, zone: &TimeZone) -> String {
-    let local = java_time::local_fields(millis, zone);
+    let local = time::local_fields(millis, zone);
     let text = SimpleDateFormat::new("EEE MMM dd HH:mm:ss Z")
         .expect("the Date.toString pattern compiles")
         .format(millis, zone)

@@ -8,23 +8,28 @@
 //! keeps the last cell value it was given.
 
 mod cell_format;
-pub(crate) mod date_format;
+mod date_format;
+pub(crate) mod decimal;
+pub(crate) mod decimal_format;
 mod fraction;
 mod number_text;
+pub(crate) mod printf;
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
-use crate::formats::java::trim;
-use crate::formats::java_text::decimal::{BigDecimal, Rounding};
-use crate::formats::java_text::decimal_format::DecimalFormat;
-use crate::formats::java_text::dtoa::java_double_to_string;
-use crate::formats::java_time::TimeZone;
+use crate::java::dtoa::java_double_to_string;
+use crate::java::simple_date_format::Unported;
+use crate::java::time::TimeZone;
+use crate::java::{self, trim};
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
-use date_format::{is_a_date_format, is_valid_excel_date, java_date, ExcelStyleDateFormatter};
+pub(crate) use date_format::is_a_date_format;
+use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter};
+use decimal::{BigDecimal, Rounding};
+use decimal_format::DecimalFormat;
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.
@@ -40,6 +45,12 @@ pub(crate) enum FormatError {
     Thrown(String),
     /// Java writes what this port does not.
     Unported(&'static str),
+}
+
+impl From<Unported> for FormatError {
+    fn from(unported: Unported) -> Self {
+        FormatError::Unported(unported.0)
+    }
 }
 
 /// POI's `BuiltinFormats`, by index.
@@ -101,6 +112,15 @@ pub(crate) fn builtin_format(index: i32) -> Option<&'static str> {
     usize::try_from(index)
         .ok()
         .and_then(|index| BUILTIN_FORMATS.get(index).copied())
+}
+
+/// `NumberFormat.getInstance(Locale.US).format(value)`: grouped, with up to three fraction
+/// digits, rounded half even.
+pub(crate) fn default_number_format(value: f64) -> String {
+    static FORMAT: LazyLock<DecimalFormat> = LazyLock::new(|| {
+        DecimalFormat::new("#,##0.###", Rounding::HalfEven).expect("a valid pattern")
+    });
+    FORMAT.format_f64(value)
 }
 
 /// The format strings `updateLocale` gives their special formats.
@@ -525,7 +545,8 @@ enum Chosen {
     None,
 }
 
-/// `TikaExcelDataFormatter` for one document, with the formats it has made.
+/// `TikaExcelDataFormatter`, or POI's own `DataFormatter`, for one document, with the formats it
+/// has made.
 pub(crate) struct DataFormatter {
     zone: &'static TimeZone,
     formats: HashMap<String, Format>,
@@ -533,8 +554,19 @@ pub(crate) struct DataFormatter {
 }
 
 impl DataFormatter {
-    /// A formatter writing dates in `zone`, Java's default time zone.
+    /// `TikaExcelDataFormatter`, writing dates in `zone`, Java's default time zone.
     pub(crate) fn new(zone: &'static TimeZone) -> Self {
+        let mut formatter = Self::poi(zone);
+        for format in TIKA_GENERAL_FORMATS {
+            formatter
+                .formats
+                .insert(format.to_owned(), Format::General(General::Tika));
+        }
+        formatter
+    }
+
+    /// POI's `DataFormatter`, as `HSSFDataFormatter` makes it, writing dates in `zone`.
+    pub(crate) fn poi(zone: &'static TimeZone) -> Self {
         let mut formats = HashMap::new();
         for format in ZIP_FORMATS {
             formats.insert(format.to_owned(), Format::ZipPlusFour);
@@ -544,9 +576,6 @@ impl DataFormatter {
         }
         for format in SSN_FORMATS {
             formats.insert(format.to_owned(), Format::SocialSecurityNumber);
-        }
-        for format in TIKA_GENERAL_FORMATS {
-            formats.insert(format.to_owned(), Format::General(General::Tika));
         }
         Self {
             zone,
@@ -816,7 +845,7 @@ fn create_date_format(format: &str) -> Created {
 
 /// The fraction format `createFormat` makes of a format with a `#/` or `?/`.
 fn create_fraction_format(format: &str) -> Result<Format, FormatError> {
-    for chunk in java_split(format, ';') {
+    for chunk in java::split(format, ';') {
         let chunk = chunk.replace('?', "#");
         let chunk = FRACTION_STRIPPER.replace_all(&chunk, " ");
         let chunk = SPACES.replace_all(&chunk, " ");
@@ -831,18 +860,6 @@ fn create_fraction_format(format: &str) -> Result<Format, FormatError> {
         }
     }
     FractionFormat::new(DEFAULT_FRACTION_WHOLE_PART, DEFAULT_FRACTION_PART).map(Format::Fraction)
-}
-
-/// `String.split(separator)`: the pieces between the separators, trailing empty ones dropped.
-fn java_split(text: &str, separator: char) -> Vec<&str> {
-    let mut pieces: Vec<&str> = text.split(separator).collect();
-    while pieces.len() > 1 && pieces.last().is_some_and(|piece| piece.is_empty()) {
-        pieces.pop();
-    }
-    if pieces == [""] && !text.is_empty() {
-        pieces.clear();
-    }
-    pieces
 }
 
 /// `createNumberFormat`, the general format where the pattern does not compile.
@@ -912,7 +929,7 @@ fn clean_format_for_number(format: &str) -> Result<String, FormatError> {
 mod tests {
     use super::*;
 
-    const FORMATS: &[u8] = include_bytes!("../../../../tests/fixtures/xlsx/formats.tsv.gz");
+    const FORMATS: &[u8] = include_bytes!("../../../tests/fixtures/xlsx/formats.tsv.gz");
 
     fn unescape(field: &str) -> String {
         let mut text = String::new();
@@ -937,7 +954,7 @@ mod tests {
     fn formats_as_tika_excel_data_formatter_does() {
         use std::io::Read;
         static COPENHAGEN: LazyLock<TimeZone> =
-            LazyLock::new(|| crate::formats::java_time::tests::zone("Europe/Copenhagen"));
+            LazyLock::new(|| crate::java::time::tests::zone("Europe/Copenhagen"));
         let mut text = String::new();
         flate2::read::GzDecoder::new(FORMATS)
             .read_to_string(&mut text)

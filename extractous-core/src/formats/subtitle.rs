@@ -7,11 +7,11 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
-use crate::formats::handlers::is_blank;
-use crate::formats::java::strip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::java::is_blank;
+use crate::java::strip;
 use crate::mime::MediaType;
 
 const SUBSTATION_DIALOGUE: &str = "Dialogue:";
@@ -22,6 +22,11 @@ pub(crate) struct SubtitleParser;
 impl Parser for SubtitleParser {
     fn name(&self) -> &'static str {
         "extractous::SubtitleParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "ai.yobix.SubtitleParser"
     }
 
     fn media_types(&self) -> &'static [&'static str] {

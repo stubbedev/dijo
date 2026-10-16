@@ -12,7 +12,7 @@ use super::date::parse_date_lenient;
 use super::handler::person_and_email;
 use super::structured::{ContentDisposition, ContentType};
 use super::Unported;
-use crate::formats::java_time::format_instant;
+use crate::java::time::format_instant;
 use crate::text::charset::tests::base64;
 
 const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/mail/fields.tsv.gz");

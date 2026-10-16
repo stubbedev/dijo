@@ -7,8 +7,8 @@ use std::io::Read as _;
 use flate2::read::ZlibDecoder;
 
 use super::{creation_time, standard_tree, Eof, Node, Read, Stream};
-use crate::formats::java_text::dtoa::java_float_to_string;
 use crate::formats::Unported;
+use crate::java::dtoa::java_float_to_string;
 use crate::text::charset::Charset;
 
 const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];

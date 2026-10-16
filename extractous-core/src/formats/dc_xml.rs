@@ -29,6 +29,11 @@ impl Parser for DcXmlParser {
         "extractous::DcXMLParser"
     }
 
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.xml.DcXMLParser"
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &MEDIA_TYPES
     }
