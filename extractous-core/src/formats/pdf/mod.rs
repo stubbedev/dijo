@@ -380,8 +380,8 @@ mod tests {
     use super::*;
     use crate::config::{PdfOcrStrategy, TesseractOcrConfig};
     use crate::formats::parity::{
-        assert_same_as_tika_but_ocr, assert_same_as_tika_delegating,
-        assert_same_as_tika_delegating_with, conformance_corpus, documents, Scratch,
+        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
+        documents, Scratch,
     };
     use std::path::{Path, PathBuf};
 
@@ -459,27 +459,6 @@ mod tests {
                     .find(|path| path.is_file())
             })
             .collect()
-    }
-
-    /// Whether the native parser reads pages of the document at `path` by OCR under `configs`.
-    fn reads_pages_by_ocr(path: &Path, configs: &ParserConfigs) -> bool {
-        let input = std::fs::read(path).unwrap();
-        record(&input, &TikaMetadata::new(), configs).is_ok_and(|(_, page_ocr)| page_ocr.is_some())
-    }
-
-    /// Reads the pages Tika's path reads by OCR as it writes them, the OCR text aside, and
-    /// reads text where it reads text.
-    fn reads_pages_by_ocr_as_tikas_path_does(documents: &[PathBuf], configs: &ParserConfigs) {
-        assert!(ocr_runs(), "tesseract is not installed");
-        let texts =
-            assert_same_as_tika_but_ocr(&as_paths(documents), tika_name(), &DELEGATES, configs);
-        for (path, (tika, native)) in documents.iter().zip(texts) {
-            assert!(
-                tika.trim().is_empty() || !native.trim().is_empty(),
-                "{}: {tika:?} against {native:?}",
-                path.display()
-            );
-        }
     }
 
     fn deferral_of(path: &Path) -> String {
@@ -942,27 +921,16 @@ mod tests {
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, _) = documents(&PdfParser, &corpora());
-        let read_by_ocr = read_by_ocr();
-        let parsed: Vec<PathBuf> = parsed
-            .into_iter()
-            .filter(|path| {
-                !read_by_ocr
-                    .iter()
-                    .any(|read| read.file_name() == path.file_name())
-            })
-            .collect();
         assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
     }
 
     #[test]
-    fn reads_pages_by_ocr_as_tikas_path_does_by_default() {
-        reads_pages_by_ocr_as_tikas_path_does(&read_by_ocr(), &ParserConfigs::default());
-    }
-
-    #[test]
     fn reads_pages_by_ocr_as_tikas_path_does_as_the_command_line_sets_it() {
-        reads_pages_by_ocr_as_tikas_path_does(
-            &read_by_ocr(),
+        assert!(ocr_runs(), "tesseract is not installed");
+        assert_same_as_tika_delegating_with(
+            &as_paths(&read_by_ocr()),
+            tika_name(),
+            &DELEGATES,
             &ParserConfigs {
                 pdf: PdfParserConfig::new()
                     .set_ocr_strategy(PdfOcrStrategy::AUTO)
@@ -1016,19 +984,7 @@ mod tests {
         for path in &deferred {
             println!("deferred {}: {}", path.display(), deferral_of(path));
         }
-        let configs = ParserConfigs::default();
-        let (read, extracted): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-            .into_iter()
-            .partition(|path| reads_pages_by_ocr(path, &configs));
-        println!(
-            "{} parsed, {} of them with pages read by OCR, {} deferred",
-            extracted.len() + read.len(),
-            read.len(),
-            deferred.len()
-        );
-        assert_same_as_tika_delegating(&as_paths(&extracted), tika_name(), &DELEGATES);
-        if !read.is_empty() {
-            reads_pages_by_ocr_as_tikas_path_does(&read, &configs);
-        }
+        println!("{} parsed, {} deferred", parsed.len(), deferred.len());
+        assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
     }
 }

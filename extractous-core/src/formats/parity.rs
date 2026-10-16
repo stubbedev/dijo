@@ -15,6 +15,14 @@
 //! Java parser's. In a string extraction, the native path, which parses an embedded document
 //! whole, may go on to more parsers and failures than Tika's, which stops at the length limit;
 //! Tika's must lead the native ones.
+//!
+//! What OCR reads is not compared, the quality corpus scores it instead: the text in each div of
+//! class `ocr`, in the XHTML and where it stands in the plain text, and the values of the
+//! reports of how each image was read. The rest of a document OCR reads is compared exactly, in
+//! its streamed UTF-8 text and XHTML, and the native parser must read text in each div Tika's
+//! path reads text in. Its string extractions are not compared, since where the length limit
+//! cuts them depends on the length of what OCR reads, nor its other character sets, which OCR
+//! has no part in.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -275,11 +283,10 @@ fn without_frames(trace: &str) -> String {
         .collect()
 }
 
-/// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
-/// without their frames.
-fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
-    let decoded = match char_set {
-        CharSet::UTF_8 | CharSet::US_ASCII => String::from_utf8(text.clone()).ok(),
+/// Text written in `char_set`, decoded, unless it is not valid in it.
+fn decoded(text: &[u8], char_set: CharSet) -> Option<String> {
+    match char_set {
+        CharSet::UTF_8 | CharSet::US_ASCII => String::from_utf8(text.to_vec()).ok(),
         CharSet::UTF_16BE => {
             let (pairs, rest) = text.as_chunks::<2>();
             let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_be_bytes(pair)).collect();
@@ -287,8 +294,14 @@ fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
                 .then(|| String::from_utf16(&units).ok())
                 .flatten()
         }
-    };
-    let Some(decoded) = decoded.filter(|decoded| decoded.contains(WARNING_META)) else {
+    }
+}
+
+/// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
+/// without their frames.
+fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
+    let Some(decoded) = decoded(&text, char_set).filter(|decoded| decoded.contains(WARNING_META))
+    else {
         return text;
     };
     let mut kept = String::with_capacity(decoded.len());
@@ -444,84 +457,80 @@ pub(crate) fn assert_same_as_tika_delegating_with(
     compare(documents, configs, expected);
 }
 
-/// What OCR reads, which the two paths are not compared on: the text in each div of class
-/// `ocr`, and the report of how each image was read.
+/// Where a div of class `ocr` starts, the text OCR read in it following.
 const OCR_DIV: &str = "<div class=\"ocr\">";
+/// A div of class `ocr` OCR read nothing in.
+const EMPTY_OCR_DIV: &str = "<div class=\"ocr\" />";
 
-/// Asserts that the native parser of each document, which Tika's path parses with `tika_name`
-/// delegating to `delegates`, writes exactly the XHTML and the metadata Tika's path does under
-/// `configs`, but for what OCR reads: the text in each div of class `ocr`, which the quality
-/// corpus scores instead, and the values of the reports of how each image was read, compared by
-/// their count. Returns each document's OCR text, Tika's path's and the native parser's.
-pub(crate) fn assert_same_as_tika_but_ocr(
-    documents: &[&Path],
-    tika_name: &str,
-    delegates: &[(&str, &str)],
-    configs: &ParserConfigs,
-) -> Vec<(String, String)> {
-    let mut differences = Vec::new();
-    let mut texts = Vec::new();
-    for document in documents {
-        let path = document.to_str().unwrap();
-        let native_name = routed(path).parser.name();
-        let names = tika_names(native_name, tika_name, delegates);
-        let tika = tika_stream(path, configs, Output::Xml, CharSet::UTF_8);
-        let native = native_stream(path, configs, Output::Xml, CharSet::UTF_8)
-            .map(|native| comparable(as_tika(native, &names, CharSet::UTF_8), CharSet::UTF_8));
-        let (Ok(tika), Ok(native)) = (&tika, &native) else {
-            differences.push(format!(
-                "{path}:\n  tika   {}\n  native {}",
-                describe(&tika),
-                describe(&native)
-            ));
-            continue;
-        };
-        let (tika_masked, tika_text) = without_ocr(comparable(tika.clone(), CharSet::UTF_8));
-        let (native_masked, native_text) = without_ocr(native.clone());
-        if tika_masked != native_masked {
-            differences.push(format!(
-                "{path}:\n  tika   {}\n  native {}",
-                describe(&Ok(tika_masked)),
-                describe(&Ok(native_masked))
-            ));
-        }
-        texts.push((tika_text, native_text));
-    }
-    assert!(differences.is_empty(), "{}", differences.join("\n"));
-    texts
+/// The text OCR read in each div of class `ocr` of an XHTML extraction, in order.
+fn ocr_texts(xhtml: &str) -> Vec<String> {
+    let xhtml = xhtml.replace(EMPTY_OCR_DIV, "<div class=\"ocr\"></div>");
+    xhtml
+        .split(OCR_DIV)
+        .skip(1)
+        .map(|read| {
+            let text = &read[..read.find("</div>").unwrap_or(read.len())];
+            text.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+        })
+        .collect()
 }
 
-/// An XHTML extraction with the text of each div of class `ocr` left out, and the values of the
-/// OCR reports masked; and that text, its divs' joined.
-fn without_ocr(mut extracted: Extracted) -> (Extracted, String) {
-    let xhtml = String::from_utf8(extracted.text)
-        .expect("XHTML in UTF-8")
-        .replace("<div class=\"ocr\" />", "<div class=\"ocr\"></div>");
-    let mut masked = String::with_capacity(xhtml.len());
-    let mut read = String::new();
-    let mut rest = xhtml.as_str();
-    while let Some(start) = rest.find(OCR_DIV) {
-        let inside = start + OCR_DIV.len();
-        masked.push_str(&rest[..inside]);
-        let end = rest[inside..]
-            .find("</div>")
-            .map_or(rest.len(), |end| inside + end);
-        read.push_str(&rest[inside..end]);
-        read.push('\n');
-        rest = &rest[end..];
+/// The text OCR read in each div of class `ocr`, by Tika's path and by the native parser, as
+/// their streamed UTF-8 XHTML has it, when either read any.
+type OcrTexts = (Vec<String>, Vec<String>);
+
+/// An extraction in `output`, written in `char_set`, without what OCR read: the text in each
+/// div of class `ocr` of XHTML, the `texts` read where they stand in plain text, and the
+/// values of the reports of how each image was read.
+fn without_ocr(
+    mut extracted: Extracted,
+    output: Output,
+    char_set: CharSet,
+    texts: &[String],
+) -> Extracted {
+    let Some(text) = decoded(&extracted.text, char_set) else {
+        return extracted;
+    };
+    let mut kept = String::with_capacity(text.len());
+    match output {
+        Output::Xml => {
+            let text = text.replace(EMPTY_OCR_DIV, "<div class=\"ocr\"></div>");
+            let mut rest = text.as_str();
+            while let Some(start) = rest.find(OCR_DIV) {
+                let inside = start + OCR_DIV.len();
+                kept.push_str(&rest[..inside]);
+                rest = &rest[inside + rest[inside..].find("</div>").unwrap_or(0)..];
+            }
+            kept.push_str(rest);
+            let report = format!("<meta name=\"{}\" content=\"", crate::ocr::REPORT);
+            let unreported = std::mem::take(&mut kept);
+            let mut rest = unreported.as_str();
+            while let Some(start) = rest.find(&report) {
+                let inside = start + report.len();
+                kept.push_str(&rest[..inside]);
+                rest = &rest[inside..];
+                rest = &rest[rest.find('"').unwrap_or(rest.len())..];
+            }
+            kept.push_str(rest);
+        }
+        _ => {
+            let mut rest = text.as_str();
+            for read in texts.iter().filter(|read| !read.is_empty()) {
+                let mut written = Vec::new();
+                formats::encode(read, char_set, &mut written);
+                let written = decoded(&written, char_set).expect("text it encoded itself");
+                if let Some(at) = rest.find(&written) {
+                    kept.push_str(&rest[..at]);
+                    rest = &rest[at + written.len()..];
+                }
+            }
+            kept.push_str(rest);
+        }
     }
-    masked.push_str(rest);
-    let report = format!("<meta name=\"{}\" content=\"", crate::ocr::REPORT);
-    let mut unreported = String::with_capacity(masked.len());
-    let mut rest = masked.as_str();
-    while let Some(start) = rest.find(&report) {
-        let inside = start + report.len();
-        unreported.push_str(&rest[..inside]);
-        rest = &rest[inside..];
-        rest = &rest[rest.find('"').unwrap_or(rest.len())..];
-    }
-    unreported.push_str(rest);
-    extracted.text = unreported.into_bytes();
+    extracted.text = kept.into_bytes();
     for (name, values) in &mut extracted.metadata {
         if name == crate::ocr::REPORT {
             values
@@ -529,7 +538,7 @@ fn without_ocr(mut extracted: Extracted) -> (Extracted, String) {
                 .for_each(|value| *value = "<report>".to_owned());
         }
     }
-    (extracted, read)
+    extracted
 }
 
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
@@ -547,48 +556,101 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     for document in documents {
         let path = document.to_str().unwrap();
         let native_name = routed(path).parser.name();
-        for output in [Output::Text, Output::Xml] {
-            let mut comparisons = vec![(
-                "string",
-                CharSet::UTF_8,
-                tika_string(path, configs, output),
-                native_string(path, configs, output),
-            )];
-            for char_set in [CharSet::UTF_8, CharSet::US_ASCII, CharSet::UTF_16BE] {
-                comparisons.push((
-                    "stream",
-                    char_set,
-                    tika_stream(path, configs, output, char_set),
-                    native_stream(path, configs, output, char_set),
-                ));
-            }
-            for (entry, char_set, tika, native) in comparisons {
-                let as_expected = match (expected, &tika, &native) {
-                    (Expected::Same(naming), Ok(tika), Ok(native)) => {
-                        let names = tika_names(native_name, naming.tika_name, naming.delegates);
-                        let tika = comparable(tika.clone(), char_set);
-                        let native =
-                            comparable(as_tika(native.clone(), &names, char_set), char_set);
-                        if entry == "string" {
-                            tika == cut_to(native, &tika)
-                        } else {
-                            tika == native
-                        }
-                    }
-                    (Expected::Failure, Err(_), Err(_)) => true,
-                    _ => false,
-                };
-                if !as_expected {
+        let first = ("stream", Output::Xml, CharSet::UTF_8);
+        let mut comparisons = vec![extracted(path, configs, first)];
+        let ocr = read_by_ocr(&comparisons[0]);
+        let rest = match ocr {
+            Some(_) => vec![("stream", Output::Text, CharSet::UTF_8)],
+            None => [Output::Text, Output::Xml]
+                .into_iter()
+                .flat_map(|output| {
+                    [CharSet::UTF_8, CharSet::US_ASCII, CharSet::UTF_16BE]
+                        .map(|char_set| ("stream", output, char_set))
+                        .into_iter()
+                        .chain([("string", output, CharSet::UTF_8)])
+                })
+                .filter(|way| *way != first)
+                .collect(),
+        };
+        comparisons.extend(rest.into_iter().map(|way| extracted(path, configs, way)));
+        if let Some((tika, native)) = &ocr {
+            for (tika, native) in tika.iter().zip(native) {
+                if !tika.trim().is_empty() && native.trim().is_empty() {
                     differences.push(format!(
-                        "{path} ({entry}, {output:?}, {char_set}), expected {expected:?}:\n  tika   {}\n  native {}",
-                        describe(&tika),
-                        describe(&native),
+                        "{path}: the native parser's OCR read nothing where Tika's path read \
+                         {tika:?}"
                     ));
                 }
             }
         }
+        for (entry, output, char_set, tika, native) in comparisons {
+            let (tika, native) = match (expected, tika, native) {
+                (Expected::Same(naming), Ok(tika), Ok(native)) => {
+                    let names = tika_names(native_name, naming.tika_name, naming.delegates);
+                    let tika = comparable(tika, char_set);
+                    let native = comparable(as_tika(native, &names, char_set), char_set);
+                    let (tika, native) = match &ocr {
+                        Some((tika_read, native_read)) => (
+                            without_ocr(tika, output, char_set, tika_read),
+                            without_ocr(native, output, char_set, native_read),
+                        ),
+                        None if entry == "string" => {
+                            let native = cut_to(native, &tika);
+                            (tika, native)
+                        }
+                        None => (tika, native),
+                    };
+                    if tika == native {
+                        continue;
+                    }
+                    (Ok(tika), Ok(native))
+                }
+                (Expected::Failure, Err(_), Err(_)) => continue,
+                (_, tika, native) => (tika, native),
+            };
+            differences.push(format!(
+                "{path} ({entry}, {output:?}, {char_set}), expected {expected:?}:\n  tika   {}\n  native {}",
+                describe(&tika),
+                describe(&native),
+            ));
+        }
     }
     assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// One output of a document, Tika's path's and the native parser's.
+type Comparison = (&'static str, Output, CharSet, Outcome, Outcome);
+
+/// A document extracted both ways, as a string or a stream, in an output and a character set.
+fn extracted(
+    path: &str,
+    configs: &ParserConfigs,
+    (entry, output, char_set): (&'static str, Output, CharSet),
+) -> Comparison {
+    let (tika, native) = match entry {
+        "string" => (
+            tika_string(path, configs, output),
+            native_string(path, configs, output),
+        ),
+        _ => (
+            tika_stream(path, configs, output, char_set),
+            native_stream(path, configs, output, char_set),
+        ),
+    };
+    (entry, output, char_set, tika, native)
+}
+
+/// What OCR read in a document, by each path, as their streamed UTF-8 XHTML has it, when either
+/// read any.
+fn read_by_ocr(xhtml: &Comparison) -> Option<OcrTexts> {
+    let (_, _, _, Ok(tika), Ok(native)) = xhtml else {
+        return None;
+    };
+    let texts = |extracted: &Extracted| {
+        ocr_texts(std::str::from_utf8(&extracted.text).expect("XHTML in UTF-8"))
+    };
+    let (tika, native) = (texts(tika), texts(native));
+    (!tika.is_empty() || !native.is_empty()).then_some((tika, native))
 }
 
 /// Why `parser` defers the document at `path` to Tika, given the metadata the detection
