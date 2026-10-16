@@ -2,6 +2,7 @@
 //! `ToUnicode` maps of all fonts, read as FontBox reads them, and the predefined Identity maps.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::LazyLock;
 
 use super::cos::decode_java;
@@ -192,12 +193,43 @@ pub(super) struct CMap {
     min_cid_length: usize,
     max_cid_length: usize,
     codespace_ranges: Vec<CodespaceRange>,
-    one_byte: HashMap<u32, String>,
-    two_bytes: HashMap<u32, String>,
-    more_bytes: HashMap<u32, String>,
-    code_to_cid: HashMap<usize, HashMap<u32, u32>>,
+    one_byte: CodeMap<u32, String>,
+    two_bytes: CodeMap<u32, String>,
+    more_bytes: CodeMap<u32, String>,
+    code_to_cid: HashMap<usize, CodeMap<u32, u32>>,
     cid_ranges: Vec<CidRange>,
     space_mapping: i64,
+}
+
+/// A map keyed by character codes or CIDs, which are looked up glyph by glyph.
+pub(super) type CodeMap<K, V> = HashMap<K, V, BuildHasherDefault<CodeHasher>>;
+
+/// Fibonacci hashing of a character code: one multiplication, where SipHash's resistance to
+/// chosen keys buys nothing for codes a font defines.
+#[derive(Debug, Default)]
+pub(super) struct CodeHasher(u64);
+
+/// 2^64 divided by the golden ratio.
+const FIBONACCI: u64 = 0x9E37_79B9_7F4A_7C15;
+
+impl Hasher for CodeHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 << 8 | u64::from(byte)).wrapping_mul(FIBONACCI);
+        }
+    }
+
+    fn write_u32(&mut self, code: u32) {
+        self.0 = u64::from(code).wrapping_mul(FIBONACCI);
+    }
+
+    fn write_i32(&mut self, code: i32) {
+        self.write_u32(code as u32);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 impl CMap {
@@ -213,9 +245,9 @@ impl CMap {
             min_cid_length: 4,
             max_cid_length: 0,
             codespace_ranges: Vec::new(),
-            one_byte: HashMap::new(),
-            two_bytes: HashMap::new(),
-            more_bytes: HashMap::new(),
+            one_byte: CodeMap::default(),
+            two_bytes: CodeMap::default(),
+            more_bytes: CodeMap::default(),
             code_to_cid: HashMap::new(),
             cid_ranges: Vec::new(),
             space_mapping: -1,

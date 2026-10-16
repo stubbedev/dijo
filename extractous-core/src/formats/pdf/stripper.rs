@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
 use super::jfloat;
-use super::position::TextPosition;
+use super::position::{TextPosition, FIRST_RIGHT_TO_LEFT};
 use super::Unported;
 use crate::formats::xhtml::Stop;
 
@@ -471,7 +471,7 @@ static MIRRORING: LazyLock<HashMap<char, char>> = LazyLock::new(|| {
 /// characters mirrored, as `java.text.Bidi` orders them.
 fn handle_direction(word: &str) -> Result<String, Unported> {
     use unicode_bidi::{BidiInfo, Level};
-    if word.is_ascii() {
+    if word.chars().all(|c| c < FIRST_RIGHT_TO_LEFT) {
         return Ok(word.to_owned());
     }
     let info = BidiInfo::new(word, None);

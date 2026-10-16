@@ -450,7 +450,9 @@ pub(crate) fn assert_same_as_tika_but_ocr(
 /// An XHTML extraction with the text of each div of class `ocr` left out, and the values of the
 /// OCR reports masked; and that text, its divs' joined.
 fn without_ocr(mut extracted: Extracted) -> (Extracted, String) {
-    let xhtml = String::from_utf8(extracted.text).expect("XHTML in UTF-8");
+    let xhtml = String::from_utf8(extracted.text)
+        .expect("XHTML in UTF-8")
+        .replace("<div class=\"ocr\" />", "<div class=\"ocr\"></div>");
     let mut masked = String::with_capacity(xhtml.len());
     let mut read = String::new();
     let mut rest = xhtml.as_str();
@@ -667,6 +669,39 @@ struct Spooled {
     content: Vec<u8>,
 }
 
+/// The bytes a compound file (OLE2) starts with.
+const COMPOUND_FILE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+/// The files the native path spooled, with each embedded OLE storage that Tika's path spooled
+/// empty taken as Tika's: Tika hands `EmbeddedSpooler` the storage as an opened container, whose
+/// stream holds no bytes, while the native path writes the storage as a compound file, or
+/// nothing but a cut where the budget is spent.
+fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
+    native
+        .into_iter()
+        .enumerate()
+        .map(|(index, native)| match tika.get(index) {
+            Some(tika)
+                if tika.size == 0
+                    && !tika.truncated
+                    && tika.name == native.name
+                    && tika.content_type == native.content_type
+                    && tika.file == native.file
+                    && (native.content.starts_with(&COMPOUND_FILE_MAGIC)
+                        || (native.truncated && native.content.is_empty())) =>
+            {
+                Spooled {
+                    size: 0,
+                    truncated: false,
+                    content: Vec::new(),
+                    ..native
+                }
+            }
+            _ => native,
+        })
+        .collect()
+}
+
 fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> {
     embedded
         .into_iter()
@@ -765,7 +800,7 @@ pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> 
                     &names,
                     CharSet::UTF_8,
                 )),
-                spooled(native_embedded, native_spool.directory()),
+                as_tika_spools(spooled(native_embedded, native_spool.directory()), &tika.1),
             );
             if native == tika {
                 Ok(tika.1.len())

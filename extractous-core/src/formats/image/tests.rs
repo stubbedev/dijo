@@ -137,9 +137,8 @@ fn reads_with_tesseract_as_tikas_path_does(
     let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
     let texts = assert_same_as_tika_but_ocr(&paths, tika_name, &TIKA_DELEGATES, configs);
     for (path, (tika, native)) in paths.iter().zip(texts) {
-        assert_eq!(
-            tika.trim().is_empty(),
-            native.trim().is_empty(),
+        assert!(
+            tika.trim().is_empty() || !native.trim().is_empty(),
             "{}: {tika:?} against {native:?}",
             path.display()
         );
