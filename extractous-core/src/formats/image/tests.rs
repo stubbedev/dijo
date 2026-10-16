@@ -284,12 +284,36 @@ fn reads_local_webps_and_photoshop_images_as_tika_does() {
 
 #[test]
 fn reads_local_pngs_and_gifs_as_tika_does() {
-    let deferred = same_as_tika(
-        &ImageParser,
-        "org.apache.tika.parser.image.ImageParser",
-        &local_roots(),
-    );
+    let configs = skipping_ocr();
+    let (parsed, deferred) = documents_with(&ImageParser, &local_roots(), &configs);
     assert!(deferred.is_empty(), "{deferred:?}");
+    // jbig2-imageio gives Tika the JBIG2 scan's dimension node twice, its pixel size off (#120).
+    let (jbig2, paths): (Vec<&Path>, Vec<&Path>) = parsed
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|path| path.ends_with("prose-scan.jb2"));
+    assert_same_as_tika_delegating_with(
+        &paths,
+        "org.apache.tika.parser.image.ImageParser",
+        &TIKA_DELEGATES,
+        &configs,
+    );
+    let [jbig2] = jbig2[..] else {
+        panic!("{jbig2:?}");
+    };
+    let (_, metadata) = crate::Extractor::new()
+        .extract_file_to_string(jbig2.to_str().unwrap())
+        .unwrap();
+    for (key, value) in [
+        ("img:Dimension PixelAspectRatio", "1.0"),
+        ("img:Dimension ImageOrientation", "Normal"),
+    ] {
+        assert_eq!(
+            metadata.get(key).map(Vec::as_slice),
+            Some(&[value.to_owned()][..]),
+            "{key}"
+        );
+    }
 }
 
 #[test]

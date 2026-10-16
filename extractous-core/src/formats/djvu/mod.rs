@@ -14,8 +14,6 @@ mod render;
 mod tests;
 mod zp;
 
-use image::GrayImage;
-
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::image::enricher::OcrReader;
@@ -123,7 +121,9 @@ impl Parser for DjvuParser {
 }
 
 /// `readByOcr`: the page, counted from 1, rendered and read as Tika's path reads its rendering,
-/// a PGM file, which records the OCR parser among those the extraction ran.
+/// which records the OCR parser among those the extraction ran. The OCR limits on the size of
+/// an image's file are held to the rendering's grey pixels, as for a PDF page; our Java held
+/// them to the PGM file it wrote, header included (#120).
 fn read_by_ocr(
     document: &DjvuDocument,
     page: &Form,
@@ -134,7 +134,7 @@ fn read_by_ocr(
     xhtml.record_parser(PREPARING_OCR_PARSER);
     let image =
         render::page(document, page).map_err(|error| Failure::Malformed(error.message()))?;
-    let file_size = pgm_size(&image);
+    let file_size = u64::from(image.width()) * u64::from(image.height());
     reader.read(
         xhtml,
         Decoded::Single(image),
@@ -142,12 +142,6 @@ fn read_by_ocr(
         None,
         Some(number as u32),
     )
-}
-
-/// The size of the PGM file `DjvuRenderer.render` writes an image to.
-fn pgm_size(image: &GrayImage) -> u64 {
-    let header = format!("P5\n{} {}\n255\n", image.width(), image.height());
-    header.len() as u64 + u64::from(image.width()) * u64::from(image.height())
 }
 
 /// The text of a page's text layers, empty when it has none.
