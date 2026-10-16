@@ -16,6 +16,7 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::java::LINE_SEPARATOR;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::xhtml::{ContentHandler, Stop};
 use crate::formats::Failure;
 
 /// The class of the div an embedded document is written in.
@@ -296,6 +297,61 @@ pub(crate) enum Event {
     End(String),
     Characters(String),
     IgnorableWhitespace(String),
+}
+
+/// Records the SAX events of an embedded document's body a native parser writes, as our Java
+/// `EventRecorder` records those of a document Tika parses: past an `EmbeddedContentHandler`,
+/// which drops the start and end of the document, and with no prefix mappings.
+#[derive(Debug, Default)]
+pub(crate) struct Recorder {
+    events: Vec<Event>,
+}
+
+impl Recorder {
+    pub(crate) fn into_events(self) -> Vec<Event> {
+        self.events
+    }
+}
+
+impl ContentHandler for Recorder {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        self.events.push(Event::Start {
+            name: name.to_owned(),
+            attributes: attributes
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        });
+        Ok(())
+    }
+
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.events.push(Event::End(name.to_owned()));
+        Ok(())
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        self.events.push(Event::Characters(text.to_owned()));
+        Ok(())
+    }
+
+    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        self.events
+            .push(Event::IgnorableWhitespace(text.to_owned()));
+        Ok(())
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
 }
 
 /// The events `EventRecorder` encoded in `bytes`.

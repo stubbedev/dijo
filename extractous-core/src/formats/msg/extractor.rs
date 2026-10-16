@@ -18,7 +18,7 @@ use crate::formats::java::{equals_ignore_case, trim};
 use crate::formats::java_time::{format_instant, CalendarFields, TimeZone};
 use crate::formats::mail::decode_encoded_words;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{codepage_encoding, office_document, Embedded};
+use crate::formats::ole2::{codepage_encoding, office_document, Embedded, Handed};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, rtf, Failure, Prepared, Unported};
@@ -137,7 +137,7 @@ enum Body {
 pub(super) struct Extracted {
     message: Message,
     body: Body,
-    attachments: Vec<Embedded>,
+    attachments: Vec<Handed>,
 }
 
 /// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses.
@@ -152,7 +152,7 @@ pub(super) fn extract(
     let mut scratch = TikaMetadata::new();
     write_metadata(&message, &mut scratch).map_err(unported)?;
     let (body, content_ids) = body(&message, configs)?;
-    let attachments = attachments(file, &message, &content_ids)?;
+    let attachments = attachments(file, &message, &content_ids, configs)?;
     Ok(Extracted {
         message,
         body,
@@ -210,12 +210,8 @@ impl Extracted {
             }
             Body::None => {}
         }
-        for attachment in &self.attachments {
-            xhtml.parse_embedded(
-                &attachment.data,
-                &attachment.metadata,
-                Wrapping::PackageEntry,
-            )?;
+        for attachment in self.attachments {
+            attachment.write(xhtml, Wrapping::PackageEntry)?;
         }
         Ok(())
     }
@@ -710,7 +706,8 @@ fn attachments(
     file: &Ole2<'_>,
     message: &Message,
     content_ids: &HashSet<String>,
-) -> Result<Vec<Embedded>, Unported> {
+    configs: &ParserConfigs,
+) -> Result<Vec<Handed>, Unported> {
     let mut embedded = Vec::new();
     for attachment in &message.attachments {
         let mut metadata = attachment_metadata(file, attachment, content_ids);
@@ -735,10 +732,10 @@ fn attachments(
             if let Some(mime) = &mime {
                 metadata.set("Content-Type", mime.clone());
             }
-            embedded.push(Embedded {
+            embedded.push(Handed::Document(Embedded {
                 data: data.to_vec(),
                 metadata: metadata.clone(),
-            });
+            }));
         }
         let directory = group
             .all(property::ATTACH_DATA)
@@ -748,7 +745,8 @@ fn attachments(
             })
             .last();
         if let Some(directory) = directory {
-            if let Some(document) = office_document(file, directory, metadata, filename.as_deref())?
+            if let Some(document) =
+                office_document(file, directory, metadata, filename.as_deref(), configs)?
             {
                 embedded.push(document);
             }

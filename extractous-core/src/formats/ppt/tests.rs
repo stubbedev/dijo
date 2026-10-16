@@ -46,16 +46,18 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
 
 #[test]
 fn defers_macros_when_they_are_extracted() {
-    let config = OfficeParserConfig::new().set_extract_macros(true);
-    assert!(matches!(read(b"", &config), Err(Unported(reason)) if reason.contains("macros")));
+    let configs = ParserConfigs {
+        office: crate::config::OfficeParserConfig::new().set_extract_macros(true),
+        ..ParserConfigs::default()
+    };
+    assert!(matches!(read(b"", &configs), Err(Unported(reason)) if reason.contains("macros")));
 }
 
 #[test]
 fn defers_what_is_no_presentation() {
     let compound = crate::ole2::tests::compound(&["WordDocument"], b"");
-    let config = OfficeParserConfig::default();
     assert!(matches!(
-        read(&compound, &config),
+        read(&compound, &ParserConfigs::default()),
         Err(Unported(reason)) if reason.contains("no presentation")
     ));
 }

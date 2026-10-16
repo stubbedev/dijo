@@ -11,12 +11,12 @@ use super::fields::Part;
 use super::lists::ListManager;
 use super::pictures::{has_picture, Pictures};
 use super::range::{CharacterRun, Paragraph, Span};
-use crate::config::OfficeParserConfig;
+use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::{Wrapping, RESOURCE_NAME};
 use crate::formats::java::{parse_int, JavaHashMap};
 use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office_document, Embedded};
+use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::Unported;
 use crate::ole2::{EntryId, EntryKind, Ole2};
@@ -36,18 +36,18 @@ const HEADERS: [usize; 3] = [10, 6, 7];
 const FOOTERS: [usize; 3] = [11, 8, 9];
 
 /// What the extractor writes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) enum Out {
     Start(&'static str),
     StartWith(&'static str, Vec<(&'static str, String)>),
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Embedded, Wrapping),
+    Embedded(Handed, Wrapping),
 }
 
 /// The output of a document and the metadata of its features.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) struct Extracted {
     /// `extractSavedByMetadata`: the places it was saved to, set before its content.
     pub(super) save_locations: Vec<String>,
@@ -242,6 +242,7 @@ struct Extractor<'d> {
     file: &'d Ole2<'d>,
     root: EntryId,
     config: &'d OfficeParserConfig,
+    configs: &'d ParserConfigs,
     pictures: Pictures,
     formatting: Vec<Tag>,
     out: Vec<Out>,
@@ -252,8 +253,9 @@ pub(super) fn extract(
     document: &Document,
     file: &Ole2<'_>,
     root: EntryId,
-    config: &OfficeParserConfig,
+    configs: &ParserConfigs,
 ) -> Result<Extracted, Unported> {
+    let config = &configs.office;
     let save_locations = match &document.save_locations {
         None => Vec::new(),
         Some(locations) => locations
@@ -271,6 +273,7 @@ pub(super) fn extract(
         file,
         root,
         config,
+        configs,
         pictures,
         formatting: Vec::new(),
         out: Vec::new(),
@@ -747,8 +750,10 @@ impl Extractor<'_> {
             metadata.set(RESOURCE_NAME_EXTENSION_INFERRED, "true");
             metadata.set(RESOURCE_NAME, filename);
             metadata.set("Content-Type", kind.media_type());
-            self.out
-                .push(Out::Embedded(Embedded { data, metadata }, Wrapping::Bare));
+            self.out.push(Out::Embedded(
+                Handed::Document(Embedded { data, metadata }),
+                Wrapping::Bare,
+            ));
         }
         Ok(())
     }
@@ -770,7 +775,9 @@ impl Extractor<'_> {
             {
                 continue;
             }
-            if let Some(embedded) = office_document(self.file, entry, TikaMetadata::new(), None)? {
+            if let Some(embedded) =
+                office_document(self.file, entry, TikaMetadata::new(), None, self.configs)?
+            {
                 self.out
                     .push(Out::Embedded(embedded, Wrapping::PackageEntry));
             }

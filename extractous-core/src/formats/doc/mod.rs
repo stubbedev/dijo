@@ -28,7 +28,7 @@ mod text;
 use document::Document;
 use extractor::{extract, Extracted, Out};
 
-use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::config::ParserConfigs;
 use crate::formats::metadata::office::{
     COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
 };
@@ -60,8 +60,7 @@ impl Parser for DocParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, extracted) =
-            read(input, &configs.office).map_err(|Unported(reason)| reason)?;
+        let (summaries, extracted) = read(input, configs).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             write(extracted, xhtml)
@@ -71,7 +70,8 @@ impl Parser for DocParser {
 
 /// The summary information and what Tika's extractor makes of the Word document in a compound
 /// document.
-fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Extracted), Unported> {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Unported> {
+    let config = &configs.office;
     if config.extracts_macros() {
         return Err(Unported(
             "macros are extracted, which this port does not do".to_owned(),
@@ -92,7 +92,7 @@ fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Extract
         ));
     }
     let document = Document::read(&file, root)?;
-    let extracted = extract(&document, &file, root, config)?;
+    let extracted = extract(&document, &file, root, configs)?;
     Ok((Summaries::read(&file, root)?, extracted))
 }
 
@@ -116,9 +116,7 @@ fn write(extracted: Extracted, xhtml: &mut Xhtml) -> Result<(), Failure> {
             }
             Out::End(tag) => xhtml.end_element(tag)?,
             Out::Text(text) => xhtml.characters_utf16(&text)?,
-            Out::Embedded(embedded, wrapping) => {
-                xhtml.parse_embedded(&embedded.data, &embedded.metadata, wrapping)?
-            }
+            Out::Embedded(handed, wrapping) => handed.write(xhtml, wrapping)?,
         }
     }
     let metadata = xhtml.metadata_mut();

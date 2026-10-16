@@ -6,6 +6,7 @@
 use crate::formats::embedded::{
     self, EmbeddedRecord, Embedding, Event, ParseContext, Wrapping, PACKAGE_ENTRY,
 };
+use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
 use crate::isolate::isolate;
@@ -369,8 +370,31 @@ impl<'h> Xhtml<'h> {
         metadata: &TikaMetadata,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
+        self.parse_embedded_spooling(data, data, metadata, wrapping)
+    }
+
+    /// Parses a storage of a compound document embedded in this one, written as a compound
+    /// document of its own in `data`, as [`Xhtml::parse_embedded`] does but for what an
+    /// extraction that spools its embedded documents copies: nothing, as Tika hands the storage
+    /// on as an open container with a stream of no bytes (`TikaInputStream.getFromContainer`).
+    pub(crate) fn parse_embedded_container(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
+        self.parse_embedded_spooling(data, &[], metadata, wrapping)
+    }
+
+    fn parse_embedded_spooling(
+        &mut self,
+        data: &[u8],
+        spooled: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
         within_budget()?;
-        if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
+        if !embedded::is_parsed(metadata) || self.embedding.spool(spooled, metadata)? {
             return Ok(());
         }
         if wrapping == Wrapping::PackageEntry {
@@ -395,15 +419,68 @@ impl<'h> Xhtml<'h> {
         if let EmbeddedOutcome::Parsed { metadata, .. } = &parsed.outcome {
             self.embedding.absorb_parsers(metadata);
         }
+        self.write_embedded(embedded::decode(&parsed.events)?, wrapping, parsed.outcome)
+    }
+
+    /// Parses a storage of a compound document embedded in this one with a native parser, as
+    /// [`Xhtml::parse_embedded_container`] parses it with Tika: `write`, which `parser` runs,
+    /// writes the document from `metadata`, and its body goes into this one.
+    pub(crate) fn parse_container_natively(
+        &mut self,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        parser: &str,
+        write: impl FnOnce(&mut Xhtml) -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
+        within_budget()?;
+        if !embedded::is_parsed(metadata) || self.embedding.spool(&[], metadata)? {
+            return Ok(());
+        }
+        if wrapping == Wrapping::PackageEntry {
+            self.start_element_with("div", &[("class", PACKAGE_ENTRY)])?;
+            if let Some(name) = embedded::heading(metadata) {
+                self.start_element("h1")?;
+                self.characters_chunk(name)?;
+                self.end_element("h1")?;
+            }
+        }
+        let mut recorder = embedded::Recorder::default();
+        let (mut parsed, record, result) = {
+            let mut body = Body::new(&mut recorder);
+            Xhtml::write(&mut body, metadata.clone(), self.context(), write)
+        };
+        record.finish(&mut parsed, parser);
+        let parsed = parsed.to_map();
+        self.embedding.absorb_parsers(&parsed);
+        let outcome = match result {
+            Ok(()) => EmbeddedOutcome::Parsed {
+                metadata: parsed,
+                recorded_exception: None,
+            },
+            Err(Failure::Extraction(error)) => EmbeddedOutcome::Failed(error),
+            Err(failure) => return Err(failure),
+        };
+        self.write_embedded(recorder.into_events(), wrapping, outcome)
+    }
+
+    /// Writes the body of an embedded document, then takes in what its parse recorded and ends
+    /// its `package-entry` div; a parse that failed, or recorded failing, has the elements it
+    /// left open closed first.
+    fn write_embedded(
+        &mut self,
+        events: Vec<Event>,
+        wrapping: Wrapping,
+        outcome: EmbeddedOutcome,
+    ) -> Result<(), Failure> {
         let mut open = Vec::new();
-        if let Err(stop) = self.replay(embedded::decode(&parsed.events)?, &mut open) {
+        if let Err(stop) = self.replay(events, &mut open) {
             if wrapping == Wrapping::PackageEntry {
                 self.end_open(&mut open)?;
                 self.end_element("div")?;
             }
             return Err(stop.into());
         }
-        let (clean, failure) = match parsed.outcome {
+        let (clean, failure) = match outcome {
             EmbeddedOutcome::Parsed {
                 metadata,
                 recorded_exception,

@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::config::OfficeParserConfig;
+use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::{Wrapping, RELATIONSHIP_ID, RESOURCE_NAME};
 use crate::formats::handlers::is_blank;
 use crate::formats::metadata::office::{
@@ -13,7 +13,7 @@ use crate::formats::metadata::office::{
     RESOURCE_NAME_EXTENSION_INFERRED,
 };
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
-use crate::formats::ole2::{office_document, Embedded};
+use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::Unported;
 use crate::mime::{self, MediaType, Origin};
 use crate::ole2::{self, Ole2, Unreadable};
@@ -44,10 +44,10 @@ pub(super) enum Out {
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Embedded, Wrapping),
+    Embedded(Handed, Wrapping),
     /// An object of a shape, handed on bare by `handleDataStream`, which catches what its parse
     /// throws and records it.
-    Object(Embedded),
+    Object(Handed),
     /// A value added to the presentation's metadata.
     Add(&'static str, String),
     /// A value set in the presentation's metadata.
@@ -66,6 +66,7 @@ fn recorded(reason: &str) -> Unported {
 struct Extractor<'s, 'a> {
     show: &'s Show<'a>,
     config: &'s OfficeParserConfig,
+    configs: &'s ParserConfigs,
     out: Vec<Out>,
     authors: HashSet<String>,
     processed: HashSet<i32>,
@@ -78,11 +79,13 @@ pub(super) fn extract<'a>(
     show: &Show<'a>,
     objects: Vec<Object<'a>>,
     pictures: &Pictures,
-    config: &OfficeParserConfig,
+    configs: &ParserConfigs,
 ) -> Result<Vec<Out>, Unported> {
+    let config = &configs.office;
     let mut extractor = Extractor {
         show,
         config,
+        configs,
         out: Vec::new(),
         authors: HashSet::new(),
         processed: HashSet::new(),
@@ -530,7 +533,9 @@ impl<'s, 'a> Extractor<'s, 'a> {
         if media_type == MediaType::parse(COMP_OBJ).expect("a media type")
             || media_type == MediaType::named(MSOFFICE)
         {
-            if let Some(embedded) = embedded_office_document(&data, TikaMetadata::new(), id)? {
+            if let Some(embedded) =
+                embedded_office_document(&data, TikaMetadata::new(), id, self.configs)?
+            {
                 self.out.push(Out::Object(embedded));
             }
             return Ok(());
@@ -539,7 +544,8 @@ impl<'s, 'a> Extractor<'s, 'a> {
         metadata.set(RESOURCE_NAME, id);
         metadata.set(RELATIONSHIP_ID, id);
         metadata.set(CONTENT_TYPE, media_type.to_string());
-        self.out.push(Out::Object(Embedded { data, metadata }));
+        self.out
+            .push(Out::Object(Handed::Document(Embedded { data, metadata })));
         Ok(())
     }
 
@@ -567,8 +573,10 @@ impl<'s, 'a> Extractor<'s, 'a> {
             }
             metadata.set(RESOURCE_NAME, name);
             metadata.set(CONTENT_TYPE, media_type);
-            self.out
-                .push(Out::Embedded(Embedded { data, metadata }, Wrapping::Bare));
+            self.out.push(Out::Embedded(
+                Handed::Document(Embedded { data, metadata }),
+                Wrapping::Bare,
+            ));
         }
         Ok(())
     }
@@ -622,14 +630,16 @@ impl<'s, 'a> Extractor<'s, 'a> {
                 if file.children(file.root()).next().is_none() {
                     return Ok(());
                 }
-                if let Some(embedded) = embedded_office_document(&data, metadata, &name)? {
+                if let Some(embedded) =
+                    embedded_office_document(&data, metadata, &name, self.configs)?
+                {
                     self.out
                         .push(Out::Embedded(embedded, Wrapping::PackageEntry));
                 }
             } else if !data.is_empty() {
                 metadata.set(RESOURCE_NAME, name);
                 self.out.push(Out::Embedded(
-                    Embedded { data, metadata },
+                    Handed::Document(Embedded { data, metadata }),
                     Wrapping::PackageEntry,
                 ));
             }
@@ -645,13 +655,14 @@ fn embedded_office_document(
     data: &[u8],
     metadata: TikaMetadata,
     name: &str,
-) -> Result<Option<Embedded>, Unported> {
+    configs: &ParserConfigs,
+) -> Result<Option<Handed>, Unported> {
     let file = Ole2::open_stream(data).map_err(|Unreadable(reason)| {
         recorded(&format!(
             "POI cannot open an embedded compound document: {reason}"
         ))
     })?;
-    office_document(&file, file.root(), metadata, Some(name))
+    office_document(&file, file.root(), metadata, Some(name), configs)
 }
 
 /// The blip store picture shapes look their pictures up in, or none where the document has no

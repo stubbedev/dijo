@@ -19,7 +19,7 @@ mod text;
 
 use extractor::{extract, Out};
 
-use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::java::LINE_SEPARATOR;
 use crate::formats::metadata::TikaMetadata;
@@ -53,7 +53,7 @@ impl Parser for PptParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, out) = read(input, &configs.office).map_err(|Unported(reason)| reason)?;
+        let (summaries, out) = read(input, configs).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
@@ -64,8 +64,8 @@ impl Parser for PptParser {
 
 /// The summary information and what Tika's extractor makes of the presentation in a compound
 /// document.
-fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Vec<Out>), Unported> {
-    if config.extracts_macros() {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<Out>), Unported> {
+    if configs.office.extracts_macros() {
         return Err(Unported(
             "macros are extracted, which this port does not do".to_owned(),
         ));
@@ -90,7 +90,7 @@ fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Vec<Out
     let show = show::Show::new(&records)?;
     let pictures = pictures::read(&file, directory, &records)?;
     let objects = pictures::objects(&records);
-    let out = extract(&show, objects, &pictures, config)?;
+    let out = extract(&show, objects, &pictures, configs)?;
     Ok((summaries, out))
 }
 
@@ -111,15 +111,11 @@ fn write(out: Vec<Out>, xhtml: &mut Xhtml) -> Result<(), Failure> {
             }
             Out::End(tag) => xhtml.end_element(tag)?,
             Out::Text(text) => xhtml.characters_utf16(&text)?,
-            Out::Embedded(embedded, wrapping) => {
-                xhtml.parse_embedded(&embedded.data, &embedded.metadata, wrapping)?
-            }
-            Out::Object(embedded) => {
-                match xhtml.parse_embedded(&embedded.data, &embedded.metadata, Wrapping::Bare) {
-                    Err(Failure::Stopped(Stop::LimitReached)) => record_write_limit(xhtml),
-                    other => other?,
-                }
-            }
+            Out::Embedded(handed, wrapping) => handed.write(xhtml, wrapping)?,
+            Out::Object(handed) => match handed.write(xhtml, Wrapping::Bare) {
+                Err(Failure::Stopped(Stop::LimitReached)) => record_write_limit(xhtml),
+                other => other?,
+            },
             Out::Add(name, value) => xhtml.metadata_mut().add(name, value),
             Out::Set(name, value) => xhtml.metadata_mut().set(name, value),
         }
