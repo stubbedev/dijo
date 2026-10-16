@@ -12,7 +12,7 @@ use super::named;
 use super::properties::Value;
 use super::types::{property, Type};
 use crate::config::ParserConfigs;
-use crate::formats::embedded::{Wrapping, RESOURCE_NAME, RESOURCE_TYPE};
+use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
 use crate::formats::handlers::{is_blank, parse_inline};
 use crate::formats::java::{equals_ignore_case, trim};
 use crate::formats::java_time::{format_instant, CalendarFields, TimeZone};
@@ -810,7 +810,7 @@ fn attachment_metadata(
             || (flags.is_some_and(|flags| flags & RENDERED_IN_BODY != 0)
                 && metadata.get(name::ATTACH_MIME).is_some_and(is_inlineable));
         if inline {
-            metadata.set(RESOURCE_TYPE, "INLINE");
+            ResourceType::Inline.set(&mut metadata);
         }
     }
     metadata
