@@ -36,6 +36,7 @@ pub(crate) mod reference;
 mod rtf;
 mod subtitle;
 mod text;
+mod warc;
 pub(crate) mod xhtml;
 mod xlsx;
 pub(crate) mod xml;
@@ -190,6 +191,7 @@ static PARSERS: &[&dyn Parser] = &[
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &warc::WarcParser,
     &xlsx::XlsxParser,
 ];
 

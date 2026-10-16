@@ -297,20 +297,46 @@ fn parse_signed(text: &str, radix: i128, value: fn(char) -> Option<u32>) -> Opti
 /// `String.equalsIgnoreCase`: the same length, and each pair of characters the same, or the same
 /// once both are upper-cased, or once those are lower-cased, each by its one-character mapping.
 pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
-    fn upper(character: char) -> char {
-        single(character.to_uppercase()).unwrap_or(character)
-    }
-    fn lower(character: char) -> char {
-        single(character.to_lowercase()).unwrap_or(character)
-    }
-    fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
-        let first = mapped.next()?;
-        mapped.next().is_none().then_some(first)
-    }
     a.chars().count() == b.chars().count()
         && a.chars()
             .zip(b.chars())
             .all(|(x, y)| x == y || upper(x) == upper(y) || lower(upper(x)) == lower(upper(y)))
+}
+
+/// `String.CASE_INSENSITIVE_ORDER`: the first characters that differ once each is upper-cased
+/// and that lower-cased, by their one-character mappings, decide; else the shorter string comes
+/// first.
+pub(crate) fn compare_ignore_case(a: &str, b: &str) -> Ordering {
+    let mut left = a.chars();
+    let mut right = b.chars();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let (x, y) = (lower(upper(x)), lower(upper(y)));
+                if x != y {
+                    return x.cmp(&y);
+                }
+            }
+        }
+    }
+}
+
+/// `Character.toUpperCase` on a code point: its mapping where that is one character.
+fn upper(character: char) -> char {
+    single(character.to_uppercase()).unwrap_or(character)
+}
+
+/// `Character.toLowerCase` on a code point: its mapping where that is one character.
+fn lower(character: char) -> char {
+    single(character.to_lowercase()).unwrap_or(character)
+}
+
+fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
+    let first = mapped.next()?;
+    mapped.next().is_none().then_some(first)
 }
 
 /// `String.trim()`: without the characters up to U+0020 at either end.
@@ -576,6 +602,9 @@ mod tests {
         assert_eq!(parse_int("2147483648"), None);
         assert_eq!(parse_int("٣"), Some(3));
         assert_eq!(parse_int("𝟗"), None);
+        assert_eq!(parse_hex_long("-7fffffffffffffff"), Some(-i64::MAX));
+        assert_eq!(parse_hex_long("8000000000000000"), None);
+        assert_eq!(parse_hex_long("1F"), Some(31));
         assert_eq!(parse_int(" 1"), None);
         assert_eq!(parse_int("-"), None);
         assert_eq!(parse_long("9223372036854775807"), Some(i64::MAX));
@@ -601,6 +630,16 @@ mod tests {
         assert!(equals_ignore_case("rootfıle", "ROOTFILE"));
         assert!(!equals_ignore_case("item", "items"));
         assert!(!equals_ignore_case("straße", "STRASSE"));
+        assert_eq!(
+            compare_ignore_case("Content-Type", "content-type"),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_ignore_case("WARC-Date", "warc-type"),
+            Ordering::Less
+        );
+        assert_eq!(compare_ignore_case("_x", "a"), Ordering::Less);
+        assert_eq!(compare_ignore_case("ab", "A"), Ordering::Greater);
     }
 
     #[test]

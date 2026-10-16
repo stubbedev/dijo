@@ -434,6 +434,18 @@ impl<'h> Xhtml<'h> {
         metadata: &TikaMetadata,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
+        self.parse_embedded_opened(data, metadata, wrapping, Opened::WithMetadata)
+    }
+
+    /// [`Xhtml::parse_embedded`] of a document whose `TikaInputStream` the parser `opened` as
+    /// given.
+    pub(crate) fn parse_embedded_opened(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        opened: Opened,
+    ) -> Result<(), Failure> {
         within_budget()?;
         if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
             return Ok(());
@@ -448,7 +460,7 @@ impl<'h> Xhtml<'h> {
         }
         let mut open = Vec::new();
         let configs = self.embedding.context().configs();
-        let ended = match formats::route_embedded(data, metadata, Opened::WithMetadata, configs) {
+        let ended = match formats::route_embedded(data, metadata, opened, configs) {
             Some(route) => self.parse_natively(route, data, metadata, &mut open),
             None => self.parse_with_tika(data, metadata, &mut open),
         };
