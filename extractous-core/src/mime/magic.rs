@@ -1,7 +1,7 @@
 //! The magic of `tika-mimetypes.xml`: Tika's `MagicMatch` clauses, combined into `and`, `or`
 //! and `minShouldMatch` clauses, each evaluated as Tika's `MagicDetector` evaluates it.
 
-use std::cell::OnceCell;
+use std::cell::RefCell;
 
 use super::java_regex::JavaRegex;
 
@@ -11,54 +11,55 @@ pub(crate) mod parse;
 /// How far a regex clause reads past the start of each offset it tries.
 const REGEX_WINDOW: usize = 8 * 1024;
 
-/// How many bytes of the haystack are decoded first: as far as the regexes of the tables read,
-/// which start within the first 8 KiB.
-const DECODED_FIRST: usize = 2 * REGEX_WINDOW;
-
-/// How many bytes [`Latin1`] counts the bytes from 0x80 up in at a time.
+/// How many bytes [`Latin1`] decodes at a time, counting those from 0x80 up.
 const BLOCK: usize = 64;
 
 /// The bytes clauses are evaluated over, and the same bytes as ISO-8859-1 text, decoded once for
-/// every regex clause that reads them: the first [`DECODED_FIRST`] bytes, and all of them only
-/// when a region reaches past those.
+/// every regex clause that reads them, as far as the furthest region read yet.
 pub(crate) struct Haystack<'a> {
     bytes: &'a [u8],
-    first: OnceCell<Latin1>,
-    whole: OnceCell<Latin1>,
+    latin1: RefCell<Latin1>,
 }
 
-/// Bytes as the characters U+0000 to U+00FF, and how many of the bytes before each [`BLOCK`]
-/// encode as two UTF-8 bytes, which places each byte's character in the text.
+/// The first blocks of the bytes as the characters U+0000 to U+00FF, and how many of the bytes
+/// before each block encode as two UTF-8 bytes, which places each byte's character in the text.
+#[derive(Default)]
 struct Latin1 {
     text: String,
     wide_before: Vec<usize>,
+    wide: usize,
 }
 
 impl Latin1 {
-    fn decode(bytes: &[u8]) -> Latin1 {
-        let mut utf8 = Vec::with_capacity(2 * bytes.len());
-        let mut wide_before = Vec::with_capacity(bytes.len() / BLOCK + 1);
-        let mut wide = 0;
-        for block in bytes.chunks(BLOCK) {
-            wide_before.push(wide);
+    /// How many of the bytes are decoded.
+    fn decoded(&self, bytes: &[u8]) -> usize {
+        (self.wide_before.len() * BLOCK).min(bytes.len())
+    }
+
+    /// Decodes the blocks of `bytes` up to the one holding byte `end - 1`.
+    fn decode_to(&mut self, bytes: &[u8], end: usize) {
+        let from = self.decoded(bytes);
+        if end <= from {
+            return;
+        }
+        let to = end.div_ceil(BLOCK) * BLOCK;
+        let more = &bytes[from..to.min(bytes.len())];
+        self.text.reserve(2 * more.len());
+        for block in more.chunks(BLOCK) {
+            self.wide_before.push(self.wide);
             if block.is_ascii() {
-                utf8.extend_from_slice(block);
+                self.text
+                    .push_str(std::str::from_utf8(block).expect("ASCII is UTF-8"));
                 continue;
             }
             for &byte in block {
-                if byte < 0x80 {
-                    utf8.push(byte);
-                } else {
-                    utf8.extend_from_slice(&[0xC0 | byte >> 6, 0x80 | byte & 0x3F]);
-                    wide += 1;
-                }
+                self.text.push(char::from(byte));
+                self.wide += usize::from(byte >= 0x80);
             }
         }
-        let text = String::from_utf8(utf8).expect("Latin-1 encodes as UTF-8");
-        Latin1 { text, wide_before }
     }
 
-    /// Where the character of byte `index` of `bytes`, the bytes decoded, starts in the text.
+    /// Where the character of byte `index` of `bytes`, decoded up to there, starts in the text.
     fn offset(&self, bytes: &[u8], index: usize) -> usize {
         let block = index / BLOCK;
         let Some(&wide) = self.wide_before.get(block) else {
@@ -76,23 +77,16 @@ impl<'a> Haystack<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Haystack {
             bytes,
-            first: OnceCell::new(),
-            whole: OnceCell::new(),
+            latin1: RefCell::default(),
         }
     }
 
-    /// The bytes from `start` to `end` as ISO-8859-1 text.
-    fn text(&self, start: usize, end: usize) -> &str {
-        let (bytes, cell) = if end <= DECODED_FIRST {
-            (
-                &self.bytes[..self.bytes.len().min(DECODED_FIRST)],
-                &self.first,
-            )
-        } else {
-            (self.bytes, &self.whole)
-        };
-        let latin1 = cell.get_or_init(|| Latin1::decode(bytes));
-        &latin1.text[latin1.offset(bytes, start)..latin1.offset(bytes, end)]
+    /// `read` of the bytes from `start` to `end` as ISO-8859-1 text.
+    fn with_text<R>(&self, start: usize, end: usize, read: impl FnOnce(&str) -> R) -> R {
+        let mut latin1 = self.latin1.borrow_mut();
+        latin1.decode_to(self.bytes, end);
+        let text = &latin1.text[latin1.offset(self.bytes, start)..latin1.offset(self.bytes, end)];
+        read(text)
     }
 }
 
@@ -138,7 +132,7 @@ impl MagicMatch {
                     let region_end = (start + REGEX_WINDOW).min(buffer_end);
                     start < region_end
                         && regex.may_start_with(char::from(data[start]))
-                        && regex.is_match(haystack.text(start, region_end))
+                        && haystack.with_text(start, region_end, |text| regex.is_match(text))
                 })
             }
             Kind::Bytes | Kind::IgnoreCase => {
@@ -286,7 +280,7 @@ mod tests {
 
     #[test]
     fn decodes_any_region_as_latin1() {
-        let bytes: Vec<u8> = (0..3 * DECODED_FIRST + 17)
+        let bytes: Vec<u8> = (0..3 * REGEX_WINDOW + 17)
             .map(|i| match (i / 300) % 3 {
                 0 => b'a' + (i % 26) as u8,
                 _ => (i * 7 % 256) as u8,
@@ -300,16 +294,15 @@ mod tests {
             (0, 0),
             (0, 1),
             (63, 65),
-            (100, DECODED_FIRST),
-            (DECODED_FIRST - 1, DECODED_FIRST + 1),
+            (100, REGEX_WINDOW),
+            (10, 20),
+            (REGEX_WINDOW - 1, REGEX_WINDOW + 1),
             (5000, bytes.len()),
+            (64, 128),
             (bytes.len(), bytes.len()),
         ] {
-            assert_eq!(
-                haystack.text(start, end),
-                latin1(start, end),
-                "{start}..{end}"
-            );
+            let text = haystack.with_text(start, end, str::to_owned);
+            assert_eq!(text, latin1(start, end), "{start}..{end}");
         }
     }
 
