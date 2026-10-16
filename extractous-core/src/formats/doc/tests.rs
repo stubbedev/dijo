@@ -15,6 +15,60 @@ const ENCRYPTED: [(&str, &str); 2] = [
     ("tika-password.doc", "tika"),
 ];
 
+/// Tika's test documents this port reads otherwise than Tika does where Tika slips (#111), each
+/// with what the native XHTML holds where Tika's does not, or the comment persons in order.
+const DEPARTURES: [(&str, Departure); 3] = [
+    // A hyperlink whose text holds a page reference field ends with its own end mark.
+    (
+        "testControlCharacters.doc",
+        Departure::Holds(
+            "<a href=\"_Toc220727528\"><u>1.</u>\t<u>Introduzione</u><b>\t</b></a></p>",
+        ),
+    ),
+    // A hyperlink field whose code holds another field is paired.
+    (
+        "testWORD_2006ml.doc",
+        Departure::Holds("<p class=\"tOC_1\">3<a href=\"_Toc467647605\"><u>Heading1</u>\t</a></p>"),
+    ),
+    // The revision authors in the order the document lists them.
+    (
+        "testWORD_features.doc",
+        Departure::Persons(&["Unknown", "Unknown Author", "Kyle Reese"]),
+    ),
+];
+
+/// What a departure's native extraction holds.
+enum Departure {
+    Holds(&'static str),
+    Persons(&'static [&'static str]),
+}
+
+/// Of `documents`, those Tika's path extracts alike, after checking that each departure holds
+/// what it should.
+fn without_departures(documents: &[PathBuf]) -> Vec<PathBuf> {
+    let mut alike = Vec::new();
+    for document in documents {
+        let name = file_name(document);
+        let Some((_, departure)) = DEPARTURES.iter().find(|(departure, _)| *departure == name)
+        else {
+            alike.push(document.clone());
+            continue;
+        };
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(document.to_str().unwrap())
+            .unwrap();
+        match departure {
+            Departure::Holds(part) => assert!(xml.contains(part), "{name}: no {part:?} in\n{xml}"),
+            Departure::Persons(persons) => assert_eq!(
+                metadata["msoffice:comment-person-display-name"], *persons,
+                "{name}"
+            ),
+        }
+    }
+    alike
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
@@ -87,5 +141,7 @@ fn extracts_what_tikas_path_extracts_from_the_repositorys_documents() {
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
     assert_eq!(ported.len(), 42);
-    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+    let alike = without_departures(&ported);
+    assert_eq!(ported.len() - alike.len(), DEPARTURES.len());
+    assert_same_as_tika_with_passwords(&alike, TIKA_PARSER, &ENCRYPTED);
 }
