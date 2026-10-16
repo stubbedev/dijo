@@ -1,24 +1,22 @@
 //! Tika's `MimeTypes`: the media types of `tika-mimetypes.xml` and extractous's
 //! `custom-mimetypes.xml`, with their magic, names and XML roots, and the detection from a
-//! document's first 64 KiB and its resource name.
+//! document's first 64 KiB and its resource name. The tables are generated from the XML into
+//! static data, so a process reads none of it.
 
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::sync::OnceLock;
-
-use super::java_regex::{Anchor, JavaRegex, Text};
-use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
+use super::java_regex::JavaRegex;
+use super::magic::{Clause, Haystack};
 use super::media_type::MediaType;
 use super::registry::Registry;
+use super::sorted_get;
 use super::text;
 use super::uri;
-use crate::hash::FastMap;
-use crate::java::{self, JavaString};
-use crate::xml::{self, Attribute, Event, Flow, XmlError};
+use crate::java;
+use crate::xml::{self, Event, Flow, XmlError};
 
-const TIKA_MIMETYPES: &str = include_str!("../../models/tika-mimetypes.xml");
-const CUSTOM_MIMETYPES: &str =
-    include_str!("../../tika-native/src/main/resources/custom-mimetypes.xml");
+#[cfg(test)]
+mod load;
+#[rustfmt::skip]
+mod tables;
 
 /// `MimeTypes.getMinLength()`: how much of a document the magic sees.
 pub(crate) const MIN_LENGTH: usize = 64 * 1024;
@@ -26,12 +24,15 @@ pub(crate) const MIN_LENGTH: usize = 64 * 1024;
 /// A type `MimeTypes` knows, by its index.
 type TypeId = usize;
 
+#[derive(Debug, PartialEq)]
 struct MimeType {
-    media_type: MediaType,
+    /// The type's printed form.
+    name: &'static str,
     interpreted: bool,
-    root_xml: Vec<(String, String)>,
+    /// The namespaces and local names of its XML root elements.
+    root_xml: &'static [(&'static str, &'static str)],
     /// The extensions of its extension patterns, with their dots, in the order they were read.
-    extensions: Vec<String>,
+    extensions: &'static [&'static str],
 }
 
 impl MimeType {
@@ -39,355 +40,76 @@ impl MimeType {
     fn matches_xml(&self, namespace: &str, local: &str) -> bool {
         self.root_xml
             .iter()
-            .any(|(ns, name)| ns == namespace && name == local)
+            .any(|&(ns, name)| ns == namespace && name == local)
     }
 }
 
 /// A `<magic>` clause of a type, at its priority.
+#[derive(Debug, PartialEq)]
 struct Magic {
     type_id: TypeId,
     priority: i32,
     clause: Clause,
-    /// `Magic.toString()`.
-    string: String,
 }
 
-/// The default types, loaded once.
+/// The default types.
 pub(crate) fn mime_types() -> &'static MimeTypes {
-    static TYPES: OnceLock<MimeTypes> = OnceLock::new();
-    TYPES.get_or_init(|| {
-        MimeTypes::load(&[TIKA_MIMETYPES, CUSTOM_MIMETYPES])
-            .unwrap_or_else(|error| panic!("The media type tables do not load: {error}"))
-    })
+    &tables::MIME_TYPES
 }
 
+#[derive(Debug, PartialEq)]
 pub(crate) struct MimeTypes {
     registry: Registry,
-    types: Vec<MimeType>,
-    by_type: FastMap<MediaType, TypeId>,
-    magics: Vec<Magic>,
-    xmls: Vec<TypeId>,
+    types: &'static [MimeType],
+    /// Each type's printed form, and each name `forName` normalized to a type, with the type,
+    /// sorted.
+    by_type: &'static [(&'static str, TypeId)],
+    /// In `Magic.compareTo` order.
+    magics: &'static [Magic],
+    /// The types with XML root elements, in their order.
+    xmls: &'static [TypeId],
     patterns: Patterns,
     octet_stream: TypeId,
     text_plain: TypeId,
     text_html: TypeId,
 }
 
-/// The state of `MimeTypesReader` between elements.
-struct Reading {
-    current: Option<TypeId>,
-    priority: i32,
-    records: Vec<Record>,
-    magics: Vec<Magic>,
-    error: Option<String>,
-}
-
-/// `MimeTypesReader.ClauseRecord`: an open `<match>` and the clauses nested in it.
-struct Record {
-    clause: Option<Pending>,
-    subclauses: Vec<Clause>,
-}
-
-enum Pending {
-    Match(Box<MagicMatch>),
-    MinShouldMatch(usize),
-}
-
-fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
-    attributes
-        .iter()
-        .find(|a| a.qualified_name == name)
-        .map(|a| a.value.as_str())
-}
-
 impl MimeTypes {
-    fn new() -> MimeTypes {
-        let mut types = MimeTypes {
-            registry: Registry::default(),
-            types: Vec::new(),
-            by_type: FastMap::default(),
-            magics: Vec::new(),
-            xmls: Vec::new(),
-            patterns: Patterns::new(),
-            octet_stream: 0,
-            text_plain: 0,
-            text_html: 0,
-        };
-        types.octet_stream = types.add(MediaType::named("application/octet-stream"));
-        types.text_plain = types.add(MediaType::named("text/plain"));
-        types.add(MediaType::named("application/xml"));
-        types
-    }
-
-    fn add(&mut self, media_type: MediaType) -> TypeId {
-        let id = self.types.len();
-        self.registry.add_type(media_type.clone());
-        self.by_type.insert(media_type.clone(), id);
-        self.types.push(MimeType {
-            media_type,
-            interpreted: false,
-            root_xml: Vec::new(),
-            extensions: Vec::new(),
-        });
-        id
-    }
-
-    /// `MimeTypes.forName`: the type a name normalizes to, created if it is new.
-    fn for_name(&mut self, name: &str) -> Result<TypeId, String> {
-        let media_type =
-            MediaType::parse(name).ok_or_else(|| format!("invalid media type name {name}"))?;
-        let normalized = self.registry.normalize(&media_type);
-        if let Some(&id) = self.by_type.get(&normalized) {
-            return Ok(id);
-        }
-        let id = self.add(media_type);
-        self.by_type.entry(normalized).or_insert(id);
-        Ok(id)
-    }
-
-    fn load(documents: &[&str]) -> Result<MimeTypes, String> {
-        let mut types = MimeTypes::new();
-        let mut reading = Reading {
-            current: None,
-            priority: 50,
-            records: Vec::new(),
-            magics: Vec::new(),
-            error: None,
-        };
-        for document in documents {
-            let result = xml::parse(document.as_bytes(), &mut |event| {
-                let outcome = match event {
-                    Event::Start(name, attributes) => {
-                        types.start(&mut reading, name.qualified_name(), attributes)
-                    }
-                    Event::End(name) => types.end(&mut reading, name.qualified_name()),
-                    Event::Text(..)
-                    | Event::DocumentType
-                    | Event::Comment(_)
-                    | Event::ProcessingInstruction(..) => Ok(()),
-                };
-                match outcome {
-                    Ok(()) => Flow::Continue,
-                    Err(error) => {
-                        reading.error = Some(error);
-                        Flow::Stop
-                    }
-                }
-            });
-            if let Some(error) = reading.error.take() {
-                return Err(error);
-            }
-            result.map_err(|error| format!("{error:?}"))?;
-        }
-        let mut magics = reading.magics;
-        magics.sort_by(|a, b| types.compare_magics(a, b));
-        types.magics = magics;
-        types.xmls = (0..types.types.len())
-            .filter(|&id| !types.types[id].root_xml.is_empty())
-            .collect();
-        types
-            .xmls
-            .sort_by(|&a, &b| types.types[a].media_type.cmp(&types.types[b].media_type));
-        types.text_html = types.for_name("text/html")?;
-        Ok(types)
-    }
-
-    /// `Magic.compareTo`: higher priority first, then the longer pattern, then by type and
-    /// printed clause, both descending.
-    fn compare_magics(&self, a: &Magic, b: &Magic) -> Ordering {
-        b.priority
-            .cmp(&a.priority)
-            .then_with(|| b.clause.size().cmp(&a.clause.size()))
-            .then_with(|| {
-                self.types[b.type_id]
-                    .media_type
-                    .cmp(&self.types[a.type_id].media_type)
-            })
-            .then_with(|| java::compare(&b.string, &a.string))
-    }
-
-    fn start(
-        &mut self,
-        reading: &mut Reading,
-        element: &str,
-        attributes: &[Attribute],
-    ) -> Result<(), String> {
-        let Some(current) = reading.current else {
-            if element == "mime-type" {
-                let name = attribute(attributes, "type").ok_or("a mime-type without a type")?;
-                let id = self.for_name(name)?;
-                self.types[id].interpreted = attribute(attributes, "interpreted") == Some("true");
-                reading.current = Some(id);
-            }
-            return Ok(());
-        };
-        let media_type = self.types[current].media_type.clone();
-        match element {
-            "alias" => {
-                let alias = attribute(attributes, "type").ok_or("an alias without a type")?;
-                let alias =
-                    MediaType::parse(alias).ok_or_else(|| format!("invalid alias {alias}"))?;
-                self.registry.add_alias(media_type, alias);
-            }
-            "sub-class-of" => {
-                let parent =
-                    attribute(attributes, "type").ok_or("a sub-class-of without a type")?;
-                let parent = MediaType::parse(parent)
-                    .ok_or_else(|| format!("invalid supertype {parent}"))?;
-                self.registry.add_supertype(media_type, parent);
-            }
-            "glob" => {
-                if let Some(pattern) = attribute(attributes, "pattern") {
-                    let regex = attribute(attributes, "isregex") == Some("true");
-                    let extension =
-                        self.patterns
-                            .add(pattern, regex, current, &self.types, &self.registry)?;
-                    if let Some(extension) = extension {
-                        let extensions = &mut self.types[current].extensions;
-                        if !extensions.iter().any(|known| known == extension) {
-                            extensions.push(extension.to_owned());
-                        }
-                    }
-                }
-            }
-            "root-XML" => {
-                let namespace = attribute(attributes, "namespaceURI").unwrap_or("");
-                let local = attribute(attributes, "localName").unwrap_or("");
-                if namespace.is_empty() && local.is_empty() {
-                    return Err(format!("a root-XML of {media_type} names nothing"));
-                }
-                self.types[current]
-                    .root_xml
-                    .push((namespace.to_owned(), local.to_owned()));
-            }
-            "match" => {
-                let clause = match attribute(attributes, "minShouldMatch") {
-                    Some(min) => Pending::MinShouldMatch(
-                        min.parse()
-                            .map_err(|_| format!("invalid minShouldMatch {min}"))?,
-                    ),
-                    None => Pending::Match(Box::new(MagicMatch::parse(
-                        &media_type,
-                        &MatchAttributes {
-                            kind: attribute(attributes, "type"),
-                            offset: attribute(attributes, "offset"),
-                            value: attribute(attributes, "value"),
-                            mask: attribute(attributes, "mask"),
-                        },
-                    )?)),
-                };
-                reading.records.push(Record {
-                    clause: Some(clause),
-                    subclauses: Vec::new(),
-                });
-            }
-            "magic" => {
-                reading.priority = match attribute(attributes, "priority") {
-                    Some(value) if !value.is_empty() => value
-                        .parse()
-                        .map_err(|_| format!("invalid priority {value}"))?,
-                    _ => 50,
-                };
-                reading.records = vec![Record {
-                    clause: None,
-                    subclauses: Vec::new(),
-                }];
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn end(&mut self, reading: &mut Reading, element: &str) -> Result<(), String> {
-        let Some(current) = reading.current else {
-            return Ok(());
-        };
-        match element {
-            "mime-type" => reading.current = None,
-            "match" => {
-                let record = reading.records.pop().ok_or("a match outside a magic")?;
-                let clause = match record.clause {
-                    Some(Pending::MinShouldMatch(min)) => {
-                        if record.subclauses.is_empty() || min == 0 || min > record.subclauses.len()
-                        {
-                            return Err(format!(
-                                "minShouldMatch {min} of {} clauses",
-                                record.subclauses.len()
-                            ));
-                        }
-                        Clause::MinShouldMatch(min, record.subclauses)
-                    }
-                    Some(Pending::Match(magic)) => {
-                        let mut subclauses = record.subclauses;
-                        let magic = Clause::Match(magic);
-                        match subclauses.len() {
-                            0 => magic,
-                            1 => Clause::And(vec![magic, subclauses.remove(0)]),
-                            _ => Clause::And(vec![magic, Clause::Or(subclauses)]),
-                        }
-                    }
-                    None => return Err("a match closes its magic".to_owned()),
-                };
-                reading
-                    .records
-                    .last_mut()
-                    .ok_or("a match outside a magic")?
-                    .subclauses
-                    .push(clause);
-            }
-            "magic" => {
-                let record = reading.records.pop().ok_or("a magic closes twice")?;
-                if record.subclauses.is_empty() {
-                    return Err(format!(
-                        "a magic of {} has no match",
-                        self.types[current].media_type
-                    ));
-                }
-                for clause in record.subclauses {
-                    let string = format!("[{}/{clause}]", reading.priority);
-                    reading.magics.push(Magic {
-                        type_id: current,
-                        priority: reading.priority,
-                        clause,
-                        string,
-                    });
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     pub(crate) fn registry(&self) -> &Registry {
         &self.registry
     }
 
+    fn type_of(&self, media_type: &MediaType) -> Option<TypeId> {
+        sorted_get(self.by_type, media_type.as_str())
+    }
+
     /// `forName(type).getExtension()`: the first extension of the type a name normalizes to,
     /// with its dot, or nothing for a type without one or one `forName` would make anew.
-    pub(crate) fn extension(&self, media_type: &MediaType) -> &str {
-        self.by_type
-            .get(&self.registry.normalize(media_type))
-            .and_then(|&id| self.types[id].extensions.first())
-            .map_or("", String::as_str)
+    pub(crate) fn extension(&self, media_type: &MediaType) -> &'static str {
+        self.type_of(&self.registry.normalize(media_type))
+            .and_then(|id| self.types[id].extensions.first())
+            .copied()
+            .unwrap_or("")
     }
 
     /// `getRegisteredMimeType(type).getExtension()`: the first extension of the registered type
     /// a name normalizes to, else of its base type where it has parameters, with its dot, or
     /// nothing for a type that is not registered.
-    pub(crate) fn registered_extension(&self, media_type: &MediaType) -> &str {
+    pub(crate) fn registered_extension(&self, media_type: &MediaType) -> &'static str {
         let normalized = self.registry.normalize(media_type);
-        let id = self.by_type.get(&normalized).or_else(|| {
+        let id = self.type_of(&normalized).or_else(|| {
             normalized
                 .has_parameters()
-                .then(|| self.by_type.get(&normalized.base_type()))
+                .then(|| sorted_get(self.by_type, normalized.base_str()))
                 .flatten()
         });
-        id.and_then(|&id| self.types[id].extensions.first())
-            .map_or("", String::as_str)
+        id.and_then(|id| self.types[id].extensions.first())
+            .copied()
+            .unwrap_or("")
     }
 
-    fn media_type(&self, id: TypeId) -> &MediaType {
-        &self.types[id].media_type
+    fn media_type(&self, id: TypeId) -> MediaType {
+        MediaType::named(self.types[id].name)
     }
 
     /// `MimeTypes.getMimeType(byte[])`: the types the magic finds, highest priority first,
@@ -399,7 +121,7 @@ impl MimeTypes {
         let haystack = Haystack::new(data);
         let mut result = Vec::new();
         let mut current_priority = -1;
-        for magic in &self.magics {
+        for magic in self.magics {
             if current_priority > 0 && current_priority > magic.priority {
                 break;
             }
@@ -417,7 +139,7 @@ impl MimeTypes {
             return vec![detected];
         }
         for slot in &mut result {
-            let name = self.media_type(*slot).as_str();
+            let name = self.types[*slot].name;
             if name != "application/xml" && name != "text/html" {
                 continue;
             }
@@ -470,17 +192,17 @@ impl MimeTypes {
         let mut possible: Vec<MediaType> = self
             .by_magic(prefix)
             .into_iter()
-            .map(|id| self.media_type(id).clone())
+            .map(|id| self.media_type(id))
             .collect();
         if let Some(hint) = resource_name.and_then(uri::name_hint) {
             let hinted = self.by_name(&hint.name);
             if !(hint.http && self.types[hinted].interpreted) {
-                possible = self.apply_hint(possible, self.media_type(hinted));
+                possible = self.apply_hint(possible, &self.media_type(hinted));
             }
         }
         if let Some(hint) = content_type.and_then(MediaType::parse) {
-            let known = self.by_type.get(&self.registry.normalize(&hint));
-            let hint = known.map_or(hint, |&id| self.media_type(id).clone());
+            let known = self.type_of(&self.registry.normalize(&hint));
+            let hint = known.map_or(hint, |id| self.media_type(id));
             possible = self.apply_hint(possible, &hint);
         }
         possible.swap_remove(0)
@@ -532,130 +254,24 @@ fn root_element(data: &[u8]) -> Option<(String, String)> {
     }
 }
 
-/// A glob's place in `Patterns`: longer patterns first, then in Java's string order.
-#[derive(Debug, PartialEq, Eq)]
-struct GlobKey(JavaString);
-
-impl Ord for GlobKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        java::utf16_length(&other.0 .0)
-            .cmp(&java::utf16_length(&self.0 .0))
-            .then_with(|| self.0.cmp(&other.0))
-    }
-}
-
-impl PartialOrd for GlobKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 /// Tika's `Patterns`: exact names, extensions and globs.
+#[derive(Debug, PartialEq)]
 struct Patterns {
-    names: FastMap<String, TypeId>,
-    extensions: FastMap<String, TypeId>,
-    globs: BTreeMap<GlobKey, (TypeId, JavaRegex)>,
+    /// Sorted.
+    names: &'static [(&'static str, TypeId)],
+    /// Without their `*`, sorted.
+    extensions: &'static [(&'static str, TypeId)],
+    /// Longer patterns first, then in Java's string order.
+    globs: &'static [(TypeId, JavaRegex)],
+    /// The shortest and longest extension, in UTF-16 units.
     min_extension: usize,
     max_extension: usize,
 }
 
-/// Where a pattern goes when it is new or narrows the type it had, as `Patterns` decides: kept
-/// when the new type is the same or more general, a conflict otherwise.
-fn replaces(
-    previous: Option<TypeId>,
-    id: TypeId,
-    types: &[MimeType],
-    registry: &Registry,
-    pattern: &str,
-) -> Result<bool, String> {
-    let Some(previous) = previous else {
-        return Ok(true);
-    };
-    let (old, new) = (&types[previous].media_type, &types[id].media_type);
-    if registry.is_specialization_of(old, new) {
-        Ok(true)
-    } else if previous == id || registry.is_specialization_of(new, old) {
-        Ok(false)
-    } else {
-        Err(format!("the pattern {pattern} names both {old} and {new}"))
-    }
-}
-
 impl Patterns {
-    fn new() -> Patterns {
-        Patterns {
-            names: FastMap::default(),
-            extensions: FastMap::default(),
-            globs: BTreeMap::new(),
-            min_extension: usize::MAX,
-            max_extension: 0,
-        }
-    }
-
-    /// `Patterns.add`: the extension of an extension pattern, which the type takes too.
-    fn add<'p>(
-        &mut self,
-        pattern: &'p str,
-        regex: bool,
-        id: TypeId,
-        types: &[MimeType],
-        registry: &Registry,
-    ) -> Result<Option<&'p str>, String> {
-        if regex {
-            self.add_glob(pattern.to_owned(), id, types, registry)?;
-            return Ok(None);
-        }
-        let wild = |c: char| matches!(c, '*' | '?' | '[');
-        if !pattern.contains(wild) {
-            if replaces(
-                self.names.get(pattern).copied(),
-                id,
-                types,
-                registry,
-                pattern,
-            )? {
-                self.names.insert(pattern.to_owned(), id);
-            }
-        } else if pattern.starts_with('*') && !pattern[1..].contains(wild) {
-            let extension = &pattern[1..];
-            if replaces(
-                self.extensions.get(extension).copied(),
-                id,
-                types,
-                registry,
-                pattern,
-            )? {
-                self.extensions.insert(extension.to_owned(), id);
-                let length = java::utf16_length(extension);
-                self.min_extension = self.min_extension.min(length);
-                self.max_extension = self.max_extension.max(length);
-            }
-            return Ok(Some(extension));
-        } else {
-            self.add_glob(compile_glob(pattern), id, types, registry)?;
-        }
-        Ok(None)
-    }
-
-    fn add_glob(
-        &mut self,
-        glob: String,
-        id: TypeId,
-        types: &[MimeType],
-        registry: &Registry,
-    ) -> Result<(), String> {
-        let key = GlobKey(JavaString(glob));
-        let previous = self.globs.get(&key).map(|(previous, _)| *previous);
-        if replaces(previous, id, types, registry, &key.0 .0)? {
-            let regex = JavaRegex::compile(&key.0 .0, Anchor::Matches, Text::Unicode)?;
-            self.globs.insert(key, (id, regex));
-        }
-        Ok(())
-    }
-
     /// `Patterns.matches`.
     fn matches(&self, name: &str) -> Option<TypeId> {
-        if let Some(&id) = self.names.get(name) {
+        if let Some(id) = sorted_get(self.names, name) {
             return Some(id);
         }
         if !self.extensions.is_empty() {
@@ -670,34 +286,16 @@ impl Patterns {
                 if length > longest || length < self.min_extension {
                     continue;
                 }
-                if let Some(&id) = self.extensions.get(suffix) {
+                if let Some(id) = sorted_get(self.extensions, suffix) {
                     return Some(id);
                 }
             }
         }
         self.globs
-            .values()
+            .iter()
             .find(|(_, regex)| regex.is_match(name))
             .map(|(id, _)| *id)
     }
-}
-
-/// `Patterns.compile`: a glob as a Java regex.
-fn compile_glob(glob: &str) -> String {
-    let mut pattern = String::from("\\A");
-    for c in glob.chars() {
-        match c {
-            '?' => pattern.push('.'),
-            '*' => pattern.push_str(".*"),
-            c if "\\[]^.-$+(){}|".contains(c) => {
-                pattern.push('\\');
-                pattern.push(c);
-            }
-            c => pattern.push(c),
-        }
-    }
-    pattern.push_str("\\z");
-    pattern
 }
 
 #[cfg(test)]
@@ -727,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_the_tables() {
+    fn holds_the_tables() {
         let types = mime_types();
         assert!(types.types.len() > 1600, "{} types", types.types.len());
         assert!(types.magics.len() > 800, "{} magics", types.magics.len());
@@ -742,10 +340,10 @@ mod tests {
             regex.force();
             regexes += 1;
         };
-        for magic in &types.magics {
+        for magic in types.magics {
             magic.clause.for_each_regex(&mut force);
         }
-        for (_, regex) in types.patterns.globs.values() {
+        for (_, regex) in types.patterns.globs {
             force(regex);
         }
         assert!(regexes > 40, "{regexes} regexes");
@@ -812,10 +410,5 @@ mod tests {
             Some(("http://www.w3.org/2000/svg".to_owned(), "svg".to_owned()))
         );
         assert_eq!(root_element(b"<!-- \xE9 --><svg/>"), None);
-    }
-
-    #[test]
-    fn compiles_globs_as_tika_does() {
-        assert_eq!(compile_glob("i_*.txt"), "\\Ai_.*\\.txt\\z");
     }
 }

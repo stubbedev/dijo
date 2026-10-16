@@ -215,10 +215,15 @@ impl MediaType {
     /// The type without its parameters.
     pub(crate) fn base_type(&self) -> MediaType {
         if self.has_parameters() {
-            MediaType::named(&self.string[..self.semicolon])
+            MediaType::named(self.base_str())
         } else {
             self.clone()
         }
+    }
+
+    /// The printed form of [`MediaType::base_type`].
+    pub(crate) fn base_str(&self) -> &str {
+        &self.string[..self.semicolon]
     }
 }
 
