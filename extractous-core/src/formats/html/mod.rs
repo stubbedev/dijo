@@ -35,7 +35,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
 use crate::text::charset::{self, Charset, Detection};
 
 /// Tika's `JSoupParser`.
@@ -63,35 +63,43 @@ impl Parser for JSoupParser {
         &TYPES
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        if let Some(reason) = AutoDetectReader::defers(input) {
-            return Some(reason.to_owned());
-        }
-        match read(input, metadata.get("Content-Type")) {
-            Ok(document) => handler::deferral(&document.dom, metadata.get("tk:resource-name"))
-                .map(str::to_owned),
-            Err(_) => Some("the document cannot be decoded natively".to_owned()),
-        }
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare(input, metadata).map_err(Declined::Deferred)
     }
+}
 
-    /// Parses as `JSoupParser.parse`, which ends the document even when writing it fails.
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let previous = xhtml.metadata_mut().get("Content-Type").map(str::to_owned);
-        let document = read(input, previous.as_deref())?;
+/// What [`JSoupParser`] prepares of `input`, which holds nothing of it.
+pub(crate) fn prepare(
+    input: &[u8],
+    metadata: &TikaMetadata,
+) -> Result<Prepared<'static>, Deferral> {
+    if let Some(reason) = AutoDetectReader::defers(input) {
+        return Err(reason.to_owned());
+    }
+    let previous = metadata.get("Content-Type").map(str::to_owned);
+    let document = read(input, previous.as_deref())
+        .map_err(|_| "the document cannot be decoded natively".to_owned())?;
+    if let Some(reason) = handler::deferral(&document.dom, metadata.get("tk:resource-name")) {
+        return Err(reason.to_owned());
+    }
+    Ok(Box::new(move |xhtml| {
+        write(&document, previous.as_deref(), xhtml)
+    }))
+}
+
+/// Writes the document as `JSoupParser.parse` does, which ends the document even when writing
+/// it fails; `previous` is the `Content-Type` the metadata held before.
+fn write(document: &Document, previous: Option<&str>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    {
         let metadata = xhtml.metadata_mut();
         auto_detect_reader::set_metadata(&document.detection, metadata);
         let charset = document.detection.charset.name();
-        let kind = match previous.as_deref() {
+        let kind = match previous {
             None => Some(TYPES[0]),
             Some(previous) => TYPES
                 .iter()
@@ -102,12 +110,12 @@ impl Parser for JSoupParser {
             metadata.set("Content-Type", format!("{kind}; charset={charset}"));
         }
         metadata.set("Content-Encoding", charset);
-        let Err(stop) = handler::write(&document.dom, xhtml) else {
-            return Ok(());
-        };
-        xhtml.end_document()?;
-        Err(stop.into())
     }
+    let Err(stop) = handler::write(&document.dom, xhtml) else {
+        return Ok(());
+    };
+    xhtml.end_document()?;
+    Err(stop.into())
 }
 
 struct Document {

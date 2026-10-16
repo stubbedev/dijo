@@ -5,9 +5,8 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::strip;
 
 const MAX_HEADING_LEVEL: usize = 6;
@@ -30,17 +29,19 @@ impl Parser for FictionBookParser {
         &["application/x-fictionbook+xml"]
     }
 
-    fn parse(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let blocks = read_book(input, xhtml.metadata_mut())?;
-        for block in blocks {
-            xhtml.element(&block.element, &block.text)?;
-        }
-        Ok(())
+        input: &'a [u8],
+        _metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        Ok(Box::new(move |xhtml| {
+            let blocks = read_book(input, xhtml.metadata_mut())?;
+            for block in blocks {
+                xhtml.element(&block.element, &block.text)?;
+            }
+            Ok(())
+        }))
     }
 }
 

@@ -4,8 +4,7 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Parser, Prepared};
 
 /// Our Java `OpenPgpParser`.
 pub(crate) struct OpenPgpParser;
@@ -24,26 +23,15 @@ impl Parser for OpenPgpParser {
         &["application/pgp-encrypted"]
     }
 
-    fn fails_before_starting(
+    fn prepare<'a>(
         &self,
-        _input: &[u8],
+        _input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        Some(Error::Encrypted(
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        Err(Declined::Fails(Error::Encrypted(
             "OpenPGP-encrypted data; decrypting it needs the recipient's private key".to_owned(),
-        ))
-    }
-
-    fn parse(
-        &self,
-        _input: &[u8],
-        _configs: &ParserConfigs,
-        _xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        Err(Failure::Malformed(
-            "OpenPGP-encrypted data fails before the document starts".to_owned(),
-        ))
+        )))
     }
 }
 

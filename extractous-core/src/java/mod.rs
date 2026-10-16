@@ -14,7 +14,7 @@ pub(crate) mod time;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::unicode::decimal_digit;
+use crate::unicode::{decimal_digit, is_whitespace};
 
 /// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
 pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
@@ -252,8 +252,14 @@ pub(crate) fn url_decode(text: &str) -> Option<String> {
     Some(decoded)
 }
 
-/// `Integer.parseInt(text, 16)` for the two characters of an escape.
+/// `Integer.parseInt(text, 16)` for the two characters of an escape, which must not be negative.
 fn parse_hex(text: &str) -> Option<i32> {
+    parse_hex_int(text).filter(|&value| value >= 0)
+}
+
+/// `Integer.parseInt(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
+/// reads them, in range.
+pub(crate) fn parse_hex_int(text: &str) -> Option<i32> {
     let (negative, digits) = match text.chars().next()? {
         '-' => (true, &text[1..]),
         '+' => (false, &text[1..]),
@@ -262,11 +268,14 @@ fn parse_hex(text: &str) -> Option<i32> {
     if digits.is_empty() {
         return None;
     }
-    let magnitude = digits.chars().try_fold(0i32, |value, character| {
-        Some(value * 16 + i32::try_from(hex_digit(character)?).ok()?)
-    })?;
-    let value = if negative { -magnitude } else { magnitude };
-    (value >= 0).then_some(value)
+    let mut magnitude: i64 = 0;
+    for character in digits.chars() {
+        magnitude = magnitude * 16 + i64::from(hex_digit(character)?);
+        if magnitude > i64::from(i32::MAX) + 1 {
+            return None;
+        }
+    }
+    i32::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
 /// `Long.parseLong(text)`: an optional sign and decimal digits of any script, in range.
@@ -315,7 +324,7 @@ pub(crate) fn trim(text: &str) -> &str {
 
 /// `String.strip()`: without the whitespace `Character.isWhitespace` sees at either end.
 pub(crate) fn strip(text: &str) -> &str {
-    text.trim_matches(is_java_whitespace)
+    text.trim_matches(is_whitespace)
 }
 
 /// The double `Double.parseDouble(text)` gives, or `None` where it throws.
@@ -485,16 +494,9 @@ pub(crate) fn utf16_length(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
 
-/// Java's `Character.isWhitespace`.
-pub(crate) fn is_java_whitespace(character: char) -> bool {
-    matches!(character, '\t'..='\r' | '\u{1c}'..='\u{1f}')
-        || (character.is_whitespace()
-            && !matches!(character, '\u{a0}' | '\u{2007}' | '\u{202f}' | '\u{85}'))
-}
-
 /// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
 pub(crate) fn is_blank(text: &str) -> bool {
-    text.chars().all(is_java_whitespace)
+    text.chars().all(is_whitespace)
 }
 
 /// Whether Java's regex `\s` (without `UNICODE_CHARACTER_CLASS`) matches `c`.

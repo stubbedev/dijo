@@ -17,8 +17,7 @@ use crate::compress::zlib;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{self, Failure, Opened, Parser};
+use crate::formats::{self, Declined, Deferral, Failure, Opened, Parser, Prepared};
 use crate::mime::MediaType;
 
 /// The bytes `CmsParser` reads the content type from.
@@ -319,49 +318,72 @@ fn typed_as_signature(metadata: &TikaMetadata) -> bool {
 }
 
 /// What `CmsParser`, and the `Pkcs7Parser` it hands what it does not report itself, write for
-/// a document that is not encrypted.
-enum Plan {
-    /// An empty document, its `Content-Type` refined to the type given, if any.
-    Empty(Option<&'static str>),
-    /// The `Content-Type` refined to `content_type`, then the content parsed by the parser
-    /// Tika's `AutoDetectParser` would route it to, from the metadata it starts from, into the
-    /// same handler.
-    Content {
-        content_type: &'static str,
-        content: Vec<u8>,
-        parser: &'static dyn Parser,
-        start: TikaMetadata,
-    },
-}
-
-/// What happens to `input`, typed by `metadata`, or why Tika's path is left to read it.
-fn plan(input: &[u8], metadata: &TikaMetadata, configs: &ParserConfigs) -> Result<Plan, String> {
+/// `input`, typed by `metadata`, when it is not encrypted, or why Tika's path is left to read it.
+fn prepare_unencrypted<'a>(
+    input: &[u8],
+    metadata: &TikaMetadata,
+    configs: &'a ParserConfigs,
+) -> Result<Prepared<'a>, Deferral> {
     let unread = || "CMS data the port does not read as Bouncy Castle does".to_owned();
-    let content = |content_type: &'static str, content: Vec<u8>| {
-        formats::route_embedded(&content, &TikaMetadata::new(), Opened::Alone, configs)
-            .map(|(parser, start)| Plan::Content {
-                content_type,
-                content,
-                parser,
-                start,
-            })
-            .ok_or_else(|| "content Tika's path parses".to_owned())
-    };
     if typed_as_signature(metadata) {
         return match signed_content(input).ok_or_else(unread)? {
-            None => Ok(Plan::Empty(None)),
-            Some(signed) => content(SIGNED, signed),
+            None => Ok(empty(None)),
+            Some(signed) => with_content(SIGNED, signed, configs),
         };
     }
     match classify(input).map_err(str::to_owned)? {
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
-            Some(signed) => content(SIGNED, signed),
+            Some(signed) => with_content(SIGNED, signed, configs),
             None => Err("signed data whose kind Bouncy Castle tells by its signers".to_owned()),
         },
-        Some(COMPRESSED_DATA) => content(COMPRESSED, compressed_content(input).ok_or_else(unread)?),
-        Some(DIGESTED_DATA) => Ok(Plan::Empty(Some(DIGESTED))),
-        _ => Ok(Plan::Empty(None)),
+        Some(COMPRESSED_DATA) => with_content(
+            COMPRESSED,
+            compressed_content(input).ok_or_else(unread)?,
+            configs,
+        ),
+        Some(DIGESTED_DATA) => Ok(empty(Some(DIGESTED))),
+        _ => Ok(empty(None)),
     }
+}
+
+/// An empty document, its `Content-Type` refined to `content_type`, if any.
+fn empty<'a>(content_type: Option<&'static str>) -> Prepared<'a> {
+    Box::new(move |xhtml| {
+        if let Some(content_type) = content_type {
+            xhtml.metadata_mut().set("Content-Type", content_type);
+        }
+        Ok(())
+    })
+}
+
+/// The `Content-Type` refined to `content_type`, then `content` parsed by the parser Tika's
+/// `AutoDetectParser` routes it to, from the metadata it starts from, into the same handler; or
+/// why Tika's path is left to read it, when that parser is not native or declines it. The parser
+/// prepares the content here, to tell whether it takes it, and again as the document is written,
+/// as what it prepares borrows the content, which the document owns.
+fn with_content<'a>(
+    content_type: &'static str,
+    content: Vec<u8>,
+    configs: &'a ParserConfigs,
+) -> Result<Prepared<'a>, Deferral> {
+    let (parser, start) = formats::embedded_parser(&content, &TikaMetadata::new(), Opened::Alone)
+        .ok_or_else(|| "content Tika's path parses".to_owned())?;
+    if parser.prepare(&content, &start, configs).is_err() {
+        return Err(format!("content {} declines", parser.name()));
+    }
+    Ok(Box::new(move |xhtml| {
+        xhtml.metadata_mut().set("Content-Type", content_type);
+        xhtml.record_parser(parser.name());
+        let prepared = parser
+            .prepare(&content, &start, configs)
+            .map_err(|declined| {
+                Failure::Extraction(Error::ParseError(format!(
+                    "{} declined CMS content it had taken: {declined:?}",
+                    parser.name()
+                )))
+            })?;
+        xhtml.with_metadata(start, prepared)
+    }))
 }
 
 /// Our Java `CmsParser`.
@@ -381,59 +403,19 @@ impl Parser for CmsParser {
         &["application/pkcs7-mime", SIGNATURE]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        if let Err(why) = header_content_type(input) {
-            return Some(why.to_owned());
-        }
-        if encryption(input).is_some() {
-            return None;
-        }
-        plan(input, metadata, configs).err()
-    }
-
-    fn fails_before_starting(
-        &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        encryption(input).map(|name| {
-            Error::Encrypted(format!(
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        header_content_type(input).map_err(str::to_owned)?;
+        if let Some(name) = encryption(input) {
+            return Err(Declined::Fails(Error::Encrypted(format!(
                 "S/MIME (CMS {name}) data; decrypting it needs the recipient's private key"
-            ))
-        })
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let plan = plan(input, xhtml.metadata_mut(), configs).map_err(Failure::Malformed)?;
-        match plan {
-            Plan::Empty(content_type) => {
-                if let Some(content_type) = content_type {
-                    xhtml.metadata_mut().set("Content-Type", content_type);
-                }
-                Ok(())
-            }
-            Plan::Content {
-                content_type,
-                content,
-                parser,
-                start,
-            } => {
-                xhtml.metadata_mut().set("Content-Type", content_type);
-                xhtml.record_parser(parser.name());
-                xhtml.with_metadata(start, |xhtml| parser.parse(&content, configs, xhtml))
-            }
+            ))));
         }
+        Ok(prepare_unencrypted(input, metadata, configs)?)
     }
 }
 

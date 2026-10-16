@@ -8,8 +8,7 @@ use crate::compress::archiver::Archiver;
 use crate::compress::{ar, cpio, tar, ArchiveFile};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Parser, Prepared};
 use crate::mime::MediaType;
 
 const GTAR: &str = "application/x-gtar";
@@ -56,30 +55,22 @@ impl Parser for PackageParser {
         ]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        let files = match read(input) {
-            Ok((_, files)) => files,
-            Err(reason) => return Some(reason),
-        };
-        Scan::new().files(input.len(), &files)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let (archiver, files) = read(input).map_err(Failure::Malformed)?;
-        update_media_type(archiver, xhtml.metadata_mut());
-        let written = write_files(&files, xhtml);
-        xhtml.end_document()?;
-        written
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let (archiver, files) = read(input)?;
+        if let Some(reason) = Scan::new().files(input.len(), &files) {
+            return Err(Declined::Deferred(reason));
+        }
+        Ok(Box::new(move |xhtml| {
+            update_media_type(archiver, xhtml.metadata_mut());
+            let written = write_files(&files, xhtml);
+            xhtml.end_document()?;
+            written
+        }))
     }
 }
 

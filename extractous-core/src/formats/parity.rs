@@ -2,7 +2,8 @@
 //! streamed text and XHTML, their final metadata, and the text and XHTML of a string extraction
 //! cut by a small length limit. The only difference allowed is the parser's name in
 //! `tk:parsed-by`, which the native output is compared under Tika's. Documents Tika's path fails
-//! on are compared on their outcome alone: the native parser must fail too.
+//! on are compared on their outcome alone: the native parser must fail too. A native parser that
+//! records the parsers its Tika counterpart delegates to is compared under their Tika names too.
 //!
 //! Two things of a document's embedded documents, which Tika parses either way, are compared as
 //! they can be: the parsers that read them, each once as Tika's record keeps it, once the native
@@ -24,6 +25,12 @@ use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
 
 const SMALL_LIMIT: usize = 100;
+
+/// Why the native path extracts Zstandard files Tika's path leaves empty: Tika's native image
+/// lacks zstd-jni, so its path parses them with `EmptyParser`.
+pub(crate) const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as \
+                                                its native image lacks zstd-jni; the native path \
+                                                decodes it";
 
 /// One extraction's result, as the two paths are compared on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,10 +89,14 @@ fn tika_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
     })
 }
 
-fn routed<'a>(path: &'a str, configs: &ParserConfigs) -> Routed<'a> {
-    formats::route(Source::File(path), false, configs)
+fn routed(path: &str) -> Routed<'_> {
+    formats::route(Source::File(path))
         .unwrap()
-        .unwrap_or_else(|| panic!("{path} has no native parser, or its parser defers it to Tika"))
+        .unwrap_or_else(|| panic!("{path} has no native parser"))
+}
+
+fn deferred(path: &str) -> String {
+    format!("the native parser leaves {path} to Tika")
 }
 
 fn native_stream(
@@ -94,11 +105,12 @@ fn native_stream(
     output: Output,
     char_set: CharSet,
 ) -> Outcome {
-    let routed = routed(path, configs);
+    let routed = routed(path);
     let options = StreamOptions {
         char_set,
         output,
         timeout: None,
+        spool: None,
     };
     let (mut stream, _) = formats::parse_to_stream(
         routed.parser,
@@ -107,7 +119,8 @@ fn native_stream(
         configs.clone(),
         options,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|| panic!("{}", deferred(path)));
     let mut text = Vec::new();
     stream
         .read_to_end(&mut text)
@@ -119,7 +132,7 @@ fn native_stream(
 }
 
 fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome {
-    let routed = routed(path, configs);
+    let routed = routed(path);
     let (text, metadata) = formats::parse_to_string(
         routed.parser,
         &routed.input,
@@ -128,20 +141,35 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
         SMALL_LIMIT,
         output,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|| panic!("{}", deferred(path)));
     Ok(Extracted {
         text: text.into_bytes(),
         metadata: sorted(metadata),
     })
 }
 
-/// The native result as Tika's path would name its parser.
-fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: CharSet) -> Extracted {
-    let names = std::iter::once((native_name, tika_name)).chain(
-        formats::PARSERS
-            .iter()
-            .map(|parser| (parser.name(), parser.tika_name())),
-    );
+/// The native names of the parsers of a document paired with Tika's: the parser `native_name`
+/// Tika's path names `tika_name`, its `delegates`, then every native parser and the parsers it
+/// delegates to, which its embedded documents may record.
+fn tika_names<'n>(
+    native_name: &'n str,
+    tika_name: &'n str,
+    delegates: &[(&'n str, &'n str)],
+) -> Vec<(&'n str, &'n str)> {
+    [(native_name, tika_name)]
+        .into_iter()
+        .chain(delegates.iter().copied())
+        .chain(formats::PARSERS.iter().flat_map(|parser| {
+            std::iter::once((parser.name(), parser.tika_name()))
+                .chain(parser.tika_delegates().iter().copied())
+        }))
+        .collect()
+}
+
+/// The native result as Tika's path would name its parsers: each native name of `names` as the
+/// Tika name paired with it.
+fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
     let mut text = native.text;
     for (native_name, tika_name) in names {
         let mut native_bytes = Vec::new();
@@ -159,13 +187,10 @@ fn as_tika(native: Extracted, native_name: &str, tika_name: &str, char_set: Char
                 let values = values
                     .into_iter()
                     .map(|value| {
-                        if value == native_name {
-                            return tika_name.to_owned();
-                        }
-                        formats::PARSERS
+                        names
                             .iter()
-                            .find(|parser| parser.name() == value)
-                            .map_or(value, |parser| parser.tika_name().to_owned())
+                            .find(|(native_name, _)| *native_name == value)
+                            .map_or(value, |(_, tika_name)| (*tika_name).to_owned())
                     })
                     .collect();
                 (name, values)
@@ -309,10 +334,19 @@ fn describe(outcome: &Outcome) -> String {
 /// What Tika's path and the native parser are expected to do with a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expected<'a> {
-    /// Both extract it identically, Tika's path naming its parser with this class name.
-    Same(&'a str),
+    /// Both extract it identically.
+    Same(Naming<'a>),
     /// Both fail on it.
     Failure,
+}
+
+/// How Tika's path names the parsers of a document the native parser extracts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Naming<'a> {
+    /// The class name of the parser of the document.
+    tika_name: &'a str,
+    /// The Tika names of the parsers it delegates to, each paired after its native name.
+    delegates: &'a [(&'a str, &'a str)],
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -328,7 +362,26 @@ pub(crate) fn assert_same_as_tika_with(
     tika_name: &str,
     configs: &ParserConfigs,
 ) {
-    compare(documents, configs, Expected::Same(tika_name));
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+    });
+    compare(documents, configs, expected);
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, extracts exactly what Tika's path does under Tika's default settings, the
+/// parsers it delegates to named as `delegates` pairs their native names with Tika's.
+pub(crate) fn assert_same_as_tika_delegating(
+    documents: &[&Path],
+    tika_name: &str,
+    delegates: &[(&str, &str)],
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates,
+    });
+    compare(documents, &ParserConfigs::default(), expected);
 }
 
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
@@ -340,7 +393,7 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
     let mut differences = Vec::new();
     for document in documents {
         let path = document.to_str().unwrap();
-        let native_name = routed(path, configs).parser.name();
+        let native_name = routed(path).parser.name();
         for output in [Output::Text, Output::Xml] {
             let mut comparisons = vec![(
                 "string",
@@ -358,10 +411,10 @@ fn compare(documents: &[&Path], configs: &ParserConfigs, expected: Expected) {
             }
             for (entry, char_set, tika, native) in comparisons {
                 let as_expected = match (expected, &tika, &native) {
-                    (Expected::Same(tika_name), Ok(tika), Ok(native)) => {
+                    (Expected::Same(naming), Ok(tika), Ok(native)) => {
+                        let names = tika_names(native_name, naming.tika_name, naming.delegates);
                         let tika = comparable(tika.clone());
-                        let native =
-                            comparable(as_tika(native.clone(), native_name, tika_name, char_set));
+                        let native = comparable(as_tika(native.clone(), &names, char_set));
                         if entry == "string" {
                             tika == cut_to(native, &tika)
                         } else {
@@ -473,6 +526,161 @@ impl Drop for Scratch {
         if !std::thread::panicking() {
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+}
+
+/// A spooled embedded document as the two paths are compared on it: everything but where the
+/// spool is, and the bytes copied.
+#[derive(Debug, PartialEq, Eq)]
+struct Spooled {
+    name: String,
+    content_type: Option<String>,
+    file: String,
+    size: u64,
+    truncated: bool,
+    content: Vec<u8>,
+}
+
+fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> {
+    embedded
+        .into_iter()
+        .map(|document| Spooled {
+            name: document.name,
+            content_type: document.content_type,
+            file: document
+                .path
+                .strip_prefix(spool)
+                .unwrap_or_else(|_| panic!("{} is outside the spool", document.path.display()))
+                .display()
+                .to_string(),
+            size: document.size,
+            truncated: document.truncated,
+            content: std::fs::read(&document.path).unwrap(),
+        })
+        .collect()
+}
+
+/// How many embedded documents Tika's path spools from the document at `path` under a budget
+/// of `budget` bytes in all, once the native parser has spooled them alike: the same XHTML and
+/// metadata, and the same files, named, typed, numbered and cut alike. Where the two differ, or
+/// one path fails and the other does not, what differs.
+pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
+    let path = path.to_str().unwrap();
+    let configs = ParserConfigs::default();
+    let tika_spool = Scratch::new("spool-tika");
+    let tika_options = tika::StreamOptions {
+        char_set: CharSet::UTF_8,
+        as_xml: true,
+        timeout: None,
+        embedded: Some(&crate::EmbeddedSpool {
+            dir: tika_spool.directory().to_path_buf(),
+            byte_budget: budget,
+        }),
+    };
+    let tika = tika::parse_to_stream(
+        isolate().unwrap(),
+        Source::File(path),
+        &configs,
+        None,
+        &tika_options,
+    )
+    .and_then(|(mut reader, _)| {
+        let mut text = Vec::new();
+        reader
+            .read_to_end(&mut text)
+            .map_err(|e| crate::Error::IoError(e.to_string()))?;
+        let metadata = sorted(reader.metadata()?);
+        Ok((text, metadata, reader.embedded()?))
+    });
+
+    let native_spool = Scratch::new("spool-native");
+    let routed = routed(path);
+    let native_name = routed.parser.name();
+    let options = StreamOptions {
+        char_set: CharSet::UTF_8,
+        output: Output::Xml,
+        timeout: None,
+        spool: Some(crate::EmbeddedSpool {
+            dir: native_spool.directory().to_path_buf(),
+            byte_budget: budget,
+        }),
+    };
+    let native = formats::parse_to_stream(
+        routed.parser,
+        routed.input.into_owned(),
+        routed.detected,
+        configs.clone(),
+        options,
+    )
+    .map(|prepared| prepared.unwrap_or_else(|| panic!("{}", deferred(path))))
+    .and_then(|(mut stream, _)| {
+        let mut text = Vec::new();
+        stream
+            .read_to_end(&mut text)
+            .map_err(|e| crate::Error::IoError(e.to_string()))?;
+        let metadata = sorted(stream.metadata()?);
+        Ok((text, metadata, stream.embedded()?))
+    });
+
+    match (tika, native) {
+        (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
+            let tika_name = metadata
+                .iter()
+                .find(|(name, _)| name == "tk:parsed-by")
+                .and_then(|(_, values)| values.first())
+                .cloned()
+                .unwrap_or_default();
+            let tika = (
+                comparable(Extracted { text, metadata }),
+                spooled(embedded, tika_spool.directory()),
+            );
+            let native = (
+                comparable(as_tika(
+                    Extracted {
+                        text: native_text,
+                        metadata: native_metadata,
+                    },
+                    &tika_names(native_name, &tika_name, &[]),
+                    CharSet::UTF_8,
+                )),
+                spooled(native_embedded, native_spool.directory()),
+            );
+            if native == tika {
+                Ok(tika.1.len())
+            } else {
+                let show = |(extracted, spooled): &(Extracted, Vec<Spooled>)| {
+                    let files: Vec<_> = spooled
+                        .iter()
+                        .map(|file| {
+                            (
+                                &file.name,
+                                &file.content_type,
+                                &file.file,
+                                file.size,
+                                file.truncated,
+                                file.content.len(),
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "{}\n         {:?}\n         {files:?}",
+                        String::from_utf8_lossy(&extracted.text),
+                        extracted.metadata
+                    )
+                };
+                Err(format!(
+                    "{path} with a budget of {budget} bytes\n  tika   {}\n  native {}",
+                    show(&tika),
+                    show(&native)
+                ))
+            }
+        }
+        (Err(_), Err(_)) => Ok(0),
+        (tika, native) => Err(format!(
+            "{path} with a budget of {budget} bytes: tika {:?}, native {:?}",
+            tika.map(|_| ()),
+            native.map(|_| ())
+        )),
     }
 }
 

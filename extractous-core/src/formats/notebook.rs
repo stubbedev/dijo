@@ -10,8 +10,7 @@ use serde_json::Value;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Parser, Prepared};
 use crate::java::is_regex_space;
 use crate::java::strip;
 use crate::java::{is_blank, utf16_length};
@@ -262,42 +261,24 @@ impl Parser for NotebookParser {
         &["application/x-ipynb+json"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        notebook_blocks(input)
-            .err()
-            .map(|Unread(why)| why.to_owned())
-    }
-
-    fn fails_before_starting(
-        &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        notebook_blocks(input).ok().and_then(Result::err)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
         let blocks = notebook_blocks(input)
-            .map_err(|Unread(why)| Failure::Malformed(why.to_owned()))?
-            .map_err(Failure::Extraction)?;
-        for block in blocks {
-            match block {
-                Block::Paragraph(text) => xhtml.element("p", &text)?,
-                Block::Preformatted(text) => xhtml.element("pre", &text)?,
+            .map_err(|Unread(why)| Declined::Deferred(why.to_owned()))?
+            .map_err(Declined::Fails)?;
+        Ok(Box::new(move |xhtml| {
+            for block in blocks {
+                match block {
+                    Block::Paragraph(text) => xhtml.element("p", &text)?,
+                    Block::Preformatted(text) => xhtml.element("pre", &text)?,
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        }))
     }
 }
 

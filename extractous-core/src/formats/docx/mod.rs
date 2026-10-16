@@ -24,10 +24,10 @@ use text::{TextHandler, TextOptions};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
-use crate::formats::ooxml::{self, Package, Relationship, Unported};
+use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::JavaHashMap;
 
 /// The WordprocessingML namespace.
@@ -117,27 +117,16 @@ impl Parser for DocxParser {
     /// Defers documents with pictures, embedded objects or attachments Tika parses, macros it
     /// extracts when asked to, parts whose XML Tika reports failing on, and packages POI does
     /// not open as this port does.
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<String> {
-        Document::open(input, &configs.office)
-            .and_then(|document| document.check())
-            .err()
-            .map(|Unported(reason)| reason)
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let document = Document::open(input, &configs.office)
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        document.write(xhtml)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let read = Document::open(input, &configs.office)
+            .and_then(Document::prepare)
+            .map_err(|Unported(reason)| reason)?;
+        Ok(Box::new(move |xhtml| read.write(xhtml)))
     }
 }
 
@@ -206,16 +195,14 @@ impl<'a> Document<'a> {
         parts
     }
 
-    /// The parts of a main document `handleDocumentPart` parses with the text handler, in order.
-    fn text_parts(&self, story: usize) -> Vec<usize> {
+    /// The parts of a main document `handleDocumentPart` writes as it reads them with the text
+    /// handler, in order: headers, the document, its diagrams and charts, and footers.
+    fn streamed_parts(&self, story: usize) -> Vec<usize> {
         let relationships = self.relationships(story);
         let footers_too = self.config.includes_headers_and_footers();
         let mut parts = Vec::new();
         if footers_too {
             parts.extend(Package::related(relationships, kind::HEADER));
-        }
-        for kind in [kind::FOOTNOTES, kind::ENDNOTES, kind::COMMENTS] {
-            parts.extend(Package::related(relationships, kind));
         }
         parts.push(story);
         parts.extend(Package::related(relationships, kind::DIAGRAM_DATA));
@@ -223,62 +210,83 @@ impl<'a> Document<'a> {
         if footers_too {
             parts.extend(Package::related(relationships, kind::FOOTER));
         }
-        parts.extend(Package::first_related(relationships, kind::STYLES));
         parts
     }
 
-    /// Finds what this port leaves to Tika in a package it could open: embedded documents,
-    /// macros to extract, parts whose XML Tika fails on, and properties it does not read.
-    fn check(&self) -> Result<(), Unported> {
+    /// Finds what this port leaves to Tika in a package it could open (embedded documents,
+    /// macros to extract, parts whose XML Tika fails on, properties it does not read), and reads
+    /// what Tika reads whole before it writes anything of a main document: the properties, each
+    /// story's numbering, styles, notes and comments, and the first story's features and
+    /// settings. The parts written as they are read are only checked here.
+    fn prepare(self) -> Result<Read<'a>, Unported> {
         for &source in &self.main_parts() {
             for relationship in self.relationships(source) {
                 extractor::check_embedded(&self.package, self.config, source, relationship, true)?;
             }
         }
-        let mut stories = self.stories.clone();
-        stories.extend(&self.glossaries);
-        for story in stories {
-            for part in self.text_parts(story) {
-                if ooxml::read_quietly(&self.package, part, Ignore)?.is_none() {
-                    return Err(Unported(format!(
-                        "Tika records a failure on {}",
-                        self.package.name(part)
-                    )));
-                }
-            }
-            let quietly_read = [
-                Package::first_related(self.relationships(story), kind::NUMBERING),
-                Package::first_related(self.relationships(story), kind::SETTINGS),
-                Package::first_related(self.relationships(story), kind::WEB_SETTINGS),
-            ];
-            for part in quietly_read.into_iter().flatten() {
-                ooxml::read_quietly(&self.package, part, Ignore)?;
-            }
+        let mut stories = Vec::new();
+        for (index, &story) in self.stories.iter().chain(&self.glossaries).enumerate() {
+            stories.push(self.read_story(story, index == 0 && !self.stories.is_empty())?);
         }
-        let mut metadata = TikaMetadata::new();
-        ooxml::extract_properties(&self.package, &mut metadata)
+        let properties = Properties::read(&self.package)?;
+        Ok(Read {
+            document: self,
+            properties,
+            stories,
+        })
     }
 
-    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        self.write_package_metadata(xhtml.metadata_mut());
-        ooxml::extract_properties(&self.package, xhtml.metadata_mut())
-            .map_err(|Unported(reason)| Failure::Malformed(reason))?;
-        for &story in &self.stories {
-            self.write_document_part(story, xhtml)?;
-        }
-        if !self.glossaries.is_empty() {
-            xhtml.start_element_with("div", &[("class", "glossary")])?;
-            for &glossary in &self.glossaries {
-                self.write_document_part(glossary, xhtml)?;
+    /// Reads what writing `story` takes and checks the parts it writes; the security features
+    /// and settings too for the `first` story.
+    fn read_story(&self, story: usize, first: bool) -> Result<StoryParts, Unported> {
+        let relationships = self.relationships(story);
+        let styles = match Package::first_related(relationships, kind::STYLES) {
+            Some(part) => Some(self.read_whole(part, Styles::default())?),
+            None => None,
+        };
+        let inline = self.inline_parts(story)?;
+        let mut security = None;
+        for part in self.streamed_parts(story) {
+            if first && part == story {
+                security = Some(self.read_whole(part, Features::default())?);
+            } else {
+                self.read_whole(part, Ignore)?;
             }
-            xhtml.end_element("div")?;
         }
-        if let Some(&story) = self.stories.first() {
-            self.write_security_features(story, xhtml)?;
-        }
-        extractor::write_embedded_parts(&self.package, &self.main_parts(), xhtml, &|_, _| {})?;
-        extractor::write_thumbnails(&self.package, xhtml)?;
-        Ok(())
+        let numbering = match Package::first_related(relationships, kind::NUMBERING) {
+            Some(part) => ooxml::read_quietly(&self.package, part, Numbering::default())?,
+            None => None,
+        };
+        let settings = match Package::first_related(relationships, kind::SETTINGS) {
+            Some(part) => ooxml::read_quietly(&self.package, part, Settings::default())?,
+            None => None,
+        };
+        let web = match Package::first_related(relationships, kind::WEB_SETTINGS) {
+            Some(part) => ooxml::read_quietly(&self.package, part, WebSettings::default())?,
+            None => None,
+        };
+        Ok(StoryParts {
+            story,
+            numbering,
+            styles,
+            inline,
+            security: security.map(|features| Security {
+                features,
+                settings,
+                web,
+            }),
+        })
+    }
+
+    /// Reads `part` into `handler`, as a part whose failure Tika records, which this port leaves
+    /// to Tika.
+    fn read_whole<H: SaxHandler>(&self, part: usize, handler: H) -> Result<H, Unported> {
+        ooxml::read_quietly(&self.package, part, handler)?.ok_or_else(|| {
+            Unported(format!(
+                "Tika records a failure on {}",
+                self.package.name(part)
+            ))
+        })
     }
 
     /// What `OOXMLExtractorFactory` records before the extractor runs.
@@ -288,17 +296,20 @@ impl<'a> Document<'a> {
     }
 
     /// `handleDocumentPart`.
-    fn write_document_part(&self, story: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn write_document_part(
+        &self,
+        parts: StoryParts,
+        xhtml: &mut Xhtml,
+    ) -> Result<Option<Security>, Failure> {
+        let StoryParts {
+            story,
+            numbering,
+            styles,
+            inline,
+            security,
+        } = parts;
         let relationships = self.relationships(story);
-        let numbering = match Package::first_related(relationships, kind::NUMBERING) {
-            Some(part) => self.read_quietly(part, Numbering::default())?,
-            None => None,
-        };
         let mut lists = ListManager::new(numbering);
-        let styles = match Package::first_related(relationships, kind::STYLES) {
-            Some(part) => Some(self.read_part(part, Styles::default())?),
-            None => None,
-        };
         let no_notes = InlineParts::default();
         let footers_too = self.config.includes_headers_and_footers();
         if footers_too {
@@ -306,7 +317,6 @@ impl<'a> Document<'a> {
                 self.write_part(header, styles.as_ref(), &mut lists, &no_notes, xhtml)?;
             }
         }
-        let inline = self.inline_parts(story)?;
         let emitted = self.write_part(story, styles.as_ref(), &mut lists, &inline, xhtml)?;
         let mut trailing = Package::related(relationships, kind::DIAGRAM_DATA);
         trailing.extend(Package::related(relationships, kind::CHART));
@@ -321,20 +331,7 @@ impl<'a> Document<'a> {
                 unreferenced_comment(xhtml, &inline, events)?;
             }
         }
-        Ok(())
-    }
-
-    /// Reads a part into `handler`, failing as Tika records a failure.
-    fn read_part<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
-        let bytes = self.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
-        Ok(handler)
-    }
-
-    /// Reads a part into `handler`, `None` where it fails, which Tika passes over.
-    fn read_quietly<H: SaxHandler>(&self, part: usize, handler: H) -> Result<Option<H>, Failure> {
-        ooxml::read_quietly(&self.package, part, handler)
-            .map_err(|Unported(reason)| Failure::Malformed(reason))
+        Ok(security)
     }
 
     /// `handlePart`: writes a part with the text handler; returns the comments it inlined.
@@ -376,7 +373,7 @@ impl<'a> Document<'a> {
     }
 
     /// `collectInlineParts`: the footnotes, endnotes and comments of a main document.
-    fn inline_parts(&self, story: usize) -> Result<InlineParts, Failure> {
+    fn inline_parts(&self, story: usize) -> Result<InlineParts, Unported> {
         let mut inline = InlineParts::default();
         let sources = [
             (kind::FOOTNOTES, "footnote", &["0", "-1"][..]),
@@ -387,7 +384,7 @@ impl<'a> Document<'a> {
             let mut collector = Collector::new(wrapper, skipped);
             for part in Package::related(self.relationships(story), kind) {
                 inline.relationships.extend(self.linked_relationships(part));
-                collector = self.read_part(part, collector)?;
+                collector = self.read_whole(part, collector)?;
             }
             for (id, events) in collector.into_notes() {
                 match index {
@@ -404,11 +401,14 @@ impl<'a> Document<'a> {
         Ok(inline)
     }
 
-    /// `detectSecurityFeatures`.
-    fn write_security_features(&self, story: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        if let Some(features) = self.read_quietly(story, Features::default())? {
-            features.write(xhtml.metadata_mut());
-        }
+    /// `detectSecurityFeatures` of `story`, which `security` holds the reads of.
+    fn write_security_features(
+        &self,
+        story: usize,
+        security: Security,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
+        security.features.write(xhtml.metadata_mut());
         let relationships = self.relationships(story);
         for (kind, flag, class) in [
             (
@@ -426,24 +426,76 @@ impl<'a> Document<'a> {
                 extractor::external_reference(xhtml, class, relationship.target_uri())?;
             }
         }
-        let settings = match Package::first_related(relationships, kind::SETTINGS) {
-            Some(part) => self.read_quietly(part, Settings::default())?,
-            None => None,
-        };
-        if let Some(settings) = settings {
-            if settings.mail_merge {
-                xhtml.metadata_mut().set(name::HAS_MAIL_MERGE, "true");
-            }
+        if security
+            .settings
+            .is_some_and(|settings| settings.mail_merge)
+        {
+            xhtml.metadata_mut().set(name::HAS_MAIL_MERGE, "true");
         }
-        let web = match Package::first_related(relationships, kind::WEB_SETTINGS) {
-            Some(part) => self.read_quietly(part, WebSettings::default())?,
-            None => None,
-        };
-        if let Some(web) = web {
-            if web.frameset {
-                xhtml.metadata_mut().set(name::HAS_FRAMESETS, "true");
-            }
+        if security.web.is_some_and(|web| web.frameset) {
+            xhtml.metadata_mut().set(name::HAS_FRAMESETS, "true");
         }
+        Ok(())
+    }
+}
+
+/// What writing a story takes that Tika reads whole before it writes the story: its numbering,
+/// styles, notes and comments, and for the first story its security features and settings.
+struct StoryParts {
+    story: usize,
+    numbering: Option<Numbering>,
+    styles: Option<Styles>,
+    inline: InlineParts,
+    security: Option<Security>,
+}
+
+/// What `detectSecurityFeatures` reads of the first story.
+struct Security {
+    features: Features,
+    settings: Option<Settings>,
+    web: Option<WebSettings>,
+}
+
+/// A Word document checked and read as far as Tika reads parts whole: what writing it takes.
+struct Read<'a> {
+    document: Document<'a>,
+    properties: Properties,
+    /// The parts of each story, then of each glossary.
+    stories: Vec<StoryParts>,
+}
+
+impl Read<'_> {
+    fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let Read {
+            document,
+            properties,
+            stories,
+        } = self;
+        document.write_package_metadata(xhtml.metadata_mut());
+        properties.write(xhtml.metadata_mut());
+        let mut stories = stories.into_iter();
+        let mut security = None;
+        for parts in stories.by_ref().take(document.stories.len()) {
+            let read = document.write_document_part(parts, xhtml)?;
+            security = security.or(read);
+        }
+        if !document.glossaries.is_empty() {
+            xhtml.start_element_with("div", &[("class", "glossary")])?;
+            for parts in stories {
+                document.write_document_part(parts, xhtml)?;
+            }
+            xhtml.end_element("div")?;
+        }
+        if let (Some(&story), Some(security)) = (document.stories.first(), security) {
+            document.write_security_features(story, security, xhtml)?;
+        }
+        extractor::write_embedded_parts(
+            &document.package,
+            &document.main_parts(),
+            xhtml,
+            &|_, _| {},
+        )?;
+        extractor::write_thumbnails(&document.package, xhtml)?;
         Ok(())
     }
 }

@@ -27,6 +27,7 @@ mod ooxml;
 mod open_pgp;
 #[cfg(test)]
 pub(crate) mod parity;
+mod pdf;
 pub(crate) mod plist;
 mod pptx;
 #[cfg(test)]
@@ -47,11 +48,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::ParserConfigs;
+use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
-use crate::isolate::{heap_capped, isolate};
+use crate::isolate::{heap_cap, isolate};
+use crate::memory;
 use crate::mime::{self, Detection, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
+use embedded::ParseContext;
 use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Write, WriteLimit};
 use metadata::TikaMetadata;
 use xhtml::{ContentHandler, Stop, Xhtml};
@@ -81,6 +85,37 @@ impl From<Stop> for Failure {
     }
 }
 
+/// Why Tika's path should extract a document rather than its native parser: a feature of the
+/// document the parser does not handle as Tika does yet.
+pub(crate) type Deferral = String;
+
+/// Why a native parser writes nothing of a document.
+#[derive(Debug)]
+pub(crate) enum Declined {
+    /// Tika's path should extract it.
+    Deferred(
+        #[cfg_attr(
+            not(test),
+            expect(dead_code, reason = "only the tests ask why a document is deferred")
+        )]
+        Deferral,
+    ),
+    /// Tika's parser throws this on it before it starts the document: the extraction fails at
+    /// once, without output, as Tika's path does.
+    Fails(Error),
+}
+
+impl From<Deferral> for Declined {
+    fn from(deferral: Deferral) -> Self {
+        Self::Deferred(deferral)
+    }
+}
+
+/// A document its parser has read as far as deciding it extracts it: what writes the document's
+/// content as XHTML and adds the metadata it finds, holding what the parser read on the way, so
+/// that nothing is read twice. The document is started before and ended after it.
+pub(crate) type Prepared<'a> = Box<dyn FnOnce(&mut Xhtml<'_>) -> Result<(), Failure> + 'a>;
+
 /// A format's native parser.
 pub(crate) trait Parser: Sync {
     /// The name recorded in `tk:parsed-by` for the documents it parses.
@@ -90,43 +125,40 @@ pub(crate) trait Parser: Sync {
     #[cfg(test)]
     fn tika_name(&self) -> &'static str;
 
+    /// The parsers it records delegating to, each native name paired with the class name of
+    /// Tika's.
+    #[cfg(test)]
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+
     /// The media types it parses, without parameters, as Tika's detection names them.
     fn media_types(&self) -> &'static [&'static str];
 
-    /// Why Tika's path should extract `input` rather than this parser, if it should: a feature
-    /// of this document the parser does not handle yet, decided before any output is written,
-    /// from the document, the `metadata` Tika's parser starts from and the parser settings
-    /// `configs` the extraction was given.
+    /// Reads `input`, from the `metadata` Tika's parser starts from and under the parser
+    /// settings `configs` the extraction was given, as far as deciding whether it extracts the
+    /// document as the Tika parser it replaces does: what then writes it, or why it writes
+    /// nothing. Nothing is written before the decision.
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined>;
+
+    /// Why Tika's path should extract `input`, if it should.
+    #[cfg(test)]
     fn defers(
         &self,
-        _input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        None
-    }
-
-    /// The failure Tika's parser throws on `input` before it starts the document, if it throws
-    /// one: the extraction then fails at once, without output, as Tika's path does, which
-    /// reports a failure before any output when the extraction starts.
-    fn fails_before_starting(
-        &self,
-        _input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<Error> {
-        None
-    }
-
-    /// Writes the content of `input` as XHTML and adds the metadata it finds, as the Tika parser
-    /// it replaces does, under the parser settings `configs` the extraction was given. The
-    /// document is started before and ended after it.
-    fn parse(
-        &self,
         input: &[u8],
+        metadata: &TikaMetadata,
         configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure>;
+    ) -> Option<Deferral> {
+        match self.prepare(input, metadata, configs) {
+            Err(Declined::Deferred(deferral)) => Some(deferral),
+            Ok(_) | Err(Declined::Fails(_)) => None,
+        }
+    }
 }
 
 static PARSERS: &[&dyn Parser] = &[
@@ -149,6 +181,7 @@ static PARSERS: &[&dyn Parser] = &[
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
     &open_pgp::OpenPgpParser,
+    &pdf::PdfParser,
     &plist::PListParser,
     &pptx::PptxParser,
     &mail::Rfc822Parser,
@@ -187,20 +220,18 @@ pub(crate) struct Routed<'a> {
     pub(crate) input: Cow<'a, [u8]>,
 }
 
-/// Routes a document to its native parser, if its format has one and the parser does not defer
-/// this document to Tika. The document is detected in Rust, without the JVM, so a document a
-/// native parser reads never starts it. Documents read from a URL, those whose embedded
-/// documents are spooled, files too large to read whole for their detection, and every document
-/// while the Java heap is capped (native parsers have no memory budget yet, #98) stay with Tika.
+/// Routes a document to its native parser, if its format has one. The document is detected in
+/// Rust, without the JVM, so a document a native parser reads never starts it. Documents read
+/// from a URL, files too large to read whole for their detection, and, while the Java heap is
+/// capped, every document in a program that does not count its allocations, where a native
+/// extraction cannot be held to the cap, stay with Tika. The parser itself may still leave the document to
+/// Tika, when [`parse_to_string`] or [`parse_to_stream`] has it prepare the document.
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
-pub(crate) fn route<'a>(
-    source: Source<'a>,
-    spooling: bool,
-    configs: &ParserConfigs,
-) -> ExtractResult<Option<Routed<'a>>> {
-    if spooling || matches!(source, Source::Url(_)) || !any_parsers() || heap_capped() {
+pub(crate) fn route(source: Source<'_>) -> ExtractResult<Option<Routed<'_>>> {
+    let unbudgeted = heap_cap().is_some() && !memory::counting();
+    if matches!(source, Source::Url(_)) || !any_parsers() || unbudgeted {
         return Ok(None);
     }
     let Some(input) = detection_input(source)? else {
@@ -212,12 +243,6 @@ pub(crate) fn route<'a>(
     let Some(parser) = parser_for(&detected.media_type) else {
         return Ok(None);
     };
-    if parser
-        .defers(&input, &detected.metadata_for(parser), configs)
-        .is_some()
-    {
-        return Ok(None);
-    }
     Ok(Some(Routed {
         parser,
         detected,
@@ -238,20 +263,25 @@ pub(crate) enum Opened {
     Alone,
 }
 
-/// Routes a document embedded in one a native parser reads, given its `data`, the `metadata`
-/// its embedding parser gives it and how its stream was `opened`, as Tika's `AutoDetectParser`
-/// and `CompositeParser`
-/// route it: detected with the resource name and `Content-Type` of its metadata as hints, then
-/// parsed by the parser of the type the metadata overrides the parser with, else of the
-/// detected type. Returns that parser, if it is native and neither defers the document nor
-/// fails it before it starts, and the metadata it starts from; otherwise Tika's path parses the
-/// document, as it does an empty one, which Tika's zero-byte check fails, and one Tika's
-/// detection throws on.
-pub(crate) fn route_embedded(
+/// A document embedded in one a native parser reads, as its native parser prepared it.
+pub(crate) struct EmbeddedRoute<'a> {
+    pub(crate) parser: &'static dyn Parser,
+    /// The metadata the parser starts from.
+    pub(crate) start: TikaMetadata,
+    pub(crate) prepared: Prepared<'a>,
+}
+
+/// The native parser of a document embedded in one a native parser reads, with the metadata it
+/// starts from, given its `data`, the `metadata` its embedding parser gives it and how its
+/// stream was `opened`, as Tika's `AutoDetectParser` and `CompositeParser` route it: detected
+/// with the resource name and `Content-Type` of its metadata as hints, then parsed by the parser
+/// of the type the metadata overrides the parser with, else of the detected type. `None` when
+/// that parser is not native, the document is empty, which Tika's zero-byte check fails, or
+/// Tika's detection throws on it.
+pub(crate) fn embedded_parser(
     data: &[u8],
     metadata: &TikaMetadata,
     opened: Opened,
-    configs: &ParserConfigs,
 ) -> Option<(&'static dyn Parser, TikaMetadata)> {
     if data.is_empty() {
         return None;
@@ -263,11 +293,26 @@ pub(crate) fn route_embedded(
             .unwrap_or(&detected.media_type),
     )?;
     let start = detected.metadata_for(parser);
-    let declines = parser.defers(data, &start, configs).is_some()
-        || parser
-            .fails_before_starting(data, &start, configs)
-            .is_some();
-    (!declines).then_some((parser, start))
+    Some((parser, start))
+}
+
+/// Routes a document embedded in one a native parser reads to its [`embedded_parser`], and
+/// returns what that parser prepared, if it takes the document. Otherwise Tika's path parses
+/// the document, as it does one the parser defers and one Tika's parser fails before it starts,
+/// as only Tika's path records that failure.
+pub(crate) fn route_embedded<'a>(
+    data: &'a [u8],
+    metadata: &TikaMetadata,
+    opened: Opened,
+    configs: &'a ParserConfigs,
+) -> Option<EmbeddedRoute<'a>> {
+    let (parser, start) = embedded_parser(data, metadata, opened)?;
+    let prepared = parser.prepare(data, &start, configs).ok()?;
+    Some(EmbeddedRoute {
+        parser,
+        start,
+        prepared,
+    })
 }
 
 /// The largest file read whole to be detected in Rust: a larger one is left to Tika, which reads
@@ -381,17 +426,30 @@ impl Detected {
 
 fn run(
     parser: &dyn Parser,
-    input: &[u8],
-    detected: &Detected,
-    configs: &ParserConfigs,
+    prepared: Prepared<'_>,
+    metadata: TikaMetadata,
+    context: &ParseContext,
     handler: &mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    let (mut metadata, record, result) =
-        Xhtml::write(handler, detected.metadata_for(parser), configs, |xhtml| {
-            parser.parse(input, configs, xhtml)
-        });
+    let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
     record.finish(&mut metadata, parser.name());
+    let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
     (metadata, result)
+}
+
+/// Whether a prepared document still keeps to its memory budget, before anything of it is
+/// written.
+fn prepared_within_budget(parser: &dyn Parser) -> ExtractResult<()> {
+    xhtml::within_budget().map_err(|stop| failure_error(parser, Failure::Stopped(stop)))
+}
+
+/// Runs a native extraction's `work`, its preparation and writing, held to the cap on the Java
+/// heap, if one is set.
+fn within_budget<R>(work: impl FnOnce() -> R) -> R {
+    match heap_cap() {
+        Some(limit) => memory::within(limit, work),
+        None => work(),
+    }
 }
 
 fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
@@ -400,6 +458,7 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
             "{} could not parse the document: {reason}",
             parser.name()
         )),
+        Failure::Stopped(Stop::MemoryLimit(limit)) => Error::MemoryLimit(limit),
         Failure::Stopped(stop) => Error::ParseError(format!(
             "{} stopped writing the document: {stop:?}",
             parser.name()
@@ -482,7 +541,8 @@ impl Write for StringOut {
 }
 
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
-/// handlers `TikaNativeMain.parseToString` uses.
+/// handlers `TikaNativeMain.parseToString` uses; `None` when the parser leaves the document to
+/// Tika.
 pub(crate) fn parse_to_string(
     parser: &dyn Parser,
     input: &[u8],
@@ -490,29 +550,39 @@ pub(crate) fn parse_to_string(
     configs: &ParserConfigs,
     max_length: usize,
     output: Output,
-) -> ExtractResult<(String, Metadata)> {
-    if let Some(error) =
-        parser.fails_before_starting(input, &detected.metadata_for(parser), configs)
-    {
-        return Err(error);
-    }
-    let mut out = StringOut::default();
-    let (metadata, result) = Chain::String { output, max_length }.write_to(&mut out, |handler| {
-        run(parser, input, detected, configs, handler)
-    });
-    match result {
-        Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => Ok((out.0, metadata.to_map())),
-        Err(failure) => Err(failure_error(parser, failure)),
-    }
+) -> ExtractResult<Option<(String, Metadata)>> {
+    within_budget(|| {
+        let metadata = detected.metadata_for(parser);
+        let prepared = match parser.prepare(input, &metadata, configs) {
+            Ok(prepared) => prepared,
+            Err(Declined::Deferred(_)) => return Ok(None),
+            Err(Declined::Fails(error)) => return Err(error),
+        };
+        prepared_within_budget(parser)?;
+        let mut out = StringOut::default();
+        let context = ParseContext::new(configs);
+        let (metadata, result) = Chain::String { output, max_length }
+            .write_to(&mut out, |handler| {
+                run(parser, prepared, metadata, &context, handler)
+            });
+        match result {
+            Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
+                Ok(Some((out.0, metadata.to_map())))
+            }
+            Err(failure) => Err(failure_error(parser, failure)),
+        }
+    })
 }
 
 enum Message {
     /// A full chunk of output, written while the parse goes on.
     Chunk(Vec<u8>),
-    /// The output after the last full chunk, and how the parse ended.
+    /// The output after the last full chunk, how the parse ended, and the embedded documents
+    /// it spooled.
     Done {
         tail: Vec<u8>,
         outcome: ExtractResult<Metadata>,
+        spooled: Vec<SpooledEmbedded>,
     },
 }
 
@@ -575,54 +645,83 @@ fn char_set_name(char_set: CharSet) -> &'static str {
 }
 
 /// How a native parse is streamed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct StreamOptions {
     pub(crate) char_set: CharSet,
     pub(crate) output: Output,
     pub(crate) timeout: Option<Duration>,
+    /// Where embedded documents are copied instead of parsed, if anywhere.
+    pub(crate) spool: Option<EmbeddedSpool>,
 }
 
 /// Parses `input` on a thread of its own into a stream encoded with the options' charset,
-/// through the handlers `ParsingInputStream` uses. Like `ParsingInputStream`, it returns once
-/// the parse has written its first chunk or ended, with the metadata known then: the final
-/// metadata of a document whose output fits in one chunk, else that of its detection.
+/// through the handlers `ParsingInputStream` uses; `None` when the parser leaves the document to
+/// Tika. Like `ParsingInputStream`, it returns once the parse has written its first chunk or
+/// ended, with the metadata known then: the final metadata of a document whose output fits in
+/// one chunk, else that of its detection; or the failure of a parse that ended without writing
+/// anything.
 pub(crate) fn parse_to_stream(
     parser: &'static dyn Parser,
     input: Vec<u8>,
     detected: Detected,
     configs: ParserConfigs,
     options: StreamOptions,
-) -> ExtractResult<(NativeStream, Metadata)> {
-    if let Some(error) =
-        parser.fails_before_starting(&input, &detected.metadata_for(parser), &configs)
-    {
-        return Err(error);
-    }
+) -> ExtractResult<Option<(NativeStream, Metadata)>> {
     let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
     let detected_metadata = detected.metadata.to_map();
     let (sender, receiver) = mpsc::sync_channel(CHUNKS_AHEAD);
+    let (decided, decision) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name(format!("extractous {}", parser.name()))
         .spawn(move || {
-            let mut out = ChannelOut {
-                sender: sender.clone(),
-                char_set: options.char_set,
-                buffer: Vec::with_capacity(CHUNK_BYTES),
-            };
-            let chain = Chain::Stream {
-                output: options.output,
-                encoding: char_set_name(options.char_set),
-            };
-            let (metadata, result) = chain.write_to(&mut out, |handler| {
-                run(parser, &input, &detected, &configs, handler)
-            });
-            let outcome = match result {
-                Ok(()) => Ok(metadata.to_map()),
-                Err(Failure::Stopped(Stop::ReaderGone)) => return,
-                Err(failure) => Err(failure_error(parser, failure)),
-            };
-            let tail = std::mem::take(&mut out.buffer);
-            let _ = sender.send(Message::Done { tail, outcome });
+            within_budget(|| {
+                let metadata = detected.metadata_for(parser);
+                let prepared = parser.prepare(&input, &metadata, &configs);
+                let _ = decided.send(!matches!(prepared, Err(Declined::Deferred(_))));
+                let prepared = match prepared {
+                    Ok(prepared) => prepared_within_budget(parser).map(|()| prepared),
+                    Err(Declined::Deferred(_)) => return,
+                    Err(Declined::Fails(error)) => Err(error),
+                };
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let _ = sender.send(Message::Done {
+                            tail: Vec::new(),
+                            outcome: Err(error),
+                            spooled: Vec::new(),
+                        });
+                        return;
+                    }
+                };
+                let mut out = ChannelOut {
+                    sender: sender.clone(),
+                    char_set: options.char_set,
+                    buffer: Vec::with_capacity(CHUNK_BYTES),
+                };
+                let chain = Chain::Stream {
+                    output: options.output,
+                    encoding: char_set_name(options.char_set),
+                };
+                let context = match &options.spool {
+                    Some(spool) => ParseContext::spooling(&configs, spool),
+                    None => ParseContext::new(&configs),
+                };
+                let (metadata, result) = chain.write_to(&mut out, |handler| {
+                    run(parser, prepared, metadata, &context, handler)
+                });
+                let outcome = match result {
+                    Ok(()) => Ok(metadata.to_map()),
+                    Err(Failure::Stopped(Stop::ReaderGone)) => return,
+                    Err(failure) => Err(failure_error(parser, failure)),
+                };
+                let tail = std::mem::take(&mut out.buffer);
+                let _ = sender.send(Message::Done {
+                    tail,
+                    outcome,
+                    spooled: context.into_spooled(),
+                });
+            })
         })
         .map_err(|e| {
             Error::IoError(format!(
@@ -636,14 +735,33 @@ pub(crate) fn parse_to_stream(
         position: 0,
         deadline,
         outcome: None,
+        spooled: Vec::new(),
     };
+    let prepared = receive(
+        &decision,
+        deadline,
+        "The native parser's thread ended before it prepared its document",
+    )?;
+    if !prepared {
+        return Ok(None);
+    }
     let first = stream.next_message()?;
+    if let Message::Done {
+        tail,
+        outcome: Err(error),
+        ..
+    } = &first
+    {
+        if tail.is_empty() {
+            return Err(copy(error));
+        }
+    }
     stream.accept(first);
     let metadata = match &stream.outcome {
         Some(Ok(metadata)) => metadata.clone(),
         _ => detected_metadata,
     };
-    Ok((stream, metadata))
+    Ok(Some((stream, metadata)))
 }
 
 /// The text of a native parse, read as it is written.
@@ -653,6 +771,7 @@ pub(crate) struct NativeStream {
     position: usize,
     deadline: Option<Instant>,
     outcome: Option<ExtractResult<Metadata>>,
+    spooled: Vec<SpooledEmbedded>,
 }
 
 impl NativeStream {
@@ -660,50 +779,68 @@ impl NativeStream {
     pub(crate) fn metadata(&self) -> ExtractResult<Metadata> {
         match &self.outcome {
             Some(Ok(metadata)) => Ok(metadata.clone()),
-            Some(Err(error)) => Err(reported(error)),
+            Some(Err(error)) => Err(copy(error)),
             None => Err(Error::StreamNotFinished),
         }
+    }
+
+    /// The embedded documents the parse copied to the spool, once the stream has been read to
+    /// its end.
+    pub(crate) fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
+        self.metadata().map(|_| self.spooled.clone())
     }
 
     fn accept(&mut self, message: Message) {
         match message {
             Message::Chunk(chunk) => self.chunk = chunk,
-            Message::Done { tail, outcome } => {
+            Message::Done {
+                tail,
+                outcome,
+                spooled,
+            } => {
                 self.chunk = tail;
                 self.outcome = Some(outcome);
+                self.spooled = spooled;
             }
         }
         self.position = 0;
     }
 
     fn next_message(&self) -> ExtractResult<Message> {
-        let disconnected = || {
-            Error::ParseError(
-                "The native parser's thread ended without finishing its document".to_owned(),
-            )
-        };
-        match self.deadline {
-            None => self.receiver.recv().map_err(|_| disconnected()),
-            Some(deadline) => {
-                let wait = deadline.saturating_duration_since(Instant::now());
-                self.receiver.recv_timeout(wait).map_err(|e| match e {
-                    RecvTimeoutError::Timeout => Error::Timeout,
-                    RecvTimeoutError::Disconnected => disconnected(),
-                })
-            }
-        }
+        receive(
+            &self.receiver,
+            self.deadline,
+            "The native parser's thread ended without finishing its document",
+        )
     }
 }
 
-/// The error a streamed parse ended with, once more for each time it is asked for: of the same
-/// kind where the kind decides how it is handled, and a parse error otherwise.
-fn reported(error: &Error) -> Error {
+/// A copy of the error a native extraction ended with, which the stream reports each time it
+/// is asked: the same kind with the same message.
+fn copy(error: &Error) -> Error {
     match error {
         Error::IoError(message) => Error::IoError(message.clone()),
         Error::Encrypted(message) => Error::Encrypted(message.clone()),
         Error::LimitExceeded(message) => Error::LimitExceeded(message.clone()),
         Error::Timeout => Error::Timeout,
+        Error::MemoryLimit(limit) => Error::MemoryLimit(*limit),
         other => Error::ParseError(other.to_string()),
+    }
+}
+
+/// What the parser's thread sends next, waiting at most until `deadline`; `ended` says what a
+/// thread that ended without sending it did not do.
+fn receive<T>(receiver: &Receiver<T>, deadline: Option<Instant>, ended: &str) -> ExtractResult<T> {
+    let disconnected = || Error::ParseError(ended.to_owned());
+    match deadline {
+        None => receiver.recv().map_err(|_| disconnected()),
+        Some(deadline) => {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            receiver.recv_timeout(wait).map_err(|e| match e {
+                RecvTimeoutError::Timeout => Error::Timeout,
+                RecvTimeoutError::Disconnected => disconnected(),
+            })
+        }
     }
 }
 
@@ -713,7 +850,7 @@ impl Read for NativeStream {
             if let Some(outcome) = &self.outcome {
                 return match outcome {
                     Ok(_) => Ok(0),
-                    Err(error) => Err(io::Error::other(reported(error))),
+                    Err(error) => Err(io::Error::other(copy(error))),
                 };
             }
             let message = self.next_message().map_err(io::Error::other)?;
@@ -788,6 +925,75 @@ mod tests {
             "application/vnd.oasis.opendocument.text"
         );
         assert!(!crate::isolate::isolate_created());
+    }
+
+    /// Documents of native formats that embed documents spool them as Tika's path does, with a
+    /// budget that holds them all and one that runs out partway.
+    #[test]
+    fn spools_embedded_documents_as_tikas_path_does() {
+        for name in ["nested.zip", "science-exploration-1p.pptx", "vodafone.xlsx"] {
+            let path = std::path::PathBuf::from("../test_files/documents").join(name);
+            for budget in [u64::MAX, 3000] {
+                let spooled = crate::formats::parity::spools_as_tika(&path, budget);
+                assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
+            }
+        }
+    }
+
+    /// Every document of Tika's tests a native parser reads spools its embedded documents as
+    /// Tika's path does.
+    #[test]
+    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+    fn spools_tikas_documents_as_tikas_path_does() {
+        let corpus = crate::formats::parity::conformance_corpus();
+        let exceptions = [(
+            "testZSTD.zst",
+            crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
+        )];
+        let mut differences = Vec::new();
+        let mut spooling = 0;
+        for parser in PARSERS {
+            let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
+            for path in parsed {
+                let name = path.file_name().unwrap().to_string_lossy();
+                if exceptions.iter().any(|(exception, _)| *exception == name) {
+                    continue;
+                }
+                for budget in [u64::MAX, 3000] {
+                    match crate::formats::parity::spools_as_tika(&path, budget) {
+                        Ok(0) => {}
+                        Ok(_) => spooling += 1,
+                        Err(difference) => differences.push(difference),
+                    }
+                }
+            }
+        }
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
+        assert!(spooling > 0);
+    }
+
+    #[test]
+    fn a_native_extraction_over_its_memory_budget_fails_and_the_next_runs() {
+        let path = "../test_files/documents/simple.odt";
+        let routed = route(Source::File(path)).unwrap().unwrap();
+        let configs = ParserConfigs::default();
+        let extract = || {
+            parse_to_string(
+                routed.parser,
+                &routed.input,
+                &routed.detected,
+                &configs,
+                100_000,
+                Output::Text,
+            )
+        };
+        let capped = memory::within(1024, extract);
+        assert!(
+            matches!(capped, Err(Error::MemoryLimit(1024))),
+            "{capped:?}"
+        );
+        let (text, _) = extract().unwrap().unwrap();
+        assert!(text.contains("These are a few of my favorite things"));
     }
 
     #[test]

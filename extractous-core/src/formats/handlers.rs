@@ -738,9 +738,43 @@ impl<W: Write> ContentHandler for ToXml<W> {
     }
 }
 
+/// Takes a document's XHTML and drops it, for reading a document ahead.
+pub(crate) struct Discard;
+
+impl ContentHandler for Discard {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, _prefix: &str, _uri: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_element(&mut self, _name: &str, _attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn end_element(&mut self, _name: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn characters(&mut self, _text: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn ignorable_whitespace(&mut self, _text: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::ParserConfigs;
+    use crate::formats::embedded::ParseContext;
     use crate::formats::metadata::TikaMetadata;
     use crate::formats::xhtml::{Stop, Xhtml};
     use crate::formats::{Chain, Output, StringOut};
@@ -811,7 +845,7 @@ mod tests {
         let configs = ParserConfigs::default();
         let mut out = StringOut::default();
         let (_, _, result) = chain.write_to(&mut out, |handler| {
-            Xhtml::write(handler, metadata, &configs, |xhtml| {
+            Xhtml::write(handler, metadata, &ParseContext::new(&configs), |xhtml| {
                 for call in body {
                     let field = |index: usize| call.get(index).map_or("", String::as_str);
                     match field(0) {

@@ -17,6 +17,7 @@ use crate::compress::xz::tests::{lzma, xz};
 use crate::compress::zip::file::tests::zip;
 use crate::compress::zlib::tests::zlib;
 use crate::compress::zstd::tests::zstd;
+use crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI;
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 use crate::formats::Parser;
 
@@ -171,11 +172,6 @@ fn extracts_compressed_files_as_tikas_path_does() {
         ],
     );
 }
-
-/// Why the native path extracts Zstandard files Tika's path leaves empty: Tika's native image
-/// lacks zstd-jni, so its path parses them with `EmptyParser`.
-const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as its native \
-                                     image lacks zstd-jni; the native path decodes it";
 
 #[test]
 fn decodes_zstandard_which_tikas_path_leaves_empty() {

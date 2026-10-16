@@ -11,6 +11,7 @@ use zip::ZipArchive;
 
 use super::uri::{self, Resolution};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
+use crate::formats::zip_file::central_directory_records;
 use crate::formats::Failure;
 use crate::java;
 
@@ -334,7 +335,7 @@ fn entry_names(archive: &ZipArchive<Cursor<&[u8]>>, input: &[u8]) -> Result<Vec<
     if archive.offset() != 0 {
         return Err(Unported("the archive is preceded by other data".to_owned()));
     }
-    if central_directory_entries(input, archive.central_directory_start()) != archive.len() {
+    if central_directory_records(input, archive.central_directory_start()) != Some(archive.len()) {
         return Err(Unported(
             "the archive lists entries with the same name".to_owned(),
         ));
@@ -346,26 +347,6 @@ fn entry_names(archive: &ZipArchive<Cursor<&[u8]>>, input: &[u8]) -> Result<Vec<
                 .map_err(|e| Unported(format!("an entry name cannot be read: {e}")))
         })
         .collect()
-}
-
-/// The number of headers in the central directory starting at `start`.
-fn central_directory_entries(input: &[u8], start: u64) -> usize {
-    const SIGNATURE: &[u8] = &[0x50, 0x4b, 0x01, 0x02];
-    const FIXED: usize = 46;
-    let length =
-        |header: &[u8], at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
-    let Ok(mut position) = usize::try_from(start) else {
-        return 0;
-    };
-    let mut count = 0;
-    while let Some(header) = input.get(position..position + FIXED) {
-        if !header.starts_with(SIGNATURE) {
-            break;
-        }
-        count += 1;
-        position += FIXED + length(header, 28) + length(header, 30) + length(header, 32);
-    }
-    count
 }
 
 fn read_entry(archive: &mut ZipArchive<Cursor<&[u8]>>, index: usize) -> Result<Vec<u8>, Unported> {

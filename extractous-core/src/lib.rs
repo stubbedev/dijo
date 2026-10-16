@@ -26,6 +26,12 @@ mod licenses;
 pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
 mod formats;
+pub mod memory;
+/// The tests count allocations as the command line does, so that budgets are enforced in them.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: memory::CountingAllocator<std::alloc::System> =
+    memory::CountingAllocator(std::alloc::System);
 mod mime;
 pub mod text;
 pub mod unicode;

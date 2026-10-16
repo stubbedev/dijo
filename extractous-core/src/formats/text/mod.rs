@@ -71,7 +71,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
 use crate::mime::MediaType;
 use crate::text::charset::Detection;
 
@@ -96,24 +96,27 @@ impl Parser for TextAndCsvParser {
         &["text/plain", "text/csv", "text/tab-separated-values"]
     }
 
-    fn defers(
+    fn prepare<'a>(
         &self,
-        input: &[u8],
-        _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
-        AutoDetectReader::defers(input).map(str::to_owned)
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare(input, metadata).map_err(Declined::Deferred)
     }
+}
 
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let content_type = xhtml.metadata_mut().get("Content-Type").map(str::to_owned);
-        read(input, content_type.as_deref())?.write(xhtml)
+/// What [`TextAndCsvParser`] prepares of `input`: the document read whole, which holds nothing
+/// of it.
+pub(crate) fn prepare(
+    input: &[u8],
+    metadata: &TikaMetadata,
+) -> Result<Prepared<'static>, Deferral> {
+    if let Some(reason) = AutoDetectReader::defers(input) {
+        return Err(reason.to_owned());
     }
+    let document = read(input, metadata.get("Content-Type"));
+    Ok(Box::new(move |xhtml| document?.write(xhtml)))
 }
 
 /// What TextAndCSVParser makes of an input.

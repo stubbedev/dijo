@@ -1163,7 +1163,7 @@ fn a_heap_cap_fails_one_extraction_and_not_the_next() {
     assert!(capped[0]["errors"][0]["message"]
         .as_str()
         .unwrap()
-        .contains("OutOfMemoryError"));
+        .contains("exceeded its memory budget of 67108864 bytes"));
     assert_eq!(capped[1]["status"], "complete");
 }
 

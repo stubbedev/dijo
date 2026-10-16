@@ -10,7 +10,7 @@ use super::W_NAMESPACE;
 use crate::formats::xhtml::Stop;
 use crate::formats::xml::{attribute, attribute_named, Attribute, SaxHandler};
 use crate::formats::Failure;
-use crate::java::parse_int;
+use crate::java::{parse_int, trim as java_trim};
 
 const MC_NAMESPACE: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const O_NAMESPACE: &str = "urn:schemas-microsoft-com:office:office";
@@ -503,10 +503,6 @@ fn external_reference_of_field(instruction: &str) -> Option<(&'static str, &str)
         .into_iter()
         .find_map(|field| find_quoted_field(trimmed, field, false).map(|url| (field, url)))
         .or_else(|| find_quoted_field(trimmed, "LINK", true).map(|url| ("LINK", url)))
-}
-
-fn java_trim(text: &str) -> &str {
-    crate::java::trim(text)
 }
 
 /// Java's `\s`.

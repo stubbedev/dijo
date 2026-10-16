@@ -11,7 +11,8 @@ use crate::formats::odf::{normalized_namespace, META_NS, OFFICE_NS};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
 use crate::java;
-use crate::java::{is_java_whitespace, utf16_length};
+use crate::java::utf16_length;
+use crate::unicode::is_whitespace;
 
 const SUBJECT: &str = "dc:subject";
 const DESCRIPTION: &str = "dc:description";
@@ -116,7 +117,7 @@ impl UserDefined {
             return;
         };
         if value.is_empty()
-            || name.chars().all(is_java_whitespace)
+            || name.chars().all(is_whitespace)
             || utf16_length(name) > MAX_USER_DEFINED_NAME_LENGTH
         {
             return;

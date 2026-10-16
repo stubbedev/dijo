@@ -17,7 +17,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::time::{instant_string, TimeZone};
 use crate::mime::MediaType;
 use crate::text::charset::{self, Charset};
@@ -134,83 +134,80 @@ impl Parser for ZipParser {
         ]
     }
 
-    fn defers(
+    /// Opens the archive and reads each entry to rule out what Tika's path reads otherwise. The
+    /// entries are read again as they are written: holding them all would hold every entry's
+    /// data at once, where writing holds one at a time, for decompression that costs little
+    /// beside the parse of each entry.
+    fn prepare<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         _metadata: &TikaMetadata,
-        _configs: &ParserConfigs,
-    ) -> Option<String> {
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
         let Ok(zip) = ZipFile::open(input) else {
-            return Some(
+            return Err(Declined::Deferred(
                 "commons-compress's ZipFile cannot open the archive, which Tika then salvages \
                  or reads entry by entry"
                     .to_owned(),
-            );
+            ));
         };
-        if TimeZone::java_default().is_err() {
-            return Some(
+        let Ok(zone) = TimeZone::java_default() else {
+            return Err(Declined::Deferred(
                 "the JVM's default time zone, which entry times are read in, is unknown".to_owned(),
-            );
-        }
+            ));
+        };
         let mut scan = Scan::new();
         for entry in zip.entries() {
             if entry.is_directory() || !entry.can_read() {
                 continue;
             }
             if entry_name(entry).is_none() {
-                return Some(format!(
+                return Err(Declined::Deferred(format!(
                     "the name of the entry {} is detected in a charset the native decoders do \
                      not decode",
                     entry.name
-                ));
+                )));
             }
             match zip.read(entry) {
                 Some(Content::Complete(content)) => {
                     if let Some(reason) = scan.entry(&content) {
-                        return Some(reason);
+                        return Err(Declined::Deferred(reason));
                     }
                 }
                 Some(Content::Truncated(_)) => {
-                    return Some(format!(
+                    return Err(Declined::Deferred(format!(
                         "the data of the entry {} is cut short or corrupt, which Tika's embedded \
                          parser reads as far as it goes",
                         entry.name
-                    ))
+                    )))
                 }
                 Some(Content::Oversized(_)) => {
-                    return Some(format!(
+                    return Err(Declined::Deferred(format!(
                         "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
                          path streams",
                         entry.name
-                    ))
+                    )))
                 }
                 None => {
-                    return Some(format!(
+                    return Err(Declined::Deferred(format!(
                         "the entry {} is compressed with method {}, which the port does not \
                          decompress",
                         entry.name, entry.method
-                    ))
+                    )))
                 }
             }
         }
-        scan.document(input.len())
-    }
-
-    fn parse(
-        &self,
-        input: &[u8],
-        _configs: &ParserConfigs,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let zip = ZipFile::open(input)
-            .map_err(|_| Failure::Malformed("ZipFile cannot open the archive".into()))?;
-        let zone = TimeZone::java_default().map_err(Failure::Malformed)?;
-        update_media_type(&zip, xhtml.metadata_mut());
-        let written = write_entries(&zip, zone, xhtml);
-        xhtml.end_document()?;
-        let central = written?;
-        check_integrity(input, &central, xhtml.metadata_mut());
-        Ok(())
+        if let Some(reason) = scan.document(input.len()) {
+            return Err(Declined::Deferred(reason));
+        }
+        Ok(Box::new(move |xhtml| {
+            update_media_type(&zip, xhtml.metadata_mut());
+            let written = write_entries(&zip, zone, xhtml);
+            xhtml.end_document()?;
+            let central = written?;
+            check_integrity(input, &central, xhtml.metadata_mut());
+            Ok(())
+        }))
     }
 }
 

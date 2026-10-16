@@ -2,7 +2,7 @@
 //! the target, `java.net.URI` accepts or rejects it, and an internal target is resolved against
 //! the part that names it.
 
-use crate::java::is_java_whitespace;
+use crate::unicode::is_whitespace;
 use crate::unicode::{is_iso_control, is_space_char};
 
 /// What POI uses for a target `java.net.URI` rejects.
@@ -19,7 +19,7 @@ pub(super) fn to_uri(value: &str) -> Option<String> {
     let trailing = value
         .char_indices()
         .rev()
-        .take_while(|&(_, c)| is_java_whitespace(c) || c == '\u{a0}')
+        .take_while(|&(_, c)| is_whitespace(c) || c == '\u{a0}')
         .last()
         .map(|(index, _)| index);
     if let Some(index) = trailing {
@@ -37,7 +37,7 @@ pub(super) fn to_uri(value: &str) -> Option<String> {
 fn encode(text: &str) -> String {
     let mut encoded = String::with_capacity(text.len());
     for &byte in text.as_bytes() {
-        if byte >= 0x80 || byte == b'|' || is_java_whitespace(char::from(byte)) {
+        if byte >= 0x80 || byte == b'|' || is_whitespace(char::from(byte)) {
             encoded.push_str(&format!("%{byte:02X}"));
         } else {
             encoded.push(char::from(byte));
