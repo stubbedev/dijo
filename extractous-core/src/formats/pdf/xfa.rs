@@ -17,16 +17,11 @@ const DATA_NAMESPACE: &str = "http://www.xfa.org/schema/xfa-data/1.0/";
 /// What `TEXT_PATTERN` matches: the local names of the elements whose text is written.
 const TEXT_ELEMENTS: [&str; 5] = ["speak", "text", "contents-richtext", "toolTip", "exData"];
 
-/// Whether `XFA_TEMPLATE_ANY_VERSION` finds the template namespace at the start of
-/// `namespace`, each `.` of the pattern matching any character but a line terminator.
+/// Whether `namespace` is the template namespace of some version. Tika's
+/// `XFA_TEMPLATE_ANY_VERSION` leaves the pattern's dots unescaped, so each matches any
+/// character (#109).
 fn is_template(namespace: &str) -> bool {
-    let mut characters = namespace.chars();
-    TEMPLATE_NAMESPACE.chars().all(|expected| {
-        characters.next().is_some_and(|character| match expected {
-            '.' => !matches!(character, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'),
-            _ => character == expected,
-        })
-    })
+    namespace.starts_with(TEMPLATE_NAMESPACE)
 }
 
 /// `PDXFAResource.getBytes`: the stream, or the streams of a packet array's odd entries one
@@ -219,40 +214,56 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// `scrapeTextUntil` collecting text: a line break at the end of each `p`.
+    /// `scrapeTextUntil` collecting text: a line break between `p`s. Tika ends each `p` with
+    /// one, the last included (#109).
     fn text(&mut self, namespace: &str, local_name: &str) -> String {
         let mut buffer = String::new();
+        let mut paragraph_ended = false;
         while let Some(node) = self.next() {
             match node {
-                Node::Text(text) => buffer.push_str(text),
+                Node::Text(text) => {
+                    if paragraph_ended && !text.is_empty() {
+                        buffer.push('\n');
+                        paragraph_ended = false;
+                    }
+                    buffer.push_str(text);
+                }
                 Node::End { .. } if node.ends(namespace, local_name) => break,
-                Node::End { local_name, .. } if local_name == "p" => buffer.push('\n'),
+                Node::End { local_name, .. } if local_name == "p" => paragraph_ended = true,
                 _ => {}
             }
         }
         buffer
     }
 
-    /// `loadData`: the text gathered up to each end tag, by the end tag's local name, until the
-    /// data ends.
+    /// `loadData`: the text of each element holding text and no elements, by its local name,
+    /// until the data ends, blank text left out. Tika takes all the text since the last end
+    /// tag, whitespace and the text around child elements included, as the value of the next
+    /// end tag (#109).
     fn data(&mut self, values: &mut Vec<(String, Vec<String>)>) {
         let mut buffer = String::new();
+        let mut leaf = false;
         while let Some(node) = self.next() {
             match node {
                 Node::Text(text) => buffer.push_str(text),
+                Node::Start { .. } => {
+                    buffer.clear();
+                    leaf = true;
+                }
                 Node::End { local_name, .. } => {
-                    if !buffer.is_empty() {
+                    if node.ends(DATA_NAMESPACE, "data") {
+                        return;
+                    }
+                    if leaf && !is_blank(&buffer) {
                         let value = std::mem::take(&mut buffer);
                         match values.iter_mut().find(|(key, _)| key == local_name) {
                             Some((_, list)) => list.push(value),
                             None => values.push((local_name.clone(), vec![value])),
                         }
                     }
-                    if node.ends(DATA_NAMESPACE, "data") {
-                        return;
-                    }
+                    buffer.clear();
+                    leaf = false;
                 }
-                Node::Start { .. } => {}
             }
         }
     }
@@ -291,9 +302,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_template_namespaces_as_the_pattern_does() {
+    fn matches_template_namespaces_of_any_version() {
         assert!(is_template("http://www.xfa.org/schema/xfa-template/2.8/"));
-        assert!(is_template("http://wwwXxfa-org/schema/xfa-template"));
+        assert!(!is_template("http://wwwXxfa-org/schema/xfa-template"));
         assert!(!is_template("http://www.xfa.org/schema/xfa-data/1.0/"));
         assert!(!is_template("http://www.xfa.org/schema/xfa-templ"));
     }
@@ -305,16 +316,19 @@ mod tests {
     }
 
     #[test]
-    fn reads_fields_data_and_text_as_xfaextractor_does() {
+    fn reads_fields_data_and_text() {
         let form = br#"<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">
 <template xmlns="http://www.xfa.org/schema/xfa-template/3.0/">
  <subform><draw><value><text>Ans&#248;gning</text></value></draw>
   <field name="navn"><assist><toolTip>Dit <p>fulde</p> navn</toolTip></assist></field>
-  <field name="by"/>
+  <field name="by"><assist><toolTip><p>Byen</p><p>du bor i</p></toolTip></assist></field>
+  <field name="adresse"/><field name="gate"/>
  </subform>
 </template>
 <xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/">
- <xfa:data><form1><navn>Kari</navn><by>Oslo</by></form1></xfa:data>
+ <xfa:data><form1>
+  <navn>Kari</navn><by>Oslo</by><adresse> <gate>Storgata</gate> 1</adresse>
+ </form1></xfa:data>
 </xfa:datasets>
 </xdp:xdp>"#;
         assert_eq!(
@@ -323,7 +337,9 @@ mod tests {
                 paragraphs: vec!["Ansøgning".to_owned()],
                 fields: vec![
                     ("navn".to_owned(), "Dit fulde\n navn: Kari".to_owned()),
-                    ("by".to_owned(), "by: Oslo".to_owned()),
+                    ("by".to_owned(), "Byen\ndu bor i: Oslo".to_owned()),
+                    ("adresse".to_owned(), "adresse: ".to_owned()),
+                    ("gate".to_owned(), "gate: Storgata".to_owned()),
                 ],
             }
         );
