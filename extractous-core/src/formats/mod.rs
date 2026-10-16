@@ -52,6 +52,7 @@ pub(crate) mod reference;
 mod rtf;
 mod subtitle;
 mod text;
+mod tnef;
 mod translation;
 mod warc;
 pub(crate) mod xhtml;
@@ -235,6 +236,7 @@ static PARSERS: &[&dyn Parser] = &[
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &tnef::TnefParser,
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,

@@ -14,7 +14,7 @@ mod extractor;
 mod named;
 mod properties;
 mod property_table;
-mod types;
+pub(super) mod types;
 
 use chunks::Message;
 use extractor::{extract, Extracted};
