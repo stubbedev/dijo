@@ -357,7 +357,7 @@ fn first_operation(pdf: &Pdf, stream: &Stream) -> Result<Option<(String, Vec<Obj
     let mut operands = Vec::new();
     while let Some(token) = lexer.next_token()? {
         match token {
-            Token::Operator(name) => return Ok(Some((name, operands))),
+            Token::Operator(name) => return Ok(Some((name.into_owned(), operands))),
             Token::Operand(object) => operands.push(object),
         }
     }
