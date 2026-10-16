@@ -149,6 +149,65 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
     })
 }
 
+/// A document `Jsoup.parse` builds from a string, for a parser that walks its nodes itself.
+pub(crate) struct ParsedDocument(Dom);
+
+/// A node of a [`ParsedDocument`], as a `NodeFilter` sees it.
+pub(crate) enum ParsedNode<'d> {
+    Document,
+    /// An element, by its name (`nodeName`), with its attributes in their order.
+    Element {
+        name: &'d str,
+        attributes: Vec<(&'d str, &'d str)>,
+    },
+    /// A text node (`TextNode`, which a CDATA section is too): its whole text.
+    Text(&'d str),
+    /// The data of a `script` or `style` element (`DataNode`).
+    Data(&'d str),
+    /// Any other node, by its name: `#comment` or `#doctype`.
+    Other(&'static str),
+}
+
+impl ParsedDocument {
+    pub(crate) fn parse(html: &str) -> Self {
+        let units: Vec<u16> = html.encode_utf16().collect();
+        Self(tree_builder::parse(&units, Source::String))
+    }
+
+    /// The document node, the root of the tree.
+    pub(crate) fn root(&self) -> usize {
+        dom::DOCUMENT
+    }
+
+    pub(crate) fn children(&self, node: usize) -> &[usize] {
+        &self.0.node(node).children
+    }
+
+    pub(crate) fn node(&self, node: usize) -> ParsedNode<'_> {
+        match &self.0.node(node).data {
+            dom::NodeData::Document { .. } => ParsedNode::Document,
+            dom::NodeData::Element { .. } => ParsedNode::Element {
+                name: &self.0.tag(node).name,
+                attributes: self
+                    .0
+                    .attributes(node)
+                    .iter()
+                    .map(|attribute| {
+                        (
+                            attribute.key.as_str(),
+                            attribute.value.as_deref().unwrap_or(""),
+                        )
+                    })
+                    .collect(),
+            },
+            dom::NodeData::Text(text) | dom::NodeData::CData(text) => ParsedNode::Text(text),
+            dom::NodeData::Data(data) => ParsedNode::Data(data),
+            dom::NodeData::Comment(_) => ParsedNode::Other("#comment"),
+            dom::NodeData::Doctype { .. } => ParsedNode::Other("#doctype"),
+        }
+    }
+}
+
 /// The text jsoup reads: decoded with a byte order mark's charset when the input starts with
 /// one, else with `decode_as`.
 fn decode(input: &[u8], decode_as: Charset) -> Result<String, Failure> {

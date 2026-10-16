@@ -23,7 +23,7 @@ mod feed;
 mod fiction_book;
 mod font;
 pub(crate) mod handlers;
-mod html;
+pub(crate) mod html;
 mod hwpx;
 mod iwork;
 mod jdk_zip;
@@ -52,6 +52,7 @@ mod prt;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
+mod source_code;
 mod subtitle;
 mod text;
 mod tnef;
@@ -240,6 +241,7 @@ static PARSERS: &[&dyn Parser] = &[
     &pptx::PptxParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
+    &source_code::SourceCodeParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
