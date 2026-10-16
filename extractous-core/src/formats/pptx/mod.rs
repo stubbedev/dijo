@@ -16,6 +16,7 @@ use crate::formats::docx::notes::InlineParts;
 use crate::formats::docx::numbering::ListManager;
 use crate::formats::docx::text::{TextHandler, TextOptions};
 use crate::formats::docx::write_general_text_parts;
+use crate::formats::embedded;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
@@ -90,8 +91,6 @@ mod name {
     pub(super) const HAS_HIDDEN_SLIDES: &str = "msoffice:ppt:has-hidden-slides";
     pub(super) const NUM_HIDDEN_SLIDES: &str = "msoffice:ppt:num-hidden-slides";
     pub(super) const HAS_ANIMATIONS: &str = "msoffice:ppt:has-animations";
-    pub(super) const PAGE_NUMBER: &str = "tk:page:number";
-    pub(super) const PAGE_NUMBERS: &str = "tk:page:numbers";
 }
 
 /// The extractor Tika records having used.
@@ -362,7 +361,7 @@ impl<'a> Presentation<'a> {
             xhtml,
             &|part, metadata| {
                 if let Some(pages) = pages.get(&part) {
-                    apply_page_numbers(metadata, pages);
+                    embedded::apply_page_numbers(metadata, pages);
                 }
             },
         )?;
@@ -637,24 +636,6 @@ impl<H: SaxHandler> SaxHandler for PlaceHolderSkipper<'_, H> {
             return Ok(());
         }
         self.inner.characters(text)
-    }
-}
-
-/// `PageAnchoring.applyPageMetadata`: the slides a picture is on in order, and the slide when
-/// there is one.
-fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
-    let mut sorted = pages.to_vec();
-    sorted.sort_unstable();
-    if sorted.is_empty() {
-        sorted.push(-1);
-    }
-    for page in &sorted {
-        metadata.add(name::PAGE_NUMBERS, page.to_string());
-    }
-    if let [page] = sorted[..] {
-        if page != -1 {
-            metadata.set(name::PAGE_NUMBER, page.to_string());
-        }
     }
 }
 

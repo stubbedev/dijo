@@ -221,6 +221,7 @@ pub(crate) enum Wrapping {
 pub(crate) enum ResourceType {
     Attachment,
     Inline,
+    Macro,
     Thumbnail,
     AlternateFormatChunk,
 }
@@ -230,6 +231,7 @@ impl ResourceType {
         match self {
             Self::Attachment => "ATTACHMENT",
             Self::Inline => "INLINE",
+            Self::Macro => "MACRO",
             Self::Thumbnail => "THUMBNAIL",
             Self::AlternateFormatChunk => "ALTERNATE_FORMAT_CHUNK",
         }
@@ -255,6 +257,31 @@ impl ResourceType {
 /// would only add a garbled copy of the front page's text.
 pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
     !ResourceType::Thumbnail.is_of(metadata)
+}
+
+/// `TikaPagedText.PAGE_NUMBER`: the page an embedded resource is on, when it is on one.
+pub(crate) const PAGE_NUMBER: &str = "tk:page:number";
+/// `TikaPagedText.PAGE_NUMBERS`: the pages an embedded resource is on.
+pub(crate) const PAGE_NUMBERS: &str = "tk:page:numbers";
+
+/// `PageAnchoring.applyPageMetadata`: the pages an embedded resource is on in order, -1 for
+/// none, and the page when there is one.
+pub(crate) fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
+    let mut sorted = pages.to_vec();
+    sorted.sort_unstable();
+    if sorted.is_empty() {
+        sorted.push(-1);
+    }
+    metadata.remove(PAGE_NUMBERS);
+    metadata.remove(PAGE_NUMBER);
+    for page in &sorted {
+        metadata.add(PAGE_NUMBERS, page.to_string());
+    }
+    if let [page] = sorted[..] {
+        if page != -1 {
+            metadata.set(PAGE_NUMBER, page.to_string());
+        }
+    }
 }
 
 /// `EmbeddedDocumentUtil.recordEmbeddedStreamException` of an exception a parser makes itself,

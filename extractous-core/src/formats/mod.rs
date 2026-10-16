@@ -23,6 +23,7 @@ mod executable;
 mod feed;
 mod fiction_book;
 mod font;
+mod geogebra;
 pub(crate) mod handlers;
 pub(crate) mod html;
 mod hwpx;
@@ -209,6 +210,7 @@ static PARSERS: &[&dyn Parser] = &[
     &font::AdobeFontMetricParser,
     &font::TrueTypeParser,
     &fiction_book::FictionBookParser,
+    &geogebra::GeoGebraParser,
     &html::JSoupParser,
     &hwpx::HwpxParser,
     &idml::IdmlParser,
@@ -469,7 +471,7 @@ impl Detected {
     /// Detects an embedded document `input`, its stream `opened` as given, with the `metadata`
     /// its embedding parser gives it, which hints at its type and which the detection's
     /// metadata is added to.
-    fn detect_embedded(
+    pub(crate) fn detect_embedded(
         input: &[u8],
         metadata: &TikaMetadata,
         opened: Opened,
