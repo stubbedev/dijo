@@ -36,6 +36,7 @@ mod type1;
 mod writer;
 mod xfa;
 mod xmp;
+mod xref;
 
 use std::sync::OnceLock;
 
@@ -157,37 +158,22 @@ fn record(
                 unreachable!("a recording stops only at the memory budget, not at {stop:?}")
             }
         });
-    if let (Some(number), false) = (
-        loaded.pdf.lost_object_needed(),
-        matches!(recorded, Err(Declined::Fails(_))),
-    ) {
+    if matches!(recorded, Err(Declined::Fails(_))) {
+        return recorded.map(|()| recording);
+    }
+    if let Some(number) = loaded.pdf.lost_object_needed() {
         return Err(Declined::Deferred(format!(
             "object {number}, which lopdf cannot read and PDFBox may recover"
         )));
     }
+    let unlisted = loaded.pdf.unlisted_objects_needed();
+    if let Some((number, _)) = xref::first_found(input, &unlisted).map_err(deferred)? {
+        return Err(Declined::Deferred(format!(
+            "object {number}, which the cross-reference table does not list and PDFBox finds \
+             by searching the document"
+        )));
+    }
     recorded.map(|()| recording)
-}
-
-/// Whether the cross-reference table puts the object `id` where it is: at an offset where its
-/// number and generation start an `obj`, after any whitespace.
-fn listed_where_it_is(doc: &Document, input: &[u8], (number, generation): lopdf::ObjectId) -> bool {
-    let offset = match doc.reference_table.entries.get(&number) {
-        Some(lopdf::xref::XrefEntry::Normal { offset, .. }) => offset,
-        Some(lopdf::xref::XrefEntry::Compressed { .. }) => return true,
-        _ => return false,
-    };
-    let Some(at) = input.get(*offset as usize..) else {
-        return false;
-    };
-    let words: Vec<&[u8]> = at
-        .split(|byte| byte.is_ascii_whitespace())
-        .filter(|word| !word.is_empty())
-        .take(3)
-        .collect();
-    words.len() == 3
-        && words[0] == number.to_string().as_bytes()
-        && words[1] == generation.to_string().as_bytes()
-        && words[2].starts_with(b"obj")
 }
 
 /// A document's objects, as `lopdf` reads them, and what the empty password opens it with.
@@ -196,25 +182,21 @@ struct Loaded {
     access: Access,
 }
 
-/// The document's objects, decrypted with the empty password as Tika's `PDFParser` opens an
-/// encrypted document without one. A document the empty password does not open is left to
-/// Tika, which asks for a password.
+/// The document's objects where PDFBox finds them, decrypted with the empty password as Tika's
+/// `PDFParser` opens an encrypted document without one. A document the empty password does
+/// not open is left to Tika, which asks for a password.
 fn load(input: &[u8]) -> Result<Loaded, Unported> {
-    let mut doc = Document::load_mem(input)
-        .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?;
-    if let Ok(encrypt) = doc.trailer.get(b"Encrypt") {
-        let misplaced = match encrypt {
-            lopdf::Object::Reference(id) => !listed_where_it_is(&doc, input, *id),
-            _ => false,
-        };
+    let resolution = xref::resolve(input)?;
+    let mut doc = match Document::load_mem(input) {
+        Ok(doc) if !resolution.needs_rewrite(&doc, input)? => doc,
+        _ => Document::load_mem(&resolution.rewritten(input)?)
+            .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?,
+    };
+    resolution.set_trailer(&mut doc);
+    if doc.trailer.has(b"Encrypt") {
         return Err(Unported(
-            if misplaced {
-                "an encryption dictionary the cross-reference table misplaces, which lopdf \
-                 cannot read and PDFBox may recover"
-            } else {
-                "encryption the empty password does not open, which Tika asks a password for"
-            }
-            .to_owned(),
+            "encryption the empty password does not open, which Tika asks a password for"
+                .to_owned(),
         ));
     }
     let access = match doc.encryption_state.clone() {
@@ -222,7 +204,7 @@ fn load(input: &[u8]) -> Result<Loaded, Unported> {
         Some(state) => Access::of(&mut doc, &state)?,
     };
     Ok(Loaded {
-        pdf: Pdf::new(doc, input),
+        pdf: Pdf::new(doc, input, resolution.listed()),
         access,
     })
 }
@@ -449,6 +431,66 @@ mod tests {
         out
     }
 
+    /// A document of the given objects, numbered from 1 with the catalog first, and a
+    /// cross-reference stream listing them, and each object of `dangling` at offset 0.
+    fn stream_document(objects: &[&str], dangling: &[u32]) -> Vec<u8> {
+        let mut out = b"%PDF-1.5\n".to_vec();
+        let mut rows: Vec<(u32, u32)> = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            rows.push((index as u32 + 1, out.len() as u32));
+            out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        rows.extend(dangling.iter().map(|&number| (number, 0)));
+        let stream_number = rows.iter().map(|&(number, _)| number).max().unwrap_or(0) + 1;
+        let start = out.len() as u32;
+        rows.push((stream_number, start));
+        rows.sort_unstable();
+        let mut data = Vec::new();
+        for (_, offset) in &rows {
+            data.push(1);
+            data.extend_from_slice(&offset.to_be_bytes());
+            data.extend_from_slice(&0u16.to_be_bytes());
+        }
+        let index: Vec<String> = rows
+            .iter()
+            .map(|(number, _)| format!("{number} 1"))
+            .collect();
+        out.extend_from_slice(
+            format!(
+                "{stream_number} 0 obj\n<< /Type /XRef /Size {} /Root 1 0 R /W [1 4 2] \
+                 /Index [{}] /Length {} >>\nstream\n",
+                stream_number + 1,
+                index.join(" "),
+                data.len()
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(&data);
+        out.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{start}\n%%EOF\n").as_bytes(),
+        );
+        out
+    }
+
+    /// Where `needle` first stands in `haystack`.
+    fn find(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap_or_else(|| panic!("{} is missing", String::from_utf8_lossy(needle)))
+    }
+
+    /// `haystack` with the first `needle` replaced by `replacement`.
+    fn replace(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+        let at = find(haystack, needle);
+        [&haystack[..at], replacement, &haystack[at + needle.len()..]].concat()
+    }
+
+    fn deferral(path: &Path) -> Option<String> {
+        let input = std::fs::read(path).unwrap();
+        PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+    }
+
     /// A page of Helvetica text drawn by `content`.
     fn page_objects(content: &str) -> Vec<String> {
         vec![
@@ -609,15 +651,67 @@ mod tests {
 
     #[test]
     fn defers_a_needed_object_lopdf_cannot_read() {
-        let objects = page_objects(TEXT);
+        let mut objects = page_objects(TEXT);
+        objects[3] = format!("<< /Length 5 /X <zz> >>\nstream\n{TEXT}\nendstream");
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let input = document(&objects, b"", &[(4, 3)]);
+        let input = document(&objects, b"", &[]);
         assert_eq!(
             PdfParser
                 .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
                 .as_deref(),
             Some("object 4, which lopdf cannot read and PDFBox may recover")
         );
+    }
+
+    #[test]
+    fn defers_a_needed_object_the_table_does_not_list_but_pdfbox_finds() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let font = find(&input, b"5 0 obj");
+        let entry = format!("{font:010} 00000 n \n");
+        let input = replace(&input, entry.as_bytes(), b"0000000000 65535 f \n");
+        assert_eq!(
+            PdfParser
+                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+                .as_deref(),
+            Some(
+                "object 5, which the cross-reference table does not list and PDFBox finds by \
+                 searching the document"
+            )
+        );
+    }
+
+    #[test]
+    fn extracts_documents_pdfbox_repairs_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-repaired");
+        let mut objects = page_objects(TEXT);
+        objects.push("<< /Title (Eventyr) /Author (H. C. Andersen) >>".to_owned());
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let plain = document(&objects, b"", &[]);
+        let start = find(&plain, b"xref\n");
+        let startxref = format!("startxref\n{start}\n");
+        let documents = [
+            ("shifted.pdf", document(&objects, b"", &[(4, 3), (6, 1)])),
+            (
+                "startxref.pdf",
+                replace(
+                    &plain,
+                    startxref.as_bytes(),
+                    format!("startxref\n{}\n", start + 2).as_bytes(),
+                ),
+            ),
+            ("no-table.pdf", plain[..start].to_vec()),
+            ("stream.pdf", stream_document(&objects, &[9])),
+        ];
+        let paths: Vec<PathBuf> = documents
+            .iter()
+            .map(|(name, bytes)| scratch.write(name, bytes))
+            .collect();
+        for path in &paths {
+            assert_eq!(deferral(path), None, "{}", path.display());
+        }
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
     }
 
     #[test]
@@ -635,17 +729,6 @@ mod tests {
             matches!(prepared, Err(Declined::Fails(Error::MemoryLimit(1)))),
             "{prepared:?}"
         );
-    }
-
-    #[test]
-    fn tells_objects_the_table_misplaces() {
-        let objects = page_objects(TEXT);
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let input = document(&objects, b"", &[(4, 2)]);
-        let doc = Document::load_mem(&input).unwrap();
-        assert!(listed_where_it_is(&doc, &input, (3, 0)));
-        assert!(!listed_where_it_is(&doc, &input, (4, 0)));
-        assert!(!listed_where_it_is(&doc, &input, (9, 0)));
     }
 
     fn with_pdf(pdf: PdfParserConfig) -> ParserConfigs {

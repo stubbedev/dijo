@@ -35,6 +35,9 @@ pub(super) struct Lexer<'a> {
     inline_image_depth: usize,
     /// The bytes of the number being read, kept for the next.
     number: Vec<u8>,
+    /// Whether the bytes are a document's own, where `COSParser` reads indirect references,
+    /// rather than a content stream, where `PDFStreamParser` stops at one.
+    file: bool,
 }
 
 /// What `BaseParser.parseDirObject` reads inside a dictionary or an array: an object, the `R` of
@@ -58,11 +61,11 @@ impl From<Unported> for Nested {
     }
 }
 
-fn is_whitespace(c: Option<u8>) -> bool {
+pub(super) fn is_whitespace(c: Option<u8>) -> bool {
     matches!(c, Some(0 | 9 | 12 | 10 | 13 | 32))
 }
 
-fn is_end_of_name(c: Option<u8>) -> bool {
+pub(super) fn is_end_of_name(c: Option<u8>) -> bool {
     matches!(
         c,
         None | Some(
@@ -83,7 +86,7 @@ fn is_end_of_name(c: Option<u8>) -> bool {
     )
 }
 
-fn is_digit(c: Option<u8>) -> bool {
+pub(super) fn is_digit(c: Option<u8>) -> bool {
     matches!(c, Some(b'0'..=b'9'))
 }
 
@@ -108,14 +111,43 @@ impl<'a> Lexer<'a> {
             depth: 0,
             inline_image_depth: 0,
             number: Vec::new(),
+            file: false,
         }
     }
 
-    fn peek(&self) -> Option<u8> {
+    /// A lexer of a document's own bytes, as `COSParser` reads them from `pos` on: indirect
+    /// references are objects there.
+    pub(super) fn file(data: &'a [u8], pos: usize) -> Self {
+        Self {
+            pos: pos.min(data.len()),
+            file: true,
+            ..Self::new(data)
+        }
+    }
+
+    pub(super) fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// `seek`, which stops at the end of the data.
+    pub(super) fn seek(&mut self, pos: usize) {
+        self.pos = pos.min(self.data.len());
+    }
+
+    /// `COSParser.parseCOSDictionary`, or `None` where it throws.
+    pub(super) fn file_dictionary(&mut self) -> Result<Option<Dictionary>, Unported> {
+        match self.parse_dictionary() {
+            Ok(dict) => Ok(Some(dict)),
+            Err(Nested::Stop) => Ok(None),
+            Err(Nested::Failed(unported)) => Err(unported),
+        }
+    }
+
+    pub(super) fn peek(&self) -> Option<u8> {
         self.data.get(self.pos).copied()
     }
 
-    fn read(&mut self) -> Option<u8> {
+    pub(super) fn read(&mut self) -> Option<u8> {
         let c = self.peek();
         if c.is_some() {
             self.pos += 1;
@@ -124,7 +156,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// `rewind(n)`, after reads that may have run past the end.
-    fn rewind(&mut self, count: usize) {
+    pub(super) fn rewind(&mut self, count: usize) {
         self.pos = self.pos.saturating_sub(count);
     }
 
@@ -140,7 +172,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// `BaseParser.skipSpaces`: whitespace and comments.
-    fn skip_spaces(&mut self) {
+    pub(super) fn skip_spaces(&mut self) {
         let mut c = self.read();
         while is_whitespace(c) || c == Some(b'%') {
             if c == Some(b'%') {
@@ -156,7 +188,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// `BaseParser.readString`: the characters up to the end of a name.
-    fn read_string(&mut self) -> Vec<u8> {
+    pub(super) fn read_string(&mut self) -> Vec<u8> {
         self.skip_spaces();
         let mut buffer = Vec::new();
         let mut c = self.read();
@@ -673,7 +705,25 @@ impl<'a> Lexer<'a> {
         if !is_number || !is_digit(self.peek()) {
             return Ok(Some(value));
         }
-        Err(Nested::Stop)
+        if !self.file {
+            return Err(Nested::Stop);
+        }
+        let generation = match self.parse_direct_object()? {
+            Direct::Object(object) => Some(object),
+            Direct::Reference | Direct::Skipped => None,
+        };
+        self.skip_spaces();
+        if self.read() != Some(b'R') {
+            return Err(Nested::Stop);
+        }
+        let (Object::Integer(number), Some(Object::Integer(generation))) = (value, generation)
+        else {
+            return Ok(Some(Object::Null));
+        };
+        if number <= 0 || (generation as i32) < 0 {
+            return Ok(Some(Object::Null));
+        }
+        reference(number, generation as i32).map(Some)
     }
 
     /// `BaseParser.readUntilEndOfCOSDictionary`: whether the stream ran out or the object ended.
@@ -736,7 +786,12 @@ impl<'a> Lexer<'a> {
                         if let Some(&Object::Integer(number)) = array.last() {
                             array.pop();
                             if number >= 0 && generation as i32 >= 0 {
-                                return Err(Nested::Stop);
+                                if !self.file {
+                                    return Err(Nested::Stop);
+                                }
+                                array.push(reference(number, generation as i32)?);
+                                self.skip_spaces();
+                                continue;
                             }
                         }
                     }
@@ -806,8 +861,12 @@ impl<'a> Lexer<'a> {
                 }
                 if word == b"endobj" || word == b"endstream" {
                     self.rewind(word.len());
+                    return Ok(Direct::Skipped);
                 }
-                return Ok(Direct::Skipped);
+                return Ok(match self.file {
+                    true => Direct::Object(Object::Null),
+                    false => Direct::Skipped,
+                });
             }
         };
         Ok(Direct::Object(object))
@@ -856,6 +915,17 @@ fn latin1(bytes: Vec<u8>) -> String {
         return String::from_utf8(bytes).expect("ASCII is UTF-8");
     }
     bytes.iter().map(|&b| char::from(b)).collect()
+}
+
+/// The reference `COSParser` reads for the object `number` of `generation`, which `lopdf` holds
+/// in fewer bits than PDFBox.
+fn reference(number: i64, generation: i32) -> Result<Object, Nested> {
+    match (u32::try_from(number), u16::try_from(generation)) {
+        (Ok(number), Ok(generation)) => Ok(Object::Reference((number, generation))),
+        _ => Err(Nested::Failed(Unported(format!(
+            "a reference to object {number} {generation}, which lopdf cannot hold"
+        )))),
+    }
 }
 
 /// The text of the bytes of a number, which are ASCII.

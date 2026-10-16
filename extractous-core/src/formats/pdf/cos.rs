@@ -2,10 +2,9 @@
 //! an indirect reference resolves to its object, `null` and a missing object to nothing, a stream
 //! is a dictionary too, and numbers, names and text strings convert as PDFBox converts them.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 
-use lopdf::xref::XrefEntry;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 use super::Unported;
@@ -34,35 +33,35 @@ impl Identity {
 /// A parsed document and its objects.
 pub(super) struct Pdf {
     pub(super) doc: Document,
-    /// The objects the cross-reference table lists that `lopdf` could not read.
+    /// The objects the cross-reference table lists, as PDFBox reads it.
+    listed: BTreeSet<ObjectId>,
+    /// The objects it lists that `lopdf` could not read.
     lost: BTreeSet<u32>,
     /// The first of them the extraction asked for, if it asked for one.
     lost_needed: Cell<Option<u32>>,
+    /// The objects the extraction asked for that the table does not list.
+    unlisted_needed: RefCell<BTreeSet<ObjectId>>,
     /// Whether the document's bytes spell `Filespec`, as a file specification outside an
     /// object stream must.
     pub(super) spells_filespec: bool,
 }
 
 impl Pdf {
-    pub(super) fn new(doc: Document, input: &[u8]) -> Self {
+    /// The document `doc` `lopdf` read from `input`, whose table, as PDFBox reads it, lists
+    /// the objects `listed`.
+    pub(super) fn new(doc: Document, input: &[u8], listed: BTreeSet<ObjectId>) -> Self {
         let present: BTreeSet<u32> = doc.objects.keys().map(|&(number, _)| number).collect();
-        let lost = doc
-            .reference_table
-            .entries
+        let lost = listed
             .iter()
-            .filter(|(_, entry)| {
-                matches!(
-                    entry,
-                    XrefEntry::Normal { .. } | XrefEntry::Compressed { .. }
-                )
-            })
-            .map(|(&number, _)| number)
+            .map(|&(number, _)| number)
             .filter(|number| !present.contains(number))
             .collect();
         Self {
             doc,
+            listed,
             lost,
             lost_needed: Cell::new(None),
+            unlisted_needed: RefCell::new(BTreeSet::new()),
             spells_filespec: input.windows(8).any(|window| window == b"Filespec"),
         }
     }
@@ -78,11 +77,24 @@ impl Pdf {
         self.lost_needed.get()
     }
 
-    /// The indirect object `id`, noting when it is one `lopdf` could not read.
+    /// The objects the extraction asked for that the table does not list, which PDFBox
+    /// searches the document for.
+    pub(super) fn unlisted_objects_needed(&self) -> Vec<ObjectId> {
+        self.unlisted_needed.borrow().iter().copied().collect()
+    }
+
+    /// The indirect object `id`, noting when it is one `lopdf` could not read, or one the
+    /// table does not list.
     pub(super) fn indirect(&self, id: ObjectId) -> Option<&Object> {
         let object = self.doc.objects.get(&id);
-        if object.is_none() && self.lost.contains(&id.0) && self.lost_needed.get().is_none() {
-            self.lost_needed.set(Some(id.0));
+        if object.is_none() {
+            if self.lost.contains(&id.0) {
+                if self.lost_needed.get().is_none() {
+                    self.lost_needed.set(Some(id.0));
+                }
+            } else if !self.listed.contains(&id) {
+                self.unlisted_needed.borrow_mut().insert(id);
+            }
         }
         object
     }
