@@ -588,7 +588,7 @@ mod tests {
         let (xml, rest): (Vec<&Path>, Vec<&Path>) = documents
             .iter()
             .copied()
-            .partition(|path| read_as_xml(&path));
+            .partition(|path| read_as_xml(path));
         assert_same_as_tika(&rest, TIKA_NAME);
         if !xml.is_empty() {
             crate::formats::parity::assert_same_as_tika_normalising(
