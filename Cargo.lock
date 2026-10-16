@@ -765,6 +765,7 @@ dependencies = [
  "lz4_flex",
  "lzma-rust2",
  "md-5",
+ "memchr",
  "object",
  "quick-xml",
  "rav1d",
