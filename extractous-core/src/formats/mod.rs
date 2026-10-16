@@ -40,7 +40,7 @@ mod subtitle;
 mod text;
 mod warc;
 pub(crate) mod xhtml;
-mod xlsx;
+pub(crate) mod xlsx;
 pub(crate) mod xml;
 mod zip_file;
 
@@ -182,6 +182,9 @@ static PARSERS: &[&dyn Parser] = &[
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,
+    &media::FlacParser,
+    &media::OpusParser,
+    &media::VorbisParser,
     &media::MidiParser,
     &media::AudioParser,
     &media::FlvParser,

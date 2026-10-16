@@ -294,6 +294,63 @@ fn parse_signed(text: &str, radix: i128, value: fn(char) -> Option<u32>) -> Opti
     i64::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
+/// `Base64.getMimeDecoder().decode(text)`: the text's ISO-8859-1 bytes, a character beyond it
+/// as `?`, decoded with everything outside the alphabet skipped, up to padding that must close a
+/// unit; `None` where Java throws.
+pub(crate) fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
+    let value = |byte: u8| -> Option<u32> {
+        match byte {
+            b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+            b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let bytes: Vec<u8> = text
+        .chars()
+        .map(|character| u8::try_from(character).unwrap_or(b'?'))
+        .collect();
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    let mut bits: u32 = 0;
+    let mut shift: i32 = 18;
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        at += 1;
+        if byte == b'=' {
+            if (shift == 6 && bytes.get(at).copied() != Some(b'=')) || shift == 18 {
+                return None;
+            }
+            if shift == 6 {
+                at += 1;
+            }
+            break;
+        }
+        let Some(digit) = value(byte) else {
+            continue;
+        };
+        bits |= digit << shift;
+        shift -= 6;
+        if shift < 0 {
+            decoded.extend_from_slice(&bits.to_be_bytes()[1..]);
+            shift = 18;
+            bits = 0;
+        }
+    }
+    match shift {
+        6 => decoded.push(bits.to_be_bytes()[1]),
+        0 => decoded.extend_from_slice(&bits.to_be_bytes()[1..3]),
+        12 => return None,
+        _ => {}
+    }
+    if bytes[at..].iter().any(|&byte| value(byte).is_some()) {
+        return None;
+    }
+    Some(decoded)
+}
+
 /// `String.equalsIgnoreCase`: the same length, and each pair of characters the same, or the same
 /// once both are upper-cased, or once those are lower-cased, each by its one-character mapping.
 pub(crate) fn equals_ignore_case(a: &str, b: &str) -> bool {
@@ -605,6 +662,17 @@ mod tests {
         assert_eq!(parse_hex_long("-7fffffffffffffff"), Some(-i64::MAX));
         assert_eq!(parse_hex_long("8000000000000000"), None);
         assert_eq!(parse_hex_long("1F"), Some(31));
+        assert_eq!(
+            base64_mime_decode("SGVs\r\nbG8=").as_deref(),
+            Some(b"Hello".as_slice())
+        );
+        assert_eq!(
+            base64_mime_decode("QQ==!").as_deref(),
+            Some(b"A".as_slice())
+        );
+        assert_eq!(base64_mime_decode("QQ=").as_deref(), None);
+        assert_eq!(base64_mime_decode("Q").as_deref(), None);
+        assert_eq!(base64_mime_decode("QUJD=QQ").as_deref(), None);
         assert_eq!(parse_int(" 1"), None);
         assert_eq!(parse_int("-"), None);
         assert_eq!(parse_long("9223372036854775807"), Some(i64::MAX));

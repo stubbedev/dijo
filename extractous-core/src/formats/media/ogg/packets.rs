@@ -1,0 +1,280 @@
+//! The Ogg packets of a stream as vorbis-java 0.8's `OggPacketReader` reads them: the next
+//! `OggS` capture pattern found within 64 KiB, each page's lacing values cut into packets, and a
+//! packet a page leaves unfinished joined to the first of the next page read, whatever its stream.
+//! The checksums are not checked, and data that ends inside a page ends the packets.
+
+/// What vorbis-java throws, which fails the parse.
+pub(super) type Thrown = String;
+
+/// A packet of a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Packet {
+    pub(super) data: Vec<u8>,
+    pub(super) sid: i32,
+    pub(super) granule_position: i64,
+    pub(super) beginning_of_stream: bool,
+    /// The data size of the page the packet ends on.
+    page_data_size: usize,
+}
+
+impl Packet {
+    /// `getOverheadBytes`, for what it throws: an `ArithmeticException` for a packet longer than
+    /// the data of the page it ends on, where that page holds none.
+    pub(super) fn check_overhead(&self) -> Result<(), Thrown> {
+        if self.data.len() > self.page_data_size && self.page_data_size == 0 {
+            return Err("ArithmeticException: / by zero".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// What a page's packet iterator gives: a packet, or the start of one the next page finishes.
+enum Piece {
+    Packet(Packet),
+    Partial(Vec<u8>),
+}
+
+/// An `OggPage` read from the stream, and its packet iterator's position.
+struct Page {
+    sid: i32,
+    granule_position: i64,
+    beginning_of_stream: bool,
+    lacing: Vec<u8>,
+    data: Vec<u8>,
+    current_lacing: usize,
+    current_offset: usize,
+    previous: Option<Vec<u8>>,
+}
+
+impl Page {
+    /// `OggPacketIterator.hasNext`: a lacing value left, or the one empty packet of a page
+    /// without lacing values.
+    fn has_next(&self) -> bool {
+        self.current_lacing < self.lacing.len()
+            || (self.current_lacing == 0 && self.lacing.is_empty())
+    }
+
+    /// `OggPacketIterator.next`.
+    fn next(&mut self) -> Piece {
+        let mut continues = false;
+        let mut lacing_values = 0;
+        let mut size = 0;
+        for (index, &value) in self.lacing.iter().enumerate().skip(self.current_lacing) {
+            size += usize::from(value);
+            lacing_values += 1;
+            if value < 255 {
+                break;
+            }
+            if index == self.lacing.len() - 1 {
+                continues = true;
+            }
+        }
+        let mut data = self.data[self.current_offset..self.current_offset + size].to_vec();
+        if let Some(mut previous) = self.previous.take() {
+            previous.extend_from_slice(&data);
+            data = previous;
+        }
+        let piece = if continues {
+            Piece::Partial(data)
+        } else {
+            Piece::Packet(Packet {
+                data,
+                sid: self.sid,
+                granule_position: self.granule_position,
+                beginning_of_stream: self.beginning_of_stream && self.current_lacing == 0,
+                page_data_size: self.data.len(),
+            })
+        };
+        self.current_lacing += lacing_values;
+        self.current_offset += size;
+        if self.current_lacing == 0 {
+            self.current_lacing = 1;
+        }
+        piece
+    }
+}
+
+/// `IOUtils.getInt` of the eight bytes of a granule position, with its `int` shifts: the high
+/// four bytes shifted by their distance modulo 32, all `-1` but for the third byte as `-1`.
+fn granule_position(bytes: [u8; 8]) -> i64 {
+    let [b0, b1, b2, b3, b4, b5, b6, b7] = bytes.map(i32::from);
+    if b0 == 255 && b1 == 255 && b3 == 255 && b4 == 255 && b5 == 255 && b6 == 255 && b7 == 255 {
+        return -1;
+    }
+    let low = (b3 << 24)
+        .wrapping_add(b2 << 16)
+        .wrapping_add(b1 << 8)
+        .wrapping_add(b0);
+    i64::from(b7 << 24) + i64::from(b6 << 16) + i64::from(b5 << 8) + i64::from(b4) + i64::from(low)
+}
+
+/// `OggPacketReader` over a stream's bytes.
+pub(super) struct Reader<'a> {
+    input: &'a [u8],
+    at: usize,
+    page: Option<Page>,
+}
+
+/// The longest search for the next capture pattern.
+const SEARCH_LIMIT: usize = 65536;
+
+impl<'a> Reader<'a> {
+    pub(super) fn new(input: &'a [u8]) -> Self {
+        Self {
+            input,
+            at: 0,
+            page: None,
+        }
+    }
+
+    fn read(&mut self) -> Option<u8> {
+        let byte = self.input.get(self.at).copied()?;
+        self.at += 1;
+        Some(byte)
+    }
+
+    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+        let bytes = self.input.get(self.at..self.at + count)?;
+        self.at += count;
+        Some(bytes)
+    }
+
+    /// `getNextPacket`: the next packet, `None` at the end of the data.
+    pub(super) fn next(&mut self) -> Result<Option<Packet>, Thrown> {
+        loop {
+            let mut left_over = None;
+            if let Some(page) = &mut self.page {
+                if page.has_next() {
+                    match page.next() {
+                        Piece::Packet(packet) => return Ok(Some(packet)),
+                        Piece::Partial(data) => left_over = Some(data),
+                    }
+                }
+            }
+            let mut searched = 0;
+            let mut matched = 0;
+            let mut found = false;
+            while searched < SEARCH_LIMIT && !found {
+                let Some(byte) = self.read() else {
+                    return Ok(None);
+                };
+                matched = match (matched, byte) {
+                    (0, b'O') | (1, b'g') | (2, b'g') => matched + 1,
+                    (3, b'S') => {
+                        found = true;
+                        4
+                    }
+                    _ => 0,
+                };
+                if !found {
+                    searched += 1;
+                }
+            }
+            if !found {
+                return Err(format!(
+                    "IOException: Next ogg packet header not found after searching {searched} bytes"
+                ));
+            }
+            match self.page()? {
+                Some(mut page) => {
+                    page.previous = left_over;
+                    self.page = Some(page);
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// `new OggPage(inp)` after the capture pattern: `None` where the data ends inside it.
+    fn page(&mut self) -> Result<Option<Page>, Thrown> {
+        let Some(&[version, flags]) = self.take(2) else {
+            return Ok(None);
+        };
+        if version != 0 {
+            return Err(format!(
+                "IllegalArgumentException: Found Ogg page in format {version} but we only support \
+                 version 0"
+            ));
+        }
+        let Some(header) = self.take(21) else {
+            return Ok(None);
+        };
+        let granule = granule_position(header[..8].try_into().expect("eight bytes"));
+        let sid = i32::from_le_bytes(header[8..12].try_into().expect("four bytes"));
+        let lacing_count = usize::from(header[20]);
+        let Some(lacing) = self.take(lacing_count) else {
+            return Ok(None);
+        };
+        let size = lacing.iter().map(|&value| usize::from(value)).sum();
+        let Some(data) = self.take(size) else {
+            return Ok(None);
+        };
+        Ok(Some(Page {
+            sid,
+            granule_position: granule,
+            beginning_of_stream: flags & 0x02 != 0,
+            lacing: lacing.to_vec(),
+            data: data.to_vec(),
+            current_lacing: 0,
+            current_offset: 0,
+            previous: None,
+        }))
+    }
+
+    /// `getNextPacketWithSid`.
+    pub(super) fn next_with_sid(&mut self, sid: i32) -> Result<Option<Packet>, Thrown> {
+        while let Some(packet) = self.next()? {
+            if packet.sid == sid {
+                return Ok(Some(packet));
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(flags: u8, granule: u64, lacing: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut page = b"OggS\x00".to_vec();
+        page.push(flags);
+        page.extend_from_slice(&granule.to_le_bytes());
+        page.extend_from_slice(&7u32.to_le_bytes());
+        page.extend_from_slice(&[0; 8]);
+        page.push(u8::try_from(lacing.len()).unwrap());
+        page.extend_from_slice(lacing);
+        page.extend_from_slice(data);
+        page
+    }
+
+    #[test]
+    fn reads_packets_across_pages_as_vorbis_java_does() {
+        let long = vec![1u8; 255];
+        let mut input = page(2, 0, &[3, 255], &[b"abc".as_slice(), &long].concat());
+        input.extend(page(0, 0x0102_0304, &[2], b"de"));
+        input.extend(b"junk");
+        input.extend(page(4, 9, &[], b""));
+        let mut reader = Reader::new(&input);
+        let first = reader.next().unwrap().unwrap();
+        assert_eq!(first.data, b"abc");
+        assert!(first.beginning_of_stream);
+        let second = reader.next().unwrap().unwrap();
+        assert_eq!(second.data.len(), 257);
+        assert_eq!(second.granule_position, 0x0102_0304);
+        let empty = reader.next().unwrap().unwrap();
+        assert!(empty.data.is_empty());
+        assert_eq!(reader.next().unwrap(), None);
+    }
+
+    #[test]
+    fn reads_granule_positions_with_javas_int_shifts() {
+        assert_eq!(granule_position([1, 0, 0, 0, 0, 0, 0, 0]), 1);
+        assert_eq!(granule_position([0, 0, 0, 0, 1, 0, 0, 0]), 1);
+        assert_eq!(granule_position([0, 0, 0, 0x80, 0, 0, 0, 0]), -0x8000_0000);
+        assert_eq!(
+            granule_position([0xFF, 0xFF, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            -1
+        );
+    }
+}

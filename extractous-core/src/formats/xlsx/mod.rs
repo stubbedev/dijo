@@ -15,7 +15,7 @@
 //! [`Workbook::prepare`].
 
 mod cell;
-mod format;
+pub(crate) mod format;
 mod handlers;
 mod header_footer;
 mod parts;
