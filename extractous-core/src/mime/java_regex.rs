@@ -33,12 +33,15 @@ pub(crate) enum Text {
 #[derive(Debug)]
 pub(crate) struct JavaRegex {
     pattern: String,
+    /// The character every match starts with, if the regex has one: a region that starts
+    /// otherwise does not match, without the regex compiled.
+    first: Option<char>,
     regex: OnceLock<Regex>,
 }
 
 impl JavaRegex {
     pub(crate) fn compile(source: &str, anchor: Anchor, text: Text) -> Result<JavaRegex, String> {
-        let translated = Translator::new(source, text).translate()?;
+        let Translation { translated, first } = Translator::new(source, text).translate()?;
         let end = match anchor {
             Anchor::LookingAt => "",
             Anchor::Matches => "\\z",
@@ -48,6 +51,7 @@ impl JavaRegex {
             .map_err(|error| format!("{source} translated to {translated}: {error}"))?;
         Ok(JavaRegex {
             pattern,
+            first,
             regex: OnceLock::new(),
         })
     }
@@ -63,6 +67,9 @@ impl JavaRegex {
 
     /// Whether a region matches.
     pub(crate) fn is_match(&self, region: &str) -> bool {
+        if self.first.is_some_and(|first| !region.starts_with(first)) {
+            return false;
+        }
         self.regex()
             .is_match(region)
             .expect("a match without a backtrack limit cannot fail")
@@ -95,6 +102,23 @@ struct Scope {
     ignore_case: bool,
 }
 
+/// A Java regex in the target syntax, and the character every match starts with, if one does.
+struct Translation {
+    translated: String,
+    first: Option<char>,
+}
+
+/// What the translation knows of the character a match starts with, from the top-level atoms read
+/// so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum First {
+    /// Only zero-width atoms: `^`, `\A` and flags.
+    Unseen,
+    /// A literal character, if the atom after it does not make it optional.
+    Literal(char),
+    Known(Option<char>),
+}
+
 struct Translator<'a> {
     source: &'a str,
     chars: Vec<char>,
@@ -102,6 +126,8 @@ struct Translator<'a> {
     out: String,
     scopes: Vec<Scope>,
     text: Text,
+    /// The plain character the last [`Translator::literal`] wrote, if it wrote one.
+    literal: Option<char>,
 }
 
 /// A character range as the target syntax writes it inside a class.
@@ -173,6 +199,7 @@ impl<'a> Translator<'a> {
                 ignore_case: false,
             }],
             text,
+            literal: None,
         }
     }
 
@@ -206,8 +233,13 @@ impl<'a> Translator<'a> {
         }
     }
 
-    fn translate(mut self) -> Result<String, String> {
+    fn translate(mut self) -> Result<Translation, String> {
+        let mut first = First::Unseen;
+        let mut alternation = false;
         while let Some(c) = self.next() {
+            let top_level = self.scopes.len() == 1;
+            let written = self.out.len();
+            self.literal = None;
             match c {
                 '\\' => self.escape()?,
                 '[' => self.class()?,
@@ -247,11 +279,38 @@ impl<'a> Translator<'a> {
                 '|' => self.out.push('|'),
                 c => self.literal(c),
             }
+            if !top_level {
+                continue;
+            }
+            alternation |= c == '|';
+            first = match first {
+                First::Unseen => {
+                    let atom = &self.out[written..];
+                    match self.literal {
+                        _ if atom.is_empty() || atom == r"\A" => First::Unseen,
+                        Some(literal) => First::Literal(literal),
+                        None => First::Known(None),
+                    }
+                }
+                First::Literal(literal) => {
+                    First::Known((!matches!(c, '*' | '?' | '{')).then_some(literal))
+                }
+                known => known,
+            };
         }
         if self.scopes.len() != 1 {
             return self.fail("an unclosed group");
         }
-        Ok(self.out)
+        let first = match first {
+            _ if alternation => None,
+            First::Unseen => None,
+            First::Literal(literal) => Some(literal),
+            First::Known(known) => known,
+        };
+        Ok(Translation {
+            translated: self.out,
+            first,
+        })
     }
 
     fn quantifier_suffix(&mut self) -> Result<(), String> {
@@ -387,6 +446,7 @@ impl<'a> Translator<'a> {
             self.set(&folded(&[(c, c)], true), false);
         } else {
             self.out.push_str(&encode(c));
+            self.literal = Some(c);
         }
     }
 
@@ -480,6 +540,34 @@ mod tests {
             .map(String::from)
             .chain(latin1().flat_map(|a| latin1().map(move |b| format!("{a}{b}"))))
             .collect()
+    }
+
+    fn first(pattern: &str) -> Option<char> {
+        JavaRegex::compile(pattern, Anchor::LookingAt, Text::Latin1)
+            .unwrap()
+            .first
+    }
+
+    #[test]
+    fn knows_the_character_a_match_starts_with() {
+        assert_eq!(first("(?s)\\xFF[\\xF0\\xF1].{2}"), Some('\u{FF}'));
+        assert_eq!(first("^BZh[1-9]"), Some('B'));
+        assert_eq!(first("\\Aowl"), Some('o'));
+        assert_eq!(first("a+b"), Some('a'));
+        assert_eq!(first("a"), Some('a'));
+        assert_eq!(first("a*b"), None);
+        assert_eq!(first("a?b"), None);
+        assert_eq!(first("a{0,2}b"), None);
+        assert_eq!(first("ab|c"), None);
+        assert_eq!(first("(?i)ab"), None);
+        assert_eq!(first("[ab]c"), None);
+        assert_eq!(first("(?:a)b"), None);
+        assert_eq!(first(".a"), None);
+        assert_eq!(first("\\da"), None);
+        assert_eq!(first("\\ba"), None);
+        assert_eq!(first("^"), None);
+        assert!(!looks("(?s)\\xFF.", b"\xFE\xFF"));
+        assert!(looks("(?s)\\xFF.", b"\xFF\xFE"));
     }
 
     #[test]

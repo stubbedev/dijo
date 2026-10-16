@@ -88,7 +88,7 @@ struct Record {
 }
 
 enum Pending {
-    Match(MagicMatch),
+    Match(Box<MagicMatch>),
     MinShouldMatch(usize),
 }
 
@@ -262,7 +262,7 @@ impl MimeTypes {
                         min.parse()
                             .map_err(|_| format!("invalid minShouldMatch {min}"))?,
                     ),
-                    None => Pending::Match(MagicMatch::parse(
+                    None => Pending::Match(Box::new(MagicMatch::parse(
                         &media_type,
                         &MatchAttributes {
                             kind: attribute(attributes, "type"),
@@ -270,7 +270,7 @@ impl MimeTypes {
                             value: attribute(attributes, "value"),
                             mask: attribute(attributes, "mask"),
                         },
-                    )?),
+                    )?)),
                 };
                 reading.records.push(Record {
                     clause: Some(clause),
@@ -315,7 +315,7 @@ impl MimeTypes {
                     }
                     Some(Pending::Match(magic)) => {
                         let mut subclauses = record.subclauses;
-                        let magic = Clause::Match(Box::new(magic));
+                        let magic = Clause::Match(magic);
                         match subclauses.len() {
                             0 => magic,
                             1 => Clause::And(vec![magic, subclauses.remove(0)]),
