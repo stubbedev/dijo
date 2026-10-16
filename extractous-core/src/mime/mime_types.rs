@@ -361,6 +361,12 @@ impl MimeTypes {
         &self.registry
     }
 
+    /// Every type the tables declare, in the order they declare them.
+    #[cfg(test)]
+    pub(crate) fn declared(&self) -> impl Iterator<Item = &MediaType> {
+        self.types.iter().map(|declared| &declared.media_type)
+    }
+
     /// `forName(type).getExtension()`: the first extension of the type a name normalizes to,
     /// with its dot, or nothing for a type without one or one `forName` would make anew.
     pub(crate) fn extension(&self, media_type: &MediaType) -> &str {

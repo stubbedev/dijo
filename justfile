@@ -173,6 +173,13 @@ mail-reference:
         extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
         corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
+# Regenerate the types Tika's path parses with EmptyParser, which the native path writes the empty
+# document of without the JVM, asking Tika's path for each type Tika's tables declare which parser it
+# parses that type with.
+empty-parser-types:
+    cd {{core}} && EMPTY_PARSER_TYPES_BLESS=1 cargo nextest run --lib \
+        formats::empty::tests::takes_the_types_tika_parses_with_empty_parser
+
 # Regenerate the tables of the JFlex scanners jhighlight highlights Java, Groovy and C++ with, which the
 # native SourceCodeParser scans source code with as Tika's does.
 [unix]

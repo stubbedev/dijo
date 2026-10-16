@@ -16,6 +16,7 @@ mod doc;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
+mod empty;
 mod epub;
 mod escher;
 mod executable;
@@ -158,8 +159,15 @@ pub(crate) trait Parser: Sync {
         &[]
     }
 
-    /// The media types it parses, without parameters, as Tika's detection names them.
+    /// The media types it parses, as Tika's detection names them.
     fn media_types(&self) -> &'static [&'static str];
+
+    /// Whether it parses a type whose parameters its media types do not name, such as a
+    /// `charset`, by the type without them, as Tika's `CompositeParser` walks to the type
+    /// without its parameters when no parser takes the type with them.
+    fn takes_base_types(&self) -> bool {
+        true
+    }
 
     /// Reads `input`, from the `metadata` Tika's parser starts from and under the parser
     /// settings `configs` the extraction was given, as far as deciding whether it extracts the
@@ -252,6 +260,7 @@ static PARSERS: &[&dyn Parser] = &[
     &xlsx::XlsxParser,
     &xml_2003::SpreadsheetMlParser,
     &xml_2003::WordMlParser,
+    &empty::EmptyParser,
 ];
 
 /// The native parser for `media_type`, if any, as Tika's `CompositeParser` looks one up: for
@@ -260,13 +269,14 @@ static PARSERS: &[&dyn Parser] = &[
 fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
     let full = media_type.trim();
     let base = full.split(';').next().unwrap_or_default().trim();
-    let serving = |name: &str| {
+    let serving = |name: &str, base: bool| {
         PARSERS
             .iter()
             .copied()
+            .filter(|parser| !base || parser.takes_base_types())
             .find(|parser| parser.media_types().contains(&name))
     };
-    serving(full).or_else(|| serving(base))
+    serving(full, false).or_else(|| serving(base, true))
 }
 
 /// Whether any format has a native parser yet, which decides whether routing needs a detection.
