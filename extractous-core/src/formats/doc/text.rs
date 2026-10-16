@@ -7,7 +7,8 @@ use crate::formats::poi::{i16_at, i32_at, u8_at, Read, Thrown};
 use crate::text::charset::Charset;
 
 const MAX_GRPPRL_LENGTH: i64 = 500_000_000;
-const MAX_PIECE_LENGTH: i64 = 100_000_000;
+/// `TextPieceTable.getMaxRecordLength`.
+pub(super) const MAX_PIECE_LENGTH: i64 = 100_000_000;
 const MAX_PLEX_STRUCT: i64 = 10_485_760;
 const MAX_PROPERTIES: i64 = 100_000;
 
@@ -25,6 +26,37 @@ pub(super) struct TextPiece {
 }
 
 impl TextPiece {
+    /// `new TextPiece(start, end, text, descriptor)`: failing where the text is not as many
+    /// characters as the range.
+    pub(super) fn new(
+        start: i32,
+        end: i32,
+        fc: i32,
+        unicode: bool,
+        prm: u16,
+        text: Vec<u16>,
+    ) -> Read<TextPiece> {
+        if text.len() as i64 != i64::from(end) - i64::from(start) {
+            return Err(Thrown(format!(
+                "Told we're for characters {start} -> {end}, but actually covers {} characters!",
+                text.len()
+            )));
+        }
+        Ok(TextPiece {
+            start,
+            end,
+            fc,
+            unicode,
+            prm,
+            text,
+        })
+    }
+
+    /// The piece's text.
+    pub(super) fn text(&self) -> &[u16] {
+        &self.text
+    }
+
     fn bytes_length(&self) -> i32 {
         (self.end - self.start) * if self.unicode { 2 } else { 1 }
     }
@@ -74,6 +106,55 @@ impl Plex {
     }
 }
 
+/// A piece descriptor of the CLX, as it is stored: its character range, its file position with
+/// its flags, and its property modifier.
+pub(super) struct Descriptor {
+    pub(super) start: i32,
+    pub(super) end: i32,
+    pub(super) fc: i32,
+    pub(super) prm: u16,
+}
+
+/// `ComplexFileTable`'s reading of the CLX at `offset` of `table`: the grpprls and the piece
+/// descriptors.
+pub(super) fn read_clx(table: &[u8], offset: i32) -> Read<(Vec<Vec<u8>>, Vec<Descriptor>)> {
+    let mut offset = offset;
+    let mut grpprls = Vec::new();
+    while u8_at(table, index(offset)?)? == 1 {
+        offset += 1;
+        let size = i32::from(i16_at(table, index(offset)?)?);
+        offset += 2;
+        grpprls.push(safely_clone(table, offset, size, MAX_GRPPRL_LENGTH)?);
+        offset = offset.wrapping_add(size);
+    }
+    let kind = u8_at(table, index(offset)?)?;
+    if kind != 2 {
+        return Err(Thrown(format!(
+            "The text piece table is corrupted, expected byte value 2 but had {kind}"
+        )));
+    }
+    offset += 1;
+    let size = i32_at(table, index(offset)?)?;
+    offset += 4;
+    let plex = Plex::read(table, offset, size, 8)?;
+    if plex.entries.is_empty() {
+        return Err(Thrown::new("Index 0 out of bounds for length 0"));
+    }
+    let mut descriptors = Vec::with_capacity(plex.entries.len());
+    for (start, end, descriptor) in &plex.entries {
+        let fc = i32_at(descriptor, 2)?;
+        let prm = i16_at(descriptor, 6)? as u16;
+        i16_at(descriptor, 0)?;
+        descriptors.push(Descriptor {
+            start: *start,
+            end: *end,
+            fc,
+            prm,
+        });
+    }
+    Ok((grpprls, descriptors))
+}
+
 /// The CLX: the grpprls its piece descriptors may refer to, and the text pieces.
 pub(super) struct ComplexFileTable {
     pub(super) grpprls: Vec<Vec<u8>>,
@@ -86,70 +167,45 @@ pub(super) struct ComplexFileTable {
 impl ComplexFileTable {
     /// `new ComplexFileTable(mainStream, tableStream, fcClx, 0)`.
     pub(super) fn read(main: &[u8], table: &[u8], offset: i32) -> Read<ComplexFileTable> {
-        let mut offset = offset;
-        let mut grpprls = Vec::new();
-        while u8_at(table, index(offset)?)? == 1 {
-            offset += 1;
-            let size = i32::from(i16_at(table, index(offset)?)?);
-            offset += 2;
-            grpprls.push(safely_clone(table, offset, size, MAX_GRPPRL_LENGTH)?);
-            offset = offset.wrapping_add(size);
-        }
-        let kind = u8_at(table, index(offset)?)?;
-        if kind != 2 {
-            return Err(Thrown(format!(
-                "The text piece table is corrupted, expected byte value 2 but had {kind}"
-            )));
-        }
-        offset += 1;
-        let size = i32_at(table, index(offset)?)?;
-        offset += 4;
-        let plex = Plex::read(table, offset, size, 8)?;
-        let mut pieces = Vec::with_capacity(plex.entries.len());
-        if plex.entries.is_empty() {
-            return Err(Thrown::new("Index 0 out of bounds for length 0"));
-        }
-        for (start, end, descriptor) in &plex.entries {
-            let raw_fc = i32_at(descriptor, 2)?;
-            let prm = i16_at(descriptor, 6)? as u16;
-            i16_at(descriptor, 0)?;
-            let unicode = raw_fc & 0x4000_0000 == 0;
+        let (grpprls, descriptors) = read_clx(table, offset)?;
+        let mut pieces = Vec::with_capacity(descriptors.len());
+        for descriptor in descriptors {
+            let unicode = descriptor.fc & 0x4000_0000 == 0;
             let fc = if unicode {
-                raw_fc
+                descriptor.fc
             } else {
-                (raw_fc & !0x4000_0000) / 2
+                (descriptor.fc & !0x4000_0000) / 2
             };
-            let length = end - start;
+            let length = descriptor.end - descriptor.start;
             let bytes = safely_clone(
                 main,
                 fc,
                 length.wrapping_mul(if unicode { 2 } else { 1 }),
                 MAX_PIECE_LENGTH,
             )?;
-            let text = decode(&bytes, unicode);
-            if text.len() as i64 != i64::from(length) {
-                return Err(Thrown(format!(
-                    "Told we're for characters {start} -> {end}, but actually covers {} characters!",
-                    text.len()
-                )));
-            }
-            pieces.push(TextPiece {
-                start: *start,
-                end: *end,
+            pieces.push(TextPiece::new(
+                descriptor.start,
+                descriptor.end,
                 fc,
                 unicode,
-                prm,
-                text,
-            });
+                descriptor.prm,
+                decode(&bytes, unicode),
+            )?);
         }
+        Ok(ComplexFileTable::new(grpprls, pieces))
+    }
+
+    /// The table of `pieces`, ordered as `TextPieceTable` orders them: by their ends, and by
+    /// their offsets in the main stream.
+    pub(super) fn new(grpprls: Vec<Vec<u8>>, mut pieces: Vec<TextPiece>) -> ComplexFileTable {
         pieces.sort_by_key(|piece| piece.end);
         let mut fc_order: Vec<usize> = (0..pieces.len()).collect();
         fc_order.sort_by_key(|&i| pieces[i].fc);
-        Ok(ComplexFileTable {
+        ComplexFileTable {
             grpprls,
             pieces,
             fc_order,
-        })
+        }
     }
 
     /// `TextPieceTable.getText`: each piece put at its start, failing where one starts past the

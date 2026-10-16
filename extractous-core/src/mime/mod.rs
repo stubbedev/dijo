@@ -141,6 +141,12 @@ pub(crate) fn extension(media_type: &MediaType) -> &'static str {
     mime_types().extension(media_type)
 }
 
+/// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type,
+/// with its dot, or nothing.
+pub(crate) fn registered_extension(media_type: &MediaType) -> &'static str {
+    mime_types().registered_extension(media_type)
+}
+
 /// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an
 /// archive or compression format by its first bytes, or `application/octet-stream`.
 pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {

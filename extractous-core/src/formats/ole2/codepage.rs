@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 
 use super::property_set::Fault;
+use crate::formats::Unported;
 use crate::text::charset::Charset;
 
 /// The code page of UTF-16LE.
@@ -83,6 +84,18 @@ pub(super) fn decode(bytes: &[u8], codepage: i32) -> Result<String, Fault> {
         Fault::Unported(format!(
             "text in code page {codepage}, which this port does not decode as Java does"
         ))
+    })
+}
+
+/// `CodePageUtil.getStringFromCodePage` for a reader outside the property sets: the text, or
+/// why Tika's path should read it, where POI throws on the code page or this port does not
+/// decode it as Java does.
+pub(crate) fn decode_text(bytes: &[u8], codepage: i32) -> Result<String, Unported> {
+    decode(bytes, codepage).map_err(|fault| match fault {
+        Fault::Unported(reason) => Unported(reason),
+        _ => Unported(format!(
+            "text in code page {codepage}, which POI throws on, failing Tika's parse"
+        )),
     })
 }
 

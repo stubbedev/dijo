@@ -13,6 +13,7 @@ use crate::formats::{self, EmbeddedRoute, Failure, Opened};
 use crate::isolate::isolate;
 use crate::memory;
 use crate::tika::{self, EmbeddedOutcome};
+use crate::Metadata;
 
 /// Whether the extraction holds no more memory than its budget, which it checks as it writes.
 pub(crate) fn within_budget() -> Result<(), Stop> {
@@ -181,6 +182,9 @@ pub(crate) struct Xhtml<'h> {
     embedding: Embedding<'h>,
     /// What learns the metadata the head shows, once it is written.
     on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
+    /// How many XHTML handlers the content passes through: more than one while a parser writes
+    /// that another parser hands its handler on to.
+    layers: usize,
 }
 
 impl<'h> Xhtml<'h> {
@@ -216,6 +220,7 @@ impl<'h> Xhtml<'h> {
             ended: false,
             embedding: Embedding::new(context),
             on_head,
+            layers: 1,
         };
         let result = xhtml
             .start_document()
@@ -293,7 +298,9 @@ impl<'h> Xhtml<'h> {
             self.end_head(false)?;
         }
         if INDENT.contains(&name) {
-            self.handler.ignorable_whitespace("\t")?;
+            for _ in 0..self.layers {
+                self.handler.ignorable_whitespace("\t")?;
+            }
         }
         self.safe_start_element(name, attributes)
     }
@@ -311,7 +318,9 @@ impl<'h> Xhtml<'h> {
         }
         self.handler.end_element(name)?;
         if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
-            self.newline()?;
+            for _ in 0..self.layers {
+                self.newline()?;
+            }
         }
         Ok(())
     }
@@ -464,6 +473,64 @@ impl<'h> Xhtml<'h> {
         self.parse_embedded_opened(data, metadata, wrapping, Opened::WithMetadata)
     }
 
+    /// Parses a storage of a compound document embedded in this one, written as a compound
+    /// document of its own in `data`, as [`Xhtml::parse_embedded`] does but for what an
+    /// extraction that spools its embedded documents copies: nothing, as Tika hands the storage
+    /// on as an open container with a stream of no bytes (`TikaInputStream.getFromContainer`).
+    pub(crate) fn parse_embedded_container(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
+        if !self.enter_embedded(&[], metadata, wrapping)? {
+            return Ok(());
+        }
+        let mut open = Vec::new();
+        let ended = self.parse_routed(data, metadata, Opened::WithMetadata, &mut open);
+        self.leave_embedded(ended, open, wrapping)
+    }
+
+    /// Parses a storage of a compound document embedded in this one with a native parser, as
+    /// [`Xhtml::parse_embedded_container`] parses it with Tika: `write`, which `parser` runs,
+    /// writes the document from `metadata`, and its body goes into this one.
+    pub(crate) fn parse_container_natively(
+        &mut self,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        parser: &str,
+        write: impl FnOnce(&mut Xhtml) -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
+        if !self.enter_embedded(&[], metadata, wrapping)? {
+            return Ok(());
+        }
+        let mut open = Vec::new();
+        let (parsed, result) = self.write_natively(metadata.clone(), parser, write, &mut open);
+        let ended = match result {
+            Ok(()) => {
+                self.embedding.absorb_failures(&parsed, None);
+                Ended::Clean
+            }
+            Err(Failure::Stopped(stop)) => Ended::Stopped(stop),
+            Err(Failure::Extraction(error)) => Ended::Failed(Failure::Embedded(error)),
+            Err(failure) => Ended::Failed(failure),
+        };
+        self.leave_embedded(ended, open, wrapping)
+    }
+
+    /// Has `write` write content as a parser that this document's parser calls itself and
+    /// hands its handler on to through `EmbeddedContentHandler(BodyContentHandler(xhtml))`, the
+    /// other parser writing through an XHTML handler of its own: its body goes into this one as
+    /// it is written, its metadata is this document's, and the line breaks after block elements
+    /// and the tabs before indented ones, which each of the two handlers writes, are written
+    /// twice.
+    pub(crate) fn write_nested<T>(&mut self, write: impl FnOnce(&mut Xhtml) -> T) -> T {
+        self.layers += 1;
+        let written = write(self);
+        self.layers -= 1;
+        written
+    }
+
     /// [`Xhtml::parse_embedded`] of a document whose `TikaInputStream` the parser `opened` as
     /// given.
     pub(crate) fn parse_embedded_opened(
@@ -473,9 +540,25 @@ impl<'h> Xhtml<'h> {
         wrapping: Wrapping,
         opened: Opened,
     ) -> Result<(), Failure> {
-        within_budget()?;
-        if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
+        if !self.enter_embedded(data, metadata, wrapping)? {
             return Ok(());
+        }
+        let mut open = Vec::new();
+        let ended = self.parse_routed(data, metadata, opened, &mut open);
+        self.leave_embedded(ended, open, wrapping)
+    }
+
+    /// Starts an embedded document that is parsed rather than spooled, `spooled` being what an
+    /// extraction that spools copies of it: whether it is parsed.
+    fn enter_embedded(
+        &mut self,
+        spooled: &[u8],
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<bool, Failure> {
+        within_budget()?;
+        if !embedded::is_parsed(metadata) || self.embedding.spool(spooled, metadata)? {
+            return Ok(false);
         }
         if wrapping == Wrapping::PackageEntry {
             self.start_element_with("div", &[("class", PACKAGE_ENTRY)])?;
@@ -485,12 +568,33 @@ impl<'h> Xhtml<'h> {
                 self.end_element("h1")?;
             }
         }
-        let mut open = Vec::new();
+        Ok(true)
+    }
+
+    /// Parses an embedded document with its native parser, if it has one, and with Tika's
+    /// path otherwise.
+    fn parse_routed(
+        &mut self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        opened: Opened,
+        open: &mut Vec<String>,
+    ) -> Ended {
         let configs = self.embedding.context().configs();
-        let ended = match formats::route_embedded(data, metadata, opened, configs) {
-            Some(route) => self.parse_natively(route, data, metadata, &mut open),
-            None => self.parse_with_tika(data, metadata, &mut open),
-        };
+        match formats::route_embedded(data, metadata, opened, configs) {
+            Some(route) => self.parse_natively(route, data, metadata, open),
+            None => self.parse_with_tika(data, metadata, open),
+        }
+    }
+
+    /// Ends an embedded document as its parse `ended`: the elements it left open closed where
+    /// it did not end cleanly, and its `package-entry` div.
+    fn leave_embedded(
+        &mut self,
+        ended: Ended,
+        mut open: Vec<String>,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
         let (clean, failure) = match ended {
             Ended::Clean => (true, None),
             Ended::Recorded => (false, None),
@@ -558,8 +662,7 @@ impl<'h> Xhtml<'h> {
                     isolate,
                     data,
                     &metadata.pairs(),
-                    self.embedding.context().configs(),
-                    None,
+                    &self.embedding.context().configs().with_password(None),
                 )
             })
             .map_err(Failure::Embedded)
@@ -581,15 +684,7 @@ impl<'h> Xhtml<'h> {
             start,
             prepared,
         } = route;
-        let context = self.embedding.context();
-        let (mut parsed, record, result) = {
-            let mut forward = Embedded { outer: self, open };
-            let mut body = Body::new(&mut forward);
-            Xhtml::write(&mut body, start, context, prepared)
-        };
-        record.finish(&mut parsed, parser.name());
-        let parsed = parsed.to_map();
-        self.embedding.absorb_parsers(&parsed);
+        let (parsed, result) = self.write_natively(start, parser.name(), prepared, open);
         let reason = match result {
             Ok(()) => {
                 self.embedding.absorb_failures(&parsed, None);
@@ -621,6 +716,29 @@ impl<'h> Xhtml<'h> {
             )))),
             EmbeddedOutcome::Failed(error) => Ended::Failed(Failure::Embedded(error)),
         }
+    }
+
+    /// Writes an embedded document with the native parser named `parser`, which `write` runs,
+    /// from the metadata `start` it starts from, its events passed on to this document as they
+    /// come: the metadata it ends with, which this document takes its parsers from, and how it
+    /// ended.
+    fn write_natively(
+        &mut self,
+        start: TikaMetadata,
+        parser: &str,
+        write: impl FnOnce(&mut Xhtml) -> Result<(), Failure>,
+        open: &mut Vec<String>,
+    ) -> (Metadata, Result<(), Failure>) {
+        let context = self.embedding.context();
+        let (mut parsed, record, result) = {
+            let mut forward = Embedded { outer: self, open };
+            let mut body = Body::new(&mut forward);
+            Xhtml::write(&mut body, start, context, write)
+        };
+        record.finish(&mut parsed, parser);
+        let parsed = parsed.to_map();
+        self.embedding.absorb_parsers(&parsed);
+        (parsed, result)
     }
 
     /// Writes the events of an embedded document, keeping the names of the elements left open

@@ -7,6 +7,7 @@ mod apple_single;
 mod archive;
 mod auto_detect_reader;
 mod cms;
+mod crypt;
 pub(crate) mod data_format;
 mod dbf;
 mod dc_xml;
@@ -47,7 +48,9 @@ pub(crate) mod parity;
 pub(crate) mod pdf;
 pub(crate) mod plist;
 mod poi;
+mod ppt;
 mod pptx;
+mod protected;
 mod prt;
 #[cfg(test)]
 pub(crate) mod reference;
@@ -251,7 +254,9 @@ static PARSERS: &[&dyn Parser] = &[
     &open_pgp::OpenPgpParser,
     &pdf::PdfParser,
     &plist::PListParser,
+    &ppt::PptParser,
     &pptx::PptxParser,
+    &protected::ProtectedParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &subtitle::SubtitleParser,
@@ -260,6 +265,7 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,
+    &xls::OldExcelParser,
     &xlsx::XlsxParser,
 ];
 
@@ -522,8 +528,15 @@ fn run<'h>(
         Xhtml::write_reporting_head(handler, metadata, context, on_head, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
+    if result.is_ok() && context.configs().password.is_some() {
+        metadata.set(PASSWORD_USED, "true");
+    }
     (metadata, result)
 }
+
+/// What our Java `LegacyOfficePasswordParser` records once a document a password was given for
+/// is parsed, and its `PasswordProvider` once a parser asks it for the password.
+pub(crate) const PASSWORD_USED: &str = "extractous:password-used";
 
 /// Whether a prepared document still keeps to its memory budget, before anything of it is
 /// written.
@@ -648,7 +661,9 @@ pub(crate) fn parse_to_string(
         };
         prepared_within_budget(parser)?;
         let mut out = StringOut::default();
-        let context = ParseContext::new(configs).reading(detected.file.clone());
+        let context = ParseContext::new(configs)
+            .reading(detected.file.clone())
+            .with_write_limit(max_length);
         let (metadata, result) = Chain::String { output, max_length }
             .write_to(&mut out, |handler| {
                 run(parser, prepared, metadata, &context, handler, None)
@@ -844,28 +859,36 @@ pub(crate) fn parse_to_stream(
         &decision,
         deadline,
         "The native parser's thread ended before it prepared its document",
-    )?;
-    if !prepared {
-        return Ok(None);
+    );
+    match prepared {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
+        Err(Error::Timeout) => {
+            stream.outcome = Some(Err(Error::Timeout));
+            return Ok(Some((stream, detected_metadata)));
+        }
+        Err(error) => return Err(error),
     }
     let mut head = None;
-    let first = loop {
-        match stream.next_message()? {
-            Message::Head(metadata) => head = Some(metadata),
-            message => break message,
-        }
-    };
-    if let Message::Done {
-        tail,
-        outcome: Err(error),
-        ..
-    } = &first
-    {
-        if tail.is_empty() {
-            return Err(copy(error));
+    loop {
+        match stream.next_message() {
+            Ok(Message::Head(metadata)) => head = Some(metadata),
+            Ok(Message::Done {
+                tail,
+                outcome: Err(error),
+                ..
+            }) if tail.is_empty() => return Err(error),
+            Ok(message) => {
+                stream.accept(message);
+                break;
+            }
+            Err(Error::Timeout) => {
+                stream.outcome = Some(Err(Error::Timeout));
+                break;
+            }
+            Err(error) => return Err(error),
         }
     }
-    stream.accept(first);
     let metadata = match (&stream.outcome, head) {
         (Some(Ok(metadata)), _) => metadata.clone(),
         (_, Some(head)) => head,
@@ -964,8 +987,11 @@ impl Read for NativeStream {
                     Err(error) => Err(io::Error::other(copy(error))),
                 };
             }
-            let message = self.next_message().map_err(io::Error::other)?;
-            self.accept(message);
+            match self.next_message() {
+                Ok(message) => self.accept(message),
+                Err(Error::Timeout) => self.outcome = Some(Err(Error::Timeout)),
+                Err(error) => return Err(io::Error::other(error)),
+            }
         }
         let count = buf.len().min(self.chunk.len() - self.position);
         buf[..count].copy_from_slice(&self.chunk[self.position..self.position + count]);
@@ -1081,6 +1107,33 @@ mod tests {
         }
         assert!(differences.is_empty(), "{}", differences.join("\n"));
         assert!(spooling > 0);
+    }
+
+    /// A document parsed with a password is marked as our Java's `LegacyOfficePasswordParser`
+    /// marks it, and one parsed without none is not.
+    #[test]
+    fn marks_what_is_parsed_with_a_password() {
+        let path = "../test_files/documents/simple.odt";
+        let routed = route(Source::File(path)).unwrap().unwrap();
+        let password = crate::config::Password::new("secret");
+        let used = |configs: &ParserConfigs| {
+            let (_, metadata) = parse_to_string(
+                routed.parser,
+                &routed.input,
+                &routed.detected,
+                configs,
+                100_000,
+                Output::Text,
+            )
+            .unwrap()
+            .unwrap();
+            metadata.get(PASSWORD_USED).cloned()
+        };
+        assert_eq!(used(&ParserConfigs::default()), None);
+        assert_eq!(
+            used(&ParserConfigs::default().with_password(Some(&password))),
+            Some(vec!["true".to_owned()])
+        );
     }
 
     #[test]

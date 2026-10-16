@@ -26,6 +26,7 @@ mod licenses;
 pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
 mod formats;
+mod hash;
 pub mod memory;
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]

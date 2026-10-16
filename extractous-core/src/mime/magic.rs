@@ -4,7 +4,7 @@
 use std::cell::OnceCell;
 use std::fmt;
 
-use super::java_regex::{Anchor, JavaRegex};
+use super::java_regex::{Anchor, JavaRegex, Text};
 use super::media_type::MediaType;
 
 /// How far a regex clause reads past the start of each offset it tries.
@@ -233,7 +233,7 @@ impl MagicMatch {
             "regex" => {
                 let source = String::from_utf8_lossy(&pattern);
                 Kind::Regex(
-                    JavaRegex::compile(&source, Anchor::LookingAt)
+                    JavaRegex::compile(&source, Anchor::LookingAt, Text::Latin1)
                         .map_err(|error| format!("{string}: {error}"))?,
                 )
             }
@@ -277,7 +277,9 @@ impl MagicMatch {
                 let buffer_end = self.begin + (data.len() - self.begin).min(REGEX_WINDOW + span);
                 (self.begin..=last).any(|start| {
                     let region_end = (start + REGEX_WINDOW).min(buffer_end);
-                    start < region_end && regex.is_match(haystack.text(start, region_end))
+                    start < region_end
+                        && regex.may_start_with(char::from(data[start]))
+                        && regex.is_match(haystack.text(start, region_end))
                 })
             }
             Kind::Bytes | Kind::IgnoreCase => {
@@ -323,6 +325,23 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
+    /// Hands `visit` each regex of the clause.
+    #[cfg(test)]
+    pub(crate) fn for_each_regex(&self, visit: &mut impl FnMut(&JavaRegex)) {
+        match self {
+            Clause::Match(m) => {
+                if let Kind::Regex(regex) = &m.kind {
+                    visit(regex);
+                }
+            }
+            Clause::And(clauses) | Clause::Or(clauses) | Clause::MinShouldMatch(_, clauses) => {
+                for clause in clauses {
+                    clause.for_each_regex(visit);
+                }
+            }
+        }
+    }
+
     pub(crate) fn eval(&self, haystack: &Haystack) -> bool {
         match self {
             Clause::Match(m) => m.matches(haystack),

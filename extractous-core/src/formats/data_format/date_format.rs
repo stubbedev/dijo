@@ -7,9 +7,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::decimal::Rounding;
-use super::decimal_format::DecimalFormat;
 use super::{FormatError, DOT};
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::{CalendarFields, TimeZone};
 

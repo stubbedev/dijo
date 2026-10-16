@@ -4,7 +4,7 @@
 use super::descriptions::{base, decimal, named, Described};
 use super::reader::Reader;
 use super::{java_string, Directory, Kind, Metadata, Unported, Value};
-use crate::formats::data_format::printf;
+use crate::java::printf;
 use crate::text::charset::Charset;
 
 const TAG_PROFILE_BYTE_COUNT: i32 = 0x0000;

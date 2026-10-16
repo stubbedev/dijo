@@ -13,12 +13,12 @@ use streams::Comments;
 use super::{extract_pictures, set_nullable, NumberAndTotal, Picture};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::data_format::decimal::Rounding;
-use crate::formats::data_format::decimal_format::DecimalFormat;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::text::charset::Charset;
 
 const METADATA_BLOCK_PICTURE: &str = "metadata_block_picture";

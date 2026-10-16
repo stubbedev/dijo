@@ -9,17 +9,16 @@
 
 mod cell_format;
 mod date_format;
-pub(crate) mod decimal;
-pub(crate) mod decimal_format;
 mod fraction;
 mod number_text;
-pub(crate) mod printf;
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
+use crate::java::decimal::{BigDecimal, Rounding};
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::simple_date_format::Unported;
 use crate::java::time::TimeZone;
@@ -28,8 +27,6 @@ use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 pub(crate) use date_format::is_a_date_format;
 use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter};
-use decimal::{BigDecimal, Rounding};
-use decimal_format::DecimalFormat;
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.

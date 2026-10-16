@@ -7,7 +7,21 @@ use std::collections::VecDeque;
 
 use super::records::{read_record, sid, CellRef, Record};
 use super::stream::RecordStream;
+use crate::config::ParserConfigs;
+use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys};
 use crate::formats::poi::{thrown, Read};
+use crate::formats::{Declined, Unported};
+
+/// `Biff8DecryptingStream.RC4_REKEYING_INTERVAL`: the bytes each block key decrypts.
+const RC4_REKEYING_INTERVAL: usize = 1024;
+/// `isNeverEncryptedRecord`: the records whose data an encrypted workbook keeps plain, BOF,
+/// `INTERFACEHDR` and `FILEPASS`.
+const NEVER_ENCRYPTED: [u16; 3] = [sid::BOF, 0x00E1, sid::FILE_PASS];
+/// `FilePassRecord`'s encryption types.
+const XOR_OBFUSCATION: u16 = 0;
+const RC4_ENCRYPTION: u16 = 1;
+/// What `WriteProtectRecord.getRecordSize` measures it as, whatever it holds.
+const WRITE_PROTECT_SIZE: usize = 4;
 
 /// What a record before a `CONTINUE` record makes of it, by the class of POI's `_lastRecord`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,8 +55,15 @@ pub(super) struct Records<'a> {
     last_was_eof_level_zero: bool,
     /// The data of each drawing group, joined with what followed it.
     pub(super) drawing_groups: Vec<Vec<u8>>,
-    /// Whether a `FILEPASS` record follows the first BOF record, after which POI decrypts.
-    pub(super) encrypted: bool,
+    /// The `FILEPASS` record the first records end with, after which POI decrypts.
+    file_pass: Option<FilePass>,
+}
+
+/// A `FILEPASS` record the first records end with.
+struct FilePass {
+    data: Vec<u8>,
+    /// What `StreamEncryptionInfo` measures the records before it as.
+    measured_before: usize,
 }
 
 fn last_of(record: &Record) -> Last {
@@ -56,21 +77,25 @@ fn last_of(record: &Record) -> Last {
 }
 
 impl<'a> Records<'a> {
-    /// `new RecordFactoryInputStream(stream, false)`: the first records read ahead, to find
-    /// whether the workbook is encrypted, whose records this port does not read on.
+    /// `new RecordFactoryInputStream(stream, false)` up to its decrypting stream: the first
+    /// records read ahead, to find whether the workbook is encrypted.
     pub(super) fn new(data: &'a [u8]) -> Read<Self> {
         let mut stream = RecordStream::new(data);
         let mut unread = VecDeque::new();
         stream.next_record()?;
+        let mut measured = 4 + stream.remaining() as usize;
         let first = read_record(&mut stream)?;
         let has_bof = matches!(first, Record::Bof { .. });
         let mut last = first.clone();
         unread.push_back((stream.sid(), first));
+        let mut measured_before = measured;
         if has_bof && stream.has_next_record()? {
             stream.next_record()?;
             last = read_record(&mut stream)?;
             unread.push_back((stream.sid(), last.clone()));
             if last == Record::WriteProtect && stream.has_next_record()? {
+                measured += WRITE_PROTECT_SIZE;
+                measured_before = measured;
                 stream.next_record()?;
                 last = read_record(&mut stream)?;
                 unread.push_back((stream.sid(), last.clone()));
@@ -79,15 +104,59 @@ impl<'a> Records<'a> {
                 return thrown("Nothing between BOF and EOF");
             }
         }
+        let file_pass = match &last {
+            Record::FilePass(data) => Some(FilePass {
+                data: data.clone(),
+                measured_before,
+            }),
+            _ => None,
+        };
         Ok(Records {
             stream,
-            encrypted: last == Record::FilePass,
+            file_pass,
             unread,
             last: last_of(&last),
             bof_depth: i32::from(has_bof),
             last_was_eof_level_zero: false,
             drawing_groups: Vec::new(),
         })
+    }
+
+    /// `StreamEncryptionInfo.createDecryptingStream`, where the first records end with a
+    /// `FILEPASS` record: the encryption opened with the password, and the records after it
+    /// decrypted as `Biff8DecryptingStream` reads them, each record's type and length plain and
+    /// the data of every record but those `isNeverEncryptedRecord` names decrypted by its
+    /// position in the stream; failing as Tika's path does where the password does not open
+    /// the encryption.
+    pub(super) fn decrypt(&mut self, configs: &ParserConfigs) -> Result<(), Declined> {
+        let Some(file_pass) = &self.file_pass else {
+            return Ok(());
+        };
+        let info = file_pass_encryption(&file_pass.data)?;
+        let measured = file_pass.measured_before + 4 + 2 + info.written_length();
+        let start = self.stream.position();
+        if measured != start {
+            return Err(Unported(
+                "an encrypted workbook whose first records POI measures otherwise than they are, \
+                 which it decrypts out of step"
+                    .to_owned(),
+            )
+            .into());
+        }
+        let password = crypt::password(configs);
+        let keys = info.verify(password).ok_or_else(|| {
+            let given = if password == crypt::DEFAULT_PASSWORD {
+                "Default"
+            } else {
+                "Supplied"
+            };
+            Declined::Fails(crypt::encrypted(Some(&format!(
+                "org.apache.poi.EncryptedDocumentException: {given} password is invalid for \
+                 salt/verifier/verifierHash"
+            ))))
+        })?;
+        decrypt_records(&keys, self.stream.data_mut(), start);
+        Ok(())
     }
 
     /// `nextRecord`: the next record handed to the listeners, `None` after the last.
@@ -200,6 +269,40 @@ impl<'a> Records<'a> {
     }
 }
 
+/// `FilePassRecord`'s encryption, which a workbook reads as CryptoAPI where its version allows.
+fn file_pass_encryption(data: &[u8]) -> Result<EncryptionInfo, Unported> {
+    let kind = data
+        .get(..2)
+        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        .ok_or_else(|| Unported("POI throws on a FILEPASS record without its type".to_owned()))?;
+    let mode =
+        match kind {
+            XOR_OBFUSCATION => Mode::Xor,
+            RC4_ENCRYPTION => Mode::CryptoApi,
+            _ => return Err(Unported(
+                "a FILEPASS record of an encryption type POI throws on, which fails Tika's parse"
+                    .to_owned(),
+            )),
+        };
+    EncryptionInfo::read(&data[2..], mode).map_err(|unopened| unopened.unported())
+}
+
+/// The records of `data` from `start` decrypted in place as `Biff8DecryptingStream` reads them.
+fn decrypt_records(keys: &Rc4Keys, data: &mut [u8], start: usize) {
+    let mut key_stream = ChunkedKeyStream::new(keys, RC4_REKEYING_INTERVAL);
+    let mut at = start;
+    while at + 4 <= data.len() {
+        let sid = u16::from_le_bytes([data[at], data[at + 1]]);
+        let length = usize::from(u16::from_le_bytes([data[at + 2], data[at + 3]]));
+        let body = at + 4;
+        let end = (body + length).min(data.len());
+        if !NEVER_ENCRYPTED.contains(&sid) {
+            key_stream.decrypt(&mut data[body..end], body);
+        }
+        at = body + length;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::stream::tests::record;
@@ -291,7 +394,7 @@ mod tests {
     fn finds_encrypted_workbooks() {
         let mut data = bof_alone(0x05);
         data.extend(record(sid::FILE_PASS, &[0; 6]));
-        assert!(Records::new(&data).unwrap().encrypted);
-        assert!(!Records::new(&bof(0x05)).unwrap().encrypted);
+        assert!(Records::new(&data).unwrap().file_pass.is_some());
+        assert!(Records::new(&bof(0x05)).unwrap().file_pass.is_none());
     }
 }

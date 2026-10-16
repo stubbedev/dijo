@@ -64,6 +64,13 @@ impl Story {
     ];
 }
 
+/// `fWhichTblStm` of the FIB's base flags: whether the table stream is "1Table".
+pub(super) const TABLE_ONE_FLAG: u16 = 0x0200;
+/// `fObfuscated` of the FIB's base flags: whether an encrypted document is XOR obfuscated.
+pub(super) const OBFUSCATED: u16 = 0x8000;
+/// Where the FIB's base holds `lKey`.
+pub(super) const ENCRYPTION_KEY_LENGTH: usize = 0xE;
+
 /// `fEncrypted` of the FIB's base: whether the stream past the base is encrypted, which POI
 /// decrypts before it reads the rest of the FIB.
 pub(super) fn is_encrypted(main: &[u8]) -> Read<bool> {
@@ -155,7 +162,7 @@ impl Fib {
 
     /// `fWhichTblStm`: whether the table stream is `1Table`.
     pub(super) fn uses_table_one(&self) -> bool {
-        self.flags & 0x0200 != 0
+        self.flags & TABLE_ONE_FLAG != 0
     }
 
     /// `getSubdocumentTextStreamLength`.

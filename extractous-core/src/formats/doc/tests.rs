@@ -1,16 +1,18 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 
 /// The documents this port leaves to Tika, by file name, with a part of the reason.
-const DEFERRED: [(&str, &str); 3] = [
-    ("testWORD6.doc", "Word 95"),
-    ("testWORD_protected_passtika.doc", "encrypted"),
-    ("tika-password.doc", "encrypted"),
+const DEFERRED: [(&str, &str); 0] = [];
+
+/// The encrypted documents, by file name, with the password that opens them.
+const ENCRYPTED: [(&str, &str); 2] = [
+    ("testWORD_protected_passtika.doc", "tika"),
+    ("tika-password.doc", "tika"),
 ];
 
 fn file_name(path: &Path) -> String {
@@ -45,20 +47,45 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
 }
 
 #[test]
+fn decrypts_an_encrypted_document_with_its_password_only() {
+    let input = std::fs::read("../test_files/documents/encrypted/tika-password.doc").unwrap();
+    let configs = |password: &str| {
+        ParserConfigs::default().with_password(Some(&crate::config::Password::new(password)))
+    };
+    let (_, extracted) = read(&input, &configs("tika")).unwrap();
+    let text: String = extracted
+        .out
+        .iter()
+        .filter_map(|out| match out {
+            extractor::Out::Text(text) => Some(String::from_utf16_lossy(text)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("This is an encrypted Word 2007 File."),
+        "{text}"
+    );
+    for configs in [ParserConfigs::default(), configs("wrong")] {
+        assert!(matches!(
+            read(&input, &configs),
+            Err(Declined::Fails(crate::Error::Encrypted(_)))
+        ));
+    }
+}
+
+#[test]
 #[ignore = "runs Tika on every Word document of the repository"]
 fn extracts_what_tikas_path_extracts_from_the_repositorys_documents() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
     let ported = ported(&corpus(&roots));
-    assert_eq!(ported.len(), 4);
-    let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, &ParserConfigs::default());
+    assert_eq!(ported.len(), 5);
+    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }
 
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
-    assert_eq!(ported.len(), 40);
-    let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, &ParserConfigs::default());
+    assert_eq!(ported.len(), 42);
+    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }

@@ -3,15 +3,16 @@
 //! document's first 64 KiB and its resource name.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use super::java_regex::{Anchor, JavaRegex};
+use super::java_regex::{Anchor, JavaRegex, Text};
 use super::magic::{Clause, Haystack, MagicMatch, MatchAttributes};
 use super::media_type::MediaType;
 use super::registry::Registry;
 use super::text;
 use super::uri;
+use crate::hash::FastMap;
 use crate::java::{self, JavaString};
 use crate::xml::{self, Attribute, Event, Flow, XmlError};
 
@@ -63,7 +64,7 @@ pub(crate) fn mime_types() -> &'static MimeTypes {
 pub(crate) struct MimeTypes {
     registry: Registry,
     types: Vec<MimeType>,
-    by_type: HashMap<MediaType, TypeId>,
+    by_type: FastMap<MediaType, TypeId>,
     magics: Vec<Magic>,
     xmls: Vec<TypeId>,
     patterns: Patterns,
@@ -88,7 +89,7 @@ struct Record {
 }
 
 enum Pending {
-    Match(MagicMatch),
+    Match(Box<MagicMatch>),
     MinShouldMatch(usize),
 }
 
@@ -104,7 +105,7 @@ impl MimeTypes {
         let mut types = MimeTypes {
             registry: Registry::default(),
             types: Vec::new(),
-            by_type: HashMap::new(),
+            by_type: FastMap::default(),
             magics: Vec::new(),
             xmls: Vec::new(),
             patterns: Patterns::new(),
@@ -265,7 +266,7 @@ impl MimeTypes {
                         min.parse()
                             .map_err(|_| format!("invalid minShouldMatch {min}"))?,
                     ),
-                    None => Pending::Match(MagicMatch::parse(
+                    None => Pending::Match(Box::new(MagicMatch::parse(
                         &media_type,
                         &MatchAttributes {
                             kind: attribute(attributes, "type"),
@@ -273,7 +274,7 @@ impl MimeTypes {
                             value: attribute(attributes, "value"),
                             mask: attribute(attributes, "mask"),
                         },
-                    )?),
+                    )?)),
                 };
                 reading.records.push(Record {
                     clause: Some(clause),
@@ -318,7 +319,7 @@ impl MimeTypes {
                     }
                     Some(Pending::Match(magic)) => {
                         let mut subclauses = record.subclauses;
-                        let magic = Clause::Match(Box::new(magic));
+                        let magic = Clause::Match(magic);
                         match subclauses.len() {
                             0 => magic,
                             1 => Clause::And(vec![magic, subclauses.remove(0)]),
@@ -367,6 +368,21 @@ impl MimeTypes {
         self.by_type
             .get(&self.registry.normalize(media_type))
             .and_then(|&id| self.types[id].extensions.first())
+            .map_or("", String::as_str)
+    }
+
+    /// `getRegisteredMimeType(type).getExtension()`: the first extension of the registered type
+    /// a name normalizes to, else of its base type where it has parameters, with its dot, or
+    /// nothing for a type that is not registered.
+    pub(crate) fn registered_extension(&self, media_type: &MediaType) -> &str {
+        let normalized = self.registry.normalize(media_type);
+        let id = self.by_type.get(&normalized).or_else(|| {
+            normalized
+                .has_parameters()
+                .then(|| self.by_type.get(&normalized.base_type()))
+                .flatten()
+        });
+        id.and_then(|&id| self.types[id].extensions.first())
             .map_or("", String::as_str)
     }
 
@@ -536,8 +552,8 @@ impl PartialOrd for GlobKey {
 
 /// Tika's `Patterns`: exact names, extensions and globs.
 struct Patterns {
-    names: HashMap<String, TypeId>,
-    extensions: HashMap<String, TypeId>,
+    names: FastMap<String, TypeId>,
+    extensions: FastMap<String, TypeId>,
     globs: BTreeMap<GlobKey, (TypeId, JavaRegex)>,
     min_extension: usize,
     max_extension: usize,
@@ -568,8 +584,8 @@ fn replaces(
 impl Patterns {
     fn new() -> Patterns {
         Patterns {
-            names: HashMap::new(),
-            extensions: HashMap::new(),
+            names: FastMap::default(),
+            extensions: FastMap::default(),
             globs: BTreeMap::new(),
             min_extension: usize::MAX,
             max_extension: 0,
@@ -631,7 +647,7 @@ impl Patterns {
         let key = GlobKey(JavaString(glob));
         let previous = self.globs.get(&key).map(|(previous, _)| *previous);
         if replaces(previous, id, types, registry, &key.0 .0)? {
-            let regex = JavaRegex::compile(&key.0 .0, Anchor::Matches)?;
+            let regex = JavaRegex::compile(&key.0 .0, Anchor::Matches, Text::Unicode)?;
             self.globs.insert(key, (id, regex));
         }
         Ok(())
@@ -716,6 +732,23 @@ mod tests {
         assert!(types.types.len() > 1600, "{} types", types.types.len());
         assert!(types.magics.len() > 800, "{} magics", types.magics.len());
         assert!(types.xmls.len() > 30, "{} root types", types.xmls.len());
+    }
+
+    #[test]
+    fn compiles_every_regex_of_the_tables() {
+        let types = mime_types();
+        let mut regexes = 0;
+        let mut force = |regex: &JavaRegex| {
+            regex.force();
+            regexes += 1;
+        };
+        for magic in &types.magics {
+            magic.clause.for_each_regex(&mut force);
+        }
+        for (_, regex) in types.patterns.globs.values() {
+            force(regex);
+        }
+        assert!(regexes > 40, "{regexes} regexes");
     }
 
     #[test]

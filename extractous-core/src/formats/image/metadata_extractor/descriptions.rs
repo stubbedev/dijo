@@ -3,8 +3,8 @@
 //! has nothing of its own for the tag. The Exif and GPS descriptors are here; those of the other
 //! directories are beside their readers.
 
-use crate::formats::data_format::decimal::Rounding;
-use crate::formats::data_format::decimal_format::DecimalFormat;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::trim as java_trim;
 use crate::text::charset::Charset;
 

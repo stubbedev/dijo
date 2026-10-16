@@ -264,9 +264,9 @@ pub(crate) fn parse_text_date(text: &str, zone: &TimeZone) -> Option<i64> {
 pub(crate) fn parse_gps_date(date: &str, hours: i32, minutes: i32, seconds: f64) -> Option<i64> {
     let text = format!(
         "{date} {}:{}:{} UTC",
-        crate::formats::data_format::printf::integer(i64::from(hours), 2),
-        crate::formats::data_format::printf::integer(i64::from(minutes), 2),
-        crate::formats::data_format::printf::fixed(seconds, 2, 3, true)
+        crate::java::printf::integer(i64::from(hours), 2),
+        crate::java::printf::integer(i64::from(minutes), 2),
+        crate::java::printf::fixed(seconds, 2, 3, true)
     );
     let parts = compile("yyyy:MM:dd HH:mm:ss.S");
     let parsed = parse_fields(&text, &parts)?;

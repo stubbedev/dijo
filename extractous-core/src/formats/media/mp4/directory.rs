@@ -2,10 +2,10 @@
 //! reads, and the metadata `MP4Parser` writes of them once the boxes are read.
 
 use super::Event;
-use crate::formats::data_format::decimal::Rounding;
-use crate::formats::data_format::decimal_format::DecimalFormat;
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::pdf::jfloat::float_to_string;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::time::format_instant;
 use crate::java::{self, hash_set_order};

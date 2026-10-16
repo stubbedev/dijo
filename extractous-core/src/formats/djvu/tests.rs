@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::config::TesseractOcrConfig;
 use crate::formats::parity::{
-    assert_fails_as_tika_with, assert_same_as_tika_but_ocr, assert_same_as_tika_delegating_with,
-    conformance_corpus, documents_with, Scratch,
+    assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
+    documents_with, Scratch,
 };
 
 const TIKA_NAME: &str = "ai.yobix.DjvuParser";
@@ -55,14 +55,7 @@ fn reads_pages_without_text_by_ocr_as_tikas_path_does() {
     let configs = automatic_language();
     let paths = djvu_documents(&local_roots(), &configs);
     let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-    let texts = assert_same_as_tika_but_ocr(&paths, TIKA_NAME, &DELEGATES, &configs);
-    for (path, (tika, native)) in paths.iter().zip(texts) {
-        assert!(
-            tika.trim().is_empty() || !native.trim().is_empty(),
-            "{}: {tika:?} against {native:?}",
-            path.display()
-        );
-    }
+    assert_same_as_tika_delegating_with(&paths, TIKA_NAME, &DELEGATES, &configs);
 }
 
 /// Tika's one DjVu test document, `testDJVU.djvu`, is an indirect document, whose pages are
