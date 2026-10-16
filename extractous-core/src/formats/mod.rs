@@ -179,6 +179,8 @@ static PARSERS: &[&dyn Parser] = &[
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,
+    &media::MidiParser,
+    &media::AudioParser,
     &media::FlvParser,
     &media::Mp3Parser,
     &mobi::MobiParser,

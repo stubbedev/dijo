@@ -1,11 +1,16 @@
-//! Audio and video files, as Tika's audio and video module reads their metadata: MP3
-//! ([`mp3`]) and Flash video ([`flv`]). What its parsers share lives here: `CoverArt`, which hands a file's pictures to
-//! the embedded document extractor, and `NumberAndTotal`, which reads a track or disc number.
+//! Audio and video files, as Tika's audio and video module reads their metadata: MP3 ([`mp3`]),
+//! Flash video ([`flv`]), WAVE, AU and AIFF ([`audio`]) and MIDI ([`midi`]). What its parsers
+//! share lives here: `CoverArt`, which hands a file's pictures to the embedded document
+//! extractor, and `NumberAndTotal`, which reads a track or disc number.
 
+mod audio;
 mod flv;
+mod midi;
 mod mp3;
 
+pub(crate) use audio::AudioParser;
 pub(crate) use flv::FlvParser;
+pub(crate) use midi::MidiParser;
 pub(crate) use mp3::Mp3Parser;
 
 use crate::formats::embedded::{ResourceType, Wrapping};
