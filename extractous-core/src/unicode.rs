@@ -98,6 +98,13 @@ pub fn decimal_digit(c: char) -> Option<u32> {
 
 /// `Character.UnicodeScript.of`: the Script property, without script extensions.
 pub fn script(c: char) -> Script {
+    if c.is_ascii() {
+        return if c.is_ascii_alphabetic() {
+            Script::Latin
+        } else {
+            Script::Common
+        };
+    }
     c.script()
 }
 
@@ -111,4 +118,16 @@ pub fn is_pseudo_script(script: Script) -> bool {
 /// `CANADIAN_ABORIGINAL`.
 pub fn java_script_name(script: Script) -> String {
     script.full_name().to_ascii_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_script_of_ascii_as_the_script_table_does() {
+        for c in '\0'..='\u{7f}' {
+            assert_eq!(script(c), c.script(), "{c:?}");
+        }
+    }
 }

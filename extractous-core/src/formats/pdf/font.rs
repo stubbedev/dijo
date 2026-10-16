@@ -5,14 +5,13 @@
 //! [`Unported`].
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
 
 use lopdf::{Dictionary, Object, Stream};
 
 use super::afm::{FontMetrics, Standard14};
 use super::cff::{self, Cff};
-use super::cmap::{self, CMap, CMapError};
+use super::cmap::{self, CMap, CMapError, CodeMap};
 use super::content::{Lexer, Token};
 use super::cos::{as_dict, float_value, int_value, name_string, Identity, Pdf};
 use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
@@ -377,11 +376,11 @@ struct SimpleFont {
 #[derive(Debug)]
 struct CidFont {
     descriptor: Option<Descriptor>,
-    widths: HashMap<i32, f32>,
+    widths: CodeMap<i32, f32>,
     width_order: Vec<(i32, f32)>,
     default_width: f32,
     dw2: [f32; 2],
-    vertical: HashMap<i32, (f32, f32, f32)>,
+    vertical: CodeMap<i32, (f32, f32, f32)>,
     vertical_ranges: Vec<(i32, i32, f32, f32, f32)>,
     kind: CidKind,
     cid_to_gid: Option<Vec<u32>>,
@@ -438,6 +437,7 @@ pub(super) struct Font {
     descriptor: Option<Descriptor>,
     kind: FontKind,
     space_width: OnceLock<f32>,
+    height: OnceLock<f32>,
 }
 
 /// A glyph's code in a string, and how many bytes it takes.
@@ -493,6 +493,7 @@ impl Font {
             descriptor,
             kind,
             space_width: OnceLock::new(),
+            height: OnceLock::new(),
         })
     }
 
@@ -1417,8 +1418,17 @@ impl Font {
         }
     }
 
-    /// `LegacyPDFStreamEngine.computeFontHeight`: the height of the font's glyphs in text space.
+    /// `LegacyPDFStreamEngine.computeFontHeight`, computed once as its `fontHeightMap` keeps it:
+    /// the height of the font's glyphs in text space.
     pub(super) fn height(&self) -> Result<f32, Unported> {
+        if let Some(height) = self.height.get() {
+            return Ok(*height);
+        }
+        let height = self.compute_height()?;
+        Ok(*self.height.get_or_init(|| height))
+    }
+
+    fn compute_height(&self) -> Result<f32, Unported> {
         let mut bbox = self.bounding_box()?;
         if bbox[1] < f32::from(i16::MIN) {
             bbox[1] = -(bbox[1] + 65536.0);
@@ -1932,11 +1942,11 @@ impl CidFont {
             descriptor: pdf
                 .dict(dict, b"FontDescriptor")
                 .map(|fd| Descriptor::read(pdf, fd)),
-            widths: HashMap::new(),
+            widths: CodeMap::default(),
             width_order: Vec::new(),
             default_width: pdf.get(dict, b"DW").and_then(float_value).unwrap_or(1000.0),
             dw2: [880.0, -1000.0],
-            vertical: HashMap::new(),
+            vertical: CodeMap::default(),
             vertical_ranges: Vec::new(),
             kind: CidKind::TrueType(Program::Fallback),
             cid_to_gid: None,

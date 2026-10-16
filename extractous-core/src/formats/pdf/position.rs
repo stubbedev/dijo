@@ -23,15 +23,30 @@ pub(super) struct TextPosition {
     page_height: f32,
     page_width: f32,
     width_of_space: f32,
-    pub(super) char_codes: Vec<u32>,
     pub(super) font: Rc<Font>,
     font_size: f32,
     font_size_pt: i32,
-    widths: Vec<f32>,
+    widths: Widths,
     pub(super) unicode: String,
     direction: f32,
     /// What the glyph was drawn under, in a tagged document.
     pub(super) label: Label,
+}
+
+/// `TextPosition.widths`: the width of each character, one until diacritics merge in.
+#[derive(Debug, Clone)]
+enum Widths {
+    One(f32),
+    Many(Vec<f32>),
+}
+
+impl Widths {
+    fn as_slice(&self) -> &[f32] {
+        match self {
+            Self::One(width) => std::slice::from_ref(width),
+            Self::Many(widths) => widths,
+        }
+    }
 }
 
 impl TextPosition {
@@ -48,7 +63,6 @@ impl TextPosition {
         individual_width: f32,
         space_width: f32,
         unicode: String,
-        char_codes: Vec<u32>,
         font: Rc<Font>,
         font_size: f32,
         font_size_pt: i32,
@@ -65,11 +79,10 @@ impl TextPosition {
             page_height,
             page_width,
             width_of_space: space_width,
-            char_codes,
             font,
             font_size,
             font_size_pt,
-            widths: vec![individual_width],
+            widths: Widths::One(individual_width),
             unicode,
             direction: 0.0,
             label,
@@ -193,7 +206,7 @@ impl TextPosition {
     }
 
     pub(super) fn individual_widths(&self) -> &[f32] {
-        &self.widths
+        self.widths.as_slice()
     }
 
     pub(super) fn text_matrix(&self) -> &Matrix {
@@ -285,21 +298,21 @@ impl TextPosition {
             return;
         }
         let diac_start = diacritic.x_dir_adj();
-        let diac_end = diac_start + diacritic.widths[0];
+        let diac_end = diac_start + diacritic.individual_widths()[0];
         let mut current_start = self.x_dir_adj();
         let units: Vec<u16> = self.unicode.encode_utf16().collect();
         let length = units.len();
         for index in 0..length {
-            if index >= self.widths.len() {
+            if index >= self.individual_widths().len() {
                 break;
             }
-            let current_end = current_start + self.widths[index];
+            let current_end = current_start + self.individual_widths()[index];
             if diac_start < current_start && diac_end <= current_end {
                 if index == 0 {
                     self.insert_diacritic(index, diacritic);
                 } else {
-                    let first = (diac_end - current_start) / self.widths[index];
-                    let second = (current_start - diac_start) / self.widths[index - 1];
+                    let first = (diac_end - current_start) / self.individual_widths()[index];
+                    let second = (current_start - diac_start) / self.individual_widths()[index - 1];
                     if first >= second {
                         self.insert_diacritic(index, diacritic);
                     } else {
@@ -311,7 +324,7 @@ impl TextPosition {
                 self.insert_diacritic(index, diacritic);
                 return;
             }
-            current_start += self.widths[index];
+            current_start += self.individual_widths()[index];
         }
     }
 
@@ -319,11 +332,11 @@ impl TextPosition {
     /// `index`, and a zero width for it.
     fn insert_diacritic(&mut self, index: usize, diacritic: &TextPosition) {
         let units: Vec<u16> = self.unicode.encode_utf16().collect();
-        let mut widths = Vec::with_capacity(self.widths.len() + 1);
-        widths.extend_from_slice(&self.widths[..index]);
-        widths.push(self.widths[index]);
+        let current = self.individual_widths();
+        let mut widths = Vec::with_capacity(current.len() + 1);
+        widths.extend_from_slice(&current[..=index]);
         widths.push(0.0);
-        widths.extend_from_slice(&self.widths[(index + 1).min(self.widths.len())..]);
+        widths.extend_from_slice(&current[(index + 1).min(current.len())..]);
         let mut end = index + 1;
         if index + 1 < units.len()
             && (0xD800..0xDC00).contains(&units[index])
@@ -335,7 +348,7 @@ impl TextPosition {
         text.extend(combine_diacritic(&diacritic.unicode).encode_utf16());
         text.extend_from_slice(&units[end..]);
         self.unicode = String::from_utf16_lossy(&text);
-        self.widths = widths;
+        self.widths = Widths::Many(widths);
     }
 
     /// The position with its text replaced, as `setUnicode` does.
@@ -348,8 +361,21 @@ impl TextPosition {
 /// reports `DIRECTIONALITY_RIGHT_TO_LEFT` and `DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC`.
 pub(super) fn is_right_to_left(c: char) -> bool {
     use unicode_bidi::BidiClass;
-    matches!(unicode_bidi::bidi_class(c), BidiClass::R | BidiClass::AL)
+    c >= FIRST_RIGHT_TO_LEFT && matches!(unicode_bidi::bidi_class(c), BidiClass::R | BidiClass::AL)
 }
+
+/// Whether `Character.getDirectionality` is `DIRECTIONALITY_LEFT_TO_RIGHT`.
+pub(super) fn is_left_to_right(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_alphabetic();
+    }
+    matches!(unicode_bidi::bidi_class(c), unicode_bidi::BidiClass::L)
+}
+
+/// The first character that can make text run right to left: none before it has the
+/// bidirectional class R, AL or AN or is an explicit formatting character, so text of those
+/// characters alone is left to right throughout.
+pub(super) const FIRST_RIGHT_TO_LEFT: char = '\u{0590}';
 
 /// `TextPosition.combineDiacritic`: the combining form of a spacing diacritic.
 fn combine_diacritic(text: &str) -> String {
@@ -385,5 +411,48 @@ fn combine_diacritic(text: &str) -> String {
     match combining {
         Some(combining) => combining.to_string(),
         None => crate::formats::java::trim(&text.nfkc().collect::<String>()).to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unicode_bidi::BidiClass;
+
+    #[test]
+    fn no_character_before_the_first_right_to_left_one_runs_right_to_left() {
+        for c in '\0'..FIRST_RIGHT_TO_LEFT {
+            let class = unicode_bidi::bidi_class(c);
+            assert!(
+                !matches!(
+                    class,
+                    BidiClass::R
+                        | BidiClass::AL
+                        | BidiClass::AN
+                        | BidiClass::LRE
+                        | BidiClass::LRO
+                        | BidiClass::RLE
+                        | BidiClass::RLO
+                        | BidiClass::PDF
+                        | BidiClass::LRI
+                        | BidiClass::RLI
+                        | BidiClass::FSI
+                        | BidiClass::PDI
+                ),
+                "{c:?} is {class:?}"
+            );
+            assert!(!is_right_to_left(c));
+        }
+    }
+
+    #[test]
+    fn tells_ascii_letters_left_to_right_as_the_bidi_table_does() {
+        for c in '\0'..='\u{7f}' {
+            assert_eq!(
+                is_left_to_right(c),
+                unicode_bidi::bidi_class(c) == BidiClass::L,
+                "{c:?}"
+            );
+        }
     }
 }

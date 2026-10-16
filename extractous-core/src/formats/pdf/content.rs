@@ -33,6 +33,8 @@ pub(super) struct Lexer<'a> {
     closed: bool,
     depth: usize,
     inline_image_depth: usize,
+    /// The bytes of the number being read, kept for the next.
+    number: Vec<u8>,
 }
 
 /// What `BaseParser.parseDirObject` reads inside a dictionary or an array: an object, the `R` of
@@ -105,6 +107,7 @@ impl<'a> Lexer<'a> {
             closed: false,
             depth: 0,
             inline_image_depth: 0,
+            number: Vec::new(),
         }
     }
 
@@ -206,15 +209,19 @@ impl<'a> Lexer<'a> {
                 Ok(Some(if word == b"null" {
                     Token::Operand(Object::Null)
                 } else {
-                    Token::Operator(latin1(&word))
+                    Token::Operator(latin1(word))
                 }))
             }
             b't' | b'f' => {
                 let word = self.read_string();
-                Ok(Some(match word.as_slice() {
-                    b"true" => Token::Operand(Object::Boolean(true)),
-                    b"false" => Token::Operand(Object::Boolean(false)),
-                    _ => Token::Operator(latin1(&word)),
+                let boolean = match word.as_slice() {
+                    b"true" => Some(true),
+                    b"false" => Some(false),
+                    _ => None,
+                };
+                Ok(Some(match boolean {
+                    Some(boolean) => Token::Operand(Object::Boolean(boolean)),
+                    None => Token::Operator(latin1(word)),
                 }))
             }
             b'0'..=b'9' | b'-' | b'+' | b'.' => self.stream_number().map(Some),
@@ -223,7 +230,7 @@ impl<'a> Lexer<'a> {
                 if word == b"BI" {
                     self.inline_image()?;
                 }
-                Ok(Some(Token::Operator(latin1(&word))))
+                Ok(Some(Token::Operator(latin1(word))))
             }
             b'I' => {
                 let first = self.read();
@@ -243,14 +250,16 @@ impl<'a> Lexer<'a> {
                 Ok(Some(Token::Operand(Object::Null)))
             }
             _ => {
-                let operator = self.read_operator();
-                let trimmed = latin1(&operator)
-                    .trim_matches(|c: char| c <= ' ')
-                    .to_owned();
+                let operator = latin1(self.read_operator());
+                let trimmed = operator.trim_matches(|c: char| c <= ' ');
                 if trimmed.is_empty() {
                     return Ok(None);
                 }
-                Ok(Some(Token::Operator(trimmed)))
+                Ok(Some(Token::Operator(if trimmed.len() == operator.len() {
+                    operator
+                } else {
+                    trimmed.to_owned()
+                })))
             }
         }
     }
@@ -258,7 +267,9 @@ impl<'a> Lexer<'a> {
     /// The number `PDFStreamParser` reads where a token starts with a digit, a sign or a dot.
     fn stream_number(&mut self) -> Result<Token, Unported> {
         let first = self.read().unwrap_or_default();
-        let mut buffer = vec![first];
+        let mut buffer = std::mem::take(&mut self.number);
+        buffer.clear();
+        buffer.push(first);
         if first == b'-' && self.peek() == Some(b'-') {
             self.read();
         }
@@ -278,12 +289,15 @@ impl<'a> Lexer<'a> {
                 dot_not_read = false;
             }
         }
-        if buffer == b"+" {
-            return Ok(Token::Operand(Object::Null));
-        }
-        number(&latin1(&buffer))
-            .map(Token::Operand)
-            .map_err(|what| malformed(&what, self.pos))
+        let token = if buffer == b"+" {
+            Ok(Token::Operand(Object::Null))
+        } else {
+            number(ascii(&buffer))
+                .map(Token::Operand)
+                .map_err(|what| malformed(&what, self.pos))
+        };
+        self.number = buffer;
+        token
     }
 
     /// `PDFStreamParser.readOperator`.
@@ -813,21 +827,17 @@ impl<'a> Lexer<'a> {
 
     /// `BaseParser.parseCOSNumber`, inside a dictionary or an array.
     fn direct_number(&mut self) -> Result<Object, Nested> {
-        let mut buffer = Vec::new();
-        let mut c = self.read();
-        while let Some(ch) = c {
-            if !(ch.is_ascii_digit() || matches!(ch, b'-' | b'+' | b'.' | b'E' | b'e')) {
-                break;
-            }
-            buffer.push(ch);
-            c = self.read();
+        let start = self.pos;
+        while self
+            .peek()
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'-' | b'+' | b'.' | b'E' | b'e'))
+        {
+            self.pos += 1;
         }
-        self.unread(c);
-        if matches!(buffer.last(), Some(b'e' | b'E')) {
-            buffer.pop();
+        if matches!(self.data[start..self.pos].last(), Some(b'e' | b'E')) {
             self.rewind(1);
         }
-        number(&latin1(&buffer)).map_err(|_| Nested::Stop)
+        number(ascii(&self.data[start..self.pos])).map_err(|_| Nested::Stop)
     }
 }
 
@@ -841,8 +851,16 @@ pub(super) fn parse_literal(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Bytes read as ISO-8859-1, as PDFBox's parsers read operator names.
-fn latin1(bytes: &[u8]) -> String {
+fn latin1(bytes: Vec<u8>) -> String {
+    if bytes.is_ascii() {
+        return String::from_utf8(bytes).expect("ASCII is UTF-8");
+    }
     bytes.iter().map(|&b| char::from(b)).collect()
+}
+
+/// The text of the bytes of a number, which are ASCII.
+fn ascii(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).expect("a number is read from ASCII bytes")
 }
 
 /// `COSNumber.get`: an integer or a real, repaired as PDFBox repairs malformed numbers; an
