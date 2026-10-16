@@ -106,7 +106,7 @@ pub(crate) fn tesseract_runs() -> bool {
 /// The tesseract native readings run, set up once per process: the one linked into the static
 /// executable with the bundled language data, the bundled library with it, or the library of
 /// the `tesseract` on the `PATH`, which reads the language data that program reads. Why there is
-/// none otherwise, as for a bundled library that offers Tika's path its JNI functions alone.
+/// none otherwise, as for a bundled library built before it exported tesseract's C API.
 pub(crate) fn tesseract() -> Result<&'static Tesseract, String> {
     static TESSERACT: OnceLock<Result<Tesseract, String>> = OnceLock::new();
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)

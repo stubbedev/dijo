@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # The tesseract the builds other than the static executable load into their process: a library of the JNI
-# functions LinkedTesseract calls (extractous-core/tika-native/src/static/tesseract.cc), linked
+# functions LinkedTesseract calls (extractous-core/tika-native/src/static/tesseract.cc) and of the
+# tesseract C API native readings call (ci/tesseract-jni/c-api.txt), linked
 # with tesseract built from its pinned source, patched as the Linux builds patch it
 # (ci/tesseract.nix), and with Leptonica and the image libraries vcpkg builds statically at a
 # pinned commit (ci/tesseract-jni); on Linux and Windows heif-png (ci/heif-png) to decode HEIC,
