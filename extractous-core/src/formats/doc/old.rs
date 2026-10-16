@@ -10,7 +10,6 @@ use super::bins::{
 };
 use super::bytes::{index, safely_clone};
 use super::extractor::{clean, strip_fields};
-use super::props::{uncompress_pap, Pap};
 use super::range::{find_range, subrange};
 use super::text::{read_clx, ComplexFileTable, Plex, TextPiece, MAX_PIECE_LENGTH};
 use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown};
@@ -88,19 +87,16 @@ impl OldDocument {
     }
 
     /// Our `getParagraphText(getRange())`: each paragraph of the range, its fields stripped and
-    /// its text cleaned, as `Paragraph.newParagraph` makes it without a style sheet.
+    /// its text cleaned, as `Paragraph.newParagraph` makes it without a style sheet. POI also
+    /// reads each paragraph's properties by Word 97's grammar, which the properties of Word 6
+    /// and 95 do not follow, and which, where it throws, sends Tika to the text pieces whole
+    /// (#119); the properties are not needed for the text.
     fn paragraphs_of_range(&self) -> Read<Vec<Vec<u16>>> {
         let length = self.text.len();
         let range = subrange(0, self.length, None)?;
         let (first, last) = find_range(&self.paragraphs, range)?;
         let mut paragraphs = Vec::with_capacity(last - first);
         for run in &self.paragraphs[first..last] {
-            let istd = run.istd()?;
-            let pap = Pap {
-                istd: i32::from(istd),
-                ..Pap::default()
-            };
-            uncompress_pap(&pap, run.grpprl(), 2)?;
             let span = subrange(
                 range.start.max(run.start),
                 range.end.min(run.end),

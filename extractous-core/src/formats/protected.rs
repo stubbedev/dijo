@@ -2,7 +2,9 @@
 //! `OfficeParser` reads them: the summary information of the compound document they are
 //! encrypted in as metadata, the package decrypted with the given password or Office's default
 //! one, and the package then parsed by `OOXMLParser` into the same body and metadata, which this
-//! port leaves to the native parser of the package's format.
+//! port leaves to the native parser of the package's format. Tika's `OOXMLParser` writes through
+//! an XHTML handler of its own into `OfficeParser`'s, so that the line breaks after block
+//! elements and the tabs before indented ones come out twice; here they come once (#119).
 //!
 //! A package whose encryption this port does not open, one whose own parser leaves it to Tika,
 //! and macros extracted when asked to, are left to Tika; where no password opens the package,
@@ -69,14 +71,10 @@ impl Parser for ProtectedParser {
         Ok(Box::new(move |xhtml| {
             write_metadata(xhtml.metadata_mut(), &summaries, asks_password, &media_type);
             let metadata = xhtml.metadata_mut().clone();
-            xhtml.write_nested(|package_xhtml| {
-                let prepared = parser.prepare(&package, &metadata, configs).map_err(|_| {
-                    Failure::Malformed(
-                        "the decrypted package no longer prepares as it did".to_owned(),
-                    )
-                })?;
-                prepared(package_xhtml)
-            })
+            let prepared = parser.prepare(&package, &metadata, configs).map_err(|_| {
+                Failure::Malformed("the decrypted package no longer prepares as it did".to_owned())
+            })?;
+            prepared(xhtml)
         }))
     }
 }

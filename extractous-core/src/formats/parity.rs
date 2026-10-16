@@ -779,6 +779,65 @@ fn without_ocr(
     extracted
 }
 
+/// Tika's XHTML of a protected OOXML package, which Tika's path writes through two XHTML
+/// handlers, without the second line break after each block element and the second tab before
+/// each indented one, which the native path writes once (#119).
+pub(crate) fn without_doubled_breaks(xhtml: &str) -> String {
+    use crate::formats::xhtml::{ENDLINE, INDENT};
+    let block = ENDLINE.join("|");
+    let breaks = regex::Regex::new(&format!(r"(</(?:{block})>|<(?:{block})(?: [^>]*)? />)\n\n"))
+        .expect("a regex");
+    let tabs =
+        regex::Regex::new(&format!(r"\t\t(<(?:{})[ />])", INDENT.join("|"))).expect("a regex");
+    let once = breaks.replace_all(xhtml, "$1\n");
+    tabs.replace_all(&once, "\t$1").into_owned()
+}
+
+/// Asserts that the native parser of each document, which Tika's path parses with
+/// `tika_name`, streams the UTF-8 XHTML and metadata Tika's path does under the settings
+/// `configs`, once `tika_as_native` has made Tika's XHTML what the native path writes on
+/// purpose. Its other outputs are not compared.
+pub(crate) fn assert_same_xhtml_as_tika_with(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+    tika_as_native: fn(&str) -> String,
+) {
+    let mut differences = Vec::new();
+    for document in documents {
+        let path = document.to_str().unwrap();
+        let names = tika_names(routed(path).parser.name(), tika_name, &[]);
+        let native = native_stream(path, configs, Output::Xml, CharSet::UTF_8)
+            .map(|native| comparable(as_tika(native, &names, CharSet::UTF_8), CharSet::UTF_8));
+        let tika = tika_stream(path, configs, Output::Xml, CharSet::UTF_8).map(|tika| {
+            let mut tika = comparable(tika, CharSet::UTF_8);
+            tika.text =
+                tika_as_native(std::str::from_utf8(&tika.text).expect("UTF-8")).into_bytes();
+            match &native {
+                Ok(native) => with_native_edit_time(tika, native, CharSet::UTF_8).0,
+                Err(_) => tika,
+            }
+        });
+        if tika != native {
+            differences.push(format!(
+                "{path}:\n  tika   {}\n  native {}",
+                describe(&tika),
+                describe(&native)
+            ));
+        }
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// The error each path fails with on the document at `path` under `configs`, the native
+/// path's first.
+pub(crate) fn errors(path: &Path, configs: &ParserConfigs) -> (String, String) {
+    (
+        format!("{:?}", native_error(path, configs)),
+        format!("{:?}", tika_error(path, configs)),
+    )
+}
+
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
 pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
     assert_fails_as_tika_with(documents, &ParserConfigs::default());
