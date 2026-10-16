@@ -132,12 +132,30 @@ enum Ended {
     Failed(Failure),
 }
 
+/// Where the events of a document embedded in another go: through the embedding document's
+/// `XHTMLContentHandler`, or to the content handler under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Target {
+    Xhtml,
+    Handler,
+}
+
+impl Target {
+    fn of(wrapping: Wrapping) -> Self {
+        match wrapping {
+            Wrapping::PackageEntry | Wrapping::Bare => Target::Xhtml,
+            Wrapping::UnderlyingPackageEntry => Target::Handler,
+        }
+    }
+}
+
 /// Tika's `EmbeddedContentHandler`, which drops the start and end of an embedded document,
-/// passing the rest on to the embedding document's `XHTMLContentHandler`, and the
+/// passing the rest on to the `target` of the embedding document, and the
 /// `XHTMLBalancingHandler` around it, which keeps the names of the elements left open in `open`.
 pub(crate) struct Embedded<'a, 'h> {
     pub(crate) outer: &'a mut Xhtml<'h>,
     pub(crate) open: &'a mut Vec<String>,
+    pub(crate) target: Target,
 }
 
 impl ContentHandler for Embedded<'_, '_> {
@@ -150,22 +168,22 @@ impl ContentHandler for Embedded<'_, '_> {
     }
 
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        self.outer.start_element_with(name, attributes)?;
+        self.outer.start_in(self.target, name, attributes)?;
         self.open.push(name.to_owned());
         Ok(())
     }
 
     fn end_element(&mut self, name: &str) -> Result<(), Stop> {
         self.open.pop();
-        self.outer.end_element(name)
+        self.outer.end_in(self.target, name)
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Stop> {
-        self.outer.characters_chunk(text)
+        self.outer.characters_in(self.target, text)
     }
 
     fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
-        self.outer.ignorable_whitespace(text)
+        self.outer.whitespace_in(self.target, text)
     }
 
     fn end_document(&mut self) -> Result<(), Stop> {
@@ -435,8 +453,18 @@ impl<'h> Xhtml<'h> {
     /// handler it was given rather than to its `XHTMLContentHandler`: in no namespace, without a
     /// tab, and without ending the head.
     pub(crate) fn raw_start_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.raw_start_element_with(name, &[])
+    }
+
+    /// Starts `name` with `attributes` in the handler under the XHTML, as
+    /// [`Xhtml::raw_start_element`] does, the characters XML cannot hold as they are.
+    pub(crate) fn raw_start_element_with(
+        &mut self,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
         within_budget()?;
-        self.handler.start_element(name, &[])
+        self.handler.start_element(name, attributes)
     }
 
     /// Ends `name` in the handler under the XHTML, without a line break.
@@ -449,6 +477,45 @@ impl<'h> Xhtml<'h> {
     pub(crate) fn raw_characters(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
         self.handler.characters(text)
+    }
+
+    /// Writes ignorable whitespace to the handler under the XHTML.
+    fn raw_ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        within_budget()?;
+        self.handler.ignorable_whitespace(text)
+    }
+
+    fn start_in(
+        &mut self,
+        target: Target,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
+        match target {
+            Target::Xhtml => self.start_element_with(name, attributes),
+            Target::Handler => self.raw_start_element_with(name, attributes),
+        }
+    }
+
+    fn end_in(&mut self, target: Target, name: &str) -> Result<(), Stop> {
+        match target {
+            Target::Xhtml => self.end_element(name),
+            Target::Handler => self.raw_end_element(name),
+        }
+    }
+
+    fn characters_in(&mut self, target: Target, text: &str) -> Result<(), Stop> {
+        match target {
+            Target::Xhtml => self.characters_chunk(text),
+            Target::Handler => self.raw_characters(text),
+        }
+    }
+
+    fn whitespace_in(&mut self, target: Target, text: &str) -> Result<(), Stop> {
+        match target {
+            Target::Xhtml => self.ignorable_whitespace(text),
+            Target::Handler => self.raw_ignorable_whitespace(text),
+        }
     }
 
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
@@ -521,19 +588,21 @@ impl<'h> Xhtml<'h> {
         if !embedded::is_parsed(metadata) || self.embedding.spool(data, metadata)? {
             return Ok(());
         }
-        if wrapping == Wrapping::PackageEntry {
-            self.start_element_with("div", &[("class", PACKAGE_ENTRY)])?;
+        let target = Target::of(wrapping);
+        let wrapped = wrapping != Wrapping::Bare;
+        if wrapped {
+            self.start_in(target, "div", &[("class", PACKAGE_ENTRY)])?;
             if let Some(name) = embedded::heading(metadata) {
-                self.start_element("h1")?;
-                self.characters_chunk(name)?;
-                self.end_element("h1")?;
+                self.start_in(target, "h1", &[])?;
+                self.characters_in(target, name)?;
+                self.end_in(target, "h1")?;
             }
         }
         let mut open = Vec::new();
         let configs = self.embedding.context().configs();
         let ended = match formats::route_embedded(data, metadata, opened, configs) {
-            Some(route) => self.parse_natively(route, data, metadata, &mut open),
-            None => self.parse_with_tika(data, metadata, &mut open),
+            Some(route) => self.parse_natively(route, data, metadata, &mut open, target),
+            None => self.parse_with_tika(data, metadata, &mut open, target),
         };
         let (clean, failure) = match ended {
             Ended::Clean => (true, None),
@@ -541,11 +610,11 @@ impl<'h> Xhtml<'h> {
             Ended::Stopped(stop) => (false, Some(Failure::Stopped(stop))),
             Ended::Failed(failure) => (false, Some(failure)),
         };
-        if wrapping == Wrapping::PackageEntry {
+        if wrapped {
             if !clean {
-                self.end_open(&mut open)?;
+                self.end_open(&mut open, target)?;
             }
-            self.end_element("div")?;
+            self.end_in(target, "div")?;
         }
         failure.map_or(Ok(()), Err)
     }
@@ -556,6 +625,7 @@ impl<'h> Xhtml<'h> {
         data: &[u8],
         metadata: &TikaMetadata,
         open: &mut Vec<String>,
+        target: Target,
     ) -> Ended {
         let parsed = match self.parse_with_tika_quietly(data, metadata) {
             Ok(parsed) => parsed,
@@ -568,7 +638,7 @@ impl<'h> Xhtml<'h> {
             Ok(events) => events,
             Err(failure) => return Ended::Failed(failure),
         };
-        if let Err(stop) = self.replay(events, open) {
+        if let Err(stop) = self.replay(events, open, target) {
             return Ended::Stopped(stop);
         }
         match parsed.outcome {
@@ -619,6 +689,7 @@ impl<'h> Xhtml<'h> {
         data: &[u8],
         metadata: &TikaMetadata,
         open: &mut Vec<String>,
+        target: Target,
     ) -> Ended {
         let EmbeddedRoute {
             parser,
@@ -627,7 +698,11 @@ impl<'h> Xhtml<'h> {
         } = route;
         let context = self.embedding.context();
         let (mut parsed, record, result) = {
-            let mut forward = Embedded { outer: self, open };
+            let mut forward = Embedded {
+                outer: self,
+                open,
+                target,
+            };
             let mut body = Body::new(&mut forward);
             Xhtml::write(&mut body, start, context, prepared)
         };
@@ -669,7 +744,12 @@ impl<'h> Xhtml<'h> {
 
     /// Writes the events of an embedded document, keeping the names of the elements left open
     /// in `open`, until the output stops taking them.
-    fn replay(&mut self, events: Vec<Event>, open: &mut Vec<String>) -> Result<(), Stop> {
+    fn replay(
+        &mut self,
+        events: Vec<Event>,
+        open: &mut Vec<String>,
+        target: Target,
+    ) -> Result<(), Stop> {
         for event in events {
             match event {
                 Event::Start { name, attributes } => {
@@ -677,15 +757,15 @@ impl<'h> Xhtml<'h> {
                         .iter()
                         .map(|(name, value)| (name.as_str(), value.as_str()))
                         .collect();
-                    self.start_element_with(&name, &borrowed)?;
+                    self.start_in(target, &name, &borrowed)?;
                     open.push(name);
                 }
                 Event::End(name) => {
                     open.pop();
-                    self.end_element(&name)?;
+                    self.end_in(target, &name)?;
                 }
-                Event::Characters(text) => self.characters_chunk(&text)?,
-                Event::IgnorableWhitespace(text) => self.ignorable_whitespace(&text)?,
+                Event::Characters(text) => self.characters_in(target, &text)?,
+                Event::IgnorableWhitespace(text) => self.whitespace_in(target, &text)?,
             }
         }
         Ok(())
@@ -693,9 +773,9 @@ impl<'h> Xhtml<'h> {
 
     /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements an aborted embedded parse
     /// left open, innermost first.
-    fn end_open(&mut self, open: &mut Vec<String>) -> Result<(), Stop> {
+    fn end_open(&mut self, open: &mut Vec<String>, target: Target) -> Result<(), Stop> {
         while let Some(name) = open.pop() {
-            self.end_element(&name)?;
+            self.end_in(target, &name)?;
         }
         Ok(())
     }

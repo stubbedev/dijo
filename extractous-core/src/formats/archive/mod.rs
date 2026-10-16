@@ -1,16 +1,19 @@
 //! Archives and compressed files as Tika 4.1's package module reads them, each entry handed to
 //! the embedded document extractor: ZIP archives with `ZipParser` ([`zip`]), compressed files
 //! with `CompressorParser` ([`compressor`]), TAR, ar and cpio archives with `PackageParser`
-//! ([`package`]) and 7z archives with `SevenZParser` ([`seven_z`]).
+//! ([`package`]), 7z archives with `SevenZParser` ([`seven_z`]) and RAR archives with
+//! `RarParser` ([`rar`]).
 
 mod compressor;
 mod nesting;
 mod package;
+mod rar;
 mod seven_z;
 mod zip;
 
 pub(crate) use compressor::CompressorParser;
 pub(crate) use package::PackageParser;
+pub(crate) use rar::RarParser;
 pub(crate) use seven_z::SevenZParser;
 pub(crate) use zip::ZipParser;
 

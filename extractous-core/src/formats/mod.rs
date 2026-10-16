@@ -199,6 +199,7 @@ pub(crate) trait Parser: Sync {
 static PARSERS: &[&dyn Parser] = &[
     &archive::CompressorParser,
     &archive::PackageParser,
+    &archive::RarParser,
     &archive::SevenZParser,
     &archive::ZipParser,
     &chm::ChmParser,

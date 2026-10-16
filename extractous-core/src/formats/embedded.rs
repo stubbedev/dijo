@@ -208,10 +208,13 @@ impl EmbeddedRecord {
 }
 
 /// Whether the embedded document is written in a `package-entry` div headed by its name, as
-/// `parseEmbedded`'s `outputHtml` asks, or bare.
+/// `parseEmbedded`'s `outputHtml` asks, or bare; and whether the parser hands the extractor
+/// its `XHTMLContentHandler` or, for `UnderlyingPackageEntry`, the content handler it was
+/// given, which the div and the document's events go to without the XHTML's line breaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wrapping {
     PackageEntry,
+    UnderlyingPackageEntry,
     Bare,
 }
 
