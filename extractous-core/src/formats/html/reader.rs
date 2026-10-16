@@ -13,7 +13,6 @@ const REWIND_LIMIT: usize = 1024;
 /// jsoup's stream reader, decoding bytes, stops short of a surrogate pair it cannot fit whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
-    #[cfg_attr(not(test), expect(dead_code))]
     String,
     Stream,
 }

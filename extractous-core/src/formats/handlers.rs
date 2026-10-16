@@ -5,7 +5,9 @@
 //! [`ToXml`] (`ToXMLContentHandler`).
 
 use crate::formats::java::JavaHashMap;
-use crate::formats::xhtml::{ContentHandler, Stop, XHTML_NAMESPACE};
+use crate::formats::metadata::TikaMetadata;
+use crate::formats::xhtml::{ContentHandler, Stop, Xhtml, XHTML_NAMESPACE};
+use crate::formats::{Failure, Prepared};
 use crate::unicode::is_whitespace;
 
 /// The block elements [`BlockBreaks`] ends with a line break and [`AnchoredBlocks`] holds back.
@@ -779,6 +781,54 @@ pub(crate) fn is_blank(text: &str) -> bool {
 /// The length of `text` in UTF-16 code units, which is how Java counts characters.
 pub(crate) fn utf16_length(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
+}
+
+/// A document its parser `prepared` from fresh metadata parsed into another document's body,
+/// through an `EmbeddedContentHandler` and a `BodyContentHandler`, as a parser does that hands a
+/// part of its document to another parser with its own `XHTMLContentHandler`, such as the mail
+/// parser's `handleInlineBodyPart`.
+pub(crate) fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let context = xhtml.context();
+    let mut forward = Forward { outer: xhtml };
+    let mut body = Body::new(&mut forward);
+    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);
+    result
+}
+
+/// The events of a document parsed inline, passed on to the other document's own
+/// `XHTMLContentHandler`, without the start and end of the inline document.
+struct Forward<'a, 'h> {
+    outer: &'a mut Xhtml<'h>,
+}
+
+impl ContentHandler for Forward<'_, '_> {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.outer.start_prefix_mapping(prefix, uri)
+    }
+
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        self.outer.start_element_with(name, attributes)
+    }
+
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.outer.end_element(name)
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        self.outer.characters(text)
+    }
+
+    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        self.outer.ignorable_whitespace(text)
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

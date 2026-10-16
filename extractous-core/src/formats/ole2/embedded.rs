@@ -64,16 +64,17 @@ fn document_type(media_type: &MediaType) -> (MediaType, &'static str) {
         .unwrap_or_else(|| (MediaType::named("application/x-tika-msoffice"), "unknown"))
 }
 
-/// `handleEmbeddedOfficeDoc(dir, resourceName, xhtml, outputHtml)`: the document to hand on,
+/// `handleEmbeddedOfficeDoc(dir, metadata, resourceName, xhtml, outputHtml)`: the document to
+/// hand on, with `metadata` and what Tika adds to it,
 /// `None` where Tika hands on nothing, or why Tika records a failure or fails instead.
 pub(crate) fn office_document(
     file: &Ole2<'_>,
     directory: EntryId,
+    mut metadata: TikaMetadata,
     resource_name: Option<&str>,
 ) -> Result<Option<Embedded>, Unported> {
     let name = file.name(directory);
     let class_id = class_id_string(&file.class_id(directory));
-    let mut metadata = TikaMetadata::new();
     let package = file
         .child(directory, "Package")
         .or_else(|| file.child(directory, "package"));
@@ -296,7 +297,7 @@ mod tests {
     fn handed_on(data: &[u8]) -> Option<Embedded> {
         let file = Ole2::open(data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();
-        office_document(&file, object, None).unwrap()
+        office_document(&file, object, TikaMetadata::new(), None).unwrap()
     }
 
     #[test]
@@ -341,7 +342,7 @@ mod tests {
         let file = Ole2::open(&data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();
         assert!(matches!(
-            office_document(&file, object, None),
+            office_document(&file, object, TikaMetadata::new(), None),
             Err(Unported(reason)) if reason.contains("Outlook message")
         ));
     }

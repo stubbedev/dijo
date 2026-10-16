@@ -62,12 +62,18 @@ type Step = Result<(), Interrupt>;
 /// Extracts `input` into `xhtml`. On a failure, the elements still open are ended, as
 /// `RTFParser`'s `XHTMLBalancingHandler` drains them, unless that fails in turn.
 pub(super) fn extract(input: &[u8], xhtml: &mut Xhtml) -> Step {
-    let mut extractor = Extractor::new(input, xhtml);
+    let mut extractor = Extractor::new(input, xhtml, None);
     let result = extractor.extract();
     if let Err(Interrupt::Failed(_)) = result {
         extractor.drain()?;
     }
     result
+}
+
+/// `RTFParser.parseInline`: extracts `input` into the elements of another document's `xhtml`,
+/// the metadata of its header into `metadata`, ending no element on a failure.
+pub(super) fn extract_inline(input: &[u8], xhtml: &mut Xhtml, metadata: TikaMetadata) -> Step {
+    Extractor::new(input, xhtml, Some(metadata)).extract()
 }
 
 /// The state of one group, `{...}`, which its nested groups start from.
@@ -311,6 +317,8 @@ struct Extractor<'a, 'x, 'h> {
     paragraphs: ParagraphStack,
     /// The elements started and not yet ended, as `XHTMLBalancingHandler` tracks them.
     open: Vec<&'static str>,
+    /// The metadata of a document extracted into another's elements, else the document's own.
+    inline_metadata: Option<TikaMetadata>,
 }
 
 /// Java's `String.trim`: characters up to a space go from both ends.
@@ -319,7 +327,7 @@ fn trim_java(text: &str) -> &str {
 }
 
 impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
-    fn new(input: &'a [u8], out: &'x mut Xhtml<'h>) -> Self {
+    fn new(input: &'a [u8], out: &'x mut Xhtml<'h>, inline_metadata: Option<TikaMetadata>) -> Self {
         Self {
             input: Input::new(input),
             out,
@@ -348,11 +356,15 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             date: DateParts::default(),
             paragraphs: ParagraphStack::default(),
             open: Vec::new(),
+            inline_metadata,
         }
     }
 
     fn metadata(&mut self) -> &mut TikaMetadata {
-        self.out.metadata_mut()
+        match &mut self.inline_metadata {
+            Some(metadata) => metadata,
+            None => self.out.metadata_mut(),
+        }
     }
 
     fn start(&mut self, tag: &'static str) -> Step {

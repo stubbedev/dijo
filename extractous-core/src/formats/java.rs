@@ -146,6 +146,18 @@ impl<V> JavaHashMap<V> {
             .map(|(_, entry)| (entry.key.as_str(), &entry.value))
     }
 
+    /// Whether two of `keys` share a bucket of the table, where Java iterates them in the order
+    /// they were inserted.
+    pub(crate) fn share_a_bucket(&self, keys: &[&str]) -> bool {
+        let mask = self.capacity.saturating_sub(1);
+        let mut buckets: Vec<usize> = keys
+            .iter()
+            .map(|key| spread(string_hash(key)) as usize & mask)
+            .collect();
+        buckets.sort_unstable();
+        buckets.windows(2).any(|pair| pair[0] == pair[1])
+    }
+
     fn insert_new(&mut self, key: &str, value: V) {
         if self.capacity == 0 {
             self.capacity = self.initial_capacity;

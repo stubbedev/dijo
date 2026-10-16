@@ -26,6 +26,7 @@ mod list_numbering;
 mod mail;
 pub(crate) mod metadata;
 mod mobi;
+mod msg;
 mod notebook;
 mod odf;
 mod ole10_native;
@@ -176,6 +177,7 @@ static PARSERS: &[&dyn Parser] = &[
     &mail::EmlxParser,
     &mail::MboxParser,
     &mobi::MobiParser,
+    &msg::MsgParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
     &odf::OpenDocumentParser,

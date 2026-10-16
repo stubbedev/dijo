@@ -770,7 +770,7 @@ impl Extractor<'_> {
             {
                 continue;
             }
-            if let Some(embedded) = office_document(self.file, entry, None)? {
+            if let Some(embedded) = office_document(self.file, entry, TikaMetadata::new(), None)? {
                 self.out
                     .push(Out::Embedded(embedded, Wrapping::PackageEntry));
             }

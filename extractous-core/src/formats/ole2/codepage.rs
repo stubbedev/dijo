@@ -12,7 +12,7 @@ pub(super) const DEFAULT: i32 = 1252;
 
 /// `CodePageUtil.codepageToEncoding(codepage, false)`: `None` for a code page below one, which
 /// POI refuses.
-pub(super) fn encoding(codepage: i32) -> Option<Cow<'static, str>> {
+pub(crate) fn encoding(codepage: i32) -> Option<Cow<'static, str>> {
     let name = match codepage {
         ..=0 => return None,
         1200 => "UTF-16LE",

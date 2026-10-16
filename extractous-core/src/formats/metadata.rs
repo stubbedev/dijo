@@ -119,6 +119,12 @@ impl TikaMetadata {
         self.entries.iter().map(|(name, _)| name)
     }
 
+    /// Whether two of `names` share a bucket of Tika's `HashMap`, where it iterates them in the
+    /// order they were first set.
+    pub(crate) fn share_a_bucket(&self, names: &[&str]) -> bool {
+        self.entries.share_a_bucket(names)
+    }
+
     /// Every name with each of its values, in the order the names were first set.
     pub(crate) fn pairs(&self) -> Vec<(&str, &str)> {
         self.entries

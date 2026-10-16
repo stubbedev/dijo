@@ -8,5 +8,6 @@ mod property_set;
 mod reader;
 mod summary;
 
+pub(crate) use codepage::encoding as codepage_encoding;
 pub(crate) use embedded::{office_document, Embedded};
 pub(crate) use summary::{add_multi, Summaries};
