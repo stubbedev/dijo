@@ -219,8 +219,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
             "droste.zip",
             "moby.zip",
             "test-documents-spanned.z01",
-            "test-documents-spanned.zip",
-            "testZip_with_DataDescriptor.zip"
+            "test-documents-spanned.zip"
         ]
     );
 }

@@ -32,7 +32,8 @@ pub(crate) enum Failure {
     /// An entry with a data descriptor the stream cannot read past as configured.
     DataDescriptor,
     /// An encrypted entry, or one compressed with a method commons-compress has no
-    /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`.
+    /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`,
+    /// as it refuses an archive that starts as a split one goes on.
     Unsupported,
     /// An entry compressed with this method, which commons-compress decompresses and the port
     /// does not.
@@ -67,6 +68,7 @@ pub(crate) struct ZipStream<'a> {
     data: &'a [u8],
     position: usize,
     allow_stored_data_descriptor: bool,
+    use_unicode_extra_fields: bool,
     first: bool,
     done: bool,
     current: Option<Current>,
@@ -78,9 +80,19 @@ impl<'a> ZipStream<'a> {
             data,
             position: 0,
             allow_stored_data_descriptor,
+            use_unicode_extra_fields: true,
             first: true,
             done: false,
             current: None,
+        }
+    }
+
+    /// The stream that reads names as they are, without their Unicode extra fields, as one
+    /// made with `useUnicodeExtraFields` false.
+    pub(crate) fn without_unicode_extra_fields(self) -> Self {
+        Self {
+            use_unicode_extra_fields: false,
+            ..self
         }
     }
 
@@ -130,7 +142,7 @@ impl<'a> ZipStream<'a> {
         let fields =
             ExtraFields::from_central(extra, &mut Times::default()).map_err(|_| Failure::Io)?;
         let mut name = entry_name(decode_name(raw_name), version);
-        if flags & 0x0800 == 0 {
+        if flags & 0x0800 == 0 && self.use_unicode_extra_fields {
             if let Some(unicode) = unicode_text(&fields, extra::UNICODE_PATH, raw_name) {
                 name = entry_name(unicode, version);
             }
@@ -182,7 +194,7 @@ impl<'a> ZipStream<'a> {
                 return Ok(Some(at + 4));
             }
             if signature == DD_SIG {
-                return Err(Failure::Io);
+                return Err(Failure::Unsupported);
             }
             if signature == EOCD_SIG {
                 return Ok(None);

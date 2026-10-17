@@ -1784,8 +1784,12 @@ fn read_by_ocr(xhtml: &Comparison) -> Option<OcrTexts> {
 pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
     let name = path.to_str().unwrap();
     let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
-    let detected = formats::Detected::detect(&formats::OpenedFrom::File(name.into()), &input)
-        .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
+    let detected = formats::Detected::detect(
+        &formats::OpenedFrom::File(name.into()),
+        &input,
+        crate::mime::Intent::Parse,
+    )
+    .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
     parser.defers(
         &input,
         &detected.metadata_for(parser),
@@ -1824,8 +1828,12 @@ pub(crate) fn documents_with(
         if input.is_empty() {
             continue;
         }
-        let detected = formats::Detected::detect(&formats::OpenedFrom::File(path.into()), &input)
-            .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
+        let detected = formats::Detected::detect(
+            &formats::OpenedFrom::File(path.into()),
+            &input,
+            crate::mime::Intent::Parse,
+        )
+        .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
         let routed = formats::parser_for(&detected.media_type).is_ok_and(|routed| {
             routed.name() == parser.name() && routed.media_types() == parser.media_types()
         });

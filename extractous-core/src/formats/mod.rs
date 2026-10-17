@@ -103,7 +103,7 @@ use crate::fetch::{self, Headers, Located};
 use crate::input::{self, Input};
 use crate::isolate::{heap_cap, isolate};
 use crate::memory;
-use crate::mime::{self, Detection, MediaType, Origin};
+use crate::mime::{self, Detection, Intent, MediaType, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
 use embedded::ParseContext;
@@ -500,8 +500,8 @@ pub(crate) enum Unrouted {
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
 pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unrouted> {
-    let detected =
-        Detected::detect(&document.from, &document.input).map_err(|_| Unrouted::Undetected)?;
+    let detected = Detected::detect(&document.from, &document.input, Intent::Parse)
+        .map_err(|_| Unrouted::Undetected)?;
     let parser = parser_for(&detected.media_type)?;
     if document.input.is_mapped() && parser.footprint() == Footprint::Proportional {
         return Err(Unrouted::Unbounded);
@@ -601,7 +601,7 @@ pub(crate) fn route_embedded<'a>(
 /// for a document Tika's detection throws on, so the failure is Tika's own.
 pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     let document = open(source, None)?;
-    match Detected::detect(&document.from, &document.input) {
+    match Detected::detect(&document.from, &document.input, Intent::Detect) {
         Ok(detected) => Ok(detected.media_type),
         Err(_) => tika::detect(isolate()?, source),
     }
@@ -616,13 +616,15 @@ pub(crate) fn java_file_name(path: &str) -> &str {
 }
 
 impl Detected {
-    /// Detects `input`, opened as `from` says, with the metadata `TikaNativeMain.detect` holds
-    /// after Tika's detection: what `TikaInputStream` writes as it opens the input (for a file
-    /// its name and length, for a fetched document what the server said of it), then what the
-    /// detectors write, in the order they write it.
+    /// Detects `input`, opened as `from` says, with the metadata Tika holds after its
+    /// detection, alone as `TikaNativeMain.detect` runs it or before a parse as
+    /// `AutoDetectParser` runs it, as `intent` says: what `TikaInputStream` writes as it opens
+    /// the input (for a file its name and length, for a fetched document what the server said
+    /// of it), then what the detectors write, in the order they write it.
     pub(crate) fn detect(
         from: &OpenedFrom<'_>,
         input: &[u8],
+        intent: Intent,
     ) -> Result<Self, mime::DetectionError> {
         let mut metadata = TikaMetadata::new();
         let (origin, file) = match from {
@@ -659,7 +661,10 @@ impl Detected {
         let Detection {
             media_type,
             metadata: entries,
-        } = mime::detect(input, origin)?;
+        } = match intent {
+            Intent::Detect => mime::detect(input, origin)?,
+            Intent::Parse => mime::detect_to_parse(input, origin)?,
+        };
         for entry in entries {
             metadata.set(entry.key.name(), entry.value);
         }
@@ -686,7 +691,7 @@ impl Detected {
         let Detection {
             media_type,
             metadata: entries,
-        } = mime::detect(input, origin)?;
+        } = mime::detect_to_parse(input, origin)?;
         let mut metadata = metadata.clone();
         for entry in entries {
             metadata.set(entry.key.name(), entry.value);
@@ -1796,7 +1801,8 @@ mod tests {
     fn detects_files_with_the_metadata_tika_opens_them_with() {
         let path = "../test_files/documents/simple.odt";
         let input = std::fs::read(path).unwrap();
-        let detected = Detected::detect(&OpenedFrom::File(path.into()), &input).unwrap();
+        let detected =
+            Detected::detect(&OpenedFrom::File(path.into()), &input, Intent::Parse).unwrap();
         assert_eq!(
             detected.media_type,
             "application/vnd.oasis.opendocument.text"
@@ -1814,7 +1820,7 @@ mod tests {
             detected.metadata.get("tk:resource-name"),
             Some("simple.odt")
         );
-        let bytes = Detected::detect(&OpenedFrom::Bytes, &input).unwrap();
+        let bytes = Detected::detect(&OpenedFrom::Bytes, &input, Intent::Parse).unwrap();
         assert_eq!(bytes.metadata.get("tk:resource-name"), None);
         assert_eq!(
             bytes.metadata.get("Content-Length"),
