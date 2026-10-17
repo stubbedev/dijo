@@ -1,10 +1,8 @@
 # tesseract built from a static package set for linking into one executable: without the
-# training tools, curl or libarchive, and with OpenMP, so that a reading can run its recognizer on
-# the threads ReadingThreads grants it. The recognizer asks for fixed numbers of threads (four for
-# its fully connected layers and its LSTM gates, one per stack of a parallel layer), which the
-# patch limits to the calling thread's omp_set_num_threads, or OMP_NUM_THREADS for the program:
-# its threads spin while they wait for each other, so threads beyond the grant starve the other
-# readings of the machine. The StrideMap index methods the network calls for every time step are
+# training tools, curl or libarchive, and without OpenMP, as tesseract's CMake build and the
+# bundles' library are. Readings run side by side, a page per thread; an OpenMP team per reading
+# spent 2.6 times the processor time for a 1.2 times faster lone page, and a worker of one aborted
+# the static server once (#62). The StrideMap index methods the network calls for every time step are
 # made inline (tesseract-inline-stridemap.patch): out of line they took a fifth of a page's
 # instructions, and inline a page reads 10 to 13% faster with the same text. It is compiled at -O3,
 # as CMake's release builds of it are, where its autotools build sets -O2: 5% faster again.
@@ -26,15 +24,8 @@ static:
       "--without-curl"
       "--without-archive"
       "--disable-doc"
+      "--disable-openmp"
     ];
-    postPatch = (old.postPatch or "") + ''
-      substituteInPlace src/lstm/fullyconnected.cpp --replace-fail "num_threads(kNumThreads)" \
-        "num_threads(omp_get_max_threads() < kNumThreads ? omp_get_max_threads() : kNumThreads)"
-      substituteInPlace src/lstm/lstm.cpp --replace-fail "PARALLEL_IF_OPENMP(GFS)" \
-        "PARALLEL_IF_OPENMP((omp_get_max_threads() < GFS ? omp_get_max_threads() : GFS))"
-      substituteInPlace src/lstm/parallel.cpp --replace-fail "num_threads(stack_size)" \
-        "num_threads(omp_get_max_threads() < stack_size ? omp_get_max_threads() : stack_size)"
-    '';
     postInstall = (old.postInstall or "") + ''
       mkdir -p $out/include/tesseract-internal
       cp include/config_auto.h src/ccstruct/*.h src/ccutil/*.h src/viewer/*.h \
