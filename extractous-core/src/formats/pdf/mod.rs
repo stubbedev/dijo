@@ -1059,10 +1059,15 @@ mod tests {
             .iter()
             .map(|(name, bytes)| scratch.write(name, bytes))
             .collect();
-        for path in &paths {
-            assert_eq!(deferral(path), None, "{}", path.display());
+        // The pages show next to no glyphs, which Tika would read by OCR: the text layer alone
+        // is compared.
+        let pdf = PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR);
+        let configs = with_pdf(pdf.clone());
+        for (_, bytes) in &documents {
+            let deferral = PdfParser.defers(bytes, &TikaMetadata::new(), &configs);
+            assert_eq!(deferral, None);
         }
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+        assert_same_as_tika_delegating_with(&as_paths(&paths), tika_name(), &DELEGATES, &configs);
         for ((_, bytes), text) in documents.iter().zip([
             "\u{3042}\u{3044}\u{3046}\u{3048}\u{3048}",
             "\u{3042}\u{3044}\u{3046}A",
@@ -1070,7 +1075,11 @@ mod tests {
             "\u{4e2d}\u{6587}",
             "\u{4e2d}\u{6587}",
         ]) {
-            let (xml, _) = native_xml(bytes);
+            let (xml, _) = crate::Extractor::new()
+                .set_xml_output(true)
+                .set_pdf_config(pdf.clone())
+                .extract_bytes_to_string(bytes)
+                .unwrap();
             assert!(xml.contains(text), "{text}: {xml}");
         }
     }
