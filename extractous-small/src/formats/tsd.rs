@@ -1,6 +1,9 @@
 //! Time-stamped data envelopes (RFC 5544), as Tika's `TSDParser` reads them: an empty document
 //! into which the envelope's content is parsed as an embedded document, read as Bouncy Castle's
-//! `CMSTimeStampedDataParser` streams it, up to where the input ends.
+//! `CMSTimeStampedDataParser` streams it, up to where the input ends. Of an envelope cut off
+//! inside its content, every byte of the content there is is kept, where Tika's copy loses the
+//! read Bouncy Castle throws in, up to 8192 bytes, and two bytes it reads ahead for each open
+//! element of indefinite length (#132).
 //!
 //! `TSDParser` also reads the time stamps, but writes them into the metadata of the embedded
 //! document, which neither the document nor its spooled copy shows, so the port does not read
@@ -23,8 +26,6 @@ const UNIVERSAL_SEQUENCE: u32 = 16;
 const UNIVERSAL_IA5_STRING: u32 = 22;
 const CLASS_UNIVERSAL: u8 = 0x00;
 const CLASS_CONTEXT: u8 = 0x80;
-/// The bytes `parseTSDContent` copies the content in at a time.
-const COPY_BUFFER: usize = 8192;
 
 /// A BER length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,35 +53,21 @@ impl Header {
 struct Thrown;
 
 /// The envelope read front to back, as `ASN1StreamParser` streams it: a definite length is not
-/// checked against what is left until the bytes it covers are read, and each open element of
-/// indefinite length reads two bytes ahead of what it hands on (`IndefiniteLengthInputStream`
-/// looks for the end-of-contents marker so), each of which the input must hold.
+/// checked against what is left until the bytes it covers are read.
 struct Stream<'a> {
     bytes: &'a [u8],
     at: usize,
-    /// The elements of indefinite length open around the position.
-    indefinite: usize,
 }
 
 impl<'a> Stream<'a> {
-    /// Where the bytes the position's elements can hand on end: two bytes before the input
-    /// ends for each element of indefinite length open around it.
-    fn limit(&self) -> usize {
-        self.bytes.len().saturating_sub(2 * self.indefinite)
-    }
-
     fn byte(&mut self) -> Result<u8, Thrown> {
-        if self.at >= self.limit() {
-            return Err(Thrown);
-        }
-        let byte = self.bytes[self.at];
+        let byte = *self.bytes.get(self.at).ok_or(Thrown)?;
         self.at += 1;
         Ok(byte)
     }
 
     /// `ASN1StreamParser.readObject`'s header: the tag, its number in base 128 when it does not
-    /// fit the first byte, and a length of at most four bytes. An element of indefinite length
-    /// is opened, its two bytes read ahead.
+    /// fit the first byte, and a length of at most four bytes.
     fn header(&mut self) -> Result<Header, Thrown> {
         let tag = self.byte()?;
         let mut number = u32::from(tag & 0x1F);
@@ -100,13 +87,7 @@ impl<'a> Stream<'a> {
         let constructed = tag & 0x20 != 0;
         let first = self.byte()?;
         let length = match first {
-            0x80 if constructed => {
-                if self.at + 2 > self.limit() {
-                    return Err(Thrown);
-                }
-                self.indefinite += 1;
-                Length::Indefinite
-            }
+            0x80 if constructed => Length::Indefinite,
             0x80 => return Err(Thrown),
             0x00..=0x7F => Length::Definite(usize::from(first)),
             0x81..=0x84 => {
@@ -130,10 +111,7 @@ impl<'a> Stream<'a> {
     /// The `length` bytes that follow, which must be there to hand on.
     fn take(&mut self, length: usize) -> Result<&'a [u8], Thrown> {
         let end = self.at.checked_add(length).ok_or(Thrown)?;
-        if end > self.limit() {
-            return Err(Thrown);
-        }
-        let bytes = &self.bytes[self.at..end];
+        let bytes = self.bytes.get(self.at..end).ok_or(Thrown)?;
         self.at = end;
         Ok(bytes)
     }
@@ -144,7 +122,6 @@ impl<'a> Stream<'a> {
         let ends = self.bytes.get(self.at..self.at + 2) == Some(&[0, 0]);
         if ends {
             self.at += 2;
-            self.indefinite -= 1;
         }
         ends
     }
@@ -166,11 +143,12 @@ impl<'a> Stream<'a> {
     }
 
     /// Adds the octets of the OCTET STRING of `header`, primitive or constructed, to `content`,
-    /// as its octet stream hands them on, up to where it throws. Whether it was read whole.
+    /// as its octet stream hands them on, up to where the input ends or the octets stop being
+    /// an OCTET STRING's. Whether it was read whole.
     fn octets(&mut self, header: Header, content: &mut Vec<u8>) -> bool {
         match (header.constructed, header.length) {
             (false, Length::Definite(length)) => {
-                let end = self.at.saturating_add(length).min(self.limit());
+                let end = self.at.saturating_add(length).min(self.bytes.len());
                 content.extend_from_slice(&self.bytes[self.at..end]);
                 let whole = end - self.at == length;
                 self.at = end;
@@ -203,15 +181,12 @@ impl<'a> Stream<'a> {
 
 /// `CMSTimeStampedDataParser(stream).getContent()` as `parseTSDContent` copies it: the
 /// `ContentInfo` of time-stamped data, the version of its `TimeStampedData`, its data URI and
-/// metadata if it has them, then the octets of its content. Bouncy Castle's octet stream fills
-/// each read whole, and the read its stream throws in loses what it read: the copy keeps the
-/// whole buffers before it. `None` where Bouncy Castle throws before the content, or the
-/// envelope has none.
+/// metadata if it has them, then the octets of its content, all there are of them. `None` where
+/// Bouncy Castle throws before the content, or the envelope has none.
 fn content(input: &[u8]) -> Option<Vec<u8>> {
     let mut stream = Stream {
         bytes: input,
         at: 0,
-        indefinite: 0,
     };
     let mut read = || -> Result<Option<Vec<u8>>, Thrown> {
         let info = stream.header()?;
@@ -254,9 +229,7 @@ fn content(input: &[u8]) -> Option<Vec<u8>> {
             return Ok(None);
         }
         let mut content = Vec::new();
-        if !stream.octets(next, &mut content) {
-            content.truncate(content.len() - content.len() % COPY_BUFFER);
-        }
+        stream.octets(next, &mut content);
         Ok(Some(content))
     };
     read().ok().flatten()
@@ -315,12 +288,22 @@ mod tests {
     }
 
     #[test]
-    fn loses_the_read_a_cut_envelope_throws_in() {
+    fn keeps_all_the_content_a_cut_envelope_holds() {
         let whole = envelope(b"hello");
         assert_eq!(content(&whole).unwrap(), b"hello");
-        assert_eq!(content(&whole[..whole.len() - 1]).unwrap(), b"");
+        assert_eq!(content(&whole[..whole.len() - 1]).unwrap(), b"hello");
+        assert_eq!(content(&whole[..whole.len() - 10]).unwrap(), b"hel");
         assert_eq!(content(&whole[..10]), None);
         assert_eq!(content(b"not ASN.1"), None);
+    }
+
+    #[test]
+    fn extracts_what_a_cut_envelope_holds() {
+        let whole = envelope("Bølgerne går højt i Øresund.".as_bytes());
+        let (text, _) = crate::Extractor::new()
+            .extract_bytes_to_string(&whole[..whole.len() - 12])
+            .unwrap();
+        assert_eq!(text.trim(), "Bølgerne går højt i Øres");
     }
 
     #[cfg(feature = "tika")]
@@ -330,9 +313,8 @@ mod tests {
         let whole = envelope(b"Some text in an envelope.");
         let documents_written = [
             scratch.write("text.tsd", &whole),
-            scratch.write("cut.tsd", &whole[..whole.len() - 12]),
             scratch.write("empty.tsd", &envelope(b"")),
-            scratch.write("none.tsd", &whole[..30]),
+            scratch.write("none.tsd", &whole[..20]),
         ];
         let paths: Vec<&Path> = documents_written.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika(&paths, TsdParser.tika_name());
