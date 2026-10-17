@@ -1098,7 +1098,7 @@ mod tests {
                 let departure = (name == "nested.zip")
                     .then_some((crate::formats::archive::as_tika_checks_zips as _, None));
                 let spooled =
-                    crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure);
+                    crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure, &[]);
                 assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
             }
         }
@@ -1130,6 +1130,154 @@ mod tests {
             (
                 "testEPUB_multi-metadata-vals.epub",
                 "Tika writes the pictures outside the spine in HashMap order (#88)",
+            ),
+            (
+                "testControlCharacters.doc",
+                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
+            ),
+            (
+                "testWORD_2006ml.doc",
+                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
+            ),
+            (
+                "testWORD_features.doc",
+                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
+            ),
+            (
+                "testJBIG2.jb2",
+                "Tika records the JBIG2 dimension node twice (#120)",
+            ),
+            (
+                "CVLKRA-KYC_Download_File_Structure_V3.1.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "protectedSheets.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_charts.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_diagramData.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_hyperlinks.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL-charts.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_extra_metadata.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_headers_footers.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_hyperlinks.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_labels-govdocs-515858.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "LibreOfficeImpress_odp_1.3.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "test-columnar.ods",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testMasterFooter.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testNPEOpenDocument.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODFwithOOo3.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODPMacro.fodp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODPMacro.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODP_NPE.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODT-TIKA-6000.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODTStyles3.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testOpenOffice2.odf",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testStarOffice-6.0-writer-template.stw",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testStarOffice-6.0-writer.sxw",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testPPT.potm",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPPT_autodate.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPPT_various.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPPT_various2.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testWPSAttachment.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "test_embedded_zip.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPDF_multiFormatEmbFiles.pdf",
+                "its embedded files are written in object order, once each (#109)",
+            ),
+            (
+                "complex.mbox",
+                "its parts keep their whole content type (#75), and its messages their own headers (#103)",
+            ),
+            (
+                "testEmailWithPNGAtt.eml",
+                "its parts keep their whole content type (#75), and its messages their own headers (#103)",
+            ),
+            (
+                "testRFC822_oddfrom",
+                "its quoted-printable parts keep their own line ends (#73)",
             ),
         ];
         let mut differences = Vec::new();
@@ -1172,9 +1320,29 @@ mod tests {
                     "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
                     _ => None,
                 };
+                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared.
+                let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
+                    "extractous::RFC822Parser"
+                    | "extractous::EmlxParser"
+                    | "extractous::MboxParser" => crate::formats::mail::tests::DEPARTURES.to_vec(),
+                    "extractous::OfficeParser" => {
+                        crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
+                    }
+                    _ => Vec::new(),
+                };
+                if crate::formats::mail::tests::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
+                    departures.push(crate::formats::parity::Departure::Values(
+                        "message:from-name",
+                        "#77",
+                    ));
+                }
                 for budget in [u64::MAX, 3000] {
-                    match crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure)
-                    {
+                    match crate::formats::parity::spools_as_tika_rewriting(
+                        &path,
+                        budget,
+                        departure,
+                        &departures,
+                    ) {
                         Ok(0) => {}
                         Ok(_) => spooling += 1,
                         Err(difference) => differences.push(difference),

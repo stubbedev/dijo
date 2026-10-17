@@ -1934,15 +1934,16 @@ fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> 
 /// metadata, and the same files, named, typed, numbered and cut alike. Where the two differ, or
 /// one path fails and the other does not, what differs.
 pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
-    spools_as_tika_rewriting(path, budget, None)
+    spools_as_tika_rewriting(path, budget, None, &[])
 }
 
 /// [`spools_as_tika`], with the native result rewritten by `rewrite`, and both texts then by
-/// its normalisation, if any.
+/// its normalisation, if any, and without the values `departures` name.
 pub(crate) fn spools_as_tika_rewriting(
     path: &Path,
     budget: u64,
     rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+    departures: Departures,
 ) -> Result<usize, String> {
     let path = path.to_str().unwrap();
     let configs = ParserConfigs::default();
@@ -2016,8 +2017,18 @@ pub(crate) fn spools_as_tika_rewriting(
                 ),
                 CharSet::UTF_8,
             );
-            let (tika_extracted, native_extracted) =
-                with_rewrite(tika_extracted, native_extracted, CharSet::UTF_8, rewrite);
+            let (mut tika_extracted, mut native_extracted) = with_rewrite(
+                without_departures(tika_extracted, CharSet::UTF_8, departures),
+                without_departures(native_extracted, CharSet::UTF_8, departures),
+                CharSet::UTF_8,
+                rewrite,
+            );
+            if tika_name == RECOGNIZED_IMAGE_PARSER {
+                tika_extracted.text =
+                    without_nested_document(tika_extracted.text, Output::Xml, CharSet::UTF_8);
+                native_extracted.text =
+                    without_nested_document(native_extracted.text, Output::Xml, CharSet::UTF_8);
+            }
             let (tika_extracted, _) =
                 with_native_edit_time(tika_extracted, &native_extracted, CharSet::UTF_8);
             let (mut tika_extracted, mut native_extracted) =

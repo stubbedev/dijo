@@ -281,7 +281,7 @@ fn prepare_message(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
@@ -294,14 +294,14 @@ mod tests {
 
     /// What the port does otherwise than Tika on purpose: Tika names a message after its
     /// subject, and makes each line feed of a quoted-printable part a CRLF.
-    pub(super) const DEPARTURES: Departures = &[
+    pub(crate) const DEPARTURES: Departures = &[
         Departure::Values("tk:resource-name", "#79"),
         Departure::LineBreaks("#73"),
     ];
 
     /// The documents whose sender's name Tika's regular expression takes otherwise than the
     /// port takes it from the parsed mailbox (#77), by file name.
-    const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
+    pub(crate) const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
 
     /// Asserts parity on the documents of `parser` under `roots`, which it must parse all of,
     /// and that there are `count`, but for those named in `except`, which it returns.

@@ -129,7 +129,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
 }
 
 /// The recipients' names, which POI swaps (#112).
-const RECIPIENT_NAMES: parity::Departures = &[
+pub(crate) const RECIPIENT_NAMES: parity::Departures = &[
     Departure::Values("message:to-name", "#112"),
     Departure::Values("message:to-display-name", "#112"),
     Departure::Values("message:cc-name", "#112"),
