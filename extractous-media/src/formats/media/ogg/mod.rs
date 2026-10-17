@@ -291,7 +291,7 @@ fn thrown(thrown: String) -> Declined {
     Declined::Fails(Error::ParseError(thrown))
 }
 
-pub(crate) struct VorbisParser;
+pub struct VorbisParser;
 
 impl Parser for VorbisParser {
     fn name(&self) -> &'static str {
@@ -339,7 +339,7 @@ impl Parser for VorbisParser {
     }
 }
 
-pub(crate) struct OpusParser;
+pub struct OpusParser;
 
 impl Parser for OpusParser {
     fn name(&self) -> &'static str {
@@ -378,7 +378,7 @@ impl Parser for OpusParser {
     }
 }
 
-pub(crate) struct FlacParser;
+pub struct FlacParser;
 
 /// `FlacParser.readNativePictures`: the picture blocks of a native FLAC file's metadata, up to
 /// the last block or where the file ends.

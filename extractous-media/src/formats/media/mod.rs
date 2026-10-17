@@ -9,16 +9,16 @@ mod flv;
 mod midi;
 mod mp3;
 mod mp4;
-#[cfg(all(test, feature = "tika"))]
-pub(crate) use mp4::as_tika_reads_it as mp4_as_tika_reads_it;
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub use mp4::as_tika_reads_it as mp4_as_tika_reads_it;
 mod ogg;
 
-pub(crate) use audio::AudioParser;
-pub(crate) use flv::FlvParser;
-pub(crate) use midi::MidiParser;
-pub(crate) use mp3::Mp3Parser;
-pub(crate) use mp4::Mp4Parser;
-pub(crate) use ogg::{FlacParser, OpusParser, VorbisParser};
+pub use audio::AudioParser;
+pub use flv::FlvParser;
+pub use midi::MidiParser;
+pub use mp3::Mp3Parser;
+pub use mp4::Mp4Parser;
+pub use ogg::{FlacParser, OpusParser, VorbisParser};
 
 use crate::formats::embedded::{ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;

@@ -370,7 +370,7 @@ fn first<'t>(tags: &'t [Tags], field: impl Fn(&'t Tags) -> &'t Option<String>) -
     tags.iter().find_map(|tag| field(tag).as_deref())
 }
 
-pub(crate) struct Mp3Parser;
+pub struct Mp3Parser;
 
 impl Parser for Mp3Parser {
     fn name(&self) -> &'static str {

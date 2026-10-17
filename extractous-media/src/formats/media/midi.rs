@@ -260,7 +260,7 @@ fn read_track(bytes: &[u8]) -> Result<Vec<String>, Unread> {
     Ok(events.into_iter().filter_map(|(_, text)| text).collect())
 }
 
-pub(crate) struct MidiParser;
+pub struct MidiParser;
 
 impl Parser for MidiParser {
     fn name(&self) -> &'static str {

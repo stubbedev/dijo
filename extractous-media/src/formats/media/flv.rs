@@ -289,7 +289,7 @@ fn tags(data: &mut Input, entries: &mut Vec<(String, String)>) -> Result<(), Sto
     Ok(())
 }
 
-pub(crate) struct FlvParser;
+pub struct FlvParser;
 
 impl Parser for FlvParser {
     fn name(&self) -> &'static str {

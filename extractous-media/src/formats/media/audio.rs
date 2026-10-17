@@ -729,7 +729,7 @@ fn file_format(bytes: &[u8]) -> Result<Option<FileFormat>, Declined> {
     Ok(None)
 }
 
-pub(crate) struct AudioParser;
+pub struct AudioParser;
 
 impl Parser for AudioParser {
     fn name(&self) -> &'static str {

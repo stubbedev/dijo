@@ -799,6 +799,7 @@ dependencies = [
  "extractous-base",
  "extractous-html",
  "extractous-image",
+ "extractous-media",
  "extractous-mime",
  "extractous-native",
  "extractous-pdf",
@@ -872,6 +873,14 @@ dependencies = [
  "tiff",
  "unicode-script",
  "zip",
+]
+
+[[package]]
+name = "extractous-media"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
 ]
 
 [[package]]

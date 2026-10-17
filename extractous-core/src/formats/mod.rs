@@ -31,7 +31,6 @@ mod iwork;
 mod iwork_package;
 mod mail;
 mod markdown;
-pub(crate) mod media;
 mod mif;
 mod mobi;
 mod ms_owner;
@@ -84,6 +83,7 @@ pub(crate) use extractous_html::formats::text;
 pub(crate) use extractous_image::formats::djvu;
 pub(crate) use extractous_image::formats::image;
 pub(crate) use extractous_image::formats::metafile;
+pub(crate) use extractous_media::formats::media;
 pub(crate) use extractous_pdf::formats::font;
 pub(crate) use extractous_pdf::formats::pdf;
 
