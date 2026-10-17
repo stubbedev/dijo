@@ -361,8 +361,14 @@ fn extracts_7z_archives_as_tikas_path_does() {
     let text = "Archived text, caf\u{e9}.\nSecond line.\n".as_bytes();
     let html = b"<html><head><title>Inner</title></head><body><p>Inner page</p></body></html>";
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
-    let deferred = assert_parity(&SevenZParser, SEVEN_Z_PARSER, &roots, &[]);
-    assert_eq!(deferred, ["password.7z"]);
+    let (parsed, deferred) = documents(&SevenZParser, &roots);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    crate::formats::parity::assert_same_as_tika_with_passwords_but(
+        &parsed,
+        SEVEN_Z_PARSER,
+        &[("password.7z", "extractous")],
+        crate::formats::parity::WrongPassword::Defers,
+    );
     assert_synthetic_parity(
         "archive-7z",
         &SevenZParser,
@@ -382,9 +388,18 @@ fn extracts_7z_archives_as_tikas_path_does() {
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_7z_archives_as_tikas_path_does() {
-    let deferred = assert_parity(&SevenZParser, SEVEN_Z_PARSER, &[&conformance_corpus()], &[]);
-    assert_eq!(
-        deferred,
-        ["full_encrypted.7z", "test7Z_protected_passTika.7z"]
+    let (parsed, deferred) = documents(&SevenZParser, &[&conformance_corpus()]);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    // Its headers are encrypted, with a password Tika's tests do not name.
+    let (headers_encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+        .into_iter()
+        .partition(|path| path.ends_with("full_encrypted.7z"));
+    assert_eq!(headers_encrypted.len(), 1);
+    crate::formats::parity::assert_fails_as_tika(&[headers_encrypted[0].as_path()]);
+    crate::formats::parity::assert_same_as_tika_with_passwords_but(
+        &parsed,
+        SEVEN_Z_PARSER,
+        &[("test7Z_protected_passTika.7z", "Tika")],
+        crate::formats::parity::WrongPassword::Defers,
     );
 }

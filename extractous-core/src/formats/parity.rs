@@ -1360,6 +1360,16 @@ pub(crate) fn assert_same_as_tika_departing(
     );
 }
 
+/// What a native parser does with a document a wrong password was given for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WrongPassword {
+    /// It fails as Tika's path fails, with the same error.
+    FailsAsTika,
+    /// It leaves the document to Tika's path, whose decoders fail on the garbled data with
+    /// errors of their own.
+    Defers,
+}
+
 /// Asserts that of `documents`, each one `passwords` names, by file name with the password that
 /// opens it, fails without a password and with a wrong one as Tika's path fails on it, with the
 /// same error, and extracts with its password as Tika's path extracts it; and that the rest
@@ -1368,6 +1378,22 @@ pub(crate) fn assert_same_as_tika_with_passwords(
     documents: &[PathBuf],
     tika_name: &str,
     passwords: &[(&str, &str)],
+) {
+    assert_same_as_tika_with_passwords_but(
+        documents,
+        tika_name,
+        passwords,
+        WrongPassword::FailsAsTika,
+    );
+}
+
+/// [`assert_same_as_tika_with_passwords`], each document a wrong password is given for handled
+/// as `wrong` says.
+pub(crate) fn assert_same_as_tika_with_passwords_but(
+    documents: &[PathBuf],
+    tika_name: &str,
+    passwords: &[(&str, &str)],
+    wrong_password: WrongPassword,
 ) {
     let password_of = |document: &Path| {
         let name = document.file_name().unwrap().to_string_lossy();
@@ -1387,7 +1413,25 @@ pub(crate) fn assert_same_as_tika_with_passwords(
         let password = password_of(document).expect("an encrypted document");
         let configs = ParserConfigs::default().with_password(Some(&password));
         assert_same_as_tika_with(&[document], tika_name, &configs);
-        for configs in [ParserConfigs::default(), wrong.clone()] {
+        let failing = match wrong_password {
+            WrongPassword::FailsAsTika => vec![ParserConfigs::default(), wrong.clone()],
+            WrongPassword::Defers => {
+                let routed = routed(document.to_str().unwrap());
+                assert!(
+                    routed
+                        .parser
+                        .defers(
+                            &routed.input,
+                            &routed.detected.metadata_for(routed.parser),
+                            &wrong
+                        )
+                        .is_some(),
+                    "{document:?} with a wrong password"
+                );
+                vec![ParserConfigs::default()]
+            }
+        };
+        for configs in failing {
             assert_eq!(
                 format!("{:?}", native_error(document, &configs)),
                 format!("{:?}", tika_error(document, &configs)),
