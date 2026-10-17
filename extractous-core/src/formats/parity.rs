@@ -1432,6 +1432,23 @@ pub(crate) fn assert_same_as_tika_delegating_with(
     compare(documents, configs, expected, None, Adjustments::default());
 }
 
+/// [`assert_same_as_tika_delegating_with`], but for the values of the metadata `departures`
+/// names, which the native parser gives on purpose otherwise than Tika's path.
+pub(crate) fn assert_same_as_tika_delegating_departing_with(
+    documents: &[&Path],
+    tika_name: &str,
+    delegates: &[(&str, &str)],
+    departures: Departures,
+    configs: &ParserConfigs,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates,
+        departures,
+    });
+    compare(documents, configs, expected, None, Adjustments::default());
+}
+
 /// Where a div of class `ocr` starts, the text OCR read in it following.
 const OCR_DIV: &str = "<div class=\"ocr\">";
 /// A div of class `ocr` OCR read nothing in.
