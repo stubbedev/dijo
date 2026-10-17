@@ -1,5 +1,5 @@
 //! Tika's `JackcessParser` over Microsoft Access databases, Jackcess's reading ported: the
-//! database's password and properties as metadata, then each of the user's tables as a table of
+//! database's properties as metadata, then each of the user's tables as a table of
 //! its columns and rows, binary values and OLE objects handed on as embedded documents, and each
 //! query as the SQL Jackcess writes for it.
 //!
@@ -46,7 +46,6 @@ use crate::java::utf16_length;
 const SUMMARY_PREFIX: &str = "mdb-summary-prop:";
 const PROPERTY_PREFIX: &str = "mdb-prop:";
 const USER_PROPERTY_PREFIX: &str = "mdb-user-prop:";
-const PASSWORD: &str = "mdb:password";
 const TITLE: &str = "dc:title";
 const CREATOR: &str = "dc:creator";
 const COMPANY: &str = "extended-properties:Company";
@@ -267,9 +266,6 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Deferral
     let thrown = Thrown::reason;
     let database = Database::open(input).map_err(thrown)?;
     let mut metadata = Vec::new();
-    if let Some(password) = database.password().map_err(thrown)? {
-        metadata.push(Entry::Set(PASSWORD, password));
-    }
     let add_all = |maps: PropertyMaps, prefix: &'static str, metadata: &mut Vec<Entry>| {
         for property in maps.default_map().iter() {
             let value = formats.text(property.value.as_ref(), property.data_type)?;

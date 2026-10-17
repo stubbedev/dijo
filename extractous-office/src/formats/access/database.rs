@@ -205,30 +205,6 @@ impl<'a> Database<'a> {
             .find(|row| row.parent == parent && is_named(row, name))
     }
 
-    /// `getDatabasePassword`: the password field of the first page, unmasked by the header
-    /// date where the format has one, up to its first NUL; `None` where all its bytes are zero.
-    pub(super) fn password(&self) -> Result<Option<String>, Thrown> {
-        let format = self.pages.format;
-        let root = self.pages.root()?;
-        let mut password =
-            root[format.offset_password..format.offset_password + format.size_password].to_vec();
-        if let Some(offset) = format.offset_header_date {
-            let date = f64::from_le_bytes(root[offset..offset + 8].try_into().expect("eight"));
-            let mask = (date as i32).to_le_bytes();
-            for (i, byte) in password.iter_mut().enumerate() {
-                *byte ^= mask[i % mask.len()];
-            }
-        }
-        if password.iter().all(|&byte| byte == 0) {
-            return Ok(None);
-        }
-        let text = format.charset.decode(&password);
-        Ok(Some(match text.find('\0') {
-            Some(end) => text[..end].to_owned(),
-            None => text,
-        }))
-    }
-
     /// `getPropertiesForDbObject`: the properties of the database's object named so.
     fn db_object_properties(&self, name: &str) -> Result<PropertyMaps, Thrown> {
         let bytes = self

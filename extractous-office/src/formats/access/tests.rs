@@ -2,16 +2,24 @@ use std::path::Path;
 #[cfg(feature = "tika")]
 use std::path::PathBuf;
 
+use super::format;
 #[cfg(feature = "tika")]
-use super::format::{self, Detected};
+use super::format::Detected;
 #[cfg(feature = "tika")]
 use super::pages::rc4;
 use super::*;
 #[cfg(feature = "tika")]
-use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, spools_as_tika};
+use crate::formats::parity::{
+    assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents,
+    spools_as_tika, Departure, Departures,
+};
 use crate::formats::parity::{deferral, Scratch};
 
 const FIXTURES: &str = "../test_files/documents/access";
+
+/// Where the native parser departs from Tika's path on purpose.
+#[cfg(feature = "tika")]
+const DEPARTURES: Departures = &[Departure::Unset("mdb:password", "#122")];
 
 #[cfg(feature = "tika")]
 fn names(paths: &[PathBuf]) -> Vec<String> {
@@ -54,7 +62,7 @@ fn extracts_access_databases_as_tikas_path_does() {
         ]
     );
     let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&parsed, JackcessParser.tika_name());
+    assert_same_as_tika_departing(&parsed, JackcessParser.tika_name(), DEPARTURES);
 }
 
 #[cfg(feature = "tika")]
@@ -106,7 +114,53 @@ fn reads_encoded_jet_databases_as_tikas_path_does() {
     for path in [&jet3, &jet4] {
         assert_eq!(deferral(&JackcessParser, path), None);
     }
-    assert_same_as_tika(&[&jet3, &jet4], JackcessParser.tika_name());
+    assert_same_as_tika_departing(&[&jet3, &jet4], JackcessParser.tika_name(), DEPARTURES);
+}
+
+/// Jet 4's header: where the database password lies, how long it is, and where the creation
+/// date that masks it lies.
+const JET4_PASSWORD: usize = 66;
+const JET4_PASSWORD_LENGTH: usize = 40;
+const JET4_HEADER_DATE: usize = 114;
+
+/// A Jet 4 database given the database password `password`, masked as Access masks it: by the
+/// header mask and by the integer part of the database's creation date.
+fn with_password(mut file: Vec<u8>, password: &str) -> Vec<u8> {
+    let Ok(format::Detected::Format(format)) = format::detect(&file) else {
+        panic!("a Jet database");
+    };
+    let mask = |at: usize| format.header_mask[at - format.offset_masked_header];
+    let date: [u8; 8] =
+        std::array::from_fn(|i| file[JET4_HEADER_DATE + i] ^ mask(JET4_HEADER_DATE + i));
+    let date_mask = (f64::from_le_bytes(date) as i32).to_le_bytes();
+    let mut field: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    field.resize(JET4_PASSWORD_LENGTH, 0);
+    for (i, byte) in field.into_iter().enumerate() {
+        let at = JET4_PASSWORD + i;
+        file[at] = byte ^ date_mask[i % date_mask.len()] ^ mask(at);
+    }
+    file
+}
+
+#[test]
+fn keeps_the_database_password_out_of_the_metadata() {
+    let scratch = Scratch::new("access-password");
+    let path = scratch.write(
+        "password.mdb",
+        &with_password(fixture("jet4-turkish.mdb"), "hemmelig"),
+    );
+    let (text, metadata) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    assert!(!metadata.contains_key("mdb:password"), "{metadata:?}");
+    assert!(!text.contains("hemmelig"), "{text}");
+    #[cfg(feature = "tika")]
+    {
+        let exact =
+            std::panic::catch_unwind(|| assert_same_as_tika(&[&path], JackcessParser.tika_name()));
+        assert!(exact.is_err(), "Tika's path exposes the password");
+        assert_same_as_tika_departing(&[&path], JackcessParser.tika_name(), DEPARTURES);
+    }
 }
 
 #[test]
@@ -169,5 +223,5 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
         ]
     );
     let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&parsed, JackcessParser.tika_name());
+    assert_same_as_tika_departing(&parsed, JackcessParser.tika_name(), DEPARTURES);
 }
