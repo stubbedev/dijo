@@ -71,7 +71,6 @@ static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
 static SETTINGS: OnceLock<IsolateSettings> = OnceLock::new();
 
 /// Where temporary files go: the directory the settings name, or the system's.
-#[cfg(not(feature = "static-image"))]
 pub(crate) fn temp_dir() -> PathBuf {
     SETTINGS
         .get()

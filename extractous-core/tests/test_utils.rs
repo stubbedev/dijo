@@ -64,6 +64,12 @@ pub fn is_expected_metadata_contained(
 
 #[allow(dead_code)]
 pub fn serve(body: Vec<u8>, content_type: &'static str) -> SocketAddr {
+    answer("200 OK", body, content_type)
+}
+
+/// Answers every request with `status`, the `body` of `content_type`, and its length.
+#[allow(dead_code)]
+pub fn answer(status: &'static str, body: Vec<u8>, content_type: &'static str) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     thread::spawn(move || {
@@ -75,12 +81,24 @@ pub fn serve(body: Vec<u8>, content_type: &'static str) -> SocketAddr {
                 line.clear();
             }
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             stream.write_all(header.as_bytes()).unwrap();
             stream.write_all(&body).unwrap();
         }
+    });
+    address
+}
+
+/// Accepts connections and never answers on them.
+#[allow(dead_code)]
+pub fn silent() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        let held: Vec<_> = listener.incoming().collect();
+        drop(held);
     });
     address
 }

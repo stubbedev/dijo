@@ -25,8 +25,10 @@ pub use ocr::tesseract_version;
 mod licenses;
 pub use licenses::{bundled_ocr_licenses, linked_native_licenses};
 
+mod fetch;
 mod formats;
 mod hash;
+mod input;
 pub mod memory;
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]

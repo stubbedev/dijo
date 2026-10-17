@@ -1,0 +1,218 @@
+//! A document's bytes as native detection and parsing read them: the caller's, read into memory,
+//! or mapped from a file too large to read whole, of which only the parts read are paged in.
+
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::ops::Deref;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use memmap2::Mmap;
+
+use crate::errors::{Error, ExtractResult};
+
+/// The largest file read into memory whole. A larger one is mapped instead, and only a parser
+/// whose memory stays bounded whatever its input's size reads it.
+pub(crate) const MAX_READ_WHOLE: u64 = 64 * 1024 * 1024;
+
+/// A document's bytes.
+#[derive(Debug, Clone)]
+pub(crate) enum Input<'a> {
+    /// The caller's.
+    Borrowed(&'a [u8]),
+    /// Read into memory.
+    Read(Arc<Vec<u8>>),
+    /// Mapped from a file larger than [`MAX_READ_WHOLE`].
+    Mapped(Arc<Mmap>),
+}
+
+impl Deref for Input<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Input::Borrowed(bytes) => bytes,
+            Input::Read(bytes) => bytes,
+            Input::Mapped(map) => map,
+        }
+    }
+}
+
+impl Input<'_> {
+    /// The same bytes, owned: the caller's copied, the others shared.
+    pub(crate) fn to_static(&self) -> Input<'static> {
+        match self {
+            Input::Borrowed(bytes) => Input::Read(Arc::new(bytes.to_vec())),
+            Input::Read(bytes) => Input::Read(Arc::clone(bytes)),
+            Input::Mapped(map) => Input::Mapped(Arc::clone(map)),
+        }
+    }
+
+    /// Whether the bytes are mapped from a file too large to read whole.
+    pub(crate) fn is_mapped(&self) -> bool {
+        matches!(self, Input::Mapped(_))
+    }
+}
+
+/// The bytes of the file at `path`: read whole, or mapped when it is larger than
+/// [`MAX_READ_WHOLE`].
+pub(crate) fn read_file(path: &str) -> ExtractResult<Input<'static>> {
+    let unreadable = |e: io::Error| Error::IoError(format!("Could not read {path}: {e}"));
+    let mut file = File::open(path).map_err(unreadable)?;
+    let length = file.metadata().map_err(unreadable)?.len();
+    if length > MAX_READ_WHOLE {
+        return map(&file).map_err(unreadable);
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(length).expect("at most MAX_READ_WHOLE"));
+    file.read_to_end(&mut bytes).map_err(unreadable)?;
+    Ok(Input::Read(Arc::new(bytes)))
+}
+
+/// Maps `file` into memory read-only.
+///
+/// A mapped file that another process truncates while it is mapped makes reading the pages past
+/// its new end fault (`SIGBUS` on Unix), which ends the process, as with any program that maps
+/// the files it reads. Only files larger than [`MAX_READ_WHOLE`] and downloads spooled to files
+/// of our own are mapped.
+fn map(file: &File) -> io::Result<Input<'static>> {
+    let map = unsafe { Mmap::map(file) }?;
+    Ok(Input::Mapped(Arc::new(map)))
+}
+
+/// Collects a stream of a document's bytes, as Tika's `CachingSource` caches a stream: in memory
+/// up to [`MAX_READ_WHOLE`], and beyond it in a temporary file of its own, mapped once complete,
+/// which is deleted once its map is dropped.
+pub(crate) struct Spool {
+    memory: Vec<u8>,
+    file: Option<File>,
+}
+
+impl Spool {
+    /// A spool for a stream of `expected` bytes, if the stream says how many.
+    pub(crate) fn new(expected: Option<u64>) -> Self {
+        let capacity = expected
+            .filter(|&length| length <= MAX_READ_WHOLE)
+            .unwrap_or(0);
+        Self {
+            memory: Vec::with_capacity(usize::try_from(capacity).expect("at most MAX_READ_WHOLE")),
+            file: None,
+        }
+    }
+
+    /// The bytes collected, once the stream has ended.
+    pub(crate) fn finish(self) -> io::Result<Input<'static>> {
+        match self.file {
+            None => Ok(Input::Read(Arc::new(self.memory))),
+            Some(mut file) => {
+                file.flush()?;
+                map(&file)
+            }
+        }
+    }
+
+    fn file(&mut self) -> io::Result<&mut File> {
+        if self.file.is_none() {
+            let mut file = temporary_file()?;
+            file.write_all(&self.memory)?;
+            self.memory = Vec::new();
+            self.file = Some(file);
+        }
+        Ok(self
+            .file
+            .as_mut()
+            .expect("the spool's file was just created"))
+    }
+}
+
+impl Write for Spool {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.file.is_none() && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE {
+            self.memory.extend_from_slice(bytes);
+            return Ok(bytes.len());
+        }
+        self.file()?.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.file {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A new file in the temporary directory that no other process opens and that is deleted once
+/// it is closed: unlinked at once on Unix, deleted on close on Windows.
+fn temporary_file() -> io::Result<File> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path: PathBuf = crate::isolate::temp_dir().join(format!(
+        "extractous-spool-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+        options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+    }
+    let file = options.open(&path).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("Could not create {}: {e}", path.display()),
+        )
+    })?;
+    #[cfg(unix)]
+    std::fs::remove_file(&path).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("Could not unlink {}: {e}", path.display()),
+        )
+    })?;
+    Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_small_files_whole_and_maps_large_ones() {
+        let path = crate::isolate::temp_dir()
+            .join(format!("extractous-input-test-{}", std::process::id()));
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_READ_WHOLE).unwrap();
+        let name = path.to_str().unwrap();
+        let read = read_file(name).unwrap();
+        assert!(!read.is_mapped());
+        assert_eq!(read.len() as u64, MAX_READ_WHOLE);
+        file.set_len(MAX_READ_WHOLE + 1).unwrap();
+        let mapped = read_file(name).unwrap();
+        assert!(mapped.is_mapped());
+        assert_eq!(mapped.len() as u64, MAX_READ_WHOLE + 1);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn spools_streams_past_the_limit_to_a_mapped_file() {
+        let mut small = Spool::new(Some(3));
+        small.write_all(b"abc").unwrap();
+        let small = small.finish().unwrap();
+        assert!(!small.is_mapped());
+        assert_eq!(&*small, b"abc");
+
+        let chunk = vec![7u8; 1 << 20];
+        let mut large = Spool::new(None);
+        for _ in 0..=MAX_READ_WHOLE >> 20 {
+            large.write_all(&chunk).unwrap();
+        }
+        large.write_all(b"end").unwrap();
+        let large = large.finish().unwrap();
+        assert!(large.is_mapped());
+        assert_eq!(large.len() as u64, MAX_READ_WHOLE + (1 << 20) + 3);
+        assert!(large.ends_with(b"\x07end"));
+    }
+}

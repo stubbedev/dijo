@@ -19,7 +19,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Opened, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Opened, Parser, Prepared};
 
 /// `MP4`: the prefix of the QuickTime metadata keys, which the file names.
 const QUICK_TIME_KEY_PREFIX: &str = "mp4:";
@@ -69,6 +69,10 @@ impl Parser for Mp4Parser {
             "video/iso.segment",
             "image/x-canon-cr3",
         ]
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(
