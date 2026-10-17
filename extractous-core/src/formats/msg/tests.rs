@@ -1,20 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_with, Departure};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The messages this port leaves to Tika, by file name, with a part of the reason.
-const DEFERRED: [(&str, &str); 7] = [
-    ("testMSG_Appointment.msg", "identity hash codes"),
-    ("testMSG_StickyNote.msg", "identity hash codes"),
-    ("testMSG_att_msg.msg", "identity hash codes"),
-    ("testMSG_Task.msg", "identity hash codes"),
-    ("testMSG_att_doc.msg", "identity hash codes"),
-    ("testMSG_forwarded.msg", "identity hash codes"),
-    ("testMSG_chinese.msg", "partial block"),
-];
+const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "partial block")];
 
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
@@ -131,7 +123,32 @@ fn reads_a_stored_message_as_tikas_path_reads_it() {
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
-    assert_eq!(ported.len(), 5);
+    assert_eq!(ported.len(), 11);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, &ParserConfigs::default());
+    parity::assert_same_as_tika_departing(&documents, TIKA_PARSER, RECIPIENT_NAMES);
+}
+
+/// The recipients' names, which POI swaps (#112).
+pub(crate) const RECIPIENT_NAMES: parity::Departures = &[
+    Departure::Values("message:to-name", "#112"),
+    Departure::Values("message:to-display-name", "#112"),
+    Departure::Values("message:cc-name", "#112"),
+    Departure::Values("message:cc-display-name", "#112"),
+    Departure::Values("message:bcc-name", "#112"),
+    Departure::Values("message:bcc-display-name", "#112"),
+];
+
+#[test]
+#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+fn names_recipients_by_their_display_names() {
+    let path = corpus(&[&parity::conformance_corpus()])
+        .into_iter()
+        .find(|path| path.ends_with("testMSG.msg"))
+        .expect("Tika's test message");
+    let (_, metadata) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    let get = |name: &str| metadata.get(name).cloned().unwrap_or_default();
+    assert_eq!(get("message:to-name"), ["tika-dev@lucene.apache.org"]);
+    assert_eq!(get("message:to-display-name"), [""]);
 }

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with};
+use crate::formats::parity::{self, assert_same_as_tika_adjusting, Adjustments};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
@@ -53,9 +53,32 @@ fn workbooks(roots: &[&Path]) -> Vec<PathBuf> {
     parsed
 }
 
+/// The divs the native parser writes each chart and diagram in.
+const TEXT_PART_DIVS: [&str; 2] = ["<div class=\"chart\">", "<div class=\"diagram-data\">"];
+
+/// How many charts and diagrams the native parser writes in a div, each ended by a line break.
+fn text_part_divs(_tika: &str, native: &str) -> usize {
+    TEXT_PART_DIVS
+        .iter()
+        .map(|div| native.matches(div).count())
+        .sum()
+}
+
+/// How the native parser departs from Tika's path (#93): it writes each chart and diagram in a
+/// div of its own, where Tika's shared handler never writes its div, and each link of a sheet
+/// once, where Tika writes it again as an outside resource; and its XHTML head says whether a
+/// sheet is protected, where Tika's says `false` before it reads the sheets (#95).
+const DEPARTURES: Adjustments = Adjustments {
+    line_breaks: Some(text_part_divs),
+    metadata: &[],
+    wrappers: &TEXT_PART_DIVS,
+    repeated: &["<a class=\"external-ref-externalResource\" "],
+    final_in_head: &["msoffice:excel:protected-worksheet"],
+};
+
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
     let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_with(&documents, TIKA_PARSER, configs);
+    assert_same_as_tika_adjusting(&documents, TIKA_PARSER, configs, DEPARTURES);
 }
 
 /// The workbook of two million shared strings, which a debug build takes minutes over in the
@@ -313,6 +336,8 @@ fn rel(id: &str, kind_name: &str, target: &str) -> (String, String, String) {
 
 /// Workbooks of the features Tika reads, each small, compared with Tika's path.
 fn snippets() -> Vec<(&'static str, Vec<u8>)> {
+    // No negative number is in a date format: Tika writes it with the date format it made for
+    // an earlier cell (#92), which `data_format`'s tests check the port does not.
     let numbers = cells(&[
         "<row r=\"1\"><c r=\"A1\"><v>1234.5678</v></c><c r=\"B1\" s=\"1\"><v>45000.75</v></c>\
          <c r=\"C1\" s=\"2\"><v>-1234.5678</v></c><c r=\"D1\" s=\"3\"><v>1.5</v></c>\
@@ -323,7 +348,7 @@ fn snippets() -> Vec<(&'static str, Vec<u8>)> {
          <c r=\"G3\" t=\"s\"><v>0</v></c><c r=\"H3\" t=\"s\"><v>1</v></c></row>",
         "<row r=\"4\"><c r=\"A4\"><f>A1*2</f><v>2469.1356</v></c><c r=\"B4\" t=\"str\"><f>\"x\"&amp;\"y\"</f><v>xy</v></c>\
          <c r=\"C4\" s=\"1\"><f>B1+1</f><v>45001.75</v></c><c r=\"D4\"><v>not a number</v></c>\
-         <c><v>7</v></c><c r=\"G4\" s=\"1\"><v>-5</v></c></row>",
+         <c><v>7</v></c><c r=\"G4\" s=\"1\"><v>5</v></c></row>",
         "<row><c r=\"A5\" t=\"s\"><v>2</v></c></row>",
     ]);
     let commented = format!(
@@ -373,6 +398,33 @@ fn snippets() -> Vec<(&'static str, Vec<u8>)> {
     );
     let rels_type = "application/vnd.openxmlformats-package.relationships+xml";
     vec![
+        (
+            // The second sheet is protected, past where the length limit cuts the first.
+            "late-protection",
+            workbook(
+                &[
+                    sheet(
+                        "Long",
+                        cells(&[
+                            "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>A cell of text long \
+                             enough that the length limit of a string extraction cuts it short \
+                             before the sheet after it is read</t></is></c></row>",
+                        ]),
+                    ),
+                    sheet(
+                        "Protected",
+                        format!(
+                            "{}<sheetProtection sheet=\"1\"/>",
+                            cells(&["<row r=\"1\"><c r=\"A1\"><v>1</v></c></row>"])
+                        ),
+                    ),
+                ],
+                &[],
+                "",
+                &[],
+                Vec::new(),
+            ),
+        ),
         (
             "cells",
             workbook(
@@ -625,12 +677,157 @@ fn extracts_what_tikas_path_extracts_from_snippets_with_other_settings() {
         office: config,
         ..ParserConfigs::default()
     };
+    // Missing rows are not compared: Tika writes an empty row for every row before each row
+    // (#93), which `writes_each_missing_row_once` checks the port does not.
     for configs in [
-        office(OfficeParserConfig::new().set_include_missing_rows(true)),
         office(OfficeParserConfig::new().set_include_headers_and_footers(false)),
         office(OfficeParserConfig::new().set_include_shape_based_content(false)),
         office(OfficeParserConfig::new().set_concatenate_phonetic_runs(false)),
     ] {
         assert_snippets_same_as_tika(&snippets(), &configs);
     }
+}
+
+#[test]
+fn writes_each_missing_row_once() {
+    use crate::config::OfficeParserConfig;
+    let gaps = workbook(
+        &[sheet(
+            "Gaps",
+            cells(&[
+                "<row r=\"1\"><c r=\"A1\"><v>1</v></c></row>",
+                "<row r=\"4\"><c r=\"A4\"><v>4</v></c></row>",
+                "<row r=\"5\"><c r=\"A5\"><v>5</v></c></row>",
+            ]),
+        )],
+        &[],
+        "",
+        &[],
+        Vec::new(),
+    );
+    let rows = |missing: bool| {
+        let (xml, _) = crate::Extractor::new()
+            .set_office_config(OfficeParserConfig::new().set_include_missing_rows(missing))
+            .set_xml_output(true)
+            .extract_bytes_to_string(&gaps)
+            .unwrap();
+        xml.matches("<tr>").count()
+    };
+    assert_eq!(rows(false), 3);
+    assert_eq!(rows(true), 5);
+}
+
+/// The XHTML and metadata the native parser extracts from `workbook`.
+fn extract(workbook: &[u8]) -> (String, crate::Metadata) {
+    crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(workbook)
+        .unwrap()
+}
+
+/// Each link of a sheet is written once, where Tika writes it again as an outside resource, and
+/// each chart in a div of its own (#93).
+#[test]
+fn writes_links_once_and_charts_in_their_divs() {
+    let snippets: HashMap<&str, Vec<u8>> =
+        snippets().into_iter().chain(drawing_snippets()).collect();
+    let (layout, _) = extract(&snippets["layout"]);
+    let link = "https://example.com/a?b=c";
+    assert_eq!(layout.matches(link).count(), 2, "{layout}");
+    assert!(
+        layout.contains(&format!("<a href=\"{link}\">{link}</a>")),
+        "{layout}"
+    );
+    let (drawn, _) = extract(&snippets["drawn"]);
+    let chart = drawn.find("<div class=\"chart\">").expect("a chart div");
+    assert!(drawn[chart..].contains("Ships by year"), "{drawn}");
+}
+
+/// A shape's link is looked up among its own drawing's relationships only (#93).
+#[test]
+fn finds_a_shapes_link_in_its_own_drawing() {
+    let rels_type = "application/vnd.openxmlformats-package.relationships+xml";
+    let drawing = |text: &str| {
+        format!(
+            "<xdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" \
+             xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"{RELATIONSHIPS_NS}\">\
+             <xdr:twoCellAnchor><xdr:sp><xdr:nvSpPr><xdr:cNvPr id=\"2\" name=\"Box\"><a:hlinkClick r:id=\"rIdShapeLink\"/></xdr:cNvPr></xdr:nvSpPr>\
+             <xdr:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></xdr:txBody></xdr:sp></xdr:twoCellAnchor></xdr:wsDr>"
+        )
+    };
+    let drawn = |name: &'static str, number: usize| SheetSpec {
+        name,
+        state: "",
+        content: "<sheetData/><drawing r:id=\"rIdDrawing\"/>".to_owned(),
+        relationships: vec![rel(
+            "rIdDrawing",
+            &kind("drawing"),
+            &format!("../drawings/drawing{number}.xml"),
+        )],
+    };
+    let drawing_type = "application/vnd.openxmlformats-officedocument.drawing+xml";
+    let bytes = workbook(
+        &[drawn("One", 1), drawn("Two", 2)],
+        &[],
+        "",
+        &[],
+        vec![
+            part("xl/drawings/drawing1.xml", drawing_type, &drawing("first")),
+            part(
+                "xl/drawings/_rels/drawing1.xml.rels",
+                rels_type,
+                &relationships(&[(
+                    "rIdShapeLink",
+                    &kind("hyperlink"),
+                    "https://example.com/one",
+                )]),
+            ),
+            part("xl/drawings/drawing2.xml", drawing_type, &drawing("second")),
+        ],
+    );
+    let (xml, _) = extract(&bytes);
+    let link = "<a href=\"https://example.com/one\">";
+    assert_eq!(xml.matches(link).count(), 1, "{xml}");
+    assert!(xml.find(link) < xml.find("second"), "{xml}");
+}
+
+/// Elements are matched by namespace and Power Query is found by its content type, not by the
+/// names of parts (#95).
+#[test]
+fn matches_elements_by_namespace_and_power_query_by_content_type() {
+    let bytes = workbook(
+        &[sheet(
+            "Plain",
+            "<sheetData><row r=\"1\"><c r=\"A1\"><v>1</v></c></row></sheetData>\
+             <x:sheetProtection xmlns:x=\"urn:other\" sheet=\"1\"/><x:cols xmlns:x=\"urn:other\">\
+             <x:col min=\"1\" max=\"1\" hidden=\"1\"/></x:cols>"
+                .to_owned(),
+        )],
+        &[],
+        "<x:sheets xmlns:x=\"urn:other\"><x:sheet name=\"Ghost\" state=\"hidden\" r:id=\"rIdSheet1\"/></x:sheets>",
+        &[],
+        vec![part("xl/customData/item1.data", "application/binary", "<x/>")],
+    );
+    let (xml, metadata) = extract(&bytes);
+    assert_eq!(xml.matches("<h1>").count(), 1, "{xml}");
+    assert_eq!(metadata["msoffice:excel:protected-worksheet"], ["false"]);
+    for name in [
+        "msoffice:excel:has-hidden-cols",
+        "msoffice:excel:has-hidden-sheets",
+        "msoffice:excel:has-power-query",
+    ] {
+        assert!(!metadata.contains_key(name), "{name}: {metadata:?}");
+    }
+    let layout = snippets()
+        .into_iter()
+        .find(|(name, _)| *name == "layout")
+        .unwrap()
+        .1;
+    let (xml, metadata) = extract(&layout);
+    assert!(
+        xml.contains("<meta name=\"msoffice:excel:protected-worksheet\" content=\"true\" />"),
+        "{xml}"
+    );
+    assert_eq!(metadata["msoffice:excel:has-power-query"], ["true"]);
+    assert_eq!(metadata["msoffice:excel:protected-worksheet"], ["true"]);
 }

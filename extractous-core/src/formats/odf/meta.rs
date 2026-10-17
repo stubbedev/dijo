@@ -1,13 +1,19 @@
 //! Tika's `OpenDocumentMetaParser`: `meta.xml` read into metadata by the chain of handlers Tika
-//! tees its events to, in that order. Dublin Core elements add their values, `meta:` elements
-//! set theirs joined by `, `, user-defined fields become `custom:` names, the statistics become
-//! counts, and finally the keywords join the subjects.
+//! tees its events to, in that order. Dublin Core elements add their values, the keywords and
+//! the initial creator add theirs too, other `meta:` elements set theirs joined by `, `,
+//! user-defined fields become `custom:` names, the statistics become counts, and finally the
+//! keywords join the subjects.
+//!
+//! Tika joins the keywords into one value by `, `, and the initial creator to the creators
+//! before it, where it adds each as a value of its own; and it finds the attributes of
+//! OpenOffice.org 1 documents, and a user-defined field's name under any prefix but `meta:`,
+//! nowhere, where they are read by their namespace (#90).
 
 use std::borrow::Cow;
 
 use crate::formats::element_metadata::{set_unless_equal, ElementMetadata, Values};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::odf::{normalized_namespace, META_NS, OFFICE_NS};
+use crate::formats::odf::{normalized_attributes, normalized_namespace, META_NS, OFFICE_NS};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
 use crate::java;
@@ -18,7 +24,6 @@ const SUBJECT: &str = "dc:subject";
 const DESCRIPTION: &str = "dc:description";
 const KEYWORD: &str = "meta:keyword";
 const USER_DEFINED_PREFIX: &str = "custom:";
-const USER_DEFINED_NAME: &str = "meta:name";
 const MAX_USER_DEFINED_NAME_LENGTH: usize = 1024;
 const MAX_USER_DEFINED_NAMES: usize = 10_000;
 
@@ -76,7 +81,7 @@ impl MetaValue {
 
 /// Tika's `AttributeDependantMetadataHandler` behind a match of `//meta:user-defined/@meta:name`
 /// and the text within: the text of a field under `custom:` and the name its `meta:name`
-/// attribute, as written with that prefix, last gave.
+/// attribute gives.
 #[derive(Default)]
 struct UserDefined {
     open: Vec<bool>,
@@ -94,15 +99,13 @@ impl UserDefined {
         if !Self::matches(namespace, local_name) {
             return;
         }
-        let mut named = attributes
+        let name = attributes
             .iter()
-            .filter(|attribute| attribute.namespace == META_NS && attribute.local_name == "name")
-            .peekable();
-        let passed = named.peek().is_some();
-        if let Some(name) = named.find(|attribute| attribute.qualified_name == USER_DEFINED_NAME) {
-            self.name = Some(name.value.to_string());
+            .find(|attribute| attribute.namespace == META_NS && attribute.local_name == "name");
+        if let Some(name) = name {
+            self.name = Some(name.value.clone());
         }
-        self.open.push(passed);
+        self.open.push(name.is_some());
     }
 
     fn end(&mut self, namespace: &str, local_name: &str, metadata: &mut TikaMetadata) {
@@ -160,7 +163,9 @@ pub(super) struct MetaHandlers {
     created: MetaValue,
     modified: ElementMetadata,
     subject: ElementMetadata,
-    meta: [MetaValue; 5],
+    keyword: ElementMetadata,
+    initial_creator: ElementMetadata,
+    meta: [MetaValue; 3],
     user_defined: UserDefined,
 }
 
@@ -183,11 +188,16 @@ impl MetaHandlers {
             created: MetaValue::new("creation-date", "dcterms:created"),
             modified: ElementMetadata::dublin_core("date", "dcterms:modified", Values::Single),
             subject: ElementMetadata::dublin_core("subject", SUBJECT, Values::Bag),
+            keyword: ElementMetadata::new(META_NS, "keyword", KEYWORD, Values::Bag),
+            initial_creator: ElementMetadata::new(
+                META_NS,
+                "initial-creator",
+                "dc:creator",
+                Values::Bag,
+            ),
             meta: [
-                MetaValue::new("keyword", KEYWORD),
                 MetaValue::new("editing-duration", "extended-properties:TotalTime"),
                 MetaValue::new("editing-cycles", "editing-cycles"),
-                MetaValue::new("initial-creator", "dc:creator"),
                 MetaValue::new("generator", "generator"),
             ],
             user_defined: UserDefined::default(),
@@ -202,6 +212,8 @@ impl MetaHandlers {
         attributes: &[Attribute],
     ) {
         let namespace: Cow<str> = normalized_namespace(namespace);
+        let attributes = normalized_attributes(attributes);
+        let attributes = attributes.as_ref();
         let root = self.depth == 0;
         self.depth += 1;
         for element in &mut self.dublin_core {
@@ -213,6 +225,8 @@ impl MetaHandlers {
         self.created.start(&namespace, local_name);
         self.modified.start(&namespace, local_name);
         self.subject.start(&namespace, local_name);
+        self.keyword.start(&namespace, local_name);
+        self.initial_creator.start(&namespace, local_name);
         for element in &mut self.meta {
             element.start(&namespace, local_name);
         }
@@ -233,6 +247,8 @@ impl MetaHandlers {
         self.created.end(&namespace, local_name, metadata);
         self.modified.end(&namespace, local_name, metadata);
         self.subject.end(&namespace, local_name, metadata);
+        self.keyword.end(&namespace, local_name, metadata);
+        self.initial_creator.end(&namespace, local_name, metadata);
         for element in &mut self.meta {
             element.end(&namespace, local_name, metadata);
         }
@@ -246,6 +262,8 @@ impl MetaHandlers {
         self.created.characters(text);
         self.modified.characters(text);
         self.subject.characters(text);
+        self.keyword.characters(text);
+        self.initial_creator.characters(text);
         for element in &mut self.meta {
             element.characters(text);
         }
@@ -254,7 +272,7 @@ impl MetaHandlers {
 }
 
 /// Tika's `AttributeMetadataHandler`: the trimmed value of an attribute under `name`.
-fn attribute_value(
+pub(super) fn attribute_value(
     metadata: &mut TikaMetadata,
     name: &str,
     attributes: &[Attribute],
@@ -302,7 +320,7 @@ impl SaxHandler for MetaFile<'_> {
 
 /// What Tika's `OpenDocumentMetaParser.parse` does once its handlers are done: a subject is the
 /// description too where there is none, and the keywords join the subjects.
-fn merge_subjects(metadata: &mut TikaMetadata) {
+pub(super) fn merge_subjects(metadata: &mut TikaMetadata) {
     if let Some(subject) = metadata.get(SUBJECT).filter(|subject| !subject.is_empty()) {
         if metadata.get(DESCRIPTION).is_none_or(str::is_empty) {
             let subject = subject.to_owned();
@@ -356,8 +374,8 @@ mod tests {
         assert_eq!(metadata.values("odf:version"), ["1.3"]);
         assert_eq!(metadata.values("dc:creator"), ["Anna", "Bo"]);
         assert_eq!(metadata.values("dc:title"), ["Fyret"]);
-        assert_eq!(metadata.values("meta:keyword"), ["hav, sten"]);
-        assert_eq!(metadata.values("dc:subject"), ["hav, sten", "Lys"]);
+        assert_eq!(metadata.values("meta:keyword"), ["hav", "sten"]);
+        assert_eq!(metadata.values("dc:subject"), ["hav", "sten", "Lys"]);
         assert_eq!(metadata.values("dc:description"), ["Lys"]);
         assert_eq!(metadata.values("custom:Info 1"), ["Tekst", "Mere"]);
         assert_eq!(metadata.values("meta:page-count"), ["2"]);
@@ -366,16 +384,16 @@ mod tests {
     }
 
     #[test]
-    fn joins_a_creator_after_the_dublin_core_one() {
+    fn adds_a_creator_after_the_dublin_core_one_as_a_value_of_its_own() {
         let metadata = meta(
             r#"<m xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:creator>Bo</dc:creator><meta:initial-creator>Anna</meta:initial-creator></m>"#,
+<dc:creator>Bo</dc:creator><meta:initial-creator>Anna</meta:initial-creator><meta:initial-creator>Bo</meta:initial-creator></m>"#,
         );
-        assert_eq!(metadata.values("dc:creator"), ["Bo, Anna"]);
+        assert_eq!(metadata.values("dc:creator"), ["Bo", "Anna"]);
     }
 
     #[test]
-    fn reads_old_openoffice_elements_but_not_their_attributes() {
+    fn reads_old_openoffice_elements_and_attributes() {
         let metadata = meta(
             r#"<office:document-meta xmlns:office="http://openoffice.org/2000/office"
  xmlns:meta="http://openoffice.org/2000/meta" office:version="1.0"><office:meta>
@@ -383,9 +401,18 @@ mod tests {
 <meta:user-defined meta:name="Info 1">x</meta:user-defined></office:meta></office:document-meta>"#,
         );
         assert_eq!(metadata.values("generator"), ["StarOffice"]);
-        assert!(metadata.get("odf:version").is_none());
-        assert!(metadata.get("meta:page-count").is_none());
-        assert!(metadata.get("custom:Info 1").is_none());
+        assert_eq!(metadata.values("odf:version"), ["1.0"]);
+        assert_eq!(metadata.values("meta:page-count"), ["1"]);
+        assert_eq!(metadata.values("custom:Info 1"), ["x"]);
+    }
+
+    #[test]
+    fn finds_a_user_defined_name_under_any_prefix() {
+        let metadata = meta(
+            r#"<m xmlns:m="urn:oasis:names:tc:opendocument:xmlns:meta:1.0">
+<m:user-defined m:name="Info 1">x</m:user-defined></m>"#,
+        );
+        assert_eq!(metadata.values("custom:Info 1"), ["x"]);
     }
 
     #[test]

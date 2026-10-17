@@ -78,9 +78,9 @@ impl MediaType {
         }
     }
 
-    /// `(?is)\s*(charset\s*=\s*[^\c;\s]+)\s*;\s*VALID\s*/\s*VALID\s*`, matched in full, where
-    /// `\c;` is `{`: the charset's value may run over semicolons, so the last split that leaves
-    /// a type behind wins, as Java's backtracking finds it.
+    /// `(?is)\s*(charset\s*=\s*[^;\s]+)\s*;\s*VALID\s*/\s*VALID\s*`, matched in full: the
+    /// charset's value ends at the first `;` or white space. Tika's pattern writes `[^\c;\s]`,
+    /// which Java reads as "not `{` or white space", so its value runs over semicolons (#70).
     fn match_charset_first(text: &str) -> Option<(&str, &str, &str)> {
         let rest = text.trim_start_matches(java::is_regex_space);
         let start = text.len() - rest.len();
@@ -92,20 +92,15 @@ impl MediaType {
             .trim_start_matches(java::is_regex_space)
             .strip_prefix('=')?;
         let rest = rest.trim_start_matches(java::is_regex_space);
-        let value_start = text.len() - rest.len();
         let value_len = rest
-            .find(|c: char| c == '{' || java::is_regex_space(c))
+            .find(|c: char| c == ';' || java::is_regex_space(c))
             .unwrap_or(rest.len());
-        for (offset, _) in rest[..value_len].char_indices().rev() {
-            let value_end = value_start + offset + 1;
-            if offset == 0 && value_len == 0 {
-                break;
-            }
-            if let Some((kind, subtype)) = Self::match_type_tail(&text[value_end..]) {
-                return Some((&text[start..value_end], kind, subtype));
-            }
+        if value_len == 0 {
+            return None;
         }
-        None
+        let value_end = text.len() - rest.len() + value_len;
+        let (kind, subtype) = Self::match_type_tail(&text[value_end..])?;
+        Some((&text[start..value_end], kind, subtype))
     }
 
     /// `\s*;\s*VALID\s*/\s*VALID\s*`, matched in full.
@@ -314,6 +309,11 @@ mod tests {
             Some("text/html; charset=utf-8")
         );
         assert_eq!(parse("text/html junk"), None);
+        assert_eq!(parse("charset=utf-8; x=1; text/html"), None);
+        assert_eq!(
+            parse("charset=a{b; text/html").as_deref(),
+            Some("text/html; charset=a{b")
+        );
     }
 
     #[test]

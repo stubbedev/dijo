@@ -4,8 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
+use super::tests::DEPARTURES;
 use super::{EmlxParser, Rfc822Parser};
-use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, documents, Scratch};
+use crate::formats::parity::{
+    assert_fails_as_tika, assert_same_as_tika_departing, documents, Scratch,
+};
 use crate::formats::Parser;
 
 const HEADER: &str = "From: Ada Lovelace <ada@example.org>\r\nTo: Charles Babbage <charles@example.org>\r\nSubject: Notes\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\nMIME-Version: 1.0\r\n";
@@ -145,7 +148,11 @@ fn extracts_synthetic_messages_as_tikas_path_does() {
         "messages Tika does not detect as email"
     );
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, "org.apache.tika.parser.mail.RFC822Parser");
+    assert_same_as_tika_departing(
+        &paths,
+        "org.apache.tika.parser.mail.RFC822Parser",
+        DEPARTURES,
+    );
     let emlx = {
         let inner = message("Content-Type: text/plain\r\n", "Apple Mail body.\r\n");
         let mut bytes = format!("{}      \n", inner.len()).into_bytes();
@@ -156,7 +163,7 @@ fn extracts_synthetic_messages_as_tikas_path_does() {
     scratch.write("apple.emlx", &emlx);
     let (parsed, _) = documents(&EmlxParser, &[scratch.directory()]);
     assert_eq!(parsed.len(), 1);
-    assert_same_as_tika(&[parsed[0].as_path()], "ai.yobix.EmlxParser");
+    assert_same_as_tika_departing(&[parsed[0].as_path()], "ai.yobix.EmlxParser", DEPARTURES);
 }
 
 #[test]

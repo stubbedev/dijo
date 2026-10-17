@@ -5,6 +5,7 @@
 
 mod creation_time;
 pub(crate) mod gif;
+pub(crate) mod jbig2;
 pub(crate) mod png;
 
 use super::extractor::{Target, UNKNOWN_IMG};

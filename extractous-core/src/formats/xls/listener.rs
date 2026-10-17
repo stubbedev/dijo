@@ -2,18 +2,24 @@
 //! workbook into a page per sheet with its cells in a table, the text found outside the cells
 //! after it, and what the workbook's metadata records of its sheets, rows, columns and
 //! comments.
+//!
+//! Unlike Tika's listener (#107), it writes a formula's boolean or error result as such, where
+//! Tika writes 0; a linked cell once, in the table, where Tika writes it again outside it; a
+//! sheet with an embedded chart as one page, where Tika ends the page at the chart and takes
+//! the cells after it for text outside any sheet; headers and footers without their codes; and
+//! every number with one formatter, in the workbook's date system.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
-use super::records::{bof, sid, Cached, CellRef, Record, SharedString};
+use super::records::{bof, error_text, sid, Cached, CellRef, Record, SharedString, Special};
 use crate::formats::data_format::{
-    builtin_format, default_number_format, is_a_date_format, DataFormatter, FormatError,
+    builtin_format, default_number_format, DataFormatter, FormatError,
 };
 use crate::formats::poi::{Read, Thrown};
+use crate::formats::xlsx::header_footer;
 use crate::java::is_blank;
-use crate::java::time::TimeZone;
-use crate::java::{equals_ignore_case, trim};
+use crate::java::trim;
 
 /// The first format index of a workbook's own formats.
 const FIRST_CUSTOM_FORMAT: i32 = 50;
@@ -79,14 +85,15 @@ pub(super) struct Listener {
     settings: Settings,
     custom_formats: HashMap<i32, String>,
     extended_formats: Vec<i16>,
-    tika_formatter: DataFormatter,
-    poi_formatter: DataFormatter,
+    formatter: DataFormatter,
     shared_strings: Option<Vec<SharedString>>,
     string_formula: Option<CellRef>,
     previous_sid: u16,
     sheet_names: Vec<String>,
     sheet_index: i16,
     sheet: Option<BTreeMap<(i32, i32), Cell>>,
+    /// How many charts embedded in the sheet are open.
+    charts: usize,
     extra: Vec<Cell>,
     in_drawing: bool,
     /// The exception a record raised, after which Tika's listener reads no more.
@@ -96,13 +103,12 @@ pub(super) struct Listener {
 
 /// Whether Tika's `HSSFRequest` hands records of this type to the listener.
 pub(super) fn is_listened(record_sid: u16, settings: &Settings) -> bool {
-    const DATE_WINDOW_1904: u16 = 0x0022;
     const COUNTRY: u16 = 0x008C;
     matches!(
         record_sid,
         sid::BOF
             | sid::EOF
-            | DATE_WINDOW_1904
+            | sid::DATE_WINDOW_1904
             | COUNTRY
             | sid::BOUND_SHEET
             | sid::SST
@@ -128,19 +134,19 @@ pub(super) fn is_listened(record_sid: u16, settings: &Settings) -> bool {
 }
 
 impl Listener {
-    pub(super) fn new(settings: Settings, zone: &'static TimeZone) -> Self {
+    pub(super) fn new(settings: Settings) -> Self {
         Listener {
             settings,
             custom_formats: HashMap::new(),
             extended_formats: Vec::new(),
-            tika_formatter: DataFormatter::new(zone),
-            poi_formatter: DataFormatter::poi(zone),
+            formatter: DataFormatter::new(false),
             shared_strings: None,
             string_formula: None,
             previous_sid: 0,
             sheet_names: Vec::new(),
             sheet_index: 0,
             sheet: None,
+            charts: 0,
             extra: Vec::new(),
             in_drawing: false,
             stored: None,
@@ -190,23 +196,26 @@ impl Listener {
             Record::Bof { kind } => match *kind {
                 bof::WORKBOOK => self.sheet_index = -1,
                 bof::CHART => {
-                    if self.previous_sid == sid::EOF {
-                        self.new_sheet();
-                    } else if self.sheet.is_some() {
-                        self.process_sheet()?;
-                        self.sheet_index = self.sheet_index.wrapping_sub(1);
+                    if self.sheet.is_some() {
+                        // A chart embedded in the sheet, which Tika takes for the end of the
+                        // sheet's page and the start of another under the same name, or, after
+                        // another chart, for a sheet of its own.
+                        self.charts += 1;
+                    } else if self.previous_sid == sid::EOF {
                         self.new_sheet();
                     }
                 }
                 bof::WORKSHEET => self.new_sheet(),
                 _ => {}
             },
+            Record::Eof if self.charts > 0 => self.charts -= 1,
             Record::Eof => {
                 if self.sheet.is_some() {
                     self.process_sheet()?;
                 }
                 self.sheet = None;
             }
+            Record::DateWindow1904(date_1904) => self.formatter.set_date_1904(*date_1904),
             Record::BoundSheet {
                 name,
                 hidden,
@@ -222,7 +231,10 @@ impl Listener {
             }
             Record::Sst(strings) => self.shared_strings = Some(strings.clone()),
             Record::Formula { cell, cached } => match cached {
-                Cached::Special(Cached::STRING) => {
+                Cached::Special(Special {
+                    kind: Special::STRING,
+                    ..
+                }) => {
                     self.string_formula = Some(*cell);
                     keeps_string_formula = true;
                 }
@@ -230,10 +242,23 @@ impl Listener {
                     let text = self.format_number(*cell, *value)?;
                     self.add_text_cell(Some(*cell), &text);
                 }
-                Cached::Special(_) => {
-                    let text = self.format_number(*cell, 0.0)?;
-                    self.add_text_cell(Some(*cell), &text);
+                // Tika formats a boolean, an error or an empty result as the number 0.
+                Cached::Special(Special {
+                    kind: Special::BOOLEAN,
+                    value,
+                }) => {
+                    let text = if *value == 1 { "TRUE" } else { "FALSE" };
+                    self.add_text_cell(Some(*cell), text);
                 }
+                Cached::Special(Special {
+                    kind: Special::ERROR,
+                    value,
+                }) => {
+                    if let Some(text) = error_text(*value) {
+                        self.add_text_cell(Some(*cell), text);
+                    }
+                }
+                Cached::Special(_) => {}
             },
             Record::String(text) => {
                 if self.previous_sid == sid::FORMULA {
@@ -270,29 +295,23 @@ impl Listener {
                 self.add_text_cell(Some(*cell), &text);
             }
             Record::Number { cell, value } => {
-                if record_sid == sid::RK {
-                    self.add_cell(Some(*cell), Cell::Text(default_number_format(*value)));
-                } else {
-                    let text = self.format_number(*cell, *value)?;
-                    self.add_text_cell(Some(*cell), &text);
-                }
+                let text = self.format_number(*cell, *value)?;
+                self.add_text_cell(Some(*cell), &text);
             }
             Record::Hyperlink {
                 first_row,
                 first_column,
                 address,
             } => {
+                // The cell is linked where it is. Tika writes it again, linked, outside the
+                // table.
                 let linked = self
                     .sheet
-                    .as_ref()
-                    .and_then(|sheet| sheet.get(&(*first_row, *first_column)))
-                    .cloned();
-                if let Some(cell) = linked {
-                    let cell = match address {
-                        Some(address) => Cell::Linked(Box::new(cell), address.clone()),
-                        None => cell,
-                    };
-                    self.add_cell(None, cell);
+                    .as_mut()
+                    .and_then(|sheet| sheet.get_mut(&(*first_row, *first_column)));
+                if let (Some(cell), Some(address)) = (linked, address) {
+                    let text = std::mem::replace(cell, Cell::Text(String::new()));
+                    *cell = Cell::Linked(Box::new(text), address.clone());
                 }
             }
             Record::TextObject(text) => {
@@ -314,8 +333,9 @@ impl Listener {
                 }
             }
             Record::Header(text) | Record::Footer(text) => {
+                // Tika writes them with their codes.
                 if self.settings.headers_and_footers {
-                    self.add_text_cell(None, text);
+                    self.add_text_cell(None, &header_footer::extract(text));
                 }
             }
             Record::Protect(true) => self.read.protected_sheet = true,
@@ -357,9 +377,13 @@ impl Listener {
     fn new_sheet(&mut self) {
         self.sheet_index = self.sheet_index.wrapping_add(1);
         self.sheet = Some(BTreeMap::new());
+        self.charts = 0;
     }
 
+    /// Adds a cell to the sheet's table, or, without a place or with a taken one, or in a chart
+    /// embedded in the sheet, to the text outside the cells.
     fn add_cell(&mut self, cell_ref: Option<CellRef>, cell: Cell) {
+        let cell_ref = cell_ref.filter(|_| self.charts == 0);
         match (&mut self.sheet, cell_ref) {
             (Some(sheet), Some(cell_ref)) => {
                 match sheet.entry((cell_ref.row, i32::from(cell_ref.column))) {
@@ -434,18 +458,14 @@ impl Listener {
         Ok(())
     }
 
-    /// `TikaFormatTrackingHSSFListener.formatNumberDateCell`: dates and the general format by
-    /// Tika's formatter, any other format by POI's.
+    /// `TikaFormatTrackingHSSFListener.formatNumberDateCell`, with one formatter. Tika formats
+    /// dates and the general format with its formatter and any other format with POI's, each
+    /// caching formats of its own.
     fn format_number(&mut self, cell: CellRef, value: f64) -> Result<String, Uncaught> {
         let index = self.format_index(cell)?;
         let format = self.format_string(index);
         let formatted = match format {
-            Some(format)
-                if is_a_date_format(index, &format) || equals_ignore_case(&format, "general") =>
-            {
-                self.tika_formatter.format_raw(value, index, &format)
-            }
-            Some(format) => self.poi_formatter.format_raw(value, index, &format),
+            Some(format) => self.formatter.format_raw(value, index, &format),
             None => Ok(default_number_format(value)),
         };
         formatted.map_err(|error| {

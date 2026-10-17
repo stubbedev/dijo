@@ -1,11 +1,15 @@
 //! OCR: the tesseract Tika's path runs, and the one native readings run in this process, with
 //! our Java `PreparingOcrParser`'s preparation of the images it reads.
 
+mod av1;
+mod avif;
 mod bitmap;
 mod decode;
 mod flatten;
+mod heif;
 mod icc;
 mod java2d;
+pub(crate) mod jbig2;
 mod jpeg;
 mod pages;
 mod prepare;
@@ -22,7 +26,7 @@ use std::sync::OnceLock;
 use crate::errors::{Error, ExtractResult};
 use crate::tika::native;
 pub(crate) use bitmap::Bitmap;
-pub(crate) use decode::{decode, Decoded, Format};
+pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub(crate) use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
 pub(crate) use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
@@ -111,7 +115,7 @@ pub(crate) fn tesseract_runs() -> bool {
 /// The tesseract native readings run, set up once per process: the one linked into the static
 /// executable with the bundled language data, the bundled library with it, or the library of
 /// the `tesseract` on the `PATH`, which reads the language data that program reads. Why there is
-/// none otherwise, as for a bundled library that offers Tika's path its JNI functions alone.
+/// none otherwise, as for a bundled library built before it exported tesseract's C API.
 pub(crate) fn tesseract() -> Result<&'static Tesseract, String> {
     static TESSERACT: OnceLock<Result<Tesseract, String>> = OnceLock::new();
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)

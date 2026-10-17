@@ -499,15 +499,12 @@ impl Read<'_> {
     }
 }
 
-/// What `handleGeneralTextContainingPart` writes for the parts `parent`'s relationships of
-/// `kind` lead to, read by one of Tika's text handlers at its defaults, `new
-/// OOXMLWordAndPowerPointTextHandler(new OOXMLTikaBodyPartHandler(xhtml), links)`, without
-/// styles, lists, notes or metadata.
-pub(crate) fn write_general_text_parts(
+/// What `handleGeneralTextContainingPart` writes for `part`, read by one of Tika's text
+/// handlers at its defaults, `new OOXMLWordAndPowerPointTextHandler(new
+/// OOXMLTikaBodyPartHandler(xhtml), links)`, without styles, lists, notes or metadata.
+pub(crate) fn write_general_text_part(
     package: &Package,
-    parent: usize,
-    kind: &str,
-    class: &str,
+    part: usize,
     links: &HashMap<String, String>,
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
@@ -515,7 +512,7 @@ pub(crate) fn write_general_text_parts(
     let inline = InlineParts::default();
     let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
     let mut handler = TextHandler::new(body, links, TextOptions::default());
-    extractor::write_general_text_parts(package, parent, kind, class, &mut handler)
+    extractor::write_general_text_part(package, part, &mut handler)
 }
 
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.

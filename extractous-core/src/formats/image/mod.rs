@@ -6,7 +6,7 @@
 //! The enricher reads the image with tesseract, natively too; with OCR skipped it records itself
 //! but reads nothing.
 
-mod enricher;
+pub(super) mod enricher;
 mod extractor;
 mod image_xmp;
 mod imageio;
@@ -17,13 +17,14 @@ mod psd;
 mod tests;
 
 use std::fs;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::{Nested, Stop, Xhtml};
+use crate::formats::xhtml::Xhtml;
 use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepared, Unported};
 use crate::java::time::TimeZone;
 use enricher::Enricher;
@@ -73,12 +74,12 @@ fn enriched(content_type: &str) -> bool {
     crate::ocr::tesseract_runs() && OCR_TYPES.contains(&base)
 }
 
-fn java_zone() -> Result<&'static TimeZone, Unported> {
-    TimeZone::java_default().map_err(|e| {
-        Unported::new(format!(
-            "dates in Java's default time zone, which the port cannot find: {e}"
-        ))
-    })
+/// The zone an image's dates are read and written in: UTC, so that a date naming no zone, as
+/// Exif's do, keeps the time it gives. Tika reads them in Java's default zone and writes them
+/// in UTC, shifting them by the machine's offset (#114).
+fn dates_zone() -> &'static TimeZone {
+    static UTC: LazyLock<TimeZone> = LazyLock::new(|| TimeZone::fixed(0));
+    &UTC
 }
 
 /// The image formats metadata-extractor reads for Tika.
@@ -220,6 +221,7 @@ impl Parser for ImageParser {
             "image/vnd.wap.wbmp",
             "image/vnd.microsoft.icon",
             "image/x-xcf",
+            "image/x-jbig2",
             "image/jp2",
             "image/jpx",
         ]
@@ -240,25 +242,24 @@ impl Parser for ImageParser {
 fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> {
     let content_type = metadata.get("Content-Type").unwrap_or_default().to_owned();
     let parse_error = |cause: &str| fails(format!("{content_type} parse error: {cause}"));
-    let read = match content_type.as_str() {
+    // The reader is picked by the type without its parameters, where Tika finds none for a
+    // type with them (#114).
+    let base = content_type.split(';').next().unwrap_or_default().trim();
+    let read = match base {
         "image/png" => imageio::png::read(input).map_err(|error| match error {
             imageio::png::PngError::Image(cause) => parse_error(&cause),
             imageio::png::PngError::Runtime(cause) => fails(cause),
             imageio::png::PngError::Unported(unported) => unported.into(),
         })?,
-        "image/gif" => match imageio::gif::read(input) {
-            Ok(imageio::gif::Outcome::Read(read)) => read,
-            Ok(imageio::gif::Outcome::UnexpectedBlockZero { images }) => {
-                metadata.set("tk:num-images", images.to_string());
-                return Ok(Read {
-                    metadata,
-                    prefix_route_names: 0,
-                    reads_file: false,
-                });
-            }
-            Err(imageio::gif::GifError::Image(cause)) => return Err(parse_error(&cause)),
-            Err(imageio::gif::GifError::Runtime(cause)) => return Err(fails(cause)),
-        },
+        "image/gif" => imageio::gif::read(input).map_err(|error| match error {
+            imageio::gif::GifError::Image(cause) => parse_error(&cause),
+            imageio::gif::GifError::Runtime(cause) => fails(cause),
+        })?,
+        "image/x-jbig2" => imageio::jbig2::read(input).map_err(|reason| {
+            Unported::new(format!(
+                "a JBIG2 image jbig2-imageio reads otherwise than the port: {reason}"
+            ))
+        })?,
         "image/bmp" | "image/vnd.wap.wbmp" => {
             return Err(Unported::new(format!(
                 "an image of {content_type}, which Tika's ImageIO reads with the JDK's reader or \
@@ -307,8 +308,10 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
     })
 }
 
-/// Our Java `RecognizedImageParser`: the parser Tika has for the image's type writes a document
-/// of its own into the image's, and the image is then handed to the OCR enricher.
+/// Our Java `RecognizedImageParser`: the parser Tika has for the image's type reads its
+/// metadata, and the image is then handed to the OCR enricher. Our Java lets that parser write
+/// a whole document of its own, `html`, `meta` and `body` elements, into the image's body
+/// (#114).
 pub(crate) struct RecognizedImageParser;
 
 /// The parser Tika has for a type `RecognizedImageParser` reads.
@@ -383,16 +386,6 @@ impl Parser for RecognizedImageParser {
             if let Some((zone, prefix_route_names)) = file_directory {
                 add_file_directory(xhtml, input.len(), true, zone, prefix_route_names)?;
             }
-            let context = xhtml.context();
-            let metadata = xhtml.metadata_mut().clone();
-            let (_, _, nested) =
-                Xhtml::write(
-                    &mut Nested(xhtml),
-                    metadata,
-                    context,
-                    |_| Ok::<(), Stop>(()),
-                );
-            nested?;
             enricher.enrich(xhtml, input.len())
         }))
     }
@@ -404,7 +397,7 @@ fn webp_metadata(
     input: &[u8],
     read: &mut TikaMetadata,
 ) -> Result<(&'static TimeZone, usize), Declined> {
-    let zone = java_zone()?;
+    let zone = dates_zone();
     image_xmp::extract_webp(input, read)?;
     let mut directories = Metadata::default();
     match webp::read(input, &mut directories) {
@@ -465,7 +458,7 @@ fn prepare<'a>(
 ) -> Result<Prepared<'a>, Declined> {
     let content_type = metadata.get("Content-Type").unwrap_or_default();
     let enriched = enriched(content_type);
-    let zone = java_zone()?;
+    let zone = dates_zone();
     let read = extract_metadata(format, input, metadata.clone(), zone)?;
     let trailer = motion_photo::trailer(&read.metadata, input)?;
     let enricher = Enricher::of(enriched, content_type, input, configs)?;
@@ -510,9 +503,8 @@ fn extract_metadata(
         }
         Format::ImageIo => return image_io(input, metadata),
         Format::Heif => {
-            if !image_xmp::extract_heif(input, &mut metadata)? {
-                image_xmp::scan_and_extract(input, &mut metadata)?;
-            }
+            // Tika scans the whole file for a packet where the image has no XMP item (#114).
+            image_xmp::extract_heif(input, &mut metadata)?;
             heif::read(input, &mut directories)?;
         }
         Format::Tiff => {
@@ -537,28 +529,32 @@ fn extract_metadata(
     })
 }
 
-/// The file metadata-extractor reads an image from, its name, size and time of modification:
-/// the document's own file, or with the enricher the temporary file Tika spools a document read
-/// from memory to; none for a document read from memory without it.
+/// The file metadata-extractor reads an image from, its name, size and time of modification,
+/// or of a document read from memory its size alone.
 struct FileFacts {
-    name: String,
+    name: Option<String>,
     size: i64,
-    modified: i64,
+    modified: Option<i64>,
 }
 
 impl FileFacts {
     /// `FileSystemMetadataReader.read`.
     fn directory(&self, zone: &'static TimeZone) -> Directory {
         let mut directory = Directory::new(Kind::FileSystem);
-        directory.set(1, Value::Text(self.name.clone()));
+        if let Some(name) = &self.name {
+            directory.set(1, Value::Text(name.clone()));
+        }
         directory.set(2, Value::Long(self.size));
-        directory.set(3, Value::Date(self.modified, zone));
+        if let Some(modified) = self.modified {
+            directory.set(3, Value::Date(modified, zone));
+        }
         directory
     }
 }
 
 /// The file metadata-extractor reads: the document's own, or when Tika `spools` a document read
-/// from memory before reading it, the temporary file it spools to.
+/// from memory before reading it, the document's size. Tika describes the temporary file it
+/// spools to, `apache-tika-<random>.tmp` modified as it is written (#114).
 fn input_file(xhtml: &Xhtml, length: usize, spools: bool) -> Result<Option<FileFacts>, Error> {
     match xhtml.context().input_file() {
         InputFile::Original(path) => {
@@ -568,15 +564,15 @@ fn input_file(xhtml: &Xhtml, length: usize, spools: bool) -> Result<Option<FileF
             let facts = fs::metadata(path).map_err(unreadable)?;
             let modified = facts.modified().map_err(unreadable)?;
             Ok(Some(FileFacts {
-                name: java_file_name(path).to_owned(),
+                name: Some(java_file_name(path).to_owned()),
                 size: facts.len() as i64,
-                modified: epoch_millis(modified),
+                modified: Some(epoch_millis(modified)),
             }))
         }
         InputFile::Spooled if spools => Ok(Some(FileFacts {
-            name: temporary_name(),
+            name: None,
             size: length as i64,
-            modified: epoch_millis(SystemTime::now()),
+            modified: None,
         })),
         InputFile::Spooled => Ok(None),
     }
@@ -588,14 +584,4 @@ fn epoch_millis(time: SystemTime) -> i64 {
         Ok(after) => after.as_millis() as i64,
         Err(before) => -(before.duration().as_millis() as i64),
     }
-}
-
-/// The name of a temporary file Tika spools to, `TemporaryResources.createTempFile`'s
-/// `apache-tika-<random>.tmp`.
-fn temporary_name() -> String {
-    use std::hash::{BuildHasher, RandomState};
-    format!(
-        "apache-tika-{}.tmp",
-        RandomState::new().hash_one(SystemTime::now())
-    )
 }

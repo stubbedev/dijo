@@ -61,9 +61,9 @@ impl Key {
     }
 }
 
-/// Where the table puts an object, as the `Long` PDFBox keeps for it: an offset in the file,
-/// or the negated number of the object stream holding it, so that an object stream numbered 0
-/// reads as offset 0.
+/// Where the table puts an object: an offset in the file, or the number of the object stream
+/// holding it. PDFBox keeps a `Long`, the stream's number negated, so that an object in object
+/// stream 0 reads as at offset 0 (#115).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Location {
     File(i64),
@@ -71,14 +71,6 @@ enum Location {
 }
 
 impl Location {
-    fn of(value: i64) -> Self {
-        if value < 0 {
-            Self::Stream(-value)
-        } else {
-            Self::File(value)
-        }
-    }
-
     fn value(self) -> i64 {
         match self {
             Self::File(offset) => offset,
@@ -159,8 +151,10 @@ fn rebuild(data: &[u8]) -> Read<Resolution> {
     Ok(Resolution { table, trailer })
 }
 
-/// `bfSearchForTrailer`: the first `trailer` of the document whose `/Root` and `/Info` lead to
-/// a catalog and an information dictionary, its `/Encrypt` and `/ID` with them.
+/// `bfSearchForTrailer`: the first `trailer` of the document whose `/Root` leads to a catalog,
+/// its `/Info`, if it leads to an information dictionary, `/Encrypt` and `/ID` with it. PDFBox
+/// takes only a trailer of both, so that a document without information loses its trailer
+/// (#115).
 fn search_trailer(
     data: &[u8],
     objects: &HashMap<Key, Location>,
@@ -181,10 +175,13 @@ fn search_trailer(
             }
             _ => false,
         };
-        if leads_to(b"Root", is_catalog) && leads_to(b"Info", is_info) {
-            for key in [&b"Root"[..], b"Info"] {
-                if let Ok(value) = found.get(key) {
-                    trailer.set(key.to_vec(), value.clone());
+        if leads_to(b"Root", is_catalog) {
+            if let Ok(value) = found.get(b"Root") {
+                trailer.set("Root", value.clone());
+            }
+            if leads_to(b"Info", is_info) {
+                if let Ok(value) = found.get(b"Info") {
+                    trailer.set("Info", value.clone());
                 }
             }
             if leads_to(b"Encrypt", |_| true) {
@@ -759,8 +756,9 @@ impl<'a> Source<'a> {
         found
     }
 
-    /// `COSParser.readUntilEndStream`: the data up to the first `endstream` or `endobj`, as
-    /// `EndstreamFilterStream` keeps it.
+    /// `COSParser.readUntilEndStream`: the data up to the first `endstream` or `endobj`,
+    /// without the line break that ends it. PDFBox's `EndstreamFilterStream` keeps the line
+    /// break when the stream's first 10 bytes look like text (#115).
     fn read_until_end_stream(&mut self) -> &'a [u8] {
         let start = self.lexer.position();
         let rest = &self.data[start..];
@@ -769,42 +767,32 @@ impl<'a> Source<'a> {
             .unwrap_or(rest.len());
         self.lexer.seek(start + end);
         let content = &rest[..end];
-        let binary = content.len() <= 10
-            || content[..10]
-                .iter()
-                .any(|&b| b < 0x09 || (b > 0x0a && b < 0x20 && b != 0x0d) || b > 0x7f);
-        if !binary {
-            return content;
-        }
         content
             .strip_suffix(b"\r\n")
             .or_else(|| content.strip_suffix(b"\n"))
+            .or_else(|| content.strip_suffix(b"\r"))
             .unwrap_or(content)
     }
 
-    /// `BruteForceParser.findString`: from here, where `string` next starts, or where a
-    /// partial match runs into the end; the source stands after it.
+    /// `BruteForceParser.findString`: from here, where `string` next starts; the source stands
+    /// after it, or at the end. PDFBox's search starts over after a partial match at the byte
+    /// that broke it, so it misses a match that overlaps the partial one, as `%%EOF` in
+    /// `%%%EOF`, and it returns a partial match that runs into the end (#115).
     fn find_string(&mut self, string: &[u8]) -> Option<i64> {
-        let mut position = None;
-        let mut counter = 0;
-        let mut c = self.read();
-        while let Some(byte) = c {
-            if byte == string[counter] {
-                if counter == 0 {
-                    position = Some(self.position() - 1);
-                }
-                counter += 1;
-                if counter == string.len() {
-                    return position;
-                }
-            } else if counter > 0 {
-                counter = 0;
-                position = None;
-                continue;
+        let start = self.lexer.position().min(self.data.len());
+        let found = self.data[start..]
+            .windows(string.len())
+            .position(|window| window == string);
+        match found {
+            Some(at) => {
+                self.lexer.seek(start + at + string.len());
+                Some((start + at) as i64)
             }
-            c = self.read();
+            None => {
+                self.lexer.seek(self.data.len());
+                None
+            }
         }
-        position
     }
 }
 
@@ -1341,27 +1329,13 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// `COSParser.lastIndexOf`: where `pattern` last starts before `end`, with its own way of
-/// starting over after a partial match.
+/// `COSParser.lastIndexOf`: where `pattern` last starts before `end`. PDFBox starts over after
+/// a partial match at the byte before the one that broke it, so it misses a match that
+/// overlaps the partial one (#115).
 fn last_index_of(pattern: &[u8], buffer: &[u8], end: usize) -> Option<usize> {
-    let last = pattern.len() - 1;
-    let mut pattern_at = last;
-    let mut lookup = pattern[pattern_at];
-    let mut at = end;
-    while at > 0 {
-        at -= 1;
-        if buffer[at] == lookup {
-            if pattern_at == 0 {
-                return Some(at);
-            }
-            pattern_at -= 1;
-            lookup = pattern[pattern_at];
-        } else if pattern_at < last {
-            pattern_at = last;
-            lookup = pattern[pattern_at];
-        }
-    }
-    None
+    buffer[..end.min(buffer.len())]
+        .windows(pattern.len())
+        .rposition(|window| window == pattern)
 }
 
 /// Java's `String.trim`.
@@ -1465,10 +1439,11 @@ fn xref_stream_entries(dict: &Dictionary, data: &[u8]) -> Read<Vec<(Key, Locatio
     let mut line = vec![0u8; widths.iter().sum()];
     let mut position = 0;
     let mut entries = Vec::new();
-    while position < data.len() && numbers.has_next() {
-        let available = (data.len() - position).min(line.len());
-        line[..available].copy_from_slice(&data[position..position + available]);
-        position += available;
+    // PDFBox reads a cut-off last row over the bytes of the row before (#115).
+    let width = line.len();
+    while position + width <= data.len() && numbers.has_next() {
+        line.copy_from_slice(&data[position..position + width]);
+        position += width;
         let number = numbers.next();
         let kind = if widths[0] == 0 {
             1
@@ -1486,13 +1461,19 @@ fn xref_stream_entries(dict: &Dictionary, data: &[u8]) -> Read<Vec<(Key, Locatio
             ))
         };
         let field = i64::try_from(field).map_err(|_| fails())?;
+        // PDFBox keeps an object at offset 0, which no object can start at, so that its
+        // check of the offsets fails and it searches the whole file for objects, where a
+        // table leaves such an entry out (#115).
+        if kind == 1 && field == 0 {
+            continue;
+        }
         let generation = if kind == 1 { i64::from(third) } else { 0 };
         let key = Key::new(number, generation).map_err(|_| fails())?;
         entries.push((
             key,
             match kind {
                 1 => Location::File(field),
-                _ => Location::of(-field),
+                _ => Location::Stream(field),
             },
         ));
     }
@@ -1506,48 +1487,55 @@ fn value(bytes: &[u8]) -> u64 {
         .fold(0u64, |value, &byte| value.wrapping_shl(8) | u64::from(byte))
 }
 
-/// `PDFXrefStreamParser.ObjectNumbers`: the object numbers of an `/Index`.
+/// `PDFXrefStreamParser.ObjectNumbers`: the object numbers of an `/Index`, range by range.
+/// PDFBox's yields the start of an empty range all the same (#115).
 struct ObjectNumbers {
-    start: Vec<i64>,
-    end: Vec<i64>,
+    /// Each range's first number and the number after its last.
+    ranges: Vec<(i64, i64)>,
     range: usize,
     current: i64,
-    current_end: i64,
 }
 
 impl ObjectNumbers {
     fn new(index: &[i64]) -> Self {
-        let start: Vec<i64> = index.iter().step_by(2).copied().collect();
-        let end: Vec<i64> = index
+        let ranges: Vec<(i64, i64)> = index
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|[start, size]| start.wrapping_add(*size))
+            .map(|[start, size]| (*start, start.saturating_add(*size)))
             .collect();
-        Self {
-            current: start[0],
-            current_end: end[0],
-            start,
-            end,
+        let mut numbers = Self {
+            current: ranges.first().map_or(0, |range| range.0),
+            ranges,
             range: 0,
+        };
+        numbers.skip_ended();
+        numbers
+    }
+
+    /// Moves past the ranges whose numbers have all been yielded.
+    fn skip_ended(&mut self) {
+        while self
+            .ranges
+            .get(self.range)
+            .is_some_and(|&(_, end)| self.current >= end)
+        {
+            self.range += 1;
+            if let Some(&(start, _)) = self.ranges.get(self.range) {
+                self.current = start;
+            }
         }
     }
 
     fn has_next(&self) -> bool {
-        if self.start.len() == 1 {
-            return self.current < self.current_end;
-        }
-        self.range < self.start.len() - 1 || self.current < self.current_end
+        self.range < self.ranges.len()
     }
 
     fn next(&mut self) -> i64 {
-        if self.current >= self.current_end {
-            self.range += 1;
-            self.current = self.start[self.range];
-            self.current_end = self.end[self.range];
-        }
+        let number = self.current;
         self.current += 1;
-        self.current - 1
+        self.skip_ended();
+        number
     }
 }
 
@@ -1687,11 +1675,16 @@ fn search_objects(data: &[u8]) -> Read<HashMap<Key, Location>> {
         if is_whitespace(next) && source.is_string(b"obj") {
             let mut temp = current - 2;
             source.seek(temp)?;
-            let generation = source.peek();
-            if is_digit(generation) {
-                let generation = i64::from(generation.unwrap_or_default() - b'0');
+            // PDFBox reads a single digit of generation, so that it never finds an object of
+            // generation 10 or more (#115).
+            let generation_end = temp + 1;
+            while temp > MINIMUM_SEARCH_OFFSET as i64 && is_digit(source.peek()) {
                 temp -= 1;
                 source.seek(temp)?;
+            }
+            let generation = parse_long(&data[(temp + 1) as usize..generation_end as usize])
+                .filter(|generation| (0..=GENERATION_NUMBER_THRESHOLD).contains(generation));
+            if let Some(generation) = generation {
                 if is_whitespace(source.peek()) {
                     while temp > MINIMUM_SEARCH_OFFSET as i64 && is_whitespace(source.peek()) {
                         temp -= 1;
@@ -1940,19 +1933,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn searches_backwards_as_cos_parser_does() {
+    fn searches_backwards() {
         assert_eq!(last_index_of(b"%%EOF", b"x%%EOF\n%%EOF", 12), Some(7));
         assert_eq!(last_index_of(b"%%EOF", b"x%%EOF\n%%EOF", 7), Some(1));
         assert_eq!(last_index_of(b"startxref", b"startxref", 8), None);
+        assert_eq!(last_index_of(b"abab", b"xabababy", 8), Some(3));
+        assert_eq!(last_index_of(b"%%EOF", b"%%EOFF", 6), Some(0));
     }
 
     #[test]
-    fn finds_strings_as_brute_force_parser_does() {
+    fn finds_strings_overlapping_partial_matches() {
         let mut source = Source::new(b"ab%%%EOF and %%EOF");
+        assert_eq!(source.find_string(b"%%EOF"), Some(3));
+        assert_eq!(source.position(), 8);
         assert_eq!(source.find_string(b"%%EOF"), Some(13));
         let mut source = Source::new(b"xref then %%EO");
-        assert_eq!(source.find_string(b"%%EOF"), Some(10));
         assert_eq!(source.find_string(b"%%EOF"), None);
+        assert!(source.is_eof());
+    }
+
+    #[test]
+    fn searches_objects_of_any_generation() {
+        let data = b"%PDF-1.4\n1 0 obj\n<< >>\nendobj\n2 12 obj\n<< >>\nendobj\n%%EOF\n";
+        let objects = search_objects(data).unwrap();
+        let mut keys: Vec<(i64, u16)> = objects
+            .keys()
+            .map(|key| (key.number, key.generation))
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, [(1, 0), (2, 12)]);
+    }
+
+    #[test]
+    fn reads_whole_cross_reference_stream_rows() {
+        let mut dict = Dictionary::new();
+        dict.set("W", vec![1.into(), 2.into(), 1.into()]);
+        dict.set("Index", vec![1.into(), 4.into()]);
+        let data = [
+            [1, 0, 20, 0], // object 1 at offset 20
+            [1, 0, 0, 0],  // object 2 at offset 0, which no object starts at
+            [2, 0, 0, 3],  // object 3 in object stream 0
+        ]
+        .concat();
+        let entries = xref_stream_entries(&dict, &[&data[..], &[1, 0]].concat()).unwrap();
+        assert_eq!(
+            entries,
+            [
+                (Key::new(1, 0).unwrap(), Location::File(20)),
+                (Key::new(3, 0).unwrap(), Location::Stream(0)),
+            ]
+        );
     }
 
     #[test]
@@ -1967,12 +1997,18 @@ mod tests {
     }
 
     #[test]
-    fn counts_index_ranges_as_the_xref_stream_parser_does() {
-        let mut numbers = ObjectNumbers::new(&[0, 2, 5, 0]);
-        let mut read = Vec::new();
-        while numbers.has_next() {
-            read.push(numbers.next());
+    fn counts_index_ranges_without_the_empty_ones() {
+        for (index, expected) in [
+            (&[0, 2, 5, 0][..], &[0, 1][..]),
+            (&[3, 0, 5, 2, 9, 0, 10, 1], &[5, 6, 10]),
+            (&[4, 0], &[]),
+        ] {
+            let mut numbers = ObjectNumbers::new(index);
+            let mut read = Vec::new();
+            while numbers.has_next() {
+                read.push(numbers.next());
+            }
+            assert_eq!(read, expected);
         }
-        assert_eq!(read, [0, 1, 5]);
     }
 }

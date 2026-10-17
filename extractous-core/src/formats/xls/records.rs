@@ -12,6 +12,7 @@ pub(super) mod sid {
     pub(in crate::formats::xls) const PROTECT: u16 = 0x0012;
     pub(in crate::formats::xls) const HEADER: u16 = 0x0014;
     pub(in crate::formats::xls) const FOOTER: u16 = 0x0015;
+    pub(in crate::formats::xls) const DATE_WINDOW_1904: u16 = 0x0022;
     pub(in crate::formats::xls) const NOTE: u16 = 0x001C;
     pub(in crate::formats::xls) const FILE_PASS: u16 = 0x002F;
     pub(in crate::formats::xls) const CONTINUE: u16 = 0x003C;
@@ -146,6 +147,8 @@ pub(super) enum Record {
     },
     Header(String),
     Footer(String),
+    /// Whether the workbook counts its dates from 1904.
+    DateWindow1904(bool),
     Obj,
     /// A `FILEPASS` record's data: the type of its encryption and the encryption.
     FilePass(Vec<u8>),
@@ -273,6 +276,7 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
             Record::SeriesText(java_string(&text))
         }
         sid::FORMAT => read_format(stream)?,
+        sid::DATE_WINDOW_1904 => Record::DateWindow1904(stream.read_u16()? == 1),
         sid::EXTENDED_FORMAT => {
             stream.read_i16()?;
             let format_index = stream.read_i16()?;
@@ -365,18 +369,31 @@ pub(super) fn read_formula(stream: &mut RecordStream<'_>) -> Read<(CellRef, Cach
     Ok((cell, cached))
 }
 
-/// A formula's cached result: a number, or, as `FormulaSpecialCachedValue` holds it, the type
-/// of a value that is none.
+/// A formula's cached result: a number, or, as `FormulaSpecialCachedValue` holds it, a value
+/// that is none.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Cached {
     Number(f64),
-    Special(i8),
+    Special(Special),
+}
+
+/// A formula's cached result that is no number: its type, and its value where the type has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Special {
+    pub(super) kind: i8,
+    pub(super) value: u8,
+}
+
+impl Special {
+    /// The type of a string result, which the `STRING` record after the formula holds.
+    pub(super) const STRING: i8 = 0;
+    /// The type of a boolean result, its value 1 for true.
+    pub(super) const BOOLEAN: i8 = 1;
+    /// The type of an error result, its value the error's code.
+    pub(super) const ERROR: i8 = 2;
 }
 
 impl Cached {
-    /// The type of a string result.
-    pub(super) const STRING: i8 = 0;
-
     /// `FormulaSpecialCachedValue.create` of a value's bits, failing on an unknown type.
     pub(super) fn read(bits: i64) -> Read<Cached> {
         const MARKER: u64 = 0xFFFF_0000_0000_0000;
@@ -387,8 +404,26 @@ impl Cached {
         if !(0..=3).contains(&kind) {
             return thrown(format!("Bad special value code ({kind})"));
         }
-        Ok(Cached::Special(kind))
+        Ok(Cached::Special(Special {
+            kind,
+            value: (bits >> 16) as u8,
+        }))
     }
+}
+
+/// The text of an error code, as POI's `FormulaError` names it; `None` for a code it lacks.
+pub(super) fn error_text(code: u8) -> Option<&'static str> {
+    Some(match code {
+        0x00 => "#NULL!",
+        0x07 => "#DIV/0!",
+        0x0F => "#VALUE!",
+        0x17 => "#REF!",
+        0x1D => "#NAME?",
+        0x24 => "#NUM!",
+        0x2A => "#N/A",
+        0x2B => "#GETTING_DATA",
+        _ => return None,
+    })
 }
 
 /// `RKUtil.decodeNumber`.
@@ -684,7 +719,8 @@ fn read_text_object(stream: &mut RecordStream<'_>) -> Read<String> {
     Ok(java_string(&text))
 }
 
-/// `FormatRecord`: the format string, read as far as the record goes whatever length it gives.
+/// `FormatRecord`: the format string, of the length it gives as far as the record holds it.
+/// POI reads as far as the record goes when the length is not what it holds (#107).
 fn read_format(stream: &mut RecordStream<'_>) -> Read<Record> {
     let index = i32::from(stream.read_i16()?);
     let length = i32::from(stream.read_u16()?);
@@ -694,11 +730,7 @@ fn read_format(stream: &mut RecordStream<'_>) -> Read<Record> {
     } else {
         stream.remaining() / 2
     };
-    let count = if i64::from(length) == available {
-        length as usize
-    } else {
-        available.max(0) as usize
-    };
+    let count = i64::from(length).min(available).max(0) as usize;
     let mut units = Vec::with_capacity(count);
     for _ in 0..count {
         units.push(if compressed {
@@ -706,9 +738,6 @@ fn read_format(stream: &mut RecordStream<'_>) -> Read<Record> {
         } else {
             stream.read_i16()? as u16
         });
-    }
-    if stream.remaining() == 1 {
-        units.push(u16::from(stream.read_u8()?));
     }
     while stream.remaining() > 0 {
         stream.read_u8()?;
@@ -809,7 +838,21 @@ mod tests {
         let Record::Formula { cached, .. } = read(sid::FORMULA, &formula).unwrap() else {
             panic!("a formula");
         };
-        assert_eq!(cached, Cached::Special(Cached::STRING));
+        assert_eq!(
+            cached,
+            Cached::Special(Special {
+                kind: Special::STRING,
+                value: 0
+            })
+        );
+        let mut format = 164i16.to_le_bytes().to_vec();
+        format.extend(2u16.to_le_bytes());
+        format.push(0);
+        format.extend(b"0.0;junk");
+        let Record::Format { format, .. } = read(sid::FORMAT, &format).unwrap() else {
+            panic!("a format");
+        };
+        assert_eq!(format, "0.");
     }
 
     #[test]

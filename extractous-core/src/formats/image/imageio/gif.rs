@@ -1,5 +1,9 @@
 //! The JDK's `GIFImageReader` as far as counting its images and reading the first one's
 //! metadata, and `GIFImageMetadata`'s trees (`javax_imageio_gif_image_1.0` and the standard one).
+//!
+//! A stray zero byte between blocks, which some encoders leave, is passed over. The JDK's reader
+//! stops counting images at one and throws `Unexpected block type 0!` reading the metadata after
+//! one, which Tika swallows, keeping the image count alone (#114).
 
 use super::{standard_tree, Eof, Node, Read, Stream};
 
@@ -20,22 +24,10 @@ const DISPOSAL_METHOD_NAMES: [&str; 8] = [
 /// Why the GIF could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GifError {
-    /// An `IIOException`, with its message, which Tika reports as a parse error of the type
-    /// unless it is `Unexpected block type 0!`.
+    /// An `IIOException`, with its message, which Tika reports as a parse error of the type.
     Image(String),
     /// A runtime exception the reader throws, which fails the parse too.
     Runtime(String),
-}
-
-/// How far the reader got before an exception Tika lets pass: the image count it set first.
-#[derive(Debug, Clone)]
-pub(crate) enum Outcome {
-    Read(Read),
-    /// `Unexpected block type 0!`, thrown reading the first image's metadata: Tika keeps the
-    /// image count and stops.
-    UnexpectedBlockZero {
-        images: i32,
-    },
 }
 
 #[derive(Debug, Default, Clone)]
@@ -69,25 +61,19 @@ fn latin1(bytes: &[u8]) -> String {
 }
 
 /// `getNumImages(true)`, `getWidth(0)`, `getHeight(0)` and `getImageMetadata(0)`.
-pub(crate) fn read(input: &[u8]) -> Result<Outcome, GifError> {
+pub(crate) fn read(input: &[u8]) -> Result<Read, GifError> {
     let mut stream = Stream::new(input);
     let first =
         header(&mut stream).map_err(|_| GifError::Image("I/O error reading header!".to_owned()))?;
     let images = count(&mut stream.clone(), first)?;
     stream.position = first;
-    let metadata = match image_metadata(&mut stream) {
-        Ok(metadata) => metadata,
-        Err(GifError::Image(message)) if message == "Unexpected block type 0!" => {
-            return Ok(Outcome::UnexpectedBlockZero { images })
-        }
-        Err(error) => return Err(error),
-    };
-    Ok(Outcome::Read(Read {
+    let metadata = image_metadata(&mut stream)?;
+    Ok(Read {
         images,
         width: i32::from(metadata.width),
         height: i32::from(metadata.height),
         trees: vec![native_tree(&metadata), standard(&metadata)],
-    }))
+    })
 }
 
 /// `readHeader`: the position the first image's blocks start at, after the global color table.
@@ -139,7 +125,8 @@ fn skip_image(stream: &mut Stream) -> bool {
                     skip_blocks(stream)?;
                     return Ok(true);
                 }
-                TRAILER | 0 => return Ok(false),
+                TRAILER => return Ok(false),
+                0 => {}
                 EXTENSION => {
                     stream.u8()?;
                     skip_blocks(stream)?;
@@ -186,6 +173,7 @@ fn image_metadata(stream: &mut Stream) -> Result<ImageMetadata, GifError> {
                 return Ok(metadata);
             }
             EXTENSION => extension(stream, &mut metadata).map_err(io)?,
+            0 => {}
             TRAILER => {
                 return Err(GifError::Runtime(
                     "Attempt to read past end of image sequence!".to_owned(),
@@ -406,6 +394,24 @@ fn standard(metadata: &ImageMetadata) -> Node {
 mod tests {
     use super::*;
     use crate::text::charset::Charset;
+
+    /// A GIF of `images` images of 3 by 2 pixels, a stray zero byte before each.
+    fn gif(images: usize) -> Vec<u8> {
+        let mut gif = b"GIF89a\x03\x00\x02\x00\x00\x00\x00".to_vec();
+        for _ in 0..images {
+            gif.push(0);
+            gif.extend_from_slice(&[IMAGE_DESCRIPTOR, 0, 0, 0, 0, 3, 0, 2, 0, 0]);
+            gif.extend_from_slice(&[2, 2, 0x44, 0x01, 0]);
+        }
+        gif.push(TRAILER);
+        gif
+    }
+
+    #[test]
+    fn passes_over_stray_zero_bytes() {
+        let read = read(&gif(2)).unwrap();
+        assert_eq!((read.images, read.width, read.height), (2, 3, 2));
+    }
 
     #[test]
     fn reads_latin1_as_the_jdk_does() {

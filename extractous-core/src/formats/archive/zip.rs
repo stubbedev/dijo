@@ -1,15 +1,15 @@
-//! Tika's `ZipParser` over an archive commons-compress's `ZipFile` opens: each entry but a
-//! directory, in central directory order, handed to the embedded document extractor with the
-//! metadata Tika gives it, an encrypted or unreadable one recorded instead, its name decoded in
-//! the charset Tika detects for it; then the integrity check of the local headers against the
-//! central directory.
+//! Tika's `ZipParser` over an archive commons-compress's `ZipFile` opens: the integrity check of
+//! the local headers against the central directory, then each entry but a directory, in central
+//! directory order, handed to the embedded document extractor with the metadata Tika gives it,
+//! an encrypted or unreadable one recorded as a failure instead, its name decoded as UTF-8 when
+//! flagged so, else in the charset Tika detects for it.
 
 use std::collections::HashSet;
 
 use super::nesting::Scan;
 use super::write_entry_div;
 use crate::compress::zip::extra::Instant;
-use crate::compress::zip::file::{NameSource, ZipEntry, ZipFile};
+use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::stream::ZipStream;
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
@@ -18,7 +18,7 @@ use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH,
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
-use crate::java::time::{instant_string, TimeZone};
+use crate::java::time::instant_string;
 use crate::mime::MediaType;
 use crate::text::charset::{self, Charset};
 
@@ -151,11 +151,6 @@ impl Parser for ZipParser {
                     .to_owned(),
             ));
         };
-        let Ok(zone) = TimeZone::java_default() else {
-            return Err(Declined::Deferred(
-                "the JVM's default time zone, which entry times are read in, is unknown".to_owned(),
-            ));
-        };
         let mut scan = Scan::new();
         for entry in zip.entries() {
             if entry.is_directory() || !entry.can_read() {
@@ -200,54 +195,45 @@ impl Parser for ZipParser {
         if let Some(reason) = scan.document(input.len()) {
             return Err(Declined::Deferred(reason));
         }
+        // Tika checks the integrity after the document has ended, so its result never reaches
+        // the document's head, and not at all when an entry fails it (#99).
         Ok(Box::new(move |xhtml| {
+            check_integrity(input, &CentralNames::of(&zip), xhtml.metadata_mut());
             update_media_type(&zip, xhtml.metadata_mut());
-            let written = write_entries(&zip, zone, xhtml);
+            let written = write_entries(&zip, xhtml);
             xhtml.end_document()?;
-            let central = written?;
-            check_integrity(input, &central, xhtml.metadata_mut());
-            Ok(())
+            written
         }))
     }
 }
 
-/// `parseWithZipFile`'s loop over the entries, which ends the document whatever happens: the
-/// central directory's names, each once, as the integrity check compares them.
-fn write_entries<'z>(
-    zip: &'z ZipFile,
-    zone: &TimeZone,
-    xhtml: &mut Xhtml,
-) -> Result<CentralNames<'z>, Failure> {
-    let mut central = CentralNames::default();
+/// `parseWithZipFile`'s loop over the entries, which ends the document whatever happens.
+fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml) -> Result<(), Failure> {
     for entry in zip.entries() {
-        if central.members.insert(&entry.name) {
-            central.ordered.push(&entry.name);
-        }
         if entry.is_directory() {
             continue;
         }
         let name = entry_name(entry).ok_or_else(|| {
             Failure::Malformed(format!("the name of {} cannot be decoded", entry.name))
         })?;
+        let name = zip_file::entry_name(name, entry.version_made_by);
         if entry.uses_encryption() {
             record_unread(
                 xhtml,
-                &name,
                 &format!(
                     "org.apache.tika.exception.EncryptedDocumentException: stream ({name}) is \
                      encrypted"
                 ),
-            )?;
+            );
             continue;
         }
         if !entry.can_read() {
             record_unread(
                 xhtml,
-                &name,
                 &format!(
                     "org.apache.tika.exception.TikaException: Can't read archive stream ({name})"
                 ),
-            )?;
+            );
             continue;
         }
         let content = match zip.read(entry) {
@@ -258,11 +244,11 @@ fn write_entries<'z>(
                 )))
             }
         };
-        let metadata = entry_metadata(entry, &name, zone);
+        let metadata = entry_metadata(entry, &name);
         write_entry_div(xhtml, &name)?;
         xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;
     }
-    Ok(central)
+    Ok(())
 }
 
 /// The central directory's entry names, each once, in order: the `LinkedHashSet` the
@@ -273,12 +259,30 @@ struct CentralNames<'z> {
     members: HashSet<&'z str>,
 }
 
-/// `updateMediaType(ZipFile, Metadata)`: a JAR when the first entry is its manifest, a ZIP
-/// otherwise, unless the archive was detected as a specialization of ZIP.
+impl<'z> CentralNames<'z> {
+    fn of(zip: &'z ZipFile) -> Self {
+        let mut central = Self::default();
+        for entry in zip.entries() {
+            if central.members.insert(&entry.name) {
+                central.ordered.push(&entry.name);
+            }
+        }
+        central
+    }
+}
+
+/// `updateMediaType(ZipFile, Metadata)`: a JAR when it holds a manifest, a ZIP otherwise,
+/// unless the archive was detected as a specialization of ZIP. Tika takes it for a JAR only
+/// when the manifest is the first entry (#99).
 fn update_media_type(zip: &ZipFile, metadata: &mut TikaMetadata) {
-    let kind = match zip.entries().first() {
-        Some(first) if first.name == "META-INF/MANIFEST.MF" => JAR,
-        _ => ZIP,
+    let kind = if zip
+        .entries()
+        .iter()
+        .any(|entry| entry.name == "META-INF/MANIFEST.MF")
+    {
+        JAR
+    } else {
+        ZIP
     };
     let specialization = metadata
         .get("Content-Type")
@@ -289,12 +293,19 @@ fn update_media_type(zip: &ZipFile, metadata: &mut TikaMetadata) {
     }
 }
 
-/// `detectEntryName`: a name from the Unicode extra field as commons-compress read it, else the
-/// name's bytes decoded in the charset Tika's encoding detector finds, told a name flagged UTF-8
-/// claims so; `None` for a charset the native decoders do not decode.
+/// `detectEntryName`: a name from the Unicode extra field as commons-compress read it, a name
+/// flagged UTF-8 (EFS) decoded so when it is valid UTF-8, else the name's bytes decoded in the
+/// charset Tika's encoding detector finds, told a name flagged UTF-8 claims so; `None` for a
+/// charset the native decoders do not decode. Tika takes the flag only as a hint to its
+/// detector, which may find another charset (#99).
 fn entry_name(entry: &ZipEntry) -> Option<String> {
     if entry.name_source == NameSource::UnicodeExtraField {
         return Some(entry.name.clone());
+    }
+    if entry.name_source == NameSource::NameWithEfsFlag {
+        if let Ok(name) = std::str::from_utf8(&entry.raw_name) {
+            return Some(name.to_owned());
+        }
     }
     let detection = match entry.name_source {
         NameSource::NameWithEfsFlag => {
@@ -309,11 +320,10 @@ fn decode_name(raw: &[u8], charset: Charset) -> Option<String> {
     charset.decode_exactly(raw)
 }
 
-/// An entry Tika cannot read: its failure recorded, and its name in a paragraph.
-fn record_unread(xhtml: &mut Xhtml, name: &str, exception: &str) -> Result<(), Failure> {
+/// An entry Tika cannot read: its failure recorded. Tika also writes its name in a paragraph,
+/// as though it were text of the archive (#99).
+fn record_unread(xhtml: &mut Xhtml, exception: &str) {
     record_stream_exception(xhtml.metadata_mut(), exception);
-    xhtml.element("p", name)?;
-    Ok(())
 }
 
 fn instant(time: Instant) -> String {
@@ -322,17 +332,18 @@ fn instant(time: Instant) -> String {
 
 /// `buildEntryMetadata`: the entry's name and path, times, sizes, method, CRC, Unix mode,
 /// platform, version and comment.
-fn entry_metadata(entry: &ZipEntry, name: &str, zone: &TimeZone) -> TikaMetadata {
+fn entry_metadata(entry: &ZipEntry, name: &str) -> TikaMetadata {
     let mut metadata = TikaMetadata::new();
     if !name.is_empty() {
-        let name = name.replace('\\', "/");
-        metadata.set(RESOURCE_NAME, name.clone());
+        metadata.set(RESOURCE_NAME, name);
         metadata.set(INTERNAL_PATH, name);
     }
     if let Some(created) = entry.created() {
         metadata.set("dcterms:created", instant(created));
     }
-    metadata.set("dcterms:modified", instant(entry.modified(zone)));
+    if let Some(modified) = entry.modified() {
+        metadata.set("dcterms:modified", instant(modified));
+    }
     if entry.size >= 0 {
         metadata.set("Content-Length", entry.size.to_string());
         metadata.set("zip:uncompressed-size", entry.size.to_string());

@@ -2,7 +2,10 @@
 //! of a TIFF, the first image of anything else, in grey, colour or colour with alpha
 //! ([`Bitmap`]). JPEG is decoded as the JDK's libjpeg decodes it ([`super::jpeg`]), its colours
 //! converted from the ICC profile it embeds as the JDK's reader converts them ([`super::icc`]).
-//! Photoshop and PCX images are decoded in grey.
+//! JPEG 2000 images, which tesseract reads where Java has no decoder, are decoded by
+//! hayro-jpeg2000, JBIG2 images, which jbig2-imageio decodes for Java, by hayro-jbig2, AVIF
+//! images by rav1d, and HEIC and HEIF images by libheif, which decodes all three for Java; these,
+//! and Photoshop and PCX images, are decoded in grey.
 
 use std::io::Cursor;
 
@@ -11,9 +14,10 @@ use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use tiff::ColorType;
 
+pub(crate) use super::bitmap::luma;
 use super::bitmap::Bitmap;
-use super::raster;
 use super::recognize::MAX_PIXELS;
+use super::{avif, heif, jbig2, raster};
 
 /// The formats this module decodes, by the media types Tika's detection gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +27,10 @@ pub(crate) enum Format {
     Tiff,
     Photoshop,
     Pcx,
+    Jpeg2000,
+    Jbig2,
+    Avif,
+    Heif,
 }
 
 impl Format {
@@ -43,17 +51,29 @@ impl Format {
             "image/tiff" => Self::Tiff,
             "image/vnd.adobe.photoshop" => Self::Photoshop,
             "image/vnd.zbrush.pcx" => Self::Pcx,
+            "image/jp2" | "image/jpx" => Self::Jpeg2000,
+            "image/x-jbig2" => Self::Jbig2,
+            "image/avif" => Self::Avif,
+            "image/heic" | "image/heic-sequence" | "image/heif" | "image/heif-sequence" => {
+                Self::Heif
+            }
             _ => return None,
         })
     }
 
     /// Whether `PreparingOcrParser` hands tesseract the file of an image of the format, which
     /// tesseract decodes itself, rather than the pixels Java decoded: for every format but
-    /// those tesseract does not decode, Photoshop, PCX and TGA.
+    /// those Java decodes for tesseract, Photoshop, PCX, TGA and JBIG2, and HEIC, HEIF and
+    /// AVIF, which libheif converts first.
     fn read_by_tesseract(self) -> bool {
         !matches!(
             self,
-            Self::Photoshop | Self::Pcx | Self::Image(ImageFormat::Tga)
+            Self::Photoshop
+                | Self::Pcx
+                | Self::Image(ImageFormat::Tga)
+                | Self::Jbig2
+                | Self::Avif
+                | Self::Heif
         )
     }
 }
@@ -99,14 +119,35 @@ pub(crate) enum Decoded<'a> {
     Pages(TiffPages<'a>),
 }
 
-/// Decodes an image file of a format, or tells why it cannot.
-pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String> {
+/// Why an image file was not decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Undecoded {
+    /// No decoder of its format is bundled or installed, as the static executable links them.
+    #[cfg(not(feature = "static-image"))]
+    NoDecoder,
+    /// It could not be decoded, for this reason.
+    Failed(String),
+}
+
+impl From<String> for Undecoded {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+/// Decodes an image file of a format, any program decoding it given `timeout`, or tells why it
+/// cannot.
+pub(crate) fn decode(
+    input: &[u8],
+    format: Format,
+    timeout: Option<std::time::Duration>,
+) -> Result<Decoded<'_>, Undecoded> {
     let single = |bitmap| Decoded::Single {
         bitmap,
         file: format.read_by_tesseract().then_some(input),
     };
     match format {
-        Format::Jpeg => jpeg(input).map(single),
+        Format::Jpeg => Ok(single(jpeg(input)?)),
         Format::Image(image_format) => {
             let image = image::load_from_memory_with_format(input, image_format)
                 .map_err(|e| format!("cannot decode the image: {e}"))?;
@@ -129,13 +170,46 @@ pub(crate) fn decode(input: &[u8], format: Format) -> Result<Decoded<'_>, String
             }
             Ok(single(tiff_page(&mut decoder)?))
         }
-        Format::Photoshop => raster::photoshop(input).map(|gray| single(Bitmap::Gray(gray))),
-        Format::Pcx => raster::pcx(input).map(|gray| single(Bitmap::Gray(gray))),
+        Format::Photoshop => Ok(single(Bitmap::Gray(raster::photoshop(input)?))),
+        Format::Pcx => Ok(single(Bitmap::Gray(raster::pcx(input)?))),
+        Format::Jpeg2000 => Ok(single(Bitmap::Gray(jpeg2000(input)?))),
+        Format::Jbig2 => Ok(single(Bitmap::Gray(jbig2::decode(input)?))),
+        Format::Avif => Ok(single(Bitmap::Gray(avif::decode(input)?))),
+        Format::Heif => heif::decode(input, timeout).map(|gray| single(Bitmap::Gray(gray))),
+    }
+}
+
+/// Fails for an image of more than [`MAX_PIXELS`] pixels, which is not decoded.
+pub(crate) fn within_limits(width: u32, height: u32) -> Result<(), String> {
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!("the image has {width}x{height} pixels"));
+    }
+    Ok(())
+}
+
+/// A JPEG 2000 image or codestream, its colours converted as its colour space says.
+fn jpeg2000(input: &[u8]) -> Result<GrayImage, String> {
+    let image = hayro_jpeg2000::Image::new(input, &hayro_jpeg2000::DecodeSettings::default())
+        .map_err(|e| format!("cannot read the JPEG 2000 image: {e}"))?;
+    within_limits(image.width(), image.height())?;
+    let image = DynamicImage::from_decoder(image)
+        .map_err(|e| format!("cannot decode the JPEG 2000 image: {e}"))?;
+    Ok(gray(image))
+}
+
+/// An image in grey, its transparency ignored.
+pub(crate) fn gray(image: DynamicImage) -> GrayImage {
+    match bitmap(image) {
+        Bitmap::Gray(gray) => gray,
+        Bitmap::Rgb(rgb) => Bitmap::Rgb(rgb).gray().into_owned(),
+        Bitmap::Rgba(rgba) => Bitmap::Rgb(DynamicImage::ImageRgba8(rgba).to_rgb8())
+            .gray()
+            .into_owned(),
     }
 }
 
 /// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds.
-fn jpeg(input: &[u8]) -> Page {
+pub(crate) fn jpeg(input: &[u8]) -> Page {
     let decoded = super::jpeg::decode(input)?;
     let (width, height) = (decoded.width as u32, decoded.height as u32);
     let short = || "the JPEG holds fewer samples than its size needs".to_owned();
@@ -176,9 +250,7 @@ fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>) -> Page {
     let (width, height) = decoder
         .dimensions()
         .map_err(|e| format!("cannot read the page's size: {e}"))?;
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(format!("the page has {width}x{height} pixels"));
-    }
+    within_limits(width, height)?;
     let color = decoder
         .colortype()
         .map_err(|e| format!("cannot read the page's colours: {e}"))?;
@@ -347,7 +419,7 @@ mod tests {
             "bmp" => "image/bmp",
             other => panic!("{path}: no image of extension {other} is referenced"),
         };
-        match decode(bytes, Format::of(media_type).unwrap()) {
+        match decode(bytes, Format::of(media_type).unwrap(), None) {
             Ok(Decoded::Single { bitmap, .. }) => {
                 let gray = bitmap.gray();
                 let digest: String = Sha256::digest(gray.as_raw())
@@ -392,6 +464,41 @@ mod tests {
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn decodes_tikas_test_images_as_imageio_does() {
         decodes_as_imageio_does(&[("tika", crate::formats::parity::conformance_corpus())]);
+    }
+
+    /// The corpus made its other scans of the PNG's, in grey: the Photoshop file as it is, the
+    /// PCX image reduced to a palette, and the rest compressed with loss. Each decodes to the
+    /// PNG's size with under one pixel in a hundred more than its format's levels off.
+    #[test]
+    fn decodes_the_corpus_scans_as_the_png_holds_them() {
+        let png = image::open("../quality/corpus/prose-scan-300dpi.png")
+            .unwrap()
+            .to_luma8();
+        for (file, format, levels) in [
+            ("prose-scan.psd", Format::Photoshop, 2),
+            ("prose-scan.pcx", Format::Pcx, 2),
+            ("prose-scan.jp2", Format::Jpeg2000, 16),
+            ("prose-scan.avif", Format::Avif, 2),
+            ("prose-scan.heic", Format::Heif, 2),
+        ] {
+            let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
+            let Decoded::Single { bitmap, .. } =
+                decode(&input, format, None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
+            else {
+                panic!("{file} is one image");
+            };
+            let decoded = bitmap.gray();
+            assert_eq!(decoded.dimensions(), png.dimensions(), "{file}");
+            let differing = decoded
+                .pixels()
+                .zip(png.pixels())
+                .filter(|(a, b)| a.0[0].abs_diff(b.0[0]) > levels)
+                .count();
+            assert!(
+                differing * 100 < (png.width() * png.height()) as usize,
+                "{file}: {differing} pixels differ"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! Header fields as mime4j 0.8.15 reads them: `RawFieldParser`'s tokens, values, comments and
-//! quoted strings over a field's bytes, and `RawField`, a field's name and unfolded body.
+//! Header fields as mime4j 0.8.15 reads them: `RawFieldParser`'s values, comments and quoted
+//! strings over a field's bytes, and `RawField`, a field's name and unfolded body.
 
 use super::codec::decode_encoded_words;
 use super::Unported;
@@ -51,10 +51,92 @@ impl Cursor {
     }
 }
 
-/// `RawFieldParser.parseToken`: the text up to a delimiter, runs of white space between words
-/// collapsed to one space and comments left out.
-pub(super) fn parse_token(buf: &[u8], cursor: &mut Cursor, delimiters: Delimiters) -> String {
-    let mut dst = String::new();
+/// A word of a value: an atom, or a quoted string's content, and whether white space comes
+/// before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Word {
+    text: String,
+    quoted: bool,
+    spaced: bool,
+}
+
+/// The words of a value as `RawFieldParser.parseValue` reads them, up to a delimiter: atoms and
+/// quoted strings, comments left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Words(Vec<Word>);
+
+impl Words {
+    /// `RawFieldParser.parseValue`: the words joined, a space where white space separates two,
+    /// and a quoted string that starts with an encoded word decoded.
+    pub(super) fn value(&self) -> Result<String, Unported> {
+        self.join(|word| decode_quoted(&word.text))
+    }
+
+    /// The words as a phrase, a display name, shows them: encoded words decoded once, in the
+    /// atoms and, leniently, in a quoted string that starts with one. mime4j decodes the
+    /// quoted string as it reads it and the phrase again after, and Tika the display name a
+    /// third time, so text that decodes to an encoded word is decoded again (#77).
+    pub(super) fn phrase(&self) -> Result<String, Unported> {
+        let mut out = String::new();
+        let mut atoms = String::new();
+        let mut atoms_spaced = false;
+        let flush = |atoms: &mut String, spaced: bool, out: &mut String| -> Result<(), Unported> {
+            if atoms.is_empty() {
+                return Ok(());
+            }
+            if spaced && !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&decode_encoded_words(atoms)?);
+            atoms.clear();
+            Ok(())
+        };
+        for word in &self.0 {
+            if word.quoted {
+                flush(&mut atoms, atoms_spaced, &mut out)?;
+                if word.spaced && !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(&decode_quoted(&word.text)?);
+            } else if atoms.is_empty() {
+                atoms.push_str(&word.text);
+                atoms_spaced = word.spaced;
+            } else {
+                if word.spaced {
+                    atoms.push(' ');
+                }
+                atoms.push_str(&word.text);
+            }
+        }
+        flush(&mut atoms, atoms_spaced, &mut out)?;
+        Ok(out)
+    }
+
+    fn join(&self, text: impl Fn(&Word) -> Result<String, Unported>) -> Result<String, Unported> {
+        let mut out = String::new();
+        for word in &self.0 {
+            if word.spaced && !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&text(word)?);
+        }
+        Ok(out)
+    }
+}
+
+/// A quoted string's content, its encoded words decoded when it starts with one, as mime4j
+/// decodes it leniently.
+fn decode_quoted(text: &str) -> Result<String, Unported> {
+    if text.starts_with("=?") {
+        decode_encoded_words(text)
+    } else {
+        Ok(text.to_owned())
+    }
+}
+
+/// The words of a value up to a delimiter, as `RawFieldParser.parseValue` reads them.
+pub(super) fn parse_words(buf: &[u8], cursor: &mut Cursor, delimiters: Delimiters) -> Words {
+    let mut words = Vec::new();
     let mut whitespace = false;
     while !cursor.at_end() {
         let current = buf[cursor.pos];
@@ -66,48 +148,31 @@ pub(super) fn parse_token(buf: &[u8], cursor: &mut Cursor, delimiters: Delimiter
         } else if current == b'(' {
             skip_comment(buf, cursor);
         } else {
-            if !dst.is_empty() && whitespace {
-                dst.push(' ');
+            let quoted = current == b'"';
+            let mut text = String::new();
+            if quoted {
+                copy_quoted_content(buf, cursor, &mut text);
+            } else {
+                copy_content(buf, cursor, delimiters, &mut text, true);
             }
-            copy_content(buf, cursor, delimiters, &mut dst, false);
+            words.push(Word {
+                text,
+                quoted,
+                spaced: whitespace,
+            });
             whitespace = false;
         }
     }
-    dst
+    Words(words)
 }
 
-/// `RawFieldParser.parseValue`: as [`parse_token`], with quoted strings read as their content.
+/// `RawFieldParser.parseValue`: the words up to a delimiter joined, as [`Words::value`].
 pub(super) fn parse_value(
     buf: &[u8],
     cursor: &mut Cursor,
     delimiters: Delimiters,
 ) -> Result<String, Unported> {
-    let mut dst = String::new();
-    let mut whitespace = false;
-    while !cursor.at_end() {
-        let current = buf[cursor.pos];
-        if delimiters.contains(current) {
-            break;
-        } else if is_whitespace(current) {
-            skip_whitespace(buf, cursor);
-            whitespace = true;
-        } else if current == b'(' {
-            skip_comment(buf, cursor);
-        } else if current == b'"' {
-            if !dst.is_empty() && whitespace {
-                dst.push(' ');
-            }
-            copy_quoted_content(buf, cursor, &mut dst)?;
-            whitespace = false;
-        } else {
-            if !dst.is_empty() && whitespace {
-                dst.push(' ');
-            }
-            copy_content(buf, cursor, delimiters, &mut dst, true);
-            whitespace = false;
-        }
-    }
-    Ok(dst)
+    parse_words(buf, cursor, delimiters).value()
 }
 
 pub(super) fn skip_whitespace(buf: &[u8], cursor: &mut Cursor) {
@@ -186,15 +251,10 @@ pub(super) fn copy_content(
 }
 
 /// `RawFieldParser.copyQuotedContent`: a quoted string's content, escapes resolved but for a
-/// backslash before a character other than a quote or a backslash, line breaks left out, and
-/// encoded words decoded when the content starts with one.
-pub(super) fn copy_quoted_content(
-    buf: &[u8],
-    cursor: &mut Cursor,
-    dst: &mut String,
-) -> Result<(), Unported> {
+/// backslash before a character other than a quote or a backslash, and line breaks left out.
+pub(super) fn copy_quoted_content(buf: &[u8], cursor: &mut Cursor, dst: &mut String) {
     if cursor.at_end() || buf[cursor.pos] != b'"' {
-        return Ok(());
+        return;
     }
     let mut pos = cursor.pos + 1;
     let mut raw = Vec::new();
@@ -216,14 +276,8 @@ pub(super) fn copy_quoted_content(
             raw.push(current);
         }
     }
-    let decoded = java::utf8(&raw);
-    if decoded.starts_with("=?") {
-        dst.push_str(&decode_encoded_words(&decoded)?);
-    } else {
-        dst.push_str(&decoded);
-    }
+    dst.push_str(&java::utf8(&raw));
     cursor.pos = pos;
-    Ok(())
 }
 
 /// The characters mime4j allows in a field name: printable ASCII but the colon.
@@ -248,7 +302,11 @@ pub(super) enum InvalidField {
 }
 
 impl RawField {
-    /// `DefaultFieldBuilder.build` of the bytes of a field, its folded lines included.
+    /// A field of its bytes, its folded lines included: its name the bytes up to the first
+    /// colon, less the spaces and tabs RFC 5322's obsolete syntax allows before the colon, a
+    /// field whose name is empty or holds anything but printable ASCII invalid. mime4j's
+    /// `DefaultFieldBuilder` reads the name as a token, which leaves comments out, and trims it
+    /// of control characters, so `\x01To` names `To` (#78).
     pub(super) fn parse(mut raw: Vec<u8>) -> Result<RawField, InvalidField> {
         if raw.last() == Some(&b'\n') {
             raw.pop();
@@ -256,18 +314,18 @@ impl RawField {
         if raw.last() == Some(&b'\r') {
             raw.pop();
         }
-        let mut cursor = Cursor::new(0, raw.len());
-        let name = parse_token(&raw, &mut cursor, Delimiters::of(b":"));
-        if cursor.at_end() {
+        let Some(colon) = raw.iter().position(|&byte| byte == b':') else {
             return Err(InvalidField::NoColon);
-        }
-        let name = crate::java::trim(&name).to_owned();
-        if !name.chars().all(is_field_char) {
+        };
+        let name = java::utf8(&raw[..colon]);
+        let name = name.trim_end_matches([' ', '\t']);
+        if name.is_empty() || !name.chars().all(is_field_char) {
             return Err(InvalidField::IllegalName);
         }
+        let name = name.to_owned();
         Ok(RawField {
             raw,
-            delimiter: cursor.pos,
+            delimiter: colon,
             name,
         })
     }
@@ -309,8 +367,16 @@ mod tests {
         let short = RawField::parse(b"X-A: ".to_vec()).unwrap();
         assert_eq!(short.body(), " ");
         let commented = RawField::parse(b"X(c)Y : v".to_vec()).unwrap();
-        assert_eq!(commented.name(), "XY");
+        assert_eq!(commented.name(), "X(c)Y");
         assert_eq!(commented.body(), "v");
+        assert_eq!(
+            RawField::parse(b"X (c) : v".to_vec()),
+            Err(InvalidField::IllegalName)
+        );
+        assert_eq!(
+            RawField::parse(b": v".to_vec()),
+            Err(InvalidField::IllegalName)
+        );
         assert_eq!(
             RawField::parse(b"From someone Mon".to_vec()),
             Err(InvalidField::NoColon)
@@ -319,7 +385,14 @@ mod tests {
             RawField::parse(b"From someone: x".to_vec()),
             Err(InvalidField::IllegalName)
         );
-        assert_eq!(RawField::parse(b"\x01To: x".to_vec()).unwrap().name(), "To");
+        assert_eq!(
+            RawField::parse(b"\x01To: x".to_vec()),
+            Err(InvalidField::IllegalName)
+        );
+        assert_eq!(
+            RawField::parse(b" To: x".to_vec()),
+            Err(InvalidField::IllegalName)
+        );
     }
 
     #[test]
@@ -329,5 +402,22 @@ mod tests {
         let value = parse_value(buf, &mut cursor, Delimiters::of(b";")).unwrap();
         assert_eq!(value, "a q\"x\\y b");
         assert_eq!(buf[cursor.pos], b';');
+    }
+
+    #[test]
+    fn decodes_a_phrase_once() {
+        let phrase = |text: &str| {
+            let mut cursor = Cursor::new(0, text.len());
+            parse_words(text.as_bytes(), &mut cursor, Delimiters::of(b"<"))
+                .phrase()
+                .unwrap()
+        };
+        assert_eq!(phrase("=?utf-8?q?Ren=C3=A9?= =?utf-8?q?_D?="), "René D");
+        assert_eq!(phrase("a \"=?utf-8?q?b?=\" c"), "a b c");
+        assert_eq!(
+            phrase("\"=?utf-8?q?=3D=3Fus-ascii=3Fq=3Fx=3F=3D?=\""),
+            "=?us-ascii?q?x?="
+        );
+        assert_eq!(phrase("\"a =?utf-8?q?b?=\""), "a =?utf-8?q?b?=");
     }
 }

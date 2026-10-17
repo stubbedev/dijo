@@ -27,7 +27,6 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
-use crate::java::LINE_SEPARATOR;
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{Ole2, Unreadable};
 
@@ -149,7 +148,7 @@ fn record_write_limit(xhtml: &mut Xhtml) {
             "org.apache.tika.exception.WriteLimitReachedException: Your document contained more \
              than {limit} characters, and so your requested limit has been reached. To receive \
              the full text of the document, increase your limit. (Text up to the limit is \
-             however available).{LINE_SEPARATOR}"
+             however available).\n"
         ),
     );
 }

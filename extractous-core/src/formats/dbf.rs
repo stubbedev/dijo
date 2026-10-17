@@ -1,9 +1,7 @@
 //! dBase tables, as Tika's `DBFParser` reads them: the header's version as the type and its date
-//! as the modification date, the columns' names as a table head, every record as a row, deleted
-//! ones too, and the text decoded in the charset detected from the first ten records' character
+//! as the modification date, the columns' names as a table head, every record but a deleted one
+//! as a row, and the text decoded in the charset detected from the first ten records' character
 //! data.
-
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -11,7 +9,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java;
-use crate::java::time::{civil, format_instant, CalendarFields, TimeZone};
+use crate::java::time::{civil, format_instant};
 use crate::text::charset::{self, Charset};
 
 /// `ROWS_TO_BUFFER_FOR_CHARSET_DETECTION`.
@@ -24,6 +22,8 @@ const MIN_BYTES_FOR_DETECTION: usize = 20;
 const END_OF_HEADER: u8 = 13;
 /// `MILLIS_PER_DAY`.
 const SECONDS_PER_DAY: i64 = 86_400;
+/// The mark that begins a deleted record.
+const DELETED: u8 = b'*';
 
 /// `DBFReader.Version`: the table's format and type, by its first byte.
 fn version(first: u8) -> Option<(&'static str, &'static str)> {
@@ -83,7 +83,7 @@ struct Column {
 #[derive(Debug)]
 struct Header {
     content_type: String,
-    modified: i64,
+    modified: Option<i64>,
     columns: Vec<Column>,
 }
 
@@ -93,6 +93,8 @@ struct Header {
 struct Table<'a> {
     header: Header,
     rows: Vec<Vec<&'a [u8]>>,
+    /// Whether each record, by its mark, is deleted; a mark may follow the last row.
+    deleted: Vec<bool>,
     /// The exception reading the records ends with, and how many of them were read before it.
     thrown: Option<(usize, String)>,
 }
@@ -120,15 +122,7 @@ impl Parser for DbfParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| Declined::Fails(Error::ParseError(error.to_string())))?;
-        let year = civil::civil_from_days(
-            i64::try_from(now.as_secs()).unwrap_or(i64::MAX) / SECONDS_PER_DAY,
-        )
-        .0;
-        let table =
-            table(input, year).map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
+        let table = table(input).map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
         if table
             .header
             .columns
@@ -183,8 +177,30 @@ impl<'a> Stream<'a> {
     }
 }
 
+/// The header's date at midnight UTC, none for a month or day out of range. dBase counts the
+/// year from 1900, and FoxBASE and others write its last two digits, so a year byte from 80 on
+/// counts from 1900 (1980, the year dBase came out, to 2155) and one below from 2000. Tika takes
+/// a byte that would put the date after the current year as counted from 1900 and any other
+/// from 2000, so the output changes over time, and rolls fields out of range over (#118).
+fn modified(date: [Option<u8>; 3]) -> Option<i64> {
+    let [Some(year), Some(month), Some(day)] = date.map(|part| part.map(i64::from)) else {
+        return None;
+    };
+    let year = if year >= 80 { 1900 + year } else { 2000 + year };
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if civil::is_leap_year(year) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    (1..=days_in_month)
+        .contains(&day)
+        .then(|| civil::days_from_civil(year, month, day) * SECONDS_PER_DAY * 1000)
+}
+
 /// `DBFFileHeader.parse`.
-fn header(stream: &mut Stream<'_>, current_year: i64) -> Result<Header, String> {
+fn header(stream: &mut Stream<'_>) -> Result<Header, String> {
     let first = stream.read();
     let (format, kind) = first.and_then(version).ok_or_else(|| {
         format!(
@@ -197,22 +213,7 @@ fn header(stream: &mut Stream<'_>, current_year: i64) -> Result<Header, String> 
     } else {
         format!("application/x-dbf; format={format}; type={kind}")
     };
-    let date: [i32; 3] = [(); 3].map(|()| stream.read().map_or(-1, i32::from));
-    let year = if i64::from(date[0]) + 2000 > current_year {
-        date[0] + 1900
-    } else {
-        date[0] + 2000
-    };
-    let modified = CalendarFields {
-        year,
-        month: date[1] - 1,
-        day: date[2],
-        hour: 0,
-        minute: 0,
-        second: 0,
-        millisecond: 0,
-    }
-    .epoch_millis(&TimeZone::fixed(0));
+    let modified = modified([(); 3].map(|()| stream.read()));
     stream.number::<4>()?;
     let header_length = i16::from_le_bytes(stream.number()?);
     let record_length = i16::from_le_bytes(stream.number()?);
@@ -255,16 +256,17 @@ fn header(stream: &mut Stream<'_>, current_year: i64) -> Result<Header, String> 
 }
 
 /// `DBFReader.open` and `next` until there are no more records.
-fn table(input: &[u8], current_year: i64) -> Result<Table<'_>, String> {
+fn table(input: &[u8]) -> Result<Table<'_>, String> {
     let mut stream = Stream {
         bytes: input,
         at: 0,
     };
-    let header = header(&mut stream, current_year)?;
+    let header = header(&mut stream)?;
     let mut rows = Vec::new();
+    let mut deleted = Vec::new();
     let thrown = loop {
         match stream.read() {
-            Some(b' ' | b'*') => {}
+            Some(mark @ (b' ' | DELETED)) => deleted.push(mark == DELETED),
             None | Some(26) => break None,
             Some(other) => {
                 break Some((
@@ -286,6 +288,7 @@ fn table(input: &[u8], current_year: i64) -> Result<Table<'_>, String> {
     Ok(Table {
         header,
         rows,
+        deleted,
         thrown,
     })
 }
@@ -340,7 +343,9 @@ fn decode(charset: Charset, bytes: &[u8]) -> Result<String, Failure> {
 fn write(table: &Table<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let metadata = xhtml.metadata_mut();
     metadata.set("Content-Type", table.header.content_type.as_str());
-    metadata.set("dcterms:modified", format_instant(table.header.modified));
+    if let Some(modified) = table.header.modified {
+        metadata.set("dcterms:modified", format_instant(modified));
+    }
     if let Some((read, thrown)) = &table.thrown {
         if *read <= ROWS_FOR_DETECTION {
             return Err(Failure::Malformed(thrown.clone()));
@@ -359,7 +364,13 @@ fn write(table: &Table<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     }
     xhtml.end_element("thead")?;
     xhtml.start_element("tbody")?;
-    for row in &table.rows {
+    // Tika writes deleted records as rows too (#118).
+    for (row, _) in table
+        .rows
+        .iter()
+        .zip(&table.deleted)
+        .filter(|(_, &deleted)| !deleted)
+    {
         xhtml.start_element("tr")?;
         for (cell, column) in row.iter().zip(&table.header.columns) {
             let text = match column.kind {
@@ -443,10 +454,11 @@ mod tests {
     #[test]
     fn extracts_dbase_tables_as_tikas_path_does() {
         let scratch = Scratch::new("dbf");
+        // Without a deleted record, which Tika writes as a row (#118).
         let mut records = vec![
             record(b"S\xf8ren S\xf8rensen", b"1250.50", b"20240309"),
             (
-                b'*',
+                b' ',
                 vec![b"Slettet \xc6bleh\xf8j", b"0", b"2024AB09", b"F"],
             ),
             record(b"\xc5se \xd8stergaard", b"-3.25", b"1999"),
@@ -490,6 +502,41 @@ mod tests {
             DbfParser.tika_name(),
         );
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn leaves_out_deleted_records_and_dates_from_the_current_year() {
+        // Tika writes deleted records, and counts a header's year from 2000 unless that puts
+        // it after the current year, so 79 is 1979 until 2079 (#118).
+        let records = [
+            record(b"Bevaret", b"1", b"20240309"),
+            (b'*', vec![b"Slettet", b"2", b"20240309", b"F"]),
+        ];
+        let mut file = table(0x03, &COLUMNS, &records);
+        file[1] = 79;
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&file)
+            .unwrap();
+        assert!(xml.contains("Bevaret"), "{xml}");
+        assert!(!xml.contains("Slettet"), "{xml}");
+        assert_eq!(metadata["dcterms:modified"], ["2079-03-09T00:00:00Z"]);
+        assert_eq!(
+            modified([Some(80), Some(1), Some(2)]).map(format_instant),
+            Some("1980-01-02T00:00:00Z".to_owned())
+        );
+        assert_eq!(
+            modified([Some(16), Some(5), Some(24)]),
+            modified([Some(116), Some(5), Some(24)])
+        );
+        assert_eq!(modified([Some(126), Some(2), Some(29)]), None);
+        assert_eq!(modified([Some(124), Some(13), Some(1)]), None);
+        assert_eq!(modified([Some(0), Some(0), Some(0)]), None);
+        assert_eq!(modified([Some(124), Some(2), None]), None);
+        assert_eq!(
+            modified([Some(124), Some(2), Some(29)]).map(format_instant),
+            Some("2024-02-29T00:00:00Z".to_owned())
+        );
     }
 
     #[test]

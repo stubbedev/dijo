@@ -8,11 +8,8 @@ use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Rc4Keys};
 use crate::formats::{Declined, Unported};
 
-/// `BLIB_STORE_ENTRY_PARTS`: the fields of a blip store entry, each of which POI decrypts from
-/// the entry's start.
+/// `BLIB_STORE_ENTRY_PARTS`: the fields of a blip store entry, each encrypted on its own.
 const STORE_ENTRY_PARTS: [usize; 11] = [1, 1, 16, 2, 4, 4, 4, 1, 1, 1, 1];
-/// The length of a blip store entry's fields.
-const STORE_ENTRY: usize = 36;
 /// The blip instances whose pictures start with two checksums.
 const TWO_CHECKSUM_INSTANCES: [u16; 8] = [0x217, 0x3D5, 0x46B, 0x543, 0x6E1, 0x6E3, 0x6E5, 0x7A9];
 /// The metafile blip types, whose checksums a 34-byte header follows.
@@ -88,8 +85,9 @@ impl Encryption {
     }
 
     /// `decryptPicture`: the picture record at `offset` of the "Pictures" stream decrypted in
-    /// place, each of its parts from the start of block 0's key, as POI does, a blip store
-    /// entry's fields each from the entry's start.
+    /// place, each of its parts, a blip store entry's fields each, from the start of block 0's
+    /// key. POI decrypts each field of the entry at the entry's start, so that only some of its
+    /// bytes come out right, and fails on a part of no bytes (#119).
     pub(super) fn decrypt_picture(&self, stream: &mut [u8], offset: usize) -> Result<(), Unported> {
         self.decrypt_part(stream, offset, 8)?;
         let mut instance = ushort(stream, offset)? >> 4;
@@ -100,8 +98,8 @@ impl Encryption {
         if kind == BSE {
             for part in STORE_ENTRY_PARTS {
                 self.decrypt_part(stream, at, part as i64)?;
+                at += part;
             }
-            at += STORE_ENTRY;
             let name = usize::from(ushort(stream, at - 3)?);
             if name > 0 {
                 self.decrypt_part(stream, at, name as i64)?;
@@ -135,14 +133,13 @@ impl Encryption {
     }
 
     /// `decryptPicBytes`: `length` bytes at `at` decrypted with block 0's key from its start,
-    /// failing where POI's stream reads none or runs out.
+    /// failing where they run past the stream.
     fn decrypt_part(&self, stream: &mut [u8], at: usize, length: i64) -> Result<(), Unported> {
         let range = usize::try_from(length)
             .ok()
-            .filter(|&length| length > 0)
             .map(|length| at..at + length)
             .filter(|range| range.end <= stream.len())
-            .ok_or_else(|| unported("a picture's part is empty or runs past the stream"))?;
+            .ok_or_else(|| unported("a picture's part runs past the stream"))?;
         self.key.block(0).decrypt(&mut stream[range]);
         Ok(())
     }
@@ -222,30 +219,32 @@ mod tests {
         assert_eq!(stream, plain);
     }
 
-    /// POI decrypts each field of a blip store entry from the entry's start, so that of its
-    /// first 16 bytes those the fields cover an odd number of times are decrypted.
+    /// Each field of a blip store entry is decrypted where it is, from the key stream's start.
     #[test]
-    fn decrypts_a_blip_store_entry_as_poi_does() {
-        let mut entry = [3; STORE_ENTRY];
+    fn decrypts_each_field_of_a_blip_store_entry() {
+        let mut entry = [3; 36];
         entry[33] = 0;
         entry[34] = 0;
-        let mut plain = header(0x0002, BSE, STORE_ENTRY as i32);
+        let mut plain = header(0x0002, BSE, 36);
         plain.extend(entry);
-        let mut stream = xored(&plain, 0, &[(0, 8)]);
-        encryption().decrypt_picture(&mut stream, 0).unwrap();
-        let key_stream = xored(&[0; 16], 0, &[(0, 16)]);
-        let mut expected = plain;
-        for at in [0, 1].into_iter().chain(4..16) {
-            expected[8 + at] ^= key_stream[at];
+        let mut fields = vec![(0, 8)];
+        let mut at = 8;
+        for part in STORE_ENTRY_PARTS {
+            fields.push((at, part));
+            at += part;
         }
-        assert_eq!(stream, expected);
+        let mut stream = xored(&plain, 0, &fields);
+        encryption().decrypt_picture(&mut stream, 0).unwrap();
+        assert_eq!(stream, plain);
     }
 
     #[test]
-    fn fails_where_poi_decrypts_an_empty_part() {
-        let plain = header(0x6E00, 0xF01E, 17);
-        let mut stream = xored(&plain, 0, &[(0, 8)]);
-        stream.extend([0; 17]);
-        assert!(encryption().decrypt_picture(&mut stream, 0).is_err());
+    fn decrypts_a_picture_with_an_empty_part() {
+        let mut plain = header(0x6E00, 0xF01E, 17);
+        plain.extend([1; 16]);
+        plain.push(0xFF);
+        let mut stream = xored(&plain, 0, &[(0, 8), (8, 16), (24, 1)]);
+        encryption().decrypt_picture(&mut stream, 0).unwrap();
+        assert_eq!(stream, plain);
     }
 }

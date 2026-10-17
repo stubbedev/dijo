@@ -2,11 +2,16 @@
 //! of a compound document's directory into metadata, with the custom properties under
 //! `custom:`. A stream POI cannot read is passed over; one it fails on partway keeps what was
 //! set before the failure, as the getters POI throws from are called in Tika's order.
+//!
+//! Where Tika slips, this port does not (#106): the edit time is a duration in whole minutes, as
+//! Office Open XML's `TotalTime` is, and only where the document records one; unsigned 32-bit
+//! counts and custom numbers stay unsigned; and a value POI keeps as bytes is passed over
+//! rather than written as a number or as text.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::codepage;
-use super::property_set::{self, millis_to_filetime, Fault, PropertySet, Section, Value};
+use super::property_set::{self, Fault, PropertySet, Section, Value, FILETIME_EPOCH_MILLIS};
 use crate::formats::metadata::{TikaMetadata, USER_DEFINED_PREFIX};
 use crate::formats::Unported;
 use crate::java;
@@ -127,7 +132,7 @@ fn set_date(metadata: &mut TikaMetadata, name: &str, millis: Option<i64>) {
     }
 }
 
-fn set_positive(metadata: &mut TikaMetadata, name: &str, value: i32) {
+fn set_positive(metadata: &mut TikaMetadata, name: &str, value: i64) {
     if value > 0 {
         metadata.set(name, value.to_string());
     }
@@ -178,8 +183,9 @@ fn parse_summary_information(section: &Section, metadata: &mut TikaMetadata) -> 
         "meta:print-date",
         date(section, pid::LAST_PRINTED)?,
     );
-    let edit_time = date(section, pid::EDIT_TIME)?.map_or(0, millis_to_filetime);
-    metadata.set("extended-properties:TotalTime", edit_time.to_string());
+    if let Some(minutes) = edit_minutes(section)? {
+        metadata.set("extended-properties:TotalTime", minutes.to_string());
+    }
     set_positive(
         metadata,
         "extended-properties:DocSecurity",
@@ -226,21 +232,23 @@ fn parse_document_summary_information(
     Ok(())
 }
 
-/// `PropertySet.getPropertyStringValue`: text as it is, bytes by their length as a number or
-/// as text in code page 1252, and any other value as Java writes it.
+/// The edit time, a file time counting 100-nanosecond units from zero, in whole minutes, as
+/// Office Open XML's `TotalTime` gives it. Tika writes the file time itself, cut to whole
+/// milliseconds, and `0` where the document records none (#106).
+fn edit_minutes(section: &Section) -> Result<Option<i64>, Fault> {
+    Ok(date(section, pid::EDIT_TIME)?.map(|millis| (millis + FILETIME_EPOCH_MILLIS) / 60_000))
+}
+
+/// `PropertySet.getPropertyStringValue`: text as it is, and any other value as Java writes it.
+/// A value POI keeps as bytes, of a type it does not convert, is passed over; Tika writes it
+/// by its length as a number or as text in code page 1252 (#106).
 fn string(section: &Section, id: u32) -> Result<Option<String>, Fault> {
     let Some(value) = section.get(id) else {
         return Ok(None);
     };
     Ok(Some(match value {
         Value::String(text) => text.clone(),
-        Value::Bytes(bytes) => match bytes.as_slice() {
-            [] => String::new(),
-            [byte] => (*byte as i8).to_string(),
-            [a, b] => u16::from_le_bytes([*a, *b]).to_string(),
-            [a, b, c, d] => u32::from_le_bytes([*a, *b, *c, *d]).to_string(),
-            _ => codepage::decode(bytes, codepage::DEFAULT)?,
-        },
+        Value::Bytes(_) => return Ok(None),
         Value::Byte(byte) => byte.to_string(),
         Value::Integer(int) => int.to_string(),
         Value::Long(long) => long.to_string(),
@@ -266,12 +274,13 @@ fn date(section: &Section, id: u32) -> Result<Option<i64>, Fault> {
 }
 
 /// `Section.getPropertyIntValue`: zero where the property is missing, and a failure where it is
-/// no `Integer` or `Long`.
-fn int(section: &Section, id: u32) -> Result<i32, Fault> {
+/// no `Integer` or `Long`. An unsigned 32-bit count stays unsigned, where POI cuts it to an
+/// `int` (#106).
+fn int(section: &Section, id: u32) -> Result<i64, Fault> {
     match section.get(id) {
         None => Ok(0),
-        Some(Value::Integer(int)) => Ok(*int),
-        Some(Value::Long(long)) => Ok(*long as i32),
+        Some(Value::Integer(int)) => Ok(i64::from(*int)),
+        Some(Value::Long(long)) => Ok(*long),
         Some(_) => Err(Fault::Runtime),
     }
 }
@@ -356,7 +365,8 @@ impl CustomProperties<'_> {
                 Value::String(text) => text.clone(),
                 Value::Date(millis) => format_instant(*millis),
                 Value::Boolean(boolean) => boolean.to_string(),
-                Value::Long(long) => (*long as i32).to_string(),
+                // Tika cuts it to an `int` (#106).
+                Value::Long(long) => long.to_string(),
                 Value::Double(double) => java_double_to_string(*double),
                 Value::Integer(int) => int.to_string(),
                 _ => continue,
@@ -401,7 +411,7 @@ mod tests {
                 (4, lpstr("Ann;Bo;Ann")),
                 (5, lpstr("k1")),
                 (3, lpstr("Subject")),
-                (10, typed(64, &12_345_678i64.to_le_bytes())),
+                (10, typed(64, &1_210_000_000i64.to_le_bytes())),
                 (12, typed(64, &FILETIME_2020.to_le_bytes())),
                 (14, typed(3, &3i32.to_le_bytes())),
                 (15, typed(3, &0i32.to_le_bytes())),
@@ -417,10 +427,7 @@ mod tests {
             ["Microsoft Excel"]
         );
         assert_eq!(metadata.values("dcterms:created"), ["2020-01-01T00:00:00Z"]);
-        assert_eq!(
-            metadata.values("extended-properties:TotalTime"),
-            ["12340000"]
-        );
+        assert_eq!(metadata.values("extended-properties:TotalTime"), ["2"]);
         assert_eq!(metadata.values("meta:page-count"), ["3"]);
         assert_eq!(metadata.values("xmpTPg:NPages"), ["3"]);
         assert!(metadata.values("meta:word-count").is_empty());
@@ -442,13 +449,24 @@ mod tests {
     }
 
     #[test]
-    fn writes_bytes_and_numbers_as_poi_does() {
+    fn passes_over_bytes_and_writes_numbers() {
         let metadata = summary(&property_set(
             SI,
-            &[(2, typed(10, &7u32.to_le_bytes())), (6, typed(16, &[0xFF]))],
+            &[
+                (2, typed(10, &7u32.to_le_bytes())),
+                (6, typed(16, &[0xFF])),
+                (15, typed(19, &u32::MAX.to_le_bytes())),
+            ],
         ));
-        assert_eq!(metadata.values("dc:title"), ["7"]);
+        assert!(metadata.values("dc:title").is_empty());
         assert_eq!(metadata.values("w:Comments"), ["-1"]);
+        assert_eq!(metadata.values("meta:word-count"), ["4294967295"]);
+    }
+
+    #[test]
+    fn writes_no_edit_time_where_there_is_none() {
+        let metadata = summary(&property_set(SI, &[(2, lpstr("Untimed"))]));
+        assert!(metadata.values("extended-properties:TotalTime").is_empty());
     }
 
     #[test]
@@ -477,7 +495,7 @@ mod tests {
         );
         assert_eq!(metadata.values("dc:language"), ["da-DK"]);
         assert_eq!(metadata.values("custom:Due"), ["2020-01-01T00:00:00Z"]);
-        assert_eq!(metadata.values("custom:Big"), ["-1"]);
+        assert_eq!(metadata.values("custom:Big"), ["4294967295"]);
         assert_eq!(metadata.values("custom:Rate"), ["0.5"]);
         assert_eq!(metadata.values("custom:Language"), ["da-DK"]);
     }
@@ -534,6 +552,35 @@ mod tests {
             .collect())
     }
 
+    const TOTAL_TIME: &str = "extended-properties:TotalTime\t";
+
+    /// Tika's lines with the edit time as this port writes it, where the port's agrees (#106):
+    /// the raw file time in whole minutes, and no line for Tika's `0` where the port has none.
+    fn with_edit_minutes(expected: &[String], actual: &[String]) -> Vec<String> {
+        let edit_time = |lines: &[String]| {
+            lines
+                .iter()
+                .find_map(|line| line.strip_prefix(TOTAL_TIME))
+                .map(str::to_owned)
+        };
+        let Some(raw) = edit_time(expected) else {
+            return expected.to_vec();
+        };
+        let file_time: i64 = raw.parse().unwrap();
+        let minutes = (file_time != 0).then(|| (file_time / 600_000_000).to_string());
+        if edit_time(actual) != minutes {
+            return expected.to_vec();
+        }
+        expected
+            .iter()
+            .filter_map(|line| match (line.strip_prefix(TOTAL_TIME), &minutes) {
+                (None, _) => Some(line.clone()),
+                (Some(_), Some(minutes)) => Some(format!("{TOTAL_TIME}{minutes}")),
+                (Some(_), None) => None,
+            })
+            .collect()
+    }
+
     /// Compares the documents under `root`, named `name` in the reference.
     fn assert_same_as_tika(name: &str, root: &std::path::Path) {
         let mut compared = 0;
@@ -545,7 +592,7 @@ mod tests {
             };
             let data = std::fs::read(root.join(path)).unwrap();
             match lines(&data) {
-                Ok(actual) if actual == expected => compared += 1,
+                Ok(actual) if actual == with_edit_minutes(&expected, &actual) => compared += 1,
                 Ok(actual) => {
                     different.push(format!("{key}\n  tika {expected:?}\n  port {actual:?}"))
                 }

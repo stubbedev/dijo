@@ -3,7 +3,6 @@
 //! first body content, indents table cells and list items with a tab, ends block elements with a
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
-use crate::errors::Error;
 use crate::formats::embedded::{
     self, EmbeddedRecord, Embedding, Event, ParseContext, Wrapping, PACKAGE_ENTRY,
 };
@@ -23,7 +22,7 @@ pub(crate) fn within_budget() -> Result<(), Stop> {
 /// The XHTML namespace, which every element a native parser writes is in.
 pub(crate) const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 
-const ENDLINE: [&str; 29] = [
+pub(crate) const ENDLINE: [&str; 29] = [
     "p",
     "h1",
     "h2",
@@ -56,7 +55,7 @@ const ENDLINE: [&str; 29] = [
 ];
 const HEAD: [&str; 5] = ["title", "link", "base", "meta", "script"];
 const AUTO: [&str; 2] = ["head", "frameset"];
-const INDENT: [&str; 6] = ["li", "dd", "dt", "td", "th", "frame"];
+pub(crate) const INDENT: [&str; 6] = ["li", "dd", "dt", "td", "th", "frame"];
 const REPLACEMENT: char = '\u{fffd}';
 
 /// Why the output stopped taking content before the parser finished.
@@ -148,7 +147,14 @@ impl ContentHandler for Embedded<'_, '_> {
         Ok(())
     }
 
+    /// Ends `name`, unless the embedded document has no element of that name open: a parser
+    /// stopped by the length limit inside its body ends its document, whose `body` end tag the
+    /// `BodyContentHandler` in front of this passes on while the body's elements are still open.
+    /// Tika's path writes that `</body>` into the embedding document (#113).
     fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        if !self.open.iter().any(|open| open == name) {
+            return Ok(());
+        }
         self.open.pop();
         self.outer.end_element(name)
     }
@@ -180,11 +186,6 @@ pub(crate) struct Xhtml<'h> {
     head: Head,
     ended: bool,
     embedding: Embedding<'h>,
-    /// What learns the metadata the head shows, once it is written.
-    on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
-    /// How many XHTML handlers the content passes through: more than one while a parser writes
-    /// that another parser hands its handler on to.
-    layers: usize,
 }
 
 impl<'h> Xhtml<'h> {
@@ -200,27 +201,12 @@ impl<'h> Xhtml<'h> {
         context: &'h ParseContext<'h>,
         body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
     ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
-        Self::write_reporting_head(handler, metadata, context, None, body)
-    }
-
-    /// Writes a document as [`Xhtml::write`] does, handing `on_head` the metadata the head shows
-    /// once it is written: what a reader of the output can know of the document before its
-    /// content.
-    pub(crate) fn write_reporting_head<E: From<Stop>>(
-        handler: &'h mut dyn ContentHandler,
-        metadata: TikaMetadata,
-        context: &'h ParseContext<'h>,
-        on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
-        body: impl FnOnce(&mut Xhtml) -> Result<(), E>,
-    ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
         let mut xhtml = Self {
             handler,
             metadata,
             head: Head::NotStarted,
             ended: false,
             embedding: Embedding::new(context),
-            on_head,
-            layers: 1,
         };
         let result = xhtml
             .start_document()
@@ -298,9 +284,7 @@ impl<'h> Xhtml<'h> {
             self.end_head(false)?;
         }
         if INDENT.contains(&name) {
-            for _ in 0..self.layers {
-                self.handler.ignorable_whitespace("\t")?;
-            }
+            self.handler.ignorable_whitespace("\t")?;
         }
         self.safe_start_element(name, attributes)
     }
@@ -318,9 +302,7 @@ impl<'h> Xhtml<'h> {
         }
         self.handler.end_element(name)?;
         if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
-            for _ in 0..self.layers {
-                self.newline()?;
-            }
+            self.newline()?;
         }
         Ok(())
     }
@@ -518,19 +500,6 @@ impl<'h> Xhtml<'h> {
         self.leave_embedded(ended, open, wrapping)
     }
 
-    /// Has `write` write content as a parser that this document's parser calls itself and
-    /// hands its handler on to through `EmbeddedContentHandler(BodyContentHandler(xhtml))`, the
-    /// other parser writing through an XHTML handler of its own: its body goes into this one as
-    /// it is written, its metadata is this document's, and the line breaks after block elements
-    /// and the tabs before indented ones, which each of the two handlers writes, are written
-    /// twice.
-    pub(crate) fn write_nested<T>(&mut self, write: impl FnOnce(&mut Xhtml) -> T) -> T {
-        self.layers += 1;
-        let written = write(self);
-        self.layers -= 1;
-        written
-    }
-
     /// [`Xhtml::parse_embedded`] of a document whose `TikaInputStream` the parser `opened` as
     /// given.
     pub(crate) fn parse_embedded_opened(
@@ -582,7 +551,7 @@ impl<'h> Xhtml<'h> {
     ) -> Ended {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, metadata, opened, configs) {
-            Some(route) => self.parse_natively(route, data, metadata, open),
+            Some(route) => self.parse_natively(route, metadata, open),
             None => self.parse_with_tika(data, metadata, open),
         }
     }
@@ -670,12 +639,12 @@ impl<'h> Xhtml<'h> {
 
     /// Parses an embedded document with the native `parser`, from the metadata `start` it
     /// starts from, its events passed on to this document as they come. Where the parser fails
-    /// as Tika's would throw, Tika records the exception its own parser throws, which only its
-    /// path can tell: that path parses the document again, for the exception alone.
+    /// on the document, as Tika's would throw, the failure is recorded in this document's
+    /// metadata, which goes on: what failed, on which document and why, where Tika records the
+    /// stack trace of the exception its own parser throws (#68).
     fn parse_natively(
         &mut self,
         route: EmbeddedRoute<'_>,
-        data: &[u8],
         metadata: &TikaMetadata,
         open: &mut Vec<String>,
     ) -> Ended {
@@ -695,27 +664,9 @@ impl<'h> Xhtml<'h> {
             Err(Failure::Malformed(reason)) => reason,
             Err(Failure::Extraction(error)) => error.to_string(),
         };
-        let tika = match self.parse_with_tika_quietly(data, metadata) {
-            Ok(tika) => tika,
-            Err(failure) => return Ended::Failed(failure),
-        };
-        match tika.outcome {
-            EmbeddedOutcome::Parsed {
-                recorded_exception: Some(exception),
-                ..
-            } => {
-                self.embedding.absorb_failures(&parsed, Some(exception));
-                Ended::Recorded
-            }
-            EmbeddedOutcome::Parsed {
-                recorded_exception: None,
-                ..
-            } => Ended::Failed(Failure::Extraction(Error::ParseError(format!(
-                "{} failed on an embedded document Tika's path parses: {reason}",
-                parser.name()
-            )))),
-            EmbeddedOutcome::Failed(error) => Ended::Failed(Failure::Embedded(error)),
-        }
+        let failure = embedded::describe_failure(parser.name(), metadata, &reason);
+        self.embedding.absorb_failures(&parsed, Some(failure));
+        Ended::Recorded
     }
 
     /// Writes an embedded document with the native parser named `parser`, which `write` runs,
@@ -803,15 +754,14 @@ impl<'h> Xhtml<'h> {
         let written = self.write_head(&metadata);
         self.metadata = metadata;
         written?;
-        if let Some(on_head) = &mut self.on_head {
-            on_head(&self.metadata);
-        }
         self.handler.end_element("head")?;
         self.newline()?;
         self.handler
             .start_element(if frameset { "frameset" } else { "body" }, &[])
     }
 
+    /// Writes the metadata as `meta` elements sorted by name, where Tika writes them in the
+    /// order of its metadata's `HashMap` (#64), then the title.
     fn write_head(&mut self, metadata: &TikaMetadata) -> Result<(), Stop> {
         for name in metadata.names().filter(|name| *name != "title") {
             for value in metadata.values(name) {
@@ -897,42 +847,6 @@ fn replace_invalid(text: &str) -> String {
         .collect()
 }
 
-/// Tika's `EmbeddedContentHandler` over a document's `XHTMLContentHandler`, as a parser hands it
-/// to another parser that writes a whole document of its own: the other document's start and
-/// end are dropped, and everything else is written through this document's handler, its
-/// `html`, `meta` and `body` elements into this document's body.
-pub(crate) struct Nested<'x, 'h>(pub(crate) &'x mut Xhtml<'h>);
-
-impl ContentHandler for Nested<'_, '_> {
-    fn start_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
-        self.0.start_prefix_mapping(prefix, uri)
-    }
-
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        self.0.start_element_with(name, attributes)
-    }
-
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.0.end_element(name)
-    }
-
-    fn characters(&mut self, text: &str) -> Result<(), Stop> {
-        self.0.characters_chunk(text)
-    }
-
-    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
-        self.0.ignorable_whitespace(text)
-    }
-
-    fn end_document(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -961,5 +875,75 @@ mod tests {
         });
         assert!(matches!(result, Err(Failure::Stopped(_))));
         assert!(out.0.ends_with("</p></div>"), "{}", out.0);
+    }
+
+    /// An embedded HTML document the length limit stops in its body ends its own document,
+    /// whose `</body>` stays out of the embedding document, which Tika's path writes (#113).
+    #[test]
+    fn keeps_the_body_end_of_an_embedded_document_cut_short_out() {
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "page.html");
+        let html = format!(
+            "<html><head><title>t</title></head><body><p>{}</p></body></html>",
+            "Words the write limit cuts short. ".repeat(8)
+        );
+        let mut out = StringOut::default();
+        let chain = Chain::String {
+            output: Output::Xml,
+            max_length: 100,
+        };
+        let result = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &ParseContext::new(&configs),
+                |xhtml| xhtml.parse_embedded(html.as_bytes(), &entry, Wrapping::PackageEntry),
+            )
+            .2
+        });
+        assert!(matches!(result, Err(Failure::Stopped(_))));
+        assert!(!out.0.contains("</body>"), "{}", out.0);
+        assert!(out.0.ends_with("</p></div>"), "{}", out.0);
+    }
+
+    /// A native parser's failure on an embedded document is recorded in the embedding
+    /// document's metadata on one line, naming the parser, the document and why, and the
+    /// embedding document goes on (#68).
+    #[test]
+    fn records_a_native_parsers_failure_on_an_embedded_document_concisely() {
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "broken.xml");
+        // XML whose elements do not nest, which the native parser fails on.
+        let xml = br#"<?xml version="1.0"?><a><b>text</a>"#;
+        let mut out = StringOut::default();
+        let chain = Chain::Stream {
+            output: Output::Text,
+            encoding: "UTF-8",
+        };
+        let (mut metadata, record, result) = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &ParseContext::new(&configs),
+                |xhtml| {
+                    xhtml.parse_embedded(xml, &entry, Wrapping::PackageEntry)?;
+                    xhtml.element("p", "After.").map_err(Failure::from)
+                },
+            )
+        });
+        result.unwrap();
+        record.finish(&mut metadata, "outer");
+        let [failure] = metadata.values("tk:exception:embedded-exception") else {
+            panic!("{metadata:?}");
+        };
+        assert!(
+            failure.starts_with("extractous::")
+                && failure.contains(" could not parse the embedded document \"broken.xml\": ")
+                && !failure.contains('\n'),
+            "{failure}"
+        );
+        assert!(out.0.contains("After."), "{}", out.0);
     }
 }

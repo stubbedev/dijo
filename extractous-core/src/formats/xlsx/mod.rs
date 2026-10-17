@@ -7,7 +7,8 @@
 //! package, and the thumbnail.
 //!
 //! Numbers are written as POI's `DataFormatter` writes them in the `en_US` locale, with Tika's
-//! general format and dates in Java's default time zone: see [`crate::formats::data_format`].
+//! general format, and dates in the workbook's date system as their cells hold them: see
+//! [`crate::formats::data_format`].
 //!
 //! A workbook embedding an OLE object, which Tika opens as a compound file, is left to Tika, as
 //! is a package POI would read in a degraded way or refuse, one with a part whose XML Tika
@@ -16,15 +17,15 @@
 
 mod cell;
 mod handlers;
-mod header_footer;
+pub(crate) mod header_footer;
 mod parts;
 mod sheet;
 
 use std::collections::{BTreeSet, HashMap};
 
 use handlers::{
-    Connections, DrawingShapes, ExternalLinks, Persons, PivotCache, SheetRefs, ThreadedComments,
-    WorkbookMetadata,
+    Connections, DrawingShapes, ExternalLinks, Persons, PivotCache, Protection, SheetRefs,
+    ThreadedComments, WorkbookMetadata,
 };
 use parts::{Comments, SharedStrings, Styles};
 use sheet::{SheetOutput, SheetReader, SheetSettings};
@@ -40,7 +41,6 @@ use crate::formats::ooxml::{
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
-use crate::java::time::TimeZone;
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =
@@ -58,8 +58,11 @@ const WORKBOOK_TYPES: [&str; 5] = [
 /// handler, in its order, with the class of the div they are written in.
 const TEXT_PART_KINDS: [(&str, &str); 2] =
     [(kind::DIAGRAM_DATA, "diagram-data"), (kind::CHART, "chart")];
-/// The content type of Power Query's data.
+/// The content type of the properties of Power Query's data.
 const POWER_QUERY_TYPE: &str = "application/vnd.ms-excel.customDataProperties+xml";
+/// The relationship to the properties of Power Query's data.
+const POWER_QUERY_RELATIONSHIP: &str =
+    "http://schemas.microsoft.com/office/2007/relationships/customDataProps";
 
 /// Relationship types of workbooks, as POI's `XSSFRelation` and Tika name them.
 mod sheet_kind {
@@ -127,20 +130,17 @@ impl Parser for XlsxParser {
     }
 
     /// Defers workbooks with OLE objects Tika opens, macros it extracts when asked to, parts
-    /// whose XML Tika records failing on, packages POI does not open as this port does, and any
-    /// workbook when Java's default time zone, which dates are written in, cannot be read.
+    /// whose XML Tika records failing on, and packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let zone = TimeZone::java_default()
-            .map_err(|reason| format!("Java's default time zone cannot be read: {reason}"))?;
         let read = Workbook::open(input, &configs.office)
             .and_then(Workbook::prepare)
             .map_err(|Unported(reason)| reason)?;
-        Ok(Box::new(move |xhtml| read.write(zone, xhtml)))
+        Ok(Box::new(move |xhtml| read.write(xhtml)))
     }
 }
 
@@ -375,8 +375,14 @@ impl<'a> Workbook<'a> {
                 None => None,
             });
         }
+        let sheet_parts: BTreeSet<usize> = self.sheets.iter().map(|sheet| sheet.part).collect();
+        let mut protected = false;
         for part in self.streamed_parts() {
-            read_checked(&self.package, part, Ignore)?;
+            if sheet_parts.contains(&part) {
+                protected |= read_checked(&self.package, part, Protection::default())?.protected;
+            } else {
+                read_checked(&self.package, part, Ignore)?;
+            }
         }
         let mut persons = Vec::new();
         for part in Package::related(self.relationships(self.workbook), sheet_kind::PERSON) {
@@ -389,6 +395,7 @@ impl<'a> Workbook<'a> {
         let properties = Properties::read(&self.package)?;
         Ok(Read {
             workbook: self,
+            protected,
             properties,
             styles,
             strings,
@@ -398,27 +405,31 @@ impl<'a> Workbook<'a> {
         })
     }
 
-    fn write(
-        &self,
-        read: &Read,
-        zone: &'static TimeZone,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
+    fn write(&self, read: &Read, xhtml: &mut Xhtml) -> Result<(), Failure> {
         extractor::write_package_metadata(&self.package, xhtml.metadata_mut());
         read.properties.write(xhtml.metadata_mut());
+        // Tika sets `false` here and `true` once it reads a protected sheet, after the XHTML
+        // head was written with `false` (#95).
+        let protected = if read.protected { "true" } else { "false" };
         xhtml
             .metadata_mut()
-            .set(excel::PROTECTED_WORKSHEET, "false");
-        self.write_sheets(read, zone, xhtml)?;
+            .set(excel::PROTECTED_WORKSHEET, protected);
+        self.write_sheets(read, xhtml)?;
         read.metadata.write(xhtml.metadata_mut());
         for persons in &read.persons {
             persons.write(xhtml.metadata_mut());
         }
         self.write_external_data(xhtml)?;
         let sheets_of_pictures = self.sheets_of_pictures();
-        extractor::write_embedded_parts(
+        let sheets: BTreeSet<usize> = self.sheets.iter().map(|sheet| sheet.part).collect();
+        // Tika writes the links of the sheets once more here (#93).
+        let written = |part: usize, relationship: &Relationship| {
+            sheets.contains(&part) && relationship.kind == HYPERLINK_RELATIONSHIP
+        };
+        extractor::write_embedded_parts_but(
             &self.package,
             &self.main_parts(),
+            &written,
             xhtml,
             &|part, metadata| {
                 if let Some(sheets) = sheets_of_pictures.get(&part) {
@@ -438,29 +449,13 @@ impl<'a> Workbook<'a> {
     }
 
     /// The sheets, each in a `sheet` div, as `buildXHTML` writes them.
-    fn write_sheets(
-        &self,
-        read: &Read,
-        zone: &'static TimeZone,
-        xhtml: &mut Xhtml,
-    ) -> Result<(), Failure> {
-        let mut formatter = DataFormatter::new(zone);
+    fn write_sheets(&self, read: &Read, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let mut formatter = DataFormatter::new(read.metadata.date_1904);
         let settings = SheetSettings {
             headers_and_footers: self.config.includes_headers_and_footers(),
             missing_rows: self.config.includes_missing_rows(),
         };
-        let mut drawing_hyperlinks: HashMap<String, String> = HashMap::new();
         for (sheet, comments) in self.sheets.iter().zip(&read.comments) {
-            for drawing in self.internal_related(sheet.part, sheet_kind::DRAWING) {
-                for relationship in
-                    Package::relationships_of(self.relationships(drawing), HYPERLINK_RELATIONSHIP)
-                {
-                    drawing_hyperlinks.insert(
-                        relationship.id.clone(),
-                        relationship.target_uri().to_owned(),
-                    );
-                }
-            }
             if comments.as_ref().is_some_and(|comments| comments.len() > 0) {
                 xhtml.metadata_mut().set(name::HAS_COMMENTS, "true");
             }
@@ -481,9 +476,6 @@ impl<'a> Workbook<'a> {
             xml::parse_sax(&bytes, self.package.name(sheet.part), &mut reader)?;
             let captured = reader.captured;
             let metadata = xhtml.metadata_mut();
-            if captured.protection {
-                metadata.set(excel::PROTECTED_WORKSHEET, "true");
-            }
             if captured.hidden_column {
                 metadata.set(excel::HAS_HIDDEN_COLUMNS, "true");
             }
@@ -505,7 +497,20 @@ impl<'a> Workbook<'a> {
             }
             if self.config.includes_shape_based_content() {
                 for drawing in self.internal_related(sheet.part, sheet_kind::DRAWING) {
-                    self.read(drawing, DrawingShapes::new(xhtml, &drawing_hyperlinks))?;
+                    // Tika looks a shape's link up among those of every drawing of the sheets
+                    // so far, so it may find another drawing's (#93).
+                    let hyperlinks: HashMap<String, String> = Package::relationships_of(
+                        self.relationships(drawing),
+                        HYPERLINK_RELATIONSHIP,
+                    )
+                    .map(|relationship| {
+                        (
+                            relationship.id.clone(),
+                            relationship.target_uri().to_owned(),
+                        )
+                    })
+                    .collect();
+                    self.read(drawing, DrawingShapes::new(xhtml, &hyperlinks))?;
                     self.write_text_parts(drawing, xhtml)?;
                 }
             }
@@ -527,12 +532,19 @@ impl<'a> Workbook<'a> {
         Ok(())
     }
 
-    /// `handleGeneralTextContainingPart` for a drawing's diagrams, then its charts, each kind's
-    /// parts read by one of Tika's Word and PowerPoint text handlers.
+    /// A drawing's diagrams, then its charts, each in a div of its kind's class, read by a Word
+    /// and PowerPoint text handler of its own. Tika's `handleGeneralTextContainingPart` reads
+    /// all of a kind's parts with one handler, which never writes the div it is handed (#93).
     fn write_text_parts(&self, drawing: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let no_links = HashMap::new();
         for (kind, class) in TEXT_PART_KINDS {
-            docx::write_general_text_parts(&self.package, drawing, kind, class, &no_links, xhtml)?;
+            let parts = Package::relationships_of(self.relationships(drawing), kind)
+                .filter_map(|relationship| relationship.part);
+            for part in parts {
+                xhtml.start_element_with("div", &[("class", class)])?;
+                docx::write_general_text_part(&self.package, part, &no_links, xhtml)?;
+                xhtml.end_element("div")?;
+            }
         }
         Ok(())
     }
@@ -577,14 +589,16 @@ impl<'a> Workbook<'a> {
                     .set(excel::HAS_EXTERNAL_PIVOT_DATA, "true");
             }
         }
+        // Tika takes any part named like `/customData/` or `/dataMashup` for Power Query's
+        // (#95).
         let parts = &self.package.parts;
-        if parts
-            .iter()
-            .any(|part| part.content_type == POWER_QUERY_TYPE)
-            || parts
-                .iter()
-                .any(|part| part.name.contains("/customData/") || part.name.contains("/dataMashup"))
-        {
+        let power_query = parts.iter().any(|part| {
+            part.content_type == POWER_QUERY_TYPE
+                || Package::relationships_of(&part.relationships, POWER_QUERY_RELATIONSHIP)
+                    .next()
+                    .is_some()
+        });
+        if power_query {
             xhtml.metadata_mut().set(excel::HAS_POWER_QUERY, "true");
         }
         Ok(())
@@ -643,6 +657,8 @@ fn first_part(relationships: &[Relationship], kind: &str) -> Result<Option<usize
 /// A workbook checked and read as far as Tika reads parts whole: what writing it takes.
 struct Read<'a> {
     workbook: Workbook<'a>,
+    /// Whether a sheet is protected.
+    protected: bool,
     properties: Properties,
     styles: Option<Styles>,
     strings: Option<SharedStrings>,
@@ -653,8 +669,8 @@ struct Read<'a> {
 }
 
 impl Read<'_> {
-    fn write(&self, zone: &'static TimeZone, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        self.workbook.write(self, zone, xhtml)
+    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        self.workbook.write(self, xhtml)
     }
 }
 

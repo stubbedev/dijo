@@ -359,7 +359,8 @@ fn ntfs_instant(ntfs: u64) -> Result<Instant, Corrupt> {
 }
 
 /// `ZipEntry.setExtra0` over the local data of the fields: the extended timestamp's times and the
-/// NTFS field's first attribute, at microsecond precision, a time of `Long.MIN_VALUE` absent.
+/// NTFS field's first attribute, at microsecond precision, a time of zero absent. `ZipEntry`
+/// takes only `Long.MIN_VALUE` for absent, so a zero creation time becomes 1601-01-01 (#99).
 fn zip_entry_times(extra: &[u8], times: &mut Times) {
     let mut off = 0;
     while off + 4 < extra.len() {
@@ -378,10 +379,10 @@ fn zip_entry_times(extra: &[u8], times: &mut Times) {
                     let windows = |time: i64| {
                         Instant::from_micros(time / 10 - WINDOWS_EPOCH_SECONDS * 1_000_000)
                     };
-                    if modify != i64::MIN {
+                    if modify != 0 && modify != i64::MIN {
                         times.modified = Some(windows(modify));
                     }
-                    if create != i64::MIN {
+                    if create != 0 && create != i64::MIN {
                         times.created = Some(windows(create));
                     }
                 }
@@ -442,13 +443,7 @@ mod tests {
                 nanos: 500
             })
         );
-        assert_eq!(
-            times.created,
-            Some(Instant {
-                seconds: -WINDOWS_EPOCH_SECONDS,
-                nanos: 0
-            })
-        );
+        assert_eq!(times.created, None);
     }
 
     #[test]

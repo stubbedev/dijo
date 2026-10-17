@@ -79,6 +79,11 @@ impl OcrSettings {
         }
     }
 
+    /// The time a run of tesseract, or of a program decoding an image for it, may take.
+    pub(crate) fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     /// Whether each image's script is detected, and its first script is learned.
     pub(crate) fn auto(&self) -> bool {
         self.language == Language::Auto
@@ -149,7 +154,7 @@ impl Attempt {
     fn words(&self) -> usize {
         self.reading
             .as_ref()
-            .map_or(0, |reading| java_word_count(&reading.text))
+            .map_or(0, |reading| word_count(&reading.text))
     }
 
     /// The more confident of this attempt and another, this one on a tie.
@@ -187,20 +192,13 @@ impl Attempt {
     }
 }
 
-/// `text.split("\\s+").length`: the pieces between runs of whitespace, a leading empty one
-/// counted and trailing ones not, and one for an empty text.
-fn java_word_count(text: &str) -> usize {
-    if text.is_empty() {
-        return 1;
-    }
-    let runs = text
-        .split(crate::java::is_regex_space)
+/// The words of `text`: the pieces between runs of whitespace. Our Java counted
+/// `text.split("\\s+").length`, one for an empty text and one more for leading whitespace
+/// (#117).
+fn word_count(text: &str) -> usize {
+    text.split(crate::java::is_regex_space)
         .filter(|piece| !piece.is_empty())
-        .count();
-    if runs == 0 {
-        return 0;
-    }
-    runs + usize::from(text.starts_with(crate::java::is_regex_space))
+        .count()
 }
 
 /// How an image was prepared to be read, and with which model.
@@ -601,11 +599,11 @@ mod tests {
     }
 
     #[test]
-    fn counts_words_as_java_splits_them() {
-        assert_eq!(java_word_count(""), 1);
-        assert_eq!(java_word_count("   "), 0);
-        assert_eq!(java_word_count("one two\n\nthree "), 3);
-        assert_eq!(java_word_count(" one two"), 3);
+    fn counts_words_between_whitespace() {
+        assert_eq!(word_count(""), 0);
+        assert_eq!(word_count("   "), 0);
+        assert_eq!(word_count("one two\n\nthree "), 3);
+        assert_eq!(word_count(" one two"), 2);
     }
 
     #[test]

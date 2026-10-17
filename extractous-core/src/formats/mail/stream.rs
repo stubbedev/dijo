@@ -2,10 +2,12 @@
 //! content decoding on, no recursion into attached messages, and Tika's limits of 100,000 bytes
 //! a line and a header field. A message is a stack of entities, each reading its lines through
 //! a buffer of 4,096 bytes from the part its parent's boundary stream delimits, and the stream
-//! reports the parts and fields Tika's handler sees as [`Event`]s. Boundaries are found as
-//! mime4j finds them in its buffers, which can depend on where a buffer is refilled.
+//! reports the parts and fields Tika's handler sees as [`Event`]s. A boundary is recognised at
+//! the start of a line alone, wherever the buffers are refilled: mime4j also takes one in the
+//! middle of a line where a refilled buffer starts, and one at the end of a buffer whatever
+//! follows it (#71).
 
-use super::codec::{decode_base64, QuotedPrintableReader};
+use super::codec::{decode_base64, decode_quoted_printable};
 use super::field::{is_whitespace, RawField};
 use super::structured::{ContentDisposition, ContentType};
 use super::Unported;
@@ -264,7 +266,8 @@ impl LineBuffer {
             line.extend_from_slice(&window[..chunk]);
             self.pos += chunk;
             total += chunk;
-            if line.len() >= MAX_LINE_LENGTH {
+            // mime4j fails a line of exactly the limit too (#78).
+            if line.len() > MAX_LINE_LENGTH {
                 return Err(MimeError(format!(
                     "Maximum line length limit ({MAX_LINE_LENGTH}) exceeded"
                 )));
@@ -328,6 +331,8 @@ struct Boundary {
     last_part: bool,
     completed: bool,
     initial_length: isize,
+    /// Whether the last byte the stream read ended a line, or it read none.
+    line_start: bool,
 }
 
 impl Boundary {
@@ -344,6 +349,7 @@ impl Boundary {
             last_part: false,
             completed: false,
             initial_length: -1,
+            line_start: true,
         };
         stream.fill_buffer(buffer, source);
         stream
@@ -380,7 +386,11 @@ impl Boundary {
             }
             if self.has_data(buffer) {
                 let chunk = out.len().min(self.limit as usize - buffer.pos);
-                return buffer.read(&mut out[..chunk], source);
+                let read = buffer.read(&mut out[..chunk], source);
+                if let Some(count @ 1..) = read {
+                    self.line_start = out[count - 1] == b'\n';
+                }
+                return read;
             }
             self.fill_buffer(buffer, source);
         }
@@ -420,23 +430,35 @@ impl Boundary {
         read
     }
 
-    /// The boundary at the start of the buffer's data or of a line, followed by white space,
-    /// `--` or the end of the buffer.
+    /// The boundary at the start of a line, followed by white space, `--` or the end of the
+    /// part. One the buffer ends too soon after to tell is not found until the buffer holds what
+    /// follows it: the data held back before it keeps it there.
     fn find(&self, buffer: &LineBuffer) -> Option<usize> {
         let mut from = buffer.pos;
         loop {
             let index = buffer.index_of(&self.pattern, from, buffer.limit)?;
-            if index == buffer.pos || buffer.byte_at(index - 1) == b'\n' {
+            let line_start = if index == buffer.pos {
+                self.line_start
+            } else {
+                buffer.byte_at(index - 1) == b'\n'
+            };
+            if line_start {
                 let after = index + self.pattern.len();
                 if after >= buffer.limit {
-                    return Some(index);
+                    return self.eof.then_some(index);
                 }
                 let next = buffer.byte_at(after);
                 if is_whitespace(next) {
                     return Some(index);
                 }
-                if next == b'-' && buffer.limit - after > 1 && buffer.byte_at(after + 1) == b'-' {
-                    return Some(index);
+                if next == b'-' {
+                    if buffer.limit - after > 1 {
+                        if buffer.byte_at(after + 1) == b'-' {
+                            return Some(index);
+                        }
+                    } else if !self.eof {
+                        return None;
+                    }
                 }
             }
             from = index + self.pattern.len();
@@ -927,7 +949,8 @@ impl Stream<'_> {
         let mut source = |into: &mut [u8]| read_source(root, ancestors, into);
         loop {
             if !entity.line.is_empty() {
-                if self.field_bytes.len() + entity.line.len() >= MAX_HEADER_LENGTH {
+                // mime4j fails a field of exactly the limit too (#78).
+                if self.field_bytes.len() + entity.line.len() > MAX_HEADER_LENGTH {
                     return Err(MimeError(format!(
                         "Maximum header length limit ({MAX_HEADER_LENGTH}) exceeded"
                     )));
@@ -963,22 +986,6 @@ impl Stream<'_> {
     /// The body of the current entity as the handler reads it, its transfer encoding decoded.
     fn body_content(&mut self, body: &BodyDescriptor) -> Result<Vec<u8>, MimeError> {
         let encoding = body.transfer_encoding();
-        if encoding.eq_ignore_ascii_case("quoted-printable") {
-            let mut reader = QuotedPrintableReader::new();
-            let mut decoded = Vec::new();
-            let mut chunk = vec![0; COPY_BUFFER_SIZE];
-            loop {
-                let root = &mut self.root;
-                let entities = &mut self.entities;
-                let read = reader.read(&mut chunk, &mut |into: &mut [u8]| {
-                    read_data(root, entities, into)
-                });
-                match read {
-                    Some(count) => decoded.extend_from_slice(&chunk[..count]),
-                    None => return Ok(decoded),
-                }
-            }
-        }
         let mut raw = Vec::new();
         let mut chunk = vec![0; COPY_BUFFER_SIZE];
         while let Some(count) = read_data(&mut self.root, &mut self.entities, &mut chunk) {
@@ -986,6 +993,8 @@ impl Stream<'_> {
         }
         Ok(if encoding.eq_ignore_ascii_case("base64") {
             decode_base64(&raw)
+        } else if encoding.eq_ignore_ascii_case("quoted-printable") {
+            decode_quoted_printable(&raw)
         } else {
             raw
         })
@@ -1046,6 +1055,29 @@ mod tests {
                 "end multipart",
             ]
         );
+    }
+
+    #[test]
+    fn finds_boundaries_at_the_start_of_lines_alone() {
+        for filler in (4000..4200).chain(8100..8200) {
+            let message = format!(
+                "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n\r\n{}--b inside\r\n--b-\r\n--b--\r\n",
+                "y".repeat(filler)
+            );
+            let body = format!("{}--b inside\r\n--b-", "y".repeat(filler));
+            assert_eq!(
+                summary(message.as_bytes()),
+                [
+                    "field Content-Type".to_owned(),
+                    "multipart multipart/mixed".to_owned(),
+                    "part".to_owned(),
+                    format!("body text/plain {body:?}"),
+                    "end part".to_owned(),
+                    "end multipart".to_owned(),
+                ],
+                "{filler} bytes before the boundary"
+            );
+        }
     }
 
     #[test]

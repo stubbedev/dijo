@@ -268,7 +268,9 @@ pub(super) fn rebuild_character_runs(
         let start_inclusive = last_start;
         last_start = boundary;
         let found = binary_search_start(&runs, &by_start, boundary);
-        let mut position = found.unsigned_abs() as usize;
+        // The insertion point of a start not found; POI takes `Math.abs` of the result, one
+        // past it, which the steps back below make up for (#111).
+        let mut position = if found < 0 { -(found + 1) } else { found } as usize;
         while position >= by_start.len() {
             position -= 1;
         }

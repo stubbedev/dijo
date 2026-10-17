@@ -228,10 +228,10 @@ impl<'p> Field<'p> {
                 };
                 format!("[{}]", values.join(", "))
             }
-            Kind::NonTerminal => match pdf.get(self.dict, b"V") {
-                None => String::new(),
-                Some(value) => java_to_string(value)?,
-            },
+            Kind::NonTerminal => pdf
+                .get(self.dict, b"V")
+                .map(|value| value_text(pdf, value, 0))
+                .unwrap_or_default(),
             Kind::Signature => unreachable!("signatures are written apart"),
         })
     }
@@ -242,19 +242,25 @@ impl<'p> Field<'p> {
     }
 }
 
-/// `COSBase.toString` of a value a non-terminal field holds.
-fn java_to_string(value: &Object) -> Result<String, Unported> {
-    Ok(match value {
-        Object::String(bytes, _) => format!("COSString{{{}}}", text_string(bytes)),
-        Object::Name(name) => format!("COSName{{{}}}", name_string(name)),
-        Object::Integer(value) => format!("COSInt{{{value}}}"),
-        Object::Boolean(value) => value.to_string(),
-        _ => {
-            return Err(Unported(
-                "a non-terminal field value Tika writes as PDFBox prints it".to_owned(),
-            ))
+/// The text of a value a non-terminal field holds: a string's text, a name, a number or a
+/// boolean, and an array's items listed as a choice's values are. Tika writes the value as
+/// PDFBox's `COSBase.toString` prints it, `COSString{...}` (#109).
+fn value_text(pdf: &Pdf, value: &Object, depth: usize) -> String {
+    match pdf.resolve(value) {
+        Some(Object::String(bytes, _)) => text_string(bytes),
+        Some(Object::Name(name)) => name_string(name),
+        Some(Object::Integer(value)) => value.to_string(),
+        Some(Object::Real(value)) => value.to_string(),
+        Some(Object::Boolean(value)) => value.to_string(),
+        Some(Object::Array(items)) if depth < MAX_RECURSION_DEPTH => {
+            let items: Vec<String> = items
+                .iter()
+                .map(|item| value_text(pdf, item, depth + 1))
+                .collect();
+            format!("[{}]", items.join(", "))
         }
-    })
+        _ => String::new(),
+    }
 }
 
 /// The data of a signature: its name, contact, location, reason and date, by key.
@@ -354,12 +360,14 @@ fn field_lines<'p>(
     let alternate = pdf.text(field.dict, b"TU");
     let mut text = partial.map(|name| format!("{name}: ")).unwrap_or_default();
     if field.kind == Kind::Signature {
+        // Tika counts the keys of the signature's data, not its values, so a signature with
+        // none still writes an empty list and is taken as signed (#109).
         if let Some(signature) = field.signature(pdf) {
-            metadata.set(HAS_SIGNATURE, "true");
-            lines.push(Line::Signature {
-                alternate,
-                data: signature_data(pdf, signature)?,
-            });
+            let data = signature_data(pdf, signature)?;
+            if !data.is_empty() {
+                metadata.set(HAS_SIGNATURE, "true");
+                lines.push(Line::Signature { alternate, data });
+            }
         }
         return Ok(());
     }
@@ -459,7 +467,8 @@ pub(super) fn signatures(pdf: &Pdf, metadata: &mut Recording) -> Result<(), Unpo
             "tk:signature:reason",
             pdf.text(signature, b"Reason"),
         );
-        signed = true;
+        // A signature dictionary of neither signature bytes nor data signs nothing (#109).
+        signed |= signature.has(b"Contents") || !signature_data(pdf, signature)?.is_empty();
     }
     if signed {
         metadata.set(HAS_SIGNATURE, "true");

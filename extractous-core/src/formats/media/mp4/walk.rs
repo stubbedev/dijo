@@ -98,15 +98,6 @@ pub(super) fn walk(input: &[u8]) -> Result<Walked<'_>, Deferral> {
         covers: Covers::default(),
     };
     walk.boxes(None, Handler::Box, 0)?;
-    if let Some(seconds) = walk.movie.contents.duration_seconds {
-        if seconds.simple_string().is_none() {
-            return Err(format!(
-                "a movie duration of {} in {}, whose GCD metadata-extractor's Rational never \
-                 finds",
-                seconds.numerator, seconds.denominator
-            ));
-        }
-    }
     Ok(Walked {
         movie: walk.movie,
         tracks: walk.tracks,
@@ -163,7 +154,7 @@ impl<'a> Walk<'a> {
     ) -> Result<(), Abort> {
         while end.is_none_or(|end| self.stream.position() < end) {
             let size = self.stream.u32()?;
-            let kind = java::utf8(self.stream.take(4)?);
+            let kind = four_cc(self.stream.take(4)?);
             let (size, header) = if size == 1 {
                 (self.stream.i64()?, 16)
             } else {
@@ -183,6 +174,12 @@ impl<'a> Walk<'a> {
                 let inner = self.container(handler, &kind);
                 self.boxes(Some(container_end), inner, depth + 1)
                     .map_err(Abort::Deferred)?;
+                // The next box starts where the container ends, even when a box in it failed:
+                // metadata-extractor reads on from wherever the failure left it (#118).
+                let position = self.stream.position();
+                if position < container_end && container_end <= self.input_length {
+                    self.stream.skip(container_end - position)?;
+                }
             } else if self.accepts_box(handler, &kind) {
                 let too_large = payload_length > MAX_BOX_SIZE;
                 if too_large || self.stream.position() + payload_length > self.input_length {
@@ -392,12 +389,12 @@ impl<'a> Walk<'a> {
     /// room for.
     fn file_type(&mut self, payload: &[u8], size: i64) -> Read<()> {
         let mut reader = Bytes::new(payload);
-        let major = java::utf8(reader.take(4)?);
+        let major = four_cc(reader.take(4)?);
         reader.u32()?;
         let mut compatible = Vec::new();
         let mut at = 16;
         while at < size {
-            compatible.push(java::utf8(reader.take(4)?));
+            compatible.push(four_cc(reader.take(4)?));
             at += 4;
         }
         let movie = &mut self.movie.contents;
@@ -424,6 +421,12 @@ impl<'a> Walk<'a> {
         reader.i16()?;
         Ok(())
     }
+}
+
+/// A box type or brand, its four bytes as ISO-8859-1 characters, so `©nam` reads as it is
+/// written: metadata-extractor decodes them in the platform's charset (#118).
+fn four_cc(bytes: &[u8]) -> String {
+    bytes.iter().copied().map(char::from).collect()
 }
 
 /// `get1Jan1904EpochDate`: seconds since 1904 as milliseconds since 1970, in Java's `long`

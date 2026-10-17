@@ -1,6 +1,7 @@
 //! A worksheet as Tika reads it: `TikaSheetXMLHandler`, POI's event-based sheet reader adapted to
 //! Tika's style, string and comment shims, behind `XSSFSheetInterestingPartsCapturer`, which notes
-//! protection and hidden rows and columns, writing rows and cells as `SheetTextAsHTML` does.
+//! hidden rows and columns, writing rows and cells as `SheetTextAsHTML` does. The capturer's
+//! note of protection is read ahead, by [`super::handlers::Protection`].
 
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -43,7 +44,6 @@ pub(crate) struct SheetSettings {
 /// What `XSSFSheetInterestingPartsCapturer` noted about a sheet.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Captured {
-    pub(crate) protection: bool,
     pub(crate) hidden_row: bool,
     pub(crate) hidden_column: bool,
 }
@@ -54,6 +54,7 @@ pub(crate) struct SheetOutput {
     settings: SheetSettings,
     pub(crate) headers: Vec<String>,
     pub(crate) footers: Vec<String>,
+    last_seen_row: i32,
     last_seen_column: i32,
 }
 
@@ -63,15 +64,19 @@ impl SheetOutput {
             settings,
             headers: Vec::new(),
             footers: Vec::new(),
+            last_seen_row: -1,
             last_seen_column: -1,
         }
     }
 
-    /// `startRow`: with missing rows asked for, an empty row for each row before this one, as
-    /// `lastSeenRow`, which is never updated, leaves every row from the first missing.
+    /// `startRow`: with missing rows asked for, an empty row for each row missing between the
+    /// last row written and this one. Tika never updates its `lastSeenRow`, so each row is
+    /// preceded by an empty row for every row before it (#93).
     fn start_row(&mut self, row: i32, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let missing = row.saturating_sub(self.last_seen_row.saturating_add(1));
+        self.last_seen_row = self.last_seen_row.max(row);
         if self.settings.missing_rows {
-            for _ in 0..row.max(0) {
+            for _ in 0..missing.max(0) {
                 xhtml.start_element("tr")?;
                 xhtml.start_element("td")?;
                 xhtml.end_element("td")?;
@@ -402,7 +407,7 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
                 self.comment_cells.pop_front();
                 return Ok(());
             }
-            let comparison = peek.java_compare(&address);
+            let comparison = peek.compare(&address);
             let up_to_row = peek.row <= self.row;
             let passed =
                 (comparison == Ordering::Greater && check == CommentCheck::EndOfRow && up_to_row)
@@ -428,21 +433,20 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
 
 impl SaxHandler for SheetReader<'_, '_, '_> {
     fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
+        // Tika recognises hidden rows and columns by local name in any namespace (#95).
+        if tag.namespace != SPREADSHEETML_NS {
+            return Ok(());
+        }
         let hidden = || {
             attribute_named(tag.attributes, "hidden")
                 .is_some_and(|value| value == "true" || value == "1")
         };
-        if tag.qualified_name == "sheetProtection" {
-            self.captured.protection = true;
-        }
-        if !self.captured.hidden_row && tag.local_name == "row" && hidden() {
-            self.captured.hidden_row = true;
-        }
-        if !self.captured.hidden_column && tag.local_name == "col" && hidden() {
-            self.captured.hidden_column = true;
-        }
-        if tag.namespace != SPREADSHEETML_NS {
-            return Ok(());
+        match tag.local_name {
+            "row" if !self.captured.hidden_row && hidden() => self.captured.hidden_row = true,
+            "col" if !self.captured.hidden_column && hidden() => {
+                self.captured.hidden_column = true;
+            }
+            _ => {}
         }
         self.start(tag.local_name, tag.attributes)
     }

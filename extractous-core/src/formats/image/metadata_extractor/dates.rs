@@ -1,6 +1,11 @@
 //! The dates metadata-extractor reads from text and writes: `Directory.getDate`, which parses with
-//! a strict `SimpleDateFormat` in Java's default time zone, `GpsDirectory.getGpsDate`, which parses
-//! leniently in UTC, and the text `TagDescriptor` and `Date.toString` make of a date.
+//! a strict `SimpleDateFormat` in a time zone, `GpsDirectory.getGpsDate`, which parses in UTC,
+//! and the text `TagDescriptor` and `Date.toString` make of a date.
+//!
+//! Each pattern must read the whole date, and the GPS date is read strictly. `SimpleDateFormat`
+//! ignores what follows a pattern, so that a date invalid in every longer pattern falls back to
+//! its year, and metadata-extractor reads the GPS date leniently, rolling a field out of its
+//! range over into the next (#114).
 
 use std::sync::LazyLock;
 
@@ -242,9 +247,14 @@ pub(crate) fn parse_text_date(text: &str, zone: &TimeZone) -> Option<i64> {
         }
         None => zone,
     };
-    let date = PATTERNS
-        .iter()
-        .find_map(|pattern| strict(parse_fields(&text, &compile(pattern))?, zone))?;
+    let text = text.trim_end_matches([' ', '\t', '\0']);
+    let date = PATTERNS.iter().find_map(|pattern| {
+        let parts = compile(pattern);
+        let parsed = parse_fields(text, &parts)?;
+        (consumed_length(text, &parts)? == text.len())
+            .then(|| strict(parsed, zone))
+            .flatten()
+    })?;
     let Some(subsecond) = subsecond else {
         return Some(date);
     };
@@ -260,7 +270,7 @@ pub(crate) fn parse_text_date(text: &str, zone: &TimeZone) -> Option<i64> {
 }
 
 /// `GpsDirectory.getGpsDate`: the date stamp and the time stamp's hours, minutes and seconds,
-/// written as `%s %02d:%02d:%02.3f UTC` and read back leniently with `yyyy:MM:dd HH:mm:ss.S z`.
+/// written as `%s %02d:%02d:%02.3f UTC` and read back strictly with `yyyy:MM:dd HH:mm:ss.S z`.
 pub(crate) fn parse_gps_date(date: &str, hours: i32, minutes: i32, seconds: f64) -> Option<i64> {
     let text = format!(
         "{date} {}:{}:{} UTC",
@@ -272,10 +282,10 @@ pub(crate) fn parse_gps_date(date: &str, hours: i32, minutes: i32, seconds: f64)
     let parsed = parse_fields(&text, &parts)?;
     let consumed = consumed_length(&text, &parts)?;
     let rest = &text[consumed..];
-    if !rest.starts_with(" UTC") {
+    if rest != " UTC" {
         return None;
     }
-    Some(parsed.calendar()?.epoch_millis(&TimeZone::fixed(0)))
+    strict(parsed, &TimeZone::fixed(0))
 }
 
 /// How many bytes of `text` a successful [`parse_fields`] of `parts` reads.
@@ -342,9 +352,12 @@ mod tests {
             parse_text_date("2009:08:11 09:09:45", &copenhagen_summer),
             Some(1_249_974_585_000)
         );
+        // Tika falls back to the year, 2009-01-01 (#114).
+        assert_eq!(parse_text_date("2009:02:30 09:09:45", &utc), None);
+        assert_eq!(parse_text_date("2009:08:11 09:09:45 x", &utc), None);
         assert_eq!(
-            parse_text_date("2009:02:30 09:09:45", &utc),
-            Some(1_230_768_000_000)
+            parse_text_date("2009:08:11 09:09:45\0", &utc),
+            Some(1_249_981_785_000)
         );
         assert_eq!(parse_text_date("0000:00:00 00:00:00", &utc), None);
         assert_eq!(
@@ -374,11 +387,13 @@ mod tests {
     }
 
     #[test]
-    fn reads_gps_dates_leniently_in_utc() {
+    fn reads_gps_dates_strictly_in_utc() {
         assert_eq!(
             parse_gps_date("2018:02:05", 7, 11, 43.07),
             Some(1_517_814_703_070)
         );
         assert_eq!(parse_gps_date("bad", 7, 11, 43.07), None);
+        // metadata-extractor rolls the hour over into 2018-02-06 (#114).
+        assert_eq!(parse_gps_date("2018:02:05", 25, 11, 43.07), None);
     }
 }
