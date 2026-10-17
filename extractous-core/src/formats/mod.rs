@@ -67,6 +67,7 @@ mod ppt;
 mod pptx;
 mod protected;
 mod prt;
+mod pst;
 mod publisher;
 #[cfg(test)]
 pub(crate) mod reference;
@@ -339,6 +340,7 @@ static PARSERS: &[&dyn Parser] = &[
     &ppt::PptParser,
     &pptx::PptxParser,
     &protected::ProtectedParser,
+    &pst::OutlookPstParser,
     &publisher::PublisherParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,

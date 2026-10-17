@@ -896,7 +896,8 @@ fn describe(outcome: &Outcome) -> String {
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, Copy)]
 enum Expected<'a> {
-    /// Both extract it identically.
+    /// Both extract it identically, or both fail on it in one of the ways, as a parser that
+    /// rethrows the length limit of a string extraction fails it.
     Same(Naming<'a>),
     /// Both fail on it.
     Failure,
@@ -1847,7 +1848,7 @@ fn compare(
                     }
                     (Ok(tika), Ok(native))
                 }
-                (Expected::Failure, Err(_), Err(_)) => continue,
+                (Expected::Failure | Expected::Same(_), Err(_), Err(_)) => continue,
                 (_, tika, native) => (tika, native),
             };
             differences.push(format!(
