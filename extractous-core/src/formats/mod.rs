@@ -60,6 +60,7 @@ mod rtf;
 mod subtitle;
 mod text;
 mod translation;
+mod vsdx;
 mod warc;
 pub(crate) mod xhtml;
 mod xls;
@@ -272,6 +273,7 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WaczParser,
     &xls::OldExcelParser,
     &xlsx::XlsxParser,
+    &vsdx::VsdxParser,
 ];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.

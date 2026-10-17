@@ -8,6 +8,13 @@ use zip::{CompressionMethod, ZipWriter};
 /// A package whose `main` part the package's relationships name as its office document, of
 /// `parts`, each a name, a content type and the content.
 pub(crate) fn package(main: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
+    let office_document =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+    package_with(&relationship("rId1", office_document, main), parts)
+}
+
+/// A package of `parts` whose own relationships are `package_relationships`.
+pub(crate) fn package_with(package_relationships: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
     let mut types = String::from(
         "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
          <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>",
@@ -27,12 +34,7 @@ pub(crate) fn package(main: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
     add("[Content_Types].xml", types.as_bytes());
     add(
         "_rels/.rels",
-        relationships(&relationship(
-            "rId1",
-            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
-            main,
-        ))
-        .as_bytes(),
+        relationships(package_relationships).as_bytes(),
     );
     for (name, _, content) in parts {
         add(name, content);
