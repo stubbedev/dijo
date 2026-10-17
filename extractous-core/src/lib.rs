@@ -37,6 +37,10 @@ pub use bundle::{bundled_ocr_licenses, linked_native_licenses};
 
 mod fetch;
 mod formats;
+/// The parity harness, which compares the native parsers with Tika's path, for the tests of the
+/// crates of the formats.
+#[cfg(feature = "parity")]
+pub use formats::parity;
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]
 #[global_allocator]

@@ -46,7 +46,9 @@ use crate::config::ParserConfigs;
 use crate::config::Password;
 #[cfg(feature = "tika")]
 use crate::formats::embedded::{EXCEPTION_WARNING, ZERO_BYTES};
-use crate::formats::{self, Output, Parser};
+#[cfg(any(test, feature = "tika"))]
+use crate::formats::Output;
+use crate::formats::{self, Parser};
 #[cfg(feature = "tika")]
 use crate::formats::{Routed, StreamOptions};
 #[cfg(feature = "tika")]
@@ -55,6 +57,7 @@ use crate::input::Source;
 use crate::isolate::isolate;
 #[cfg(feature = "tika")]
 use crate::tika;
+#[cfg(any(test, feature = "tika"))]
 use crate::CharSet;
 #[cfg(feature = "tika")]
 use crate::Metadata;
@@ -66,30 +69,30 @@ const SMALL_LIMIT: usize = 100;
 /// OCR path converts the image's colours with AWT, whose colour management throws
 /// `CMMException: Invalid profile` on its ICC profile; the native path prepares it without.
 #[cfg(feature = "tika")]
-pub(crate) const PSD_PROFILE_AWT_REJECTS: &str = "Tika's OCR path throws CMMException on the \
+pub const PSD_PROFILE_AWT_REJECTS: &str = "Tika's OCR path throws CMMException on the \
                                                   image's colour profile; the native path reads \
                                                   it";
 
 /// Why the native path extracts Zstandard files Tika's path leaves empty: Tika's native image
 /// lacks zstd-jni, so its path parses them with `EmptyParser`.
-pub(crate) const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as \
+pub const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with EmptyParser, as \
                                                 its native image lacks zstd-jni; the native path \
                                                 decodes it";
 
 /// One extraction's result, as the two paths are compared on it.
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Extracted {
-    pub(super) text: Vec<u8>,
-    pub(super) metadata: Vec<(String, Vec<String>)>,
+pub struct Extracted {
+    pub text: Vec<u8>,
+    pub metadata: Vec<(String, Vec<String>)>,
 }
 
 /// An extraction's result, or why it failed.
 #[cfg(feature = "tika")]
-pub(super) type Outcome = Result<Extracted, String>;
+pub type Outcome = Result<Extracted, String>;
 
 #[cfg(feature = "tika")]
-pub(super) fn sorted(metadata: Metadata) -> Vec<(String, Vec<String>)> {
+pub fn sorted(metadata: Metadata) -> Vec<(String, Vec<String>)> {
     let mut sorted: Vec<_> = metadata.into_iter().collect();
     sorted.sort();
     sorted
@@ -218,7 +221,7 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
 /// Tika's path names `tika_name`, its `delegates`, then every native parser and the parsers it
 /// delegates to, which its embedded documents may record.
 #[cfg(feature = "tika")]
-pub(super) fn tika_names<'n>(
+pub fn tika_names<'n>(
     native_name: &'n str,
     tika_name: &'n str,
     delegates: &[(&'n str, &'n str)],
@@ -236,7 +239,7 @@ pub(super) fn tika_names<'n>(
 /// The native result as Tika's path would name its parsers: each native name of `names` as the
 /// Tika name paired with it.
 #[cfg(feature = "tika")]
-pub(super) fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
+pub fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
     let mut text = native.text;
     for (native_name, tika_name) in names {
         let mut native_bytes = Vec::new();
@@ -275,11 +278,14 @@ const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 #[cfg(feature = "tika")]
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 /// Where the XHTML head writes a recorded warning.
+#[cfg(any(test, feature = "tika"))]
 const WARNING_META: &str = "<meta name=\"tk:exception:warn\" content=\"";
 /// The first frame below an embedded document's parse in Tika's path, where the embedding
 /// parser hands it to the embedded document extractor.
+#[cfg(any(test, feature = "tika"))]
 const TIKA_EMBEDDING_FRAME: &str = "\tat org.apache.tika.parser.DelegatingParser.parse(";
 /// The first frame below an embedded document's parse in the native path.
+#[cfg(any(test, feature = "tika"))]
 const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded(";
 
 /// An extraction, its text in `char_set`, as the two paths are compared on it: each parser of
@@ -288,7 +294,7 @@ const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded
 /// and the exceptions a parser records without their frames, which a native parser does not
 /// have.
 #[cfg(feature = "tika")]
-pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
+pub fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
     extracted.text = without_warning_frames(extracted.text, char_set);
     extracted.text = in_defined_order(extracted.text, char_set);
     for (name, values) in &mut extracted.metadata {
@@ -386,6 +392,7 @@ const RECOGNIZED_IMAGE_PARSER: &str = "ai.yobix.RecognizedImageParser";
 /// An extraction of [`RECOGNIZED_IMAGE_PARSER`] in `output`, written in `char_set`, without the
 /// whole document that our Java `RecognizedImageParser` writes into its body, and the native
 /// parser does not: its `html` element in XHTML, and the line breaks leading the plain text.
+#[cfg(any(test, feature = "tika"))]
 fn without_nested_document(text: Vec<u8>, output: Output, char_set: CharSet) -> Vec<u8> {
     let Some(decoded) = decoded(&text, char_set) else {
         return text;
@@ -452,6 +459,7 @@ fn with_native_failures_masked(tika: &mut Extracted, native: &mut Extracted) {
 /// that the limit stops in its body ends its own document, whose `</body>` leaks into the
 /// embedding document and closes the elements open there (#113). The native path leaves them
 /// open, as a cut does anywhere else.
+#[cfg(any(test, feature = "tika"))]
 fn with_the_body_end_tika_leaks(native: Vec<u8>, tika: &[u8]) -> Vec<u8> {
     let Some(tail) = tika.strip_prefix(native.as_slice()) else {
         return native;
@@ -547,6 +555,7 @@ fn cut_alike(
 
 /// A Java stack trace without its frames, its lines ended by `\n`: Java ends them with the
 /// platform's line separator, the native parsers with `\n` everywhere (#108).
+#[cfg(any(test, feature = "tika"))]
 fn without_frames(trace: &str) -> String {
     trace
         .split_inclusive('\n')
@@ -556,6 +565,7 @@ fn without_frames(trace: &str) -> String {
 }
 
 /// Text written in `char_set`, decoded, unless it is not valid in it.
+#[cfg(any(test, feature = "tika"))]
 fn decoded(text: &[u8], char_set: CharSet) -> Option<String> {
     match char_set {
         CharSet::UTF_8 | CharSet::US_ASCII => String::from_utf8(text.to_vec()).ok(),
@@ -617,6 +627,7 @@ fn without_nested_head_breaks(
 
 /// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
 /// without their frames.
+#[cfg(any(test, feature = "tika"))]
 fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
     let Some(decoded) = decoded(&text, char_set).filter(|decoded| decoded.contains(WARNING_META))
     else {
@@ -645,6 +656,7 @@ fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
 /// (#64), sorted by name, the values of one name kept in their order; and the namespace
 /// declarations of each start tag, which Tika writes in the order of a map of its pending
 /// mappings and the native path by prefix (#87), sorted by prefix.
+#[cfg(any(test, feature = "tika"))]
 fn in_defined_order(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
     let Some(decoded) = decoded(&text, char_set).filter(|decoded| decoded.contains('<')) else {
         return text;
@@ -680,6 +692,7 @@ fn in_defined_order(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
 /// stably. A run some element of which no line break follows is one a string extraction's
 /// length limit, which counts the line breaks, stopped: which elements the head has then
 /// depends on their order, so the run is written as [`CUT_HEAD`].
+#[cfg(any(test, feature = "tika"))]
 fn flush_metas(metas: &mut Vec<(&str, &str, bool)>, ordered: &mut String) {
     if metas.iter().any(|(_, _, line_ended)| !line_ended) {
         metas.clear();
@@ -694,11 +707,13 @@ fn flush_metas(metas: &mut Vec<(&str, &str, bool)>, ordered: &mut String) {
 }
 
 /// What a run of `meta` elements the length limit stopped in is compared as (#64).
+#[cfg(any(test, feature = "tika"))]
 const CUT_HEAD: &str =
     "<!-- a head the length limit stopped, its meta elements in its own order -->";
 
 /// Where the tag `text` starts with ends, after its `>`: attribute values hold no `"`, which
 /// both paths escape.
+#[cfg(any(test, feature = "tika"))]
 fn tag_end(text: &str) -> Option<usize> {
     let mut quoted = false;
     for (index, character) in text.char_indices() {
@@ -712,6 +727,7 @@ fn tag_end(text: &str) -> Option<usize> {
 }
 
 /// The value of the attribute `name` of a start tag, as written.
+#[cfg(any(test, feature = "tika"))]
 fn attribute<'t>(tag: &'t str, name: &str) -> Option<&'t str> {
     let marker = format!(" {name}=\"");
     let start = tag.find(&marker)? + marker.len();
@@ -720,6 +736,7 @@ fn attribute<'t>(tag: &'t str, name: &str) -> Option<&'t str> {
 }
 
 /// A start tag with the namespace declarations it ends with sorted by prefix.
+#[cfg(any(test, feature = "tika"))]
 fn with_sorted_declarations(tag: &str) -> String {
     let Some(first) = tag.find(" xmlns") else {
         return tag.to_owned();
@@ -751,6 +768,7 @@ fn with_sorted_declarations(tag: &str) -> String {
 /// `apache-tika-<digits>.<suffix>`, masked: the suffix is the extension of the name the
 /// embedded document's stream was made with, which the native bridge gives it and Tika's path,
 /// making the stream from bytes alone, does not.
+#[cfg(any(test, feature = "tika"))]
 fn without_temporary_names(text: &str) -> String {
     const PREFIX: &str = "apache-tika-";
     let mut out = String::with_capacity(text.len());
@@ -772,6 +790,7 @@ fn without_temporary_names(text: &str) -> String {
 /// embedded the document on, and without the counts of frames a cause shares with its effect:
 /// the frames of the failing document's own parse. Below them are those of the documents it is
 /// embedded in, Java frames only where Tika's path parsed those, which a native parser replaces.
+#[cfg(any(test, feature = "tika"))]
 fn without_embedding_frames(trace: &str) -> String {
     let lines: Vec<&str> = trace.split_inclusive('\n').collect();
     let mut kept = String::with_capacity(trace.len());
@@ -1028,7 +1047,7 @@ struct Naming<'a> {
 /// the issue that tells why. The parser's own tests check what it does instead.
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Departure<'a> {
+pub enum Departure<'a> {
     /// The values of a metadata name, not compared, in the metadata nor in the XHTML head.
     Values(&'a str, &'a str),
     /// A metadata name Tika's path sets wrongly and the native parser does not set: left out of
@@ -1044,15 +1063,15 @@ pub(crate) enum Departure<'a> {
 
 /// What a native parser does otherwise than Tika's path on purpose.
 #[cfg(feature = "tika")]
-pub(crate) type Departures<'a> = &'a [Departure<'a>];
+pub type Departures<'a> = &'a [Departure<'a>];
 
-#[cfg(feature = "tika")]
 /// The divs native parsers write around the parts Tika's path reads with a handler that never
 /// writes the div it is handed: those of a presentation's layouts, notes, masters, diagrams and
 /// charts (#102), and of a workbook's diagrams and charts (#93). Wherever Tika's XHTML of a
 /// document has none of one of them, the native XHTML's, of the document and of every document
 /// it embeds, are taken out, with the line break that ends each.
-pub(crate) const UNWRITTEN_DIVS: [&str; 7] = [
+#[cfg(feature = "tika")]
+pub const UNWRITTEN_DIVS: [&str; 7] = [
     "<div class=\"slide-master-content\">",
     "<div class=\"slide-notes\">",
     "<div class=\"slide-notes-master\">",
@@ -1062,10 +1081,10 @@ pub(crate) const UNWRITTEN_DIVS: [&str; 7] = [
     "<div class=\"chart\">",
 ];
 
-#[cfg(feature = "tika")]
 /// The native XHTML `native` without the [`UNWRITTEN_DIVS`] that Tika's XHTML `tika` does not
 /// have where the native one does, found by reading both alike up to each, each with the line
 /// breaks that end it; and how many line breaks that takes out.
+#[cfg(feature = "tika")]
 fn without_unwritten(native: &str, tika: &str) -> (String, usize) {
     let unwritten = |at: usize| {
         UNWRITTEN_DIVS.iter().copied().find(|div| {
@@ -1200,18 +1219,14 @@ fn without_departures(
 /// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, extracts exactly what Tika's path does under Tika's default settings.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
+pub fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
     assert_same_as_tika_with(documents, tika_name, &ParserConfigs::default());
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, extracts exactly what Tika's path does under the settings `configs`.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_with(
-    documents: &[&Path],
-    tika_name: &str,
-    configs: &ParserConfigs,
-) {
+pub fn assert_same_as_tika_with(documents: &[&Path], tika_name: &str, configs: &ParserConfigs) {
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
@@ -1224,34 +1239,34 @@ pub(crate) fn assert_same_as_tika_with(
 /// Tika's quirks, which a comparison takes out of the native result before comparing it.
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Adjustments {
+pub struct Adjustments {
     /// Counts, in Tika's and the native parser's streamed UTF-8 XHTML of a document, the line
     /// breaks the native parser adds after blocks that Tika's path does not end as blocks or
     /// does not write. Up to that many line breaks where Tika's text and XHTML have none are
     /// taken out of the native ones, exactly that many where the output is not cut by the
     /// length limit, and nothing else.
-    pub(crate) line_breaks: Option<fn(&str, &str) -> usize>,
+    pub line_breaks: Option<fn(&str, &str) -> usize>,
     /// Metadata the native parser sets where Tika's path sets none: left out of the native
     /// metadata, and its `meta` element out of the XHTML head, where Tika's has no value under it.
-    pub(crate) metadata: &'static [&'static str],
+    pub metadata: &'static [&'static str],
     /// The start tags of elements the native parser wraps around what Tika's path writes
     /// unwrapped: taken out of the native XHTML with their end tags.
-    pub(crate) wrappers: &'static [&'static str],
+    pub wrappers: &'static [&'static str],
     /// The starts of empty elements Tika's path writes more often than the native parser, which
     /// writes each once: as many of each as Tika's XHTML has more are taken out of it.
-    pub(crate) repeated: &'static [&'static str],
+    pub repeated: &'static [&'static str],
     /// Metadata the native parser has its final value of when it writes the XHTML head, where
     /// Tika's path writes the head with a value it changes later: Tika's `meta` element of it
     /// is compared with its final value, and where the length limit cut the output before Tika
     /// changed it, Tika's value is taken as the native one.
-    pub(crate) final_in_head: &'static [&'static str],
+    pub final_in_head: &'static [&'static str],
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, extracts exactly what Tika's path does under the settings `configs`, but for
 /// its `adjustments`.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_adjusting(
+pub fn assert_same_as_tika_adjusting(
     documents: &[&Path],
     tika_name: &str,
     configs: &ParserConfigs,
@@ -1265,10 +1280,10 @@ pub(crate) fn assert_same_as_tika_adjusting(
     compare(documents, configs, expected, None, adjustments);
 }
 
-#[cfg(feature = "tika")]
 /// [`assert_same_as_tika_adjusting`], with each native result rewritten by `rewrite` before
 /// it is compared.
-pub(crate) fn assert_same_as_tika_adjusting_rewriting(
+#[cfg(feature = "tika")]
+pub fn assert_same_as_tika_adjusting_rewriting(
     documents: &[&Path],
     tika_name: &str,
     configs: &ParserConfigs,
@@ -1592,18 +1607,18 @@ fn is_closing_tags(text: &str) -> bool {
 
 /// The metadata of an extraction, as the two paths are compared on it.
 #[cfg(feature = "tika")]
-pub(crate) type ComparedMetadata = Vec<(String, Vec<String>)>;
+pub type ComparedMetadata = Vec<(String, Vec<String>)>;
 
 /// A rewrite of a native result, its decoded text and its metadata, into what Tika's path
 /// writes, given Tika's metadata, undoing a fix that departs from Tika's path systematically:
 /// it names the issue of the quirk, and undoes only what that fix changes.
 #[cfg(feature = "tika")]
-pub(crate) type NativeRewrite = fn(&mut String, &mut ComparedMetadata, &ComparedMetadata);
+pub type NativeRewrite = fn(&mut String, &mut ComparedMetadata, &ComparedMetadata);
 
 /// For a [`NativeRewrite`]: the native result without the metadata `name`, in its metadata and
 /// as each `meta` element of the XHTML head, the one a length limit cut included.
 #[cfg(feature = "tika")]
-pub(crate) fn without_metadata(text: &mut String, metadata: &mut ComparedMetadata, name: &str) {
+pub fn without_metadata(text: &mut String, metadata: &mut ComparedMetadata, name: &str) {
     metadata.retain(|(native_name, _)| native_name != name);
     let meta = format!("<meta name=\"{name}\" content=\"");
     while let Some(start) = text.find(&meta) {
@@ -1619,7 +1634,7 @@ pub(crate) fn without_metadata(text: &mut String, metadata: &mut ComparedMetadat
 /// `name` in place of its own, in its metadata and in the content of each `meta` element of the
 /// XHTML head, which must be as many and hold no characters XML escapes.
 #[cfg(feature = "tika")]
-pub(crate) fn with_tikas_values(
+pub fn with_tikas_values(
     text: &mut String,
     metadata: &mut ComparedMetadata,
     tika: &ComparedMetadata,
@@ -1654,11 +1669,7 @@ pub(crate) fn with_tikas_values(
 /// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
 /// compared.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_rewriting(
-    documents: &[&Path],
-    tika_name: &str,
-    rewrite: NativeRewrite,
-) {
+pub fn assert_same_as_tika_rewriting(documents: &[&Path], tika_name: &str, rewrite: NativeRewrite) {
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
@@ -1676,11 +1687,11 @@ pub(crate) fn assert_same_as_tika_rewriting(
 /// A rewrite of the decoded text of both results, for a fix whose departure cannot be undone
 /// from the native result alone: it names the issue, and normalises only what that fix changes.
 #[cfg(feature = "tika")]
-pub(crate) type Normalisation = fn(&mut String);
+pub type Normalisation = fn(&mut String);
 
 /// [`assert_same_as_tika_rewriting`], with both texts then rewritten by `normalise`.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_normalising(
+pub fn assert_same_as_tika_normalising(
     documents: &[&Path],
     tika_name: &str,
     rewrite: NativeRewrite,
@@ -1750,11 +1761,7 @@ fn with_rewrite(
 /// [`assert_same_as_tika`], but for the values of the metadata `departures` names, which the
 /// native parser gives on purpose otherwise than Tika's path.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_departing(
-    documents: &[&Path],
-    tika_name: &str,
-    departures: Departures,
-) {
+pub fn assert_same_as_tika_departing(documents: &[&Path], tika_name: &str, departures: Departures) {
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
@@ -1772,7 +1779,7 @@ pub(crate) fn assert_same_as_tika_departing(
 /// What a native parser does with a document a wrong password was given for.
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WrongPassword {
+pub enum WrongPassword {
     /// It fails as Tika's path fails, with the same error.
     FailsAsTika,
     /// It leaves the document to Tika's path, whose decoders fail on the garbled data with
@@ -1785,7 +1792,7 @@ pub(crate) enum WrongPassword {
 /// same error, and extracts with its password as Tika's path extracts it; and that the rest
 /// extract as Tika's path extracts them.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_with_passwords(
+pub fn assert_same_as_tika_with_passwords(
     documents: &[PathBuf],
     tika_name: &str,
     passwords: &[(&str, &str)],
@@ -1801,7 +1808,7 @@ pub(crate) fn assert_same_as_tika_with_passwords(
 /// [`assert_same_as_tika_with_passwords`], each document a wrong password is given for handled
 /// as `wrong` says.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_with_passwords_but(
+pub fn assert_same_as_tika_with_passwords_but(
     documents: &[PathBuf],
     tika_name: &str,
     passwords: &[(&str, &str)],
@@ -1873,7 +1880,7 @@ fn native_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
 /// `tika_name`, extracts exactly what Tika's path does under Tika's default settings, the
 /// parsers it delegates to named as `delegates` pairs their native names with Tika's.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_delegating(
+pub fn assert_same_as_tika_delegating(
     documents: &[&Path],
     tika_name: &str,
     delegates: &[(&str, &str)],
@@ -1883,7 +1890,7 @@ pub(crate) fn assert_same_as_tika_delegating(
 
 /// [`assert_same_as_tika_delegating`] under the settings `configs`.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_delegating_with(
+pub fn assert_same_as_tika_delegating_with(
     documents: &[&Path],
     tika_name: &str,
     delegates: &[(&str, &str)],
@@ -1900,7 +1907,7 @@ pub(crate) fn assert_same_as_tika_delegating_with(
 /// [`assert_same_as_tika_delegating_with`], but for the values of the metadata `departures`
 /// names, which the native parser gives on purpose otherwise than Tika's path.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_as_tika_delegating_departing_with(
+pub fn assert_same_as_tika_delegating_departing_with(
     documents: &[&Path],
     tika_name: &str,
     delegates: &[(&str, &str)],
@@ -2008,7 +2015,7 @@ fn without_ocr(
 /// handlers, without the second line break after each block element and the second tab before
 /// each indented one, which the native path writes once (#119).
 #[cfg(feature = "tika")]
-pub(crate) fn without_doubled_breaks(xhtml: &str) -> String {
+pub fn without_doubled_breaks(xhtml: &str) -> String {
     use crate::formats::xhtml::{ENDLINE, INDENT};
     let block = ENDLINE.join("|");
     let breaks = regex::Regex::new(&format!(r"(</(?:{block})>|<(?:{block})(?: [^>]*)? />)\n\n"))
@@ -2025,7 +2032,7 @@ pub(crate) fn without_doubled_breaks(xhtml: &str) -> String {
 /// purpose, and the native XHTML is without the [`UNWRITTEN_DIVS`] Tika's has not. Its other
 /// outputs are not compared.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_same_xhtml_as_tika_with(
+pub fn assert_same_xhtml_as_tika_with(
     documents: &[&Path],
     tika_name: &str,
     configs: &ParserConfigs,
@@ -2071,7 +2078,7 @@ pub(crate) fn assert_same_xhtml_as_tika_with(
 /// The error each path fails with on the document at `path` under `configs`, the native
 /// path's first.
 #[cfg(feature = "tika")]
-pub(crate) fn errors(path: &Path, configs: &ParserConfigs) -> (String, String) {
+pub fn errors(path: &Path, configs: &ParserConfigs) -> (String, String) {
     (
         format!("{:?}", native_error(path, configs)),
         format!("{:?}", tika_error(path, configs)),
@@ -2080,13 +2087,13 @@ pub(crate) fn errors(path: &Path, configs: &ParserConfigs) -> (String, String) {
 
 /// Asserts that Tika's path fails on each document, and that the native parser fails too.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_fails_as_tika(documents: &[&Path]) {
+pub fn assert_fails_as_tika(documents: &[&Path]) {
     assert_fails_as_tika_with(documents, &ParserConfigs::default());
 }
 
 /// [`assert_fails_as_tika`] under the settings `configs`.
 #[cfg(feature = "tika")]
-pub(crate) fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
+pub fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
     compare(
         documents,
         configs,
@@ -2298,7 +2305,7 @@ fn read_by_ocr(xhtml: &Comparison) -> Option<OcrTexts> {
 
 /// Why `parser` defers the document at `path` to Tika, given the metadata the detection
 /// starts it from, if it does.
-pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
+pub fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
     let name = path.to_str().unwrap();
     let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
     let detected = formats::Detected::detect(
@@ -2316,12 +2323,12 @@ pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Defe
 
 /// The non-empty files under `roots` whose detected type routing gives `parser`, split into
 /// those it parses and those it defers to Tika.
-pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+pub fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     documents_with(parser, roots, &ParserConfigs::default())
 }
 
 /// [`documents`], deferred under the settings `configs`.
-pub(crate) fn documents_with(
+pub fn documents_with(
     parser: &dyn Parser,
     roots: &[&Path],
     configs: &ParserConfigs,
@@ -2371,7 +2378,7 @@ pub(crate) fn documents_with(
 
 /// Tika's own test documents, which `conformance/prepare.sh` checks out and names in
 /// `CONFORMANCE_CORPUS`, for the ignored tests that compare a parser on all of them.
-pub(crate) fn conformance_corpus() -> PathBuf {
+pub fn conformance_corpus() -> PathBuf {
     PathBuf::from(std::env::var_os("CONFORMANCE_CORPUS").expect(
         "CONFORMANCE_CORPUS names Tika's test documents: eval \"$(conformance/prepare.sh target/conformance)\"",
     ))
@@ -2379,10 +2386,10 @@ pub(crate) fn conformance_corpus() -> PathBuf {
 
 /// A directory for the documents a test writes, removed with it. Each is a directory of its
 /// own, so tests running at once never share one.
-pub(crate) struct Scratch(PathBuf);
+pub struct Scratch(PathBuf);
 
 impl Scratch {
-    pub(crate) fn new(test: &str) -> Self {
+    pub fn new(test: &str) -> Self {
         static CREATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let number = CREATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let directory =
@@ -2392,12 +2399,12 @@ impl Scratch {
     }
 
     /// The directory the documents are written in.
-    pub(crate) fn directory(&self) -> &Path {
+    pub fn directory(&self) -> &Path {
         &self.0
     }
 
     /// Writes `bytes` as the document `name`, returning its path.
-    pub(crate) fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+    pub fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
         let path = self.0.join(name);
         std::fs::write(&path, bytes).unwrap();
         path
@@ -2571,14 +2578,14 @@ fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> 
 /// metadata, and the same files, named, typed, numbered and cut alike. Where the two differ, or
 /// one path fails and the other does not, what differs.
 #[cfg(feature = "tika")]
-pub(crate) fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
+pub fn spools_as_tika(path: &Path, budget: u64) -> Result<usize, String> {
     spools_as_tika_rewriting(path, budget, None, &[])
 }
 
 /// [`spools_as_tika`], with the native result rewritten by `rewrite`, and both texts then by
 /// its normalisation, if any, and without the values `departures` name.
 #[cfg(feature = "tika")]
-pub(crate) fn spools_as_tika_rewriting(
+pub fn spools_as_tika_rewriting(
     path: &Path,
     budget: u64,
     rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
@@ -2589,7 +2596,7 @@ pub(crate) fn spools_as_tika_rewriting(
 
 /// [`spools_as_tika`] under the settings `configs`, but for what `departures` name.
 #[cfg(feature = "tika")]
-pub(crate) fn spools_as_tika_departing_with(
+pub fn spools_as_tika_departing_with(
     path: &Path,
     budget: u64,
     departures: Departures,
@@ -2781,6 +2788,7 @@ fn spools_as_tika_under(
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -116,10 +116,10 @@ text-reference:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    fixtures=extractous-core/tests/fixtures/text
+    fixtures=extractous-html/tests/fixtures/text
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
-        extractous-core/tests/fixtures/formats/TextReference.java \
+        extractous-html/tests/fixtures/formats/TextReference.java \
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
@@ -169,11 +169,11 @@ html-reference:
     rm -rf "$tests"
     mkdir -p "$tests"
     tar -xzf "$tests.tar.gz" -C "$tests" --strip-components 1
-    mkdir -p extractous-core/tests/fixtures/html
+    mkdir -p extractous-html/tests/fixtures/html
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
-        extractous-core/tests/fixtures/formats/HtmlReference.java \
-        extractous-core/tests/fixtures/html extractous-core/models \
+        extractous-html/tests/fixtures/formats/HtmlReference.java \
+        extractous-html/tests/fixtures/html extractous-html/models \
         "$tests/tree-construction" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
@@ -188,7 +188,7 @@ mail-reference:
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     mkdir -p extractous-core/tests/fixtures/mail
     java -cp "$jars/*:extractous-core/tika-native/src/main/resources" \
-        extractous-core/tests/fixtures/formats/MailReference.java \
+        extractous-html/tests/fixtures/formats/MailReference.java \
         extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
         corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
 

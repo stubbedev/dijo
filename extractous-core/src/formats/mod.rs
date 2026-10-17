@@ -27,7 +27,6 @@ mod feed;
 mod fiction_book;
 mod font;
 mod geogebra;
-pub(crate) mod html;
 mod hwpx;
 mod idml;
 mod image;
@@ -47,8 +46,8 @@ mod ole2;
 mod onenote;
 mod ooxml;
 mod open_pgp;
-#[cfg(test)]
-pub(crate) mod parity;
+#[cfg(any(test, feature = "parity"))]
+pub mod parity;
 pub(crate) mod pdf;
 pub(crate) mod plist;
 mod poi;
@@ -58,14 +57,11 @@ mod protected;
 mod prt;
 mod pst;
 mod publisher;
-#[cfg(test)]
-pub(crate) mod reference;
 mod rtf;
 mod source_code;
 #[cfg(not(feature = "static-image"))]
 mod sqlite;
 mod subtitle;
-mod text;
 mod tnef;
 mod translation;
 mod tsd;
@@ -88,6 +84,8 @@ use std::time::Instant;
 
 pub(crate) use crate::mime::{Detected, OpenedFrom};
 pub(crate) use extractous_base::formats::*;
+pub(crate) use extractous_html::formats::html;
+pub(crate) use extractous_html::formats::text;
 
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
@@ -370,7 +368,7 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
 }
 
 /// Routes the file at `path` as an extraction of it does.
-#[cfg(test)]
+#[cfg(any(test, all(feature = "parity", feature = "tika")))]
 pub(crate) fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }

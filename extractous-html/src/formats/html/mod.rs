@@ -39,7 +39,7 @@ use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
 use crate::text::charset::{self, Charset, Detection};
 
 /// Tika's `JSoupParser`.
-pub(crate) struct JSoupParser;
+pub struct JSoupParser;
 
 /// The content types JSoupParser names in its `Content-Type`, by the prefix it recognises.
 const TYPES: [&str; 4] = [
@@ -72,10 +72,7 @@ impl Parser for JSoupParser {
 }
 
 /// What [`JSoupParser`] prepares of `input`, which holds nothing of it.
-pub(crate) fn prepare(
-    input: &[u8],
-    metadata: &TikaMetadata,
-) -> Result<Prepared<'static>, Deferral> {
+pub fn prepare(input: &[u8], metadata: &TikaMetadata) -> Result<Prepared<'static>, Deferral> {
     if let Some(reason) = AutoDetectReader::defers(input) {
         return Err(reason.to_owned());
     }
@@ -91,7 +88,7 @@ pub(crate) fn prepare(
 }
 
 /// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units.
-pub(crate) fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Deferral> {
+pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Deferral> {
     let dom = tree_builder::parse(html, Source::String);
     if let Some(reason) = handler::deferral(&dom, None) {
         return Err(reason.to_owned());
@@ -148,10 +145,10 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
 }
 
 /// A document `Jsoup.parse` builds from a string, for a parser that walks its nodes itself.
-pub(crate) struct ParsedDocument(Dom);
+pub struct ParsedDocument(Dom);
 
 /// A node of a [`ParsedDocument`], as a `NodeFilter` sees it.
-pub(crate) enum ParsedNode<'d> {
+pub enum ParsedNode<'d> {
     Document,
     /// An element, by its name (`nodeName`), with its attributes in their order.
     Element {
@@ -167,21 +164,21 @@ pub(crate) enum ParsedNode<'d> {
 }
 
 impl ParsedDocument {
-    pub(crate) fn parse(html: &str) -> Self {
+    pub fn parse(html: &str) -> Self {
         let units: Vec<u16> = html.encode_utf16().collect();
         Self(tree_builder::parse(&units, Source::String))
     }
 
     /// The document node, the root of the tree.
-    pub(crate) fn root(&self) -> usize {
+    pub fn root(&self) -> usize {
         dom::DOCUMENT
     }
 
-    pub(crate) fn children(&self, node: usize) -> &[usize] {
+    pub fn children(&self, node: usize) -> &[usize] {
         &self.0.node(node).children
     }
 
-    pub(crate) fn node(&self, node: usize) -> ParsedNode<'_> {
+    pub fn node(&self, node: usize) -> ParsedNode<'_> {
         match &self.0.node(node).data {
             dom::NodeData::Document { .. } => ParsedNode::Document,
             dom::NodeData::Element { .. } => ParsedNode::Element {

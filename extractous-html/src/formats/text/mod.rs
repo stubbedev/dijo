@@ -81,7 +81,7 @@ use crate::mime::MediaType;
 const CHUNK: usize = 4096;
 
 /// Tika's `TextAndCSVParser`, for the plain text, CSV and TSV types extractous routes to it.
-pub(crate) struct TextAndCsvParser;
+pub struct TextAndCsvParser;
 
 impl Parser for TextAndCsvParser {
     fn name(&self) -> &'static str {
@@ -141,7 +141,7 @@ pub(crate) fn prepare<'a>(
 
 /// What [`prepare`] prepares of a `text/plain` part of an email: plain text, never a table.
 /// Tika sniffs such a part for a table, and makes it `text/csv` when it looks like one (#82).
-pub(crate) fn prepare_plain(input: Vec<u8>) -> Result<Prepared<'static>, Deferral> {
+pub fn prepare_plain(input: Vec<u8>) -> Result<Prepared<'static>, Deferral> {
     if let Some(reason) = AutoDetectReader::defers(&input) {
         return Err(reason.to_owned());
     }
