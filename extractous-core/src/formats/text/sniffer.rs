@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 /// The characters (UTF-16 units) the sniffer reads: `TextAndCSVConfig`'s default mark limit.
-const MARK_LIMIT: usize = 20_000;
+pub(super) const MARK_LIMIT: usize = 20_000;
 /// The confidence from which the text is a table.
 const MIN_CONFIDENCE: f64 = 0.5;
 const QUOTE: u16 = b'"' as u16;

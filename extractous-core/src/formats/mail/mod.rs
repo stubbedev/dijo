@@ -248,7 +248,7 @@ fn prepare_message(
             Item::StartEntry => Part::StartEntry,
             Item::EndEntry => Part::EndEntry,
             Item::Inline(Inline::Text(content)) => Part::Inline(
-                text::prepare_plain(&content)
+                text::prepare_plain(content)
                     .map_err(|reason| format!("a text part defers: {reason}"))?,
             ),
             Item::Inline(Inline::Html(content)) => Part::Inline(
