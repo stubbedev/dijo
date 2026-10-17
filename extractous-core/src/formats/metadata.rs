@@ -33,13 +33,15 @@ pub(crate) mod paged {
 }
 
 /// `PageAnchoring.applyPageMetadata`: the pages a resource is on in order, -1 for none, and the
-/// page when there is one.
+/// page when there is one, in place of any the metadata held.
 pub(crate) fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
     let mut sorted = pages.to_vec();
     sorted.sort_unstable();
     if sorted.is_empty() {
         sorted.push(-1);
     }
+    metadata.remove(paged::PAGE_NUMBERS);
+    metadata.remove(paged::PAGE_NUMBER);
     for page in &sorted {
         metadata.add(paged::PAGE_NUMBERS, page.to_string());
     }

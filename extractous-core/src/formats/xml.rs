@@ -133,6 +133,39 @@ pub(crate) fn parse_sax(
     })
 }
 
+/// Whether the XML document `input` declares a document type before its root element, under
+/// which Xerces may report whitespace as ignorable, which Tika's handlers drop or keep as their
+/// own `ignorableWhitespace` decides.
+pub(crate) fn has_document_type(input: &[u8]) -> bool {
+    /// Finds a document type declaration, and stops at it or at the root element.
+    struct Finder(bool);
+
+    impl SaxHandler for Finder {
+        fn start_element(&mut self, _: &str, _: &str, _: &[Attribute]) -> Result<(), Failure> {
+            Err(Failure::Malformed(
+                "the root element comes first".to_owned(),
+            ))
+        }
+
+        fn end_element(&mut self, _: &str, _: &str) -> Result<(), Failure> {
+            Ok(())
+        }
+
+        fn characters(&mut self, _: &str) -> Result<(), Failure> {
+            Ok(())
+        }
+
+        fn document_type(&mut self) -> Result<(), Failure> {
+            self.0 = true;
+            Err(Failure::Malformed("found".to_owned()))
+        }
+    }
+
+    let mut finder = Finder(false);
+    let _stopped = parse_sax(input, "the document", &mut finder);
+    finder.0
+}
+
 /// Whether the JDK's scanner reads on over the character `byte` is part of in a run of character
 /// data: anything but a line break, `]` and a character outside the Basic Multilingual Plane, the
 /// characters whose UTF-8 starts with a byte of 0xF0 or more.

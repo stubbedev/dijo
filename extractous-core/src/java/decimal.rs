@@ -58,6 +58,55 @@ impl BigDecimal {
         }
     }
 
+    /// `new BigDecimal(unscaled, scale)` of the unscaled value's decimal `digits`, negated where
+    /// asked.
+    pub(crate) fn from_digits(negative: bool, digits: &str, scale: i64) -> Self {
+        Self::new(negative, digits.bytes().map(|b| b - b'0').collect(), scale)
+    }
+
+    /// `toString`: plain where the scale is not negative and the adjusted exponent is at least
+    /// -6, else in scientific notation.
+    pub(crate) fn to_java_string(&self) -> String {
+        let coefficient: String = if self.digits.is_empty() {
+            "0".to_owned()
+        } else {
+            self.digits.iter().map(|d| char::from(b'0' + d)).collect()
+        };
+        let mut text = String::from(if self.negative { "-" } else { "" });
+        if self.scale == 0 {
+            text.push_str(&coefficient);
+            return text;
+        }
+        let adjusted = -self.scale + (coefficient.len() as i64 - 1);
+        if self.scale > 0 && adjusted >= -6 {
+            let pad = self.scale - coefficient.len() as i64;
+            if pad >= 0 {
+                text.push_str("0.");
+                text.push_str(&"0".repeat(pad as usize));
+                text.push_str(&coefficient);
+            } else {
+                let point = (-pad) as usize;
+                text.push_str(&coefficient[..point]);
+                text.push('.');
+                text.push_str(&coefficient[point..]);
+            }
+            return text;
+        }
+        text.push_str(&coefficient[..1]);
+        if coefficient.len() > 1 {
+            text.push('.');
+            text.push_str(&coefficient[1..]);
+        }
+        if adjusted != 0 {
+            text.push('E');
+            if adjusted > 0 {
+                text.push('+');
+            }
+            text.push_str(&adjusted.to_string());
+        }
+        text
+    }
+
     fn new(negative: bool, digits: Vec<u8>, scale: i64) -> Self {
         let digits = strip_leading_zeros(digits);
         Self {
@@ -325,6 +374,21 @@ mod tests {
             digits,
             -number.scale
         )
+    }
+
+    #[test]
+    fn writes_as_java_big_decimal_to_string_does() {
+        let string = |negative, digits, scale| {
+            BigDecimal::from_digits(negative, digits, scale).to_java_string()
+        };
+        assert_eq!(string(false, "12345", 0), "12345");
+        assert_eq!(string(true, "12345", 2), "-123.45");
+        assert_eq!(string(false, "5", 4), "0.0005");
+        assert_eq!(string(false, "0", 4), "0.0000");
+        assert_eq!(string(false, "1", 7), "1E-7");
+        assert_eq!(string(false, "123", 9), "1.23E-7");
+        assert_eq!(string(false, "123", -2), "1.23E+4");
+        assert_eq!(string(true, "0", 0), "0");
     }
 
     #[test]

@@ -53,3 +53,4 @@ org/apache/pdfbox/pdfbox/3.0.8/pdfbox-3.0.8.jar	97647cfbde61ebcfc06b4cf8c9b0ffca
 org/apache/pdfbox/pdfbox-io/3.0.8/pdfbox-io-3.0.8.jar	36a0e04001010b4c764857817412b96339930b19755e728959805cc0352061b2	pdf
 org/apache/pdfbox/fontbox/3.0.8/fontbox-3.0.8.jar	a1915c24e3edbe0ecec93896dfbf6d41427810b663ade97bd4e8bae86ec3fdab	pdf
 commons-logging/commons-logging/1.3.5/commons-logging-1.3.5.jar	6d7a744e4027649fbb50895df9497d109f98c766a637062fe8d2eabbb3140ba4	pdf
+org/codelibs/jhighlight/2.0.0/jhighlight-2.0.0.jar	e7102742e79e16b720cec45debef889b2af67f99968791a352e54c9d2488b53c	source-code

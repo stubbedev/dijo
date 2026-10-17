@@ -32,6 +32,12 @@ use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 
+/// Every type Tika's tables declare, by its printed form, in the order they declare them.
+#[cfg(test)]
+pub(crate) fn declared_types() -> impl Iterator<Item = &'static str> {
+    mime_types().declared()
+}
+
 /// What Tika knows of a document before it detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin<'a> {
@@ -162,12 +168,6 @@ pub(crate) fn lineage(media_type: &MediaType) -> impl Iterator<Item = MediaType>
 /// Whether the default types declare `kind`, or its base type, as a type or an alias.
 pub(crate) fn declares(kind: &MediaType) -> bool {
     mime_types().registry().declares(kind)
-}
-
-/// Every type the default types declare.
-#[cfg(test)]
-pub(crate) fn known_types() -> impl Iterator<Item = MediaType> {
-    mime_types().known_types()
 }
 
 /// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type,

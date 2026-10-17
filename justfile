@@ -192,6 +192,18 @@ mail-reference:
         extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
         corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
+
+# Regenerate the tables of the JFlex scanners jhighlight highlights Java, Groovy and C++ with, which the
+# native SourceCodeParser scans source code with as Tika's does.
+[unix]
+source-code-tables:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    java -cp "$jars/source-code/*" extractous-core/tests/fixtures/source_code/LexerTables.java \
+        extractous-core/src/formats/source_code/tables.rs
+
 # Regenerate what Apache Tika's RTFParser makes of the code pages RTF names and of the dates in its
 # info group, which the Rust port is tested against, after refreshing the fixture zoneinfo files the
 # dates are computed with from the system's.

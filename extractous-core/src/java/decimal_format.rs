@@ -46,10 +46,39 @@ struct Limits {
     max_fraction: i64,
 }
 
+/// The currency a format's symbols name: what `¤` and `¤¤` in a pattern's affixes write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Currency {
+    symbol: &'static str,
+    code: &'static str,
+}
+
+/// The `en_US` symbols' currency.
+const EN_US_CURRENCY: Currency = Currency {
+    symbol: "$",
+    code: "USD",
+};
+
+/// `Locale.ROOT`'s symbols' currency: none, whose code is `XXX`.
+pub(crate) const ROOT_CURRENCY: Currency = Currency {
+    symbol: "\u{a4}",
+    code: "XXX",
+};
+
 impl DecimalFormat {
     /// `new DecimalFormat(pattern, symbols)` with `setRoundingMode(rounding)`; an error where the
     /// pattern throws `IllegalArgumentException`.
     pub(crate) fn new(pattern: &str, rounding: Rounding) -> Result<Self, String> {
+        Self::with_currency(pattern, rounding, EN_US_CURRENCY)
+    }
+
+    /// [`DecimalFormat::new`] with symbols whose currency is `currency`. Like a currency format
+    /// of a locale whose currency has no default fraction digits, it keeps the pattern's.
+    pub(crate) fn with_currency(
+        pattern: &str,
+        rounding: Rounding,
+        currency: Currency,
+    ) -> Result<Self, String> {
         let malformed = |reason: &str| Err(format!("{reason} in pattern {pattern:?}"));
         let chars: Vec<char> = pattern.chars().collect();
         let mut format = DecimalFormat {
@@ -295,10 +324,10 @@ impl DecimalFormat {
             negative_suffix_pattern = positive_suffix_pattern.clone();
             negative_prefix_pattern = format!("'-{positive_prefix_pattern}");
         }
-        format.positive_prefix = expand_affix(&positive_prefix_pattern);
-        format.positive_suffix = expand_affix(&positive_suffix_pattern);
-        format.negative_prefix = expand_affix(&negative_prefix_pattern);
-        format.negative_suffix = expand_affix(&negative_suffix_pattern);
+        format.positive_prefix = expand_affix(&positive_prefix_pattern, currency);
+        format.positive_suffix = expand_affix(&positive_suffix_pattern, currency);
+        format.negative_prefix = expand_affix(&negative_prefix_pattern, currency);
+        format.negative_suffix = expand_affix(&negative_suffix_pattern, currency);
         Ok(format)
     }
 
@@ -534,8 +563,9 @@ impl DecimalFormat {
     }
 }
 
-/// `expandAffix`: the quoted specials `'¤`, `'%`, `'‰` and `'-` as their `en_US` symbols.
-fn expand_affix(pattern: &str) -> String {
+/// `expandAffix`: the quoted specials `'¤`, `'%`, `'‰` and `'-` as their `en_US` symbols, the
+/// currency as `currency`.
+fn expand_affix(pattern: &str, currency: Currency) -> String {
     let mut expanded = String::new();
     let mut chars = pattern.chars().peekable();
     while let Some(c) = chars.next() {
@@ -544,9 +574,9 @@ fn expand_affix(pattern: &str) -> String {
                 Some(CURRENCY_SIGN) => {
                     if chars.peek() == Some(&CURRENCY_SIGN) {
                         chars.next();
-                        expanded.push_str("USD");
+                        expanded.push_str(currency.code);
                     } else {
-                        expanded.push('$');
+                        expanded.push_str(currency.symbol);
                     }
                 }
                 Some('%') => expanded.push('%'),
@@ -759,6 +789,14 @@ mod tests {
         assert_eq!(format_text("0.00E0", "12345"), "1.23E4");
         assert_eq!(format_text("$#,##0;($#,##0)", "-1234.5"), "($1,235)");
         assert_eq!(format_text("0.0", "-0.04"), "-0.0");
+        let root_currency =
+            DecimalFormat::with_currency("\u{a4}\u{a0}#,##0.00", Rounding::HalfEven, ROOT_CURRENCY)
+                .unwrap();
+        assert_eq!(root_currency.format_f64(3.5), "\u{a4}\u{a0}3.50");
+        assert_eq!(
+            root_currency.format_f64(-8_540_982_423.45),
+            "-\u{a4}\u{a0}8,540,982,423.45"
+        );
         assert_eq!(format("#.##########", 0.125), "0.125");
         assert_eq!(format("0", 2.5), "3");
         assert_eq!(format("0.##############E0", 1.5e20), "1.5E20");

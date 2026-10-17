@@ -73,7 +73,8 @@ mod tests {
                 .clone()
         };
         let mut table = Vec::new();
-        for kind in mime::known_types() {
+        for declared in mime::declared_types() {
+            let kind = MediaType::named(declared);
             let class = class_of(kind.as_str());
             let inherited = match mime::lineage(&kind).nth(1) {
                 Some(supertype) => class_of(supertype.as_str()),
@@ -125,7 +126,8 @@ mod tests {
     #[test]
     fn routes_each_type_to_the_parser_tika_picks() {
         let mut differences = Vec::new();
-        for kind in mime::known_types() {
+        for declared in mime::declared_types() {
+            let kind = MediaType::named(declared);
             if EXCEPTIONS
                 .iter()
                 .any(|(exception, _)| *exception == kind.as_str())
@@ -160,7 +162,7 @@ mod tests {
             formats::parser_for("text/x-matlab").unwrap().name(),
             formats::parser_for("text/plain").unwrap().name()
         );
-        assert!(formats::parser_for("application/x-msaccess").is_err());
+        assert!(formats::parser_for("image/vnd.dwg").is_err());
         assert!(formats::parser_for("image/x-portable-pixmap").is_err());
         assert!(TIKA_PARSERS.is_sorted());
     }

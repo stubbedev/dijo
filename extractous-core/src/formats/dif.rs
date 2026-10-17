@@ -46,9 +46,7 @@ impl Parser for DifParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let mut finder = DocumentType(false);
-        let _ = xml::parse_sax(input, "the DIF record", &mut finder);
-        if finder.0 {
+        if xml::has_document_type(input) {
             return Err(Declined::Deferred(
                 "a document type declaration, under which Xerces may report whitespace as \
                  ignorable, which DIFContentHandler writes as it is"
@@ -72,30 +70,6 @@ impl Parser for DifParser {
                 other => other,
             })
         }))
-    }
-}
-
-/// Finds a document type declaration, and stops.
-struct DocumentType(bool);
-
-impl SaxHandler for DocumentType {
-    fn start_element(&mut self, _: &str, _: &str, _: &[Attribute]) -> Result<(), Failure> {
-        Err(Failure::Malformed(
-            "the root element comes first".to_owned(),
-        ))
-    }
-
-    fn end_element(&mut self, _: &str, _: &str) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    fn characters(&mut self, _: &str) -> Result<(), Failure> {
-        Ok(())
-    }
-
-    fn document_type(&mut self) -> Result<(), Failure> {
-        self.0 = true;
-        Err(Failure::Malformed("found".to_owned()))
     }
 }
 

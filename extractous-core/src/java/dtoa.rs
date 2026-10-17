@@ -582,4 +582,19 @@ mod tests {
         assert_eq!(java_double_to_string(-1.5e-10), "-1.5E-10");
         assert_eq!(java_double_to_string(0.0001), "1.0E-4");
     }
+
+    #[test]
+    fn prints_floats_as_java_does() {
+        assert_eq!(java_float_to_string(0.1), "0.1");
+        assert_eq!(java_float_to_string(444.555), "444.555");
+        assert_eq!(java_float_to_string(-2.5), "-2.5");
+        assert_eq!(java_float_to_string(16_777_216.0), "1.6777216E7");
+        assert_eq!(
+            java_float_to_string(f32::MIN_POSITIVE / 8_388_608.0),
+            "1.4E-45"
+        );
+        assert_eq!(java_float_to_string(f32::MAX), "3.4028235E38");
+        assert_eq!(java_float_to_string(-0.0), "-0.0");
+        assert_eq!(java_float_to_string(f32::NAN), "NaN");
+    }
 }
