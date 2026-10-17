@@ -18,8 +18,6 @@ impl Parser for FeedParser {
     fn name(&self) -> &'static str {
         "extractous::FeedParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.feed.FeedParser"
     }

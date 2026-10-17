@@ -28,8 +28,6 @@ impl Parser for MifParser {
     fn name(&self) -> &'static str {
         "extractous::MIFParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.mif.MIFParser"
     }

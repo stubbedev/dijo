@@ -45,8 +45,6 @@ impl Parser for WarcParser {
     fn name(&self) -> &'static str {
         "extractous::WARCParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.warc.WARCParser"
     }

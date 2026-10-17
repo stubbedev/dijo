@@ -77,8 +77,6 @@ impl Parser for Rfc822Parser {
     fn name(&self) -> &'static str {
         "extractous::RFC822Parser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.mail.RFC822Parser"
     }
@@ -105,8 +103,6 @@ impl Parser for EmlxParser {
     fn name(&self) -> &'static str {
         "extractous::EmlxParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.EmlxParser"
     }

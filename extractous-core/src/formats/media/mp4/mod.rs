@@ -51,8 +51,6 @@ impl Parser for Mp4Parser {
     fn name(&self) -> &'static str {
         "extractous::MP4Parser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.mp4.MP4Parser"
     }

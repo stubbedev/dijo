@@ -46,11 +46,11 @@ encoding-reference:
     ci/fetch-reference-jars.sh "$jars"
     for model in nb-bigram.bin utf16-specialist.bin; do
         unzip -p "$jars"/tika-encoding-detector-mojibuster-*.jar "org/apache/tika/ml/chardetect/$model" \
-            | cmp - "extractous-core/models/$model"
+            | cmp - "extractous-base/models/$model"
     done
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    fixtures=extractous-core/tests/fixtures/charset
-    java "$fixtures/CharsetTables.java" extractous-core/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
+    fixtures=extractous-base/tests/fixtures/charset
+    java "$fixtures/CharsetTables.java" extractous-base/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/encoding-reference.tsv.gz"
@@ -66,19 +66,19 @@ native-image-rules:
     rules=target/native-image-rules
     rm -rf "$rules"
     mkdir -p "$rules"
-    java extractous-core/tests/fixtures/charset/NativeImageRules.java \
+    java extractous-base/tests/fixtures/charset/NativeImageRules.java \
         "$jars/sources/tika-encoding-detector-mojibuster-4.1.0-sources.jar" "$jars/*" "$rules" >&2
     echo "$rules"
 
 # Regenerate what Tika's XHTMLContentHandler and our handler chains write for the parser calls in
-# extractous-core/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.
+# extractous-base/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.
 [unix]
 handler-reference:
     #!/usr/bin/env bash
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/handlers
+    fixtures=extractous-base/tests/fixtures/handlers
     sources=target/handler-reference/ai/yobix
     rm -rf "$sources"
     mkdir -p "$sources"
@@ -213,7 +213,7 @@ rtf-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/rtf
+    fixtures=extractous-base/tests/fixtures/rtf
     system=$(readlink -f /etc/localtime | sed 's|/zoneinfo/.*|/zoneinfo|')
     (cd "$fixtures/zoneinfo" && find . -type f) | while IFS= read -r zone; do
         cp -L "$system/$zone" "$fixtures/zoneinfo/$zone"
@@ -229,7 +229,7 @@ xlsx-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/xlsx
+    fixtures=extractous-base/tests/fixtures/xlsx
     java -Duser.language=en -Duser.country=US -Duser.timezone=Europe/Copenhagen \
         -cp "$jars/mime/*" "$fixtures/FormatReference.java" "$fixtures"
 
@@ -266,8 +266,8 @@ junk-reference:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     model=org/apache/tika/ml/junkdetect/junkdetect.bin
-    unzip -p "$jars"/tika-ml-junkdetect-*.jar "$model" | cmp - "extractous-core/models/$(basename "$model")"
-    fixtures=extractous-core/tests/fixtures/junk
+    unzip -p "$jars"/tika-ml-junkdetect-*.jar "$model" | cmp - "extractous-base/models/$(basename "$model")"
+    fixtures=extractous-base/tests/fixtures/junk
     java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
         extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
 

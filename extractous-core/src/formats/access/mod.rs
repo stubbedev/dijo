@@ -71,8 +71,6 @@ impl Parser for JackcessParser {
     fn name(&self) -> &'static str {
         "extractous::JackcessParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.JackcessParser"
     }

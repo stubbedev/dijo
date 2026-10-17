@@ -399,8 +399,6 @@ impl Parser for CmsParser {
     fn name(&self) -> &'static str {
         "extractous::CmsParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.CmsParser"
     }

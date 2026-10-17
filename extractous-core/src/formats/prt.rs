@@ -20,8 +20,6 @@ impl Parser for PrtParser {
     fn name(&self) -> &'static str {
         "extractous::PRTParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.prt.PRTParser"
     }

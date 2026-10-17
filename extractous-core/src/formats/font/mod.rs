@@ -6,11 +6,11 @@ mod afm;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::media::set_nullable;
+use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::pdf::jfloat::float_to_string;
 use crate::formats::pdf::truetype::{Read, TrueType};
 use crate::formats::{Declined, Parser, Prepared};
+use crate::java::jfloat::float_to_string;
 use crate::java::time::format_instant;
 
 /// Milliseconds from 1904-01-01, where TrueType counts its dates from, to the Java epoch.
@@ -40,8 +40,6 @@ impl Parser for TrueTypeParser {
     fn name(&self) -> &'static str {
         "extractous::TrueTypeParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.font.TrueTypeParser"
     }
@@ -99,8 +97,6 @@ impl Parser for AdobeFontMetricParser {
     fn name(&self) -> &'static str {
         "extractous::AdobeFontMetricParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.font.AdobeFontMetricParser"
     }

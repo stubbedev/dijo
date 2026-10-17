@@ -19,8 +19,6 @@ impl Parser for FictionBookParser {
     fn name(&self) -> &'static str {
         "extractous::FictionBookParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.FictionBookParser"
     }

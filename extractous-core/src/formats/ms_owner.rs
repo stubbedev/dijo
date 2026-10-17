@@ -20,8 +20,6 @@ impl Parser for MsOwnerFileParser {
     fn name(&self) -> &'static str {
         "extractous::MSOwnerFileParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.MSOwnerFileParser"
     }

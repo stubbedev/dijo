@@ -61,8 +61,6 @@ impl Parser for Sqlite3Parser {
     fn name(&self) -> &'static str {
         "extractous::SQLite3Parser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.sqlite3.SQLite3Parser"
     }

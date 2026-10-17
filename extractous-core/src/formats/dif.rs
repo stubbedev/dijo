@@ -30,8 +30,6 @@ impl Parser for DifParser {
     fn name(&self) -> &'static str {
         "extractous::DIFParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.dif.DIFParser"
     }

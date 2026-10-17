@@ -33,8 +33,6 @@ impl Parser for WaczParser {
     fn name(&self) -> &'static str {
         "extractous::WACZParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.wacz.WACZParser"
     }

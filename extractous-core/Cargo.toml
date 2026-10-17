@@ -31,7 +31,7 @@ default = ["tika"]
 # Apache Tika compiled to native code with GraalVM and run through JNI, which extracts what no
 # native parser reads yet. Without it, those documents fail with `Error::Unsupported`, and the
 # build needs no GraalVM.
-tika = ["dep:jni"]
+tika = ["dep:jni", "extractous-base/tika"]
 # Link tesseract, Leptonica and libheif statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
 # of loading them: for the statically linked Linux executable without Tika that ci/static.sh builds.
 static = []
@@ -39,22 +39,21 @@ static = []
 # GraalVM native image of Tika and uses the Java VM that image runs, instead of loading the image as
 # a shared library: ci/static-image.sh builds it.
 static-image = ["static", "tika"]
+# The parity harness, which compares the native parsers with Tika's path, for the tests of the crates
+# of the formats.
+parity = ["extractous-base/testing"]
 
 [dependencies]
+extractous-base = { path = "../extractous-base", default-features = false }
 libc = { version = "0.2.178" }
 jni = { version = "0.22.4", optional = true }
 libloading = "0.9.0"
 flate2 = "1.1.5"
-bzip2 = "0.6.1"
 snap = "1.1.2"
-lz4_flex = "0.14.0"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz"] }
-ruzstd = "0.9.1"
 tar = { version = "0.4.46", default-features = false }
 ar = "0.9.0"
 cpio = "0.4.1"
-sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["aes256", "bzip2", "deflate"] }
-encoding_rs = "0.8.42"
 fancy-regex = "0.19.2"
 regex = "1.13.1"
 unicode-bidi = "0.3.18"
@@ -63,9 +62,6 @@ unicode-normalization = "0.1.25"
 unicode-script = "0.5.8"
 thiserror = { version = "2.0.17" }
 bytemuck =  { version = "1.24.0"}
-# String enums
-strum = { version = "0.28.0" }
-strum_macros = { version = "0.28.0" }
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 serde = "1.0.228"
 serde_json = "1.0.145"
@@ -79,28 +75,23 @@ tiff = "0.11.3"
 png = "0.18.1"
 hayro = "0.8.0"
 lcms2-sys = { version = "4.0.7", default-features = false, features = ["static"] }
-aes = "0.9.3"
 md-5 = "0.11.0"
 rc4 = "0.2.0"
-sha1 = "0.11.0"
 sha2 = "0.11.1"
 hayro-jpeg2000 = "0.4.1"
 hayro-jbig2 = "0.3.1"
 rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
-memmap2 = "0.9.11"
 # SQLite compiled in. The static image with Tika leaves SQLite to Tika's path, as it links
 # sqlite-jdbc's own SQLite.
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }
 
 [target.'cfg(windows)'.dependencies]
-jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
-jiff-tzdb = "0.1.9"
 windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
+extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
-sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["bzip2", "deflate", "compress"] }
 textdistance = "1.1.1"
 test-case = "3.3.1"
 criterion = "0.8.0"

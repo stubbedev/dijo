@@ -39,7 +39,6 @@ pub(crate) use raw::RawTiffParser;
 /// The name the port records the OCR enricher under, as Tika records `ai.yobix.PreparingOcrParser`.
 pub(crate) const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
 /// The OCR enricher's names, the port's paired with Tika's.
-#[cfg(all(test, feature = "tika"))]
 const TIKA_DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
 
 /// The types `PreparingOcrParser` reads, for which Tika's image parsers run it as their enricher:
@@ -105,13 +104,9 @@ impl Parser for JpegParser {
     fn name(&self) -> &'static str {
         "extractous::JpegParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.JpegParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -137,13 +132,9 @@ impl Parser for TiffParser {
     fn name(&self) -> &'static str {
         "extractous::TiffParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.TiffParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -169,13 +160,9 @@ impl Parser for HeifParser {
     fn name(&self) -> &'static str {
         "extractous::HeifParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.HeifParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -207,8 +194,6 @@ impl Parser for JxlParser {
     fn name(&self) -> &'static str {
         "extractous::JXLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.JXLParser"
     }
@@ -236,8 +221,6 @@ impl Parser for BpgParser {
     fn name(&self) -> &'static str {
         "extractous::BPGParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.BPGParser"
     }
@@ -264,13 +247,9 @@ impl Parser for ImageParser {
     fn name(&self) -> &'static str {
         "extractous::ImageParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.ImageParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -403,13 +382,9 @@ impl Parser for RecognizedImageParser {
     fn name(&self) -> &'static str {
         "extractous::RecognizedImageParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.RecognizedImageParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }

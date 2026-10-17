@@ -355,8 +355,6 @@ impl Parser for OpenDocumentParser {
     fn name(&self) -> &'static str {
         "extractous::OpenDocumentParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.odf.OpenDocumentParser"
     }

@@ -123,8 +123,6 @@ impl Parser for ExecutableParser {
     fn name(&self) -> &'static str {
         "extractous::ExecutableParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.executable.ExecutableParser"
     }
@@ -362,8 +360,6 @@ impl Parser for UniversalExecutableParser {
     fn name(&self) -> &'static str {
         "extractous::UniversalExecutableParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.executable.UniversalExecutableParser"
     }

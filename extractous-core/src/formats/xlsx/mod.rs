@@ -18,7 +18,6 @@
 mod binary;
 mod cell;
 mod handlers;
-pub(crate) mod header_footer;
 mod parts;
 mod sheet;
 
@@ -33,9 +32,9 @@ use parts::{Comments, SharedStrings, Styles};
 use sheet::{SheetOutput, SheetReader, SheetSettings};
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
-use crate::formats::data_format::DataFormatter;
+use crate::formats::data_format::{header_footer, DataFormatter};
 use crate::formats::docx;
-use crate::formats::metadata::TikaMetadata;
+use crate::formats::metadata::{write_sheet_numbers, TikaMetadata};
 use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ignore};
 use crate::formats::ooxml::{
     self, Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP,
@@ -106,8 +105,6 @@ mod excel {
     pub(super) const HAS_WEB_QUERIES: &str = "msoffice:excel:has-web-queries";
     pub(super) const HAS_EXTERNAL_PIVOT_DATA: &str = "msoffice:excel:has-external-pivot-data";
     pub(super) const HAS_POWER_QUERY: &str = "msoffice:excel:has-power-query";
-    pub(super) const SHEET_NUMBER: &str = "msoffice:excel:sheet-number";
-    pub(super) const SHEET_NUMBERS: &str = "msoffice:excel:sheet-numbers";
 }
 
 pub(crate) struct XlsxParser;
@@ -116,8 +113,6 @@ impl Parser for XlsxParser {
     fn name(&self) -> &'static str {
         "extractous::OOXMLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
@@ -644,17 +639,6 @@ impl<'a> Workbook<'a> {
             .filter(|relationship| relationship.is_internal())
             .filter_map(|relationship| relationship.part)
             .collect()
-    }
-}
-
-/// `PageAnchoring.applySheetMetadata`: the sheets an embedded picture is drawn on, and the
-/// sheet where it is one.
-pub(crate) fn write_sheet_numbers(sheets: &BTreeSet<usize>, metadata: &mut TikaMetadata) {
-    for sheet in sheets {
-        metadata.add(excel::SHEET_NUMBERS, sheet.to_string());
-    }
-    if let [sheet] = sheets.iter().collect::<Vec<_>>()[..] {
-        metadata.set(excel::SHEET_NUMBER, sheet.to_string());
     }
 }
 

@@ -59,8 +59,6 @@ impl Parser for TnefParser {
     fn name(&self) -> &'static str {
         "extractous::TNEFParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.TNEFParser"
     }

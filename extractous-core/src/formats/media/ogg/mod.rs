@@ -10,9 +10,10 @@ use std::collections::HashSet;
 
 use streams::Comments;
 
-use super::{extract_pictures, set_nullable, NumberAndTotal, Picture};
+use super::{extract_pictures, NumberAndTotal, Picture};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
+use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
@@ -296,8 +297,6 @@ impl Parser for VorbisParser {
     fn name(&self) -> &'static str {
         "extractous::VorbisParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.ogg.VorbisParser"
     }
@@ -346,8 +345,6 @@ impl Parser for OpusParser {
     fn name(&self) -> &'static str {
         "extractous::OpusParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.ogg.OpusParser"
     }
@@ -414,8 +411,6 @@ impl Parser for FlacParser {
     fn name(&self) -> &'static str {
         "extractous::FlacParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.ogg.FlacParser"
     }

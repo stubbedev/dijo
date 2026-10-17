@@ -9,9 +9,10 @@ mod mpeg;
 use id3v2::{Frame, Tags, Thrown, Version};
 use mpeg::{AudioFrame, Frames, Stream};
 
-use super::{extract_pictures, set_nullable, NumberAndTotal, Picture};
+use super::{extract_pictures, NumberAndTotal, Picture};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
+use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
@@ -375,8 +376,6 @@ impl Parser for Mp3Parser {
     fn name(&self) -> &'static str {
         "extractous::Mp3Parser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.mp3.Mp3Parser"
     }

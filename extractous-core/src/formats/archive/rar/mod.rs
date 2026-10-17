@@ -35,8 +35,6 @@ impl Parser for RarParser {
     fn name(&self) -> &'static str {
         "extractous::RarParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.pkg.RarParser"
     }

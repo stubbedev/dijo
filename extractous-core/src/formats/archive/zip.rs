@@ -119,8 +119,6 @@ impl Parser for ZipParser {
     fn name(&self) -> &'static str {
         "extractous::ZipParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.pkg.ZipParser"
     }

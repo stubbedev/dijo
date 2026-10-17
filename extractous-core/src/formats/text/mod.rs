@@ -87,8 +87,6 @@ impl Parser for TextAndCsvParser {
     fn name(&self) -> &'static str {
         "extractous::TextAndCSVParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.csv.TextAndCSVParser"
     }

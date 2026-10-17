@@ -30,8 +30,6 @@ impl Parser for IdmlParser {
     fn name(&self) -> &'static str {
         "extractous::IDMLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.indesign.IDMLParser"
     }

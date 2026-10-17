@@ -136,14 +136,6 @@ impl NumberAndTotal {
     }
 }
 
-/// Sets `name` to `value` as `Metadata.set` does, removing it for a null value.
-pub(crate) fn set_nullable(metadata: &mut TikaMetadata, name: &str, value: Option<&str>) {
-    match value {
-        Some(value) => metadata.set(name, value),
-        None => metadata.remove(name),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

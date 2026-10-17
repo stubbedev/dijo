@@ -52,8 +52,6 @@ impl Parser for TmxParser {
     fn name(&self) -> &'static str {
         "extractous::TMXParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.tmx.TMXParser"
     }
@@ -195,8 +193,6 @@ impl Parser for Xliff12Parser {
     fn name(&self) -> &'static str {
         "extractous::XLIFF12Parser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.xliff.XLIFF12Parser"
     }
@@ -359,13 +355,9 @@ impl Parser for XlzParser {
     fn name(&self) -> &'static str {
         "extractous::XLZParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.xliff.XLZParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }

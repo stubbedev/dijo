@@ -16,8 +16,6 @@ impl Parser for HttpParser {
     fn name(&self) -> &'static str {
         "extractous::HttpParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.http.HttpParser"
     }

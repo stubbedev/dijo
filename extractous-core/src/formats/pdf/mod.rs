@@ -24,7 +24,6 @@ mod engine;
 mod font;
 mod form;
 mod images;
-pub(crate) mod jfloat;
 mod matrix;
 mod metadata;
 mod ocr;
@@ -41,6 +40,8 @@ mod type1;
 mod writer;
 mod xfa;
 mod xref;
+
+use crate::java::jfloat;
 
 use std::ops::ControlFlow;
 
@@ -64,13 +65,10 @@ use writer::{DocumentWriter, WriteFailure};
 const MEDIA_TYPE: &str = "application/pdf";
 const TEXT_LAYER_CHECKING_PARSER: &str = "extractous::TextLayerCheckingPdfParser";
 const PDF_PARSER: &str = "extractous::PDFParser";
-#[cfg(test)]
 const TIKA_PDF_PARSER: &str = "org.apache.tika.parser.pdf.PDFParser";
-#[cfg(test)]
 const TIKA_TEXT_LAYER_CHECKING_PARSER: &str = "ai.yobix.TextLayerCheckingPdfParser";
 /// The parser our `TextLayerCheckingPdfParser` records delegating to, and the OCR parser Tika's
 /// PDF parser hands the pages it OCRs itself, under both names.
-#[cfg(all(test, feature = "tika"))]
 const DELEGATES: [(&str, &str); 2] = [
     (PDF_PARSER, TIKA_PDF_PARSER),
     (
@@ -95,8 +93,6 @@ impl Parser for PdfParser {
             PDF_PARSER
         }
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         if ocr_runs() {
             TIKA_TEXT_LAYER_CHECKING_PARSER
@@ -104,8 +100,6 @@ impl Parser for PdfParser {
             TIKA_PDF_PARSER
         }
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &DELEGATES
     }

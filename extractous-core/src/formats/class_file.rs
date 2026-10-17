@@ -752,8 +752,6 @@ impl Parser for ClassParser {
     fn name(&self) -> &'static str {
         "extractous::ClassParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.asm.ClassParser"
     }

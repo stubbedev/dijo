@@ -109,13 +109,9 @@ impl Parser for OutlookPstParser {
     fn name(&self) -> &'static str {
         "extractous::OutlookPSTParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.pst.OutlookPSTParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &[(
             MAIL_ITEM_PARSER,

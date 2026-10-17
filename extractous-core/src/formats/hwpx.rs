@@ -326,8 +326,6 @@ impl Parser for HwpxParser {
     fn name(&self) -> &'static str {
         "extractous::HwpxParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.HwpxParser"
     }

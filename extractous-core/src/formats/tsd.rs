@@ -269,8 +269,6 @@ impl Parser for TsdParser {
     fn name(&self) -> &'static str {
         "extractous::TSDParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.crypto.TSDParser"
     }

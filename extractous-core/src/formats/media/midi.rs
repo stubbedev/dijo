@@ -266,8 +266,6 @@ impl Parser for MidiParser {
     fn name(&self) -> &'static str {
         "extractous::MidiParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.audio.MidiParser"
     }

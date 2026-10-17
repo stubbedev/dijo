@@ -5,9 +5,9 @@
 use super::location;
 use super::reader::u32_at;
 use super::Event;
-use crate::formats::pdf::jfloat::float_to_string;
 use crate::java;
 use crate::java::dtoa::java_double_to_string;
+use crate::java::jfloat::float_to_string;
 
 /// The key whose value Tika also reads as the location.
 const LOCATION_KEY: &str = "com.apple.quicktime.location.ISO6709";

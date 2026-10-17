@@ -31,8 +31,6 @@ impl Parser for RtfParser {
     fn name(&self) -> &'static str {
         "extractous::RTFParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.rtf.RTFParser"
     }

@@ -8,8 +8,9 @@
 //! on Tika's path. ASCII property lists have no media type of their own in Tika, which detects
 //! them as text, so they never reach `PListParser`.
 
-pub(crate) mod binary;
 mod xml;
+
+use crate::bplist as binary;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -280,8 +281,6 @@ impl Parser for PListParser {
     fn name(&self) -> &'static str {
         "extractous::PListParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.apple.PListParser"
     }

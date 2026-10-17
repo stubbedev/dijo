@@ -20,8 +20,6 @@ impl Parser for QuattroProParser {
     fn name(&self) -> &'static str {
         "extractous::QuattroProParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.wordperfect.QuattroProParser"
     }

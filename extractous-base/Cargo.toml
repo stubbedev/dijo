@@ -1,0 +1,56 @@
+[package]
+name = "extractous-base"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "The common ground of extractous's native parsers: errors, settings, ports of Java's semantics, codecs and the XHTML writer"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/extractous"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+default = ["tika"]
+# Tika's path, which the native parsers hand the documents embedded in theirs that no native parser
+# reads.
+tika = ["dep:jni"]
+# What the tests of the crates built on this one share with its own: helpers and the vocabulary of
+# the parity comparisons.
+testing = ["lzma-rust2/encoder", "sevenz-rust2/compress"]
+
+[dependencies]
+jni = { version = "0.22.4", optional = true }
+aes = "0.9.3"
+ar = "0.9.0"
+bzip2 = "0.6.1"
+cpio = "0.4.1"
+encoding_rs = "0.8.42"
+flate2 = "1.1.5"
+libc = { version = "0.2.178" }
+lz4_flex = "0.14.0"
+lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz"] }
+md-5 = "0.11.0"
+memchr = "2.8.3"
+memmap2 = "0.9.11"
+rc4 = "0.2.0"
+regex = "1.13.1"
+ruzstd = "0.9.1"
+sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["aes256", "bzip2", "deflate"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+snap = "1.1.2"
+strum = { version = "0.28.0" }
+strum_macros = { version = "0.28.0" }
+tar = { version = "0.4.46", default-features = false }
+thiserror = { version = "2.0.17" }
+unicode-general-category = "1.1.0"
+unicode-normalization = "0.1.25"
+unicode-script = "0.5.8"
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(windows)'.dependencies]
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
+jiff-tzdb = "0.1.9"
+
+[dev-dependencies]
+lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
+sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["bzip2", "deflate", "compress"] }

@@ -735,8 +735,6 @@ impl Parser for AudioParser {
     fn name(&self) -> &'static str {
         "extractous::AudioParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.audio.AudioParser"
     }

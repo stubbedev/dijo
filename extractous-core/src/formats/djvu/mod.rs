@@ -59,13 +59,9 @@ impl Parser for DjvuParser {
     fn name(&self) -> &'static str {
         "extractous::DjvuParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.DjvuParser"
     }
-
-    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &[(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")]
     }

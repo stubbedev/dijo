@@ -33,11 +33,11 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::lines;
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
+use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office, office_document, Handed, Summaries};
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::xlsx::write_sheet_numbers;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USED};
 use crate::ole2::{EntryKind, Unreadable};
 
@@ -71,8 +71,6 @@ impl Parser for OldExcelParser {
     fn name(&self) -> &'static str {
         "extractous::OldExcelParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.OldExcelParser"
     }
@@ -112,8 +110,6 @@ impl Parser for XlsParser {
     fn name(&self) -> &'static str {
         "extractous::OfficeParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.OfficeParser"
     }

@@ -38,8 +38,6 @@ impl Parser for PptParser {
     fn name(&self) -> &'static str {
         "extractous::OfficeParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.OfficeParser"
     }

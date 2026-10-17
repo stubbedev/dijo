@@ -260,8 +260,6 @@ impl Parser for MboxParser {
     fn name(&self) -> &'static str {
         "extractous::MboxParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.mbox.MboxParser"
     }

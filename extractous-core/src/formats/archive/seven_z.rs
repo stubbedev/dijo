@@ -22,8 +22,6 @@ impl Parser for SevenZParser {
     fn name(&self) -> &'static str {
         "extractous::SevenZParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.pkg.SevenZParser"
     }

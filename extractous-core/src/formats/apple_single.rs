@@ -39,8 +39,6 @@ impl Parser for AppleSingleFileParser {
     fn name(&self) -> &'static str {
         "extractous::AppleSingleFileParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.apple.AppleSingleFileParser"
     }

@@ -13,11 +13,11 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use super::records::{bof, sid, Cached, CellRef, Record, SharedString, Special};
+use crate::formats::data_format::header_footer;
 use crate::formats::data_format::{
     builtin_format, default_number_format, error_text, DataFormatter, FormatError,
 };
 use crate::formats::poi::{Read, Thrown};
-use crate::formats::xlsx::header_footer;
 use crate::java::is_blank;
 use crate::java::trim;
 

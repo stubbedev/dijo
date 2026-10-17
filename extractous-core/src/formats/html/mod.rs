@@ -53,8 +53,6 @@ impl Parser for JSoupParser {
     fn name(&self) -> &'static str {
         "extractous::JSoupParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.html.JSoupParser"
     }

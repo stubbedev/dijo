@@ -10,6 +10,7 @@ use crate::tika::jni_utils::*;
 use crate::tika::wrappers::*;
 use crate::unpack::EmbeddedExtractResult;
 use crate::{CharSet, Metadata, StreamReader};
+use extractous_base::tika::EmbeddedEvents;
 use jni::objects::{JObject, JValue};
 use jni::Env;
 

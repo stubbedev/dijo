@@ -43,8 +43,6 @@ impl Parser for CompressorParser {
     fn name(&self) -> &'static str {
         "extractous::CompressorParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.pkg.CompressorParser"
     }

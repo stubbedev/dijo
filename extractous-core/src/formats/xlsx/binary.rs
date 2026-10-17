@@ -10,10 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::cell::CellAddress;
 use super::header_footer;
 use super::sheet::{SheetOutput, SheetSettings};
-use super::{excel, sheet_kind, write_sheet_numbers, Sheet, Workbook};
+use super::{excel, sheet_kind, Sheet, Workbook};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::data_format::{builtin_format, error_text, DataFormatter, FormatError};
 use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
+use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, kind, name};
 use crate::formats::ooxml::{Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP};
@@ -84,8 +85,6 @@ impl Parser for XlsbParser {
     fn name(&self) -> &'static str {
         "extractous::OOXMLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }

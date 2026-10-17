@@ -127,7 +127,8 @@ fn ansicpg_name(number: i32) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    const REFERENCE: &str = include_str!("../../../tests/fixtures/rtf/charsets.tsv");
+    const REFERENCE: &str =
+        include_str!("../../../../extractous-base/tests/fixtures/rtf/charsets.tsv");
 
     fn all_names() -> impl Iterator<Item = &'static str> {
         (0..=60_000)

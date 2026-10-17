@@ -458,8 +458,6 @@ impl Parser for IworkArchiveParser {
     fn name(&self) -> &'static str {
         "extractous::IworkArchiveParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.IworkArchiveParser"
     }

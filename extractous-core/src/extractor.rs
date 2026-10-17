@@ -9,27 +9,10 @@ use crate::tika::{self, JInputStream, StreamOptions};
 #[cfg(feature = "tika")]
 use crate::EmbeddedExtractResult;
 use crate::{
-    EmbeddedSpool, OfficeParserConfig, PdfParserConfig, SpooledEmbedded, TesseractOcrConfig,
+    CharSet, EmbeddedSpool, Metadata, OfficeParserConfig, PdfParserConfig, SpooledEmbedded,
+    TesseractOcrConfig,
 };
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use strum_macros::{Display, EnumString};
-
-/// Metadata type alias
-pub type Metadata = HashMap<String, Vec<String>>;
-
-/// CharSet enum of all supported encodings
-#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Display, EnumString)]
-#[allow(non_camel_case_types)]
-pub enum CharSet {
-    #[default]
-    #[strum(serialize = "UTF-8")]
-    UTF_8,
-    #[strum(serialize = "US-ASCII")]
-    US_ASCII,
-    #[strum(serialize = "UTF-16BE")]
-    UTF_16BE,
-}
 
 /// A media type as detected by Apache Tika, such as `application/pdf`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

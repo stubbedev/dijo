@@ -26,8 +26,6 @@ impl Parser for WordMlParser {
     fn name(&self) -> &'static str {
         "extractous::WordMLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.xml.WordMLParser"
     }

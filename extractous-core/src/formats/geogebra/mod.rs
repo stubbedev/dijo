@@ -57,8 +57,6 @@ impl Parser for GeoGebraParser {
     fn name(&self) -> &'static str {
         "extractous::GeoGebraParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.geogebra.GeoGebraParser"
     }

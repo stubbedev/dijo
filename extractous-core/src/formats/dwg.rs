@@ -105,8 +105,6 @@ impl Parser for DwgParser {
     fn name(&self) -> &'static str {
         "extractous::DWGParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.dwg.DWGParser"
     }

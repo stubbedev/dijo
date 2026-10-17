@@ -21,8 +21,6 @@ impl Parser for SpreadsheetMlParser {
     fn name(&self) -> &'static str {
         "extractous::SpreadsheetMLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.xml.SpreadsheetMLParser"
     }

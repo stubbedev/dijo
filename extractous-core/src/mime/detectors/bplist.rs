@@ -2,7 +2,7 @@
 //! the whole list parsed as dd-plist's `BinaryPropertyListParser` parses it. A list it rejects
 //! makes Tika's detection fail.
 
-use crate::formats::plist::binary::{self, ListKind, Object};
+use crate::bplist::{self as binary, ListKind, Object};
 use crate::mime::media_type::MediaType;
 
 use super::Thrown;

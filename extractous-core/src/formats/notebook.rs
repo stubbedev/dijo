@@ -249,8 +249,6 @@ impl Parser for NotebookParser {
     fn name(&self) -> &'static str {
         "extractous::NotebookParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.NotebookParser"
     }

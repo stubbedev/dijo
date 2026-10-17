@@ -173,8 +173,6 @@ impl Parser for WordPerfectParser {
     fn name(&self) -> &'static str {
         "extractous::WordPerfectParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.wordperfect.WordPerfectParser"
     }

@@ -187,8 +187,6 @@ impl Parser for IworkPackageParser {
     fn name(&self) -> &'static str {
         "extractous::IWorkPackageParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.iwork.IWorkPackageParser"
     }

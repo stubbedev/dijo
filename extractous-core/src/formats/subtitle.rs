@@ -23,8 +23,6 @@ impl Parser for SubtitleParser {
     fn name(&self) -> &'static str {
         "extractous::SubtitleParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.SubtitleParser"
     }

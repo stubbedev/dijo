@@ -29,8 +29,6 @@ impl Parser for DcXmlParser {
     fn name(&self) -> &'static str {
         "extractous::DcXMLParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.xml.DcXMLParser"
     }

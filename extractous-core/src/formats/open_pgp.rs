@@ -13,8 +13,6 @@ impl Parser for OpenPgpParser {
     fn name(&self) -> &'static str {
         "extractous::OpenPgpParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.OpenPgpParser"
     }

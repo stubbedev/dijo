@@ -137,8 +137,6 @@ impl Parser for EmfParser {
     fn name(&self) -> &'static str {
         "extractous::EMFParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.EMFParser"
     }
@@ -340,8 +338,6 @@ impl Parser for WmfParser {
     fn name(&self) -> &'static str {
         "extractous::WMFParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.WMFParser"
     }

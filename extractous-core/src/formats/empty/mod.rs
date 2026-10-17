@@ -15,8 +15,6 @@ impl Parser for EmptyParser {
     fn name(&self) -> &'static str {
         "extractous::EmptyParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.EmptyParser"
     }

@@ -46,8 +46,6 @@ impl Parser for RawTiffParser {
     fn name(&self) -> &'static str {
         "extractous::RawTiffParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.RawTiffParser"
     }

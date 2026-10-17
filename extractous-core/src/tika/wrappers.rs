@@ -8,6 +8,7 @@ use crate::tika::jni_utils::{
 };
 use crate::unpack::{EmbeddedDocument, EmbeddedExtractResult};
 use crate::{Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
+use extractous_base::tika::{EmbeddedEvents, EmbeddedOutcome};
 use jni::objects::{Global, JObject, JValue};
 use jni::strings::JNIString;
 use jni::Env;
@@ -159,25 +160,6 @@ pub(crate) fn reader_result<'local>(
     let reader =
         jni_call_method(env, result, "getStream", "", "Ljava/io/InputStream;", &[])?.l()?;
     Ok((reader, java_result_metadata(env, result)?))
-}
-
-/// What Tika made of a document embedded in one a native parser reads: the SAX events of its
-/// body as `ai.yobix.EventRecorder` encodes them, and how its parse ended.
-pub(crate) struct EmbeddedEvents {
-    pub(crate) events: Vec<u8>,
-    pub(crate) outcome: EmbeddedOutcome,
-}
-
-/// How the parse of an embedded document ended.
-pub(crate) enum EmbeddedOutcome {
-    /// It ended, with the document's metadata and, if its parser failed in a way Tika records
-    /// in the embedding document's metadata, that failure as Tika formats it there.
-    Parsed {
-        metadata: Metadata,
-        recorded_exception: Option<String>,
-    },
-    /// It failed in a way that fails the embedding document too, after writing the events.
-    Failed(Error),
 }
 
 /// Converts an `ai.yobix.EmbeddedEvents` into [`EmbeddedEvents`].

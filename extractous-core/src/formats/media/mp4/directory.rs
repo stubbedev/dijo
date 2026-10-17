@@ -3,11 +3,11 @@
 
 use super::Event;
 use crate::formats::embedded::EXCEPTION_WARNING;
-use crate::formats::pdf::jfloat::float_to_string;
 use crate::java;
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
+use crate::java::jfloat::float_to_string;
 use crate::java::time::format_instant;
 
 /// `MAX_ERROR_MESSAGES`: how many distinct directory errors Tika reports.

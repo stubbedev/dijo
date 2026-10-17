@@ -48,8 +48,6 @@ impl Parser for ChmParser {
     fn name(&self) -> &'static str {
         "extractous::ChmParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.chm.ChmParser"
     }

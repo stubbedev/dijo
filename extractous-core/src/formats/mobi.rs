@@ -320,8 +320,6 @@ impl Parser for MobiParser {
     fn name(&self) -> &'static str {
         "extractous::MobiParser"
     }
-
-    #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "ai.yobix.MobiParser"
     }
