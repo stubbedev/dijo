@@ -87,10 +87,6 @@ impl Parser for Rfc822Parser {
         &["message/rfc822"]
     }
 
-    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
-        &["message/rfc822"]
-    }
-
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -396,7 +392,7 @@ pub(crate) mod tests {
             &Rfc822Parser,
             TIKA_NAME,
             &[&conformance_corpus()],
-            28,
+            26,
             &["testRFC822_encrypted_zip"],
         );
         let [encrypted] = &encrypted[..] else {

@@ -1265,6 +1265,18 @@ mod tests {
                 "Tika records the JBIG2 dimension node twice (#120)",
             ),
             (
+                "testFODS_embeddedChart.fods",
+                "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
+            ),
+            (
+                "testODSMacro.fods",
+                "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
+            ),
+            (
+                "testODTMacro.fodt",
+                "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
+            ),
+            (
                 "CVLKRA-KYC_Download_File_Structure_V3.1.xlsx",
                 "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
             ),
