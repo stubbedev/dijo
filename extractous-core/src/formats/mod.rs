@@ -10,6 +10,7 @@ mod archive;
 pub(crate) mod audit;
 mod auto_detect_reader;
 mod chm;
+mod class_file;
 mod cms;
 mod composite;
 mod compound;
@@ -255,6 +256,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::SevenZParser,
     &archive::ZipParser,
     &chm::ChmParser,
+    &class_file::ClassParser,
     &cms::CmsParser,
     &compound::CompoundDocumentParser,
     &dc_xml::DcXmlParser,
