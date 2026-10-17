@@ -82,8 +82,8 @@ fn read_document(package: &Package) -> Document {
     document
 }
 
-/// `buildXHTML`'s reading of the document sequences: for each relationship to one, the
-/// package's first, as POI's `getPart` finds the part of a relationship.
+/// `buildXHTML`'s reading of the document sequences: the part of each relationship to one.
+/// Tika reads the part of the first relationship for each (#127).
 fn read_sequences(package: &Package, document: &mut Document) -> Result<(), Failure> {
     let mut sequences: Vec<_> =
         Package::relationships_of(&package.relationships, XPS_DOCUMENT).collect();
@@ -91,7 +91,7 @@ fn read_sequences(package: &Package, document: &mut Document) -> Result<(), Fail
         sequences = Package::relationships_of(&package.relationships, OPEN_XPS_DOCUMENT).collect();
     }
     for relationship in sequences {
-        let part = package.package_part(relationship).ok_or_else(|| {
+        let part = relationship.part.ok_or_else(|| {
             Failure::Malformed(format!(
                 "NullPointerException: the document sequence {} is no part",
                 relationship.target
