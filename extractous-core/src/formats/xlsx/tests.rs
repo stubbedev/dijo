@@ -53,25 +53,14 @@ fn workbooks(roots: &[&Path]) -> Vec<PathBuf> {
     parsed
 }
 
-/// The divs the native parser writes each chart and diagram in.
-const TEXT_PART_DIVS: [&str; 2] = ["<div class=\"chart\">", "<div class=\"diagram-data\">"];
-
-/// How many charts and diagrams the native parser writes in a div, each ended by a line break.
-fn text_part_divs(_tika: &str, native: &str) -> usize {
-    TEXT_PART_DIVS
-        .iter()
-        .map(|div| native.matches(div).count())
-        .sum()
-}
-
-/// How the native parser departs from Tika's path (#93): it writes each chart and diagram in a
-/// div of its own, where Tika's shared handler never writes its div, and each link of a sheet
-/// once, where Tika writes it again as an outside resource; and its XHTML head says whether a
-/// sheet is protected, where Tika's says `false` before it reads the sheets (#95).
+/// How the native parser departs from Tika's path (#93): it writes each link of a sheet once,
+/// where Tika writes it again as an outside resource; and its XHTML head says whether a sheet is
+/// protected, where Tika's says `false` before it reads the sheets (#95). The div of each chart
+/// and diagram is the parity's [`parity::UNWRITTEN_DIVS`].
 const DEPARTURES: Adjustments = Adjustments {
-    line_breaks: Some(text_part_divs),
+    line_breaks: None,
     metadata: &[],
-    wrappers: &TEXT_PART_DIVS,
+    wrappers: &[],
     repeated: &["<a class=\"external-ref-externalResource\" "],
     final_in_head: &["msoffice:excel:protected-worksheet"],
 };

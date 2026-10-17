@@ -2,12 +2,14 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::formats::ooxml::testing::{self, relationship};
-use crate::formats::parity::{
-    assert_same_as_tika, assert_same_as_tika_with, conformance_corpus, documents, Scratch,
-};
+use crate::formats::parity::{assert_same_as_tika_with, conformance_corpus, documents, Scratch};
 use crate::mime::compound_document;
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
+
+fn assert_same_as_tika(documents: &[&Path], configs: &ParserConfigs) {
+    assert_same_as_tika_with(documents, TIKA_PARSER, configs);
+}
 
 const DOCUMENTS: [&str; 3] = [
     "../test_files/documents/simple.pptx",
@@ -30,11 +32,11 @@ const DEPARTURES: [(&str, &[&str]); 7] = [
     // The handout master's placeholders are skipped.
     (
         "testPPT.potm",
-        &["<p>Investment</p>\n<p />\n</div>\n<div class=\"embedded\""],
+        &["<p>Investment</p>\n<p />\n</div>\n<div class=\"slide-master-content\" />\n<div class=\"slide-master\" />\n<div class=\"slide-handout-master\" />\n<div class=\"embedded\""],
     ),
     (
         "testPPT_autodate.pptx",
-        &["<p>2011-12-19 10:20:04 AM</p>\n<div class=\"embedded\""],
+        &["<p>2011-12-19 10:20:04 AM</p>\n</div>\n<div class=\"slide-master\" />\n<div class=\"slide-handout-master\" />\n<div class=\"embedded\""],
     ),
     // A link to an anchor is a link.
     ("testPPT_various.pptx", &["<a href=\"#_ftn1\">[1]</a>"]),
@@ -369,7 +371,7 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
 #[test]
 fn extracts_what_tikas_path_extracts() {
     let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
-    assert_same_as_tika(&documents, TIKA_PARSER);
+    assert_same_as_tika(&documents, &ParserConfigs::default());
     let departures = [Path::new(
         "../test_files/documents/science-exploration-1p.pptx",
     )];
@@ -382,12 +384,12 @@ fn extracts_what_tikas_path_extracts_from_built_presentations() {
     assert_eq!(defers(&input), None);
     let scratch = Scratch::new("pptx-built");
     let document = scratch.write("rich.pptx", &input);
-    assert_same_as_tika(&[document.as_path()], TIKA_PARSER);
+    assert_same_as_tika(&[document.as_path()], &ParserConfigs::default());
     for configs in [
         office(OfficeParserConfig::new().set_include_slide_notes(false)),
         office(OfficeParserConfig::new().set_include_slide_master_content(false)),
     ] {
-        assert_same_as_tika_with(&[document.as_path()], TIKA_PARSER, &configs);
+        assert_same_as_tika(&[document.as_path()], &configs);
     }
 }
 
@@ -433,8 +435,9 @@ fn xml(input: &[u8]) -> String {
 }
 
 /// What Tika slips on, read as it should be (#102): a link to an anchor, links of a layout and
-/// notes by their own relationships, a comment's own text, placeholders of the handout master,
-/// and slides past the ninth in order.
+/// notes by their own relationships, a comment's own text, comment authors in the part's order,
+/// placeholders of the handout master, the div of each kind of part, and slides past the ninth in
+/// order.
 #[test]
 fn reads_what_tika_slips_on() {
     let mut slides = vec![
@@ -532,7 +535,8 @@ fn reads_what_tika_slips_on() {
             "ppt/commentAuthors.xml",
             &pml("commentAuthors"),
             &format!(
-                "<p:cmAuthorLst {NAMESPACES}><p:cmAuthor id=\"0\" name=\"Ann\"/></p:cmAuthorLst>"
+                "<p:cmAuthorLst {NAMESPACES}><p:cmAuthor id=\"10\" name=\"Zed\"/>\
+                 <p:cmAuthor id=\"0\" name=\"Ann\"/></p:cmAuthorLst>"
             ),
         )
         .part(
@@ -563,6 +567,25 @@ fn reads_what_tika_slips_on() {
         xml.contains("Handout text") && !xml.contains("Handout header"),
         "{xml}"
     );
+    let persons: Vec<usize> = ["Zed", "Ann"]
+        .iter()
+        .map(|name| {
+            let meta = format!(
+                "<meta name=\"{}\" content=\"{name}\"",
+                name::COMMENT_PERSONS
+            );
+            xml.find(&meta).unwrap()
+        })
+        .collect();
+    assert!(persons[0] < persons[1], "{xml}");
+    for div in [
+        "<div class=\"slide-master-content\"><p><a href=\"https://layout.example/\">",
+        "<div class=\"slide-notes\"><p><a href=\"https://notes.example/\">",
+        "<div class=\"slide-master\"><p>Master text</p>",
+        "<div class=\"slide-handout-master\"><p>Handout text</p>",
+    ] {
+        assert!(xml.contains(div), "{div} in {xml}");
+    }
     let order: Vec<usize> = (2..=11)
         .map(|number| xml.find(&format!("Slide {number}<")).unwrap())
         .collect();
@@ -598,5 +621,5 @@ fn extracts_what_tikas_path_extracts_from_tikas_documents() {
     let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     let alike = without_departures(&parsed);
     assert_eq!(parsed.len() - alike.len(), DEPARTURES.len() - 1);
-    assert_same_as_tika(&alike, TIKA_PARSER);
+    assert_same_as_tika(&alike, &ParserConfigs::default());
 }
