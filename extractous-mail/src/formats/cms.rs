@@ -436,6 +436,19 @@ mod tests {
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
 
+    #[test]
+    fn records_encrypted_mail_parts_as_encrypted() {
+        let (_, metadata) = crate::Extractor::new()
+            .extract_file_to_string("../test_files/documents/encrypted/smime-encrypted.eml")
+            .unwrap();
+        let failures = &metadata["tk:exception:embedded-exception"];
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].contains("org.apache.tika.exception.EncryptedDocumentException: "),
+            "{failures:?}"
+        );
+    }
+
     /// The `meta` element of the `Content-Length` the head of signed or compressed content
     /// shows, which Tika's path does not give the content (#113).
     const CONTENT_LENGTH: &str = "<meta name=\"Content-Length\" content=\"";

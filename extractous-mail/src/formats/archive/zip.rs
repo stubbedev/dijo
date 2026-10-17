@@ -22,7 +22,8 @@ use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{
-    record_exception, record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME,
+    record_exception, record_stream_exception, Wrapping, ENCRYPTED_DOCUMENT, INTERNAL_PATH,
+    RESOURCE_NAME,
 };
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -284,10 +285,7 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
         if entry.uses_encryption() {
             record_unread(
                 xhtml,
-                &format!(
-                    "org.apache.tika.exception.EncryptedDocumentException: stream ({name}) is \
-                     encrypted"
-                ),
+                &format!("{ENCRYPTED_DOCUMENT}: stream ({name}) is encrypted"),
             );
             continue;
         }
@@ -468,10 +466,7 @@ impl Streamed {
             if entry.uses_encryption() {
                 record_unread(
                     xhtml,
-                    &format!(
-                        "org.apache.tika.exception.EncryptedDocumentException: stream ({name}) \
-                         is encrypted"
-                    ),
+                    &format!("{ENCRYPTED_DOCUMENT}: stream ({name}) is encrypted"),
                 );
                 continue;
             }
