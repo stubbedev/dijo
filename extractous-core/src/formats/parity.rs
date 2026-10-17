@@ -127,7 +127,8 @@ fn tika_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
 }
 
 fn routed(path: &str) -> Routed<'_> {
-    formats::route_file(path).unwrap_or_else(|| panic!("{path} has no native parser"))
+    formats::route_file(path)
+        .unwrap_or_else(|unrouted| panic!("{path} has no native parser: {unrouted:?}"))
 }
 
 fn deferred(path: &str) -> String {
@@ -617,8 +618,10 @@ fn without_temporary_names(text: &str) -> String {
     out
 }
 
-/// A Java stack trace without, in each of its exceptions, the frames from the last one that
-/// embedded the document on, and without the counts of frames a cause shares with its effect.
+/// A Java stack trace without, in each of its exceptions, the frames from the first one that
+/// embedded the document on, and without the counts of frames a cause shares with its effect:
+/// the frames of the failing document's own parse. Below them are those of the documents it is
+/// embedded in, Java frames only where Tika's path parsed those, which a native parser replaces.
 fn without_embedding_frames(trace: &str) -> String {
     let lines: Vec<&str> = trace.split_inclusive('\n').collect();
     let mut kept = String::with_capacity(trace.len());
@@ -631,7 +634,7 @@ fn without_embedding_frames(trace: &str) -> String {
         let block = &lines[block_start..block_end];
         let cut = block
             .iter()
-            .rposition(|line| {
+            .position(|line| {
                 line.starts_with(TIKA_EMBEDDING_FRAME) || line.starts_with(NATIVE_EMBEDDING_FRAME)
             })
             .unwrap_or(block.len());
@@ -1785,7 +1788,7 @@ pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Defe
     )
 }
 
-/// The non-empty files under `roots` whose detected type `parser` reads, split into
+/// The non-empty files under `roots` whose detected type routing gives `parser`, split into
 /// those it parses and those it defers to Tika.
 pub(crate) fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     documents_with(parser, roots, &ParserConfigs::default())
@@ -1818,8 +1821,10 @@ pub(crate) fn documents_with(
         }
         let detected = formats::Detected::detect(&formats::OpenedFrom::File(path.into()), &input)
             .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
-        let routed = formats::parser_for(&detected.media_type);
-        if !routed.is_some_and(|routed| routed.media_types() == parser.media_types()) {
+        let routed = formats::parser_for(&detected.media_type).is_ok_and(|routed| {
+            routed.name() == parser.name() && routed.media_types() == parser.media_types()
+        });
+        if !routed {
             continue;
         }
         if parser

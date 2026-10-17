@@ -1,9 +1,9 @@
 //! OpenDocument files (ODT, ODS, ODP, ODG and the rest, their templates, and StarOffice Writer
 //! files), as Tika's `OpenDocumentParser` reads them: the metadata of `meta.xml`, the media type
 //! the `mimetype` entry names, and the text of every `content.xml` and `styles.xml` in the
-//! archive, embedded objects' included, in the order of its central directory. Documents with
-//! pictures or embedded binary data, which Tika parses as embedded documents, and encrypted
-//! documents are left to Tika.
+//! archive, embedded objects' included, in the order of its central directory, with the
+//! pictures, object thumbnails and base64 binary data it embeds parsed as embedded documents.
+//! Encrypted documents are left to Tika.
 
 mod body;
 mod flat;
@@ -27,6 +27,40 @@ pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office
 pub(crate) const META_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0";
 /// The element in which an OpenDocument part embeds a file, base64-encoded.
 pub(crate) const BINARY_DATA_ELEMENT: &str = "binary-data";
+
+/// commons-codec's `Base64.decodeBase64` of `text`, as `OpenDocumentBodyHandler` decodes binary
+/// data: its UTF-8 bytes decoded with the standard and the URL-safe alphabets, every other
+/// byte skipped, up to the first pad; the bits left over make one or two bytes more, unless
+/// they are a single sextet.
+pub(crate) fn decode_base64(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut bits = 0u32;
+    let mut sextets = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'=' => break,
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => continue,
+        };
+        bits = (bits << 6) | u32::from(value);
+        sextets += 1;
+        if sextets == 4 {
+            out.extend_from_slice(&[(bits >> 16) as u8, (bits >> 8) as u8, bits as u8]);
+            bits = 0;
+            sextets = 0;
+        }
+    }
+    match sextets {
+        2 => out.push((bits >> 4) as u8),
+        3 => out.extend_from_slice(&[(bits >> 10) as u8, (bits >> 2) as u8]),
+        _ => {}
+    }
+    out
+}
 const OLD_NS: &str = "http://openoffice.org/2000/";
 const NEW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:";
 const META_NAME: &[u8] = b"meta.xml";
@@ -258,7 +292,6 @@ const UNREADABLE_MANIFEST: &str = "its manifest cannot be read";
 const ENCRYPTED: &str = "it is encrypted";
 const NO_BODY: &str = "it has no content.xml or styles.xml, so Tika leaves its XHTML unfinished";
 const UNREADABLE_ENTRY: &str = "an entry it reads cannot be read by the zip crate";
-const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded documents";
 
 /// The metadata Tika's `OpenDocumentParser` gives the picture or object thumbnail `name` of
 /// `bytes` it hands to the embedded document extractor: a picture's type as its detector finds
@@ -310,15 +343,7 @@ fn read_ahead(input: &[u8]) -> Result<Archive<'_>, &'static str> {
         archive.read_now(entry).map_err(|_| UNREADABLE_ENTRY)?;
     }
     for body in &bodies {
-        let Ok(bytes) = archive.read_now(body) else {
-            return Err(UNREADABLE_ENTRY);
-        };
-        let named = bytes
-            .windows(BINARY_DATA_ELEMENT.len())
-            .any(|window| window == BINARY_DATA_ELEMENT.as_bytes());
-        if named && ElementFinder::finds(BINARY_DATA_ELEMENT, bytes, body.name()) {
-            return Err(BINARY_DATA);
-        }
+        archive.read_now(body).map_err(|_| UNREADABLE_ENTRY)?;
     }
     Ok(archive)
 }
@@ -780,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_documents_with_binary_data_to_tika_and_reads_those_with_pictures() {
+    fn reads_documents_with_pictures_and_binary_data() {
         let text = content("<office:text><text:p>x</text:p></office:text>");
         let picture = document(TEXT, &[("content.xml", &text), ("Pictures/a.png", "png")]);
         assert_eq!(
@@ -816,7 +841,7 @@ mod tests {
             OpenDocumentParser
                 .defers(&binary, &TikaMetadata::new(), &ParserConfigs::default())
                 .as_deref(),
-            Some(BINARY_DATA)
+            None
         );
         let mentioned = document(
             TEXT,

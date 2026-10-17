@@ -373,7 +373,7 @@ fn with_content<'a>(
     let mut given = TikaMetadata::new();
     given.set("Content-Length", content.len().to_string());
     let (parser, start) = formats::embedded_parser(&content, &given, Opened::Alone)
-        .ok_or_else(|| "content Tika's path parses".to_owned())?;
+        .map_err(|unrouted| format!("content Tika's path parses: {unrouted:?}"))?;
     if parser.prepare(&content, &start, configs).is_err() {
         return Err(format!("content {} declines", parser.name()));
     }

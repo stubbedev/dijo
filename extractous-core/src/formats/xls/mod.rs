@@ -3,7 +3,7 @@
 //! records through POI's event model into Tika's `TikaHSSFListener`, a page per sheet with its
 //! cells in a table and the text found outside the cells after it, the pictures the drawing
 //! groups store as embedded documents, and the hidden sheets, rows, columns, protection and
-//! comment authors as metadata.
+//! comment authors as metadata, then the documents embedded in `MBD` storages.
 //!
 //! Numbers are written with one formatter, in the `en_US` locale, with dates as their cells
 //! hold them in the workbook's date system; see [`crate::formats::data_format`]. Tika writes

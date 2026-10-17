@@ -156,6 +156,21 @@ pub(crate) fn extension(media_type: &MediaType) -> &'static str {
     mime_types().extension(media_type)
 }
 
+/// The types `CompositeParser.getParser` looks a parser up for, in order, given a document's
+/// type: the canonical type the default types' registry normalizes it to, then each supertype
+/// `getSupertype` gives, to `application/octet-stream`.
+pub(crate) fn lineage(media_type: &MediaType) -> impl Iterator<Item = MediaType> {
+    let registry = mime_types().registry();
+    std::iter::successors(Some(registry.normalize(media_type)), |kind| {
+        registry.supertype(kind)
+    })
+}
+
+/// Whether the default types declare `kind`, or its base type, as a type or an alias.
+pub(crate) fn declares(kind: &MediaType) -> bool {
+    mime_types().registry().declares(kind)
+}
+
 /// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type,
 /// with its dot, or nothing.
 pub(crate) fn registered_extension(media_type: &MediaType) -> &'static str {

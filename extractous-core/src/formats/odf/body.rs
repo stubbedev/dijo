@@ -2,7 +2,8 @@
 //! `content.xml` and `styles.xml` as XHTML. Paragraphs, headings, lists, tables, links, notes,
 //! annotations, text boxes and images become their XHTML counterparts, bold, italic and
 //! underlined text styles become `b`, `i` and `u`, and templates, style definitions, covered
-//! table cells and, unless deleted content is asked for, tracked changes are left out.
+//! table cells and, unless deleted content is asked for, tracked changes are left out. A file
+//! embedded as base64 in `binary-data` is parsed as an embedded document where it ends.
 //!
 //! Unlike Tika's handler, headings and notes end as blocks, `text:s` writes as many spaces as
 //! its `text:c` counts, malformed font weights and outline levels are ignored rather than
@@ -11,9 +12,10 @@
 
 use std::collections::HashMap;
 
+use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{
-    normalized_attributes, normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS,
+    decode_base64, normalized_attributes, normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS,
 };
 use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
@@ -122,6 +124,8 @@ pub(super) struct Body<'a, 'x> {
     italic: bool,
     paragraph_depth: i64,
     anchor_depth: i64,
+    /// The base64 text of the `binary-data` element being read, if one is.
+    binary_data: Option<String>,
 }
 
 impl<'a, 'x> Body<'a, 'x> {
@@ -149,7 +153,13 @@ impl<'a, 'x> Body<'a, 'x> {
             italic: false,
             paragraph_depth: 0,
             anchor_depth: 0,
+            binary_data: None,
         }
+    }
+
+    /// Whether it is inside a `binary-data` element, whose text it takes whatever the section.
+    pub(super) fn reads_binary_data(&self) -> bool {
+        self.binary_data.is_some()
     }
 
     /// The document's metadata.
@@ -550,9 +560,8 @@ impl SaxHandler for Body<'_, '_> {
             self.end_in(XHTML_NAMESPACE, "img")?;
         }
         if local_name == BINARY_DATA_ELEMENT {
-            return Err(Failure::Malformed(
-                "The document embeds binary data, which only Tika's path extracts".to_owned(),
-            ));
+            self.binary_data = Some(String::new());
+            return Ok(());
         }
         self.define_styles(namespace, local_name, attributes)?;
         self.text_nodes.push(is_text_node(namespace, local_name));
@@ -603,6 +612,14 @@ impl SaxHandler for Body<'_, '_> {
     }
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
+        if local_name == BINARY_DATA_ELEMENT {
+            let text = self.binary_data.take().unwrap_or_default();
+            return self.xhtml.parse_embedded(
+                &decode_base64(&text),
+                &TikaMetadata::new(),
+                Wrapping::PackageEntry,
+            );
+        }
         let namespace = normalized_namespace(namespace);
         let namespace = namespace.as_ref();
         self.end_style_definition(namespace, local_name);
@@ -653,6 +670,10 @@ impl SaxHandler for Body<'_, '_> {
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
+        if let Some(binary_data) = &mut self.binary_data {
+            binary_data.push_str(text);
+            return Ok(());
+        }
         self.write_characters(text)
     }
 }

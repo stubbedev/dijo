@@ -192,12 +192,6 @@ mail-reference:
         extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
         corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
-# Regenerate the types Tika's path parses with EmptyParser, which the native path writes the empty
-# document of without the JVM, asking Tika's path for each type Tika's tables declare which parser it
-# parses that type with.
-empty-parser-types:
-    cd {{core}} && EMPTY_PARSER_TYPES_BLESS=1 cargo nextest run --lib \
-        formats::empty::tests::takes_the_types_tika_parses_with_empty_parser
 
 # Regenerate the tables of the JFlex scanners jhighlight highlights Java, Groovy and C++ with, which the
 # native SourceCodeParser scans source code with as Tika's does.
@@ -295,6 +289,14 @@ mime-reference:
     fixtures={{core}}/tests/fixtures/mime
     java -cp "$classpath" "$fixtures/MimeReference.java" test_files/documents quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/mime-reference.tsv"
+
+# Regenerate the types Tika's composite parser, as extractous configures it, has a parser of its own for,
+# which native routing walks a document's types against, from Tika's path in the native library.
+composite-reference:
+    COMPOSITE_REFERENCE={{justfile_directory()}}/{{core}}/src/formats/composite/parsers.rs \
+        cargo nextest run -p extractous-core --lib \
+        -E 'test(=formats::composite::tests::lists_the_types_tikas_composite_parser_reads)'
+    rustfmt --edition 2021 {{core}}/src/formats/composite/parsers.rs
 
 # Regenerate the answers of Apache Tika's own CharSoup language detector that the Rust port is tested against, after
 # checking that the embedded model is the one in the pinned Tika version's jar.
@@ -401,7 +403,8 @@ parity *args:
             cp -a "$libs/." "$seed/"
         fi
     done
-    cargo nextest run --package extractous-core --lib --cargo-profile parity --run-ignored only "$@"
+    cargo nextest run --package extractous-core --lib --cargo-profile parity --run-ignored only \
+        -E 'not test(/^formats::audit::/)' "$@"
 
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
 # any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.

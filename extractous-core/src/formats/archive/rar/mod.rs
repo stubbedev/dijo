@@ -45,10 +45,6 @@ impl Parser for RarParser {
         &[RAR]
     }
 
-    fn takes_base_types(&self) -> bool {
-        true
-    }
-
     fn prepare<'a>(
         &self,
         input: &'a [u8],

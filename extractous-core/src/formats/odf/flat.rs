@@ -4,8 +4,8 @@
 //! master pages, headers and footers among them, and of its body, in document order, styled by
 //! its styles, through the handlers of the archived format. As in an archive, where they are
 //! parts of their own, the body does not see the common styles. Settings and scripts are left
-//! out, and macros are not extracted, as Tika's default leaves them. Documents with embedded
-//! binary data are left to Tika.
+//! out, and macros are not extracted, as Tika's default leaves them. Base64 binary data, in the
+//! styles as in the body, is parsed as embedded documents, as it is in an archive.
 //!
 //! Tika's `FlatOpenDocumentParser` reads `office:meta` and `office:body` alone, so styles, master
 //! pages, headers and footers are lost, and routes them by local name in any namespace. It never
@@ -17,14 +17,13 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::body::{Body, DefinedStyles};
 use crate::formats::odf::meta::{attribute_value, merge_subjects, MetaHandlers};
-use crate::formats::odf::{BINARY_DATA_ELEMENT, OFFICE_NS};
+use crate::formats::odf::OFFICE_NS;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const WHAT: &str = "The flat OpenDocument XML";
 const DOCUMENT: &str = "document";
-const BINARY_DATA: &str = "it embeds binary data, which Tika parses as embedded documents";
 
 /// The flat media types, by the media type a document's `office:mimetype` names.
 const FLAT_TYPES: [(&str, &str); 3] = [
@@ -74,11 +73,6 @@ impl Section {
             "body" => Section::Body,
             _ => Section::Other,
         }
-    }
-
-    /// Whether its elements go to the body handler.
-    fn is_read(self) -> bool {
-        !matches!(self, Section::Other | Section::Meta)
     }
 
     /// Whether its character data goes to the body handler too. Style definitions hold no
@@ -229,41 +223,11 @@ impl SaxHandler for Flat<'_, '_> {
                 self.meta.characters(text);
                 Ok(())
             }
-            section if section.has_text() => self.body.characters(text),
+            section if section.has_text() || self.body.reads_binary_data() => {
+                self.body.characters(text)
+            }
             _ => Ok(()),
         }
-    }
-}
-
-/// Finds whether binary data reaches the body handler, before anything Java's parser would stop
-/// at.
-struct BinaryDataFinder {
-    sections: Sections,
-    found: bool,
-}
-
-impl SaxHandler for BinaryDataFinder {
-    fn start_element(
-        &mut self,
-        namespace: &str,
-        local_name: &str,
-        _attributes: &[Attribute],
-    ) -> Result<(), Failure> {
-        self.sections.start(namespace, local_name);
-        if self.sections.current.is_read() && local_name == BINARY_DATA_ELEMENT {
-            self.found = true;
-            return Err(Failure::Malformed(format!("<{local_name}> found")));
-        }
-        Ok(())
-    }
-
-    fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
-        self.sections.end();
-        Ok(())
-    }
-
-    fn characters(&mut self, _text: &str) -> Result<(), Failure> {
-        Ok(())
     }
 }
 
@@ -288,24 +252,12 @@ impl Parser for FlatOpenDocumentParser {
         ]
     }
 
-    /// Defers a document embedding binary data in its styles or body, which only a document
-    /// whose bytes may name the element is read ahead for.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        if xml::may_name(input, BINARY_DATA_ELEMENT) {
-            let mut finder = BinaryDataFinder {
-                sections: Sections::new(),
-                found: false,
-            };
-            let stopped = xml::parse_sax(input, WHAT, &mut finder).is_err();
-            if stopped && finder.found {
-                return Err(Declined::Deferred(BINARY_DATA.to_owned()));
-            }
-        }
         Ok(Box::new(move |xhtml| write(input, configs, xhtml)))
     }
 }
@@ -539,51 +491,55 @@ mod tests {
     }
 
     #[test]
-    fn leaves_documents_with_binary_data_in_their_styles_or_body_to_tika() {
-        let in_body = flat(
+    fn extracts_binary_data_in_the_body_as_tikas_path_does() {
+        let scratch = Scratch::new("flat-binary-data");
+        let image = |data: &str| {
+            format!(
+                "<office:body><office:text><text:p>before</text:p><text:p><draw:frame>\
+                 <draw:image><office:binary-data>{data}</office:binary-data></draw:image>\
+                 </draw:frame>after</text:p></office:text></office:body>"
+            )
+        };
+        let files = [
+            scratch.write("zeros.fodt", &flat(TEXT, &image("AAAA"))),
+            scratch.write(
+                "text.fodt",
+                &flat(TEXT, &image("SGVq\n  IHZl cmRl\nbiE=ignored")),
+            ),
+            scratch.write("unpadded.fodt", &flat(TEXT, &image("SGVqIHZlcmRlbiE"))),
+            scratch.write("url-safe.fodt", &flat(TEXT, &image("-_-_SGVq"))),
+            scratch.write("empty.fodt", &flat(TEXT, &image(""))),
+        ];
+        let (parsed, deferred) = documents(&FlatOpenDocumentParser, &[scratch.directory()]);
+        assert!(deferred.is_empty(), "{deferred:?}");
+        assert_eq!(parsed.len(), files.len());
+        let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&paths, TIKA_NAME);
+    }
+
+    /// Binary data in the styles, which Tika's path never reads, is parsed as in an archive,
+    /// where the styles are a part the body handler reads; in the settings it is left out.
+    #[test]
+    fn extracts_binary_data_in_the_styles_and_not_the_settings() {
+        let text = "SGVqIHZlcmRlbiE=";
+        let (styles, _) = extract(&flat(
             TEXT,
-            r#"<office:body><office:text><text:p><draw:frame><draw:image><office:binary-data>AAAA</office:binary-data></draw:image></draw:frame></text:p></office:text></office:body>"#,
-        );
-        assert_eq!(
-            FlatOpenDocumentParser
-                .defers(&in_body, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(BINARY_DATA)
-        );
-        let in_styles = flat(
+            &format!(
+                "<office:styles><style:style style:name=\"S\"><office:binary-data>{text}\
+                 </office:binary-data></style:style></office:styles><office:body><office:text>\
+                 <text:p>x</text:p></office:text></office:body>"
+            ),
+        ));
+        assert!(styles.contains("Hej verden!"), "{styles}");
+        let (settings, _) = extract(&flat(
             TEXT,
-            r#"<office:styles><office:binary-data>AAAA</office:binary-data></office:styles><office:body><office:text><text:p>x</text:p></office:text></office:body>"#,
-        );
-        assert_eq!(
-            FlatOpenDocumentParser
-                .defers(&in_styles, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(BINARY_DATA)
-        );
-        let in_settings = flat(
-            TEXT,
-            r#"<office:settings><office:binary-data>AAAA</office:binary-data></office:settings><office:body><office:text><text:p>x</text:p></office:text></office:body>"#,
-        );
-        assert_eq!(
-            FlatOpenDocumentParser
-                .defers(
-                    &in_settings,
-                    &TikaMetadata::new(),
-                    &ParserConfigs::default()
-                )
-                .as_deref(),
-            None
-        );
-        let mentioned = flat(
-            TEXT,
-            "<office:body><office:text><text:p>binary-data</text:p></office:text></office:body>",
-        );
-        assert_eq!(
-            FlatOpenDocumentParser
-                .defers(&mentioned, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            None
-        );
+            &format!(
+                "<office:settings><office:binary-data>{text}</office:binary-data>\
+                 </office:settings><office:body><office:text><text:p>x</text:p></office:text>\
+                 </office:body>"
+            ),
+        ));
+        assert!(!settings.contains("Hej verden!"), "{settings}");
     }
 
     #[test]
@@ -591,30 +547,30 @@ mod tests {
     fn extracts_what_tikas_path_extracts_from_tikas_documents() {
         let corpus = conformance_corpus();
         let (parsed, deferred) = documents(&FlatOpenDocumentParser, &[&corpus]);
-        let names: Vec<String> = deferred
-            .iter()
-            .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "testFODS_embeddedChart.fods",
-                "testODSMacro.fods",
-                "testODTMacro.fodt"
-            ]
-        );
+        assert!(deferred.is_empty(), "{deferred:?}");
         assert!(!parsed.is_empty());
-        // Its master pages hold placeholders, which Tika's path leaves out (#69).
-        let master_pages = "testODPMacro.fodp";
-        let (master_pages, parsed): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| path.ends_with(master_pages));
+        // Their master pages hold placeholders, which Tika's path leaves out (#69), with what
+        // the native parser writes of them.
+        let with_master_pages = [
+            ("testODPMacro.fodp", "<body><div><p />\n</div>"),
+            ("testFODS_embeddedChart.fods", "<p>Oldal </p>"),
+            ("testODSMacro.fods", "<p>Page </p>"),
+        ];
+        let (master_pages, parsed): (Vec<&Path>, Vec<&Path>) =
+            parsed.iter().map(PathBuf::as_path).partition(|path| {
+                with_master_pages
+                    .iter()
+                    .any(|(name, _)| path.ends_with(name))
+            });
         assert_same_as_tika(&parsed, TIKA_NAME);
-        let [master_pages] = master_pages[..] else {
-            panic!("no {master_pages:?}");
-        };
-        let (xml, _) = extract(&std::fs::read(master_pages).unwrap());
-        assert!(xml.contains("<body><div><p />\n</div>"), "{xml}");
+        assert_eq!(master_pages.len(), with_master_pages.len());
+        for (name, written) in with_master_pages {
+            let path = master_pages
+                .iter()
+                .find(|path| path.ends_with(name))
+                .unwrap_or_else(|| panic!("no {name}"));
+            let (xml, _) = extract(&std::fs::read(path).unwrap());
+            assert!(xml.contains(written), "{name}: {written} in {xml}");
+        }
     }
 }

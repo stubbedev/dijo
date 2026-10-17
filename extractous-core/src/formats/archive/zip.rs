@@ -134,6 +134,10 @@ impl Parser for ZipParser {
         ]
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &[ZIP]
+    }
+
     /// Opens the archive and reads each entry to rule out what Tika's path reads otherwise. The
     /// entries are read again as they are written: holding them all would hold every entry's
     /// data at once, where writing holds one at a time, for decompression that costs little

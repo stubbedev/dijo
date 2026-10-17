@@ -680,8 +680,16 @@ impl<'h> Xhtml<'h> {
     ) -> Ended {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, metadata, opened, configs) {
-            Some(route) => self.parse_natively(route, metadata, open, target),
-            None => self.parse_with_tika(data, metadata, open, target),
+            Ok(route) => self.parse_natively(route, metadata, open, target),
+            #[cfg_attr(
+                not(test),
+                expect(unused_variables, reason = "only the tests record why")
+            )]
+            Err(bridged) => {
+                #[cfg(test)]
+                formats::audit::bridged(bridged);
+                self.parse_with_tika(data, metadata, open, target)
+            }
         }
     }
 
