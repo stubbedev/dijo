@@ -7,6 +7,7 @@ mod apple_single;
 mod archive;
 mod auto_detect_reader;
 mod cms;
+mod compound;
 mod crypt;
 pub(crate) mod data_format;
 mod dbf;
@@ -212,6 +213,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::SevenZParser,
     &archive::ZipParser,
     &cms::CmsParser,
+    &compound::CompoundDocumentParser,
     &dc_xml::DcXmlParser,
     &doc::DocParser,
     &docx::DocxParser,
