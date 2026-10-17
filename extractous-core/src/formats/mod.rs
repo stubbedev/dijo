@@ -33,6 +33,7 @@ mod list_numbering;
 mod mail;
 pub(crate) mod media;
 pub(crate) mod metadata;
+mod metafile;
 mod mif;
 mod mobi;
 mod ms_owner;
@@ -225,6 +226,8 @@ static PARSERS: &[&dyn Parser] = &[
     &hwpx::HwpxParser,
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
+    &metafile::EmfParser,
+    &metafile::WmfParser,
     &mail::MboxParser,
     &media::FlacParser,
     &media::OpusParser,
