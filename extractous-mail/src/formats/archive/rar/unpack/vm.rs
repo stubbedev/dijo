@@ -36,13 +36,13 @@ const SIGNATURES: [(usize, u32, Standard); 6] = [
     (216, 0xbc85_e701, Standard::Audio),
 ];
 
-/// `VMPreparedProgram`: a filter's kind, initial registers and global data (a `Vector<Byte>`,
-/// whose elements a `setSize` that grows it leaves null), and where its output is.
+/// `VMPreparedProgram`: a filter's kind, initial registers and global data, and where its output
+/// is.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Program {
     pub(super) kind: Standard,
     pub(super) init_r: [i32; 7],
-    pub(super) global: Vec<Option<u8>>,
+    pub(super) global: Vec<u8>,
     pub(super) filtered_data_offset: i32,
     pub(super) filtered_data_size: i32,
 }
@@ -55,15 +55,15 @@ impl Program {
                 .ok()
                 .and_then(|offset| self.global.get_mut(offset + i))
                 .ok_or(OUT_OF_BOUNDS)?;
-            *slot = Some(byte);
+            *slot = byte;
         }
         Ok(())
     }
 
-    /// `Vector.setSize`: grown with null elements, or cut.
+    /// `Vector.setSize`: grown with zeros, or cut.
     pub(super) fn resize_global(&mut self, size: i32) -> Result<(), Thrown> {
         let size = usize::try_from(size).map_err(|_| OUT_OF_BOUNDS)?;
-        self.global.resize(size, None);
+        self.global.resize(size, 0);
         Ok(())
     }
 }

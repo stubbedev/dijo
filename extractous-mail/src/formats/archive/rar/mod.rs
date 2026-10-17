@@ -6,14 +6,17 @@
 //!
 //! The headers are ported from junrar's `Archive` ([`headers`]), its extraction from
 //! `getInputStream` on ([`extract`]) and its unpackers, PPMd decoder and filters ([`unpack`]),
-//! so an entry's data is junrar's, checked against its CRC. What junrar reads that the port
-//! does not, RAR 5 and 1.4 archives, self-extractors and entries continued in another volume,
-//! and every entry the unpacker fails on, is left to Tika.
+//! so an entry's data is junrar's, checked against its CRC, but where junrar slips (#122). An
+//! entry the port cannot give whole, one whose data does not match its CRC, is compressed for
+//! an unknown RAR version, continues in another volume or fails to unpack, is recorded as a
+//! failure where Tika's path gives it empty. What junrar reads that the port does not, RAR 5
+//! and 1.4 archives and self-extractors, is left to Tika.
 
 mod extract;
 mod headers;
 mod unpack;
 
+use extract::Extracted;
 use headers::{Name, Unopened};
 
 use super::entry_metadata;
@@ -21,10 +24,9 @@ use super::nesting::Scan;
 use crate::compress::{ArchiveFile, MAX_DECODED};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Deferral, Opened, Parser, Prepared};
-use crate::java::time::TimeZone;
 
 const RAR: &str = "application/x-rar-compressed";
 
@@ -57,10 +59,7 @@ impl Parser for RarParser {
                 "Tika does not yet support rar version 5.".to_owned(),
             )));
         }
-        let zone = TimeZone::java_default().map_err(|_| {
-            "the JVM's default time zone, which entry times are read in, is unknown".to_owned()
-        })?;
-        let headers = headers::read(input, zone).map_err(|unopened| match unopened {
+        let headers = headers::read(input).map_err(|unopened| match unopened {
             Unopened::Fails {
                 encrypted: true,
                 reason,
@@ -70,20 +69,32 @@ impl Parser for RarParser {
                 Declined::Deferred(format!("junrar reads {what}, which the port does not"))
             }
         })?;
-        let files = files(input, &headers)?;
-        if let Some(reason) = Scan::new().files(input.len(), &files) {
+        let entries = entries(input, &headers)?;
+        if let Some(reason) =
+            Scan::new().files(input.len(), entries.iter().map(|entry| &entry.file))
+        {
             return Err(Declined::Deferred(reason));
         }
         Ok(Box::new(move |xhtml| {
             xhtml.element("div", " ")?;
-            for file in &files {
+            for Entry { file, unread } in &entries {
                 let metadata = entry_metadata(file, xhtml)?;
-                xhtml.parse_embedded_opened(
-                    &file.content,
-                    &metadata,
-                    Wrapping::UnderlyingPackageEntry,
-                    Opened::Alone,
-                )?;
+                match unread {
+                    None => xhtml.parse_embedded_opened(
+                        &file.content,
+                        &metadata,
+                        Wrapping::UnderlyingPackageEntry,
+                        Opened::Alone,
+                    )?,
+                    Some(reason) => record_stream_exception(
+                        xhtml.metadata_mut(),
+                        &format!(
+                            "org.apache.tika.exception.TikaException: Can't read archive stream \
+                             ({}): {reason}",
+                            file.name
+                        ),
+                    ),
+                }
             }
             Ok(())
         }))
@@ -95,16 +106,22 @@ pub(super) fn is_rar(data: &[u8]) -> bool {
     data.starts_with(b"Rar!")
 }
 
-/// The files of the RAR archive `data` but its directories, with their data, if the port
-/// reads it.
+/// The files of the RAR archive `data` but its directories, with their data, empty for an
+/// entry the port cannot give, if the port reads it.
 pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile>> {
-    let zone = TimeZone::java_default().ok()?;
-    let headers = headers::read(data, zone).ok()?;
-    files(data, &headers).ok()
+    let headers = headers::read(data).ok()?;
+    let entries = entries(data, &headers).ok()?;
+    Some(entries.into_iter().map(|entry| entry.file).collect())
 }
 
-/// The files of the archive but its directories, with the data their streams give.
-fn files(input: &[u8], headers: &headers::Headers) -> Result<Vec<ArchiveFile>, Deferral> {
+/// A file of the archive, and why its data cannot be given, if it cannot.
+struct Entry {
+    file: ArchiveFile,
+    unread: Option<String>,
+}
+
+/// The files of the archive but its directories.
+fn entries(input: &[u8], headers: &headers::Headers) -> Result<Vec<Entry>, Deferral> {
     let mut declared = 0i64;
     let mut names = Vec::with_capacity(headers.files.len());
     for header in &headers.files {
@@ -112,10 +129,7 @@ fn files(input: &[u8], headers: &headers::Headers) -> Result<Vec<ArchiveFile>, D
             Name::Decoded(name) => names.push(name),
             Name::Unported(what) => return Err(format!("an entry has {what}")),
         }
-        if header.full_unpack_size > 0 && header.is_split() {
-            return Err("an entry continued from or in another volume".to_owned());
-        }
-        if !header.is_directory() {
+        if !header.is_directory() && !header.is_split() {
             declared = declared.saturating_add(header.full_unpack_size);
         }
     }
@@ -124,21 +138,28 @@ fn files(input: &[u8], headers: &headers::Headers) -> Result<Vec<ArchiveFile>, D
             "its entries declare more than the {MAX_DECODED} bytes the port decodes"
         ));
     }
-    Ok(extract::streams(input, headers)?
+    Ok(extract::entries(input, headers)
         .into_iter()
-        .map(|(index, content)| {
+        .map(|(index, extracted)| {
             let header = &headers.files[index];
-            ArchiveFile {
-                name: names[index].clone(),
-                size: header.full_unpack_size as u64,
-                modified_millis: Some(header.modified_millis),
-                created_millis: header.created_millis,
-                directory: false,
-                content,
+            let (content, unread) = match extracted {
+                Extracted::Data(content) => (content, None),
+                Extracted::Unread(reason) => (Vec::new(), Some(reason)),
+            };
+            Entry {
+                file: ArchiveFile {
+                    name: names[index].clone(),
+                    size: header.full_unpack_size as u64,
+                    modified_millis: header.modified_millis,
+                    created_millis: header.created_millis,
+                    directory: false,
+                    content,
+                },
+                unread,
             }
         })
         .collect())
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests;
