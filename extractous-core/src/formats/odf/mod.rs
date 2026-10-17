@@ -20,7 +20,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
 use crate::mime::{self, Origin};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -163,7 +163,7 @@ struct Archive<'a> {
     zip: ZipFile<'a>,
     entries: Vec<Entry>,
     /// The entries read ahead to check them, by name, each to be read once more.
-    read_ahead: HashMap<String, Vec<u8>>,
+    read_ahead: HashMap<String, Cow<'a, [u8]>>,
 }
 
 impl<'a> Archive<'a> {
@@ -188,7 +188,7 @@ impl<'a> Archive<'a> {
         self.entries.iter().filter(move |entry| entry.kind == kind)
     }
 
-    fn read(&mut self, entry: &Entry) -> Result<Vec<u8>, Failure> {
+    fn read(&mut self, entry: &Entry) -> Result<Cow<'a, [u8]>, Failure> {
         match self.read_ahead.remove(entry.name()) {
             Some(bytes) => Ok(bytes),
             None => self.zip.read(&entry.entry),
@@ -333,6 +333,10 @@ impl Parser for OpenDocumentParser {
     #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.odf.OpenDocumentParser"
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn media_types(&self) -> &'static [&'static str] {

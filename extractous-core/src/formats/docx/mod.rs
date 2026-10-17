@@ -14,6 +14,7 @@ pub(crate) mod numbering;
 mod styles;
 pub(crate) mod text;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use body::{unreferenced_comment, Body, Context, OleReferences};
@@ -29,7 +30,7 @@ use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts, Igno
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
 use crate::java::JavaHashMap;
 
 /// The WordprocessingML namespace.
@@ -108,6 +109,10 @@ impl Parser for DocxParser {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -174,7 +179,7 @@ impl<'a> Document<'a> {
         &self.package.parts[part].relationships
     }
 
-    fn read(&self, part: usize) -> Result<Vec<u8>, Failure> {
+    fn read(&self, part: usize) -> Result<Cow<'a, [u8]>, Failure> {
         self.package.read(part)
     }
 

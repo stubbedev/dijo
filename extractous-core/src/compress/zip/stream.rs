@@ -6,6 +6,7 @@
 //! only, as by [`super::file`]. Names come from the Unicode path extra field where its CRC
 //! matches, as `useUnicodeExtraFields` asks.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use super::extra::{self, ExtraFields, Times};
@@ -202,24 +203,21 @@ impl<'a> ZipStream<'a> {
     }
 
     /// The data of the entry the stream is in, read to its end.
-    pub(crate) fn content(&self) -> Result<Content, Failure> {
+    pub(crate) fn content(&self) -> Result<Content<'a>, Failure> {
         let current = self.current.as_ref().ok_or(Failure::Io)?;
         self.check(current)?;
         match current.method {
             STORED if current.has_data_descriptor() => {
                 let (data, _) = self.read_stored_with_descriptor(current)?;
-                Ok(Content::Complete(self.data[data].to_vec()))
+                Ok(Content::Complete(Cow::Borrowed(&self.data[data])))
             }
             STORED => {
                 let size = usize::try_from(current.size).map_err(|_| Failure::Io)?;
                 Ok(match self.bytes(current.data_start, size) {
-                    Ok(bytes) => Content::Complete(bytes.to_vec()),
-                    Err(_) => Content::Truncated(
-                        self.data
-                            .get(current.data_start..)
-                            .unwrap_or_default()
-                            .to_vec(),
-                    ),
+                    Ok(bytes) => Content::Complete(Cow::Borrowed(bytes)),
+                    Err(_) => Content::Truncated(Cow::Borrowed(
+                        self.data.get(current.data_start..).unwrap_or_default(),
+                    )),
                 })
             }
             DEFLATED => {

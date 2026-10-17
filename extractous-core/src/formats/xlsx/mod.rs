@@ -42,7 +42,7 @@ use crate::formats::ooxml::{
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =
@@ -119,6 +119,10 @@ impl Parser for XlsxParser {
     #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn media_types(&self) -> &'static [&'static str] {

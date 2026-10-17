@@ -5,6 +5,8 @@
 
 mod page;
 
+use std::borrow::Cow;
+
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping};
 use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
@@ -139,7 +141,7 @@ fn read_fixed_document(
 }
 
 /// `getZipStream`: the archive's entry at `path`, a leading slash dropped from a longer path.
-fn zip_entry(package: &Package, path: &str) -> Result<Vec<u8>, Failure> {
+fn zip_entry<'a>(package: &Package<'a>, path: &str) -> Result<Cow<'a, [u8]>, Failure> {
     let target = if path.len() > 1 {
         path.strip_prefix('/').unwrap_or(path)
     } else {

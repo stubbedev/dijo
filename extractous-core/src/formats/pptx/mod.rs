@@ -28,7 +28,7 @@ use crate::formats::ooxml::{
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
 use crate::java::is_blank;
 use crate::java::JavaHashMap;
 
@@ -113,6 +113,10 @@ impl Parser for PptxParser {
     #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn media_types(&self) -> &'static [&'static str] {

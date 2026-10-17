@@ -10,7 +10,8 @@
 mod content;
 mod package;
 
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::HashSet;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
@@ -18,7 +19,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::formats::{Declined, Deferral, Failure, Footprint, Parser, Prepared};
 use crate::java;
 use crate::java::is_blank;
 
@@ -105,8 +106,6 @@ impl From<crate::formats::xhtml::Stop> for Thrown {
 /// An opened book.
 struct Book<'a> {
     zip: ZipFile<'a>,
-    /// The entries read ahead to check them, by name, each to be read once more.
-    read_ahead: HashMap<String, Vec<u8>>,
 }
 
 impl<'a> Book<'a> {
@@ -114,11 +113,8 @@ impl<'a> Book<'a> {
         self.zip.named(name).cloned()
     }
 
-    fn read(&mut self, entry: &ZipEntry) -> Result<Vec<u8>, Failure> {
-        match self.read_ahead.remove(&entry.name) {
-            Some(bytes) => Ok(bytes),
-            None => self.zip.read(entry),
-        }
+    fn read(&mut self, entry: &ZipEntry) -> Result<Cow<'a, [u8]>, Failure> {
+        self.zip.read(entry)
     }
 
     /// `getRoot`: the package document `container.xml` names, or without one, the first entry
@@ -336,7 +332,8 @@ fn read_fallback(book: &mut Book, reason: &str, xhtml: &mut Xhtml) -> Result<(),
 
 /// Reads the book in `input` as far as deciding whether this parser extracts it as Tika does:
 /// its package document, with the metadata it adds to `metadata`, and its content documents,
-/// which it keeps for writing; or why Tika's path should read it.
+/// each read again as it is written, so that no more than one is held at a time; or why
+/// Tika's path should read it.
 fn prepare<'a>(
     input: &'a [u8],
     metadata: &mut TikaMetadata,
@@ -352,10 +349,7 @@ fn prepare<'a>(
     if !zip.reads_every_entry() {
         return Err("its archive has entries the zip crate cannot decompress".to_owned());
     }
-    let mut book = Book {
-        zip,
-        read_ahead: HashMap::new(),
-    };
+    let mut book = Book { zip };
     let reading = book.reading(metadata);
     let documents: Vec<ZipEntry> = match &reading {
         Err(_) => Vec::new(),
@@ -395,7 +389,6 @@ fn prepare<'a>(
                 document.name
             ));
         }
-        book.read_ahead.insert(document.name.clone(), bytes);
     }
     Ok((book, reading))
 }
@@ -410,6 +403,10 @@ impl Parser for EpubParser {
     #[cfg(test)]
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.epub.EpubParser"
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn media_types(&self) -> &'static [&'static str] {

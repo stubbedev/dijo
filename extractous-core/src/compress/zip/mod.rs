@@ -5,6 +5,8 @@ pub(crate) mod extra;
 pub(crate) mod file;
 pub(crate) mod stream;
 
+use std::borrow::Cow;
+
 use flate2::{Decompress, FlushDecompress, Status};
 
 use super::MAX_DECODED;
@@ -20,14 +22,15 @@ pub(crate) struct Corrupt;
 
 /// An entry's content: all of it, what was read before the data failed, or the first
 /// [`MAX_DECODED`] bytes and more of an entry that inflates past them, which is not read on.
+/// A stored entry's is the archive's own bytes; an inflated entry's is its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Content {
-    Complete(Vec<u8>),
-    Truncated(Vec<u8>),
-    Oversized(Vec<u8>),
+pub(crate) enum Content<'a> {
+    Complete(Cow<'a, [u8]>),
+    Truncated(Cow<'a, [u8]>),
+    Oversized(Cow<'a, [u8]>),
 }
 
-impl Content {
+impl Content<'_> {
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
             Content::Complete(bytes) | Content::Truncated(bytes) | Content::Oversized(bytes) => {
@@ -70,7 +73,7 @@ pub(crate) fn u64_at(data: &[u8], offset: usize) -> i64 {
 /// Raw deflate data inflated as `InflaterInputStream` inflates it: to the end of the deflate
 /// stream, or as far as it goes before the input runs out or turns out corrupt, or past
 /// [`MAX_DECODED`] bytes.
-pub(crate) fn inflate(raw: &[u8]) -> Content {
+pub(crate) fn inflate(raw: &[u8]) -> Content<'static> {
     let mut inflater = Decompress::new(false);
     let mut out = Vec::new();
     loop {
@@ -80,14 +83,14 @@ pub(crate) fn inflate(raw: &[u8]) -> Content {
         let input: &[u8] = match consumed.cmp(&raw.len()) {
             std::cmp::Ordering::Less => &raw[consumed..],
             std::cmp::Ordering::Equal => &[0],
-            std::cmp::Ordering::Greater => return Content::Truncated(out),
+            std::cmp::Ordering::Greater => return Content::Truncated(Cow::Owned(out)),
         };
         match inflater.decompress_vec(input, &mut out, FlushDecompress::None) {
-            Ok(_) if out.len() > MAX_DECODED => return Content::Oversized(out),
-            Ok(Status::StreamEnd) => return Content::Complete(out),
-            Err(_) => return Content::Truncated(out),
+            Ok(_) if out.len() > MAX_DECODED => return Content::Oversized(Cow::Owned(out)),
+            Ok(Status::StreamEnd) => return Content::Complete(Cow::Owned(out)),
+            Err(_) => return Content::Truncated(Cow::Owned(out)),
             Ok(_) if inflater.total_in() == before_in && out.len() == before_out => {
-                return Content::Truncated(out)
+                return Content::Truncated(Cow::Owned(out))
             }
             Ok(_) => {}
         }

@@ -3,15 +3,16 @@
 //! relationships of the package and of each part. A package POI would open in a degraded way or
 //! refuse, or one using what this port does not read, is [`Unported`].
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use zip::ZipArchive;
 
 use super::uri::{self, Resolution};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::zip_file::central_directory_records;
+use crate::formats::zip_file::{self, central_directory_records};
 use crate::formats::Failure;
 pub(crate) use crate::formats::Unported;
 use crate::java;
@@ -89,6 +90,7 @@ pub(crate) struct Part {
 
 /// An opened package.
 pub(crate) struct Package<'a> {
+    input: &'a [u8],
     archive: ZipArchive<Cursor<&'a [u8]>>,
     /// The names of the archive's entries, in its order.
     entry_names: Vec<String>,
@@ -114,7 +116,8 @@ impl<'a> Package<'a> {
             .iter()
             .position(|name| name == CONTENT_TYPES)
             .ok_or_else(|| Unported(format!("the package has no {CONTENT_TYPES}")))?;
-        let content_types = ContentTypes::read(&read_entry(&mut archive, content_types_entry)?)?;
+        let content_types =
+            ContentTypes::read(&read_entry(&mut archive, input, content_types_entry)?)?;
         let mut entries: Vec<(String, String, usize)> = Vec::new();
         for (index, name) in names.iter().enumerate() {
             if name.eq_ignore_ascii_case(CONTENT_TYPES)
@@ -169,6 +172,7 @@ impl<'a> Package<'a> {
             });
         }
         let mut package = Package {
+            input,
             archive,
             entry_names: names,
             parts,
@@ -185,18 +189,22 @@ impl<'a> Package<'a> {
         Ok(package)
     }
 
-    /// The bytes of `part`.
-    pub(crate) fn read(&self, part: usize) -> Result<Vec<u8>, Failure> {
-        read_entry(&mut self.archive.clone(), self.parts[part].entry)
-            .map_err(|Unported(reason)| Failure::Malformed(reason))
+    /// The bytes of `part`: the archive's own where it is stored.
+    pub(crate) fn read(&self, part: usize) -> Result<Cow<'a, [u8]>, Failure> {
+        read_entry(
+            &mut self.archive.clone(),
+            self.input,
+            self.parts[part].entry,
+        )
+        .map_err(|Unported(reason)| Failure::Malformed(reason))
     }
 
     /// The bytes of the archive's entry named `name` exactly, as `ZipPackage.getZipArchive()`
     /// finds it among the entries, if there is one.
-    pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Vec<u8>, Failure>> {
+    pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Cow<'a, [u8]>, Failure>> {
         let entry = self.entry_names.iter().position(|entry| entry == name)?;
         Some(
-            read_entry(&mut self.archive.clone(), entry)
+            read_entry(&mut self.archive.clone(), self.input, entry)
                 .map_err(|Unported(reason)| Failure::Malformed(reason)),
         )
     }
@@ -256,7 +264,7 @@ impl<'a> Package<'a> {
         let Some(&rels_part) = by_name.get(&rels_name.to_ascii_lowercase()) else {
             return Ok(Vec::new());
         };
-        let bytes = read_entry(&mut self.archive, self.parts[rels_part].entry)?;
+        let bytes = read_entry(&mut self.archive, self.input, self.parts[rels_part].entry)?;
         let mut reader = RelationshipsReader::default();
         xml::parse_sax(&bytes, &rels_name, &mut reader)
             .map_err(|e| Unported(format!("POI fails on {rels_name}: {}", describe(&e))))?;
@@ -369,14 +377,15 @@ fn entry_names(archive: &ZipArchive<Cursor<&[u8]>>, input: &[u8]) -> Result<Vec<
         .collect()
 }
 
-fn read_entry(archive: &mut ZipArchive<Cursor<&[u8]>>, index: usize) -> Result<Vec<u8>, Unported> {
-    let mut file = archive
-        .by_index(index)
-        .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))?;
-    let mut bytes = Vec::with_capacity(usize::try_from(file.size()).unwrap_or(0));
-    file.read_to_end(&mut bytes)
-        .map_err(|e| Unported(format!("the ZIP entry {index} cannot be inflated: {e}")))?;
-    Ok(bytes)
+/// The bytes of the entry `index` of the archive `input`: the archive's own where the entry is
+/// stored.
+fn read_entry<'a>(
+    archive: &mut ZipArchive<Cursor<&'a [u8]>>,
+    input: &'a [u8],
+    index: usize,
+) -> Result<Cow<'a, [u8]>, Unported> {
+    zip_file::read_entry(archive, input, index)
+        .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))
 }
 
 /// `PackagingURIHelper.getRelationshipPartName`.

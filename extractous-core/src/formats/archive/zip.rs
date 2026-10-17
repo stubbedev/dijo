@@ -17,7 +17,8 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java::time::instant_string;
 use crate::mime::MediaType;
 use crate::text::charset::{self, Charset};
@@ -134,16 +135,31 @@ impl Parser for ZipParser {
         ]
     }
 
-    /// Opens the archive and reads each entry to rule out what Tika's path reads otherwise. The
-    /// entries are read again as they are written: holding them all would hold every entry's
-    /// data at once, where writing holds one at a time, for decompression that costs little
-    /// beside the parse of each entry.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Opens the archive and reads each entry to rule out what Tika's path reads otherwise. The
+    /// entries are read again as they are written: holding them all would hold every entry's
+    /// data at once, where writing holds one at a time, for decompression that costs little
+    /// beside the parse of each entry. A stored entry's data is the archive's own.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
+        let paging = Paging::new(pages);
         let Ok(zip) = ZipFile::open(input) else {
             return Err(Declined::Deferred(
                 "commons-compress's ZipFile cannot open the archive, which Tika then salvages \
@@ -168,6 +184,7 @@ impl Parser for ZipParser {
                     if let Some(reason) = scan.entry(&content) {
                         return Err(Declined::Deferred(reason));
                     }
+                    paging.read(content.len());
                 }
                 Some(Content::Truncated(_)) => {
                     return Err(Declined::Deferred(format!(
@@ -197,10 +214,12 @@ impl Parser for ZipParser {
         }
         // Tika checks the integrity after the document has ended, so its result never reaches
         // the document's head, and not at all when an entry fails it (#99).
+        paging.release();
         Ok(Box::new(move |xhtml| {
             check_integrity(input, &CentralNames::of(&zip), xhtml.metadata_mut());
+            paging.release();
             update_media_type(&zip, xhtml.metadata_mut());
-            let written = write_entries(&zip, xhtml);
+            let written = write_entries(&zip, xhtml, &paging);
             xhtml.end_document()?;
             written
         }))
@@ -208,7 +227,7 @@ impl Parser for ZipParser {
 }
 
 /// `parseWithZipFile`'s loop over the entries, which ends the document whatever happens.
-fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml) -> Result<(), Failure> {
+fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<(), Failure> {
     for entry in zip.entries() {
         if entry.is_directory() {
             continue;
@@ -247,6 +266,7 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let metadata = entry_metadata(entry, &name);
         write_entry_div(xhtml, &name)?;
         xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;
+        paging.read(content.len());
     }
     Ok(())
 }
