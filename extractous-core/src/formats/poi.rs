@@ -102,6 +102,65 @@ pub(crate) fn inflate(data: &[u8], limit: Option<usize>) -> Option<Vec<u8>> {
     }
 }
 
+/// How a subclass of POI's `LZWDecompresser` reads its data.
+pub(crate) struct Lzw {
+    /// Whether a set flag bit marks a dictionary reference, not a byte.
+    pub(crate) mask_means_compressed: bool,
+    /// How much longer than its length field a reference copies.
+    pub(crate) code_length_increase: usize,
+    /// Whether a reference's position is its first byte and the high half of its second.
+    pub(crate) position_is_big_endian: bool,
+    /// `populateDictionary`: what the dictionary starts with.
+    pub(crate) preload: &'static [u8],
+    /// `adjustDictionaryOffset`.
+    pub(crate) adjust: fn(usize) -> usize,
+}
+
+/// `LZWDecompresser`'s dictionary of the last 4096 bytes.
+const LZW_DICTIONARY_SIZE: usize = 0x1000;
+const LZW_DICTIONARY_MASK: usize = 0xFFF;
+
+impl Lzw {
+    /// `LZWDecompresser.decompress`: flags of eight items, each a byte or a reference into the
+    /// dictionary of what came before, until the data ends.
+    pub(crate) fn decompress(&self, data: &[u8]) -> Vec<u8> {
+        let mut dictionary = [0u8; LZW_DICTIONARY_SIZE];
+        dictionary[..self.preload.len()].copy_from_slice(self.preload);
+        let mut position = self.preload.len();
+        let mut out = Vec::with_capacity(data.len() * 2);
+        let mut input = data.iter().copied();
+        while let Some(flag) = input.next() {
+            for bit in 0..8 {
+                if (flag & (1 << bit) != 0) != self.mask_means_compressed {
+                    if let Some(byte) = input.next() {
+                        dictionary[position & LZW_DICTIONARY_MASK] = byte;
+                        position += 1;
+                        out.push(byte);
+                    }
+                    continue;
+                }
+                let (Some(first), Some(second)) = (input.next(), input.next()) else {
+                    break;
+                };
+                let length = usize::from(second & 0x0F) + self.code_length_increase;
+                let pointer = if self.position_is_big_endian {
+                    (usize::from(first) << 4) + (usize::from(second) >> 4)
+                } else {
+                    usize::from(first) + (usize::from(second & 0xF0) << 4)
+                };
+                let pointer = (self.adjust)(pointer);
+                for i in 0..length {
+                    let byte = dictionary[(pointer + i) & LZW_DICTIONARY_MASK];
+                    dictionary[(position + i) & LZW_DICTIONARY_MASK] = byte;
+                    out.push(byte);
+                }
+                position += length;
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

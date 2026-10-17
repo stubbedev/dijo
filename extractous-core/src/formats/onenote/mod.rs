@@ -4,15 +4,18 @@
 //! to the embedded document extractor. Where the structure or the walk throws, Tika records the
 //! exception and falls back to dumping the file's runs of printable characters ([`legacy`]),
 //! after anything the walk wrote. Sections in the alternative packaging of MS-FSSHTTPB, which
-//! OneNote writes for files from OneDrive, are left to Tika's path.
+//! OneNote writes for files from OneDrive, are read as Tika reads them ([`fsshttpb`]), and
+//! dumped as legacy text where that reading throws or finds no content.
 
 mod file;
+mod fsshttpb;
 mod guid;
 mod legacy;
 mod structure;
 mod walker;
 
 use file::{Dif, Thrown};
+use fsshttpb::Walked;
 use structure::{Document, Header, Reader};
 use walker::{Ended, Found, Walker};
 
@@ -24,6 +27,9 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const STRUCTURE_FAILED: &str = "OneNote parse failed; falling back to legacy text dump";
+const PACKAGE_FAILED: &str = "OneNote FSSHTTPB parse failed; falling back to legacy text dump";
+const PACKAGE_EMPTY: &str =
+    "OneNote FSSHTTPB parse produced no content; falling back to legacy text dump";
 
 /// Tika's `OneNoteParser`.
 pub(crate) struct OneNoteParser;
@@ -55,11 +61,24 @@ impl Parser for OneNoteParser {
             .map_err(|Thrown(exception)| Declined::Fails(Error::ParseError(exception)))?;
         if !header.is_ms_one_store() {
             if header.alternative_packaging {
-                return Err(Declined::Deferred(
-                    "a OneNote section in the alternative packaging of MS-FSSHTTPB, which the \
-                     port does not read"
-                        .to_owned(),
-                ));
+                let read = fsshttpb::read(input)?;
+                return Ok(Box::new(move |xhtml| {
+                    let walked = match &read {
+                        Ok(package) => fsshttpb::walk(package, xhtml),
+                        Err(thrown) => Walked::Thrown(thrown.clone()),
+                    };
+                    match walked {
+                        Walked::Done { content: true } => Ok(()),
+                        Walked::Done { content: false } => {
+                            xhtml
+                                .metadata_mut()
+                                .add(embedded::EXCEPTION_WARNING, PACKAGE_EMPTY);
+                            Ok(legacy::dump(input, xhtml)?)
+                        }
+                        Walked::Thrown(cause) => fall_back(input, PACKAGE_FAILED, cause, xhtml),
+                        Walked::Failed(failure) => Err(failure),
+                    }
+                }));
             }
             return Err(Declined::Fails(Error::ParseError(
                 "Invalid OneStore document - could not parse headers".to_owned(),
@@ -82,15 +101,20 @@ impl Parser for OneNoteParser {
                 }
                 Err(thrown) => thrown,
             };
-            fall_back(input, cause, xhtml)
+            fall_back(input, STRUCTURE_FAILED, cause, xhtml)
         }))
     }
 }
 
 /// `legacyFallbackDump`: the warning and the exception recorded, then the legacy dump.
-fn fall_back(input: &[u8], Thrown(cause): Thrown, xhtml: &mut Xhtml) -> Result<(), Failure> {
+fn fall_back(
+    input: &[u8],
+    warning: &str,
+    Thrown(cause): Thrown,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     let metadata = xhtml.metadata_mut();
-    metadata.add(embedded::EXCEPTION_WARNING, STRUCTURE_FAILED);
+    metadata.add(embedded::EXCEPTION_WARNING, warning);
     embedded::record_exception(metadata, &cause);
     legacy::dump(input, xhtml)?;
     Ok(())

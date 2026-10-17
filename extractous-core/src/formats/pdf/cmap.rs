@@ -1,111 +1,52 @@
 //! FontBox's `CMap` and `CMapParser`: the character maps of composite fonts and the
 //! `ToUnicode` maps of all fonts, read as FontBox reads them, and the predefined Identity maps.
 
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::sync::{LazyLock, OnceLock};
 
 use super::cos::decode_java;
 use super::Unported;
 use crate::hash::FastMap;
 
-/// The predefined CMaps FontBox bundles, by name.
-const PREDEFINED: [&str; 92] = [
-    "83pv-RKSJ-H",
-    "90msp-RKSJ-H",
-    "90msp-RKSJ-V",
-    "90ms-RKSJ-H",
-    "90ms-RKSJ-V",
-    "90pv-RKSJ-H",
-    "90pv-RKSJ-V",
-    "Add-RKSJ-H",
-    "Add-RKSJ-V",
-    "Adobe-CNS1-0",
-    "Adobe-CNS1-1",
-    "Adobe-CNS1-2",
-    "Adobe-CNS1-3",
-    "Adobe-CNS1-4",
-    "Adobe-CNS1-5",
-    "Adobe-CNS1-6",
-    "Adobe-CNS1-UCS2",
-    "Adobe-GB1-0",
-    "Adobe-GB1-1",
-    "Adobe-GB1-2",
-    "Adobe-GB1-3",
-    "Adobe-GB1-4",
-    "Adobe-GB1-5",
-    "Adobe-GB1-UCS2",
-    "Adobe-Japan1-0",
-    "Adobe-Japan1-1",
-    "Adobe-Japan1-2",
-    "Adobe-Japan1-3",
-    "Adobe-Japan1-4",
-    "Adobe-Japan1-5",
-    "Adobe-Japan1-6",
-    "Adobe-Japan1-7",
-    "Adobe-Japan1-UCS2",
-    "Adobe-Japan2-0",
-    "Adobe-Korea1-0",
-    "Adobe-Korea1-1",
-    "Adobe-Korea1-2",
-    "Adobe-Korea1-UCS2",
-    "B5pc-H",
-    "B5pc-V",
-    "CNS-EUC-H",
-    "CNS-EUC-V",
-    "ETen-B5-H",
-    "ETen-B5-V",
-    "ETenms-B5-H",
-    "ETenms-B5-V",
-    "EUC-H",
-    "EUC-V",
-    "Ext-RKSJ-H",
-    "Ext-RKSJ-V",
-    "GB-EUC-H",
-    "GB-EUC-V",
-    "GBK2K-H",
-    "GBK2K-V",
-    "GBK-EUC-H",
-    "GBK-EUC-V",
-    "GBKp-EUC-H",
-    "GBKp-EUC-V",
-    "GBpc-EUC-H",
-    "GBpc-EUC-V",
-    "H",
-    "HKscs-B5-H",
-    "HKscs-B5-V",
-    "Identity-H",
-    "Identity-V",
-    "KSC-EUC-H",
-    "KSC-EUC-V",
-    "KSCms-UHC-H",
-    "KSCms-UHC-HW-H",
-    "KSCms-UHC-HW-V",
-    "KSCms-UHC-V",
-    "KSCpc-EUC-H",
-    "KSCpc-EUC-V",
-    "UniCNS-UCS2-H",
-    "UniCNS-UCS2-V",
-    "UniCNS-UTF16-H",
-    "UniCNS-UTF16-V",
-    "UniGB-UCS2-H",
-    "UniGB-UCS2-V",
-    "UniGB-UTF16-H",
-    "UniGB-UTF16-V",
-    "UniJIS-UCS2-H",
-    "UniJIS-UCS2-HW-H",
-    "UniJIS-UCS2-HW-V",
-    "UniJIS-UCS2-V",
-    "UniJIS-UTF16-H",
-    "UniJIS-UTF16-V",
-    "UniKS-UCS2-H",
-    "UniKS-UCS2-V",
-    "UniKS-UTF16-H",
-    "UniKS-UTF16-V",
-    "V",
-];
+/// The CMaps FontBox 3.0.8 bundles (`org/apache/fontbox/cmap` of its jar), by name, as a TAR
+/// archive compressed with xz.
+const BUNDLE: &[u8] = include_bytes!("../../../models/pdf/cmaps.tar.xz");
+
+/// The bundled CMaps, by name.
+static BUNDLED: LazyLock<BTreeMap<String, Vec<u8>>> = LazyLock::new(|| {
+    let tar = lzma_rust2::XzReader::new(BUNDLE, false);
+    let mut archive = tar::Archive::new(tar);
+    let mut maps = BTreeMap::new();
+    for entry in archive
+        .entries()
+        .expect("the bundled CMaps are a TAR archive")
+    {
+        let mut entry = entry.expect("a bundled CMap reads");
+        let name = entry
+            .path()
+            .expect("a bundled CMap has a name")
+            .to_string_lossy()
+            .into_owned();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).expect("a bundled CMap reads");
+        maps.insert(name, data);
+    }
+    maps
+});
+
+/// The bundled CMaps, parsed once each when first used, by name.
+static PARSED: LazyLock<BTreeMap<&'static str, OnceLock<Result<CMap, CMapError>>>> =
+    LazyLock::new(|| {
+        BUNDLED
+            .keys()
+            .map(|name| (name.as_str(), OnceLock::new()))
+            .collect()
+    });
 
 /// Why a CMap was not read: FontBox throws an `IOException` on it, which PDFBox catches for a
 /// `ToUnicode` map, or the map needs something the port does not hold.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum CMapError {
     Malformed(String),
     Unported(Unported),
@@ -195,6 +136,11 @@ pub(super) struct CMap {
     one_byte: FastMap<u32, String>,
     two_bytes: FastMap<u32, String>,
     more_bytes: FastMap<u32, String>,
+    /// `unicodeToByteCodes`: the code of each text, the last mapped to it.
+    unicode_to_codes: FastMap<String, Vec<u8>>,
+    /// Whether a map this one uses gave texts codes, which FontBox adds in the order of its
+    /// hash maps.
+    codes_used: bool,
     code_to_cid: FastMap<usize, FastMap<u32, u32>>,
     cid_ranges: Vec<CidRange>,
     space_mapping: i64,
@@ -216,6 +162,8 @@ impl CMap {
             one_byte: FastMap::default(),
             two_bytes: FastMap::default(),
             more_bytes: FastMap::default(),
+            unicode_to_codes: FastMap::default(),
+            codes_used: false,
             code_to_cid: FastMap::default(),
             cid_ranges: Vec::new(),
             space_mapping: -1,
@@ -260,6 +208,20 @@ impl CMap {
             _ => self.more_bytes.get(&code),
         }
         .map(String::as_str)
+    }
+
+    /// `CMap.getCodesFromUnicode`: the code `unicode` was last mapped from, or why the port
+    /// does not know it: a map that uses another with Unicode mappings, whose codes FontBox
+    /// adds in the order of its hash maps.
+    pub(super) fn codes_from_unicode(&self, unicode: &str) -> Result<Option<&[u8]>, Unported> {
+        if self.codes_used {
+            return Err(Unported(
+                "a CMap using another with Unicode mappings, whose codes FontBox reverses in \
+                 hash order"
+                    .to_owned(),
+            ));
+        }
+        Ok(self.unicode_to_codes.get(unicode).map(Vec::as_slice))
     }
 
     /// `CMap.readCode`: the code at the start of `bytes`, and how many bytes it takes, as
@@ -328,18 +290,14 @@ impl CMap {
         if unicode == " " {
             self.space_mapping = i64::from(to_int_java(codes));
         }
-        match codes.len() {
-            1 => {
-                self.one_byte.insert(to_int(codes), unicode);
-            }
-            2 => {
-                self.two_bytes.insert(to_int(codes), unicode);
-            }
-            3 | 4 => {
-                self.more_bytes.insert(to_int(codes), unicode);
-            }
-            _ => {}
-        }
+        let map = match codes.len() {
+            1 => &mut self.one_byte,
+            2 => &mut self.two_bytes,
+            3 | 4 => &mut self.more_bytes,
+            _ => return,
+        };
+        map.insert(to_int(codes), unicode.clone());
+        self.unicode_to_codes.insert(unicode, codes.to_vec());
     }
 
     fn add_cid_mapping(&mut self, code: &[u8], cid: u32) {
@@ -382,6 +340,7 @@ impl CMap {
         for range in &other.codespace_ranges {
             self.add_codespace_range(range.clone());
         }
+        self.codes_used |= other.has_unicode_mappings();
         self.one_byte.extend(other.one_byte.clone());
         self.two_bytes.extend(other.two_bytes.clone());
         self.more_bytes.extend(other.more_bytes.clone());
@@ -431,23 +390,22 @@ fn identity(name: &str, wmode: i32) -> CMap {
     cmap
 }
 
-/// Whether FontBox bundles a predefined CMap of that name.
-pub(super) fn is_predefined(name: &str) -> bool {
-    PREDEFINED.contains(&name)
-}
-
-/// `CMapManager.getPredefinedCMap`: the predefined map of that name.
+/// `CMapManager.getPredefinedCMap`: the bundled map of that name, parsed as `parsePredefined`
+/// parses it, the Identity maps made as FontBox's files define them.
 pub(super) fn predefined(name: &str) -> Result<&'static CMap, CMapError> {
     match name {
-        "Identity-H" => Ok(&IDENTITY_H),
-        "Identity-V" => Ok(&IDENTITY_V),
-        _ if PREDEFINED.contains(&name) => Err(CMapError::Unported(Unported(format!(
-            "the predefined CMap {name}, which the port does not hold"
-        )))),
-        _ => Err(malformed(&format!(
-            "Error: Could not find referenced cmap stream {name}"
-        ))),
+        "Identity-H" => return Ok(&IDENTITY_H),
+        "Identity-V" => return Ok(&IDENTITY_V),
+        _ => {}
     }
+    let (Some(cell), Some(data)) = (PARSED.get(name), BUNDLED.get(name)) else {
+        return Err(malformed(&format!(
+            "Error: Could not find referenced cmap stream {name}"
+        )));
+    };
+    cell.get_or_init(|| parse(data))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// A token of FontBox's CMap parser.
@@ -953,10 +911,15 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
         assert_eq!(identity.to_cid(0x1234), 0x1234);
         assert_eq!(identity.wmode, 0);
         assert_eq!(predefined("Identity-V").unwrap().wmode, 1);
-        assert!(matches!(
-            predefined("UniJIS-UCS2-H"),
-            Err(CMapError::Unported(_))
-        ));
+        let unicode = predefined("UniJIS-UCS2-H").unwrap();
+        assert_eq!(unicode.registry.as_deref(), Some("Adobe"));
+        assert_eq!(unicode.ordering.as_deref(), Some("Japan1"));
+        assert_eq!(unicode.to_cid(0x3042), 843);
+        let ucs2 = predefined("Adobe-Japan1-UCS2").unwrap();
+        assert_eq!(ucs2.to_unicode(843), Some("\u{3042}"));
+        for name in BUNDLED.keys() {
+            assert!(predefined(name).is_ok(), "{name}");
+        }
         assert!(matches!(
             predefined("NoSuchMap"),
             Err(CMapError::Malformed(_))

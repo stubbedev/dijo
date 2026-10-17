@@ -12,7 +12,7 @@ use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
 use super::form;
-use super::ocr::PageCheck;
+use super::ocr::{Layer, PageCheck};
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
@@ -26,6 +26,11 @@ use crate::java::is_blank;
 const MAX_ANNOTATION_TYPES: usize = 100;
 /// `AbstractPDF2XHTML.MAX_BOOKMARK_ITEMS`.
 const MAX_BOOKMARK_ITEMS: usize = 100_000;
+/// `RenderSettings.defaults()`: the resolution Tika renders pages at, the fewest pixels a side
+/// takes, and the most pixels a page takes.
+const RENDER_DPI: f64 = 300.0;
+const MIN_RENDER_PIXELS: f64 = 2.0;
+const MAX_RENDER_PIXELS: f64 = 100_000_000.0;
 /// `AbstractPDF2XHTML.MAX_BOOKMARK_DEPTH`.
 const MAX_BOOKMARK_DEPTH: usize = 50;
 
@@ -66,6 +71,8 @@ pub(super) struct PageWriter<'p, 'r> {
     pub(super) tagged: Option<Tagged<'p>>,
     /// The text of the current page's `div`, while it is kept for the page's assessment.
     layer_text: Option<String>,
+    /// Whether the current page's `div` holds files an annotation embeds.
+    embeds: bool,
 }
 
 impl PageWriter<'_, '_> {
@@ -218,6 +225,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 in_paragraph: false,
                 tagged,
                 layer_text: None,
+                embeds: false,
             },
             page_number: 0,
             settings,
@@ -249,9 +257,21 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         Ok(ControlFlow::Continue(()))
     }
 
-    /// `PDFTextStripper.processPage`, as `PDF2XHTML` and Tika's tagged writer run it.
+    /// `PDFTextStripper.processPage`, as `PDF2XHTML` and Tika's tagged writer run it, or
+    /// `OCR2XHTML.processPage`, which reads the page's OCR text in place of its text.
     fn process_page(&mut self, page: Page<'p>) -> Result<(), WriteFailure> {
         self.page_number += 1;
+        if self.settings.ocr.reads_only_ocr() {
+            self.page
+                .out
+                .start_element_with("div", &[("class", "page")])?;
+            if self.renders(page)? {
+                self.page
+                    .out
+                    .release_read(self.page_number - 1, PageCheck::Recognize);
+            }
+            return self.close_page(page, 0, 0);
+        }
         self.start_page()?;
         let mut content = self.engine.process_page(page)?;
         if self.page.tagged.is_none() && self.settings.reading_order {
@@ -276,6 +296,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             self.page.out.hold();
             self.page.layer_text = Some(String::new());
         }
+        self.page.embeds = false;
         match self.page.tagged.as_mut() {
             Some(tagged) => tagged.start_page(),
             None => self.page.plain_paragraph_start()?,
@@ -283,31 +304,71 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         Ok(())
     }
 
-    /// `PDF2XHTML.endPage` and `AbstractPDF2XHTML.endPage`, the page kept for OCR when our
-    /// `TextLayerCheckingPdfParser` reads it, unless Tika's path OCRs the page itself.
+    /// `PDF2XHTML.endPage`.
     fn end_page(&mut self, page: Page<'p>, content: &PageContent) -> Result<(), WriteFailure> {
         self.page.write_paragraph_end()?;
+        self.close_page(page, content.glyphs, content.unmapped)
+    }
+
+    /// `AbstractPDF2XHTML.endPage` of a page of `glyphs` glyphs, `unmapped` of them without
+    /// characters: its annotations, then the page kept for OCR when our
+    /// `TextLayerCheckingPdfParser` reads it, or its OCR text when Tika's PDF parser reads it.
+    fn close_page(
+        &mut self,
+        page: Page<'p>,
+        glyphs: i32,
+        unmapped: i32,
+    ) -> Result<(), WriteFailure> {
         let out = &mut *self.page.out;
-        out.add("pdf:chars-per-page", content.glyphs.to_string());
-        out.add(
-            "pdf:unmapped-unicode-chars-per-page",
-            content.unmapped.to_string(),
-        );
-        self.total_glyphs += i64::from(content.glyphs);
-        self.total_unmapped += i64::from(content.unmapped);
+        out.add("pdf:chars-per-page", glyphs.to_string());
+        out.add("pdf:unmapped-unicode-chars-per-page", unmapped.to_string());
+        self.total_glyphs += i64::from(glyphs);
+        self.total_unmapped += i64::from(unmapped);
         self.annotations(page)?;
         let layer_text = self.page.layer_text.take();
-        match self.settings.ocr.page(
-            self.page_number,
-            content.glyphs,
-            content.unmapped,
-            layer_text.as_deref(),
-        )? {
+        let layer = match (layer_text.as_deref(), self.page.embeds) {
+            (None, _) => Layer::Unheld,
+            (Some(_), true) => Layer::Embedding,
+            (Some(text), false) => Layer::Text(text),
+        };
+        let check = match self
+            .settings
+            .ocr
+            .page(self.page_number, glyphs, unmapped, layer)?
+        {
+            PageCheck::Recognize if !self.renders(page)? => PageCheck::Keep,
+            check => check,
+        };
+        match check {
             PageCheck::Keep => self.page.out.release(),
             check => self.page.out.release_read(self.page_number - 1, check),
         }
         self.page.out.end_element("div")?;
         Ok(())
+    }
+
+    /// Whether Tika's renderer renders `page` for the OCR parser: not a page too small to hold
+    /// anything (`RenderSettings.belowMinimum`). A page above its limit of pixels, whose failure
+    /// Tika records, is left to Tika.
+    fn renders(&self, page: Page<'p>) -> Result<bool, Unported> {
+        let [left, bottom, right, top] = page.crop_box(self.pdf);
+        let (width, height) = (f64::from(right - left), f64::from(top - bottom));
+        let (width, height) = match page.rotation(self.pdf) {
+            90 | 270 => (height, width),
+            _ => (width, height),
+        };
+        let pixels = |points: f64| (points / 72.0 * RENDER_DPI).ceil();
+        if pixels(width) < MIN_RENDER_PIXELS || pixels(height) < MIN_RENDER_PIXELS {
+            return Ok(false);
+        }
+        if pixels(width) * pixels(height) > MAX_RENDER_PIXELS {
+            return Err(Unported(format!(
+                "page {} renders to more pixels than Tika's renderer allows, which Tika records \
+                 as a failure",
+                self.page_number
+            )));
+        }
+        Ok(true)
     }
 
     /// The annotations of a page, as `processPageAnnotation` writes and records them.
@@ -527,8 +588,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// `processDocOnAction` for the file specification of an annotation: its files, written
     /// in the page's `div` unless an annotation led to the specification before. Our
-    /// `TextLayerCheckingPdfParser` weighs the text of such a file with the page's, which the
-    /// port does not.
+    /// `TextLayerCheckingPdfParser` weighs the text of such a file with the page's, once it is
+    /// parsed ([`PageCheck::Settle`]).
     fn annotation_file(
         &mut self,
         source: &str,
@@ -549,14 +610,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                     Written::Embedded { attributes, file } => {
                         self.page.start("div", &borrowed(&attributes))?;
                         self.page.end("div")?;
-                        if self.settings.ocr.holds_pages() {
-                            return Err(Unported(
-                                "a file an annotation embeds, whose text our \
-                                 TextLayerCheckingPdfParser weighs with the page's"
-                                    .to_owned(),
-                            )
-                            .into());
-                        }
+                        self.page.embeds = true;
                         self.page.out.embedded(file)?;
                     }
                 }
