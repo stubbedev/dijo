@@ -14,11 +14,11 @@ use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, PackageEncryption, ENCRYPTED_PACKAGE, ENCRYPTION_INFO};
 use crate::formats::docx::DocxParser;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::Summaries;
+use crate::formats::ole2::{office, Summaries};
 use crate::formats::pptx::PptxParser;
 use crate::formats::xlsx::XlsxParser;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USED};
-use crate::mime::{self, ole_directory_type, MediaType, Origin};
+use crate::mime::{self, Origin};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 const MEDIA_TYPE: &str = "application/x-tika-ooxml-protected";
@@ -109,28 +109,8 @@ struct Package {
 
 impl Package {
     fn read(input: &[u8], configs: &ParserConfigs) -> Result<Package, Declined> {
-        if configs.office.extracts_macros() {
-            return Err(
-                Unported("macros are extracted, which this port does not do".to_owned()).into(),
-            );
-        }
-        let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-            Unported(format!("POI cannot open the compound document: {reason}"))
-        })?;
-        if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
-            return Err(Unported(format!(
-                "POI reads the compound document from a stream differently: {reason}"
-            ))
-            .into());
-        }
+        let file = office::open(input, configs, MEDIA_TYPE, "protected package")?;
         let root = file.root();
-        if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
-            return Err(Unported(
-                "the compound document is no protected package to POI's container detection"
-                    .to_owned(),
-            )
-            .into());
-        }
         let summaries = Summaries::read(&file, root)?;
         let info = stream(&file, root, ENCRYPTION_INFO)?;
         let encryption = PackageEncryption::read(&info).map_err(|unopened| unopened.unported())?;

@@ -25,11 +25,10 @@ use extractor::{extract, Extracted};
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::Summaries;
+use crate::formats::ole2::{office, Summaries};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
-use crate::mime::{ole_directory_type, MediaType};
-use crate::ole2::{EntryId, Ole2, Unreadable};
+use crate::ole2::{EntryId, Ole2};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-outlook";
 
@@ -70,25 +69,8 @@ impl Parser for MsgParser {
 /// The summary information and what Tika's extractor makes of the message in a compound
 /// document.
 fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Unported> {
-    if configs.office.extracts_macros() {
-        return Err(Unported(
-            "macros are extracted, which this port does not do".to_owned(),
-        ));
-    }
-    let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-        Unported(format!("POI cannot open the compound document: {reason}"))
-    })?;
-    if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
-        return Err(Unported(format!(
-            "POI reads the compound document from a stream differently: {reason}"
-        )));
-    }
+    let file = office::open(input, configs, MEDIA_TYPE, "message")?;
     let root = file.root();
-    if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
-        return Err(Unported(
-            "the compound document is no message to POI's container detection".to_owned(),
-        ));
-    }
     let summaries = Summaries::read(&file, root)?;
     let message = Message::read(&file, root, false)
         .map_err(|thrown| Unported(format!("POI throws reading the message: {}", thrown.0)))?;

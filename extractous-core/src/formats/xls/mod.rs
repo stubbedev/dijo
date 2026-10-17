@@ -34,13 +34,12 @@ use crate::formats::auto_detect_reader::lines;
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office_document, Handed, Summaries};
+use crate::formats::ole2::{office, office_document, Handed, Summaries};
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xlsx::write_sheet_numbers;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USED};
-use crate::mime::{ole_directory_type, MediaType};
-use crate::ole2::{EntryKind, Ole2, Unreadable};
+use crate::ole2::{EntryKind, Unreadable};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-excel";
 /// `InternalWorkbook.WORKBOOK_DIR_ENTRY_NAMES`, in the order POI looks for them.
@@ -170,27 +169,8 @@ struct Picture {
 
 impl Workbook {
     fn read(input: &[u8], configs: &ParserConfigs) -> Result<Self, Declined> {
-        if configs.office.extracts_macros() {
-            return Err(
-                Unported("macros are extracted, which this port does not do".to_owned()).into(),
-            );
-        }
-        let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-            Unported(format!("POI cannot open the compound document: {reason}"))
-        })?;
-        if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
-            return Err(Unported(format!(
-                "POI reads the compound document from a stream differently: {reason}"
-            ))
-            .into());
-        }
+        let file = office::open(input, configs, MEDIA_TYPE, "workbook")?;
         let root = file.root();
-        if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
-            return Err(Unported(
-                "the compound document is no workbook to POI's container detection".to_owned(),
-            )
-            .into());
-        }
         let summaries = Summaries::read(&file, root)?;
         let Some(name) = WORKBOOK_ENTRY_NAMES
             .into_iter()
