@@ -1514,6 +1514,11 @@ mod tests {
                 "testRFC822_oddfrom",
                 "its quoted-printable parts keep their own line ends (#73)",
             ),
+            (
+                "testMHTMLFirefox.mhtml",
+                "its quoted-printable parts keep their own line ends (#73), which moves where a \
+                 budget cuts the spool; mail::tests compares its spool unbudgeted",
+            ),
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;

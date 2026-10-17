@@ -1932,6 +1932,30 @@ fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
         .collect()
 }
 
+/// The spooled files, where a [`Departure::LineBreaks`] applies, with each CRLF of the whole
+/// ones an LF, as their text is compared: the line breaks of a part the departure decodes
+/// otherwise are in its bytes too. Where the budget cuts the spool, the departure moves the cut,
+/// which no comparison of the cut files can take out.
+fn with_line_feeds(spooled: Vec<Spooled>, line_breaks: bool) -> Vec<Spooled> {
+    if !line_breaks {
+        return spooled;
+    }
+    spooled
+        .into_iter()
+        .map(|file| {
+            if file.truncated {
+                return file;
+            }
+            let content = replace_bytes(&file.content, b"\r\n", b"\n");
+            Spooled {
+                size: content.len() as u64,
+                content,
+                ..file
+            }
+        })
+        .collect()
+}
+
 fn spooled(embedded: Vec<crate::SpooledEmbedded>, spool: &Path) -> Vec<Spooled> {
     embedded
         .into_iter()
@@ -2056,10 +2080,22 @@ pub(crate) fn spools_as_tika_rewriting(
             let (mut tika_extracted, mut native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
             with_native_failures_masked(&mut tika_extracted, &mut native_extracted);
-            let tika = (tika_extracted, spooled(embedded, tika_spool.directory()));
+            let line_breaks = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::LineBreaks(_)));
+            let tika = (
+                tika_extracted,
+                with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
+            );
             let native = (
                 native_extracted,
-                as_tika_spools(spooled(native_embedded, native_spool.directory()), &tika.1),
+                as_tika_spools(
+                    with_line_feeds(
+                        spooled(native_embedded, native_spool.directory()),
+                        line_breaks,
+                    ),
+                    &tika.1,
+                ),
             );
             if native == tika {
                 Ok(tika.1.len())
