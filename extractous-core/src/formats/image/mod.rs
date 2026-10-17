@@ -322,13 +322,16 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
                 "a JBIG2 image jbig2-imageio reads otherwise than the port: {reason}"
             ))
         })?,
-        "image/bmp" | "image/vnd.wap.wbmp" => {
-            return Err(Unported::new(format!(
-                "an image of {content_type}, which Tika's ImageIO reads with the JDK's reader or \
-                 jai-imageio's, picked at random in each process, so its metadata has no one form"
-            ))
-            .into())
-        }
+        "image/bmp" => imageio::bmp::read(input).map_err(|error| match error {
+            imageio::bmp::BmpError::Fails(cause) => fails(cause),
+            imageio::bmp::BmpError::Unported(unported) => unported.into(),
+        })?,
+        "image/vnd.wap.wbmp" => imageio::wbmp::read(input).map_err(|error| match error {
+            imageio::wbmp::WbmpError::Image(cause) => parse_error(cause),
+            imageio::wbmp::WbmpError::Eof => {
+                fails("EOFException reading the WBMP header".to_owned())
+            }
+        })?,
         _ => {
             return Ok(Read {
                 metadata,

@@ -233,6 +233,18 @@ xlsx-reference:
     java -Duser.language=en -Duser.country=US -Duser.timezone=Europe/Copenhagen \
         -cp "$jars/mime/*" "$fixtures/FormatReference.java" "$fixtures"
 
+# Regenerate the BMP and WBMP images and what Tika's ImageParser reads of them through the JDK's own
+# readers alone, which the native readers are tested against.
+bmp-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/image
+    java -Djava.awt.headless=true -cp "$jars/mime/*:$jars/image/*" "$fixtures/BmpReference.java" "$fixtures" \
+        "$CONFORMANCE_CORPUS/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testBMP.bmp"
+
 # Regenerate what Tika's SummaryExtractor reads from the OLE2 documents among the test files and
 # Tika's own test documents, which the Rust port of HPSF is tested against.
 ole2-reference:

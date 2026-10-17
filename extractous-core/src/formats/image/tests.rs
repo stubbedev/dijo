@@ -318,12 +318,21 @@ fn reads_local_webps_and_photoshop_images_as_tika_does() {
 /// Asserts that `ImageParser` reads the images under `roots` as Tika does, but for JBIG2 files,
 /// whose dimension node jbig2-imageio gives Tika twice, its pixel size off (#120): each of their
 /// dimension values is read once. The images left to Tika are returned.
+/// Whether Tika's path reads the image at `path` with a reader its registry picks in an order
+/// nothing defines, a BMP or WBMP (#114), which [`reads_bmps_and_wbmps_as_the_jdks_readers_do`] and
+/// [`reads_tikas_test_bmp_as_the_jdks_reader_does`] compare with the JDK's reader instead.
+fn read_by_a_random_reader(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "bmp" || extension == "wbmp")
+}
+
 fn reads_apart_from_jbig2_as_tika_does(roots: &[&Path]) -> Vec<PathBuf> {
     let configs = skipping_ocr();
     let (parsed, deferred) = documents_with(&ImageParser, roots, &configs);
     let (jbig2, paths): (Vec<&Path>, Vec<&Path>) = parsed
         .iter()
         .map(PathBuf::as_path)
+        .filter(|path| !read_by_a_random_reader(path))
         .partition(|path| path.extension().is_some_and(|extension| extension == "jb2"));
     assert_same_as_tika_reading_images(
         &paths,
@@ -406,33 +415,124 @@ fn reads_images_imageio_has_no_reader_for_as_tika_does() {
     );
 }
 
-#[test]
-fn defers_bmps_and_wbmps_tika_reads_with_a_reader_picked_at_random() {
-    let bmp = [
-        &b"BM"[..],
-        &[
-            58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0,
-        ],
-        &[
-            0, 0, 0, 0, 4, 0, 0, 0, 0x13, 0x0B, 0, 0, 0x13, 0x0B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        ],
-        &[0xFF, 0xFF, 0xFF, 0],
-    ]
-    .concat();
-    for (media_type, image) in [
-        ("image/bmp", &bmp[..]),
-        ("image/vnd.wap.wbmp", &[0, 0, 0x88, 0x01, 2, 0xAA, 0x55][..]),
-    ] {
-        let mut metadata = TikaMetadata::new();
-        metadata.set("Content-Type", media_type);
-        let deferred = ImageParser.defers(image, &metadata, &skipping_ocr());
-        assert!(
-            deferred
-                .as_deref()
-                .is_some_and(|reason| reason.contains("at random")),
-            "{media_type}: {deferred:?}"
-        );
+/// What Tika's `ImageParser` reads of an image through the JDK's own readers, as
+/// `BmpReference.java` records it: its metadata, sorted by name, or the message at the root of
+/// its failure.
+#[derive(Debug, PartialEq, Eq)]
+enum JdkRead {
+    Metadata(Vec<(String, String)>),
+    Fails(String),
+}
+
+/// The images of `bmp-reference.tsv`, by name, with what the JDK's readers read of them.
+fn jdk_reads() -> Vec<(String, JdkRead)> {
+    let unescape = |text: &str| {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            out.push(match chars.next() {
+                Some('t') => '\t',
+                Some('n') => '\n',
+                Some('r') => '\r',
+                Some(other) => other,
+                None => panic!("a line of bmp-reference.tsv ends in a backslash"),
+            });
+        }
+        out
+    };
+    let mut reads: Vec<(String, JdkRead)> = Vec::new();
+    for line in include_str!("../../../tests/fixtures/image/bmp-reference.tsv").lines() {
+        if let Some(name) = line.strip_prefix('#') {
+            reads.push((name.to_owned(), JdkRead::Metadata(Vec::new())));
+            continue;
+        }
+        let (_, read) = reads.last_mut().expect("a #name line first");
+        match line.strip_prefix('!') {
+            Some(message) => *read = JdkRead::Fails(unescape(message)),
+            None => {
+                let (name, values) = line.split_once('\t').expect("a name and its values");
+                let JdkRead::Metadata(metadata) = read else {
+                    panic!("metadata after a failure: {line}");
+                };
+                metadata.push((unescape(name), unescape(values)));
+            }
+        }
     }
+    reads
+}
+
+/// What the native reader reads of the image `input` named `name`, as `BmpReference.java`
+/// records what the JDK's readers read.
+fn native_read(name: &str, input: &[u8]) -> JdkRead {
+    let mut metadata = TikaMetadata::new();
+    let content_type = if name.ends_with(".wbmp") {
+        "image/vnd.wap.wbmp"
+    } else {
+        "image/bmp"
+    };
+    metadata.set("Content-Type", content_type);
+    match image_io(input, metadata) {
+        Ok(read) => {
+            let mut names: Vec<&str> = read.metadata.names().collect();
+            names.sort_unstable();
+            JdkRead::Metadata(
+                names
+                    .into_iter()
+                    .map(|name| (name.to_owned(), read.metadata.values(name).join("|")))
+                    .collect(),
+            )
+        }
+        Err(Declined::Fails(error)) => JdkRead::Fails(error.to_string()),
+        Err(other) => panic!("{name} is not read: {other:?}"),
+    }
+}
+
+/// Asserts that the native reader reads `input`, named `name`, as the JDK's do: the same
+/// metadata, or a failure whose message holds that of the JDK's failure, where it has one.
+fn assert_read_as_the_jdk_does(name: &str, input: &[u8], expected: &JdkRead) {
+    match (native_read(name, input), expected) {
+        (JdkRead::Fails(native), JdkRead::Fails(jdk)) => assert!(
+            jdk == "null" || native.contains(jdk.as_str()),
+            "{name}: the native reader fails with {native:?}, the JDK's with {jdk:?}"
+        ),
+        (native, expected) => assert_eq!(&native, expected, "{name}"),
+    }
+}
+
+/// Tika's path reads BMP and WBMP images with the JDK's readers or jai-imageio's, whichever its
+/// registry lists first in an order nothing defines (#114); the native readers read them as the
+/// JDK's do, the readers the Java path has without jai-imageio, as `just bmp-reference`
+/// records them.
+#[test]
+fn reads_bmps_and_wbmps_as_the_jdks_readers_do() {
+    let mut read = 0;
+    for (name, expected) in jdk_reads() {
+        if name == "testBMP.bmp" {
+            continue;
+        }
+        let input = std::fs::read(format!(
+            "../extractous-core/tests/fixtures/image/bmp/{name}"
+        ))
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_read_as_the_jdk_does(&name, &input, &expected);
+        read += 1;
+    }
+    assert_eq!(read, 27);
+}
+
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_bmp_as_the_jdks_reader_does() {
+    let (_, expected) = jdk_reads()
+        .into_iter()
+        .find(|(name, _)| name == "testBMP.bmp")
+        .expect("the reference reads testBMP.bmp");
+    let path = conformance_roots()[0].join("src/test/resources/test-documents/testBMP.bmp");
+    assert_read_as_the_jdk_does("testBMP.bmp", &std::fs::read(path).unwrap(), &expected);
 }
 
 #[test]

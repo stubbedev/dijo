@@ -1,0 +1,225 @@
+#v3-24.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	8 8 8
+img:Dimension HorizontalPhysicalPixelSpacing	0.35273367
+img:Dimension PixelAspectRatio	1.0
+img:Dimension VerticalPhysicalPixelSpacing	0.35273367
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 8 8
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-8-aspect.bmp
+Content-Type	image/bmp
+img:Chroma Palette	4
+img:Chroma Palette PaletteEntry	index=0, red=0, green=0, blue=0|index=1, red=0, green=-1, blue=-1, alpha=-1
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	
+img:Dimension HorizontalPhysicalPixelSpacing	0.35273367
+img:Dimension PixelAspectRatio	1.0
+img:Dimension VerticalPhysicalPixelSpacing	0.26455027
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-1.bmp
+Content-Type	image/bmp
+img:Chroma Palette	4
+img:Chroma Palette PaletteEntry	index=0, red=0, green=0, blue=0|index=1, red=0, green=-1, blue=-1, alpha=-1
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-4-rle4.bmp
+Content-Type	image/bmp
+img:Chroma Palette	4
+img:Chroma Palette PaletteEntry	index=0, red=0, green=37, blue=74, alpha=111|index=1, red=-108, green=-71, blue=-34, alpha=3|index=2, red=40, green=77, blue=114, alpha=-105|index=3, red=-68, green=-31, blue=6, alpha=43|index=4, red=80, green=117, blue=-102, alpha=-65|index=5, red=-28, green=9, blue=46, alpha=83|index=6, red=120, green=-99, blue=-62, alpha=-25|index=7, red=12, green=49, blue=86, alpha=123|index=8, red=-96, green=-59, blue=-22, alpha=15|index=9, red=52, green=89, blue=126, alpha=-93|index=10, red=-56, green=-19, blue=18, alpha=55|index=11, red=92, green=-127, blue=-90, alpha=-53|index=12, red=-16, green=21, blue=58, alpha=95|index=13, red=-124, green=-87, blue=-50, alpha=-13|index=14, red=24, green=61, blue=98, alpha=-121|index=15, red=-84, green=-47, blue=-10, alpha=27
+img:Compression CompressionTypeName	BI_RLE4
+img:Data BitsPerSample	
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-8-rle8.bmp
+Content-Type	image/bmp
+img:Chroma Palette	4
+img:Chroma Palette PaletteEntry	index=0, red=0, green=0, blue=0|index=1, red=0, green=-1, blue=-1, alpha=-1
+img:Compression CompressionTypeName	BI_RLE8
+img:Data BitsPerSample	
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-16.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	5 55
+img:height	2
+img:width	2
+tiff:BitsPerSample	5 55
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-32.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	8 88
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 88
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-16-565.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_BITFIELDS
+img:Data BitsPerSample	5 65
+img:height	2
+img:width	2
+tiff:BitsPerSample	5 65
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v3-32-fields-palette.bmp
+Content-Type	image/bmp
+img:Chroma Palette	4
+img:Chroma Palette PaletteEntry	index=0, red=0, green=0, blue=0|index=1, red=0, green=-1, blue=-1, alpha=-1
+img:Compression CompressionTypeName	BI_BITFIELDS
+img:Data BitsPerSample	8 88
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 88
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v2-8.bmp
+Content-Type	image/bmp
+img:Chroma Palette	3
+img:Chroma Palette PaletteEntry	index=0, red=0, green=0, blue=0|index=1, red=-1, green=-1, blue=-1
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v4-32-alpha.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_BITFIELDS
+img:Data BitsPerSample	8 88
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 88
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#v5-24.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	8 8 8
+img:Dimension HorizontalPhysicalPixelSpacing	1.0
+img:Dimension PixelAspectRatio	1.0
+img:Dimension VerticalPhysicalPixelSpacing	1.0
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 8 8
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#top-down.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	8 8 8
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 8 8
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#palette-alpha.bmp
+Content-Type	image/bmp
+img:Chroma Palette	4
+img:Chroma Palette PaletteEntry	index=0, red=0, green=0, blue=0, alpha=9|index=1, red=-1, green=-1, blue=-1
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#png-inside.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_PNG
+img:Data BitsPerSample	
+img:height	2
+img:width	2
+tiff:BitsPerSample	
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#bad-magic.bmp
+!Invalid magic value for BMP file.
+#two-bits.bmp
+!Invalid bits per pixel in image header.
+#short-data.bmp
+!Invalid width/height for BI_RGB image data.
+#zero-width.bmp
+!Width (0) and height (2) must be > 0
+#compression-7.bmp
+!Invalid compression specified in BMP stream.
+#unknown-header.bmp
+!New BMP version not implemented yet.
+#empty-palette.bmp
+!Map size (0) must be >= 1
+#split-mask.bmp
+!Mask 61455 must be contiguous
+#v3-ext-56.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_BITFIELDS
+img:Data BitsPerSample	8 88
+img:height	2
+img:width	2
+tiff:BitsPerSample	8 88
+tiff:ImageLength	2
+tiff:ImageWidth	2
+tk:num-images	1
+#tiny.wbmp
+Content-Type	image/vnd.wap.wbmp
+img:Chroma BlackIsZero	true
+img:Dimension ImageOrientation	Normal
+img:height	2
+img:width	1025
+tiff:ImageLength	2
+tiff:ImageWidth	1025
+tk:num-images	1
+#bad.wbmp
+!Bad WBMP header.
+#cut.wbmp
+!null
+#testBMP.bmp
+Content-Type	image/bmp
+img:Compression CompressionTypeName	BI_RGB
+img:Data BitsPerSample	8 8 8
+img:Dimension HorizontalPhysicalPixelSpacing	0.35273367
+img:Dimension PixelAspectRatio	1.0
+img:Dimension VerticalPhysicalPixelSpacing	0.35273367
+img:height	75
+img:width	100
+tiff:BitsPerSample	8 8 8
+tiff:ImageLength	75
+tiff:ImageWidth	100
+tk:num-images	1
