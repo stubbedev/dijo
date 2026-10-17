@@ -165,7 +165,7 @@ impl SaxHandler for Dif<'_, '_> {
 
 /// A native result with each leaf's text cut to the last piece Tika's parser read of it,
 /// where Tika's value ends the native one: the reader splits text around an entity (#118).
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn as_tika_keeps_last_pieces(
     _text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -185,9 +185,12 @@ pub(crate) fn as_tika_keeps_last_pieces(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika, assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
     };
@@ -207,6 +210,7 @@ mod tests {
 </DIF>
 "#;
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_dif_records_as_tikas_path_does() {
         let scratch = Scratch::new("dif");
@@ -260,6 +264,7 @@ mod tests {
         assert_eq!(metadata["dif:DIF-Entry_Title"], ["T"]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_dif_records_as_tikas_path_does() {

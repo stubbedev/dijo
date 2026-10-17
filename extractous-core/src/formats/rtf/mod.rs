@@ -111,13 +111,17 @@ fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
     };
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.rtf.RTFParser";
     /// The conformance documents with pictures or embedded objects Tika parses.
+    #[cfg(feature = "tika")]
     const DEFERRED: [&str; 4] = [
         "testBinControlWord.rtf",
         "testRTFEmbeddedFiles.rtf",
@@ -126,6 +130,7 @@ mod tests {
     ];
 
     /// Small documents for the corners of `TextExtractor` the corpora do not reach.
+    #[cfg(feature = "tika")]
     const SNIPPETS: &[&str] = &[
         r"{\rtf1\ansi\ansicpg1251\deff0{\fonttbl{\f0\fcharset204 Arial;}}\pard \'cf\'f0\u1080?\uc2\u1074 ab c\uc0\u1099 d\par}",
         r"{\rtf1\ansi{\fonttbl{\f0\fcharset238 A;}{\f1\fcharset0 B;}{\f2\fcharset128 C;}}\pard\f0 \'b9\f1\'b9{\f2\'82\'a0\'83\'4a}\par}",
@@ -181,6 +186,7 @@ mod tests {
     ];
 
     /// Snippets Tika fails on.
+    #[cfg(feature = "tika")]
     const FAILING_SNIPPETS: &[&str] = &[
         r"{\rtf1\ansi\pard a\bin10 abc}",
         r"{\rtf1{\info{\nofpages1}{\nofpages2}}\pard x\par}",
@@ -198,11 +204,13 @@ mod tests {
     ];
 
     /// Snippets written to files of their own, in a directory removed when they are dropped.
+    #[cfg(feature = "tika")]
     struct SnippetFiles {
         directory: PathBuf,
         files: Vec<PathBuf>,
     }
 
+    #[cfg(feature = "tika")]
     impl SnippetFiles {
         fn new(name: &str, snippets: &[&str]) -> Self {
             let directory =
@@ -225,17 +233,20 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     impl Drop for SnippetFiles {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.directory).unwrap();
         }
     }
 
+    #[cfg(feature = "tika")]
     fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {
         paths.iter().map(PathBuf::as_path).collect()
     }
 
     /// Asserts that the native parser reads each of `paths` rather than deferring it.
+    #[cfg(feature = "tika")]
     fn assert_read_natively(paths: &[&Path]) {
         for path in paths {
             let input = std::fs::read(path).unwrap();
@@ -254,6 +265,7 @@ mod tests {
             .0
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         // The document's creation date is all zeros, which Tika's lenient calendar makes
@@ -268,6 +280,7 @@ mod tests {
         assert_same_as_tika(&undated.paths(), TIKA_PARSER);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_snippets_as_tikas_path_does() {
         let snippets = SnippetFiles::new("same", SNIPPETS);
@@ -310,6 +323,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn fails_where_tikas_path_fails() {
         assert_fails_as_tika(&SnippetFiles::new("failing", FAILING_SNIPPETS).paths());
@@ -343,6 +357,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {

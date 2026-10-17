@@ -34,7 +34,7 @@ pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 
 /// Every type Tika's tables declare, by its printed form, in the order they declare them.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn declared_types() -> impl Iterator<Item = &'static str> {
     mime_types().declared()
 }

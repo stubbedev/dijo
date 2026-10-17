@@ -331,7 +331,7 @@ fn custom_properties(stream: &mut Stream) -> Result<u16, Failure> {
     Ok(if count > 0 && count < 0x7f { count } else { 0 })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

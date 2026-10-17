@@ -292,9 +292,12 @@ fn escher_part(data: &[u8]) -> Read<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
@@ -306,6 +309,7 @@ mod tests {
     }
 
     /// Quill contents of the bits given as their type and data.
+    #[cfg(feature = "tika")]
     fn quill(bits: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut quill = vec![0u8; INDEX_START + BITS * INDEX_ENTRY];
         quill[..8].copy_from_slice(QUILL_SIGNATURE);
@@ -323,12 +327,14 @@ mod tests {
         quill
     }
 
+    #[cfg(feature = "tika")]
     fn utf16(text: &str) -> Vec<u8> {
         text.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     /// A Publisher document of Quill contents `quill`, without the delay stream where `delay` is
     /// false.
+    #[cfg(feature = "tika")]
     fn publication(quill: Vec<u8>, delay: bool) -> Vec<u8> {
         use crate::ole2::{write, Node, Storage};
         let units = |name: &str| name.encode_utf16().collect::<Vec<u16>>();
@@ -358,6 +364,7 @@ mod tests {
         write(&root).unwrap()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_text_bits_as_tikas_path_does() {
         let mut links = vec![0u8; 0x34];

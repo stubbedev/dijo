@@ -161,6 +161,7 @@ fn detects_as_tika_does_on_tikas_corpus() {
 
 /// The JVM reference is what the native image answers: every document of the repository's
 /// test corpus, through extractous's JNI detection.
+#[cfg(feature = "tika")]
 #[test]
 fn the_reference_is_what_the_native_image_answers() {
     let isolate = crate::isolate::isolate().expect("the native library loads");
@@ -171,10 +172,10 @@ fn the_reference_is_what_the_native_image_answers() {
         let path_text = path.to_str().expect("a UTF-8 path");
         let data;
         let source = match case.variant {
-            "file" => crate::tika::Source::File(path_text),
+            "file" => crate::input::Source::File(path_text),
             _ => {
                 data = std::fs::read(&path).expect("the document reads");
-                crate::tika::Source::Bytes(&data)
+                crate::input::Source::Bytes(&data)
             }
         };
         let (media_type, metadata) = crate::tika::detect_with_metadata(isolate, source)

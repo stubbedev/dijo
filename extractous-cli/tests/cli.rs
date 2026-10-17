@@ -1,11 +1,15 @@
 use std::fs;
-use std::io::{Cursor, Write};
+#[cfg(feature = "tika")]
+use std::io::Cursor;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 mod common;
 
-use common::{document, text_pdf, write_docx, Scratch, StoredZip, DOCUMENTS};
+#[cfg(feature = "tika")]
+use common::write_docx;
+use common::{document, text_pdf, Scratch, StoredZip, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
     extractous_with_stdin(args, None)
@@ -132,6 +136,7 @@ fn detect_labels_several_inputs() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn reads_an_outlook_offline_folder_without_its_name() {
     let bytes = fs::read(document("offline-folder.ost")).unwrap();
@@ -417,6 +422,7 @@ fn metadata_is_normalised_per_format() {
     assert_eq!(metadata(5)["authors"][0], "Grace Hopper");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn damaged_parts_make_a_partial_result() {
     let objects = json_objects(&[&document("partially-damaged.zip")]);
@@ -430,6 +436,7 @@ fn damaged_parts_make_a_partial_result() {
     assert_eq!(object["errors"][0]["location"], "embedded document");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn text_extracted_before_a_parse_fails_is_kept() {
     let objects = json_objects(&[&document("spanned.z01")]);
@@ -441,6 +448,7 @@ fn text_extracted_before_a_parse_fails_is_kept() {
     assert_eq!(objects[0]["errors"][0]["category"], "corrupt");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn a_sqlite_database_is_read_for_its_tables() {
     let objects = json_objects(&[&document("notes.sqlite")]);
@@ -570,6 +578,7 @@ fn hwpx_documents_are_read_as_paragraphs_and_tables() {
     assert!(!text.contains("Style names"), "{text}");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn archives_nested_past_the_limit_stop_there() {
     let scratch = Scratch::new("nested");
@@ -602,6 +611,7 @@ fn archives_nested_past_the_limit_stop_there() {
     assert!(message.len() < 1000, "{message}");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn partial_results_succeed_unless_strict() {
     let lenient = extractous(&[&document("partially-damaged.zip")]);
@@ -715,6 +725,7 @@ fn encrypted_inputs_are_reported_as_encrypted() {
     assert_matches_schema(&objects[0]);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn encrypted_mail_and_openpgp_are_reported_as_encrypted() {
     for name in [
@@ -793,6 +804,7 @@ fn a_wrong_password_fails_with_status_one() {
     assert!(!stderr(&output).contains("not-it"));
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn a_timeout_keeps_the_text_extracted_before_it() {
     let warm_up = extractous(&["detect", &document("simple.odt")]);
@@ -972,7 +984,11 @@ fn licenses_prints_the_licence_and_third_party_notices() {
     let text = stdout(&output);
     assert!(text.contains("Apache License"));
     assert!(text.contains("| `clap` |"));
-    assert!(text.contains("| `org.apache.tika:tika-core` |"));
+    assert_eq!(
+        text.contains("| `org.apache.tika:tika-core` |"),
+        cfg!(feature = "tika"),
+        "the Java libraries' licences are printed exactly by a build with Tika"
+    );
 
     let with_input = extractous(&["--licenses", &document("simple.odt")]);
     assert_eq!(with_input.status.code(), Some(2));
@@ -1464,6 +1480,7 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[cfg(unix)]
 #[test]
 fn djvu_pages_without_a_text_layer_are_rendered_for_ocr_without_helpers() {
@@ -1506,6 +1523,7 @@ fn djvu_pages_without_a_text_layer_are_rendered_for_ocr_without_helpers() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[cfg(unix)]
 #[test]
 fn heic_is_read_and_reported_when_nothing_can_decode_it() {
@@ -1718,6 +1736,7 @@ fn tiff_images_with_exif_directories_are_ocred() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn xml_parsers_resolve_no_external_entities() {
     let scratch = Scratch::new("xxe");

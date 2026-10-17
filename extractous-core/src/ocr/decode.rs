@@ -123,7 +123,7 @@ pub(crate) enum Decoded<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Undecoded {
     /// No decoder of its format is bundled or installed, as the static executable links them.
-    #[cfg(not(feature = "static-image"))]
+    #[cfg(not(feature = "static"))]
     NoDecoder,
     /// It could not be decoded, for this reason.
     Failed(String),

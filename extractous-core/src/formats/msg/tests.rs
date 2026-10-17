@@ -1,19 +1,25 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with, Departure};
+use crate::formats::parity;
+#[cfg(feature = "tika")]
+use crate::formats::parity::{assert_same_as_tika_with, Departure};
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The messages this port leaves to Tika, by file name, with a part of the reason.
+#[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "partial block")];
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
 /// Of `documents`, those this port reads, after checking that it leaves exactly those
 /// [`DEFERRED`] names to Tika.
+#[cfg(feature = "tika")]
 fn ported(documents: &[PathBuf]) -> Vec<PathBuf> {
     let mut ported = Vec::new();
     let mut unexpected = Vec::new();
@@ -39,15 +45,18 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     documents
 }
 
+#[cfg(feature = "tika")]
 fn units(name: &str) -> Vec<u16> {
     name.encode_utf16().collect()
 }
 
+#[cfg(feature = "tika")]
 fn unicode(text: &str) -> Vec<u8> {
     text.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 /// A fixed-length property of a properties stream: its type, its id and its value.
+#[cfg(feature = "tika")]
 fn property(kind: u16, id: u16, value: &[u8]) -> Vec<u8> {
     let mut bytes = kind.to_le_bytes().to_vec();
     bytes.extend(id.to_le_bytes());
@@ -60,6 +69,7 @@ fn property(kind: u16, id: u16, value: &[u8]) -> Vec<u8> {
 
 /// A message from Ann with a text body, which carries a message from Bob stored in its
 /// attachment's storage, its properties stream headed as an embedded message's is.
+#[cfg(feature = "tika")]
 fn message_with_a_stored_message() -> Vec<u8> {
     use crate::ole2::{write, Node, Storage};
     let document = |name: &str, data: Vec<u8>| (units(name), Node::Document(data));
@@ -103,6 +113,7 @@ fn message_with_a_stored_message() -> Vec<u8> {
     .unwrap()
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn reads_a_stored_message_as_tikas_path_reads_it() {
     let scratch = parity::Scratch::new("msg-stored-message");
@@ -119,6 +130,7 @@ fn reads_a_stored_message_as_tikas_path_reads_it() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
@@ -129,6 +141,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
 }
 
 /// The recipients' names, which POI swaps (#112).
+#[cfg(feature = "tika")]
 pub(crate) const RECIPIENT_NAMES: parity::Departures = &[
     Departure::Values("message:to-name", "#112"),
     Departure::Values("message:to-display-name", "#112"),

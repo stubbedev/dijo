@@ -384,12 +384,16 @@ impl Parser for HwpxParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::PathBuf;
 
+    #[cfg(feature = "tika")]
     use super::*;
     use crate::compress::zip::file::tests::zip;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.HwpxParser";
     const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -431,6 +435,7 @@ mod tests {
 
     /// A section of less text than the write limit, so that a failure after it fails every
     /// extraction.
+    #[cfg(feature = "tika")]
     const SHORT_SECTION: &str = r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run><hp:t>Short</hp:t></hp:run></hp:p></hs:sec>"#;
 
     fn hwpx(package: &str, sections: &[(&str, &str)]) -> Vec<u8> {
@@ -476,6 +481,7 @@ mod tests {
         assert_eq!(metadata["dc:title"], ["A bold title"]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_documents_as_tikas_path_does() {
         let scratch = Scratch::new("hwpx");

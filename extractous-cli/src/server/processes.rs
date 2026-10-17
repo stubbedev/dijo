@@ -146,6 +146,7 @@ pub(crate) fn answer_channel() -> io::Result<File> {
 /// until its input closes.
 pub fn serve_jobs(cache: Option<&Cache>) -> io::Result<()> {
     let mut output = BufWriter::new(answer_channel()?);
+    #[cfg(feature = "tika")]
     extractous_core::keep_current_thread_attached().map_err(io::Error::other)?;
     let mut input = BufReader::new(io::stdin().lock());
     write_frame(&mut output, READY, &[])?;

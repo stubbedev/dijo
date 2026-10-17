@@ -22,24 +22,113 @@ const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
 const OCR_LICENSES: &str = "licenses";
 const STATIC_LICENSES_VARIABLE: &str = "EXTRACTOUS_STATIC_LICENSES";
+const STATIC_LIBS_VARIABLE: &str = "EXTRACTOUS_STATIC_LIBS";
+/// The C++ and OpenMP runtimes tesseract and libheif need, which `pkg-config` leaves out, and GCC's
+/// runtime, whose CPU detection (`__builtin_cpu_supports`) tesseract picks its kernels with.
+const STATIC_RUNTIME_LIBRARIES: [&str; 3] = ["stdc++", "gomp", "gcc"];
+/// The libraries of the C library itself, which musl's `libc.a` holds.
+const STATIC_C_LIBRARIES: [&str; 4] = ["c", "m", "pthread", "dl"];
 /// The Visual C++ runtime the GraalVM library and the JDK's DLLs link, which Windows does not
 /// include, shipped in the JDK's bin directory for applications to carry beside them.
 const VISUAL_CPP_RUNTIME: [&str; 3] = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 
 fn main() {
-    let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
     let platform = Platform::from_target_os(&required_env("CARGO_CFG_TARGET_OS"));
-    if env::var_os("CARGO_FEATURE_STATIC_IMAGE").is_some() {
-        let ocr = ocr_bundle(&out_dir, platform, Tesseract::Linked).unwrap_or_else(|| {
-            panic!(
-                "The static build links tesseract and needs {OCR_BUNDLE_VARIABLE} for its language data"
-            )
-        });
-        let linked_licenses = static_licenses(&out_dir);
-        write_static_native_module(&out_dir, &ocr, &linked_licenses);
-        return;
+    match Build::from_features() {
+        Build::Static { links_tika } => {
+            let ocr = ocr_bundle(&out_dir, platform, Tesseract::Linked).unwrap_or_else(|| {
+                panic!(
+                    "The static build links tesseract and needs {OCR_BUNDLE_VARIABLE} for its language data"
+                )
+            });
+            let linked_licenses = static_licenses(&out_dir);
+            if !links_tika {
+                link_static_libraries();
+            }
+            write_static_native_module(&out_dir, &ocr, &linked_licenses);
+        }
+        Build::WithoutTika => {
+            let ocr = ocr_bundle(&out_dir, platform, platform.bundled_tesseract());
+            write_ocr_module(&out_dir, ocr.as_ref());
+        }
+        Build::TikaLibrary => build_tika_library(&out_dir, platform),
     }
+}
+
+/// What the build makes of the crate, by its features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Build {
+    /// Tika's native image loaded as a shared library, which the build embeds.
+    TikaLibrary,
+    /// Native extraction alone, tesseract loaded from the OCR bundle or the system.
+    WithoutTika,
+    /// tesseract and libheif linked in statically: into Tika's static native image, which
+    /// `ci/static-image.sh` links, or into the program Cargo links.
+    Static { links_tika: bool },
+}
+
+impl Build {
+    fn from_features() -> Self {
+        let enabled = |feature: &str| env::var_os(format!("CARGO_FEATURE_{feature}")).is_some();
+        match (enabled("TIKA"), enabled("STATIC"), enabled("STATIC_IMAGE")) {
+            (true, _, true) => Build::Static { links_tika: true },
+            (false, true, _) => Build::Static { links_tika: false },
+            (true, true, false) => panic!(
+                "The static feature links into a program without Tika, or with static-image into \
+                 Tika's static native image; it cannot load Tika as a shared library"
+            ),
+            (true, false, false) => Build::TikaLibrary,
+            (false, false, _) => Build::WithoutTika,
+        }
+    }
+}
+
+/// Has Cargo link the static libraries `EXTRACTOUS_STATIC_LIBS` lists into the program: the files
+/// it names, separated as `PATH` is, hold one linker flag per line, `-L<dir>`, `-l<library>` or
+/// `-pthread`, as `pkg-config --static --libs` prints them. A library named more than once is
+/// linked where it is last named, after everything that needs it, and those of the C library
+/// itself (`STATIC_C_LIBRARIES`), which musl's holds whole, are left to it.
+fn link_static_libraries() {
+    println!("cargo:rerun-if-env-changed={STATIC_LIBS_VARIABLE}");
+    let files = env::var_os(STATIC_LIBS_VARIABLE).unwrap_or_else(|| {
+        panic!(
+            "The static build without Tika needs {STATIC_LIBS_VARIABLE} for the libraries it links"
+        )
+    });
+    let mut libraries: Vec<String> = Vec::new();
+    for file in env::split_paths(&files) {
+        println!("cargo:rerun-if-changed={}", file.display());
+        let flags = String::from_utf8(read_file(&file))
+            .unwrap_or_else(|e| panic!("{} is not UTF-8: {e}", file.display()));
+        for flag in flags.lines() {
+            if let Some(dir) = flag.strip_prefix("-L") {
+                println!("cargo:rustc-link-search=native={dir}");
+            } else if let Some(library) = flag.strip_prefix("-l") {
+                libraries.push(library.to_owned());
+            } else if flag != "-pthread" {
+                panic!(
+                    "{} holds {flag:?}, which is no library to link",
+                    file.display()
+                );
+            }
+        }
+    }
+    libraries.extend(STATIC_RUNTIME_LIBRARIES.map(str::to_owned));
+    for (index, library) in libraries.iter().enumerate() {
+        if STATIC_C_LIBRARIES.contains(&library.as_str())
+            || libraries[index + 1..].contains(library)
+        {
+            continue;
+        }
+        println!("cargo:rustc-link-lib=static:-bundle={library}");
+    }
+}
+
+/// Embeds Tika's native image as a shared library: built with GraalVM unless a build with the
+/// same inputs left one, along with the OCR bundle.
+fn build_tika_library(out_dir: &Path, platform: Platform) {
+    let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
     for input in TIKA_NATIVE_INPUTS {
         println!(
             "cargo:rerun-if-changed={}",
@@ -62,15 +151,15 @@ fn main() {
     let libs_dir = out_dir.join("libs");
 
     if read_fingerprint(&libs_dir).as_deref() != Some(fingerprint.as_str()) {
-        match find_built_libs(&out_dir, &fingerprint) {
-            Some(built_libs) => install_libs(&out_dir, &libs_dir, |staging_dir| {
+        match find_built_libs(out_dir, &fingerprint) {
+            Some(built_libs) => install_libs(out_dir, &libs_dir, |staging_dir| {
                 for path in list_dir(&built_libs) {
                     copy_file(&path, &staging_dir.join(path.file_name().unwrap()));
                 }
             }),
             None => {
-                let native_dir = gradle_build(&source_dir, &out_dir, &graalvm_home, platform);
-                install_libs(&out_dir, &libs_dir, |staging_dir| {
+                let native_dir = gradle_build(&source_dir, out_dir, &graalvm_home, platform);
+                install_libs(out_dir, &libs_dir, |staging_dir| {
                     compress_native_libraries(
                         &native_dir,
                         staging_dir,
@@ -83,8 +172,8 @@ fn main() {
         }
     }
 
-    let ocr = ocr_bundle(&out_dir, platform, platform.bundled_tesseract());
-    write_native_module(&out_dir, &libs_dir, &fingerprint, ocr.as_ref());
+    let ocr = ocr_bundle(out_dir, platform, platform.bundled_tesseract());
+    write_native_module(out_dir, &libs_dir, &fingerprint, ocr.as_ref());
 }
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `EXTRACTOUS_OCR_BUNDLE` names: tesseract as
@@ -589,7 +678,22 @@ fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle, linked_licenses: 
     write_if_changed(&out_dir.join("native.rs"), &module);
 }
 
-/// The items of the generated module that describe the OCR bundle.
+/// The module of a build without Tika that links nothing statically: only the OCR bundle, if
+/// there is one.
+fn write_ocr_module(out_dir: &Path, ocr: Option<&OcrBundle>) {
+    let fingerprint = match ocr {
+        Some(ocr) => format!("ocr-{}", ocr.fingerprint),
+        None => "no-ocr".to_string(),
+    };
+    let module = format!(
+        "pub(crate) const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n{}",
+        ocr_items(ocr)
+    );
+    write_if_changed(&out_dir.join("native.rs"), &module);
+}
+
+/// The items of the generated module that describe the OCR bundle: the tesseract library it
+/// carries, unless tesseract is linked in, its heif-png, its language data and its licenses.
 fn ocr_items(ocr: Option<&OcrBundle>) -> String {
     let ocr_files: &[(String, PathBuf)] = ocr.map_or(&[], |ocr| &ocr.files);
     let ocr_entries: String = ocr_files
@@ -600,10 +704,16 @@ fn ocr_items(ocr: Option<&OcrBundle>) -> String {
         Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
         None => "None".to_string(),
     };
-    let library = ocr.and_then(|ocr| ocr.tesseract.library());
+    let library = match ocr.map(|ocr| &ocr.tesseract) {
+        Some(Tesseract::Linked) => String::new(),
+        tesseract => format!(
+            "pub(crate) const OCR_TESSERACT_LIBRARY: Option<&str> = {:?};\n",
+            tesseract.and_then(Tesseract::library)
+        ),
+    };
     let heif_decoder = ocr.and_then(|ocr| ocr.heif_decoder.as_deref());
     format!(
-        "pub(crate) const OCR_TESSERACT_LIBRARY: Option<&str> = {library:?};\n\
+        "{library}\
          pub(crate) const OCR_HEIF_DECODER: Option<&str> = {heif_decoder:?};\n\
          pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
          pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\

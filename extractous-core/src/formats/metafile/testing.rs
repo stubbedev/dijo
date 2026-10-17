@@ -85,6 +85,7 @@ pub(crate) fn emf_select(index: u32) -> Vec<u8> {
 }
 
 /// An `EMR_COMMENT` of private data.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_comment(data: &[u8]) -> Vec<u8> {
     let mut comment = int(data.len() as i32).to_vec();
     comment.extend_from_slice(data);
@@ -98,6 +99,7 @@ pub(crate) fn utf16(text: &str) -> Vec<u8> {
 }
 
 /// A public `EMR_COMMENT` of `kind` holding `body`.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_public_comment(kind: u32, body: &[u8]) -> Vec<u8> {
     let mut data = b"GDIC".to_vec();
     data.extend_from_slice(&kind.to_le_bytes());
@@ -106,6 +108,7 @@ pub(crate) fn emf_public_comment(kind: u32, body: &[u8]) -> Vec<u8> {
 }
 
 /// A comment embedding a WMF picture.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_wmf_comment(wmf: &[u8]) -> Vec<u8> {
     let mut body = vec![1, 0, 0, 0];
     body.extend_from_slice(&int(0));
@@ -116,6 +119,7 @@ pub(crate) fn emf_wmf_comment(wmf: &[u8]) -> Vec<u8> {
 }
 
 /// A comment embedding each of `formats` as a format of the picture.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_formats_comment(formats: &[&[u8]]) -> Vec<u8> {
     let mut body = vec![0; 16];
     body.extend_from_slice(&int(formats.len() as i32));

@@ -105,7 +105,7 @@ fn read(
     Ok((Summaries::read(&file, root)?, document_type))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

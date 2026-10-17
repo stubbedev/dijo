@@ -331,6 +331,7 @@ fn worker_processes_serve_extractions() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[cfg(unix)]
 #[test]
 fn a_crashed_worker_process_fails_its_request_and_not_the_next() {
@@ -354,6 +355,7 @@ fn a_crashed_worker_process_fails_its_request_and_not_the_next() {
     assert!(metrics.contains("extractous_workers 1"), "{metrics}");
 }
 
+#[cfg(feature = "tika")]
 #[cfg(unix)]
 #[test]
 fn a_hung_worker_process_is_stopped_after_the_deadline() {

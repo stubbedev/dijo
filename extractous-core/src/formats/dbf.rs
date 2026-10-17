@@ -397,9 +397,11 @@ fn write(table: &Table<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
@@ -451,6 +453,7 @@ mod tests {
         (b' ', vec![name, amount, date, b"T"])
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_dbase_tables_as_tikas_path_does() {
         let scratch = Scratch::new("dbf");
@@ -539,6 +542,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_dbase_tables_as_tikas_path_does() {

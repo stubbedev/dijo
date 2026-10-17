@@ -466,7 +466,7 @@ fn write(
 /// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
 /// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
 /// as Tika's last `dc:date` wins.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn as_tika_writes_it(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -504,7 +504,7 @@ pub(crate) fn as_tika_writes_it(
 }
 
 /// The start tag `tag` with `xml:lang` named `lang`, and only the first `lang` kept.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 fn with_one_lang(tag: &str) -> String {
     let mut kept = String::with_capacity(tag.len());
     let mut seen = false;
@@ -538,14 +538,18 @@ mod tests {
     fn deferral(input: &[u8]) -> Option<String> {
         EpubParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
     }
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_rewriting,
         conformance_corpus, documents, Scratch,
     };
     use std::io::{Cursor, Write};
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.epub.EpubParser";
+    #[cfg(feature = "tika")]
     const DOCUMENTS: [&str; 2] = [
         "../quality/corpus/prose.epub",
         "../test_files/documents/winter-sports.epub",
@@ -582,12 +586,14 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
         assert_same_as_tika_rewriting(&documents, TIKA_NAME, as_tika_writes_it);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts_from_every_kind_of_book() {
         let scratch = Scratch::new("epub-books");
@@ -692,6 +698,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn closes_the_embedded_document_the_write_limit_stops_in() {
         let scratch = Scratch::new("epub-limit");
@@ -715,6 +722,7 @@ mod tests {
         assert_same_as_tika(&[document.as_path()], TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn fails_where_tikas_path_fails() {
         let scratch = Scratch::new("epub-failures");
@@ -1037,6 +1045,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore]
     fn extracts_what_tikas_path_extracts_from_tikas_documents() {

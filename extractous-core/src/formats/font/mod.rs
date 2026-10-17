@@ -161,7 +161,7 @@ impl Parser for AdobeFontMetricParser {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

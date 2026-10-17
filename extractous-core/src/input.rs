@@ -17,6 +17,14 @@ use crate::errors::{Error, ExtractResult};
 /// whose memory stays bounded whatever its input's size reads it.
 pub(crate) const MAX_READ_WHOLE: u64 = 64 * 1024 * 1024;
 
+/// Where a document is read from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Source<'a> {
+    File(&'a str),
+    Bytes(&'a [u8]),
+    Url(&'a str),
+}
+
 /// A document's bytes.
 #[derive(Debug, Clone)]
 pub(crate) enum Input<'a> {
