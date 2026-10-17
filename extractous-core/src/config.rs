@@ -179,10 +179,15 @@ impl PdfParserConfig {
         self.extract_annotation_text.unwrap_or(true)
     }
 
-    /// Whether inline images are extracted, which native PDF parsing does not do; whether only
-    /// unique ones are matters only when they are.
+    /// Whether the images of the pages are extracted, as they are not unless asked.
     pub(crate) fn extracts_inline_images(&self) -> bool {
         self.extract_inline_images.unwrap_or(false)
+    }
+
+    /// Whether an image drawn again is extracted only the first time, as it is unless told
+    /// otherwise.
+    pub(crate) fn extracts_unique_inline_images_only(&self) -> bool {
+        self.extract_unique_inline_images_only.unwrap_or(true)
     }
 }
 

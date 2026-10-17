@@ -3,7 +3,8 @@
 //! then the metadata `PDFParser` collects, and the text of each page as PDFBox's
 //! `PDFTextStripper` assembles it from the glyphs its content stream shows, written by
 //! `PDF2XHTML` in our reading order, or for a tagged document by `PDFMarkedContent2XHTML`
-//! through its structure tree, then the bookmarks, the files the document embeds, parsed as
+//! through its structure tree, each page's images after its text when they are extracted
+//! ([`images`]), then the bookmarks, the files the document embeds, parsed as
 //! embedded documents, and the form. The pages `TextLayerCheckingPdfParser` reads by OCR are
 //! rendered and read with tesseract ([`ocr`]). Documents with a page Tika would OCR with no
 //! tesseract to run, and documents with what the port does not do (encryption the empty
@@ -21,6 +22,7 @@ mod encoding;
 mod engine;
 mod font;
 mod form;
+mod images;
 pub(crate) mod jfloat;
 mod matrix;
 mod metadata;
@@ -42,7 +44,7 @@ use std::ops::ControlFlow;
 
 use lopdf::Document;
 
-use crate::config::{MarkedContentStrategy, ParserConfigs, PdfParserConfig};
+use crate::config::{MarkedContentStrategy, ParserConfigs};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -153,22 +155,41 @@ struct Settings {
     marked_content: MarkedContentStrategy,
     bookmarks: bool,
     annotation_text: bool,
+    images: ImageExtraction,
+}
+
+/// Whether the images of the pages are extracted, as `setExtractInlineImages` asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageExtraction {
+    Off,
+    On {
+        /// `setExtractUniqueInlineImagesOnly`.
+        unique_only: bool,
+        /// Whether our `TextLayerCheckingPdfParser` weighs each page's text with what OCR
+        /// reads in its images.
+        assessed_with_ocr: bool,
+    },
 }
 
 impl Settings {
-    /// The settings `config` sets, or why the port leaves documents to Tika under them.
-    fn of(config: &PdfParserConfig) -> Result<Self, Unported> {
-        if config.extracts_inline_images() {
-            return Err(Unported(
-                "the PDF setting setExtractInlineImages, which the port does not read".to_owned(),
-            ));
-        }
+    /// The settings `configs` set, or why the port leaves documents to Tika under them.
+    fn of(configs: &ParserConfigs) -> Result<Self, Unported> {
+        let config = &configs.pdf;
+        let ocr = OcrCheck::of(config, ocr_runs())?;
+        let images = match config.extracts_inline_images() {
+            false => ImageExtraction::Off,
+            true => ImageExtraction::On {
+                unique_only: config.extracts_unique_inline_images_only(),
+                assessed_with_ocr: ocr.holds_pages() && !configs.ocr.skips_ocr(),
+            },
+        };
         Ok(Self {
-            ocr: OcrCheck::of(config, ocr_runs())?,
+            ocr,
             reading_order: config.reads_in_reading_order(),
             marked_content: config.marked_content(),
             bookmarks: config.extracts_bookmarks_text(),
             annotation_text: config.extracts_annotation_text(),
+            images,
         })
     }
 }
@@ -208,7 +229,7 @@ fn record(
     limit: usize,
 ) -> Result<Recorded, Declined> {
     let deferred = |Unported(reason)| Declined::Deferred(reason);
-    let settings = Settings::of(&configs.pdf).map_err(deferred)?;
+    let settings = Settings::of(configs).map_err(deferred)?;
     let loaded = load(input).map_err(deferred)?;
     let mut recording = new_recording(metadata.clone());
     let mut large = |recording: &mut Recording| {
@@ -539,7 +560,7 @@ fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{PdfOcrStrategy, TesseractOcrConfig};
+    use crate::config::{PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
     use crate::formats::parity::{
         assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
         documents, Scratch,
@@ -547,7 +568,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
+    pub(super) const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
     /// Why OCR reads pages of a document of the corpora, or the port leaves it to Tika.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,11 +618,11 @@ mod tests {
         ),
     ];
 
-    fn tika_name() -> &'static str {
+    pub(super) fn tika_name() -> &'static str {
         PdfParser.tika_name()
     }
 
-    fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {
+    pub(super) fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {
         paths.iter().map(PathBuf::as_path).collect()
     }
 
@@ -632,7 +653,7 @@ mod tests {
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
     /// cross-reference table whose entries `shift` moves off their objects.
-    fn document(objects: &[&str], prefix: &[u8], shift: &[(usize, usize)]) -> Vec<u8> {
+    pub(super) fn document(objects: &[&str], prefix: &[u8], shift: &[(usize, usize)]) -> Vec<u8> {
         let mut out = prefix.to_vec();
         let start = out.len();
         out.extend_from_slice(b"%PDF-1.4\n");
@@ -723,7 +744,7 @@ mod tests {
     }
 
     /// A page of Helvetica text drawn by `content`.
-    fn page_objects(content: &str) -> Vec<String> {
+    pub(super) fn page_objects(content: &str) -> Vec<String> {
         vec![
             "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
@@ -1287,10 +1308,6 @@ mod tests {
             (
                 PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION),
                 "the OCR strategy OCR_AND_TEXT_EXTRACTION",
-            ),
-            (
-                PdfParserConfig::new().set_extract_inline_images(true),
-                "the PDF setting setExtractInlineImages",
             ),
             (
                 PdfParserConfig::new().set_ocr_strategy_auto("faster , 4"),

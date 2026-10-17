@@ -1,6 +1,7 @@
 //! Content streams tokenized as PDFBox's `PDFStreamParser` tokenizes them, leniency included:
 //! operands and operators in order, a malformed dictionary or array ending the stream, numbers
-//! read with PDFBox's repairs, and inline image data skipped up to its `EI`.
+//! read with PDFBox's repairs, and an inline image read with its parameters and its data up to
+//! its `EI`.
 
 use std::borrow::Cow;
 
@@ -15,11 +16,20 @@ const MAX_RECURSION_DEPTH: usize = 500;
 const MAX_BIN_CHAR_TEST_LENGTH: usize = 10;
 
 /// What a content stream holds: an operand, or the operator the operands before it belong to,
-/// borrowed from the stream unless it is not ASCII.
+/// borrowed from the stream unless it is not ASCII, or the `BI` operator of an inline image.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Token<'a> {
     Operand(Object),
     Operator(Cow<'a, str>),
+    InlineImage(Box<InlineImage>),
+}
+
+/// The `BI` operator as `PDFStreamParser` reads it: the parameters up to `ID`, and the data `ID`
+/// read, none when the parameters did not end at an `ID`.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct InlineImage {
+    pub(super) parameters: Dictionary,
+    pub(super) data: Option<Vec<u8>>,
 }
 
 /// The bytes of an operator as Java decodes them, ISO-8859-1.
@@ -45,6 +55,8 @@ pub(super) struct Lexer<'a> {
     closed: bool,
     depth: usize,
     inline_image_depth: usize,
+    /// The data the last `ID` read.
+    inline_data: Option<Vec<u8>>,
     /// The bytes of the number being read, kept for the next.
     number: Vec<u8>,
     /// Whether the bytes are a document's own, where `COSParser` reads indirect references,
@@ -122,6 +134,7 @@ impl<'a> Lexer<'a> {
             closed: false,
             depth: 0,
             inline_image_depth: 0,
+            inline_data: None,
             number: Vec::new(),
             file: false,
         }
@@ -276,7 +289,7 @@ impl<'a> Lexer<'a> {
             b'B' => {
                 let word = self.read_word();
                 if word == b"BI" {
-                    self.inline_image()?;
+                    return Ok(Some(Token::InlineImage(Box::new(self.inline_image()?))));
                 }
                 Ok(Some(Token::Operator(operator(word))))
             }
@@ -290,7 +303,7 @@ impl<'a> Lexer<'a> {
                         self.pos,
                     ));
                 }
-                self.skip_inline_image_data();
+                self.inline_data = Some(self.inline_image_data());
                 Ok(Some(Token::Operator(Cow::Borrowed("ID"))))
             }
             b']' => {
@@ -369,33 +382,39 @@ impl<'a> Lexer<'a> {
         &self.data[start..self.pos]
     }
 
-    /// The parameters of an inline image after `BI`, up to its data, which `ID` skips.
-    fn inline_image(&mut self) -> Result<(), Unported> {
+    /// The parameters of an inline image after `BI`, and the data of the `ID` they end at.
+    fn inline_image(&mut self) -> Result<InlineImage, Unported> {
         self.inline_image_depth += 1;
         if self.inline_image_depth > 1 {
             return Err(malformed("a nested BI operator", self.pos));
         }
+        let mut parameters = Dictionary::new();
+        let mut data = None;
         loop {
             match self.next_token()? {
-                Some(Token::Operand(Object::Name(_))) => match self.next_token()? {
-                    Some(Token::Operand(_)) => {}
+                Some(Token::Operand(Object::Name(key))) => match self.next_token()? {
+                    Some(Token::Operand(value)) => parameters.set(key, value),
                     _ => break,
                 },
-                Some(Token::Operator(_)) => {
+                Some(Token::Operator(name)) => {
+                    if name == "ID" {
+                        data = self.inline_data.take();
+                    }
                     self.inline_image_depth -= 1;
                     break;
                 }
                 _ => break,
             }
         }
-        Ok(())
+        Ok(InlineImage { parameters, data })
     }
 
     /// The data of an inline image after `ID`, up to the `EI` that ends it as PDFBox finds it.
-    fn skip_inline_image_data(&mut self) {
+    fn inline_image_data(&mut self) -> Vec<u8> {
         if !self.skip_linebreak() && is_whitespace(self.peek()) {
             self.read();
         }
+        let mut data = Vec::new();
         let mut last = self.read();
         let mut current = self.read();
         while !(last == Some(b'E')
@@ -404,9 +423,11 @@ impl<'a> Lexer<'a> {
             && self.no_following_binary_data())
             && !self.is_eof()
         {
+            data.extend(last);
             last = current;
             current = self.read();
         }
+        data
     }
 
     /// `BaseParser.skipLinebreak`: a CR, an LF or a CR LF.
@@ -1108,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_marked_content_properties_and_skips_inline_images() {
+    fn reads_marked_content_properties_and_inline_images() {
         assert_eq!(
             tokens(b"/P <</MCID 3>> BDC BI /W 2 /H 1 ID \x00\xff EI Q EMC"),
             vec![
@@ -1118,7 +1139,13 @@ mod tests {
                     Object::Integer(3)
                 )]))),
                 op("BDC"),
-                op("BI"),
+                Token::InlineImage(Box::new(InlineImage {
+                    parameters: Dictionary::from_iter(vec![
+                        ("W", Object::Integer(2)),
+                        ("H", Object::Integer(1)),
+                    ]),
+                    data: Some(vec![0x00, 0xff, b' ']),
+                })),
                 op("Q"),
                 op("EMC"),
             ]

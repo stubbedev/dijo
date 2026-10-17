@@ -284,6 +284,7 @@ impl<'p> Run<'p, '_> {
                     self.operator(&operator, &operands)?;
                     operands.clear();
                 }
+                Token::InlineImage(_) => operands.clear(),
             }
         }
         Ok(())
