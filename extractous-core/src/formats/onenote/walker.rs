@@ -22,6 +22,8 @@ const MAX_WALK_DEPTH: usize = 500;
 const TIME32_EPOCH_DIFF_1980: i64 = 315_532_800;
 const DATETIME_EPOCH_DIFF_1601: i64 = -11_644_473_600;
 const EXCEPTION_WARNING: &str = embedded::EXCEPTION_WARNING;
+/// `HYPERLINK_PATTERN`, with Java's `\s`.
+pub(super) const HYPERLINK: &str = "\u{FDDF}HYPERLINK[ \t\n\x0B\x0C\r]+\"([^\"]+)\"([^\"]+)$";
 
 /// The property IDs `OneNotePropertyEnum.of` names that the walk tells apart. Every
 /// `ElementChildNodesOf...` shares one ID, which the enum's map gives the last of them,
@@ -104,8 +106,7 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
             document,
             dif,
             xhtml,
-            hyperlink: Regex::new("\u{FDDF}HYPERLINK[ \t\n\x0B\x0C\r]+\"([^\"]+)\"([^\"]+)$")
-                .expect("the hyperlink pattern is valid"),
+            hyperlink: Regex::new(HYPERLINK).expect("the hyperlink pattern is valid"),
             found: Found {
                 creation_timestamp: i64::MAX,
                 last_modified: i64::MIN,

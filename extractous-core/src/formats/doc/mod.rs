@@ -36,11 +36,9 @@ use crate::formats::metadata::office::{
     COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
 };
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::Summaries;
+use crate::formats::ole2::{office, Summaries};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
-use crate::mime::{ole_directory_type, MediaType};
-use crate::ole2::{Ole2, Unreadable};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const MEDIA_TYPE: &str = "application/msword";
 
@@ -79,28 +77,8 @@ impl Parser for DocParser {
 /// The summary information and what Tika's extractor makes of the Word document in a compound
 /// document.
 fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Declined> {
-    let config = &configs.office;
-    if config.extracts_macros() {
-        return Err(
-            Unported("macros are extracted, which this port does not do".to_owned()).into(),
-        );
-    }
-    let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-        Unported(format!("POI cannot open the compound document: {reason}"))
-    })?;
-    if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
-        return Err(Unported(format!(
-            "POI reads the compound document from a stream differently: {reason}"
-        ))
-        .into());
-    }
+    let file = office::open(input, configs, MEDIA_TYPE, "Word document")?;
     let root = file.root();
-    if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
-        return Err(Unported(
-            "the compound document is no Word document to POI's container detection".to_owned(),
-        )
-        .into());
-    }
     let extracted = match Document::read(&file, root, configs)? {
         Word::Modern(document) => extract(&document, &file, root, configs)?,
         Word::Old(document) => Extracted::paragraphs(document.paragraph_text()),

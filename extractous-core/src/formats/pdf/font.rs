@@ -403,20 +403,14 @@ enum CidKind {
     Compact(Program<Box<Cff>>),
 }
 
-/// What a composite font maps to Unicode with when it has no usable `ToUnicode` map: the
-/// UCS-2 map of its character collection, if PDFBox finds one.
-#[derive(Debug)]
-enum Ucs2 {
-    None,
-    Unported(String),
-}
-
 #[derive(Debug)]
 struct Type0Font {
     cmap: Option<Cow<'static, CMap>>,
     predefined: bool,
     descendant_cjk: bool,
-    ucs2: Ucs2,
+    /// `cMapUCS2`: the predefined map from CIDs to Unicode, of a font whose CMap is predefined
+    /// or whose descendant is a CJK font, where FontBox bundles it.
+    ucs2: Option<&'static CMap>,
     descendant: CidFont,
 }
 
@@ -758,15 +752,12 @@ impl Font {
             } else {
                 encoding_name
             };
-            match source.filter(|source| cmap::is_predefined(source)) {
-                Some(source) => Ucs2::Unported(format!(
-                    "a composite font mapped to Unicode through the UCS-2 map of {source}, which \
-                     the port does not hold"
-                )),
-                None => Ucs2::None,
+            match source {
+                Some(source) => ucs2_map(&source)?,
+                None => None,
             }
         } else {
-            Ucs2::None
+            None
         };
         font.kind = FontKind::Type0(Box::new(Type0Font {
             cmap,
@@ -1098,8 +1089,8 @@ impl Font {
                     return java_char(code).map(Some);
                 }
                 if type0.predefined || type0.descendant_cjk {
-                    if let Ucs2::Unported(reason) = &type0.ucs2 {
-                        return Err(Unported(reason.clone()));
+                    if let Some(ucs2) = type0.ucs2 {
+                        return Ok(ucs2.to_unicode(self.code_to_cid(code)).map(GlyphText::new));
                     }
                 }
                 let CidKind::TrueType(program) = &type0.descendant.kind else {
@@ -1641,12 +1632,62 @@ impl Font {
                     }
                 }
             }
-            FontKind::Type0(_) => Err(Unported(
-                "a composite font whose space is measured by encoding it, which the port does \
-                 not do"
-                    .to_owned(),
-            )),
+            FontKind::Type0(type0) => self.encode_composite_space(type0),
         }
+    }
+
+    /// `PDCIDFontType0.encode(32)`, which throws an `UnsupportedOperationException`, or
+    /// `PDCIDFontType2.encode(32)`: the CID of a space, two bytes, as the program's Unicode cmap
+    /// or the UCS-2 map gives it, or the code the `ToUnicode` map gives a space; `None` where
+    /// PDFBox throws an `IllegalArgumentException` for a CID of 0.
+    fn encode_composite_space(&self, type0: &Type0Font) -> Result<Option<Vec<u8>>, Unported> {
+        let CidKind::TrueType(program) = &type0.descendant.kind else {
+            return Ok(None);
+        };
+        let unicode_cmap = program.font()?.unicode_cmap();
+        let cid = if type0.descendant.embedded {
+            let name = type0
+                .cmap
+                .as_ref()
+                .and_then(|cmap| cmap.name.as_deref())
+                .ok_or_else(|| {
+                    Unported(
+                        "an embedded composite TrueType font whose CMap has no name, whose space \
+                         PDFBox fails to encode with a NullPointerException"
+                            .to_owned(),
+                    )
+                })?;
+            let cid = if name.starts_with("Identity-") {
+                unicode_cmap.map(|cmap| cmap.glyph(u32::from(b' ')))
+            } else {
+                type0.ucs2.map(|ucs2| ucs2.to_cid(u32::from(b' ')))
+            };
+            match cid {
+                Some(cid) => cid,
+                None => {
+                    if let Some(to_unicode) = &self.to_unicode {
+                        if let Some(codes) = to_unicode.codes_from_unicode(" ")? {
+                            return Ok(Some(codes.to_vec()));
+                        }
+                    }
+                    0
+                }
+            }
+        } else {
+            unicode_cmap
+                .ok_or_else(|| {
+                    Unported(
+                        "a composite TrueType font whose fallback has no Unicode cmap, whose \
+                         space PDFBox fails to encode with a NullPointerException"
+                            .to_owned(),
+                    )
+                })?
+                .glyph(u32::from(b' '))
+        };
+        if cid == 0 {
+            return Ok(None);
+        }
+        Ok(Some(vec![(cid >> 8) as u8, cid as u8]))
     }
 }
 
@@ -1834,6 +1875,25 @@ fn read_true_type(pdf: &Pdf, stream: &Stream) -> Result<Option<Box<TrueType>>, U
         truetype::Read::Damaged(_) => Ok(None),
         truetype::Read::Unported(reason) => Err(Unported(reason)),
     }
+}
+
+/// `PDType0Font.fetchCMapUCS2`'s map: the predefined CMap `source` names, whose registry and
+/// ordering name the map from CIDs to Unicode; `None` where FontBox bundles either not.
+fn ucs2_map(source: &str) -> Result<Option<&'static CMap>, Unported> {
+    let found = |name: &str| match cmap::predefined(name) {
+        Ok(map) => Ok(Some(map)),
+        Err(CMapError::Malformed(_)) => Ok(None),
+        Err(CMapError::Unported(unported)) => Err(unported),
+    };
+    let Some(predefined) = found(source)? else {
+        return Ok(None);
+    };
+    let java = |part: &Option<String>| part.clone().unwrap_or_else(|| "null".to_owned());
+    found(&format!(
+        "{}-{}-UCS2",
+        java(&predefined.registry),
+        java(&predefined.ordering)
+    ))
 }
 
 /// `PDFont.loadUnicodeCmap`: the `ToUnicode` map, `None` where PDFBox fails to read it, or the

@@ -400,6 +400,28 @@ fn finds_images_in_forms_patterns_and_soft_masks_as_tikas_path_does() {
 }
 
 #[test]
+fn extracts_images_under_the_ocr_strategies_as_tikas_path_does() {
+    if !crate::ocr::tesseract_runs() {
+        return;
+    }
+    let scratch = Scratch::new("pdf-image-strategies");
+    let path = scratch.write("painted.pdf", &painted_images());
+    for strategy in [
+        PdfOcrStrategy::OCR_ONLY,
+        PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION,
+    ] {
+        let configs = ParserConfigs {
+            pdf: PdfParserConfig::new()
+                .set_extract_inline_images(true)
+                .set_ocr_strategy(strategy),
+            ..ParserConfigs::default()
+        };
+        assert_eq!(deferral(&painted_images(), &configs), None, "{strategy}");
+        assert_same(std::slice::from_ref(&path), &configs);
+    }
+}
+
+#[test]
 fn records_failures_to_read_images_as_tikas_path_does() {
     let images = vec![
         image("/Width 2 /Height 2 /BitsPerComponent 8", "", &[1, 2, 3, 4]),

@@ -174,6 +174,19 @@ fn spread(hash: u32) -> u32 {
     hash ^ (hash >> 16)
 }
 
+/// The order a Java `HashMap` whose table starts at `capacity` buckets, a power of two, iterates
+/// the keys of the hash codes `hashes`, each key put once in that order: by bucket of the table
+/// grown as `HashMap` grows it, then in insertion order. The indices of `hashes`, in that order.
+pub(crate) fn hash_map_order(hashes: &[u32], capacity: usize) -> Vec<usize> {
+    let mut capacity = capacity;
+    while hashes.len() * 4 > capacity * 3 {
+        capacity *= 2;
+    }
+    let mut order: Vec<usize> = (0..hashes.len()).collect();
+    order.sort_by_key(|&index| (spread(hashes[index]) as usize & (capacity - 1), index));
+    order
+}
+
 /// `Character.digit(c, 10)` on a `char`: the value of a decimal digit of any script in the Basic
 /// Multilingual Plane. A digit beyond it is two `char`s to Java, neither of them a digit.
 pub(crate) fn digit(character: char) -> Option<u32> {

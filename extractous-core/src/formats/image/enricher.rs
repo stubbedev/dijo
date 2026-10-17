@@ -187,6 +187,13 @@ fn write(xhtml: &mut Xhtml, read: &ImageRead, page: Option<u32>) -> Result<(), S
 /// `PreparingOcrParser.emit`: the report of a reading, then its text in a div of class `ocr`.
 fn emit(xhtml: &mut Xhtml, attempt: &ocr::Attempt, page: Option<u32>) -> Result<(), Stop> {
     xhtml.metadata_mut().add(ocr::REPORT, attempt.report(page));
+    write_text(xhtml, attempt)
+}
+
+/// The text of a reading, if it read any, in a div of class `ocr` of `PreparingOcrParser`'s own
+/// document, as Tika's `EmbeddedContentHandler` and `BodyContentHandler` pass it into the
+/// document it reads an image of.
+pub(crate) fn write_text(xhtml: &mut Xhtml, attempt: &ocr::Attempt) -> Result<(), Stop> {
     let Some(text) = attempt.text() else {
         return Ok(());
     };

@@ -65,6 +65,7 @@ mod ppt;
 mod pptx;
 mod protected;
 mod prt;
+mod publisher;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
@@ -75,6 +76,7 @@ mod tnef;
 mod translation;
 #[cfg(test)]
 mod url_tests;
+mod visio;
 mod vsdx;
 mod warc;
 mod wordperfect;
@@ -309,12 +311,14 @@ static PARSERS: &[&dyn Parser] = &[
     &ppt::PptParser,
     &pptx::PptxParser,
     &protected::ProtectedParser,
+    &publisher::PublisherParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &source_code::SourceCodeParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
+    &visio::VisioParser,
     &xls::XlsParser,
     &warc::WarcParser,
     &warc::HttpParser,
