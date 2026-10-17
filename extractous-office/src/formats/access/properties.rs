@@ -107,7 +107,7 @@ impl PropertyMaps {
         let Some(bytes) = bytes.filter(|bytes| !bytes.is_empty()) else {
             return Ok(maps);
         };
-        let charset = pages.format.charset;
+        let charset = pages.charset;
         let mut buffer = Buffer::new(bytes);
         let Some(map_type) = PROPERTY_MAP_TYPES
             .iter()

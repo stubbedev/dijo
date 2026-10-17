@@ -4,6 +4,8 @@
 
 use super::buffer::Thrown;
 use super::column::SortOrder;
+use crate::formats::ole2::codepage_encoding;
+use crate::text::charset::Charset as JdkCharset;
 
 const OFFSET_VERSION: usize = 20;
 const HEADER_LENGTH: usize = 21;
@@ -32,20 +34,38 @@ pub(super) enum CodecType {
     Office,
 }
 
-/// The charset Jackcess decodes the text of a format with: the JVM's default, UTF-8, for Jet 3,
-/// whose text is in the database's code page.
+/// How a format encodes its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Encoding {
+    /// In the code page the database's header names: Jet 3.
+    CodePage,
+    /// UTF-16LE, a text value possibly compressed: Jet 4 and ACE.
+    Unicode,
+}
+
+/// The charset a database's text is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Charset {
-    Utf8,
-    Utf16Le,
+    /// A code page, as a JDK charset this port decodes.
+    CodePage(JdkCharset),
+    Unicode,
 }
 
 impl Charset {
-    /// `charset.decode`, malformed input replaced as the JDK replaces it.
+    /// The charset of the Windows code page `code_page`, where it names one the port decodes.
+    pub(super) fn of_code_page(code_page: u16) -> Option<Charset> {
+        let charset =
+            codepage_encoding(i32::from(code_page)).and_then(|name| JdkCharset::for_name(&name))?;
+        charset.decode(&[]).map(|_| Charset::CodePage(charset))
+    }
+
+    /// The text of `bytes`, malformed input replaced as the JDK replaces it.
     pub(super) fn decode(self, bytes: &[u8]) -> String {
         match self {
-            Charset::Utf8 => crate::java::utf8(bytes),
-            Charset::Utf16Le => crate::java::utf16le(bytes),
+            Charset::CodePage(charset) => charset
+                .decode(bytes)
+                .expect("a code page charset only where the port decodes it"),
+            Charset::Unicode => crate::java::utf16le(bytes),
         }
     }
 }
@@ -57,9 +77,6 @@ pub(super) struct Format {
     pub(super) page_size: usize,
     pub(super) offset_masked_header: usize,
     pub(super) header_mask: &'static [u8],
-    pub(super) offset_header_date: Option<usize>,
-    pub(super) offset_password: usize,
-    pub(super) size_password: usize,
     pub(super) offset_encoding_key: usize,
     pub(super) offset_next_table_def_page: usize,
     pub(super) offset_num_rows: usize,
@@ -72,7 +89,6 @@ pub(super) struct Format {
     pub(super) offset_num_index_slots: usize,
     pub(super) offset_num_indexes: usize,
     pub(super) offset_owned_pages: usize,
-    pub(super) offset_free_space_pages: usize,
     pub(super) offset_index_def_block: usize,
     pub(super) offset_column_type: usize,
     pub(super) offset_column_number: usize,
@@ -102,7 +118,7 @@ pub(super) struct Format {
     pub(super) size_name_length: usize,
     pub(super) size_row_column_count: usize,
     pub(super) size_row_var_col_offset: usize,
-    pub(super) charset: Charset,
+    pub(super) encoding: Encoding,
     pub(super) default_sort_order: SortOrder,
 }
 
@@ -111,9 +127,6 @@ const JET3: Format = Format {
     page_size: 2048,
     offset_masked_header: 24,
     header_mask: BASE_HEADER_MASK.split_at(BASE_HEADER_MASK.len() - 2).0,
-    offset_header_date: None,
-    offset_password: 66,
-    size_password: 20,
     offset_encoding_key: 62,
     offset_next_table_def_page: 4,
     offset_num_rows: 12,
@@ -126,7 +139,6 @@ const JET3: Format = Format {
     offset_num_index_slots: 27,
     offset_num_indexes: 31,
     offset_owned_pages: 35,
-    offset_free_space_pages: 39,
     offset_index_def_block: 43,
     offset_column_type: 0,
     offset_column_number: 1,
@@ -156,7 +168,7 @@ const JET3: Format = Format {
     size_name_length: 1,
     size_row_column_count: 1,
     size_row_var_col_offset: 1,
-    charset: Charset::Utf8,
+    encoding: Encoding::CodePage,
     default_sort_order: SortOrder::GENERAL_97,
 };
 
@@ -165,9 +177,6 @@ const JET4: Format = Format {
     page_size: 4096,
     offset_masked_header: 24,
     header_mask: &BASE_HEADER_MASK,
-    offset_header_date: Some(114),
-    offset_password: 66,
-    size_password: 40,
     offset_encoding_key: 62,
     offset_next_table_def_page: 4,
     offset_num_rows: 16,
@@ -180,7 +189,6 @@ const JET4: Format = Format {
     offset_num_index_slots: 47,
     offset_num_indexes: 51,
     offset_owned_pages: 55,
-    offset_free_space_pages: 59,
     offset_index_def_block: 63,
     offset_column_type: 0,
     offset_column_number: 5,
@@ -210,7 +218,7 @@ const JET4: Format = Format {
     size_name_length: 2,
     size_row_column_count: 2,
     size_row_var_col_offset: 2,
-    charset: Charset::Utf16Le,
+    encoding: Encoding::Unicode,
     default_sort_order: SortOrder::GENERAL_LEGACY,
 };
 

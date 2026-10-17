@@ -11,7 +11,6 @@ use super::{
     STORED,
 };
 use crate::compress::crc32;
-use crate::java::time::civil;
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const ZIP64_EOCD_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";
@@ -45,7 +44,8 @@ pub enum NameSource {
     UnicodeExtraField,
 }
 
-/// An entry of the central directory, as `ZipArchiveEntry`.
+/// An entry of the central directory, or of a local header read front to back, as
+/// `ZipArchiveEntry`.
 #[derive(Debug, Clone)]
 pub struct ZipEntry {
     pub name: String,
@@ -53,15 +53,15 @@ pub struct ZipEntry {
     pub name_source: NameSource,
     pub comment: String,
     pub version_made_by: u16,
-    flags: u16,
+    pub(super) flags: u16,
     pub method: u16,
-    dos_time: i64,
+    pub(super) dos_time: i64,
     pub crc: i64,
     pub compressed_size: i64,
     pub size: i64,
-    external_attributes: i64,
-    times: Times,
-    data_offset: i64,
+    pub(super) external_attributes: i64,
+    pub(super) times: Times,
+    pub(super) data_offset: i64,
 }
 
 impl ZipEntry {
@@ -102,35 +102,15 @@ impl ZipEntry {
     /// with a lenient `Calendar` in the JVM's default time zone, so the instant depends on the
     /// machine's zone and out-of-range fields roll over (#99).
     pub fn modified(&self) -> Option<Instant> {
-        self.times.modified.or_else(|| dos_instant(self.dos_time))
+        self.times
+            .modified
+            .or_else(|| crate::compress::dos_millis(self.dos_time).map(Instant::from_millis))
     }
 
     /// `getCreationTime`.
     pub fn created(&self) -> Option<Instant> {
         self.times.created
     }
-}
-
-/// The DOS date and time `dos` as a UTC instant, if its fields are in range.
-fn dos_instant(dos: i64) -> Option<Instant> {
-    let year = (dos >> 25 & 0x7F) + 1980;
-    let month = dos >> 21 & 0x0F;
-    let day = dos >> 16 & 0x1F;
-    let (hour, minute, second) = (dos >> 11 & 0x1F, dos >> 5 & 0x3F, dos << 1 & 0x3E);
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if civil::is_leap_year(year) => 29,
-        2 => 28,
-        _ => return None,
-    };
-    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    let days = civil::days_from_civil(year, month, day);
-    Some(Instant::from_millis(
-        (days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000,
-    ))
 }
 
 /// An archive `ZipFile` opened.
@@ -445,23 +425,6 @@ pub mod tests {
             writer.write_all(content).unwrap();
         }
         writer.finish().unwrap().into_inner()
-    }
-
-    #[test]
-    fn reads_dos_times_as_utc_wall_clock_times() {
-        let dos = |year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64| {
-            (year - 1980) << 25 | month << 21 | day << 16 | hour << 11 | minute << 5 | second >> 1
-        };
-        assert_eq!(
-            dos_instant(dos(2024, 2, 29, 23, 59, 58)),
-            Some(Instant::from_millis(1_709_251_198_000))
-        );
-        assert_eq!(dos_instant(0), None);
-        assert_eq!(dos_instant(dos(2023, 2, 29, 0, 0, 0)), None);
-        assert_eq!(dos_instant(dos(2023, 13, 1, 0, 0, 0)), None);
-        assert_eq!(dos_instant(dos(2023, 1, 1, 24, 0, 0)), None);
-        assert_eq!(dos_instant(dos(2023, 1, 1, 0, 60, 0)), None);
-        assert_eq!(dos_instant(dos(2023, 1, 1, 0, 0, 60)), None);
     }
 
     #[test]

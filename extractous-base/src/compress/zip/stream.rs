@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use super::extra::{self, ExtraFields, Times};
-use super::file::{entry_name, unicode_text};
+use super::file::{entry_name, unicode_text, NameSource, ZipEntry};
 use super::{decode_name, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATED, LFH_SIG, STORED};
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
@@ -43,11 +43,6 @@ pub enum Failure {
     Io,
 }
 
-/// An entry as the stream reads it, its data read by [`ZipStream::content`] before the next.
-pub struct StreamEntry {
-    pub name: String,
-}
-
 /// The local header of the entry the stream is in.
 struct Current {
     flags: u16,
@@ -70,6 +65,7 @@ pub struct ZipStream<'a> {
     position: usize,
     allow_stored_data_descriptor: bool,
     use_unicode_extra_fields: bool,
+    skip_split_signature: bool,
     first: bool,
     done: bool,
     current: Option<Current>,
@@ -82,6 +78,7 @@ impl<'a> ZipStream<'a> {
             position: 0,
             allow_stored_data_descriptor,
             use_unicode_extra_fields: true,
+            skip_split_signature: false,
             first: true,
             done: false,
             current: None,
@@ -97,14 +94,24 @@ impl<'a> ZipStream<'a> {
         }
     }
 
+    /// The stream that skips the signature a split archive's first segment starts with and
+    /// reads the entries of that segment, as one made with `skipSplitSig` true.
+    pub fn skipping_split_signature(self) -> Self {
+        Self {
+            skip_split_signature: true,
+            ..self
+        }
+    }
+
     fn bytes(&self, at: usize, length: usize) -> Result<&'a [u8], Failure> {
         self.data
             .get(at..at.saturating_add(length))
             .ok_or(Failure::Io)
     }
 
-    /// `getNextZipEntry`: `None` at the end of the entries.
-    pub fn next_entry(&mut self) -> Result<Option<StreamEntry>, Failure> {
+    /// `getNextZipEntry`: the entry its local header describes, its data read by
+    /// [`ZipStream::content`] before the next; `None` at the end of the entries.
+    pub fn next_entry(&mut self) -> Result<Option<ZipEntry>, Failure> {
         if self.done {
             return Ok(None);
         }
@@ -140,12 +147,18 @@ impl<'a> ZipStream<'a> {
         let extra_length = usize::from(u16_at(header, 28));
         let raw_name = self.bytes(header_at + 30, name_length)?;
         let extra = self.bytes(header_at + 30 + name_length, extra_length)?;
-        let fields =
-            ExtraFields::from_central(extra, &mut Times::default()).map_err(|_| Failure::Io)?;
+        let mut times = Times::default();
+        let fields = ExtraFields::from_central(extra, &mut times).map_err(|_| Failure::Io)?;
         let mut name = entry_name(decode_name(raw_name), version);
+        let mut name_source = if flags & 0x0800 != 0 {
+            NameSource::NameWithEfsFlag
+        } else {
+            NameSource::Name
+        };
         if flags & 0x0800 == 0 && self.use_unicode_extra_fields {
             if let Some(unicode) = unicode_text(&fields, extra::UNICODE_PATH, raw_name) {
                 name = entry_name(unicode, version);
+                name_source = NameSource::UnicodeExtraField;
             }
         }
         let zip64 = super::file::zip64_field(extra);
@@ -179,8 +192,28 @@ impl<'a> ZipStream<'a> {
                 return Err(Failure::Io);
             }
         }
+        let entry = ZipEntry {
+            name,
+            raw_name: raw_name.to_vec(),
+            name_source,
+            comment: String::new(),
+            version_made_by: version,
+            flags,
+            method: current.method,
+            dos_time: u32_at(header, 10),
+            crc: if current.has_data_descriptor() {
+                -1
+            } else {
+                u32_at(header, 14)
+            },
+            compressed_size: current.compressed_size,
+            size: current.size,
+            external_attributes: 0,
+            times,
+            data_offset: current.data_start as i64,
+        };
         self.current = Some(current);
-        Ok(Some(StreamEntry { name }))
+        Ok(Some(entry))
     }
 
     /// `readFirstLocalFileHeader`: where the first local header starts, `None` for an empty
@@ -191,7 +224,7 @@ impl<'a> ZipStream<'a> {
             if signature == LFH_SIG {
                 return Ok(Some(at));
             }
-            if signature == SPLIT_MARKER {
+            if signature == SPLIT_MARKER || (signature == DD_SIG && self.skip_split_signature) {
                 return Ok(Some(at + 4));
             }
             if signature == DD_SIG {

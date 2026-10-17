@@ -412,16 +412,27 @@ impl Reader<'_> {
         })
     }
 
-    /// The value of a text chunk's text command: from its eighth byte to the first two zero
-    /// bytes after it, or to its end, in the chunk's charset.
+    /// The value of a text chunk's text command: from its eighth byte to its first NUL
+    /// character, or to its end, in the chunk's charset. HDGF ends it at the first two zero
+    /// bytes after its start, whatever their alignment, which cuts a UTF-16 text in the middle
+    /// of a character, before it where the text starts with a NUL (#129).
     fn text(&self, contents: &[u8]) -> String {
-        let end = (TEXT_START + 1..contents.len().saturating_sub(1))
-            .find(|&at| contents[at] == 0 && contents[at + 1] == 0)
-            .unwrap_or(contents.len());
-        let bytes = &contents[TEXT_START..end];
+        let text = &contents[TEXT_START..];
         match self.version {
-            Version::V11 => crate::java::utf16le(bytes),
-            Version::V5 | Version::V6 => crate::java::ascii(bytes),
+            Version::V11 => {
+                let units = text.len() / 2;
+                let end = (0..units)
+                    .find(|&unit| text[2 * unit..2 * unit + 2] == [0, 0])
+                    .unwrap_or(units);
+                crate::java::utf16le(&text[..2 * end])
+            }
+            Version::V5 | Version::V6 => {
+                let end = text
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(text.len());
+                crate::java::ascii(&text[..end])
+            }
         }
     }
 }
@@ -644,17 +655,24 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_text_chunk_to_its_first_two_zero_bytes_after_its_start() {
-        let reader = Reader {
+    fn reads_a_text_chunk_to_its_first_nul_character() {
+        let reader = |version| Reader {
             document: &[],
-            version: Version::V11,
+            version,
         };
         let mut contents = vec![0u8; TEXT_START];
         contents.extend("Rum".encode_utf16().flat_map(u16::to_le_bytes));
         contents.extend([0, 0, b'x', 0]);
-        assert_eq!(reader.text(&contents), "Ru\u{fffd}");
+        assert_eq!(reader(Version::V11).text(&contents), "Rum");
         let mut leading = vec![0u8; TEXT_START + 2];
         leading.extend([b'a', 0]);
-        assert_eq!(reader.text(&leading), "\0a");
+        assert_eq!(reader(Version::V11).text(&leading), "");
+        let mut odd = vec![0u8; TEXT_START];
+        odd.extend("\u{c5}".encode_utf16().flat_map(u16::to_le_bytes));
+        odd.push(b'x');
+        assert_eq!(reader(Version::V11).text(&odd), "\u{c5}");
+        let mut ascii = vec![0u8; TEXT_START];
+        ascii.extend(b"Hav\0n\0");
+        assert_eq!(reader(Version::V6).text(&ascii), "Hav");
     }
 }

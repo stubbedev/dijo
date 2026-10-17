@@ -42,9 +42,20 @@ fn reads_code_page_1252_where_the_fonts_name_no_other() {
 }
 
 #[test]
+fn reads_double_byte_text_in_the_code_page_the_fonts_name() {
+    let mut text = vec![0x93, 0xFA, 0x96, 0x7B, b'\r'];
+    text.extend(b"World\r");
+    let document = OldDocument::read(&word6(&text, 0x80)).unwrap();
+    assert_eq!(
+        document.paragraph_text(),
+        [units("\u{65E5}\u{672C}\n"), units("World\n")]
+    );
+}
+
+#[test]
 fn ends_the_lines_of_a_piece_as_word6_extractor_falls_back_to() {
-    let piece = TextPiece::new(0, 3, 0, false, 0, units("a\r\u{FFFE}")).unwrap();
-    assert_eq!(piece_text(&piece), units("a\r\n\r\n"));
+    let piece = TextPiece::new(0, 3, 0, false, 0, units("a\rb")).unwrap();
+    assert_eq!(piece_text(&piece), units("a\r\nb"));
 }
 
 #[test]

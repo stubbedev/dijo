@@ -1,11 +1,15 @@
 //! Publisher documents (PUB) as Tika's `OfficeParser` reads them with POI's HPBF: the summary
 //! information as metadata, then the text of the Quill contents' text bits, every carriage
 //! return a line break, in one paragraph, as `PublisherTextExtractor` gives it. A document POI
-//! throws on, in its Quill contents, its main contents or the Escher streams HPBF reads, is left
-//! to Tika, as are macros extracted when asked to.
+//! throws on, in its Quill contents or its main contents, is left to Tika, as are macros
+//! extracted when asked to.
+//!
+//! HPBF also reads the Escher streams, which hold no text, and reads each of their records at
+//! the start of the stream rather than where it lies, so that a document whose streams are
+//! missing or whose first record it cannot read fails Tika's parse; the port does not read them
+//! (#129).
 
 use crate::config::ParserConfigs;
-use crate::formats::escher::{self, Factory};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office, Summaries};
 use crate::formats::poi::{i32_at, safely_clone, thrown, u16_at, u8_at, Read, Thrown};
@@ -16,8 +20,6 @@ const MEDIA_TYPE: &str = "application/x-mspublisher";
 /// `QuillContents`' path to its stream.
 const QUILL_CONTENTS: [&str; 3] = ["Quill", "QuillSub", "CONTENTS"];
 const MAIN_CONTENTS: [&str; 1] = ["Contents"];
-const ESCHER_STM: [&str; 2] = ["Escher", "EscherStm"];
-const ESCHER_DELAY_STM: [&str; 2] = ["Escher", "EscherDelayStm"];
 /// What the Quill contents start with.
 const QUILL_SIGNATURE: &[u8; 8] = b"CHNKINK ";
 /// How many bits the Quill contents' index lists.
@@ -25,7 +27,7 @@ const BITS: usize = 20;
 /// Where the index starts, and how long each of its entries is.
 const INDEX_START: usize = 0x20;
 const INDEX_ENTRY: usize = 24;
-/// `EscherPart.getMaxRecordLength`, which also bounds a bit's data.
+/// `EscherPart.getMaxRecordLength`, which HPBF also bounds a bit's data by.
 const MAX_RECORD_LENGTH: i64 = 1_000_000;
 /// `QCPLCBit.MAX_NUMBER_OF_PLCS`.
 const MAX_PLCS: i64 = 1000;
@@ -76,14 +78,11 @@ fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<u16>), 
 }
 
 /// `new HPBFDocument(root)` and `PublisherTextExtractor.getText`: the text of the Quill
-/// contents' text bits, once every part HPBF reads is read.
+/// contents' text bits, once the main contents and the Quill contents are read.
 fn text(file: &Ole2<'_>, root: EntryId) -> Read<Vec<u16>> {
     let _main = part(file, root, &MAIN_CONTENTS)?;
     let quill = part(file, root, &QUILL_CONTENTS)?;
     let bits = quill_bits(&quill)?;
-    for path in [ESCHER_STM, ESCHER_DELAY_STM] {
-        escher_part(&part(file, root, &path)?)?;
-    }
     let mut text = Vec::new();
     for bit in bits {
         if let Bit::Text(data) = bit {
@@ -279,14 +278,6 @@ fn hyperlinks(data: &[u8], count: usize) -> Result<(), Plc> {
     Ok(())
 }
 
-/// `EscherPart`: the records of its data, each read from its start, as POI reads them.
-fn escher_part(data: &[u8]) -> Read<()> {
-    if !data.is_empty() {
-        escher::made_at(data, 0, Factory::Default)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,8 +375,14 @@ mod tests {
         );
         assert_same_as_tika(&[&path], PublisherParser.tika_name());
         let missing = scratch.write("missing.pub", &publication(quill, false));
-        let reason = crate::formats::parity::deferral(&PublisherParser, &missing).unwrap();
-        assert!(reason.contains("EscherDelayStm"), "{reason}");
+        assert_eq!(
+            crate::formats::parity::deferral(&PublisherParser, &missing),
+            None
+        );
+        let (text, _) = crate::Extractor::new()
+            .extract_file_to_string(missing.to_str().unwrap())
+            .unwrap();
+        assert!(text.contains("Havnen i \u{c5}lborg\nog fjorden"), "{text}");
     }
 
     #[test]

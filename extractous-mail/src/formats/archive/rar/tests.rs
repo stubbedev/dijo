@@ -1,14 +1,20 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
     deferral, documents, spools_as_tika, Scratch,
 };
 
+#[cfg(feature = "tika")]
 const SOLID: u16 = 0x0008;
+#[cfg(feature = "tika")]
 const FILE_SOLID: u16 = 0x0010;
+#[cfg(feature = "tika")]
 const DIRECTORY: u16 = 0x00e0;
+#[cfg(feature = "tika")]
 const UNICODE: u16 = 0x0200;
 /// 2021-03-04 05:06:08 as a DOS date and time.
 const DOS_TIME: u32 = (41 << 25) | (3 << 21) | (4 << 16) | (5 << 11) | (6 << 5) | 4;
@@ -22,6 +28,11 @@ struct Stored<'a> {
 
 /// A RAR 4 archive of stored entries, with every header's CRC, as RAR 2 writes one.
 fn rar(main_flags: u16, entries: &[Stored]) -> Vec<u8> {
+    rar_dated(main_flags, entries, DOS_TIME)
+}
+
+/// [`rar`], its entries dated by the DOS time `time`.
+fn rar_dated(main_flags: u16, entries: &[Stored], time: u32) -> Vec<u8> {
     let mut archive = b"Rar!\x1a\x07\x00".to_vec();
     block(&mut archive, 0x73, main_flags, &[0; 6]);
     for entry in entries {
@@ -30,7 +41,7 @@ fn rar(main_flags: u16, entries: &[Stored]) -> Vec<u8> {
         body.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
         body.push(2);
         body.extend_from_slice(&crate::compress::crc32(entry.data).to_le_bytes());
-        body.extend_from_slice(&DOS_TIME.to_le_bytes());
+        body.extend_from_slice(&time.to_le_bytes());
         body.push(20);
         body.push(0x30);
         body.extend_from_slice(&(entry.name.len() as u16).to_le_bytes());
@@ -57,6 +68,15 @@ fn stored<'a>(name: &'a [u8], flags: u16, data: &'a [u8]) -> Stored<'a> {
     Stored { name, flags, data }
 }
 
+/// The documents of an entry the port cannot give whole, which Tika's path gives empty: the
+/// port records why instead (#122).
+const UNREAD: [(&str, &str); 3] = [
+    ("corrupt-data.rar", "does not match its CRC"),
+    ("method36.rar", "RAR version 36"),
+    ("volume.part1.rar", "another volume"),
+];
+
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_rar_archives_as_tikas_path_does() {
     let roots = [
@@ -64,28 +84,18 @@ fn extracts_rar_archives_as_tikas_path_does() {
         Path::new("../quality/corpus"),
     ];
     let (parsed, deferred) = documents(&RarParser, &roots);
-    let names = |paths: &[PathBuf]| -> Vec<String> {
-        paths
-            .iter()
-            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect()
+    assert!(deferred.is_empty(), "{deferred:?}");
+    let named = |path: &PathBuf, names: &[&str]| {
+        names.contains(&path.file_name().unwrap().to_string_lossy().as_ref())
     };
-    assert_eq!(
-        names(&deferred),
-        ["corrupt-data.rar", "method36.rar", "volume.part1.rar"]
-    );
-    let reasons: Vec<String> = deferred
-        .iter()
-        .map(|path| deferral(&RarParser, path).unwrap())
-        .collect();
-    assert!(reasons[0].contains("CRC"), "{reasons:?}");
-    assert!(reasons[1].contains("method 36"), "{reasons:?}");
-    assert!(reasons[2].contains("another volume"), "{reasons:?}");
     let failing = ["encrypted-headers.rar", "no-main-header.rar", "rar5.rar"];
-    let (failed, same): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-        .into_iter()
-        .partition(|path| failing.contains(&path.file_name().unwrap().to_string_lossy().as_ref()));
+    let unread: Vec<&str> = UNREAD.iter().map(|(name, _)| *name).collect();
+    let (failed, rest): (Vec<PathBuf>, Vec<PathBuf>) =
+        parsed.into_iter().partition(|path| named(path, &failing));
+    let (unread, same): (Vec<PathBuf>, Vec<PathBuf>) =
+        rest.into_iter().partition(|path| named(path, &unread));
     assert_eq!(names(&failed), failing);
+    assert_eq!(unread.len(), UNREAD.len());
     assert_eq!(same.len(), 24, "{:?}", names(&same));
     let same: Vec<&Path> = same.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_departing(
@@ -102,6 +112,44 @@ fn extracts_rar_archives_as_tikas_path_does() {
     ));
 }
 
+#[test]
+fn records_the_entries_it_cannot_give_whole() {
+    for (name, reason) in UNREAD {
+        let path = format!("../test_files/documents/rar/{name}");
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(&path)
+            .unwrap();
+        assert_eq!(
+            metadata["tk:parsed-by"],
+            ["extractous::RarParser"],
+            "{name}"
+        );
+        let failures = &metadata["tk:exception:embedded-stream-exception"];
+        assert_eq!(failures.len(), 1, "{name}: {failures:?}");
+        assert!(
+            failures[0].starts_with(
+                "org.apache.tika.exception.TikaException: Can't read archive stream ("
+            ) && failures[0].contains(reason),
+            "{name}: {failures:?}"
+        );
+        assert!(
+            xml.contains(r#"<div class="embedded" id=""#),
+            "{name}: {xml}"
+        );
+        assert!(!xml.contains("package-entry"), "{name}: {xml}");
+    }
+}
+
+#[cfg(feature = "tika")]
+fn names(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[cfg(feature = "tika")]
 #[test]
 fn reads_names_times_and_directories_as_junrar_does() {
     let scratch = Scratch::new("rar-headers");
@@ -179,15 +227,14 @@ fn reads_names_times_and_directories_as_junrar_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
-fn leaves_solid_entries_after_one_larger_than_junrars_pipe_to_tika() {
+fn decodes_solid_entries_after_one_larger_than_junrars_pipe() {
     let scratch = Scratch::new("rar-pipe");
     let large = "Dette er en lang tekst om vinter i Danmark.\n".repeat(1000);
     let first = stored(b"lang.txt", 0, large.as_bytes());
     let second = stored(b"kort.txt", FILE_SOLID, b"Kort.\n");
     let solid = scratch.write("solid.rar", &rar(SOLID, &[first, second]));
-    let reason = deferral(&RarParser, &solid).unwrap();
-    assert!(reason.contains("pipe"), "{reason}");
     let first = stored(b"lang.txt", 0, large.as_bytes());
     let second = stored(b"kort.txt", 0, b"Kort.\n");
     let separate = scratch.write("separate.rar", &rar(0, &[first, second]));
@@ -201,13 +248,43 @@ fn leaves_solid_entries_after_one_larger_than_junrars_pipe_to_tika() {
             ],
         ),
     );
-    assert_eq!(deferral(&RarParser, &separate), None);
+    for path in [&solid, &separate, &small] {
+        assert_eq!(deferral(&RarParser, path), None);
+    }
     assert_same_as_tika(
-        &[separate.as_path(), small.as_path()],
+        &[solid.as_path(), separate.as_path(), small.as_path()],
         RarParser.tika_name(),
     );
 }
 
+#[test]
+fn dates_entries_in_utc_and_drops_dates_out_of_range() {
+    let entries = [stored(b"a.txt", 0, b"tekst")];
+    let files = archive_files(&rar(0, &entries)).unwrap();
+    assert_eq!(files[0].modified_millis, Some(1_614_834_368_000));
+    let february_30 = (41 << 25) | (2 << 21) | (30 << 16);
+    let files = archive_files(&rar_dated(0, &entries, february_30)).unwrap();
+    assert_eq!(files[0].modified_millis, None);
+}
+
+#[test]
+fn leaves_a_solid_stream_alone_across_a_stored_entry() {
+    let files = archive_files(include_bytes!(
+        "../../../../tests/fixtures/rar/stored-in-solid-stream.rar"
+    ))
+    .unwrap();
+    let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+    assert_eq!(names, ["a.txt", "b.png", "c.txt"]);
+    let text = "R\u{f8}dgr\u{f8}d med fl\u{f8}de og vinter i Danmark. ";
+    assert_eq!(files[0].content, text.repeat(300).as_bytes());
+    assert_eq!(files[1].content.len(), 3000);
+    assert_eq!(
+        files[2].content,
+        format!("{}Slut.\n", text.repeat(200)).as_bytes()
+    );
+}
+
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {

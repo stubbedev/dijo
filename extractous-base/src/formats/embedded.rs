@@ -354,6 +354,20 @@ fn first_line(exception: &str) -> String {
     format!("{exception}\n")
 }
 
+/// The class of the exception Tika throws on an encrypted document it has no password for, by
+/// which a recorded failure is told to be about encryption.
+pub const ENCRYPTED_DOCUMENT: &str = "org.apache.tika.exception.EncryptedDocumentException";
+
+/// Why a native parser failed with `error`, as [`describe_failure`] records it: an encrypted
+/// document named by the class of Tika's exception, so that its record is told apart as Tika's
+/// is.
+pub(crate) fn error_reason(error: &crate::Error) -> String {
+    match error {
+        crate::Error::Encrypted(reason) => format!("{ENCRYPTED_DOCUMENT}: {reason}"),
+        other => other.to_string(),
+    }
+}
+
 /// How the failure of the parser named `parser` on a document embedded with `metadata` is
 /// recorded in `tk:exception:embedded-exception` of the document embedding it: the parser, the
 /// embedded document by its resource name or internal path, and the `reason`, on one line.
