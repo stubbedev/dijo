@@ -841,3 +841,19 @@ fn reads_tikas_test_jpeg_xl_images_as_tika_does() {
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     crate::formats::parity::assert_same_as_tika(&paths, JxlParser.tika_name());
 }
+
+/// Tika's `BPGParser` reads the header and extensions of a BPG image, and its `ICNSParser` the
+/// icons an Apple icon file lists, as the port does.
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_bpg_and_icns_images_as_tika_does() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    for (parser, count) in [(&BpgParser as &dyn Parser, 4), (&IcnsParser, 2)] {
+        let (parsed, deferred) = documents_with(parser, &roots, &skipping_ocr());
+        assert_eq!(parsed.len(), count, "{parsed:?}");
+        assert!(deferred.is_empty(), "{deferred:?}");
+        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+        crate::formats::parity::assert_same_as_tika(&paths, parser.tika_name());
+    }
+}
