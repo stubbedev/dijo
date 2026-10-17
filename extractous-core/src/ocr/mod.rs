@@ -1,8 +1,12 @@
 //! OCR: the tesseract Tika's path runs, and the one native readings run in this process, with
 //! our Java `PreparingOcrParser`'s preparation of the images it reads.
 
+mod bitmap;
 mod decode;
 mod flatten;
+mod icc;
+mod java2d;
+mod jpeg;
 mod pages;
 mod prepare;
 mod raster;
@@ -17,6 +21,7 @@ use std::sync::OnceLock;
 
 use crate::errors::{Error, ExtractResult};
 use crate::tika::native;
+pub(crate) use bitmap::Bitmap;
 pub(crate) use decode::{decode, Decoded, Format};
 pub(crate) use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
@@ -56,9 +61,9 @@ pub(crate) fn read_image(
 ) -> Result<ImageRead, OcrError> {
     let recognizer = Recognizer::new(tesseract, settings);
     match decoded {
-        Decoded::Single(gray) => {
-            let Recognized { read, learned } =
-                recognizer.recognize(&Image::of(&gray, file_size, orientation), assumed)?;
+        Decoded::Single { bitmap, file } => {
+            let image = Image::of(&bitmap, file, file_size, orientation);
+            let Recognized { read, learned } = recognizer.recognize(&image, assumed)?;
             Ok(ImageRead {
                 pages: ReadPages::One(read),
                 learned: learned.filter(|_| settings.auto()),
@@ -71,10 +76,10 @@ pub(crate) fn read_image(
                 &first_page,
                 || (),
                 |(), index, script| {
-                    let Ok(gray) = pages.page(index) else {
+                    let Ok(bitmap) = pages.page(index) else {
                         return Ok((None, None));
                     };
-                    let image = Image::of(&gray, file_size, orientation);
+                    let image = Image::of(&bitmap, None, file_size, orientation);
                     let Recognized { read, learned } = recognizer.recognize(&image, script)?;
                     Ok((Some(read), learned))
                 },

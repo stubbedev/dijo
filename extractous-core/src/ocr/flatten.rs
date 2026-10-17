@@ -8,7 +8,8 @@
 
 use image::GrayImage;
 
-use super::prepare::{histogram, otsu_threshold, resized};
+use super::bitmap::Bitmap;
+use super::prepare::{histogram, otsu_threshold};
 
 const ANALYSIS_SIZE: u32 = 800;
 const MAX_PAGE_FILL: f64 = 0.85;
@@ -26,13 +27,13 @@ struct Point {
     y: f64,
 }
 
-/// The page made flat, or none when the image has no page to flatten.
-pub(crate) fn flatten(image: &GrayImage) -> Option<GrayImage> {
+/// The page made flat, in grey, or none when the image has no page to flatten.
+pub(crate) fn flatten(image: &Bitmap) -> Option<GrayImage> {
     let (image_width, image_height) = image.dimensions();
     let scale = 1.0_f64.min(f64::from(ANALYSIS_SIZE) / f64::from(image_width.max(image_height)));
     let width = ((f64::from(image_width) * scale).round() as u32).max(1);
     let height = ((f64::from(image_height) * scale).round() as u32).max(1);
-    let gray = resized(image, width, height);
+    let gray = image.gray_resized(width, height);
     let levels = gray.as_raw();
     let threshold = otsu_threshold(&histogram(levels));
     let bright: Vec<bool> = levels
@@ -55,7 +56,7 @@ pub(crate) fn flatten(image: &GrayImage) -> Option<GrayImage> {
         corner.x /= scale;
         corner.y /= scale;
     }
-    Some(warp(image, &corners))
+    Some(warp(&image.gray(), &corners))
 }
 
 /// The corners of the largest 4-connected bright region, top left, top right, bottom right and
@@ -285,7 +286,7 @@ mod tests {
 
     #[test]
     fn leaves_a_scan_as_it_is() {
-        let scan = GrayImage::from_pixel(300, 400, Luma([WHITE]));
+        let scan = Bitmap::Gray(GrayImage::from_pixel(300, 400, Luma([WHITE])));
         assert!(flatten(&scan).is_none());
     }
 
@@ -304,7 +305,7 @@ mod tests {
             });
             Luma([if inside { 235 } else { 40 }])
         });
-        let flat = flatten(&photo).expect("a page to flatten");
+        let flat = flatten(&Bitmap::Gray(photo)).expect("a page to flatten");
         let (width, height) = flat.dimensions();
         assert!((525..=540).contains(&width), "{width}");
         assert!((635..=650).contains(&height), "{height}");

@@ -1,11 +1,14 @@
-//! Our Java `OcrImages`: corrections that make an image readable for OCR, all on its grey
+//! Our Java `OcrImages`: corrections that make an image readable for OCR, judged on its grey
 //! levels: the orientation recorded in its EXIF data, the small rotation of a page scanned or
 //! photographed slightly askew, which breaks tesseract's layout analysis already at a few
 //! degrees, text too small for tesseract, as in screenshots and low-resolution scans, light text
 //! on a dark ground, specks, faint marks, and lighting too uneven for a single binarisation
-//! threshold.
+//! threshold. Turning and rotating keep the colours of an image ([`Bitmap`]); the other
+//! corrections make it grey.
 
-use image::{GrayImage, Luma};
+use image::GrayImage;
+
+use super::bitmap::Bitmap;
 
 const ANALYSIS_SIZE: u32 = 1200;
 const MAX_SKEW_DEGREES: f64 = 10.0;
@@ -47,8 +50,27 @@ impl Orientation {
         self.0
     }
 
+    /// Whether the orientation swaps the image's width and height.
+    pub(crate) fn swaps_sides(self) -> bool {
+        matches!(self.0, 5..=8)
+    }
+
+    /// Where the pixel at `x`, `y` of an image of `width` by `height` pixels moves to.
+    pub(crate) fn moved(self, x: u32, y: u32, width: u32, height: u32) -> (u32, u32) {
+        match self.0 {
+            2 => (width - 1 - x, y),
+            3 => (width - 1 - x, height - 1 - y),
+            4 => (x, height - 1 - y),
+            5 => (y, x),
+            6 => (height - 1 - y, x),
+            7 => (height - 1 - y, width - 1 - x),
+            8 => (y, width - 1 - x),
+            _ => (x, y),
+        }
+    }
+
     /// The orientation that turns an image clockwise by quarter turns, when it turns it at all.
-    fn clockwise(quarter_turns: u8) -> Option<Self> {
+    pub(crate) fn clockwise(quarter_turns: u8) -> Option<Self> {
         match quarter_turns % 4 {
             1 => Some(Self(6)),
             2 => Some(Self(3)),
@@ -58,41 +80,10 @@ impl Orientation {
     }
 }
 
-/// The image turned upright according to its EXIF orientation.
-pub(crate) fn apply_orientation(image: &GrayImage, orientation: Orientation) -> GrayImage {
-    let (width, height) = image.dimensions();
-    let swapped = matches!(orientation.0, 5..=8);
-    let (out_width, out_height) = if swapped {
-        (height, width)
-    } else {
-        (width, height)
-    };
-    let mut turned = GrayImage::new(out_width, out_height);
-    for (x, y, pixel) in image.enumerate_pixels() {
-        let (to_x, to_y) = match orientation.0 {
-            2 => (width - 1 - x, y),
-            3 => (width - 1 - x, height - 1 - y),
-            4 => (x, height - 1 - y),
-            5 => (y, x),
-            6 => (height - 1 - y, x),
-            7 => (height - 1 - y, width - 1 - x),
-            8 => (y, width - 1 - x),
-            _ => (x, y),
-        };
-        turned.put_pixel(to_x, to_y, *pixel);
-    }
-    turned
-}
-
-/// The image turned clockwise by a number of quarter turns, or none when it needs no turn.
-pub(crate) fn turn_clockwise(image: &GrayImage, quarter_turns: u8) -> Option<GrayImage> {
-    Orientation::clockwise(quarter_turns).map(|orientation| apply_orientation(image, orientation))
-}
-
 /// The angle, in degrees, by which the lines of text in the image are rotated, or 0 when no
 /// rotation clearly lines them up better. Found by projecting the dark pixels of a reduced copy
 /// onto the vertical axis at candidate angles: text lines give the sharpest profile when level.
-pub(crate) fn skew_degrees(image: &GrayImage) -> f64 {
+pub(crate) fn skew_degrees(image: &Bitmap) -> f64 {
     let analysis = analysis(image, 1);
     let width = analysis.width() as i64;
     let height = analysis.height() as i64;
@@ -158,7 +149,8 @@ fn sharpness(points: &[(f64, f64)], degrees: f64, diagonal: i64, rows: &mut [u64
 /// smaller. The line height is only trusted for reducing when at least [`MIN_MEASURED_LINES`]
 /// lines were measured, each under a tenth of the image's height: on an inverted page or one
 /// with a dark border, every row holds ink. 1 when the image has no lines of text.
-pub(crate) fn scale_factor(image: &GrayImage, max_pixels: u64, reduce: bool) -> f64 {
+pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64 {
+    let image = image.gray();
     let (width, height) = image.dimensions();
     let levels = image.as_raw();
     let darkest: Vec<u8> = levels
@@ -203,7 +195,7 @@ pub(crate) fn scale_factor(image: &GrayImage, max_pixels: u64, reduce: bool) -> 
 /// Whether the image is lit unevenly, as a photographed page in shadow is: whether the
 /// background brightness of its regions differs by [`UNEVEN_BACKGROUND_LEVELS`] grey levels or
 /// more. The background of a region is the brightness its lightest tenth of pixels reaches.
-pub(crate) fn uneven_lighting(image: &GrayImage) -> bool {
+pub(crate) fn uneven_lighting(image: &Bitmap) -> bool {
     let analysis = analysis(image, LIGHTING_TILES);
     let (width, height) = analysis.dimensions();
     let mut lightest = 0;
@@ -239,10 +231,12 @@ fn percentile(histogram: &[u64; 256], count: u64, share: f64) -> u32 {
     u32::from(WHITE)
 }
 
-/// The image resized by a factor with bicubic interpolation (Keys' kernel with a = -0.5, as
-/// Java2D interpolates), which keeps the strokes of letters sharp: each row is resampled first,
-/// then each column of the result, the pixels beyond the edges taken as the edge's.
-pub(crate) fn scale(image: &GrayImage, factor: f64) -> GrayImage {
+/// The image, in grey, resized by a factor with bicubic interpolation (Keys' kernel with
+/// a = -0.5, as Java2D interpolates), which keeps the strokes of letters sharp: each row is
+/// resampled first, then each column of the result, the pixels beyond the edges taken as the
+/// edge's.
+pub(crate) fn scale(image: &Bitmap, factor: f64) -> GrayImage {
+    let image = image.gray();
     let (width, height) = image.dimensions();
     let scaled_width = ((f64::from(width) * factor).round() as u32).max(1);
     let scaled_height = ((f64::from(height) * factor).round() as u32).max(1);
@@ -323,53 +317,20 @@ impl Taps {
     }
 }
 
-/// The image reduced to at most [`ANALYSIS_SIZE`] pixels on its longer side, and to no fewer
-/// than `min_side` on either, sampled bilinearly as Java2D draws it.
-fn analysis(image: &GrayImage, min_side: u32) -> GrayImage {
+/// The image in grey, reduced to at most [`ANALYSIS_SIZE`] pixels on its longer side, and to no
+/// fewer than `min_side` on either, sampled bilinearly as Java2D draws it.
+fn analysis(image: &Bitmap, min_side: u32) -> GrayImage {
     let (width, height) = image.dimensions();
     let scale = 1.0_f64.min(f64::from(ANALYSIS_SIZE) / f64::from(width.max(height)));
     let to_width = ((f64::from(width) * scale).round() as u32).max(min_side);
     let to_height = ((f64::from(height) * scale).round() as u32).max(min_side);
-    resized(image, to_width, to_height)
-}
-
-/// The image drawn at another size with bilinear interpolation, each pixel sampled at its
-/// centre: itself when the size is its own.
-pub(crate) fn resized(image: &GrayImage, width: u32, height: u32) -> GrayImage {
-    if image.dimensions() == (width, height) {
-        return image.clone();
-    }
-    let (source_width, source_height) = image.dimensions();
-    let x_step = f64::from(source_width) / f64::from(width);
-    let y_step = f64::from(source_height) / f64::from(height);
-    let columns: Vec<(u32, u32, f64)> = (0..width)
-        .map(|x| between(f64::from(x), x_step, source_width))
-        .collect();
-    GrayImage::from_fn(width, height, |x, y| {
-        let (top, bottom, fy) = between(f64::from(y), y_step, source_height);
-        let (left, right, fx) = columns[x as usize];
-        let level = |x, y| f64::from(image.get_pixel(x, y).0[0]);
-        let upper = level(left, top) + (level(right, top) - level(left, top)) * fx;
-        let lower = level(left, bottom) + (level(right, bottom) - level(left, bottom)) * fx;
-        Luma([(upper + (lower - upper) * fy).round() as u8])
-    })
-}
-
-/// The source pixels a resampled pixel lies between along one axis, and how far past the first.
-fn between(index: f64, step: f64, size: u32) -> (u32, u32, f64) {
-    let centre = ((index + 0.5) * step - 0.5).clamp(0.0, f64::from(size - 1));
-    let first = centre.floor();
-    (
-        first as u32,
-        (first as u32 + 1).min(size - 1),
-        centre - first,
-    )
+    image.gray_resized(to_width, to_height)
 }
 
 /// Whether the image is light text on a dark ground, as a negative or a slide is: whether more
 /// than [`MIN_INVERTED_DARK_PERCENT`]% of it is darker than its Otsu threshold. Pages
 /// photographed on a dark table or lying in shadow are dark in part, up to about 70%.
-pub(crate) fn inverted(image: &GrayImage) -> bool {
+pub(crate) fn inverted(image: &Bitmap) -> bool {
     let analysis = analysis(image, 1);
     let levels = analysis.as_raw();
     let threshold = otsu_threshold(&histogram(levels));
@@ -380,8 +341,9 @@ pub(crate) fn inverted(image: &GrayImage) -> bool {
     dark * 100 > levels.len() as u64 * MIN_INVERTED_DARK_PERCENT
 }
 
-/// The image with every level inverted, dark for light.
-pub(crate) fn invert(mut image: GrayImage) -> GrayImage {
+/// The image in grey with every level inverted, dark for light.
+pub(crate) fn invert(image: &Bitmap) -> GrayImage {
+    let mut image = image.gray().into_owned();
     for level in image.iter_mut() {
         *level = !*level;
     }
@@ -392,7 +354,8 @@ pub(crate) fn invert(mut image: GrayImage) -> GrayImage {
 /// [`MIN_SPECKLE_PERCENT`]% of its pixels darker than its Otsu threshold have no dark
 /// neighbour. Clean scans down to 72 dpi have under 0.3% such pixels, and a fax-like scan 30% or
 /// more, whose specks tesseract's Latin model reads as diacritics.
-pub(crate) fn speckled(image: &GrayImage) -> bool {
+pub(crate) fn speckled(image: &Bitmap) -> bool {
+    let image = image.gray();
     let (width, height) = image.dimensions();
     if width < 3 || height < 3 {
         return false;
@@ -424,9 +387,10 @@ pub(crate) fn speckled(image: &GrayImage) -> bool {
     isolated * 100 > dark_pixels * MIN_SPECKLE_PERCENT
 }
 
-/// The image with each pixel the median of its 3×3 neighbourhood, edges repeated, which removes
-/// isolated specks and keeps strokes two pixels wide or more.
-pub(crate) fn despeckle(image: &GrayImage) -> GrayImage {
+/// The image in grey with each pixel the median of its 3×3 neighbourhood, edges repeated, which
+/// removes isolated specks and keeps strokes two pixels wide or more.
+pub(crate) fn despeckle(image: &Bitmap) -> GrayImage {
+    let image = image.gray();
     let (width, height) = image.dimensions();
     let levels = image.as_raw();
     let row_of = |y: i64| {
@@ -451,67 +415,25 @@ pub(crate) fn despeckle(image: &GrayImage) -> GrayImage {
     despeckled
 }
 
-/// The image with every pixel lighter than [`FAINT_PERCENT`]% of the way from its ink to its
-/// paper made white: faint marks, such as text showing through from the back of the page, that
-/// tesseract's single threshold takes for ink between the words. Its ink is its darkest half
-/// percent and its paper its 90th percentile.
-pub(crate) fn whiten_faint_marks(mut image: GrayImage) -> GrayImage {
-    let analysis = analysis(&image, 1);
+/// The image in grey with every pixel lighter than [`FAINT_PERCENT`]% of the way from its ink to
+/// its paper made white: faint marks, such as text showing through from the back of the page,
+/// that tesseract's single threshold takes for ink between the words. Its ink is its darkest
+/// half percent and its paper its 90th percentile.
+pub(crate) fn whiten_faint_marks(image: &Bitmap) -> GrayImage {
+    let analysis = analysis(image, 1);
     let levels = analysis.as_raw();
     let histogram = histogram(levels);
     let count = levels.len() as u64;
     let ink = percentile(&histogram, count, INK_PERCENTILE);
     let paper = percentile(&histogram, count, BACKGROUND_PERCENTILE);
     let faint = (ink as i64 + (paper as i64 - ink as i64) * i64::from(FAINT_PERCENT) / 100) as u32;
+    let mut image = image.gray().into_owned();
     for level in image.iter_mut() {
         if u32::from(*level) >= faint {
             *level = WHITE;
         }
     }
     image
-}
-
-/// The image rotated by -degrees about its centre, with bicubic interpolation, on a white canvas
-/// that holds all of it.
-pub(crate) fn rotate(image: &GrayImage, degrees: f64) -> GrayImage {
-    let (sin, cos) = (-degrees).to_radians().sin_cos();
-    let (width, height) = image.dimensions();
-    let (w, h) = (f64::from(width), f64::from(height));
-    let rotated_width = (w * cos.abs() + h * sin.abs()).ceil() as u32;
-    let rotated_height = (h * cos.abs() + w * sin.abs()).ceil() as u32;
-    let (centre_x, centre_y) = (
-        f64::from(rotated_width) / 2.0,
-        f64::from(rotated_height) / 2.0,
-    );
-    let levels = image.as_raw();
-    let level = |x: i64, y: i64| {
-        let x = x.clamp(0, i64::from(width) - 1) as usize;
-        let y = y.clamp(0, i64::from(height) - 1) as usize;
-        f64::from(levels[y * width as usize + x])
-    };
-    GrayImage::from_fn(rotated_width, rotated_height, |x, y| {
-        let dx = f64::from(x) + 0.5 - centre_x;
-        let dy = f64::from(y) + 0.5 - centre_y;
-        let source_x = dx * cos + dy * sin + w / 2.0;
-        let source_y = -dx * sin + dy * cos + h / 2.0;
-        if source_x < 0.0 || source_y < 0.0 || source_x >= w || source_y >= h {
-            return Luma([WHITE]);
-        }
-        let (cx, cy) = (source_x - 0.5, source_y - 0.5);
-        let (first_x, first_y) = (cx.floor() as i64 - 1, cy.floor() as i64 - 1);
-        let mut sum = 0.0;
-        for ty in 0..4 {
-            let wy = Taps::keys(cy - (first_y + ty) as f64);
-            if wy == 0.0 {
-                continue;
-            }
-            for tx in 0..4 {
-                let wx = Taps::keys(cx - (first_x + tx) as f64);
-                sum += wx * wy * level(first_x + tx, first_y + ty);
-            }
-        }
-        Luma([sum.round().clamp(0.0, 255.0) as u8])
-    })
 }
 
 /// The count of each grey level.
@@ -562,55 +484,7 @@ pub(crate) fn otsu_threshold(histogram: &[u64; 256]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn numbered(width: u32, height: u32) -> GrayImage {
-        GrayImage::from_fn(width, height, |x, y| Luma([(y * width + x) as u8]))
-    }
-
-    #[test]
-    fn turns_and_mirrors_as_exif_orientations_do() {
-        let image = numbered(3, 2);
-        let rows = |image: &GrayImage| -> Vec<Vec<u8>> {
-            image
-                .rows()
-                .map(|row| row.map(|pixel| pixel.0[0]).collect())
-                .collect()
-        };
-        let orientation = |value| Orientation::parse(value).unwrap();
-        assert_eq!(rows(&image), [[0, 1, 2], [3, 4, 5]]);
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("2"))),
-            [[2, 1, 0], [5, 4, 3]]
-        );
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("3"))),
-            [[5, 4, 3], [2, 1, 0]]
-        );
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("4"))),
-            [[3, 4, 5], [0, 1, 2]]
-        );
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("5"))),
-            [[0, 3], [1, 4], [2, 5]]
-        );
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("6"))),
-            [[3, 0], [4, 1], [5, 2]]
-        );
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("7"))),
-            [[5, 2], [4, 1], [3, 0]]
-        );
-        assert_eq!(
-            rows(&apply_orientation(&image, orientation("8"))),
-            [[2, 5], [1, 4], [0, 3]]
-        );
-        assert_eq!(Orientation::parse(" 1 "), None);
-        assert_eq!(Orientation::parse("9"), None);
-        assert_eq!(Orientation::parse("x"), None);
-        assert!(turn_clockwise(&image, 4).is_none());
-    }
+    use image::Luma;
 
     #[test]
     fn thresholds_as_otsu() {
@@ -623,7 +497,7 @@ mod tests {
     #[test]
     fn scales_with_keys_kernel() {
         let image = GrayImage::from_pixel(4, 4, Luma([100]));
-        let scaled = scale(&image, 2.5);
+        let scaled = scale(&Bitmap::Gray(image), 2.5);
         assert_eq!(scaled.dimensions(), (10, 10));
         assert!(scaled.pixels().all(|pixel| pixel.0[0] == 100));
     }
@@ -639,9 +513,10 @@ mod tests {
                 }
             }
         }
+        let image = Bitmap::Gray(image);
         let skew = skew_degrees(&image);
         assert!((skew - 3.0).abs() < 0.2, "{skew}");
-        let level = rotate(&image, skew);
+        let level = image.rotated(skew);
         assert!(skew_degrees(&level).abs() < MIN_CORRECTION_DEGREES);
     }
 }

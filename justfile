@@ -267,6 +267,19 @@ charsoup-reference:
     fixtures=extractous-cli/tests/fixtures/language
     java -cp "$jars/*" "$fixtures/CharSoupReference.java" "$fixtures" quality/truth "$fixtures/charsoup-reference.tsv"
 
+# Regenerate the sRGB profile the JDK's JPEG reader converts embedded ICC profiles to, and the grey pixels ImageIO and
+# Java2D give our Java PreparingOcrParser for every JPEG, PNG, GIF and BMP of the corpora, loose or stored in a ZIP-based
+# file, which the native OCR's image decoding is tested against.
+[unix]
+ocr-image-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    fixtures=extractous-core/tests/fixtures/ocr
+    java -Djava.awt.headless=true "$fixtures/JdkSrgbProfile.java" extractous-core/models/jdk-srgb.icc
+    java -Djava.awt.headless=true "$fixtures/ImageReference.java" "$fixtures/image-reference.tsv.gz" \
+        documents=test_files/documents corpus=quality/corpus tika="$CONFORMANCE_CORPUS"
+
 # Build the container image extractous:local, FROM scratch around the static executable that
 # `just static` built.
 [linux]

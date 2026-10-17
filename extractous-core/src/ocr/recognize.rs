@@ -8,8 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use image::GrayImage;
-
+use super::bitmap::Bitmap;
 use super::flatten::flatten;
 use super::prepare::{self, Orientation};
 use super::report::Report;
@@ -88,8 +87,11 @@ impl OcrSettings {
 
 /// An image to read.
 pub(crate) struct Image<'a> {
-    /// Its grey levels.
-    pub(crate) gray: &'a GrayImage,
+    /// Its pixels, as Java decoded them.
+    pub(crate) bitmap: &'a Bitmap,
+    /// Its file, when tesseract reads the file itself while the image needs no preparation, as
+    /// it does an image Java does not decode for it.
+    pub(crate) file: Option<&'a [u8]>,
     /// Whether it is small enough to prepare: [`MAX_PIXELS`] or fewer, and decoded as it is.
     pub(crate) preparable: bool,
     /// The size of the image's file, for the limits it is read within.
@@ -102,13 +104,16 @@ impl<'a> Image<'a> {
     /// An image of a file of `file_size` bytes, prepared unless it has more than [`MAX_PIXELS`]
     /// pixels.
     pub(crate) fn of(
-        gray: &'a GrayImage,
+        bitmap: &'a Bitmap,
+        file: Option<&'a [u8]>,
         file_size: u64,
         orientation: Option<Orientation>,
     ) -> Self {
+        let (width, height) = bitmap.dimensions();
         Self {
-            gray,
-            preparable: u64::from(gray.width()) * u64::from(gray.height()) <= MAX_PIXELS,
+            bitmap,
+            file,
+            preparable: u64::from(width) * u64::from(height) <= MAX_PIXELS,
             file_size,
             orientation,
         }
@@ -202,7 +207,7 @@ fn java_word_count(text: &str) -> usize {
 #[derive(Debug, Clone)]
 struct Prepared {
     /// The prepared image, or none when the image reads as it is.
-    image: Option<Arc<GrayImage>>,
+    image: Option<Arc<Bitmap>>,
     /// The model to read it with: the configured one, or with the automatic language the one
     /// for its script.
     model: String,
@@ -273,7 +278,7 @@ enum Upright {
     /// It is upright as it is.
     AsItIs,
     /// It was turned or made flat into this.
-    Made(GrayImage),
+    Made(Bitmap),
 }
 
 impl Oriented {
@@ -287,8 +292,8 @@ impl Oriented {
         }
         let upright = image
             .orientation
-            .map(|orientation| prepare::apply_orientation(image.gray, orientation));
-        let flat = flatten(upright.as_ref().unwrap_or(image.gray));
+            .map(|orientation| image.bitmap.oriented(orientation));
+        let flat = flatten(upright.as_ref().unwrap_or(image.bitmap)).map(Bitmap::Gray);
         Self {
             exif_orientation: upright.as_ref().and(image.orientation),
             flattened: flat.is_some(),
@@ -462,17 +467,13 @@ impl<'t> Recognizer<'t> {
     }
 }
 
-/// The image as tesseract reads it prepared, or as it is.
+/// The image as tesseract reads it: prepared, or else its file, as Java hands tesseract the
+/// file of an image it does not decode for it, or else its pixels.
 fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
-    gray_pixels(prepared.image.as_deref().unwrap_or(image.gray))
-}
-
-/// A grey image as tesseract reads it.
-pub(crate) fn gray_pixels(image: &GrayImage) -> Pixels<'_> {
-    Pixels {
-        data: image.as_raw(),
-        width: image.width(),
-        height: image.height(),
+    match (&prepared.image, image.file) {
+        (Some(prepared), _) => prepared.pixels(),
+        (None, Some(file)) => Pixels::Encoded(file.into()),
+        (None, None) => image.bitmap.pixels(),
     }
 }
 
@@ -523,10 +524,10 @@ fn finish(
 ) -> Prepared {
     let (oriented_image, mut changed) = match &oriented.image {
         Upright::Unprepared => return Prepared::unprepared(script, model),
-        Upright::AsItIs => (image.gray, false),
+        Upright::AsItIs => (image.bitmap, false),
         Upright::Made(upright) => (upright, true),
     };
-    let mut prepared = match prepare::turn_clockwise(oriented_image, quarter_turns) {
+    let mut prepared = match oriented_image.turned_clockwise(quarter_turns) {
         Some(turned) => {
             changed = true;
             turned
@@ -535,27 +536,27 @@ fn finish(
     };
     let inverted = prepare::inverted(&prepared);
     if inverted {
-        prepared = prepare::invert(prepared);
+        prepared = Bitmap::Gray(prepare::invert(&prepared));
         changed = true;
     }
     let despeckled = prepare::speckled(&prepared);
     if despeckled {
-        prepared = prepare::despeckle(&prepared);
+        prepared = Bitmap::Gray(prepare::despeckle(&prepared));
         changed = true;
     }
     let uneven_lighting = prepare::uneven_lighting(&prepared);
     if !uneven_lighting {
-        prepared = prepare::whiten_faint_marks(prepared);
+        prepared = Bitmap::Gray(prepare::whiten_faint_marks(&prepared));
         changed = true;
     }
     let skew_degrees = prepare::skew_degrees(&prepared);
     if skew_degrees != 0.0 {
-        prepared = prepare::rotate(&prepared, skew_degrees);
+        prepared = prepared.rotated(skew_degrees);
         changed = true;
     }
     let scale = prepare::scale_factor(&prepared, MAX_PIXELS, reducible(script.as_deref()));
     if scale != 1.0 {
-        prepared = prepare::scale(&prepared, scale);
+        prepared = Bitmap::Gray(prepare::scale(&prepared, scale));
         changed = true;
     }
     Prepared {

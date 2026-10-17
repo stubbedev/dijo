@@ -17,7 +17,7 @@ use crate::config::{PdfOcrStrategy, PdfParserConfig};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::ocr::{
-    self, Attempt, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
+    self, Attempt, Bitmap, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
     Recognizer, Tesseract,
 };
 
@@ -320,7 +320,8 @@ impl PageOcr {
             }
         };
         let pixels = u64::from(gray.width()) * u64::from(gray.height());
-        let image = Image::of(&gray, pixels, None);
+        let bitmap = Bitmap::Gray(gray);
+        let image = Image::of(&bitmap, None, pixels, None);
         match Recognizer::new(tesseract, settings).recognize(&image, script) {
             Ok(Recognized { read, learned }) => (
                 PageReading::Read {
