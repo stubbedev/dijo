@@ -15,6 +15,7 @@ mod dif;
 mod djvu;
 mod doc;
 mod docx;
+mod dwg;
 mod element_metadata;
 pub(crate) mod embedded;
 mod epub;
@@ -213,6 +214,7 @@ static PARSERS: &[&dyn Parser] = &[
     &dc_xml::DcXmlParser,
     &doc::DocParser,
     &docx::DocxParser,
+    &dwg::DwgParser,
     &feed::FeedParser,
     &font::AdobeFontMetricParser,
     &font::TrueTypeParser,
