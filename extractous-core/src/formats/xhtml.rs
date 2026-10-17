@@ -8,7 +8,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, EmbeddedRoute, Failure, Opened};
+use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::isolate::isolate;
 use crate::memory;
 use crate::tika::{self, EmbeddedOutcome};
@@ -789,7 +789,8 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Parses an embedded document with its native parser, if it has one, and with Tika's
-    /// path otherwise.
+    /// path otherwise. One of no bytes no parser starts: its failure is recorded as Tika's
+    /// zero-byte check fails it.
     fn parse_routed(
         &mut self,
         data: &[u8],
@@ -801,6 +802,16 @@ impl<'h> Xhtml<'h> {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, metadata, opened, configs) {
             Ok(route) => self.parse_natively(route, metadata, open, target),
+            Err(Bridged::Unrouted(Unrouted::Empty)) => {
+                self.embedding.record_zero_bytes();
+                Ended::Recorded
+            }
+            Err(Bridged::Declined(parser, Declined::Unwritten(start))) => {
+                let parsed = formats::unwritten(parser, start, configs).to_map();
+                self.embedding.absorb_parsers(&parsed);
+                self.embedding.absorb_failures(&parsed, None);
+                Ended::Clean
+            }
             #[cfg_attr(
                 not(test),
                 expect(unused_variables, reason = "only the tests record why")

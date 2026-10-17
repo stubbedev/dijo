@@ -1,7 +1,9 @@
 //! 7z archives, which sevenz-rust2 reads, given as commons-compress's `SevenZFile` gives Tika's
 //! `SevenZParser` their files: in the order the archive lists them, with their times, under
-//! the memory limit Tika sets for the LZMA and LZMA2 coders. An archive needing a password
-//! stays with Tika's path, which fails on it as it has none.
+//! the memory limit Tika sets for the LZMA and LZMA2 coders, encrypted ones decrypted with the
+//! password the extraction was given. One that needs a password none was given for fails, as
+//! Tika's path does; one a password does not decrypt stays with Tika's path, whose decoders
+//! fail on its garbled data otherwise than sevenz-rust2's.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
@@ -14,7 +16,11 @@ use super::{throws, ArchiveFile, Undecoded, MAX_DECODED, MEMORY_LIMIT_KIB};
 const NTFS_EPOCH_MILLIS: i64 = 11_644_473_600_000;
 
 fn fail(error: sevenz_rust2::Error) -> Undecoded {
-    throws(error.to_string())
+    match error {
+        sevenz_rust2::Error::PasswordRequired => Undecoded::Encrypted,
+        sevenz_rust2::Error::MaybeBadPassword(_) => Undecoded::BadPassword,
+        error => throws(error.to_string()),
+    }
 }
 
 /// `FileTimes.ntfsTimeToDate`: the milliseconds since 1970 of an NTFS time.
@@ -75,9 +81,11 @@ fn entry_name(file: &ArchiveEntry) -> String {
     }
 }
 
-/// The files of the 7z archive `data`, or why they are not read natively.
-pub(crate) fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
-    let mut reader = ArchiveReader::new(Cursor::new(data), Password::empty()).map_err(fail)?;
+/// The files of the 7z archive `data`, decrypted with `password` where it is encrypted, or why
+/// they are not read natively.
+pub(crate) fn files(data: &[u8], password: Option<&str>) -> Result<Vec<ArchiveFile>, Undecoded> {
+    let password = password.map_or_else(Password::empty, Password::new);
+    let mut reader = ArchiveReader::new(Cursor::new(data), password).map_err(fail)?;
     if over_memory_limit(&reader)? {
         return Err(throws("a coder needs more memory than Tika allows"));
     }
@@ -142,7 +150,7 @@ pub(crate) mod tests {
     #[test]
     fn reads_the_files_in_the_order_the_archive_lists_them() {
         let data = seven_z(&[("dir/", b""), ("empty.txt", b""), ("dir/a.txt", b"text")]);
-        let found: Vec<(String, bool, Vec<u8>)> = files(&data)
+        let found: Vec<(String, bool, Vec<u8>)> = files(&data, None)
             .unwrap()
             .into_iter()
             .map(|file| (file.name, file.directory, file.content))
@@ -158,9 +166,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn refuses_what_needs_a_password_or_is_no_archive() {
+    fn decrypts_with_the_password_and_refuses_what_is_no_archive() {
         let encrypted = std::fs::read("../test_files/documents/encrypted/password.7z").unwrap();
-        assert!(files(&encrypted).is_err());
-        assert!(files(b"7z\xBC\xAF\x27\x1C\x00\x04 not really").is_err());
+        assert_eq!(files(&encrypted, None), Err(Undecoded::Encrypted));
+        assert_eq!(
+            files(&encrypted, Some("wrong")),
+            Err(Undecoded::BadPassword)
+        );
+        assert!(!files(&encrypted, Some("extractous")).unwrap().is_empty());
+        assert!(files(b"7z\xBC\xAF\x27\x1C\x00\x04 not really", None).is_err());
     }
 }

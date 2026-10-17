@@ -60,7 +60,9 @@ impl Parser for ChmParser {
 
     /// Extracts and prepares every page before writing any, so a page the HTML parser leaves to
     /// Tika defers the file; a page that cannot be extracted fails the parse after the pages
-    /// before it, as Tika's extraction of it throws there.
+    /// before it, as Tika's extraction of it throws there. Each page is prepared again as it is
+    /// written: holding every page's document at once would hold a help file's whole content
+    /// parsed, where writing holds one page at a time.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -69,38 +71,30 @@ impl Parser for ChmParser {
     ) -> Result<Prepared<'a>, Declined> {
         let extractor = Extractor::new(input)
             .map_err(|thrown| Declined::Fails(Error::ParseError(thrown.reason().to_owned())))?;
-        let mut pages = Vec::new();
-        let mut failure = None;
-        for entry in extractor
-            .listing
-            .entries
-            .iter()
-            .filter(|entry| entry.name.ends_with(".html") || entry.name.ends_with(".htm"))
-        {
-            let data = match extractor.extract(entry) {
-                Ok(data) => data,
-                Err(thrown) => {
-                    failure = Some(thrown);
-                    break;
-                }
+        for page in extractor.pages() {
+            let Ok((name, data)) = page else {
+                break;
             };
-            let page = html::prepare(&data, &TikaMetadata::new()).map_err(|reason| {
-                Declined::Deferred(format!("the page {} defers: {reason}", entry.name))
-            })?;
-            pages.push(page);
+            drop(
+                html::prepare(&data, &TikaMetadata::new()).map_err(|reason| {
+                    Declined::Deferred(format!("the page {name} defers: {reason}"))
+                })?,
+            );
         }
         Ok(Box::new(move |xhtml| {
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            for page in pages {
-                parse_inline(page, xhtml)?;
+            for page in extractor.pages() {
+                let (name, data) = page.map_err(|thrown| {
+                    Failure::Malformed(format!("TikaException: {}", thrown.reason()))
+                })?;
+                let prepared = html::prepare(&data, &TikaMetadata::new()).map_err(|reason| {
+                    Failure::Malformed(format!(
+                        "the page {name} defers, which it did not as it was prepared: {reason}"
+                    ))
+                })?;
+                parse_inline(prepared, xhtml)?;
             }
-            match failure {
-                Some(thrown) => Err(Failure::Malformed(format!(
-                    "TikaException: {}",
-                    thrown.reason()
-                ))),
-                None => Ok(()),
-            }
+            Ok(())
         }))
     }
 }
@@ -179,6 +173,25 @@ impl<'a> Extractor<'a> {
                 decoder: None,
             }),
         })
+    }
+
+    /// The pages of the directory listing, the entries whose names end in `.html` or `.htm`,
+    /// each by its name and data, in the listing's order, up to the first that cannot be
+    /// extracted, whose failure ends them.
+    fn pages(&self) -> impl Iterator<Item = Result<(&str, Vec<u8>), Thrown>> + '_ {
+        let mut failed = false;
+        self.listing
+            .entries
+            .iter()
+            .filter(|entry| entry.name.ends_with(".html") || entry.name.ends_with(".htm"))
+            .map_while(move |entry| {
+                if failed {
+                    return None;
+                }
+                let page = self.extract(entry).map(|data| (entry.name.as_str(), data));
+                failed = page.is_err();
+                Some(page)
+            })
     }
 
     /// `extractChmEntry`: the data of an entry, stored or decompressed, which must come to the

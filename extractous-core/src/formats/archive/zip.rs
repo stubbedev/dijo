@@ -10,6 +10,7 @@ use super::nesting::Scan;
 use super::write_entry_div;
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
+use crate::compress::zip::salvage::salvage;
 use crate::compress::zip::stream::ZipStream;
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
@@ -19,7 +20,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::time::instant_string;
-use crate::mime::MediaType;
+use crate::mime::{Key, MediaType};
 use crate::text::charset::{self, Charset};
 
 const ZIP: &str = "application/zip";
@@ -138,77 +139,104 @@ impl Parser for ZipParser {
         &[ZIP]
     }
 
-    /// Opens the archive and reads each entry to rule out what Tika's path reads otherwise. The
-    /// entries are read again as they are written: holding them all would hold every entry's
-    /// data at once, where writing holds one at a time, for decompression that costs little
-    /// beside the parse of each entry.
+    /// Opens the archive, or where `ZipFile` cannot open it, the archive Tika's detector
+    /// salvaged from it for the parser, as its metadata says, and reads each entry to rule out
+    /// what Tika's path reads otherwise. The entries are read again as they are written:
+    /// holding them all would hold every entry's data at once, where writing holds one at a
+    /// time, for decompression that costs little beside the parse of each entry.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let Ok(zip) = ZipFile::open(input) else {
+        if let Ok(zip) = ZipFile::open(input) {
+            check_entries(&zip, input.len())?;
+            return Ok(Box::new(move |xhtml| write_archive(input, &zip, xhtml)));
+        }
+        if metadata.get(Key::Salvaged.name()) != Some("true") {
             return Err(Declined::Deferred(
-                "commons-compress's ZipFile cannot open the archive, which Tika then salvages \
-                 or reads entry by entry"
+                "commons-compress's ZipFile cannot open the archive, nor did Tika's detector \
+                 salvage it, which Tika then reads entry by entry"
                     .to_owned(),
             ));
-        };
-        let mut scan = Scan::new();
-        for entry in zip.entries() {
-            if entry.is_directory() || !entry.can_read() {
-                continue;
-            }
-            if entry_name(entry).is_none() {
-                return Err(Declined::Deferred(format!(
-                    "the name of the entry {} is detected in a charset the native decoders do \
-                     not decode",
-                    entry.name
-                )));
-            }
-            match zip.read(entry) {
-                Some(Content::Complete(content)) => {
-                    if let Some(reason) = scan.entry(&content) {
-                        return Err(Declined::Deferred(reason));
-                    }
-                }
-                Some(Content::Truncated(_)) => {
-                    return Err(Declined::Deferred(format!(
-                        "the data of the entry {} is cut short or corrupt, which Tika's embedded \
-                         parser reads as far as it goes",
-                        entry.name
-                    )))
-                }
-                Some(Content::Oversized(_)) => {
-                    return Err(Declined::Deferred(format!(
-                        "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
-                         path streams",
-                        entry.name
-                    )))
-                }
-                None => {
-                    return Err(Declined::Deferred(format!(
-                        "the entry {} is compressed with method {}, which the port does not \
-                         decompress",
-                        entry.name, entry.method
-                    )))
-                }
-            }
         }
-        if let Some(reason) = scan.document(input.len()) {
-            return Err(Declined::Deferred(reason));
-        }
-        // Tika checks the integrity after the document has ended, so its result never reaches
-        // the document's head, and not at all when an entry fails it (#99).
+        let salvaged = salvage(input).map_err(|unsalvaged| {
+            Declined::Deferred(format!(
+                "the detection salvaged the archive, which salvages no more: {unsalvaged:?}"
+            ))
+        })?;
+        let unopened = || "the salvaged archive does not open".to_owned();
+        check_entries(
+            &ZipFile::open(&salvaged).map_err(|_| unopened())?,
+            input.len(),
+        )?;
         Ok(Box::new(move |xhtml| {
-            check_integrity(input, &CentralNames::of(&zip), xhtml.metadata_mut());
-            update_media_type(&zip, xhtml.metadata_mut());
-            let written = write_entries(&zip, xhtml);
-            xhtml.end_document()?;
-            written
+            let zip = ZipFile::open(&salvaged).map_err(|_| Failure::Malformed(unopened()))?;
+            write_archive(input, &zip, xhtml)
         }))
     }
+}
+
+/// Reads each entry of the archive `zip`, `length` bytes in all, to rule out what Tika's path
+/// reads otherwise.
+fn check_entries(zip: &ZipFile, length: usize) -> Result<(), Declined> {
+    let mut scan = Scan::new();
+    for entry in zip.entries() {
+        if entry.is_directory() || !entry.can_read() {
+            continue;
+        }
+        if entry_name(entry).is_none() {
+            return Err(Declined::Deferred(format!(
+                "the name of the entry {} is detected in a charset the native decoders do \
+                 not decode",
+                entry.name
+            )));
+        }
+        match zip.read(entry) {
+            Some(Content::Complete(content)) => {
+                if let Some(reason) = scan.entry(&content) {
+                    return Err(Declined::Deferred(reason));
+                }
+            }
+            Some(Content::Truncated(_)) => {
+                return Err(Declined::Deferred(format!(
+                    "the data of the entry {} is cut short or corrupt, which Tika's embedded \
+                     parser reads as far as it goes",
+                    entry.name
+                )))
+            }
+            Some(Content::Oversized(_)) => {
+                return Err(Declined::Deferred(format!(
+                    "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
+                     path streams",
+                    entry.name
+                )))
+            }
+            None => {
+                return Err(Declined::Deferred(format!(
+                    "the entry {} is compressed with method {}, which the port does not \
+                     decompress",
+                    entry.name, entry.method
+                )))
+            }
+        }
+    }
+    if let Some(reason) = scan.document(length) {
+        return Err(Declined::Deferred(reason));
+    }
+    Ok(())
+}
+
+/// `parseWithZipFile` of the archive `zip`, read from `input` or salvaged from it. Tika checks
+/// the integrity of `input` after the document has ended, so its result never reaches the
+/// document's head, and not at all when an entry fails it (#99).
+fn write_archive(input: &[u8], zip: &ZipFile, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    check_integrity(input, &CentralNames::of(zip), xhtml.metadata_mut());
+    update_media_type(zip, xhtml.metadata_mut());
+    let written = write_entries(zip, xhtml);
+    xhtml.end_document()?;
+    written
 }
 
 /// `parseWithZipFile`'s loop over the entries, which ends the document whatever happens.
@@ -436,10 +464,20 @@ mod tests {
     }
 
     #[test]
-    fn defers_archives_zip_file_cannot_open() {
+    fn reads_archives_zip_file_cannot_open_as_the_detection_salvaged_them() {
         let data = zip(&[("a", b"hej")]);
-        let reason = defers(&data[..data.len() - 10]).unwrap();
-        assert!(reason.contains("ZipFile cannot open"), "{reason}");
+        let cut = &data[..data.len() - 10];
+        let reason = defers(cut).unwrap();
+        assert!(
+            reason.contains("nor did Tika's detector salvage it"),
+            "{reason}"
+        );
+        let mut salvaged = TikaMetadata::new();
+        salvaged.set(Key::Salvaged.name(), "true");
+        assert_eq!(
+            ZipParser.defers(cut, &salvaged, &ParserConfigs::default()),
+            None
+        );
     }
 
     #[test]

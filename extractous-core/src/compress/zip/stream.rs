@@ -20,6 +20,9 @@ const PREAMBLE_GARBAGE_MAX_SIZE: usize = 4096;
 const DEFLATE64: u16 = 9;
 const XZ: u16 = 95;
 const ZSTD: [u16; 2] = [93, 20];
+const UNSHRINKING: u16 = 1;
+const IMPLODING: u16 = 6;
+const BZIP2: u16 = 12;
 /// Where an entry whose data the input cuts short ends: nowhere a next entry can start.
 const TRUNCATED: usize = usize::MAX;
 
@@ -28,6 +31,13 @@ const TRUNCATED: usize = usize::MAX;
 pub(crate) enum Failure {
     /// An entry with a data descriptor the stream cannot read past as configured.
     DataDescriptor,
+    /// An encrypted entry, or one compressed with a method commons-compress has no
+    /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`,
+    /// as it refuses an archive that starts as a split one goes on.
+    Unsupported,
+    /// An entry compressed with this method, which commons-compress decompresses and the port
+    /// does not.
+    Method(u16),
     /// Anything else the stream throws.
     Io,
 }
@@ -58,6 +68,7 @@ pub(crate) struct ZipStream<'a> {
     data: &'a [u8],
     position: usize,
     allow_stored_data_descriptor: bool,
+    use_unicode_extra_fields: bool,
     first: bool,
     done: bool,
     current: Option<Current>,
@@ -69,9 +80,19 @@ impl<'a> ZipStream<'a> {
             data,
             position: 0,
             allow_stored_data_descriptor,
+            use_unicode_extra_fields: true,
             first: true,
             done: false,
             current: None,
+        }
+    }
+
+    /// The stream that reads names as they are, without their Unicode extra fields, as one
+    /// made with `useUnicodeExtraFields` false.
+    pub(crate) fn without_unicode_extra_fields(self) -> Self {
+        Self {
+            use_unicode_extra_fields: false,
+            ..self
         }
     }
 
@@ -121,7 +142,7 @@ impl<'a> ZipStream<'a> {
         let fields =
             ExtraFields::from_central(extra, &mut Times::default()).map_err(|_| Failure::Io)?;
         let mut name = entry_name(decode_name(raw_name), version);
-        if flags & 0x0800 == 0 {
+        if flags & 0x0800 == 0 && self.use_unicode_extra_fields {
             if let Some(unicode) = unicode_text(&fields, extra::UNICODE_PATH, raw_name) {
                 name = entry_name(unicode, version);
             }
@@ -173,7 +194,7 @@ impl<'a> ZipStream<'a> {
                 return Ok(Some(at + 4));
             }
             if signature == DD_SIG {
-                return Err(Failure::Io);
+                return Err(Failure::Unsupported);
             }
             if signature == EOCD_SIG {
                 return Ok(None);
@@ -186,7 +207,7 @@ impl<'a> ZipStream<'a> {
     /// data descriptor its method cannot be read past with.
     fn check(&self, current: &Current) -> Result<(), Failure> {
         if current.flags & 0x0001 != 0 {
-            return Err(Failure::Io);
+            return Err(Failure::Unsupported);
         }
         let method = current.method;
         if current.has_data_descriptor()
@@ -230,7 +251,7 @@ impl<'a> ZipStream<'a> {
                 }
                 Ok(content)
             }
-            _ => Err(Failure::Io),
+            method => Err(unread(method)),
         }
     }
 
@@ -259,7 +280,7 @@ impl<'a> ZipStream<'a> {
                     None => Ok(TRUNCATED),
                 }
             }
-            _ => Err(Failure::Io),
+            method => Err(unread(method)),
         }
     }
 
@@ -339,6 +360,19 @@ impl<'a> ZipStream<'a> {
             TRUNCATED => Err(Failure::Io),
             end => Ok(end),
         }
+    }
+}
+
+/// Why the data of an entry compressed with `method`, neither stored nor deflated, is not
+/// read: the port does not decompress the methods commons-compress's `ZipUtil.supportsMethodOf`
+/// accepts, and commons-compress refuses the others.
+fn unread(method: u16) -> Failure {
+    let decompressed =
+        [UNSHRINKING, IMPLODING, DEFLATE64, BZIP2, XZ].contains(&method) || ZSTD.contains(&method);
+    if decompressed {
+        Failure::Method(method)
+    } else {
+        Failure::Unsupported
     }
 }
 

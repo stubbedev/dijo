@@ -3,6 +3,7 @@
 
 pub(crate) mod extra;
 pub(crate) mod file;
+pub(crate) mod salvage;
 pub(crate) mod stream;
 
 use flate2::{Decompress, FlushDecompress, Status};

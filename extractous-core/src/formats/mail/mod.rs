@@ -87,6 +87,10 @@ impl Parser for Rfc822Parser {
         &["message/rfc822"]
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &["message/rfc822"]
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -392,7 +396,7 @@ pub(crate) mod tests {
             &Rfc822Parser,
             TIKA_NAME,
             &[&conformance_corpus()],
-            26,
+            28,
             &["testRFC822_encrypted_zip"],
         );
         let [encrypted] = &encrypted[..] else {
@@ -402,6 +406,32 @@ pub(crate) mod tests {
             .extract_file_to_string(encrypted.to_str().unwrap())
             .unwrap();
         assert!(!text.trim().is_empty());
+    }
+
+    /// MHTML documents, typed `multipart/related`, which Tika's composite parser hands the
+    /// parser of `message/rfc822`, its supertype, spool their parts as Tika's path does, once
+    /// the line breaks of their quoted-printable parts are taken alike (#73). Where a budget
+    /// cuts the spool, the departure moves the cut.
+    #[test]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+    fn spools_the_parts_of_tikas_mhtml_documents_as_tikas_path_does() {
+        let mhtml: Vec<PathBuf> = documents(&Rfc822Parser, &[&conformance_corpus()])
+            .0
+            .into_iter()
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "mhtml")
+            })
+            .collect();
+        assert_eq!(mhtml.len(), 2, "{mhtml:?}");
+        let spooled: usize = mhtml
+            .iter()
+            .map(|path| {
+                crate::formats::parity::spools_as_tika_rewriting(path, u64::MAX, None, DEPARTURES)
+                    .unwrap_or_else(|difference| panic!("{difference}"))
+            })
+            .sum();
+        assert!(spooled > 0);
     }
 
     #[test]

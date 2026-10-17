@@ -53,6 +53,9 @@ fn bridge_reason(bridged: &Bridged) -> String {
         Bridged::Declined(parser, Declined::Deferred(reason)) => {
             format!("{parser} defers: {}", short(reason))
         }
+        Bridged::Declined(parser, Declined::Unwritten(_)) => {
+            format!("{parser} writes no document, which the native path records")
+        }
         Bridged::Declined(parser, Declined::Fails(_)) => {
             format!("{parser} fails it before starting: Tika records the exception")
         }
