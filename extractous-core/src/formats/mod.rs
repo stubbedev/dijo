@@ -914,6 +914,10 @@ impl Write for StringOut {
     fn finish(&mut self) -> Result<(), Stop> {
         Ok(())
     }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
 }
 
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
@@ -1018,6 +1022,10 @@ impl Write for ChannelOut {
 
     fn finish(&mut self) -> Result<(), Stop> {
         Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.send()
     }
 }
 

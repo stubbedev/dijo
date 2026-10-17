@@ -3,11 +3,11 @@
 
 mod av1;
 mod avif;
-mod bitmap;
+pub(crate) mod bitmap;
 mod decode;
 mod flatten;
 mod heif;
-mod icc;
+pub(crate) mod icc;
 mod java2d;
 pub(crate) mod jbig2;
 mod jpeg;

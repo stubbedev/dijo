@@ -12,13 +12,14 @@ use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
 use super::form;
+use super::images::Images;
 use super::ocr::{Layer, PageCheck};
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
-use super::{jfloat, xfa, Settings, Unported};
+use super::{jfloat, xfa, ImageExtraction, Settings, Unported};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::java::is_blank;
 
@@ -204,6 +205,8 @@ pub(super) struct DocumentWriter<'p, 'r> {
     total_unmapped: i64,
     /// Tika's `extractedFiles`: the file specifications annotations led to.
     extracted: HashSet<SpecKey>,
+    /// The images of the pages, when they are extracted.
+    images: Option<Images>,
 }
 
 impl<'p, 'r> DocumentWriter<'p, 'r> {
@@ -234,6 +237,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             total_glyphs: 0,
             total_unmapped: 0,
             extracted: HashSet::new(),
+            images: match settings.images {
+                ImageExtraction::Off => None,
+                ImageExtraction::On {
+                    unique_only,
+                    assessed_with_ocr,
+                } => Some(Images::new(unique_only, assessed_with_ocr)),
+            },
         }
     }
 
@@ -307,6 +317,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// `PDF2XHTML.endPage`.
     fn end_page(&mut self, page: Page<'p>, content: &PageContent) -> Result<(), WriteFailure> {
         self.page.write_paragraph_end()?;
+        if let Some(images) = self.images.as_mut() {
+            images.extract(self.pdf, page, self.page_number, &mut self.page)?;
+        }
         self.close_page(page, content.glyphs, content.unmapped)
     }
 

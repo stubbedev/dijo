@@ -523,9 +523,32 @@ impl<'d> Pdf<'d> {
     /// The decoded data of `stream`, its filters applied in order as PDFBox applies them, each
     /// with its own decode parameters.
     pub(super) fn decode(&self, stream: &Stream) -> Result<Vec<u8>, Unported> {
-        let raw = || self.raw(stream).map(Cow::into_owned);
-        let filters: Vec<&[u8]> = match self.get(&stream.dict, b"Filter") {
-            None => return raw(),
+        self.decode_until(stream, &[])
+    }
+
+    /// `COSStream.createInputStream(stopFilters)`: the data of `stream` with its filters
+    /// applied up to the first that `stop` names.
+    pub(super) fn decode_until(
+        &self,
+        stream: &Stream,
+        stop: &[&[u8]],
+    ) -> Result<Vec<u8>, Unported> {
+        let filters = self.get(&stream.dict, b"Filter");
+        let parameters = self.get(&stream.dict, b"DecodeParms");
+        self.decode_data(self.raw(stream)?, filters, parameters, stop)
+    }
+
+    /// `content` with the filters `filters` names applied in order up to the first that `stop`
+    /// names, each with its own parameters of `parameters`.
+    pub(super) fn decode_data(
+        &self,
+        content: Cow<'_, [u8]>,
+        filters: Option<&Object>,
+        parameters: Option<&Object>,
+        stop: &[&[u8]],
+    ) -> Result<Vec<u8>, Unported> {
+        let filters: Vec<&[u8]> = match filters {
+            None => return Ok(content.into_owned()),
             Some(Object::Name(name)) => vec![name.as_slice()],
             Some(Object::Array(names)) => names
                 .iter()
@@ -534,11 +557,13 @@ impl<'d> Pdf<'d> {
                     _ => None,
                 })
                 .collect(),
-            Some(_) => return raw(),
+            Some(_) => return Ok(content.into_owned()),
         };
-        let parameters = self.get(&stream.dict, b"DecodeParms");
-        let mut data = raw()?;
+        let mut data = content.into_owned();
         for (index, filter) in filters.iter().enumerate() {
+            if stop.contains(filter) {
+                break;
+            }
             let params = match parameters {
                 Some(Object::Array(each)) => each
                     .get(index)

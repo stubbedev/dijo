@@ -36,6 +36,8 @@ const MAX_HELD_CHARACTERS: usize = 1 << 20;
 pub(crate) trait Write {
     fn write(&mut self, text: &str) -> Result<(), Stop>;
     fn finish(&mut self) -> Result<(), Stop>;
+    /// Passes on what is written so far.
+    fn flush(&mut self) -> Result<(), Stop>;
 }
 
 impl<W: Write + ?Sized> Write for &mut W {
@@ -45,6 +47,10 @@ impl<W: Write + ?Sized> Write for &mut W {
 
     fn finish(&mut self) -> Result<(), Stop> {
         (**self).finish()
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        (**self).flush()
     }
 }
 
@@ -114,6 +120,10 @@ impl<H: ContentHandler> ContentHandler for Body<H> {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         self.next.end_document()
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.next.flush()
     }
 }
 
@@ -267,6 +277,10 @@ impl<H: ContentHandler> ContentHandler for AnchoredBlocks<H> {
         self.release()?;
         self.next.end_document()
     }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.next.flush()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -382,6 +396,10 @@ impl<H: ContentHandler> ContentHandler for BlockBreaks<H> {
     fn end_document(&mut self) -> Result<(), Stop> {
         self.next.end_document()
     }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.next.flush()
+    }
 }
 
 /// Keeps the elements passed on balanced, as our Java `WellFormedContentHandler`: an end tag
@@ -442,6 +460,10 @@ impl<H: ContentHandler> ContentHandler for WellFormed<H> {
             self.next.end_element(&open)?;
         }
         self.next.end_document()
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.next.flush()
     }
 }
 
@@ -531,6 +553,10 @@ impl<H: ContentHandler> ContentHandler for WriteLimit<H> {
     fn end_document(&mut self) -> Result<(), Stop> {
         self.next.end_document()
     }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.next.flush()
+    }
 }
 
 /// Writes the text and ignorable whitespace, except inside `style` and `script`, as Tika's
@@ -589,6 +615,10 @@ impl<W: Write> ContentHandler for ToText<W> {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         self.out.finish()
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.out.flush()
     }
 }
 
@@ -818,6 +848,10 @@ impl<W: Write> ContentHandler for ToXml<W> {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         self.out.finish()
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        self.out.flush()
     }
 }
 

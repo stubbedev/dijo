@@ -116,7 +116,8 @@ fn link_static_libraries() {
     }
     libraries.extend(STATIC_RUNTIME_LIBRARIES.map(str::to_owned));
     for (index, library) in libraries.iter().enumerate() {
-        if STATIC_C_LIBRARIES.contains(&library.as_str()) || libraries[index + 1..].contains(library)
+        if STATIC_C_LIBRARIES.contains(&library.as_str())
+            || libraries[index + 1..].contains(library)
         {
             continue;
         }

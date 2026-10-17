@@ -263,28 +263,7 @@ pub(super) fn document(
     if acro_form_fields {
         metadata.set("pdf:has-acro-form-fields", "true");
     }
-    match pdf.stream(catalog, b"Metadata") {
-        None => metadata.set("pdf:has-xmp", "false"),
-        Some(stream) => {
-            metadata.set("pdf:has-xmp", "true");
-            let packet = pdf.decode(stream).map_err(|unported| {
-                Unported(format!(
-                    "an XMP stream PDFBox fails to read, whose exception Tika records: {}",
-                    unported.0
-                ))
-            })?;
-            xmp::extract(&packet, metadata, xmp_decode)?;
-            if let Some(conformance) = metadata.get("pdfaid:conformance").map(str::to_owned) {
-                let part = metadata
-                    .get("pdfaid:part")
-                    .map_or_else(|| "UNKNOWN".to_owned(), str::to_owned);
-                metadata.set(
-                    "pdfa:pdf-version",
-                    format!("A-{part}{}", conformance.to_lowercase()),
-                );
-            }
-        }
-    }
+    xmp_metadata(pdf, pdf.stream(catalog, b"Metadata"), metadata)?;
     metadata.set("xmpTPg:NPages", pdf.number_of_pages()?.to_string());
     let empty = lopdf::Dictionary::new();
     let info = pdf.dict(pdf.trailer(), b"Info").unwrap_or(&empty);
@@ -386,6 +365,37 @@ pub(super) fn document(
                 metadata.set("pdf:found-non-adobe-extension-name", name_string(name));
             }
         }
+    }
+    Ok(())
+}
+
+/// `PDMetadataExtractor.extract(PDMetadata, ...)`: whether there is an XMP stream, and what
+/// it holds, the PDF/A version derived from it.
+pub(super) fn xmp_metadata(
+    pdf: &Pdf,
+    stream: Option<&lopdf::Stream>,
+    metadata: &mut dyn xmp::Sink,
+) -> Result<(), Unported> {
+    let Some(stream) = stream else {
+        metadata.set("pdf:has-xmp", "false".to_owned());
+        return Ok(());
+    };
+    metadata.set("pdf:has-xmp", "true".to_owned());
+    let packet = pdf.decode(stream).map_err(|unported| {
+        Unported(format!(
+            "an XMP stream PDFBox fails to read, whose exception Tika records: {}",
+            unported.0
+        ))
+    })?;
+    xmp::extract(&packet, metadata, xmp_decode)?;
+    if let Some(conformance) = metadata.get("pdfaid:conformance").map(str::to_owned) {
+        let part = metadata
+            .get("pdfaid:part")
+            .map_or_else(|| "UNKNOWN".to_owned(), str::to_owned);
+        metadata.set(
+            "pdfa:pdf-version",
+            format!("A-{part}{}", conformance.to_lowercase()),
+        );
     }
     Ok(())
 }
