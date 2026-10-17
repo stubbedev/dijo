@@ -522,10 +522,8 @@ fn run<'h>(
     metadata: TikaMetadata,
     context: &'h ParseContext<'h>,
     handler: &'h mut dyn ContentHandler,
-    on_head: Option<&'h mut dyn FnMut(&TikaMetadata)>,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    let (mut metadata, record, result) =
-        Xhtml::write_reporting_head(handler, metadata, context, on_head, prepared);
+    let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
     if result.is_ok() && context.configs().password.is_some() {
@@ -575,16 +573,23 @@ pub(crate) enum Output {
     Xml,
 }
 
-/// The handlers extractous puts behind a parser, which differ between Tika's two entry points.
+/// The handlers extractous puts behind a parser. Both entry points hold back anchored blocks,
+/// which only Tika's streamed extraction (`ParsingInputStream`) does: its string extraction
+/// (`TikaNativeMain.parseToString`) leaves them where they cut the paragraph they are anchored
+/// in (#63).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Chain {
-    /// `ParsingInputStream`'s: anchored blocks held back, XML declaring its `encoding`.
+    /// A stream's: XML declaring its `encoding`.
     Stream {
         output: Output,
         encoding: &'static str,
     },
-    /// `TikaNativeMain.parseToString`'s: at most `max_length` UTF-16 code units of text.
+    /// A string's: at most `max_length` UTF-16 code units of text.
     String { output: Output, max_length: usize },
+    /// `TikaNativeMain.parseToString`'s, without anchored blocks held back, which the parity
+    /// tests compare a native parser's string extraction with Tika's under (#63).
+    #[cfg(test)]
+    TikaString { output: Output, max_length: usize },
 }
 
 impl Chain {
@@ -611,17 +616,42 @@ impl Chain {
             Chain::String {
                 output: Output::Xml,
                 max_length,
+            } => write(&mut AnchoredBlocks::new(WriteLimit::new(
+                WellFormed::new(ToXml::new(out, None)),
+                max_length,
+            ))),
+            Chain::String {
+                output: Output::Text,
+                max_length,
+            } => write(&mut Body::new(AnchoredBlocks::new(BlockBreaks::new(
+                WriteLimit::new(ToText::new(out), max_length),
+            )))),
+            #[cfg(test)]
+            Chain::TikaString {
+                output: Output::Xml,
+                max_length,
             } => write(&mut WriteLimit::new(
                 WellFormed::new(ToXml::new(out, None)),
                 max_length,
             )),
-            Chain::String {
+            #[cfg(test)]
+            Chain::TikaString {
                 output: Output::Text,
                 max_length,
             } => write(&mut Body::new(BlockBreaks::new(WriteLimit::new(
                 ToText::new(out),
                 max_length,
             )))),
+        }
+    }
+
+    /// The limit of the text this chain writes, if it has one.
+    fn max_length(self) -> Option<usize> {
+        match self {
+            Chain::Stream { .. } => None,
+            Chain::String { max_length, .. } => Some(max_length),
+            #[cfg(test)]
+            Chain::TikaString { max_length, .. } => Some(max_length),
         }
     }
 }
@@ -642,8 +672,7 @@ impl Write for StringOut {
 }
 
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
-/// handlers `TikaNativeMain.parseToString` uses; `None` when the parser leaves the document to
-/// Tika.
+/// handlers of [`Chain::String`]; `None` when the parser leaves the document to Tika.
 pub(crate) fn parse_to_string(
     parser: &dyn Parser,
     input: &[u8],
@@ -652,6 +681,26 @@ pub(crate) fn parse_to_string(
     max_length: usize,
     output: Output,
 ) -> ExtractResult<Option<(String, Metadata)>> {
+    parse_to_string_through(
+        parser,
+        input,
+        detected,
+        configs,
+        Chain::String { output, max_length },
+    )
+}
+
+/// [`parse_to_string`] through the handlers of `chain`, a string extraction's.
+pub(crate) fn parse_to_string_through(
+    parser: &dyn Parser,
+    input: &[u8],
+    detected: &Detected,
+    configs: &ParserConfigs,
+    chain: Chain,
+) -> ExtractResult<Option<(String, Metadata)>> {
+    let max_length = chain
+        .max_length()
+        .expect("a string extraction's chain limits its text");
     within_budget(|| {
         let metadata = detected.metadata_for(parser);
         let prepared = match parser.prepare(input, &metadata, configs) {
@@ -664,10 +713,9 @@ pub(crate) fn parse_to_string(
         let context = ParseContext::new(configs)
             .reading(detected.file.clone())
             .with_write_limit(max_length);
-        let (metadata, result) = Chain::String { output, max_length }
-            .write_to(&mut out, |handler| {
-                run(parser, prepared, metadata, &context, handler, None)
-            });
+        let (metadata, result) = chain.write_to(&mut out, |handler| {
+            run(parser, prepared, metadata, &context, handler)
+        });
         match result {
             Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
                 Ok(Some((out.0, metadata.to_map())))
@@ -678,9 +726,6 @@ pub(crate) fn parse_to_string(
 }
 
 enum Message {
-    /// The metadata the document's head shows, sent once the head is written, before the
-    /// content after it.
-    Head(Metadata),
     /// A full chunk of output, written while the parse goes on.
     Chunk(Vec<u8>),
     /// The output after the last full chunk, how the parse ended, and the embedded documents
@@ -763,9 +808,11 @@ pub(crate) struct StreamOptions {
 /// Parses `input` on a thread of its own into a stream encoded with the options' charset,
 /// through the handlers `ParsingInputStream` uses; `None` when the parser leaves the document to
 /// Tika. Like `ParsingInputStream`, it returns once the parse has written its first chunk or
-/// ended, with the metadata known then: the final metadata of a document whose output fits in
-/// one chunk, else that of its detection; or the failure of a parse that ended without writing
-/// anything.
+/// ended, or with the failure of a parse that ended without writing anything. It returns the
+/// metadata known before the parse, of the input and its detection, whatever the parse has
+/// found by then: the final metadata comes with [`NativeStream::metadata`] once the stream is
+/// read. Tika's path returns a copy of the metadata made as the first chunk is written, the
+/// final metadata for a document whose output fits in one chunk (#67).
 pub(crate) fn parse_to_stream(
     parser: &'static dyn Parser,
     input: Vec<u8>,
@@ -774,14 +821,15 @@ pub(crate) fn parse_to_stream(
     options: StreamOptions,
 ) -> ExtractResult<Option<(NativeStream, Metadata)>> {
     let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
-    let detected_metadata = detected.metadata.to_map();
+    let start = detected.metadata_for(parser);
+    let known = start.to_map();
     let (sender, receiver) = mpsc::sync_channel(CHUNKS_AHEAD);
     let (decided, decision) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name(format!("extractous {}", parser.name()))
         .spawn(move || {
             within_budget(|| {
-                let metadata = detected.metadata_for(parser);
+                let metadata = start;
                 let prepared = parser.prepare(&input, &metadata, &configs);
                 let _ = decided.send(!matches!(prepared, Err(Declined::Deferred(_))));
                 let prepared = match prepared {
@@ -814,19 +862,8 @@ pub(crate) fn parse_to_stream(
                     None => ParseContext::new(&configs),
                 }
                 .reading(detected.file.clone());
-                let head_sender = sender.clone();
-                let mut on_head = |metadata: &TikaMetadata| {
-                    let _ = head_sender.send(Message::Head(metadata.to_map()));
-                };
                 let (metadata, result) = chain.write_to(&mut out, |handler| {
-                    run(
-                        parser,
-                        prepared,
-                        metadata,
-                        &context,
-                        handler,
-                        Some(&mut on_head),
-                    )
+                    run(parser, prepared, metadata, &context, handler)
                 });
                 let outcome = match result {
                     Ok(()) => Ok(metadata.to_map()),
@@ -865,36 +902,21 @@ pub(crate) fn parse_to_stream(
         Ok(false) => return Ok(None),
         Err(Error::Timeout) => {
             stream.outcome = Some(Err(Error::Timeout));
-            return Ok(Some((stream, detected_metadata)));
+            return Ok(Some((stream, known)));
         }
         Err(error) => return Err(error),
     }
-    let mut head = None;
-    loop {
-        match stream.next_message() {
-            Ok(Message::Head(metadata)) => head = Some(metadata),
-            Ok(Message::Done {
-                tail,
-                outcome: Err(error),
-                ..
-            }) if tail.is_empty() => return Err(error),
-            Ok(message) => {
-                stream.accept(message);
-                break;
-            }
-            Err(Error::Timeout) => {
-                stream.outcome = Some(Err(Error::Timeout));
-                break;
-            }
-            Err(error) => return Err(error),
-        }
+    match stream.next_message() {
+        Ok(Message::Done {
+            tail,
+            outcome: Err(error),
+            ..
+        }) if tail.is_empty() => return Err(error),
+        Ok(message) => stream.accept(message),
+        Err(Error::Timeout) => stream.outcome = Some(Err(Error::Timeout)),
+        Err(error) => return Err(error),
     }
-    let metadata = match (&stream.outcome, head) {
-        (Some(Ok(metadata)), _) => metadata.clone(),
-        (_, Some(head)) => head,
-        (_, None) => detected_metadata,
-    };
-    Ok(Some((stream, metadata)))
+    Ok(Some((stream, known)))
 }
 
 /// The text of a native parse, read as it is written.
@@ -925,7 +947,6 @@ impl NativeStream {
 
     fn accept(&mut self, message: Message) {
         match message {
-            Message::Head(_) => return,
             Message::Chunk(chunk) => self.chunk = chunk,
             Message::Done {
                 tail,
@@ -1068,10 +1089,16 @@ mod tests {
     /// budget that holds them all and one that runs out partway.
     #[test]
     fn spools_embedded_documents_as_tikas_path_does() {
-        for name in ["nested.zip", "science-exploration-1p.pptx", "vodafone.xlsx"] {
+        // science-exploration-1p.pptx is not compared: its slides are read otherwise than
+        // Tika's path reads them on purpose (#102).
+        for name in ["nested.zip", "vodafone.xlsx"] {
             let path = std::path::PathBuf::from("../test_files/documents").join(name);
             for budget in [u64::MAX, 3000] {
-                let spooled = crate::formats::parity::spools_as_tika(&path, budget);
+                // The ZIP's integrity check now reaches its head (#99).
+                let departure = (name == "nested.zip")
+                    .then_some((crate::formats::archive::as_tika_checks_zips as _, None));
+                let spooled =
+                    crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure, &[]);
                 assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
             }
         }
@@ -1083,21 +1110,239 @@ mod tests {
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn spools_tikas_documents_as_tikas_path_does() {
         let corpus = crate::formats::parity::conformance_corpus();
-        let exceptions = [(
-            "testZSTD.zst",
-            crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
-        )];
+        let exceptions = [
+            (
+                "testZSTD.zst",
+                crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
+            ),
+            (
+                "testPSD_xmp.psd",
+                crate::formats::parity::PSD_PROFILE_AWT_REJECTS,
+            ),
+            (
+                "testHTML_metadata_two_titles.html",
+                "a meta title after the title element is a further dc:title (#86)",
+            ),
+            (
+                "testZipEncrypted.zip",
+                "Tika writes the name of an encrypted entry as text (#99)",
+            ),
+            (
+                "testEPUB_multi-metadata-vals.epub",
+                "Tika writes the pictures outside the spine in HashMap order (#88)",
+            ),
+            (
+                "testControlCharacters.doc",
+                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
+            ),
+            (
+                "testWORD_2006ml.doc",
+                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
+            ),
+            (
+                "testWORD_features.doc",
+                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
+            ),
+            (
+                "testJBIG2.jb2",
+                "Tika records the JBIG2 dimension node twice (#120)",
+            ),
+            (
+                "CVLKRA-KYC_Download_File_Structure_V3.1.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "protectedSheets.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_charts.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_diagramData.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_hyperlinks.xlsx",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL-charts.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_extra_metadata.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_headers_footers.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_hyperlinks.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_labels-govdocs-515858.xls",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "LibreOfficeImpress_odp_1.3.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "test-columnar.ods",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testMasterFooter.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testNPEOpenDocument.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODFwithOOo3.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODPMacro.fodp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODPMacro.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODP_NPE.odp",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODT-TIKA-6000.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testODTStyles3.odt",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testOpenOffice2.odf",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testStarOffice-6.0-writer-template.stw",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testStarOffice-6.0-writer.sxw",
+                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
+            ),
+            (
+                "testPPT.potm",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPPT_autodate.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPPT_various.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPPT_various2.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testWPSAttachment.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "test_embedded_zip.pptx",
+                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
+            ),
+            (
+                "testPDF_multiFormatEmbFiles.pdf",
+                "its embedded files are written in object order, once each (#109)",
+            ),
+            (
+                "complex.mbox",
+                "its parts keep their whole content type (#75), and its messages their own headers (#103)",
+            ),
+            (
+                "testEmailWithPNGAtt.eml",
+                "its parts keep their whole content type (#75), and its messages their own headers (#103)",
+            ),
+            (
+                "testRFC822_oddfrom",
+                "its quoted-printable parts keep their own line ends (#73)",
+            ),
+        ];
         let mut differences = Vec::new();
         let mut spooling = 0;
-        for parser in PARSERS {
+        // The head of CMS content shows its Content-Length, which Tika's path does not give it
+        // (#113); CMS content is parsed in place, never spooled, and its comparison with Tika's
+        // is cms.rs's.
+        for parser in PARSERS
+            .iter()
+            .filter(|parser| parser.name() != cms::CmsParser.name())
+        {
             let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
             for path in parsed {
                 let name = path.file_name().unwrap().to_string_lossy();
                 if exceptions.iter().any(|(exception, _)| *exception == name) {
                     continue;
                 }
+                // The fixes of #89, #99, #105 and #118 depart from Tika's path systematically.
+                let head: crate::formats::parity::Normalisation =
+                    crate::formats::dc_xml::without_head;
+                let departure: Option<(crate::formats::parity::NativeRewrite, _)> = match parser
+                    .name()
+                {
+                    "extractous::ZipParser" | "extractous::CmsParser" => {
+                        Some((crate::formats::archive::as_tika_checks_zips, None))
+                    }
+                    "extractous::DcXMLParser" | "extractous::MobiParser" => Some((
+                        crate::formats::dc_xml::without_unread_dublin_core,
+                        Some(head),
+                    )),
+                    "extractous::EpubParser" => {
+                        Some((crate::formats::epub::as_tika_writes_it, None))
+                    }
+                    "extractous::MP4Parser" => {
+                        Some((crate::formats::media::mp4_as_tika_reads_it, None))
+                    }
+                    "extractous::DIFParser" => {
+                        Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
+                    }
+                    "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
+                    _ => None,
+                };
+                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared.
+                let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
+                    "extractous::RFC822Parser"
+                    | "extractous::EmlxParser"
+                    | "extractous::MboxParser" => crate::formats::mail::tests::DEPARTURES.to_vec(),
+                    "extractous::OfficeParser" => {
+                        crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
+                    }
+                    _ => Vec::new(),
+                };
+                if crate::formats::mail::tests::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
+                    departures.push(crate::formats::parity::Departure::Values(
+                        "message:from-name",
+                        "#77",
+                    ));
+                }
                 for budget in [u64::MAX, 3000] {
-                    match crate::formats::parity::spools_as_tika(&path, budget) {
+                    match crate::formats::parity::spools_as_tika_rewriting(
+                        &path,
+                        budget,
+                        departure,
+                        &departures,
+                    ) {
                         Ok(0) => {}
                         Ok(_) => spooling += 1,
                         Err(difference) => differences.push(difference),
@@ -1158,6 +1403,37 @@ mod tests {
         );
         let (text, _) = extract().unwrap().unwrap();
         assert!(text.contains("These are a few of my favorite things"));
+    }
+
+    /// A stream comes with the metadata known before the parse, however much output the parse
+    /// writes before the stream returns, and the parse's own once it has been read (#67).
+    #[test]
+    fn a_stream_comes_with_the_metadata_known_before_the_parse() {
+        let path = "../test_files/documents/simple.odt";
+        let routed = route(Source::File(path)).unwrap().unwrap();
+        let known = routed.detected.metadata_for(routed.parser).to_map();
+        let options = StreamOptions {
+            char_set: CharSet::UTF_8,
+            output: Output::Text,
+            timeout: None,
+            spool: None,
+        };
+        let (mut stream, metadata) = parse_to_stream(
+            routed.parser,
+            routed.input.into_owned(),
+            routed.detected,
+            ParserConfigs::default(),
+            options,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(metadata, known);
+        assert!(!metadata.contains_key("tk:parsed-by-full-set"));
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        assert!(text.len() < CHUNK_BYTES, "the output fits in one chunk");
+        let parsed = stream.metadata().unwrap();
+        assert!(parsed.contains_key("tk:parsed-by-full-set"), "{parsed:?}");
     }
 
     #[test]

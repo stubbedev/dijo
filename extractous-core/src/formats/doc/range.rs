@@ -43,10 +43,10 @@ impl Paragraph {
         self.pap.ttp || self.pap.ttp_embedded
     }
 
-    /// `isInList`: an `ilfo` of 0xF801, sign-extended as POI reads it, never equals the
-    /// unsigned value POI compares it to.
+    /// `isInList`: an `ilfo` of 0xF801 marks no list. POI reads it sign-extended, which never
+    /// equals the unsigned value it compares it to (#111).
     pub(super) fn is_in_list(&self) -> bool {
-        self.pap.ilfo != 0 && self.pap.ilfo != 0xF801
+        self.pap.ilfo != 0 && self.pap.ilfo as u16 != 0xF801
     }
 
     pub(super) fn ilfo(&self) -> i32 {
@@ -219,10 +219,13 @@ impl Document {
         let level = paragraph.table_level();
         let (start_index, _) = self.paragraph_bounds(paragraph.span)?;
         self.character_bounds(paragraph.span)?;
-        let section_start = self.section_start(paragraph.span);
         if start_index != 0 {
             let previous = self.new_paragraph(range, start_index - 1)?;
-            if previous.is_in_table() && previous.table_level() == level && section_start == 0 {
+            // Tika compares the section with one it never sets, which is 0 (#111).
+            if previous.is_in_table()
+                && previous.table_level() == level
+                && self.section_start(previous.span) == self.section_start(paragraph.span)
+            {
                 return Err(Thrown::new(
                     "This paragraph is not the first one in the table",
                 ));
@@ -245,8 +248,7 @@ impl Document {
     }
 
     /// `initSections` of a paragraph, whose first section index starts the search at 0: the
-    /// index of the first section of the range. `Range.getTable` compares it to the last section
-    /// index of the previous paragraph, which is never found and stays 0.
+    /// index of the first section of the range.
     fn section_start(&self, span: Span) -> usize {
         let sections = &self.sections;
         if sections.is_empty() {
@@ -284,9 +286,10 @@ impl Document {
     }
 
     /// `new TableRow(...)` and its `initCells`: a cell ends at each paragraph ending in a cell
-    /// mark at the row's level. Paragraphs after the last cell mark make a cell whose bounds are
-    /// paragraph indexes taken for character positions, as POI makes it; where the cells are
-    /// not as many as the row's properties say, a last cell of a single row end paragraph goes.
+    /// mark at the row's level. Paragraphs after the last cell mark but the row's end make a
+    /// cell, where POI takes their paragraph indexes for character positions (#111); where the
+    /// cells are not as many as the row's properties say, a last cell of a single row end
+    /// paragraph goes.
     fn cells(&self, row: Span, level: i32) -> Read<Vec<Span>> {
         let count = self.paragraph_count(row)?;
         let last = self.paragraph(row, count - 1)?;
@@ -307,7 +310,9 @@ impl Document {
             }
         }
         if cell_start + 1 < count {
-            cells.push(self.subrange(cell_start as i32, count as i32 - 1)?);
+            let first = self.paragraph(row, cell_start)?;
+            let last = self.paragraph(row, count - 2)?;
+            cells.push(self.subrange(first.span.start, last.span.end)?);
         }
         if !cells.is_empty() && cells.len() as i64 != expected {
             let last = cells[cells.len() - 1];

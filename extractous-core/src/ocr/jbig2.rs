@@ -12,6 +12,13 @@ const FILE_HEADER_ID: [u8; 8] = [0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A]
 const PAGE_INFORMATION: u8 = 48;
 /// The segment type of the end of a file (7.4.11).
 const END_OF_FILE: u8 = 51;
+/// The segment type of an immediate generic region (7.4.6), the one segment whose data length
+/// may be unknown.
+const IMMEDIATE_GENERIC_REGION: u8 = 38;
+/// The data length of a segment whose length is unknown (7.2.7).
+const UNKNOWN_LENGTH: u64 = 0xFFFF_FFFF;
+/// The bytes of a region segment information field (7.4.1).
+const REGION_INFORMATION_LENGTH: usize = 17;
 /// The bytes of a page information segment's data that `PageInformation` reads.
 const PAGE_INFORMATION_LENGTH: usize = 19;
 
@@ -42,11 +49,10 @@ pub(crate) struct PageInformation {
     pub(crate) resolution_y: i32,
 }
 
-/// A JBIG2 file as `JBIG2Document` maps it: the number of pages its header declares, and the
-/// segments of each page by page number, each page's by segment number.
+/// A JBIG2 file as `JBIG2Document` maps it: the segments of each page by page number, each
+/// page's by segment number.
 #[derive(Debug)]
 pub(crate) struct Jbig2File {
-    declared_pages: Option<i32>,
     pages: BTreeMap<i32, BTreeMap<i32, Segment>>,
 }
 
@@ -91,10 +97,13 @@ impl Jbig2File {
     /// `JBIG2Document.mapStream`: the file header, when there is one, then the segment headers
     /// up to the end of the file or of its data, each segment of a page kept under the page.
     /// Fails where jbig2-imageio throws.
+    ///
+    /// The data of an immediate generic region of unknown length runs to its end marker
+    /// (7.2.7). jbig2-imageio adds the unknown length as it is, `0xffffffff`, and so stops
+    /// mapping the file there (#120).
     pub(crate) fn read(data: &[u8]) -> Result<Self, String> {
         let mut bits = Bits { data, position: 0 };
         let mut organisation = Organisation::Sequential;
-        let mut declared_pages = None;
         if data.starts_with(&FILE_HEADER_ID) {
             bits.position = FILE_HEADER_ID.len() as u64;
             let flags = bits.u8()?;
@@ -104,7 +113,7 @@ impl Jbig2File {
                 Organisation::RandomAccess
             };
             if flags & 2 == 0 {
-                declared_pages = Some(bits.u32()? as i32);
+                bits.u32()?;
             }
         }
         let mut offset = bits.position;
@@ -113,8 +122,16 @@ impl Jbig2File {
         let mut kind = 0;
         while kind != END_OF_FILE && !bits.ends_at(offset) {
             bits.position = offset;
-            let (number, page, segment) = segment_header(&mut bits, organisation)?;
+            let (number, page, mut segment) = segment_header(&mut bits, organisation)?;
             kind = segment.kind;
+            if organisation == Organisation::Sequential
+                && segment.data_length == UNKNOWN_LENGTH
+                && kind == IMMEDIATE_GENERIC_REGION
+            {
+                if let Some(length) = unknown_length(data, segment.data_start) {
+                    segment.data_length = length;
+                }
+            }
             if page != 0 {
                 pages
                     .entry(page)
@@ -146,18 +163,13 @@ impl Jbig2File {
                 (page, segments)
             })
             .collect();
-        Ok(Self {
-            declared_pages,
-            pages,
-        })
+        Ok(Self { pages })
     }
 
-    /// `getAmountOfPages`: the count the header declares, unless it declares none or 0.
+    /// The pages the file holds. jbig2-imageio's `getAmountOfPages` takes the count the header
+    /// declares, unless it declares none or 0, whatever pages follow (#120).
     pub(crate) fn page_count(&self) -> i32 {
-        match self.declared_pages {
-            Some(count) if count != 0 => count,
-            _ => self.pages.len() as i32,
-        }
+        i32::try_from(self.pages.len()).unwrap_or(i32::MAX)
     }
 
     /// The information segment of the first page, the first by segment number, as
@@ -245,6 +257,32 @@ fn segment_header(
     ))
 }
 
+/// The length of the data of an immediate generic region whose header leaves it unknown, from
+/// `start`: up to its end marker, `0xffac` or, coded with MMR, `0x0000`, and the row count
+/// after it (7.2.7); none where the marker is missing.
+fn unknown_length(data: &[u8], start: u64) -> Option<u64> {
+    let start = usize::try_from(start).ok()?;
+    let flags = *data.get(start.checked_add(REGION_INFORMATION_LENGTH)?)?;
+    let mmr = flags & 1 != 0;
+    let template = (flags >> 1) & 3;
+    let extended = flags & 0x10 != 0;
+    let adaptive = match (mmr, template, extended) {
+        (true, ..) => 0,
+        (false, 0, true) => 32,
+        (false, 0, false) => 8,
+        (false, ..) => 2,
+    };
+    let coded = start + REGION_INFORMATION_LENGTH + 1 + adaptive;
+    let marker: [u8; 2] = if mmr { [0, 0] } else { [0xFF, 0xAC] };
+    let at = coded
+        + data
+            .get(coded..)?
+            .windows(2)
+            .position(|pair| pair == marker)?;
+    let end = at + marker.len() + 4;
+    (end <= data.len()).then(|| (end - start) as u64)
+}
+
 /// The image of a JBIG2 file of one page, black on white, or why it cannot be decoded.
 pub(crate) fn decode(data: &[u8]) -> Result<GrayImage, String> {
     let file = Jbig2File::read(data)?;
@@ -310,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_pages_as_jbig2_imageio_does() {
+    fn maps_pages() {
         let two = file(2, false);
         let mapped = Jbig2File::read(&two).unwrap();
         assert_eq!(mapped.page_count(), 2);
@@ -323,12 +361,31 @@ mod tests {
                 resolution_y: 0,
             }
         );
+        // jbig2-imageio takes the 7 pages the header declares (#120).
         let mut declared = file(1, true);
         declared[9..13].copy_from_slice(&7u32.to_be_bytes());
-        assert_eq!(Jbig2File::read(&declared).unwrap().page_count(), 7);
+        assert_eq!(Jbig2File::read(&declared).unwrap().page_count(), 1);
         let mut second_only = file(2, false);
         second_only[9 + 6] = 2;
         assert_eq!(Jbig2File::read(&second_only).unwrap_err(), "Page 1 missing");
+    }
+
+    #[test]
+    fn maps_past_a_region_of_unknown_length() {
+        let mut two = file(1, false);
+        // An immediate generic region of page 1, its length unknown, coded with template 1.
+        two.extend_from_slice(&2u32.to_be_bytes());
+        two.extend_from_slice(&[IMMEDIATE_GENERIC_REGION, 0, 1]);
+        two.extend_from_slice(&u32::MAX.to_be_bytes());
+        two.extend_from_slice(&[0; REGION_INFORMATION_LENGTH]);
+        two.extend_from_slice(&[0b10, 3, 0xFF]);
+        two.extend_from_slice(&[0x12, 0x34, 0xFF, 0xAC, 0, 0, 0, 30]);
+        // The information of page 2, which jbig2-imageio never reaches.
+        let mut page_two = file(1, false)[9..].to_vec();
+        page_two[3] = 3;
+        page_two[6] = 2;
+        two.extend_from_slice(&page_two);
+        assert_eq!(Jbig2File::read(&two).unwrap().page_count(), 2);
     }
 
     #[test]

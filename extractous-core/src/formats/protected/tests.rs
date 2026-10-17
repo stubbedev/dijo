@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
+use crate::config::Password;
+use crate::formats::parity;
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
@@ -46,6 +47,31 @@ fn ported(documents: &[PathBuf], deferred: &[(&str, &str)]) -> Vec<PathBuf> {
     ported
 }
 
+/// Asserts that each document, all of them encrypted, fails without its password and with a
+/// wrong one as Tika's path fails on it, and extracts with its password the XHTML and metadata
+/// Tika's path does, once Tika's doubled line breaks and tabs are single (#119).
+fn assert_same_as_tika_with_single_breaks(documents: &[PathBuf]) {
+    let wrong = ParserConfigs::default().with_password(Some(&Password::new("wrong")));
+    for document in documents {
+        let name = file_name(document);
+        let (_, password) = ENCRYPTED
+            .iter()
+            .find(|(encrypted, _)| *encrypted == name)
+            .unwrap_or_else(|| panic!("{name} is not encrypted"));
+        let configs = ParserConfigs::default().with_password(Some(&Password::new(*password)));
+        parity::assert_same_xhtml_as_tika_with(
+            &[document.as_path()],
+            TIKA_PARSER,
+            &configs,
+            parity::without_doubled_breaks,
+        );
+        for configs in [ParserConfigs::default(), wrong.clone()] {
+            let (native, tika) = parity::errors(document, &configs);
+            assert_eq!(native, tika, "{name}");
+        }
+    }
+}
+
 fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     let (mut documents, deferred) = parity::documents(&ProtectedParser, roots);
     documents.extend(deferred);
@@ -57,7 +83,16 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
 fn opens_the_repositorys_protected_package_as_tikas_path_does() {
     let ported = ported(&corpus(&[Path::new("../test_files/documents")]), &[]);
     assert_eq!(ported.len(), 1, "{ported:?}");
-    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+    assert_same_as_tika_with_single_breaks(&ported);
+    let (xml, _) = crate::Extractor::new()
+        .set_passwords([Password::new("extractous")])
+        .set_xml_output(true)
+        .extract_file_to_string(ported[0].to_str().unwrap())
+        .unwrap();
+    assert!(
+        xml.contains("</p>\n<p") && !xml.contains("</p>\n\n"),
+        "{xml}"
+    );
 }
 
 #[test]
@@ -68,5 +103,5 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
         &DEFERRED_CONFORMANCE,
     );
     assert_eq!(ported.len(), 5);
-    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+    assert_same_as_tika_with_single_breaks(&ported);
 }

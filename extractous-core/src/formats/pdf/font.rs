@@ -328,8 +328,9 @@ impl CharProc {
         }
     }
 
-    /// `PDType3CharProc.getGlyphBBox`: the box a `d1` of six numbers gives first, its upper
-    /// corner reached by adding the box's size in `float` as `PDRectangle` does.
+    /// `PDType3CharProc.getGlyphBBox`: the box a `d1` of six numbers gives first, its corners
+    /// as `d1` gives them. Tika reaches the upper corner by adding the box's size in `float`,
+    /// as `PDRectangle` does, which can round it off the corner (#109).
     fn glyph_bbox(&self) -> Result<Option<[f32; 4]>, Unported> {
         let Some((operator, operands)) = self.first.as_ref().map_err(Clone::clone)? else {
             return Ok(None);
@@ -344,8 +345,7 @@ impl CharProc {
         else {
             return Ok(None);
         };
-        let (x, y) = (values[2], values[3]);
-        Ok(Some([x, y, x + (values[4] - x), y + (values[5] - y)]))
+        Ok(Some([values[2], values[3], values[4], values[5]]))
     }
 }
 
@@ -1463,14 +1463,16 @@ impl Font {
         })
     }
 
-    /// `getAverageFontWidth`.
+    /// `getAverageFontWidth`. PDFBox's `PDType1CFont` takes 500 whatever the font's widths
+    /// (#109); the port averages its `/Widths` as for other simple fonts, taking 500 only
+    /// where they have no positive width.
     pub(super) fn average_width(&self) -> f32 {
         match &self.kind {
             FontKind::Type0(type0) => type0.descendant.average_width(),
             FontKind::Simple(SimpleFont {
                 kind: SimpleKind::Type1C(_),
                 ..
-            }) => 500.0,
+            }) if self.widths.average <= 0.0 => 500.0,
             FontKind::Simple(SimpleFont {
                 kind: SimpleKind::Type1(_),
                 ..
@@ -2098,11 +2100,9 @@ impl CidFont {
     }
 
     /// `PDCIDFont.getAverageFontWidth`: the positive widths averaged in the order a Java
-    /// `HashMap<Integer, Float>` iterates them; `PDCIDFontType0` takes 500.
+    /// `HashMap<Integer, Float>` iterates them. PDFBox's `PDCIDFontType0` takes 500 whatever
+    /// its widths (#109); the port averages them as for other CID fonts.
     fn average_width(&self) -> f32 {
-        if matches!(self.kind, CidKind::Compact(_)) {
-            return 500.0;
-        }
         let mut total = 0.0f32;
         let mut count = 0;
         for (_, width) in encoding::java_integer_map_order(&self.width_order) {
@@ -2148,6 +2148,21 @@ impl CidFont {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_type3_glyph_boxes_as_d1_gives_them() {
+        let proc = CharProc {
+            name: "a".to_owned(),
+            length: 0,
+            first: Ok(Some((
+                "d1".to_owned(),
+                [520.0, 0.0, -0.1, 0.3, 480.7, 700.1]
+                    .map(Object::Real)
+                    .to_vec(),
+            ))),
+        };
+        assert_eq!(proc.glyph_bbox().unwrap(), Some([-0.1, 0.3, 480.7, 700.1]));
+    }
 
     #[test]
     fn coerces_codes_to_java_chars() {

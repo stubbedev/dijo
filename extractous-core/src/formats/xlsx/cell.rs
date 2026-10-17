@@ -125,14 +125,9 @@ impl CellAddress {
         })
     }
 
-    /// `compareTo`: by the difference of the rows, then of the columns, which Java's `int`
-    /// subtraction wraps.
-    pub(crate) fn java_compare(&self, other: &Self) -> Ordering {
-        let rows = self.row.wrapping_sub(other.row);
-        if rows != 0 {
-            return rows.cmp(&0);
-        }
-        self.column.wrapping_sub(other.column).cmp(&0)
+    /// By row, then by column. POI's `compareTo` subtracts them as `int`s, which wraps (#95).
+    pub(crate) fn compare(&self, other: &Self) -> Ordering {
+        (self.row, self.column).cmp(&(other.row, other.column))
     }
 
     /// `formatAsString`: the column's letters and the row from 1.

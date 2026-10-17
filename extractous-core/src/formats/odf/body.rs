@@ -3,12 +3,18 @@
 //! annotations, text boxes and images become their XHTML counterparts, bold, italic and
 //! underlined text styles become `b`, `i` and `u`, and templates, style definitions, covered
 //! table cells and, unless deleted content is asked for, tracked changes are left out.
+//!
+//! Unlike Tika's handler, headings and notes end as blocks, `text:s` writes as many spaces as
+//! its `text:c` counts, malformed font weights and outline levels are ignored rather than
+//! failing the document, and the attributes of OpenOffice.org 1 documents are read in their
+//! OpenDocument namespaces, as their elements are (#90).
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::odf::{normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS};
+use crate::formats::odf::{
+    normalized_attributes, normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS,
+};
 use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -23,8 +29,12 @@ const PRESENTATION_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:presentatio
 const DRAW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 const SPACE: &str = " ";
+/// Spaces to write a `text:s` from, in pieces.
+const SPACES: &str = "                                                                ";
 const TAB: &str = "\t";
 const MIN_BOLD_WEIGHT: i32 = 500;
+/// The most spaces one `text:s` writes, whatever its `text:c` says.
+const MAX_SPACES: usize = 65_535;
 
 /// How the attributes of an ODF element become those of its XHTML element: the ODF attribute,
 /// by namespace and local name, and the XHTML name it takes.
@@ -87,24 +97,12 @@ enum ListTag {
     Styled(ListStyleId),
 }
 
-/// Which namespaces the handler sees.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Namespaces {
-    /// Those of OpenOffice.org 1 elements mapped to OpenDocument's, as behind Tika's
-    /// `NSNormalizerContentHandler` in the parts of an archive.
-    Normalized,
-    /// As written, as in a flat document, where Tika normalizes only what the handler writes.
-    AsWritten,
-}
-
 /// The state of Tika's `OpenDocumentBodyHandler` over one XML part, which also keeps the
 /// elements it has open, as the `XHTMLBalancingHandler` behind it in a flat document does.
 pub(super) struct Body<'a, 'x> {
     xhtml: &'a mut Xhtml<'x>,
     include_deleted_content: bool,
-    namespaces: Namespaces,
     open: Vec<&'static str>,
-    unchecked_failure: bool,
     text_nodes: Vec<bool>,
     completely_filtered: usize,
     heading_stack: Vec<&'static str>,
@@ -127,17 +125,11 @@ pub(super) struct Body<'a, 'x> {
 }
 
 impl<'a, 'x> Body<'a, 'x> {
-    pub(super) fn new(
-        xhtml: &'a mut Xhtml<'x>,
-        include_deleted_content: bool,
-        namespaces: Namespaces,
-    ) -> Self {
+    pub(super) fn new(xhtml: &'a mut Xhtml<'x>, include_deleted_content: bool) -> Self {
         Self {
             xhtml,
             include_deleted_content,
-            namespaces,
             open: Vec::new(),
-            unchecked_failure: false,
             text_nodes: Vec::new(),
             completely_filtered: 0,
             heading_stack: Vec::new(),
@@ -165,12 +157,6 @@ impl<'a, 'x> Body<'a, 'x> {
         self.xhtml.metadata_mut()
     }
 
-    /// Whether the handler failed as with one of Java's unchecked exceptions, on a number that
-    /// does not parse, rather than with a `SAXException`.
-    pub(super) fn failed_unchecked(&self) -> bool {
-        self.unchecked_failure
-    }
-
     /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements still open.
     pub(super) fn drain_open_elements(&mut self) -> Result<(), Stop> {
         while let Some(name) = self.open.pop() {
@@ -191,17 +177,27 @@ impl<'a, 'x> Body<'a, 'x> {
         Ok(())
     }
 
-    fn namespace<'n>(&self, namespace: &'n str) -> Cow<'n, str> {
-        match self.namespaces {
-            Namespaces::Normalized => normalized_namespace(namespace),
-            Namespaces::AsWritten => Cow::Borrowed(namespace),
+    /// The names of the text, paragraph and list styles defined so far.
+    pub(super) fn defined_styles(&self) -> DefinedStyles {
+        DefinedStyles {
+            text: self.text_style_names.keys().cloned().collect(),
+            paragraph: self.paragraph_text_style_names.keys().cloned().collect(),
+            list: self.list_style_names.keys().cloned().collect(),
         }
     }
 
-    /// Notes when `result` failed as Java's unchecked exceptions fail.
-    fn unchecked<T>(&mut self, result: Result<T, Failure>) -> Result<T, Failure> {
-        self.unchecked_failure |= result.is_err();
-        result
+    /// Forgets the styles `names` holds, as the next part of an archive starts without the
+    /// styles of the part before it.
+    pub(super) fn forget_styles(&mut self, names: &DefinedStyles) {
+        for name in &names.text {
+            self.text_style_names.remove(name);
+        }
+        for name in &names.paragraph {
+            self.paragraph_text_style_names.remove(name);
+        }
+        for name in &names.list {
+            self.list_style_names.remove(name);
+        }
     }
 
     /// The `needsCompleteFiltering` of extractous's substitution: elements whose whole content
@@ -415,11 +411,9 @@ impl<'a, 'x> Body<'a, 'x> {
             if matches!(font_style, Some("italic" | "oblique")) {
                 self.text_styles[style].italic = true;
             }
-            if let Some(weight) = attribute(attributes, FORMATTING_OBJECTS_NS, "font-weight") {
-                let bold = is_bold(weight);
-                if self.unchecked(bold)? {
-                    self.text_styles[style].bold = true;
-                }
+            let weight = attribute(attributes, FORMATTING_OBJECTS_NS, "font-weight");
+            if weight.is_some_and(is_bold) {
+                self.text_styles[style].bold = true;
             }
             let underline = attribute(attributes, STYLE_NS, "text-underline-style");
             if underline.is_some_and(|underline| underline != "none") {
@@ -464,33 +458,58 @@ impl<'a, 'x> Body<'a, 'x> {
     }
 }
 
-/// Whether a `fo:font-weight` makes text bold, failing where Tika's check throws: on an empty
-/// weight, and on one that starts with a digit but is no `int`.
-fn is_bold(weight: &str) -> Result<bool, Failure> {
-    if matches!(weight, "bold" | "bolder") {
-        return Ok(true);
-    }
-    let Some(first) = weight.chars().next() else {
-        return Err(Failure::Malformed("A font weight is empty".to_owned()));
-    };
-    if !java::is_digit(first) {
-        return Ok(false);
-    }
-    let value = java::parse_int(weight)
-        .ok_or_else(|| Failure::Malformed(format!("The font weight {weight:?} is not a number")))?;
-    Ok(value > MIN_BOLD_WEIGHT)
+/// The names of the styles defined in a part, which [`Body::forget_styles`] forgets.
+#[derive(Debug, Default)]
+pub(super) struct DefinedStyles {
+    text: Vec<String>,
+    paragraph: Vec<String>,
+    list: Vec<String>,
 }
 
-/// The heading element of a `text:h`, from its outline level.
-fn heading(attributes: &[Attribute]) -> Result<&'static str, Failure> {
+impl DefinedStyles {
+    /// The styles of these that `before` does not hold.
+    pub(super) fn since(self, before: &DefinedStyles) -> DefinedStyles {
+        let new = |names: Vec<String>, old: &[String]| {
+            names
+                .into_iter()
+                .filter(|name| !old.contains(name))
+                .collect()
+        };
+        DefinedStyles {
+            text: new(self.text, &before.text),
+            paragraph: new(self.paragraph, &before.paragraph),
+            list: new(self.list, &before.list),
+        }
+    }
+}
+
+/// Whether a `fo:font-weight` makes text bold: `bold`, `bolder` or a number above 500. A weight
+/// that is empty, or starts with a digit but is no number, is not bold; Tika's check throws on
+/// it, failing the whole document (#90).
+fn is_bold(weight: &str) -> bool {
+    matches!(weight, "bold" | "bolder")
+        || java::parse_int(weight).is_some_and(|value| value > MIN_BOLD_WEIGHT)
+}
+
+/// The heading element of a `text:h`, from its outline level: `h1` where the level is missing
+/// or no number, on which Tika fails the whole document (#90).
+fn heading(attributes: &[Attribute]) -> &'static str {
     const HEADINGS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"];
-    let Some(level) = attribute(attributes, TEXT_NS, "outline-level") else {
-        return Ok(HEADINGS[0]);
-    };
-    let level = java::parse_int(level).ok_or_else(|| {
-        Failure::Malformed(format!("The outline level {level:?} is not a number"))
-    })?;
-    Ok(HEADINGS[usize::try_from(level.clamp(1, 6) - 1).expect("a clamped level is positive")])
+    let level = attribute(attributes, TEXT_NS, "outline-level")
+        .and_then(java::parse_int)
+        .unwrap_or(1);
+    HEADINGS[usize::try_from(level.clamp(1, 6) - 1).expect("a clamped level is positive")]
+}
+
+/// How many spaces a `text:s` stands for: as many as its `text:c` counts, at most
+/// [`MAX_SPACES`], and one where it counts none or is no number. Tika writes one space whatever
+/// the count (#90).
+fn spaces(attributes: &[Attribute]) -> usize {
+    attribute(attributes, TEXT_NS, "c")
+        .and_then(java::parse_int)
+        .and_then(|count| usize::try_from(count).ok())
+        .filter(|count| *count > 0)
+        .map_or(1, |count| count.min(MAX_SPACES))
 }
 
 fn is_text_node(namespace: &str, local_name: &str) -> bool {
@@ -515,8 +534,10 @@ impl SaxHandler for Body<'_, '_> {
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        let namespace = self.namespace(namespace);
+        let namespace = normalized_namespace(namespace);
         let namespace = namespace.as_ref();
+        let attributes = normalized_attributes(attributes);
+        let attributes = attributes.as_ref();
         if namespace == DRAW_NS && local_name == "image" {
             self.close_style_tags()?;
             let source = attribute(attributes, XLINK_NS, "href")
@@ -544,18 +565,28 @@ impl SaxHandler for Body<'_, '_> {
         match (namespace, local_name) {
             (TEXT_NS, "h") => {
                 let element = heading(attributes);
-                let element = self.unchecked(element)?;
                 self.heading_stack.push(element);
                 self.start(element, &[])?;
             }
             (TEXT_NS, "list") => self.start_list(attribute(attributes, TEXT_NS, "style-name"))?,
             (TEXT_NS, "span") => self.start_span(attribute(attributes, TEXT_NS, "style-name")),
             (TEXT_NS, "p") => self.start_paragraph(attribute(attributes, TEXT_NS, "style-name"))?,
-            (TEXT_NS, "s") => self.xhtml.characters(SPACE)?,
+            (TEXT_NS, "s") => {
+                let mut spaces = spaces(attributes);
+                while spaces > 0 {
+                    let piece = spaces.min(SPACES.len());
+                    self.xhtml.characters(&SPACES[..piece])?;
+                    spaces -= piece;
+                }
+            }
             (_, "annotation" | "note" | "notes") => {
                 self.close_style_tags()?;
-                self.xhtml
-                    .start_element_with("p", &[("class", local_name)])?;
+                let class = match local_name {
+                    "annotation" => "annotation",
+                    "note" => "note",
+                    _ => "notes",
+                };
+                self.start("p", &[("class", class)])?;
             }
             (_, "a") => {
                 self.anchor_depth += 1;
@@ -572,7 +603,7 @@ impl SaxHandler for Body<'_, '_> {
     }
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        let namespace = self.namespace(namespace);
+        let namespace = normalized_namespace(namespace);
         let namespace = namespace.as_ref();
         self.end_style_definition(namespace, local_name);
         if self.completely_filtered == 0 {
@@ -583,7 +614,8 @@ impl SaxHandler for Body<'_, '_> {
                         .pop()
                         .expect("a heading ends after it started");
                     self.close_style_tags()?;
-                    self.end_in(namespace, element)?;
+                    // Tika ends a heading in the ODF namespace, so no line break follows it.
+                    self.end_in(XHTML_NAMESPACE, element)?;
                 }
                 (TEXT_NS, "list") => self.end_list()?,
                 (TEXT_NS, "span") => {
@@ -593,7 +625,8 @@ impl SaxHandler for Body<'_, '_> {
                 (TEXT_NS, "p") => self.end_paragraph()?,
                 (_, "annotation" | "note" | "notes") => {
                     self.close_style_tags()?;
-                    self.end_in(namespace, "p")?;
+                    // Tika ends a note in the ODF namespace too.
+                    self.end_in(XHTML_NAMESPACE, "p")?;
                 }
                 (_, "a") => {
                     self.close_style_tags()?;
@@ -628,26 +661,36 @@ impl SaxHandler for Body<'_, '_> {
 mod tests {
     use super::*;
 
+    fn text_attribute(local_name: &str, value: &str) -> Attribute {
+        Attribute {
+            namespace: TEXT_NS.to_owned(),
+            local_name: local_name.to_owned(),
+            qualified_name: format!("text:{local_name}"),
+            value: value.into(),
+        }
+    }
+
     #[test]
-    fn decides_boldness_and_headings_as_tika_does() {
-        assert!(is_bold("bold").unwrap());
-        assert!(is_bold("600").unwrap());
-        assert!(!is_bold("500").unwrap());
-        assert!(!is_bold("normal").unwrap());
-        assert!(is_bold("6x").is_err());
-        assert!(is_bold("").is_err());
-        let level = |value: &'static str| {
-            heading(&[Attribute {
-                namespace: TEXT_NS.to_owned(),
-                local_name: "outline-level".to_owned(),
-                qualified_name: "text:outline-level".to_owned(),
-                value: value.into(),
-            }])
-        };
-        assert_eq!(level("0").unwrap(), "h1");
-        assert_eq!(level("3").unwrap(), "h3");
-        assert_eq!(level("9").unwrap(), "h6");
-        assert!(level("x").is_err());
-        assert_eq!(heading(&[]).unwrap(), "h1");
+    fn decides_boldness_headings_and_spaces_ignoring_malformed_values() {
+        assert!(is_bold("bold"));
+        assert!(is_bold("600"));
+        assert!(!is_bold("500"));
+        assert!(!is_bold("normal"));
+        assert!(!is_bold("6x"));
+        assert!(!is_bold(""));
+        let level = |value: &str| heading(&[text_attribute("outline-level", value)]);
+        assert_eq!(level("0"), "h1");
+        assert_eq!(level("3"), "h3");
+        assert_eq!(level("9"), "h6");
+        assert_eq!(level("x"), "h1");
+        assert_eq!(level(""), "h1");
+        assert_eq!(heading(&[]), "h1");
+        let count = |value: &str| spaces(&[text_attribute("c", value)]);
+        assert_eq!(count("3"), 3);
+        assert_eq!(count("0"), 1);
+        assert_eq!(count("-2"), 1);
+        assert_eq!(count("x"), 1);
+        assert_eq!(count("999999999"), MAX_SPACES);
+        assert_eq!(spaces(&[]), 1);
     }
 }

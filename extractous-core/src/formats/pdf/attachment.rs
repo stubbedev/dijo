@@ -9,7 +9,6 @@ use lopdf::xref::XrefEntry;
 use lopdf::{Dictionary, Object, ObjectId, StringFormat};
 
 use super::cos::{as_dict, text_string, Pdf};
-use super::encoding::java_bucket;
 use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::embedded::{ResourceType, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
@@ -18,14 +17,11 @@ use crate::java::is_blank;
 
 /// The type of a file specification dictionary.
 const FILESPEC: &[u8] = b"Filespec";
-/// The keys of a complex file specification's file names, each with the key of its embedded
-/// file, in the order `extractMultiOSPDEmbeddedFiles` extracts them.
-const PLATFORMS: [(&[u8], &[u8]); 4] = [
-    (b"F", b"F"),
-    (b"Mac", b"Mac"),
-    (b"DOS", b"DOS"),
-    (b"Unix", b"Unix"),
-];
+/// The keys of a complex file specification's embedded files, the one it is extracted from
+/// first: the file, its Unicode-named copy, then the platform copies PDF 2.0 deprecates.
+const FILE_KEYS: [&[u8]; 5] = [b"F", b"UF", b"DOS", b"Mac", b"Unix"];
+/// The keys of a complex file specification's file names, the one it is named by first.
+const NAME_KEYS: [&[u8]; 5] = [b"UF", b"F", b"DOS", b"Mac", b"Unix"];
 
 /// The attributes of an element, in the order SAX's `AttributesImpl` holds them.
 pub(super) type Attributes = Vec<(String, String)>;
@@ -112,7 +108,12 @@ fn set_or_replace(attributes: &mut Attributes, name: &str, value: &str) {
 }
 
 /// `AbstractPDF2XHTML.processDoc`, apart from its check for specifications already extracted:
-/// a link for a simple specification, and each embedded file of a complex one.
+/// a link for a simple specification, and the file a complex one embeds.
+///
+/// Tika extracts the Mac, DOS and Unix copies of a file as files of their own, each named by
+/// its platform's name before `UF`; the port extracts the file once, from the first copy of
+/// [`FILE_KEYS`], named by the first name of [`NAME_KEYS`] that is not blank, else by the name
+/// it is listed under (#109).
 pub(super) fn written(
     pdf: &Pdf,
     name: &str,
@@ -131,59 +132,57 @@ pub(super) fn written(
     if !attributes.iter().any(|(key, _)| key == "source") {
         attributes.push(("source".to_owned(), "attachment".to_owned()));
     }
-    let mut written = Vec::new();
     let files = pdf.dict(dict, b"EF");
-    for (name_key, file_key) in PLATFORMS {
-        let Some(stream) = files.and_then(|files| match pdf.get(files, file_key) {
+    let Some(stream) = FILE_KEYS.into_iter().find_map(|key| {
+        files.and_then(|files| match pdf.get(files, key) {
             Some(Object::Stream(stream)) => Some(stream),
             _ => None,
-        }) else {
-            continue;
-        };
-        let file_name = [pdf.text(dict, name_key), pdf.text(dict, b"UF")]
-            .into_iter()
-            .flatten()
-            .find(|file_name| !java::trim(file_name).is_empty())
-            .unwrap_or_else(|| name.to_owned());
-        let mut metadata = TikaMetadata::new();
-        metadata.set(RESOURCE_NAME, file_name.clone());
-        let size = pdf
-            .dict(&stream.dict, b"Params")
-            .map_or(-1, |params| pdf.int(params, b"Size", -1));
-        if size > -1 {
-            metadata.set("Content-Length", size.to_string());
-        }
-        ResourceType::Attachment.set(&mut metadata);
-        metadata.set("tk:orig-resource-name", file_name.clone());
-        let described = [
-            (
-                "pdf:embedded-file-annotation-type",
-                Some(annotation_type.to_owned()),
-            ),
-            (
-                "pdf:embedded-file-subtype",
-                pdf.name_as_string(&stream.dict, b"Subtype"),
-            ),
-            ("pdf:embedded-file-description", pdf.text(dict, b"Desc")),
-            (
-                "pdf:associated-file-relationship",
-                pdf.name_as_string(dict, b"AFRelationship"),
-            ),
-        ];
-        for (key, value) in described {
-            if let Some(value) = value.filter(|value| !is_blank(value)) {
-                metadata.set(key, value);
-            }
-        }
-        let data = pdf.decode(stream)?;
-        set_or_replace(&mut attributes, "class", "embedded");
-        set_or_replace(&mut attributes, "id", &file_name);
-        written.push(Written::Embedded {
-            attributes: attributes.clone(),
-            file: EmbeddedFile { metadata, data },
-        });
+        })
+    }) else {
+        return Ok(Vec::new());
+    };
+    let file_name = NAME_KEYS
+        .into_iter()
+        .filter_map(|key| pdf.text(dict, key))
+        .find(|file_name| !java::trim(file_name).is_empty())
+        .unwrap_or_else(|| name.to_owned());
+    let mut metadata = TikaMetadata::new();
+    metadata.set(RESOURCE_NAME, file_name.clone());
+    let size = pdf
+        .dict(&stream.dict, b"Params")
+        .map_or(-1, |params| pdf.int(params, b"Size", -1));
+    if size > -1 {
+        metadata.set("Content-Length", size.to_string());
     }
-    Ok(written)
+    ResourceType::Attachment.set(&mut metadata);
+    metadata.set("tk:orig-resource-name", file_name.clone());
+    let described = [
+        (
+            "pdf:embedded-file-annotation-type",
+            Some(annotation_type.to_owned()),
+        ),
+        (
+            "pdf:embedded-file-subtype",
+            pdf.name_as_string(&stream.dict, b"Subtype"),
+        ),
+        ("pdf:embedded-file-description", pdf.text(dict, b"Desc")),
+        (
+            "pdf:associated-file-relationship",
+            pdf.name_as_string(dict, b"AFRelationship"),
+        ),
+    ];
+    for (key, value) in described {
+        if let Some(value) = value.filter(|value| !is_blank(value)) {
+            metadata.set(key, value);
+        }
+    }
+    let data = pdf.decode(stream)?;
+    set_or_replace(&mut attributes, "class", "embedded");
+    set_or_replace(&mut attributes, "id", &file_name);
+    Ok(vec![Written::Embedded {
+        attributes,
+        file: EmbeddedFile { metadata, data },
+    }])
 }
 
 /// `PDFDOMUtil.findType` for file specifications, as `processPageAnnotation` looks for them
@@ -290,12 +289,6 @@ pub(super) fn document_specs(pdf: &Pdf) -> Result<Vec<(String, &Dictionary)>, Un
     let mut named = Vec::new();
     name_tree(pdf, Some(tree), 0, &mut named)?;
     for (name, spec) in named {
-        let spec = spec.ok_or_else(|| {
-            Unported(
-                "a tree of embedded files naming null, whose specification PDFBox fails on"
-                    .to_owned(),
-            )
-        })?;
         if seen.insert(identity(spec)) {
             specs.push((name, spec));
         }
@@ -304,8 +297,9 @@ pub(super) fn document_specs(pdf: &Pdf) -> Result<Vec<(String, &Dictionary)>, Un
 }
 
 /// `COSDocument.getObjectsByType(COSName.FILESPEC)`: the file specifications among the
-/// objects the cross-reference table lists, in the order PDFBox's `HashMap` of their keys
-/// holds them.
+/// objects the cross-reference table lists, by object number. Tika takes them in the order
+/// PDFBox's `HashMap` of their keys holds them, which follows hash buckets, not the document
+/// (#109).
 ///
 /// The objects `lopdf` could not read are left out where none of them can be a file
 /// specification, the document's bytes not spelling `Filespec` and none of them held in an
@@ -330,8 +324,8 @@ fn file_spec_objects(pdf: &Pdf) -> Result<Vec<&Dictionary>, Unported> {
             XrefEntry::Free | XrefEntry::UnusableFree => {}
         }
     }
-    let capacity = java_presized_capacity(keys.len());
-    let mut found: Vec<(usize, &Dictionary)> = Vec::new();
+    keys.sort_unstable();
+    let mut found: Vec<&Dictionary> = Vec::new();
     let mut lost: Vec<ObjectId> = Vec::new();
     for key in keys {
         if pdf.is_lost(key.0) {
@@ -342,7 +336,7 @@ fn file_spec_objects(pdf: &Pdf) -> Result<Vec<&Dictionary>, Unported> {
             continue;
         };
         if pdf.name(dict, b"Type") == Some(FILESPEC) {
-            found.push((java_bucket(object_key_hash(key), capacity), dict));
+            found.push(dict);
         }
     }
     if !found.is_empty() || pdf.spells_filespec || compressed_lost {
@@ -350,27 +344,7 @@ fn file_spec_objects(pdf: &Pdf) -> Result<Vec<&Dictionary>, Unported> {
             pdf.indirect(key);
         }
     }
-    found.sort_by_key(|&(bucket, _)| bucket);
-    if found.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-        return Err(Unported(
-            "file specifications PDFBox's table of objects holds in one bucket, in an order \
-             the port does not follow"
-                .to_owned(),
-        ));
-    }
-    Ok(found.into_iter().map(|(_, dict)| dict).collect())
-}
-
-/// `COSObjectKey.hashCode`.
-fn object_key_hash((number, generation): ObjectId) -> i32 {
-    let value = i64::from(number) << 16 | i64::from(generation);
-    (value ^ (value >> 32)) as i32
-}
-
-/// The table size of a Java `HashMap` that `putAll` of `size` entries sizes from empty:
-/// `tableSizeFor` of what the entries need at the default load factor.
-fn java_presized_capacity(size: usize) -> usize {
-    ((size as f64 / 0.75).ceil() as usize).next_power_of_two()
+    Ok(found)
 }
 
 /// `extractFilesfromEFTree`: the names and specifications of a node of the tree of embedded
@@ -379,7 +353,7 @@ fn name_tree<'p>(
     pdf: &'p Pdf,
     node: Option<&'p Dictionary>,
     depth: usize,
-    named: &mut Vec<(String, Option<&'p Dictionary>)>,
+    named: &mut Vec<(String, &'p Dictionary)>,
 ) -> Result<(), Unported> {
     if depth > MAX_RECURSION_DEPTH {
         return Err(Unported(
@@ -390,9 +364,7 @@ fn name_tree<'p>(
     let Some(node) = node else {
         return Ok(());
     };
-    if let Some(names) = node_names(pdf, node) {
-        named.extend(names);
-    }
+    named.extend(node_names(pdf, node));
     for kid in pdf.array(node, b"Kids").unwrap_or(&[]) {
         let kid = pdf.resolve(kid).and_then(as_dict);
         name_tree(pdf, kid, depth + 1, named)?;
@@ -400,46 +372,23 @@ fn name_tree<'p>(
     Ok(())
 }
 
-/// `PDNameTreeNode.getNames` of the tree of embedded files: a later value of a name replaces
-/// the earlier where it stands, and a node naming with what is not a string, or naming what
-/// is neither a dictionary nor null, has no names Tika reads.
-fn node_names<'p>(
-    pdf: &'p Pdf,
-    node: &'p Dictionary,
-) -> Option<Vec<(String, Option<&'p Dictionary>)>> {
-    let items = pdf.array(node, b"Names")?;
-    let mut names: Vec<(String, Option<&'p Dictionary>)> = Vec::with_capacity(items.len() / 2);
-    for [key, value] in items.as_chunks::<2>().0 {
-        let Some(Object::String(bytes, _)) = pdf.resolve(key) else {
-            return None;
-        };
-        let value = match pdf.resolve(value) {
-            None => None,
-            Some(value) => Some(as_dict(value)?),
-        };
-        let name = text_string(bytes);
-        match names.iter_mut().find(|(existing, _)| *existing == name) {
-            Some((_, current)) => *current = value,
-            None => names.push((name, value)),
-        }
-    }
-    Some(names)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hashes_object_keys_as_pdfbox_does() {
-        assert_eq!(object_key_hash((1, 0)), 1 << 16);
-        assert_eq!(object_key_hash((70_000, 2)), 292_552_707);
-    }
-
-    #[test]
-    fn sizes_tables_as_java_putall_does() {
-        assert_eq!(java_presized_capacity(1), 2);
-        assert_eq!(java_presized_capacity(12), 16);
-        assert_eq!(java_presized_capacity(13), 32);
-    }
+/// The names and specifications of a node of the tree of embedded files, each pair as it
+/// stands. PDFBox's `PDNameTreeNode.getNames` keeps a repeated name where it first stands with
+/// its last value, and gives no names for a node with one entry naming with what is not a
+/// string, or naming what is not a dictionary (#109); such an entry is skipped alone here.
+fn node_names<'p>(pdf: &'p Pdf, node: &'p Dictionary) -> Vec<(String, &'p Dictionary)> {
+    let Some(items) = pdf.array(node, b"Names") else {
+        return Vec::new();
+    };
+    items
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter_map(|[key, value]| match pdf.resolve(key) {
+            Some(Object::String(bytes, _)) => {
+                Some((text_string(bytes), pdf.resolve(value).and_then(as_dict)?))
+            }
+            _ => None,
+        })
+        .collect()
 }

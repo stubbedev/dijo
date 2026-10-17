@@ -4,9 +4,13 @@
 //! object parsed once however often it is referenced; and the `int` casts and array accesses
 //! Java makes, which fail as a `RuntimeException` rather than a `PropertyListFormatException`.
 //!
-//! A port rather than a crate, as dd-plist's object model is what Tika reads and writes: a UID
-//! is named by the number of its object, a dictionary key is any object's `toString`, a
-//! dictionary drops its null values, and strings decode as the JDK decodes them.
+//! A port rather than a crate, as dd-plist's object model is what Tika reads and writes: a
+//! dictionary is keyed by its keys' `toString`, whatever their objects, which the detector
+//! follows and the parser refuses, and strings decode as the JDK decodes them. Unlike dd-plist,
+//! a UID is named by its value, not by the number of its object; a UTF-8 string's characters
+//! are measured by their real length, where dd-plist counts two bytes for each multibyte one;
+//! and a dictionary keeps its null values, which dd-plist drops, though the detector still
+//! looks only at keys with values (#104).
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -62,26 +66,36 @@ pub(crate) enum Object {
     Data(Vec<u8>),
     /// Seconds since 2001-01-01.
     Date(f64),
-    /// A UID, named by the number of its object.
-    Uid {
-        object: i32,
-        value: u128,
-    },
+    /// A UID.
+    Uid(u128),
 }
 
-/// A dictionary's key: the `toString` of its object where the port writes it, else the object.
+/// A dictionary's key: a string, or another object, which dd-plist keys by its `toString`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Key {
-    Text(String),
-    Object(Rc<Object>),
+    String(String),
+    Other(Rc<Object>),
 }
 
-/// An `NSDictionary`: its entries in the order of a `LinkedHashMap`, a key put again keeping
-/// its place and taking the new value, a null value not put.
+impl Key {
+    /// The key's `toString` where the port has it.
+    fn name(&self) -> Option<String> {
+        match self {
+            Self::String(text) => Some(text.clone()),
+            Self::Other(object) => object.text(),
+        }
+    }
+}
+
+/// An `NSDictionary`: its entries in the order of a `LinkedHashMap` keyed by their keys'
+/// `toString`, a key put again keeping its place and taking the new value, null values
+/// included.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Dict {
-    entries: Vec<(Key, Rc<Object>)>,
+    entries: Vec<(Key, Value)>,
     positions: HashMap<String, usize>,
+    /// The keys put with a value, the keys of dd-plist's dictionary.
+    valued: HashSet<String>,
 }
 
 /// What a property list holds, as `BPListDetector.detectOnKeys` tells it by the keys of its root
@@ -118,26 +132,26 @@ impl ListKind {
 
 impl Dict {
     pub(super) fn put(&mut self, key: Key, value: Value) {
-        let Some(value) = value else {
-            return;
-        };
-        if let Key::Text(text) = &key {
-            if let Some(&position) = self.positions.get(text) {
+        if let Some(name) = key.name() {
+            if value.is_some() {
+                self.valued.insert(name.clone());
+            }
+            if let Some(&position) = self.positions.get(&name) {
                 self.entries[position].1 = value;
                 return;
             }
-            self.positions.insert(text.clone(), self.entries.len());
+            self.positions.insert(name, self.entries.len());
         }
         self.entries.push((key, value));
     }
 
-    pub(crate) fn entries(&self) -> &[(Key, Rc<Object>)] {
+    pub(crate) fn entries(&self) -> &[(Key, Value)] {
         &self.entries
     }
 
-    /// Whether `key` is a key of the dictionary.
+    /// Whether `key` is a key of dd-plist's dictionary: put with a value.
     fn contains(&self, key: &str) -> bool {
-        self.positions.contains_key(key)
+        self.valued.contains(key)
     }
 
     /// `BPListDetector.detectOnKeys` of the dictionary's keys.
@@ -166,7 +180,7 @@ impl Object {
             Object::Real(value) if *value == f64::INFINITY => "+infinity".to_owned(),
             Object::Real(value) if *value == f64::NEG_INFINITY => "-infinity".to_owned(),
             Object::Real(value) => java_double_to_string(*value),
-            Object::Uid { object, value } => format!("{value:x} ({object})"),
+            Object::Uid(value) => format!("{value:x} ({value})"),
             Object::Dict(_)
             | Object::Array(_)
             | Object::Set(_)
@@ -324,7 +338,7 @@ impl Parser<'_> {
                         "The NSObject at offset {offset} is a URL, which is not supported."
                     )))
                 }
-                0xE => self.uid(object, offset, 16)?,
+                0xE => self.uid(offset, 16)?,
                 _ => return Err(unsupported()),
             },
             INT_TYPE | REAL_TYPE => {
@@ -378,7 +392,7 @@ impl Parser<'_> {
                         .expect("the JDK's Unicode and ASCII charsets decode natively"),
                 )
             }
-            UID_TYPE => self.uid(object, offset, i32::from(info) + 1)?,
+            UID_TYPE => self.uid(offset, i32::from(info) + 1)?,
             ARRAY_TYPE | ORDERED_SET_TYPE | SET_TYPE => {
                 let (count, header) = self.length_and_offset(info, offset)?;
                 let base = offset + header;
@@ -414,9 +428,9 @@ impl Parser<'_> {
                         ))
                     })?;
                     let value = self.object(stack, value_reference)?;
-                    let key = match key.text() {
-                        Some(text) => Key::Text(text),
-                        None => Key::Object(key),
+                    let key = match &*key {
+                        Object::String(text) => Key::String(text.clone()),
+                        _ => Key::Other(key),
                     };
                     dict.put(key, value);
                 }
@@ -501,9 +515,8 @@ impl Parser<'_> {
         Ok((value, length_length))
     }
 
-    /// `calculateUtf8StringLength`: the bytes of `characters` characters, counting two for a
-    /// multibyte one whatever its length, and the count itself where the bytes run out or turn
-    /// out malformed; `None` where Java's exact sum overflows.
+    /// `calculateUtf8StringLength`: the bytes of `characters` characters, and the count itself
+    /// where the bytes run out or turn out malformed; `None` where Java's exact sum overflows.
     fn utf8_length(&self, start: i32, characters: i32) -> Option<i32> {
         let mut length: i32 = 0;
         for _ in 0..characters {
@@ -529,19 +542,19 @@ impl Parser<'_> {
             if !complete {
                 return Some(characters);
             }
-            length += 2;
+            length = length.checked_add(following + 1)?;
         }
         Some(length)
     }
 
-    /// `parseUid`: the UID of `length` bytes after the marker, named by its object's number.
-    fn uid(&self, object: i32, offset: i32, length: i32) -> Result<Object, Thrown> {
+    /// `parseUid`: the UID of `length` bytes after the marker.
+    fn uid(&self, offset: i32, length: i32) -> Result<Object, Thrown> {
         let end = self.safe_add(offset, length + 1, "UID")?;
         let value = self
             .slice(offset + 1, end)
             .iter()
             .fold(0u128, |value, &byte| value << 8 | u128::from(byte));
-        Ok(Object::Uid { object, value })
+        Ok(Object::Uid(value))
     }
 }
 
@@ -628,17 +641,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn reads_objects_as_dd_plist_does() {
+    fn reads_objects() {
         use Item::*;
         let list = bplist(
             &[
                 Dict(vec![(1, 2), (3, 4), (1, 5), (6, 7), (8, 9)]),
                 Ascii("key"),
                 Ascii("first"),
-                Int(7),
+                Ascii("empty"),
                 Null,
                 Ascii("second"),
-                Uid(10),
+                Ascii("named"),
                 Utf8("\u{20AC}uro"),
                 Utf8("na\u{ef}ve"),
                 Ascii("caf\u{e9}"),
@@ -649,26 +662,30 @@ pub(crate) mod tests {
         let Object::Dict(dict) = &*root else {
             panic!("{root:?}");
         };
-        let entries: Vec<(String, Object)> = dict
+        let entries: Vec<(String, Option<Object>)> = dict
             .entries()
             .iter()
             .map(|(key, value)| match key {
-                Key::Text(text) => (text.clone(), (**value).clone()),
-                Key::Object(object) => panic!("{object:?}"),
+                Key::String(text) => (text.clone(), value.as_deref().cloned()),
+                Key::Other(object) => panic!("{object:?}"),
             })
             .collect();
         assert_eq!(
             entries,
             [
-                ("key".to_owned(), Object::String("second".to_owned())),
-                ("a (6)".to_owned(), Object::String("\u{20AC}u".to_owned())),
+                ("key".to_owned(), Some(Object::String("second".to_owned()))),
+                ("empty".to_owned(), None),
+                (
+                    "named".to_owned(),
+                    Some(Object::String("\u{20AC}uro".to_owned()))
+                ),
                 (
                     "na\u{ef}ve".to_owned(),
-                    Object::String("caf\u{FFFD}\u{FFFD}".to_owned())
+                    Some(Object::String("caf\u{FFFD}\u{FFFD}".to_owned()))
                 ),
             ]
         );
-        assert!(!dict.contains("7"));
+        assert!(!dict.contains("empty"));
     }
 
     #[test]

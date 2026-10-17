@@ -1,8 +1,11 @@
 //! Hancom Office documents in HWPX (KS X 6101), as our Java `HwpxParser` reads them: the
-//! sections the package lists, in their order, as paragraphs and tables, footnotes and endnotes
-//! where they are anchored, and the title, language, authors and dates of the package as
-//! metadata; running headers, footers and master pages left out. The package is read as
-//! [`jdk_zip`] reads the JDK's `ZipFile`, its XML parts as Tika's SAX parser reads them.
+//! sections the package lists, in their order, as paragraphs and tables, footnotes, endnotes,
+//! running headers, footers and master pages where they are anchored, and the title, language,
+//! authors and dates of the package as metadata. The package is read as [`jdk_zip`] reads the
+//! JDK's `ZipFile`, its XML parts as Tika's SAX parser reads them.
+//!
+//! Our Java parser leaves headers, footers and master pages out, ends the collection of a
+//! metadata value at any end tag, and fails on an end tag it has no open element for (#105).
 
 use std::collections::HashMap;
 
@@ -18,8 +21,9 @@ use crate::java::is_blank;
 use crate::java::strip;
 
 const CONTAINER: &str = "META-INF/container.xml";
-const FURNITURE: [&str; 3] = ["header", "footer", "masterPage"];
-const NOTES: [&str; 2] = ["footNote", "endNote"];
+/// What HWPX anchors in a paragraph, read as paragraphs of their own: the notes, and the running
+/// headers, footers and master pages.
+const ANCHORED: [&str; 5] = ["footNote", "endNote", "header", "footer", "masterPage"];
 
 /// A change `Package` makes to the document's metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +120,9 @@ struct PackageHandler {
     manifest: HashMap<Option<String>, Option<String>>,
     spine: Vec<Option<String>>,
     text: String,
-    collecting: Option<String>,
+    /// The name of the value being collected, and how many elements are open inside the
+    /// element that holds it.
+    collecting: Option<(String, usize)>,
 }
 
 impl SaxHandler for PackageHandler {
@@ -126,14 +132,18 @@ impl SaxHandler for PackageHandler {
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
+        if let Some((_, depth)) = &mut self.collecting {
+            *depth += 1;
+            return Ok(());
+        }
         let value = |name: &str| attribute_named(attributes, name).map(str::to_owned);
         match local_name {
             "item" => {
                 self.manifest.insert(value("id"), value("href"));
             }
             "itemref" => self.spine.push(value("idref")),
-            "title" | "language" => self.collecting = Some(local_name.to_owned()),
-            "meta" => self.collecting = value("name"),
+            "title" | "language" => self.collecting = Some((local_name.to_owned(), 0)),
+            "meta" => self.collecting = value("name").map(|name| (name, 0)),
             _ => return Ok(()),
         }
         self.text.clear();
@@ -148,7 +158,15 @@ impl SaxHandler for PackageHandler {
     }
 
     fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
-        let Some(collecting) = self.collecting.take() else {
+        match &mut self.collecting {
+            Some((_, depth)) if *depth > 0 => {
+                *depth -= 1;
+                return Ok(());
+            }
+            Some(_) => {}
+            None => return Ok(()),
+        }
+        let Some((collecting, _)) = self.collecting.take() else {
             return Ok(());
         };
         let value = strip(&self.text).to_owned();
@@ -168,7 +186,7 @@ impl SaxHandler for PackageHandler {
 }
 
 /// `HwpxParser.Cell`: a table cell, whose paragraphs are those one level deeper than the open
-/// ones it started inside, or a note inside one, which takes paragraphs again.
+/// ones it started inside, or what is anchored inside one, which takes paragraphs again.
 struct Cell {
     depth: Option<usize>,
     lines: usize,
@@ -187,13 +205,7 @@ struct Section<'x, 'h> {
     paragraphs: Vec<String>,
     cells: Vec<Cell>,
     text_depth: i64,
-    furniture_depth: i64,
     in_section: bool,
-}
-
-/// What Java's `ArrayDeque.pop` throws on an empty deque.
-fn empty_deque() -> Failure {
-    Failure::Malformed("java.util.NoSuchElementException".to_owned())
 }
 
 impl Section<'_, '_> {
@@ -243,10 +255,6 @@ impl SaxHandler for Section<'_, '_> {
         if !self.in_section {
             return Ok(());
         }
-        if self.furniture_depth > 0 || FURNITURE.contains(&local_name) {
-            self.furniture_depth += 1;
-            return Ok(());
-        }
         match local_name {
             "p" => self.paragraphs.push(String::new()),
             "t" => self.text_depth += 1,
@@ -264,7 +272,7 @@ impl SaxHandler for Section<'_, '_> {
                     lines: 0,
                 });
             }
-            _ if NOTES.contains(&local_name) => {
+            _ if ANCHORED.contains(&local_name) => {
                 self.end_paragraph()?;
                 self.cells.push(Cell {
                     depth: None,
@@ -277,7 +285,7 @@ impl SaxHandler for Section<'_, '_> {
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        if self.text_depth > 0 && self.furniture_depth == 0 {
+        if self.text_depth > 0 {
             if let Some(paragraph) = self.paragraphs.last_mut() {
                 paragraph.push_str(text);
             }
@@ -289,25 +297,21 @@ impl SaxHandler for Section<'_, '_> {
         if !self.in_section {
             return Ok(());
         }
-        if self.furniture_depth > 0 {
-            self.furniture_depth -= 1;
-            return Ok(());
-        }
         match local_name {
             "p" => {
                 self.end_paragraph()?;
-                self.paragraphs.pop().ok_or_else(empty_deque)?;
+                self.paragraphs.pop();
             }
             "t" => self.text_depth -= 1,
             "tbl" => self.xhtml.end_element("table")?,
             "tr" => self.xhtml.end_element("tr")?,
             "tc" => {
-                self.cells.pop().ok_or_else(empty_deque)?;
+                self.cells.pop();
                 self.xhtml.end_element("td")?;
             }
             "sec" => self.in_section = false,
-            _ if NOTES.contains(&local_name) => {
-                self.cells.pop().ok_or_else(empty_deque)?;
+            _ if ANCHORED.contains(&local_name) => {
+                self.cells.pop();
             }
             _ => {}
         }
@@ -369,7 +373,6 @@ impl Parser for HwpxParser {
                     paragraphs: Vec::new(),
                     cells: Vec::new(),
                     text_depth: 0,
-                    furniture_depth: 0,
                     in_section: false,
                 };
                 xml::parse_sax(&section, "an HWPX section", &mut handler)?;
@@ -417,7 +420,7 @@ mod tests {
 </opf:package>"#;
     const SECTION0: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
-  <hp:p><hp:run><hp:secPr><hp:header><hp:p><hp:run><hp:t>Running header</hp:t></hp:run></hp:p></hp:header></hp:secPr><hp:t>First paragraph</hp:t><hp:t><hp:tab/>tabbed<hp:lineBreak/>broken</hp:t></hp:run></hp:p>
+  <hp:p><hp:run><hp:t>First paragraph</hp:t><hp:t><hp:tab/>tabbed<hp:lineBreak/>broken</hp:t></hp:run></hp:p>
   <hp:p><hp:run><hp:t>Before the table</hp:t><hp:tbl><hp:tr><hp:tc><hp:subList><hp:p><hp:run><hp:t>Cell one</hp:t></hp:run></hp:p><hp:p><hp:run><hp:t>second line</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc><hp:subList><hp:p><hp:run><hp:t>Cell two</hp:t><hp:footNote><hp:subList><hp:p><hp:run><hp:t>A note</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:run></hp:p></hp:subList></hp:tc></hp:tr></hp:tbl><hp:t>after the table</hp:t></hp:run></hp:p>
   <hp:p><hp:run><hp:t>   </hp:t></hp:run></hp:p>
 </hs:sec>"#;
@@ -442,6 +445,35 @@ mod tests {
         ];
         entries.extend(sections.iter().map(|(name, xml)| (*name, xml.as_bytes())));
         zip(&entries)
+    }
+
+    #[test]
+    fn reads_headers_and_metadata_by_their_structure() {
+        // Our Java parser leaves headers out and ends a value at any end tag (#105).
+        let section = SECTION0.replace(
+            "<hp:p><hp:run><hp:t>First paragraph</hp:t>",
+            "<hp:p><hp:run><hp:t>Before</hp:t><hp:secPr><hp:header><hp:p><hp:run><hp:t>Running header</hp:t></hp:run></hp:p></hp:header></hp:secPr><hp:t>First paragraph</hp:t>",
+        );
+        let package = PACKAGE_XML.replace(
+            "<opf:title> A title </opf:title>",
+            "<opf:title> A <opf:b>bold</opf:b> title </opf:title>",
+        );
+        let document = hwpx(
+            &package,
+            &[
+                ("Contents/section0.xml", section.as_str()),
+                ("Contents/section1.xml", SECTION1),
+            ],
+        );
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&document)
+            .unwrap();
+        assert!(
+            xml.contains("<p>Before</p>\n<p>Running header</p>\n<p>First paragraph"),
+            "{xml}"
+        );
+        assert_eq!(metadata["dc:title"], ["A bold title"]);
     }
 
     #[test]

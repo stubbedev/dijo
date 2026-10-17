@@ -741,8 +741,8 @@ fn parse_font(
     })
 }
 
-/// `concatenateMatrix`: the top DICT's matrix times the font DICT's, with FontBox's `d1` where
-/// the second element wants `d2`.
+/// `concatenateMatrix`: the top DICT's matrix times the font DICT's. FontBox computes the
+/// second element with `d1` where it wants `d2` (#109).
 fn concatenate(destination: &[Number], other: &[Number]) -> Parsed<Vec<Number>> {
     let get = |list: &[Number], index: usize| {
         list.get(index)
@@ -770,7 +770,7 @@ fn concatenate(destination: &[Number], other: &[Number]) -> Parsed<Vec<Number>> 
     );
     let mut result = destination.to_vec();
     result[0] = Number::Real(a1 * a2 + b1 * c2);
-    result[1] = Number::Real(a1 * b2 + b1 * d1);
+    result[1] = Number::Real(a1 * b2 + b1 * d2);
     result[2] = Number::Real(c1 * a2 + d1 * c2);
     result[3] = Number::Real(c1 * b2 + d1 * d2);
     result[4] = Number::Real(x1 * a2 + y1 * c2 + x2);
@@ -1297,6 +1297,24 @@ impl Cff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concatenates_font_matrices() {
+        let numbers = |values: [f64; 6]| values.map(Number::Real).to_vec();
+        let Ok(product) = concatenate(
+            &numbers([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            &numbers([1.0, 0.5, 0.0, 2.0, 1.0, 1.0]),
+        ) else {
+            panic!("the matrices do not concatenate");
+        };
+        assert_eq!(
+            product
+                .into_iter()
+                .map(Number::double_value)
+                .collect::<Vec<_>>(),
+            [1.0, 4.5, 3.0, 9.5, 6.0, 15.5]
+        );
+    }
 
     fn index(items: &[&[u8]]) -> Vec<u8> {
         let mut out = (items.len() as u16).to_be_bytes().to_vec();

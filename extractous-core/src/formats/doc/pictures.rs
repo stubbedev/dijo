@@ -45,13 +45,14 @@ impl PictureType {
         }
     }
 
-    /// `getExtension`, which for PICT pictures starts with a dot of its own.
+    /// `getExtension`. POI's for PICT pictures starts with a dot of its own, which made Tika
+    /// name them `image-N..pict` (#111).
     pub(super) fn extension(self) -> &'static str {
         match self {
             PictureType::Bmp => "bmp",
             PictureType::Emf => "emf",
             PictureType::Jpeg => "jpg",
-            PictureType::Pict => ".pict",
+            PictureType::Pict => "pict",
             PictureType::Png => "png",
             PictureType::Tiff => "tiff",
             PictureType::Unknown => "",
@@ -173,13 +174,16 @@ impl Pictures {
             let Some(run) = document.range_run(main, index)? else {
                 continue;
             };
+            // A picture two runs claim, or a run no picture, is claimed once; Tika fails the
+            // parse on the second claim (#111).
             if has_picture(document, &run)? {
                 let picture = by_start.get(&run.chp.fc_pic).copied();
-                let at = unclaimed
+                if let Some(at) = unclaimed
                     .iter()
-                    .position(|&slot| slot == picture)
-                    .ok_or_else(|| Thrown::new("Index -1 out of bounds for length"))?;
-                unclaimed[at] = None;
+                    .position(|&slot| slot.is_some() && slot == picture)
+                {
+                    unclaimed[at] = None;
+                }
             }
         }
         Ok(Pictures {
@@ -354,7 +358,7 @@ mod tests {
     fn names_the_types_of_pictures_as_poi_does() {
         assert_eq!(PictureType::of_stored(0x12), PictureType::Jpeg);
         assert_eq!(PictureType::of_blip(kind::BLIP_DIB).extension(), "bmp");
-        assert_eq!(PictureType::Pict.extension(), ".pict");
+        assert_eq!(PictureType::Pict.extension(), "pict");
         assert_eq!(PictureType::Unknown.media_type(), "image/unknown");
     }
 }

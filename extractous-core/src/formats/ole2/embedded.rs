@@ -34,8 +34,6 @@ const MESSAGE_TITLES: [&str; 3] = [
     "__substg1.0_0E1D001F",
     "__substg1.0_0070001F",
 ];
-/// The most bytes of a title stream `tryToGetMsgTitle` reads.
-const MAX_MESSAGE_TITLE: usize = 1000;
 
 /// A document handed on to be parsed, with the metadata Tika gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,15 +206,19 @@ pub(crate) fn office_document(
 }
 
 /// `tryToGetMsgTitle`: the subject, conversation topic or display name of a message storage,
-/// the first 1000 bytes of the first of its streams there is, decoded as UTF-16LE.
+/// the first of its streams there is, decoded as UTF-16LE up to a NUL that ends it. POI takes the
+/// first 1000 bytes of the stream, which may cut a long title and split a character (#119).
 fn message_title(file: &Ole2<'_>, directory: EntryId) -> Option<String> {
     MESSAGE_TITLES.iter().find_map(|name| {
         let entry = file.child(directory, name)?;
         if file.kind(entry) != EntryKind::Document {
             return None;
         }
-        let bytes = file.read(entry).ok()?;
-        Some(utf16_le(&bytes[..bytes.len().min(MAX_MESSAGE_TITLE)]))
+        let mut title = utf16_le(&file.read(entry).ok()?);
+        if let Some(end) = title.find('\0') {
+            title.truncate(end);
+        }
+        Some(title)
     })
 }
 
@@ -504,6 +506,26 @@ mod tests {
     #[test]
     fn decodes_a_title_as_java_decodes_utf_16() {
         assert_eq!(utf16_le(&[0x00, 0xD8, b'a', 0, 1]), "\u{fffd}a\u{fffd}");
+    }
+
+    #[test]
+    fn names_a_stored_message_by_its_whole_subject() {
+        let subject: Vec<u8> = "\u{e9}"
+            .repeat(600)
+            .encode_utf16()
+            .chain([0, 0x41])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let data = embedding(vec![
+            (units("__substg1.0_0037001F"), Node::Document(subject)),
+            (
+                units("__properties_version1.0"),
+                Node::Document(vec![0; 24]),
+            ),
+        ]);
+        let file = Ole2::open(&data).unwrap();
+        let object = file.child(file.root(), "_123").unwrap();
+        assert_eq!(message_title(&file, object), Some("\u{e9}".repeat(600)));
     }
 
     #[test]

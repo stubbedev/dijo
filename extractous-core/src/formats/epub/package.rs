@@ -2,11 +2,13 @@
 //! `META-INF/container.xml` names, its Dublin Core metadata through Tika's `OPFParser` and
 //! `DcXMLParser`, and its manifest and spine through the `ContentOrderScraper`.
 
-use crate::formats::element_metadata::DublinCore;
+use std::collections::HashMap;
+
+use crate::formats::element_metadata::{set_unless_equal, DublinCore, DUBLIN_CORE_NS};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
-use crate::java::{self, JavaHashMap};
+use crate::java;
 
 const RENDITION_LAYOUT: &str = "epub:rendition:layout";
 const VERSION: &str = "epub:version";
@@ -24,8 +26,9 @@ pub(super) fn attribute_value<'a>(
         .map(|attribute| attribute.value.as_str())
 }
 
-/// Tika's `RootFinder`: the `full-path` of the last `rootfile` in `container.xml`, which a
-/// `rootfile` without one leaves unset.
+/// The `full-path` of the first `rootfile` in `container.xml` that has one. Tika's `RootFinder`
+/// takes the last `rootfile`, matched ignoring case, and one without a `full-path` leaves the
+/// book without a package document (#88).
 pub(super) fn root(container: &[u8]) -> Result<Option<String>, Failure> {
     struct RootFinder(Option<String>);
 
@@ -36,8 +39,10 @@ pub(super) fn root(container: &[u8]) -> Result<Option<String>, Failure> {
             local_name: &str,
             attributes: &[Attribute],
         ) -> Result<(), Failure> {
-            if java::equals_ignore_case(local_name, "rootfile") {
-                self.0 = attribute_value(attributes, "full-path").map(str::to_owned);
+            if self.0.is_none() && local_name == "rootfile" {
+                self.0 = attribute_value(attributes, "full-path")
+                    .filter(|path| !java::is_blank(path))
+                    .map(str::to_owned);
             }
             Ok(())
         }
@@ -106,11 +111,32 @@ impl Rendition {
     }
 }
 
+/// A `dc:date`, under the name its `opf:event` gives it.
+struct Date {
+    name: &'static str,
+    depth: usize,
+    text: String,
+}
+
+impl Date {
+    /// The metadata name of a `dc:date` that marks `event`: `dcterms:modified` for a
+    /// modification, `dcterms:issued` for a publication, else `dcterms:created`. Tika's
+    /// `DcXMLParser` makes every `dc:date` `dcterms:created` (#89).
+    fn name(event: Option<&str>) -> &'static str {
+        match event.map(java::trim) {
+            Some("modification") => "dcterms:modified",
+            Some("publication") => "dcterms:issued",
+            _ => "dcterms:created",
+        }
+    }
+}
+
 /// The handlers Tika's `DcXMLParser` tees an XML document's events to, and `OPFParser`'s
-/// `OPFHandler` after them for a package document.
+/// `OPFHandler` after them for a package document, with the dates read apart.
 struct MetadataHandlers<'m> {
     metadata: &'m mut TikaMetadata,
     dublin_core: DublinCore,
+    date: Option<Date>,
     rendition: Option<Rendition>,
 }
 
@@ -122,6 +148,17 @@ impl SaxHandler for MetadataHandlers<'_> {
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
         self.dublin_core.start(namespace, local_name);
+        match &mut self.date {
+            Some(date) => date.depth += 1,
+            None if namespace == DUBLIN_CORE_NS && local_name == "date" => {
+                self.date = Some(Date {
+                    name: Date::name(attribute_value(attributes, "event")),
+                    depth: 0,
+                    text: String::new(),
+                });
+            }
+            None => {}
+        }
         if let Some(rendition) = &mut self.rendition {
             rendition.start(local_name, attributes, self.metadata);
         }
@@ -130,6 +167,17 @@ impl SaxHandler for MetadataHandlers<'_> {
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
         self.dublin_core.end(namespace, local_name, self.metadata);
+        match &mut self.date {
+            Some(date) if date.depth > 0 => date.depth -= 1,
+            Some(_) => {
+                let date = self.date.take().expect("a date is open");
+                let value = java::trim(&date.text);
+                if !value.is_empty() {
+                    set_unless_equal(date.name, value.to_owned(), self.metadata);
+                }
+            }
+            None => {}
+        }
         if let Some(rendition) = &mut self.rendition {
             rendition.end(local_name, self.metadata);
         }
@@ -138,6 +186,9 @@ impl SaxHandler for MetadataHandlers<'_> {
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
         self.dublin_core.characters(text);
+        if let Some(date) = &mut self.date {
+            date.text.push_str(text);
+        }
         if let Some(rendition) = &mut self.rendition {
             rendition.characters(text);
         }
@@ -167,7 +218,8 @@ pub(super) fn read_metadata(
     }
     let mut handler = MetadataHandlers {
         metadata,
-        dublin_core: DublinCore::new(),
+        dublin_core: DublinCore::without_date(),
+        date: None,
         rendition: (parser == MetadataParser::Package).then(Rendition::default),
     };
     xml::parse_sax(input, what, &mut handler).map_err(|failure| match failure {
@@ -183,11 +235,16 @@ pub(super) struct Item {
     pub(super) media_type: Option<String>,
 }
 
-/// What Tika's `ContentOrderScraper` reads from the package document.
+/// What Tika's `ContentOrderScraper` reads from the package document, with element names
+/// matched exactly: Tika matches them ignoring case, a dotless `ı` included, and the spine's
+/// as `itemRef` (#88).
 #[derive(Debug, Default)]
 pub(super) struct Contents {
-    /// The manifest items by id, in Java's `HashMap` order.
-    pub(super) items: JavaHashMap<Item>,
+    /// The manifest items with their ids, in manifest order: Tika keeps them in a `HashMap`,
+    /// and parses those outside the spine in its order (#88).
+    pub(super) items: Vec<(String, Item)>,
+    /// The index in `items` of each id.
+    by_id: HashMap<String, usize>,
     /// The ids the spine lists, in its order.
     pub(super) spine: Vec<String>,
     cover_image: Option<String>,
@@ -201,6 +258,22 @@ impl Contents {
     /// EPUB 2 `cover` meta names.
     pub(super) fn cover(&self) -> Option<&str> {
         self.cover_image.as_deref().or(self.cover_meta.as_deref())
+    }
+
+    /// The manifest item `id`.
+    pub(super) fn item(&self, id: &str) -> Option<&Item> {
+        self.by_id.get(id).map(|&index| &self.items[index].1)
+    }
+
+    /// Adds the manifest item `id`, replacing an earlier item of that id in its place.
+    fn insert(&mut self, id: &str, item: Item) {
+        match self.by_id.get(id) {
+            Some(&index) => self.items[index].1 = item,
+            None => {
+                self.by_id.insert(id.to_owned(), self.items.len());
+                self.items.push((id.to_owned(), item));
+            }
+        }
     }
 
     /// Reads the manifest and spine of the package document `input`.
@@ -218,24 +291,18 @@ impl SaxHandler for Contents {
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        if java::equals_ignore_case(local_name, "manifest") {
+        if local_name == "manifest" {
             self.in_manifest = true;
-        } else if java::equals_ignore_case(local_name, "spine") {
+        } else if local_name == "spine" {
             self.in_spine = true;
         }
         if self.in_manifest {
-            if java::equals_ignore_case(local_name, "item") {
+            if local_name == "item" {
                 let id = attribute_value(attributes, "id");
-                let href = attribute_value(attributes, "href");
+                let href = attribute_value(attributes, "href").and_then(percent_decode);
                 if let (Some(id), Some(href)) = (id, href) {
-                    let href = java::url_decode(href).ok_or_else(|| {
-                        Failure::Malformed(format!(
-                            "The manifest item {id} has the href {href:?}, which Java's \
-                             URLDecoder rejects"
-                        ))
-                    })?;
                     let media_type = attribute_value(attributes, "media-type").map(str::to_owned);
-                    self.items.insert(id, Item { href, media_type });
+                    self.insert(id, Item { href, media_type });
                     let cover_image =
                         attribute_value(attributes, "properties").is_some_and(|properties| {
                             java::trim(properties)
@@ -247,7 +314,7 @@ impl SaxHandler for Contents {
                     }
                 }
             }
-        } else if java::equals_ignore_case(local_name, "meta")
+        } else if local_name == "meta"
             && self.cover_meta.is_none()
             && attribute_value(attributes, "name") == Some("cover")
         {
@@ -257,7 +324,7 @@ impl SaxHandler for Contents {
                 self.cover_meta = Some(java::trim(content).to_owned());
             }
         }
-        if self.in_spine && java::equals_ignore_case(local_name, "itemRef") {
+        if self.in_spine && local_name == "itemref" {
             if let Some(id) = attribute_value(attributes, "idref") {
                 self.spine.push(id.to_owned());
             }
@@ -266,9 +333,9 @@ impl SaxHandler for Contents {
     }
 
     fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
-        if java::equals_ignore_case(local_name, "manifest") {
+        if local_name == "manifest" {
             self.in_manifest = false;
-        } else if java::equals_ignore_case(local_name, "spine") {
+        } else if local_name == "spine" {
             self.in_spine = false;
         }
         Ok(())
@@ -277,6 +344,31 @@ impl SaxHandler for Contents {
     fn characters(&mut self, _text: &str) -> Result<(), Failure> {
         Ok(())
     }
+}
+
+/// An `href` with its percent escapes decoded as a URI's (RFC 3986), or none when an escape is
+/// broken or the bytes are not UTF-8, which leaves out only that item. Tika decodes it with
+/// Java's `URLDecoder`, which makes `+` a space, accepts a signed escape such as `%+1`, and
+/// fails the whole book on a broken one (#88).
+pub(super) fn percent_decode(href: &str) -> Option<String> {
+    let bytes = href.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut position = 0;
+    while position < bytes.len() {
+        if bytes[position] == b'%' {
+            let escape = bytes.get(position + 1..position + 3)?;
+            let escape = std::str::from_utf8(escape).ok()?;
+            if !escape.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            decoded.push(u8::from_str_radix(escape, 16).ok()?);
+            position += 3;
+        } else {
+            decoded.push(bytes[position]);
+            position += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 /// Whether a Java regular expression's `\s` matches `character`.

@@ -1,27 +1,50 @@
-//! Tika's `MailDateParser.parseDateLenient`: a date normalised with a few regular expressions,
-//! then parsed with java.time formatters, case-insensitive and lenient, as java.time parses,
-//! the first that parses winning. A time zone the date names by a region or by a name, whose
-//! rules java.time looks up in its time-zone database, leaves the message to Tika.
+//! The dates of mail: a date normalised with the regular expressions of Tika's
+//! `MailDateParser`, then parsed with the forms of its formatters, RFC 5322's and its common
+//! variants, case-insensitive, the first that parses winning. Each form is read strictly: its
+//! fields of the widths it gives, a month, day, hour, minute and second within their ranges,
+//! and an hour of the morning or afternoon from 1 to 12 with `AM` or `PM` after it. A date
+//! without a time is the day alone, and what does not parse is no date.
+//!
+//! Tika parses leniently into dates nobody wrote (#80): `12:30 PM` the next day at 00:30, a
+//! number in place of `AM` or `PM` a count of half days, `10-10-2000` the year 10, 31 February
+//! 3 March, and a date without a time 12:00 UTC.
+//!
+//! A time zone the date names by a region or by a name, whose rules java.time looks up in its
+//! time-zone database, leaves the message to Tika.
 
 use super::Unported;
-use crate::java::time::civil;
+use crate::java::time::{civil, format_instant};
 
-const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 const MAX_OFFSET_SECONDS: i64 = 18 * 3600;
-const MAX_YEAR: i64 = 999_999_999;
-const BASE_YEAR: i64 = 1970;
 
-/// The milliseconds since the epoch of the date `parseDateLenient` returns, `None` for null.
-pub(super) fn parse_date_lenient(text: &str) -> Result<Option<i64>, Unported> {
-    let normalized: Vec<char> = normalize(text).chars().collect();
-    for formatter in DATE_TIME_FORMATTERS {
-        if let Some(millis) = formatter.parse(&normalized)? {
-            return Ok(Some(millis));
+/// A date of mail: an instant, or a day without a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MailDate {
+    /// Milliseconds since the epoch.
+    Instant(i64),
+    /// Days since the epoch.
+    Day(i64),
+}
+
+impl MailDate {
+    /// The date as metadata gives it: an instant in ISO 8601 in UTC, a day as `yyyy-MM-dd`.
+    pub(crate) fn format(self) -> String {
+        match self {
+            MailDate::Instant(millis) => format_instant(millis),
+            MailDate::Day(epoch_day) => {
+                let (year, month, day) = civil::civil_from_days(epoch_day);
+                format!("{year:04}-{month:02}-{day:02}")
+            }
         }
     }
-    for formatter in DATE_FORMATTERS {
-        if let Some(millis) = formatter.parse(&normalized)? {
-            return Ok(Some(millis));
+}
+
+/// The date `text` gives, `None` when it does not parse.
+pub(crate) fn parse_date(text: &str) -> Result<Option<MailDate>, Unported> {
+    let normalized: Vec<char> = normalize(text).chars().collect();
+    for formatter in DATE_TIME_FORMATTERS.iter().chain(&DATE_FORMATTERS) {
+        if let Some(date) = formatter.parse(&normalized)? {
+            return Ok(Some(date));
         }
     }
     Ok(None)
@@ -290,33 +313,17 @@ enum Field {
     AmPm,
     Minute,
     Second,
-    Milli,
+    /// The fraction of a second, in nanoseconds.
+    Nano,
     OffsetSeconds,
-}
-
-/// `SignStyle`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Sign {
-    Normal,
-    NotNegative,
-    Never,
-}
-
-impl Sign {
-    /// `SignStyle.parse`: whether a sign may be read.
-    fn allows(self, positive: bool, strict: bool, fixed_width: bool) -> bool {
-        match self {
-            Sign::Normal => !positive || !strict,
-            Sign::NotNegative | Sign::Never => !strict && !fixed_width,
-        }
-    }
 }
 
 /// A printer-parser of a java.time formatter.
 #[derive(Debug, Clone, Copy)]
 enum Element {
-    Value(Field, usize, usize, Sign),
-    /// `appendValueReduced(YEAR, 2, 4, 1970)`.
+    /// A number of the field, of the least to the most digits given, without a sign.
+    Value(Field, usize, usize),
+    /// A year of two to four digits, one of two or three read as RFC 5322 reads them.
     ReducedYear,
     Literal(char),
     /// The short month names, `MMM`.
@@ -327,51 +334,34 @@ enum Element {
     TimeZone,
 }
 
-/// How a formatter resolves what it parsed.
+/// What a formatter makes of what it parsed.
 #[derive(Debug, Clone, Copy)]
 enum Resolution {
-    /// `ResolverStyle.LENIENT` with resolver fields, as a `ZonedDateTime` or, without a zone,
-    /// a `LocalDateTime` in UTC.
-    DateTime(&'static [Field]),
-    /// `ResolverStyle.SMART`, as a `LocalDate` at the start of the day in GMT-12:00.
+    /// An instant, in UTC without a zone.
+    DateTime,
+    /// A day.
     Date,
-    /// `ResolverStyle.LENIENT`, as a `LocalDate` at the start of the day in GMT-12:00.
-    LenientDate,
 }
 
 struct Formatter {
     elements: &'static [Element],
-    /// `parseCaseInsensitive().parseLenient()`; without them a formatter is case-sensitive and
-    /// strict.
-    lenient: bool,
+    /// `parseCaseInsensitive()`; without it a formatter is case-sensitive.
+    case_insensitive: bool,
     resolution: Resolution,
 }
 
 use Element::{Literal, MonthText, Optional, ReducedYear, TimeZone, Value};
 use Field::*;
 
-const TIME_FIELDS: &[Field] = &[Day, Month, Year, Hour, Minute, Second, Milli, OffsetSeconds];
-const AM_PM_FIELDS: &[Field] = &[
-    Day,
-    Month,
-    Year,
-    HourOfAmPm,
-    AmPm,
-    Minute,
-    Second,
-    Milli,
-    OffsetSeconds,
-];
-
 const SECONDS_MILLIS_ZONE: [Element; 3] = [
-    Optional(&[Literal(':'), Value(Second, 2, 2, Sign::NotNegative)]),
-    Optional(&[Literal('.'), Value(Milli, 3, 5, Sign::Never)]),
+    Optional(&[Literal(':'), Value(Second, 1, 2)]),
+    Optional(&[Literal('.'), Value(Nano, 3, 5)]),
     Optional(&[TimeZone]),
 ];
 
 const SECONDS_MILLIS_AM_PM_ZONE: [Element; 5] = [
-    Optional(&[Literal(':'), Value(Second, 2, 2, Sign::NotNegative)]),
-    Optional(&[Literal('.'), Value(Milli, 3, 5, Sign::Never)]),
+    Optional(&[Literal(':'), Value(Second, 1, 2)]),
+    Optional(&[Literal('.'), Value(Nano, 3, 5)]),
     Optional(&[Literal(' ')]),
     Element::AmPmText,
     Optional(&[TimeZone]),
@@ -396,30 +386,30 @@ const fn concat<const A: usize, const B: usize, const N: usize>(
 
 const RFC_5322_LENIENT: [Element; 12] = concat(
     [
-        Value(Day, 1, 2, Sign::Never),
+        Value(Day, 1, 2),
         Literal(' '),
         MonthText,
         Literal(' '),
         ReducedYear,
         Literal(' '),
-        Value(Hour, 1, 2, Sign::Never),
+        Value(Hour, 1, 2),
         Literal(':'),
-        Value(Minute, 1, 2, Sign::Never),
+        Value(Minute, 1, 2),
     ],
     SECONDS_MILLIS_ZONE,
 );
 
 const RFC_5322_AM_PM_LENIENT: [Element; 14] = concat(
     [
-        Value(Day, 1, 2, Sign::Never),
+        Value(Day, 1, 2),
         Literal(' '),
         MonthText,
         Literal(' '),
         ReducedYear,
         Literal(' '),
-        Value(HourOfAmPm, 1, 2, Sign::Never),
+        Value(HourOfAmPm, 1, 2),
         Literal(':'),
-        Value(Minute, 1, 2, Sign::Never),
+        Value(Minute, 1, 2),
     ],
     SECONDS_MILLIS_AM_PM_ZONE,
 );
@@ -428,13 +418,13 @@ const MMM_D_YYYY_HH_MM: [Element; 12] = concat(
     [
         MonthText,
         Literal(' '),
-        Value(Day, 1, 2, Sign::Never),
+        Value(Day, 1, 2),
         Literal(' '),
         ReducedYear,
         Literal(' '),
-        Value(Hour, 1, 2, Sign::Never),
+        Value(Hour, 1, 2),
         Literal(':'),
-        Value(Minute, 1, 2, Sign::Never),
+        Value(Minute, 1, 2),
     ],
     SECONDS_MILLIS_ZONE,
 );
@@ -443,36 +433,36 @@ const MMM_D_YYYY_HH_MM_AM_PM: [Element; 14] = concat(
     [
         MonthText,
         Literal(' '),
-        Value(Day, 1, 2, Sign::Never),
+        Value(Day, 1, 2),
         Literal(' '),
         ReducedYear,
         Literal(' '),
-        Value(HourOfAmPm, 1, 2, Sign::Never),
+        Value(HourOfAmPm, 1, 2),
         Literal(':'),
-        Value(Minute, 1, 2, Sign::Never),
+        Value(Minute, 1, 2),
     ],
     SECONDS_MILLIS_AM_PM_ZONE,
 );
 
 const YYYY_MM_DD_HH_MM: [Element; 12] = concat(
     [
-        Value(Year, 4, 4, Sign::NotNegative),
+        Value(Year, 4, 4),
         Literal('-'),
-        Value(Month, 2, 2, Sign::Never),
+        Value(Month, 2, 2),
         Literal('-'),
-        Value(Day, 2, 2, Sign::Never),
+        Value(Day, 2, 2),
         Literal(' '),
-        Value(Hour, 1, 2, Sign::Never),
+        Value(Hour, 1, 2),
         Literal(':'),
-        Value(Minute, 1, 2, Sign::Never),
+        Value(Minute, 1, 2),
     ],
     SECONDS_MILLIS_ZONE,
 );
 
 const SLASHED_DATE: [Element; 6] = [
-    Value(Month, 1, 2, Sign::Never),
+    Value(Month, 1, 2),
     Literal('/'),
-    Value(Day, 1, 2, Sign::Never),
+    Value(Day, 1, 2),
     Literal('/'),
     ReducedYear,
     Literal(' '),
@@ -482,8 +472,8 @@ const MM_SLASH_DD_SLASH_YY_HH_MM: [Element; 11] = concat(
     concat::<6, 2, 8>(
         SLASHED_DATE,
         [
-            Value(Hour, 1, 2, Sign::Never),
-            Optional(&[Literal(':'), Value(Minute, 1, 2, Sign::Never)]),
+            Value(Hour, 1, 2),
+            Optional(&[Literal(':'), Value(Minute, 1, 2)]),
         ],
     ),
     SECONDS_MILLIS_ZONE,
@@ -493,8 +483,8 @@ const MM_SLASH_DD_SLASH_YY_HH_MM_AM_PM: [Element; 13] = concat(
     concat::<6, 2, 8>(
         SLASHED_DATE,
         [
-            Value(HourOfAmPm, 1, 2, Sign::Never),
-            Optional(&[Literal(':'), Value(Minute, 1, 2, Sign::Never)]),
+            Value(HourOfAmPm, 1, 2),
+            Optional(&[Literal(':'), Value(Minute, 1, 2)]),
         ],
     ),
     SECONDS_MILLIS_AM_PM_ZONE,
@@ -503,79 +493,79 @@ const MM_SLASH_DD_SLASH_YY_HH_MM_AM_PM: [Element; 13] = concat(
 const DATE_TIME_FORMATTERS: [Formatter; 7] = [
     Formatter {
         elements: &RFC_5322_LENIENT,
-        lenient: true,
-        resolution: Resolution::DateTime(TIME_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
     Formatter {
         elements: &RFC_5322_AM_PM_LENIENT,
-        lenient: true,
-        resolution: Resolution::DateTime(AM_PM_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
     Formatter {
         elements: &MMM_D_YYYY_HH_MM,
-        lenient: true,
-        resolution: Resolution::DateTime(TIME_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
     Formatter {
         elements: &MMM_D_YYYY_HH_MM_AM_PM,
-        lenient: true,
-        resolution: Resolution::DateTime(AM_PM_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
     Formatter {
         elements: &YYYY_MM_DD_HH_MM,
-        lenient: true,
-        resolution: Resolution::DateTime(TIME_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
     Formatter {
         elements: &MM_SLASH_DD_SLASH_YY_HH_MM,
-        lenient: true,
-        resolution: Resolution::DateTime(TIME_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
     Formatter {
         elements: &MM_SLASH_DD_SLASH_YY_HH_MM_AM_PM,
-        lenient: true,
-        resolution: Resolution::DateTime(AM_PM_FIELDS),
+        case_insensitive: true,
+        resolution: Resolution::DateTime,
     },
 ];
 
-/// `appendValue(field)` of a pattern letter: one to nineteen digits, `SignStyle.NORMAL`.
+/// A month or day of a slashed date: one or two digits. Tika reads up to nineteen.
 const fn pattern_value(field: Field) -> Element {
-    Value(field, 1, 19, Sign::Normal)
+    Value(field, 1, 2)
 }
 
 const DATE_FORMATTERS: [Formatter; 6] = [
     Formatter {
         elements: &[
-            Value(Day, 1, 2, Sign::Never),
+            Value(Day, 1, 2),
             Literal(' '),
             MonthText,
             Literal(' '),
             ReducedYear,
         ],
-        lenient: true,
+        case_insensitive: true,
         resolution: Resolution::Date,
     },
     Formatter {
         elements: &[
             MonthText,
             Literal(' '),
-            Value(Day, 1, 2, Sign::Never),
+            Value(Day, 1, 2),
             Literal(' '),
             ReducedYear,
         ],
-        lenient: true,
+        case_insensitive: true,
         resolution: Resolution::Date,
     },
     Formatter {
         elements: &[
-            Value(Year, 4, 4, Sign::NotNegative),
+            Value(Year, 4, 4),
             Literal('-'),
-            Value(Month, 2, 2, Sign::Never),
+            Value(Month, 2, 2),
             Literal('-'),
-            Value(Day, 2, 2, Sign::Never),
+            Value(Day, 2, 2),
         ],
-        lenient: true,
-        resolution: Resolution::LenientDate,
+        case_insensitive: true,
+        resolution: Resolution::Date,
     },
     Formatter {
         elements: &[
@@ -585,7 +575,7 @@ const DATE_FORMATTERS: [Formatter; 6] = [
             Literal('/'),
             ReducedYear,
         ],
-        lenient: false,
+        case_insensitive: false,
         resolution: Resolution::Date,
     },
     Formatter {
@@ -596,7 +586,7 @@ const DATE_FORMATTERS: [Formatter; 6] = [
             Literal('/'),
             ReducedYear,
         ],
-        lenient: false,
+        case_insensitive: false,
         resolution: Resolution::Date,
     },
     Formatter {
@@ -607,7 +597,7 @@ const DATE_FORMATTERS: [Formatter; 6] = [
             Literal('/'),
             pattern_value(Day),
         ],
-        lenient: false,
+        case_insensitive: false,
         resolution: Resolution::Date,
     },
 ];
@@ -674,8 +664,8 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
-/// The month names of `Locale.US` a lenient parse tries, longest first: the full and short
-/// names, then the narrow initials, each standing for the last month that has it.
+/// The month names a parse tries, longest first: the full and the short names. Tika also
+/// reads a month's initial, and a number in place of the name (#80).
 fn month_names() -> Vec<(String, i64)> {
     let mut names: Vec<(String, i64)> = Vec::new();
     for (index, name) in MONTHS.iter().enumerate() {
@@ -684,24 +674,24 @@ fn month_names() -> Vec<(String, i64)> {
     for (index, name) in MONTHS.iter().enumerate() {
         names.push((name[..3].to_owned(), index as i64 + 1));
     }
-    let mut initials: Vec<(String, i64)> = Vec::new();
-    for (index, name) in MONTHS.iter().enumerate() {
-        let initial = name[..1].to_owned();
-        match initials.iter_mut().find(|(text, _)| *text == initial) {
-            Some(entry) => entry.1 = index as i64 + 1,
-            None => initials.push((initial, index as i64 + 1)),
-        }
-    }
-    names.extend(initials);
-    names.sort_by_key(|(text, _)| std::cmp::Reverse(text.len()));
     names
 }
 
 const AM_PM_NAMES: [(&str, i64); 4] = [("AM", 0), ("PM", 1), ("a", 0), ("p", 1)];
 
+/// The year RFC 5322 reads of a year of two or three digits: two up to 49 in the 2000s, two
+/// from 50 and three in the 1900s. Tika reads two digits in the century from 1970 on.
+fn rfc_5322_year(year: i64, digits: usize) -> i64 {
+    match digits {
+        2 if year < 50 => year + 2000,
+        2 | 3 => year + 1900,
+        _ => year,
+    }
+}
+
 impl Formatter {
-    /// The date this formatter parses from the whole text, as `parseDateLenient` takes it.
-    fn parse(&self, text: &[char]) -> Result<Option<i64>, Unported> {
+    /// The date this formatter parses from the whole text.
+    fn parse(&self, text: &[char]) -> Result<Option<MailDate>, Unported> {
         let mut parsed = Parsed::default();
         let end = match self.parse_elements(self.elements, &mut parsed, text, 0) {
             Ok(end) => end,
@@ -711,11 +701,7 @@ impl Formatter {
         if end != text.len() {
             return Ok(None);
         }
-        Ok(match self.resolution {
-            Resolution::DateTime(fields) => resolve_date_time(&parsed, fields),
-            Resolution::Date => resolve_date(&parsed),
-            Resolution::LenientDate => resolve_lenient_date(&parsed),
-        })
+        Ok(resolve(&parsed, self.resolution))
     }
 
     fn parse_elements(
@@ -739,14 +725,10 @@ impl Formatter {
         pos: usize,
     ) -> Result<usize, Stop> {
         match element {
-            Value(field, min, max, sign) => {
-                self.parse_number(field, min, max, sign, false, parsed, text, pos)
-            }
-            ReducedYear => {
-                self.parse_number(Year, 2, 4, Sign::NotNegative, true, parsed, text, pos)
-            }
+            Value(field, min, max) => parse_number(field, min, max, parsed, text, pos),
+            ReducedYear => parse_number(Year, 2, 4, parsed, text, pos),
             Literal(literal) => match text.get(pos) {
-                Some(&c) if chars_equal(c, literal, self.lenient) => Ok(pos + 1),
+                Some(&c) if chars_equal(c, literal, self.case_insensitive) => Ok(pos + 1),
                 _ => Err(Stop::Mismatch),
             },
             MonthText => {
@@ -773,80 +755,8 @@ impl Formatter {
         }
     }
 
-    /// `NumberPrinterParser.parse`, or with `reduced` `ReducedPrinterParser`'s.
-    #[allow(clippy::too_many_arguments)]
-    fn parse_number(
-        &self,
-        field: Field,
-        min: usize,
-        max: usize,
-        sign: Sign,
-        reduced: bool,
-        parsed: &mut Parsed,
-        text: &[char],
-        pos: usize,
-    ) -> Result<usize, Stop> {
-        let strict = !self.lenient;
-        let mut position = pos;
-        let mut negative = false;
-        match text.get(position) {
-            None => return Err(Stop::Mismatch),
-            Some('+') => {
-                if !sign.allows(true, strict, min == max) {
-                    return Err(Stop::Mismatch);
-                }
-                position += 1;
-            }
-            Some('-') => {
-                if !sign.allows(false, strict, min == max) {
-                    return Err(Stop::Mismatch);
-                }
-                negative = true;
-                position += 1;
-            }
-            Some(_) => {}
-        }
-        let (min_width, max_width) = if strict { (min, max) } else { (1, 9) };
-        if position + min_width > text.len() {
-            return Err(Stop::Mismatch);
-        }
-        let mut end = position;
-        let mut total: i128 = 0;
-        while end < text.len().min(position + max_width) {
-            let Some(digit) = text[end]
-                .to_digit(10)
-                .filter(|_| text[end].is_ascii_digit())
-            else {
-                break;
-            };
-            total = total * 10 + i128::from(digit);
-            end += 1;
-        }
-        if end - position < min_width {
-            return Err(Stop::Mismatch);
-        }
-        if total > i128::from(i64::MAX) {
-            total /= 10;
-            end -= 1;
-        }
-        let mut value = total as i64;
-        if negative {
-            if value == 0 && strict {
-                return Err(Stop::Mismatch);
-            }
-            value = -value;
-        }
-        if reduced && end - position == 2 && value >= 0 {
-            value += BASE_YEAR - BASE_YEAR % 100;
-            if value < BASE_YEAR {
-                value += 100;
-            }
-        }
-        parsed.set(field, value, end)
-    }
-
-    /// `TextPrinterParser.parse` in lenient mode: the first of the names that matches, else a
-    /// number.
+    /// The first of the names that matches. Tika reads a number where none does, so that a
+    /// number in place of `AM` or `PM` counts half days (#80).
     fn parse_text(
         &self,
         field: Field,
@@ -861,12 +771,12 @@ impl Formatter {
                 && text[pos..pos + length]
                     .iter()
                     .zip(name.chars())
-                    .all(|(&a, b)| chars_equal(a, b, self.lenient));
+                    .all(|(&a, b)| chars_equal(a, b, self.case_insensitive));
             if matches {
                 return parsed.set(field, value, pos + length);
             }
         }
-        self.parse_number(field, 1, 19, Sign::Normal, false, parsed, text, pos)
+        Err(Stop::Mismatch)
     }
 
     /// `TIME_ZONE_FORMATTER`: an optional space, then optionally a zone id, an offset and a zone
@@ -1061,131 +971,86 @@ fn parse_offset(
     Ok(Some((if sign == '-' { -seconds } else { seconds }, end)))
 }
 
-/// `LocalDate.of(year, 1, 1).plusMonths(months).plusDays(days)` as an epoch day, or `None`
-/// where java.time throws.
-fn lenient_epoch_day(year: i64, months: i64, days: i64) -> Option<i64> {
-    let month_count = year.checked_mul(12)?.checked_add(months)?;
-    let new_year = month_count.div_euclid(12);
-    if new_year.abs() > MAX_YEAR {
-        return None;
+/// A number of `field` of `min` to `max` ASCII digits, without a sign: a year of two or three
+/// digits as RFC 5322 reads it, a fraction of a second in nanoseconds. Tika's lenient
+/// formatters read one to nine digits with a sign, so that `10-10-2000` is the year 10 (#80).
+fn parse_number(
+    field: Field,
+    min: usize,
+    max: usize,
+    parsed: &mut Parsed,
+    text: &[char],
+    pos: usize,
+) -> Result<usize, Stop> {
+    let digits = text[pos.min(text.len())..]
+        .iter()
+        .take(max)
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    if digits < min {
+        return Err(Stop::Mismatch);
     }
-    let month = month_count.rem_euclid(12) + 1;
-    let epoch_day = civil::days_from_civil(new_year, month, 1).checked_add(days)?;
-    in_range(epoch_day).then_some(epoch_day)
+    let mut value = text[pos..pos + digits]
+        .iter()
+        .fold(0i64, |value, c| value * 10 + i64::from(*c as u8 - b'0'));
+    match field {
+        Year => value = rfc_5322_year(value, digits),
+        Nano => value *= 10i64.pow(9 - digits as u32),
+        _ => {}
+    }
+    parsed.set(field, value, pos + digits)
 }
 
-/// Whether an epoch day is within `LocalDate`'s years.
-fn in_range(epoch_day: i64) -> bool {
-    let (year, _, _) = civil::civil_from_days(epoch_day);
-    year.abs() <= MAX_YEAR
-}
-
-/// `Date.from(instant)`: the milliseconds of an epoch second and nanosecond, or `None` where the
-/// conversion overflows.
-fn epoch_millis(epoch_second: i64, nano: i64) -> Option<i64> {
-    epoch_second
-        .checked_mul(1000)?
-        .checked_add(nano / 1_000_000)
-}
-
-/// The lenient resolution of a date-time formatter's fields, restricted to `fields`.
-fn resolve_date_time(parsed: &Parsed, fields: &[Field]) -> Option<i64> {
-    let get = |field: Field| parsed.get(field).filter(|_| fields.contains(&field));
-    let date = match (get(Year), get(Month), get(Day)) {
-        (Some(year), Some(month), Some(day)) => {
-            if year.abs() > MAX_YEAR {
-                return None;
-            }
-            Some(lenient_epoch_day(
-                year,
-                month.checked_sub(1)?,
-                day.checked_sub(1)?,
-            )?)
-        }
-        _ => None,
-    };
-    let mut hour = get(Hour);
-    if let (Some(am_pm), Some(hour_of_am_pm)) = (get(AmPm), get(HourOfAmPm)) {
-        let from_am_pm = am_pm.checked_mul(12)?.checked_add(hour_of_am_pm)?;
-        if hour.is_some_and(|hour| hour != from_am_pm) {
-            return None;
-        }
-        hour = Some(from_am_pm);
-    }
-    let nano = get(Milli).map(|milli| milli.wrapping_mul(1000).wrapping_mul(1000));
-    let (minute, second) = (get(Minute), get(Second));
-    let time = match hour {
-        Some(hour) => {
-            let invalid = (minute.is_none() && (second.is_some() || nano.is_some()))
-                || (minute.is_some() && second.is_none() && nano.is_some());
-            if invalid {
-                None
-            } else {
-                let total = hour
-                    .checked_mul(3_600_000_000_000)?
-                    .checked_add(minute.unwrap_or(0).checked_mul(60_000_000_000)?)?
-                    .checked_add(second.unwrap_or(0).checked_mul(1_000_000_000)?)?
-                    .checked_add(nano.unwrap_or(0))?;
-                Some((
-                    total.div_euclid(NANOS_PER_DAY),
-                    total.rem_euclid(NANOS_PER_DAY),
-                ))
-            }
-        }
-        None => None,
-    };
-    let (date, (excess_days, nano_of_day)) = (date?, time?);
-    let epoch_day = date.checked_add(excess_days)?;
-    if !in_range(epoch_day) {
-        return None;
-    }
-    let offset = match get(OffsetSeconds) {
-        Some(seconds) if seconds.abs() > MAX_OFFSET_SECONDS => return None,
-        Some(seconds) => seconds,
-        None => parsed.zone.unwrap_or(0),
-    };
-    let epoch_second = epoch_day * 86_400 + nano_of_day / 1_000_000_000 - offset;
-    epoch_millis(epoch_second, nano_of_day % 1_000_000_000)
-}
-
-/// The lenient resolution of a date formatter's fields, at the start of the day in GMT-12:00.
-fn resolve_lenient_date(parsed: &Parsed) -> Option<i64> {
-    let year = parsed.get(Year)?;
-    if year.abs() > MAX_YEAR {
-        return None;
-    }
-    let month = parsed.get(Month)?.checked_sub(1)?;
-    let day = parsed.get(Day)?.checked_sub(1)?;
-    let epoch_day = lenient_epoch_day(year, month, day)?;
-    epoch_millis(epoch_day.checked_mul(86_400)?.checked_add(12 * 3600)?, 0)
-}
-
-/// The smart resolution of a date formatter's fields, at the start of the day in GMT-12:00.
-fn resolve_date(parsed: &Parsed) -> Option<i64> {
-    let year = parsed.get(Year)?;
-    let month = parsed.get(Month)?;
-    let mut day = parsed.get(Day)?;
-    if year.abs() > MAX_YEAR || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let length = match month {
+/// The days of a month.
+fn month_length(year: i64, month: i64) -> i64 {
+    match month {
         4 | 6 | 9 | 11 => 30,
         2 if civil::is_leap_year(year) => 29,
         2 => 28,
         _ => 31,
-    };
-    day = day.min(length);
+    }
+}
+
+/// The date of the fields a formatter parsed, each within its range, or `None`: a day of the
+/// month it is in, an hour of a day, or of the morning or afternoon from 1 to 12, and a minute
+/// and second of their hour and minute, a leap second the last of its minute. Tika resolves the
+/// fields leniently, so that 31 February is 3 March and `12:30 PM` 00:30 the next day, and
+/// gives a date without a time as 12:00 UTC (#80).
+fn resolve(parsed: &Parsed, resolution: Resolution) -> Option<MailDate> {
+    let (year, month, day) = (parsed.get(Year)?, parsed.get(Month)?, parsed.get(Day)?);
+    if !(1..=12).contains(&month) || !(1..=month_length(year, month)).contains(&day) {
+        return None;
+    }
     let epoch_day = civil::days_from_civil(year, month, day);
-    epoch_millis(epoch_day * 86_400 + 12 * 3600, 0)
+    if let Resolution::Date = resolution {
+        return Some(MailDate::Day(epoch_day));
+    }
+    let hour = match (parsed.get(Hour), parsed.get(HourOfAmPm), parsed.get(AmPm)) {
+        (Some(hour), None, None) if (0..=23).contains(&hour) => hour,
+        (None, Some(hour), Some(am_pm)) if (1..=12).contains(&hour) => hour % 12 + 12 * am_pm,
+        _ => return None,
+    };
+    let minute = parsed.get(Minute).unwrap_or(0);
+    let second = parsed.get(Second).unwrap_or(0);
+    if !(0..=59).contains(&minute) || !(0..=60).contains(&second) {
+        return None;
+    }
+    let offset = match parsed.get(OffsetSeconds) {
+        Some(seconds) if seconds.abs() > MAX_OFFSET_SECONDS => return None,
+        Some(seconds) => seconds,
+        None => parsed.zone.unwrap_or(0),
+    };
+    let epoch_second = epoch_day * 86_400 + hour * 3600 + minute * 60 + second.min(59) - offset;
+    let nano = parsed.get(Nano).unwrap_or(0);
+    Some(MailDate::Instant(epoch_second * 1000 + nano / 1_000_000))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::java::time::format_instant;
 
     fn parse(text: &str) -> Option<String> {
-        parse_date_lenient(text).unwrap().map(format_instant)
+        parse_date(text).unwrap().map(MailDate::format)
     }
 
     #[test]
@@ -1210,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_dates_as_mail_date_parser_does() {
+    fn parses_dates_strictly() {
         assert_eq!(
             parse("Tue, 05 Mar 2024 14:30:00 +0100").as_deref(),
             Some("2024-03-05T13:30:00Z")
@@ -1220,22 +1085,35 @@ mod tests {
             Some("2024-03-05T14:30:00Z")
         );
         assert_eq!(
-            parse("Mar 5 2024 12:30 PM").as_deref(),
-            Some("2024-03-06T00:30:00Z")
+            parse("5 Mar 99 14:30 +0000").as_deref(),
+            Some("1999-03-05T14:30:00Z")
         );
         assert_eq!(
-            parse("2012-10-10 10:10:10").as_deref(),
+            parse("Mar 5 2024 12:30 PM").as_deref(),
+            Some("2024-03-05T12:30:00Z")
+        );
+        assert_eq!(
+            parse("Mar 5 2024 12:30 AM").as_deref(),
+            Some("2024-03-05T00:30:00Z")
+        );
+        assert_eq!(parse("Mar 5 2024 10:30 +1"), None);
+        assert_eq!(parse("Mar 5 2024 13:30 PM"), None);
+        assert_eq!(parse("2012-10-10 10:10:10.5"), None);
+        assert_eq!(
+            parse("2012-10-10 10:10:10.250").as_deref(),
             Some("2012-10-10T10:10:10Z")
         );
-        assert_eq!(parse("7/9/2012").as_deref(), Some("2012-07-09T12:00:00Z"));
+        assert_eq!(parse("10-10-2000 10:10:10"), None);
+        assert_eq!(parse("7/9/2012").as_deref(), Some("2012-07-09"));
+        assert_eq!(parse("13/9/2012").as_deref(), Some("2012-09-13"));
+        assert_eq!(parse("31 Feb 2021 10:00"), None);
+        assert_eq!(parse("29 Feb 2024").as_deref(), Some("2024-02-29"));
+        assert_eq!(parse("5 3 2024 10:00"), None);
         assert_eq!(
-            parse("31 Feb 2021 10:00").as_deref(),
-            Some("2021-03-03T10:00:00Z")
+            parse("5 Mar 2024 23:59:60 +0000").as_deref(),
+            Some("2024-03-05T23:59:59Z")
         );
         assert_eq!(parse("not a date"), None);
-        assert_eq!(
-            parse_date_lenient("5 Mar 2024 14:30 EST"),
-            Err(Unported::TimeZone)
-        );
+        assert_eq!(parse_date("5 Mar 2024 14:30 EST"), Err(Unported::TimeZone));
     }
 }

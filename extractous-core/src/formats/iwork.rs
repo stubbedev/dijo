@@ -19,8 +19,8 @@ use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::is_blank;
+use crate::java::strip;
 use crate::java::{is_line_terminator, JavaString};
-use crate::java::{parse_long, strip};
 use crate::text::charset::Charset;
 
 const TYPES: [&str; 7] = [
@@ -78,7 +78,7 @@ fn read_package<'a>(input: &'a [u8], paragraphs: &mut Vec<String>) -> Result<End
     let zip = jdk_zip::open(input)?;
     let mut budget = Budget(MAX_DECOMPRESSED_BYTES);
     let archives = archives(&zip, &mut budget)?;
-    for (name, archive) in in_reading_order(archives)? {
+    for (name, archive) in in_reading_order(archives) {
         if file_name(&name).starts_with("MasterSlide") {
             continue;
         }
@@ -144,19 +144,43 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Where an archive comes in the reading order: its group, then its name without the number,
+/// then the number, compared as a number.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReadingOrder {
+    group: u8,
+    name: JavaString,
+    /// The number's digits without leading zeros, compared by length, then digit by digit.
+    number: Option<(usize, String)>,
+}
+
 /// `readingOrder`: the document first, then the slides, then everything else (such as tables'
-/// lists), each group in the order of the archives' numbers.
-fn reading_order(name: &str) -> Result<String, Refusal> {
+/// lists), each group by name and then by the archives' numbers. Our Java parser sorts keys of
+/// numbers padded to ten digits in Java's string order, so an eleven-digit number goes before
+/// a two-digit one, and fails on a number longer than a `long` when there are two or more
+/// archives (#105).
+fn reading_order(name: &str) -> ReadingOrder {
     if name == "Document.iwa" {
-        return Ok("0".to_owned());
+        return ReadingOrder {
+            group: 0,
+            name: JavaString(String::new()),
+            number: None,
+        };
     }
-    let group = if name.starts_with("Slide") { '1' } else { '2' };
+    let group = if name.starts_with("Slide") { 1 } else { 2 };
     if let Some((prefix, digits)) = numbered(name) {
-        let number =
-            parse_long(digits).ok_or_else(|| failed(format!("For input string: \"{digits}\"")))?;
-        return Ok(format!("{group}{prefix}{number:010}"));
+        let digits = digits.trim_start_matches('0');
+        return ReadingOrder {
+            group,
+            name: JavaString(prefix.to_owned()),
+            number: Some((digits.len(), digits.to_owned())),
+        };
     }
-    Ok(format!("{group}{}", name.replace(ARCHIVE, "")))
+    ReadingOrder {
+        group,
+        name: JavaString(name.replace(ARCHIVE, "")),
+        number: None,
+    }
 }
 
 /// The groups of `(.*?)-(\d+)\.iwa` matching all of `name`.
@@ -168,26 +192,17 @@ fn numbered(name: &str) -> Option<(&str, &str)> {
     numbered.then_some((prefix, digits))
 }
 
-/// The archives sorted by their reading order, stably, as `List.sort` sorts them: it computes
-/// every key of two or more names, failing where one fails.
-fn in_reading_order(
-    archives: BTreeMap<JavaString, Vec<u8>>,
-) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
-    let mut keyed: Vec<(JavaString, String, Vec<u8>)> = Vec::with_capacity(archives.len());
-    let several = archives.len() > 1;
-    for (JavaString(name), archive) in archives {
-        let key = if several {
-            reading_order(file_name(&name))?
-        } else {
-            String::new()
-        };
-        keyed.push((JavaString(key), name, archive));
-    }
+/// The archives sorted by their reading order, stably, as `List.sort` sorts them.
+fn in_reading_order(archives: BTreeMap<JavaString, Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    let mut keyed: Vec<(ReadingOrder, String, Vec<u8>)> = archives
+        .into_iter()
+        .map(|(JavaString(name), archive)| (reading_order(file_name(&name)), name, archive))
+        .collect();
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(keyed
+    keyed
         .into_iter()
         .map(|(_, name, archive)| (name, archive))
-        .collect())
+        .collect()
 }
 
 /// `decompress`: an archive's protobuf stream, chunks of a zero byte, a three-byte
@@ -229,7 +244,7 @@ fn text(stream: &[u8]) -> Result<Vec<String>, Refusal> {
         let mut info = reader.message(length)?;
         let mut messages = Vec::new();
         while info.has_more() {
-            if info.field()? != 2 {
+            if info.field()? != 2 || info.wire_type != LENGTH_DELIMITED {
                 info.skip()?;
                 continue;
             }
@@ -237,9 +252,9 @@ fn text(stream: &[u8]) -> Result<Vec<String>, Refusal> {
             let mut message_info = info.message(length)?;
             let (mut kind, mut length) = (-1, 0);
             while message_info.has_more() {
-                match message_info.field()? {
-                    1 => kind = message_info.varint()?,
-                    3 => length = message_info.varint()?,
+                match message_info.varint_field()? {
+                    Some(1) => kind = message_info.varint()?,
+                    Some(3) => length = message_info.varint()?,
                     _ => message_info.skip()?,
                 }
             }
@@ -260,7 +275,7 @@ fn text(stream: &[u8]) -> Result<Vec<String>, Refusal> {
 /// `storage`: the lines of a text storage, without attachment characters.
 fn storage(mut storage: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refusal> {
     while storage.has_more() {
-        if storage.field()? != 3 {
+        if storage.field()? != 3 || storage.wire_type != LENGTH_DELIMITED {
             storage.skip()?;
             continue;
         }
@@ -279,16 +294,18 @@ fn strings(mut list: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refus
     let mut list_type = -1;
     let mut strings = BTreeMap::new();
     while list.has_more() {
-        match list.field()? {
-            1 => list_type = list.varint()?,
-            3 => {
+        let field = list.field()?;
+        match (field, list.wire_type) {
+            (1, VARINT) => list_type = list.varint()?,
+            (3, LENGTH_DELIMITED) => {
                 let length = list.varint()?;
                 let mut entry = list.message(length)?;
                 let (mut key, mut string) = (-1, None);
                 while entry.has_more() {
-                    match entry.field()? {
-                        1 => key = entry.varint()?,
-                        3 => string = Some(entry.string()?),
+                    let field = entry.field()?;
+                    match (field, entry.wire_type) {
+                        (1, VARINT) => key = entry.varint()?,
+                        (3, LENGTH_DELIMITED) => string = Some(entry.string()?),
                         _ => entry.skip()?,
                     }
                 }
@@ -319,8 +336,14 @@ fn data_files(zip: &ZipFile<'_>) -> Result<Vec<usize>, Refusal> {
     Ok(files)
 }
 
-/// Reads protobuf wire format as the Java parser does: varints, length-delimited fields, and
-/// skips the rest, whatever wire type a field it reads has.
+/// The wire type of a varint.
+const VARINT: i64 = 0;
+/// The wire type of a length-delimited field.
+const LENGTH_DELIMITED: i64 = 2;
+
+/// Reads protobuf wire format: varints, length-delimited fields, and skips the rest. A field is
+/// read only when its wire type is the one it is read as: our Java parser reads fields 1 and 3
+/// whatever their wire type, so a fixed-width field misreads as a varint or a length (#105).
 struct Protobuf<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -347,6 +370,12 @@ impl<'a> Protobuf<'a> {
         let key = self.varint()?;
         self.wire_type = key & 7;
         Ok(((key as u64) >> 3) as i32)
+    }
+
+    /// The field number of the next key when it is a varint's, else none.
+    fn varint_field(&mut self) -> Result<Option<i32>, Refusal> {
+        let field = self.field()?;
+        Ok((self.wire_type == VARINT).then_some(field))
     }
 
     fn varint(&mut self) -> Result<i64, Refusal> {
@@ -559,14 +588,47 @@ mod tests {
     }
 
     #[test]
-    fn orders_archives_as_java_does() {
-        let order = |name: &str| reading_order(name).unwrap();
-        assert_eq!(order("Document.iwa"), "0");
-        assert_eq!(order("Slide-12.iwa"), "1Slide0000000012");
-        assert_eq!(order("DataList.iwa"), "2DataList");
-        assert_eq!(order("a-1-2.iwa"), "2a-10000000002");
-        assert_eq!(order("x-.iwa"), "2x-");
-        assert!(reading_order("x-99999999999999999999.iwa").is_err());
+    fn orders_archives_by_group_name_and_number() {
+        // Our Java parser sorts numbers padded to ten digits as strings, and fails on one
+        // longer than a `long` (#105).
+        let mut names = [
+            "Slide-12345678901.iwa",
+            "DataList.iwa",
+            "Slide-2.iwa",
+            "Document.iwa",
+            "Slide-99999999999999999999.iwa",
+            "Slide-010.iwa",
+            "a-1-2.iwa",
+            "x-.iwa",
+        ];
+        names.sort_by_key(|name| reading_order(name));
+        assert_eq!(
+            names,
+            [
+                "Document.iwa",
+                "Slide-2.iwa",
+                "Slide-010.iwa",
+                "Slide-12345678901.iwa",
+                "Slide-99999999999999999999.iwa",
+                "DataList.iwa",
+                "a-1-2.iwa",
+                "x-.iwa",
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_fields_only_by_their_wire_type() {
+        // Field 3 of a storage as a fixed 32-bit value: our Java parser reads it as a string's
+        // length (#105).
+        let mut fixed = key(3, 5);
+        fixed.extend_from_slice(&[4, 0, 0, 0]);
+        let stream = decompress(
+            &archive(&[record(2001, &[fixed, bytes_field(3, b"Kept")].concat())]),
+            &mut Budget(MAX_DECOMPRESSED_BYTES),
+        )
+        .unwrap();
+        assert_eq!(text(&stream).unwrap(), ["Kept"]);
     }
 
     #[test]

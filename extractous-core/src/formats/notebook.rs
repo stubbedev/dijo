@@ -65,25 +65,23 @@ fn within_jackson_limits(value: &Value) -> bool {
     }
 }
 
-/// `JsonNode.asText`: a string itself, a container nothing.
+/// `JsonNode.asText`: a string itself, a number in its shortest form, a container nothing.
+/// Our Java parser writes numbers as Jackson formats them, `1.0E10` for `1e10` (#105).
 fn as_text(value: &Value) -> Result<String, Unread> {
     match value {
         Value::String(text) => Ok(text.clone()),
         Value::Bool(flag) => Ok(flag.to_string()),
         Value::Null => Ok("null".to_owned()),
-        Value::Number(_) => Err(Unread(
-            "numbers where text is expected, which Jackson writes",
-        )),
+        Value::Number(number) => Ok(number.to_string()),
         Value::Array(_) | Value::Object(_) => Ok(String::new()),
     }
 }
 
-/// `JsonNode.forEach` over an array; an object, whose values Jackson would iterate in its
-/// order, is not read.
+/// The elements of an array; anything else, an object included, has none. Our Java parser
+/// iterates an object's values as though they were an array's (#105).
 fn elements(value: Option<&Value>) -> Result<&[Value], Unread> {
     match value {
         Some(Value::Array(elements)) => Ok(elements),
-        Some(Value::Object(_)) => Err(Unread("an object where an array is expected")),
         _ => Ok(&[]),
     }
 }
@@ -306,9 +304,7 @@ mod tests {
         let long_number = format!(r#"{{"nbformat": {}}}"#, "1".repeat(MAX_NUMBER_LENGTH + 1));
         let long_name = format!(r#"{{"{}": 1}}"#, "n".repeat(MAX_NAME_LENGTH + 1));
         for input in [
-            br#"{"cells": [{"cell_type": "code", "source": ["x = ", 1]}]}"#.as_slice(),
-            br#"{"cells": [{"cell_type": "code", "source": "\ud800"}]}"#,
-            br#"{"cells": {"a": {"cell_type": "code", "source": "x"}}}"#,
+            br#"{"cells": [{"cell_type": "code", "source": "\ud800"}]}"#.as_slice(),
             b"\xFF\xFE{\0}\0",
             long_number.as_bytes(),
             long_name.as_bytes(),
@@ -319,6 +315,21 @@ mod tests {
             notebook_blocks(b" \n"),
             Ok(Err(Error::ParseError(_)))
         ));
+    }
+
+    #[test]
+    fn reads_numbers_as_written_and_only_arrays_as_lists() {
+        // Our Java parser writes numbers as Jackson formats them and iterates an object as
+        // though it were an array (#105).
+        let blocks = |input: &[u8]| notebook_blocks(input).unwrap().unwrap();
+        assert_eq!(
+            blocks(br#"{"cells": [{"cell_type": "code", "source": ["x = ", 1e10, " + ", 2]}]}"#),
+            [Block::Preformatted("x = 10000000000.0 + 2".to_owned())]
+        );
+        assert_eq!(
+            blocks(br#"{"cells": {"a": {"cell_type": "code", "source": "x"}}}"#),
+            []
+        );
     }
 
     #[test]

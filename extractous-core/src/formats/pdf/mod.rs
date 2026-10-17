@@ -739,6 +739,14 @@ mod tests {
         ]
     }
 
+    /// The XHTML the native parser extracts of a document, with its metadata.
+    fn native_xml(input: &[u8]) -> (String, crate::Metadata) {
+        crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(input)
+            .unwrap()
+    }
+
     const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
@@ -908,8 +916,9 @@ mod tests {
         assert_same_as_tika_delegating(&[&plain, &marked], tika_name(), &DELEGATES);
     }
 
-    #[test]
-    fn extracts_form_fields_and_signatures_as_tikas_path_does() {
+    /// A document of a form with a field of each kind, a non-terminal field holding `address`
+    /// as its value and the signature `blank`.
+    fn form_objects(address: &str, blank: &str) -> Vec<String> {
         let mut objects = page_objects(TEXT);
         objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
         objects.extend(
@@ -920,7 +929,7 @@ mod tests {
                 "<< /FT /Btn /T (agree) /V /1 /Opt [(no) (yes)] >>",
                 "<< /FT /Btn /Ff 65536 /T (send) /TU (Send the form) >>",
                 "<< /FT /Ch /T (colours) /V [(red) (bl\\345)] >>",
-                "<< /T (address) /V /Home /Kids [13 0 R 14 0 R] >>",
+                &format!("<< /T (address) {address} /Kids [13 0 R 14 0 R] >>"),
                 "<< /T (orphan) /V (no type) >>",
                 "<< /FT /Tx /Parent 11 0 R /T (street) /V (Storgata 1) >>",
                 "<< /Parent 11 0 R /T (city) /FT /Tx >>",
@@ -928,12 +937,18 @@ mod tests {
                 "<< /Type /Sig /Filter /Adobe.PPKLite /Name (Ola Nordmann) \
                  /M (D:20240102030405+01'30') /Reason (Approval) /Location () \
                  /ContactInfo ( ) >>",
-                "<< /FT /Sig /T (unsigned) >>",
+                &format!("<< /FT /Sig /T (unsigned) {blank} >>"),
                 "<< /FT /Btn /Ff 32768 /T (size) /V /2 /Kids [19 0 R] >>",
                 "<< /Parent 18 0 R /Subtype /Widget /Rect [0 0 1 1] >>",
             ]
             .map(str::to_owned),
         );
+        objects
+    }
+
+    #[test]
+    fn extracts_form_fields_and_signatures_as_tikas_path_does() {
+        let objects = form_objects("", "");
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let scratch = Scratch::new("pdf-form");
         let form = scratch.write("form.pdf", &document(&objects, b"", &[]));
@@ -941,7 +956,27 @@ mod tests {
     }
 
     #[test]
-    fn parses_embedded_files_as_tikas_path_does() {
+    fn writes_values_of_non_terminal_fields_and_no_empty_signatures() {
+        let objects = form_objects("/V [(Hjem) 2]", "/V << /Type /Sig >>");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let (xml, metadata) = native_xml(&document(&objects, b"", &[]));
+        // Tika writes `COSArray{...}`, and an empty list for the signature (#109).
+        assert!(xml.contains("<li>address: [Hjem, 2]</li>"), "{xml}");
+        assert_eq!(xml.matches("signaturedata").count(), 1, "{xml}");
+        assert_eq!(metadata.get("tk:has-signature").unwrap(), &["true"]);
+        let objects = form_objects("/V /Home", "");
+        let mut objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        objects[15] = "<< /Type /Sig >>";
+        let (xml, metadata) = native_xml(&document(&objects, b"", &[]));
+        assert!(xml.contains("<li>address: Home</li>"), "{xml}");
+        assert!(!xml.contains("signaturedata"), "{xml}");
+        assert_eq!(metadata.get("tk:has-signature"), None);
+    }
+
+    /// A document embedding files by an annotation, among its objects and by its tree of
+    /// embedded files, `copies` among the embedded files of `second.txt` and `names` at the
+    /// end of the tree's names.
+    fn embedding(copies: &str, names: &str) -> Vec<u8> {
         let hello = "Hej verden, her er en fil.";
         let second = "Anden fil, ogs\u{e5} med.";
         let third = "Tredje fil.";
@@ -968,17 +1003,38 @@ mod tests {
             "<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] /FS (note.txt) \
              /Contents (A note) >>"
                 .to_owned(),
-            "<< /Names [(second.txt) << /F (  ) /UF (second.txt) /EF << /F 10 0 R /Mac 10 0 R >> >> \
-             (hello) 6 0 R] >>"
-                .to_owned(),
+            format!(
+                "<< /Names [(second.txt) << /F (  ) /UF (second.txt) /EF << /F 10 0 R {copies} >> >> \
+                 (hello) 6 0 R {names}] >>"
+            ),
             stream("", second),
             "<< /Type /Filespec /F (third.txt) /EF << /F 12 0 R >> >>".to_owned(),
             stream("", third),
         ]);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        document(&objects, b"", &[])
+    }
+
+    #[test]
+    fn parses_embedded_files_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-embedded");
-        let embedding = scratch.write("embedding.pdf", &document(&objects, b"", &[]));
+        let embedding = scratch.write("embedding.pdf", &embedding("", ""));
         assert_same_as_tika_delegating(&[&embedding], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn parses_each_embedded_file_once_and_every_name_of_the_tree() {
+        // Tika extracts the Mac copy apart, under its name `  ` before `UF`, keeps only the
+        // last value of the repeated name and drops the node for its one bad entry (#109).
+        let input = embedding(
+            "/Mac 10 0 R",
+            "(second.txt) << /F (fourth.txt) /EF << /F 12 0 R >> >> (bad) 3",
+        );
+        let (xml, _) = native_xml(&input);
+        assert_eq!(xml.matches("Anden fil").count(), 1, "{xml}");
+        assert_eq!(xml.matches("id=\"second.txt\"").count(), 1, "{xml}");
+        assert!(xml.contains("id=\"fourth.txt\""), "{xml}");
+        assert_eq!(xml.matches("Tredje fil.").count(), 2, "{xml}");
     }
 
     #[test]
@@ -1007,15 +1063,16 @@ mod tests {
         assert_same_as_tika_delegating(&[&type3], tika_name(), &DELEGATES);
     }
 
-    #[test]
-    fn extracts_xfa_forms_as_tikas_path_does() {
+    /// A document of an XFA form whose data `data` holds.
+    fn xfa_form(data: &str) -> Vec<u8> {
         let template = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.0/\">\n\
              <subform><draw><value><text>Ans&#248;gning om tilskud</text></value></draw>\n\
              <field name=\"navn\"><assist><toolTip>Dit <p>fulde</p> navn</toolTip></assist>\
              </field>\n<field name=\"by\"/><field name=\"tom\"/></subform>\n</template>";
-        let data = "<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">\n\
-             <xfa:data>\n<form1>\n<navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>\n\
-             </xfa:data></xfa:datasets>";
+        let data = format!(
+            "<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">\n\
+             <xfa:data>{data}</xfa:data></xfa:datasets>"
+        );
         let stream =
             |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
         let mut objects = page_objects(TEXT);
@@ -1026,13 +1083,36 @@ mod tests {
                 .to_owned(),
             stream("<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"),
             stream(template),
-            stream(data),
+            stream(&data),
             stream("</xdp:xdp>"),
         ]);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        document(&objects, b"", &[])
+    }
+
+    #[test]
+    fn extracts_xfa_forms_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-xfa");
-        let xfa = scratch.write("xfa.pdf", &document(&objects, b"", &[]));
+        let xfa = scratch.write(
+            "xfa.pdf",
+            &xfa_form("<form1><navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>"),
+        );
         assert_same_as_tika_delegating(&[&xfa], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn takes_the_values_of_xfa_fields_from_their_own_elements() {
+        // Tika takes the line breaks before `navn` into its value, and the text since `by`
+        // ended as a value of `form1` (#109).
+        let (xml, _) = native_xml(&xfa_form(
+            "\n<form1>\n<navn>Kari</navn>\n<by>Oslo</by>\n</form1>\n",
+        ));
+        assert!(
+            xml.contains("<li fieldName=\"navn\">Dit fulde\n navn: Kari</li>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<li fieldName=\"by\">by: Oslo</li>"), "{xml}");
+        assert!(xml.contains("<li fieldName=\"tom\">tom: </li>"), "{xml}");
     }
 
     #[test]
@@ -1302,6 +1382,19 @@ mod tests {
             println!("deferred {}: {}", path.display(), deferral_of(path));
         }
         println!("{} parsed, {} deferred", parsed.len(), deferred.len());
-        assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
+        // Tika extracts its Mac, DOS and Unix copies of one file as files of their own (#109).
+        let (copies, paths): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
+            .into_iter()
+            .partition(|path| path.ends_with("testPDF_multiFormatEmbFiles.pdf"));
+        assert_same_as_tika_delegating(&paths, tika_name(), &DELEGATES);
+        let [copies] = copies[..] else {
+            panic!("{copies:?}");
+        };
+        let (xml, _) = native_xml(&std::fs::read(copies).unwrap());
+        assert_eq!(xml.matches("class=\"embedded\"").count(), 1, "{xml}");
+        assert!(
+            xml.contains("id=\"Test.txt\"") && xml.contains("non os specific"),
+            "{xml}"
+        );
     }
 }

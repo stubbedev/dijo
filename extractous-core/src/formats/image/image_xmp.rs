@@ -137,8 +137,9 @@ pub(crate) fn scan_and_extract(input: &[u8], metadata: &mut TikaMetadata) -> Res
     Ok(())
 }
 
-/// `XMPPacketScanner.parse`: the bytes between the packet header and trailer, matched as its
-/// `skipAfter` matches, which does not look again at the byte that broke a partial match.
+/// `XMPPacketScanner.parse`: the bytes between the packet header and trailer. Its `skipAfter`
+/// does not look again at the byte that broke a partial match, so that it misses a match
+/// that byte starts (#114).
 fn scan(input: &[u8]) -> Result<Option<Vec<u8>>, Unported> {
     let mut position = 0;
     if !skip_after(input, &mut position, b"<?xpacket begin=", None)? {
@@ -158,28 +159,21 @@ fn skip_after(
     input: &[u8],
     position: &mut usize,
     pattern: &[u8],
-    mut out: Option<&mut Vec<u8>>,
+    out: Option<&mut Vec<u8>>,
 ) -> Result<bool, Unported> {
-    let mut found = 0;
-    while let Some(&byte) = input.get(*position) {
-        *position += 1;
-        if byte == pattern[found] {
-            found += 1;
-            if found == pattern.len() {
-                return Ok(true);
-            }
-        } else {
-            if let Some(out) = out.as_deref_mut() {
-                out.extend_from_slice(&pattern[..found]);
-                out.push(byte);
-                if out.len() > MAX_PACKET {
-                    return Err(recorded("in an XMP packet larger than Tika reads"));
-                }
-            }
-            found = 0;
+    let rest = input.get(*position..).unwrap_or_default();
+    let found = rest
+        .windows(pattern.len())
+        .position(|window| window == pattern);
+    if let Some(out) = out {
+        let before = &rest[..found.unwrap_or(rest.len())];
+        if out.len() + before.len() > MAX_PACKET {
+            return Err(recorded("in an XMP packet larger than Tika reads"));
         }
+        out.extend_from_slice(before);
     }
-    Ok(false)
+    *position += found.map_or(rest.len(), |at| at + pattern.len());
+    Ok(found.is_some())
 }
 
 /// `ImageXmp.extractWebp`: the packet of the first top-level `XMP ` chunk.
@@ -327,4 +321,18 @@ fn looks_like_xmp(data: &[u8]) -> bool {
     [&b"xmpmeta"[..], b"rdf:RDF", b"xpacket"]
         .iter()
         .any(|needle| head.windows(needle.len()).any(|window| window == *needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scans_for_packets_past_partial_matches() {
+        assert_eq!(
+            scan(b"x<<?xpacket begin=\"\"??>XMP<<?xpacket end=\"w\"?>").unwrap(),
+            Some(b"XMP<".to_vec())
+        );
+        assert_eq!(scan(b"no packet").unwrap(), None);
+    }
 }

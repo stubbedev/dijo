@@ -8,7 +8,7 @@ use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::is_blank;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
@@ -73,62 +73,57 @@ impl Parser for CompressorParser {
         if let Some(reason) = scan.entry(&decoded.content) {
             return Err(Declined::Deferred(reason));
         }
-        let entry = entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME)).map_err(
-            |LowerCaseMismatch| {
-                "lower-casing the file name changes its length, which GzipUtils mixes up".to_owned()
-            },
-        )?;
+        let entry = entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME));
         if let Some(reason) = scan.document(input.len()) {
             return Err(Declined::Deferred(reason));
         }
         let content = decoded.content;
+        // The document ends whatever the entry's parse does, short of the output stopping:
+        // Tika leaves it open when the parse fails (#100).
         Ok(Box::new(move |xhtml| {
-            xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry)
+            let parsed = xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry);
+            if !matches!(parsed, Err(Failure::Stopped(_))) {
+                xhtml.end_document()?;
+            }
+            parsed
         }))
     }
 }
 
-/// Lower-casing a name changed its length, which `GzipUtils` mixes up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LowerCaseMismatch;
-
 /// The metadata of the entry: the name in the gzip header (`extractGzipMetadata`) unless blank,
 /// else the name `setName` makes of the compressed file's `resource_name`.
-fn entry_metadata(
-    file_name: Option<String>,
-    resource_name: Option<&str>,
-) -> Result<TikaMetadata, LowerCaseMismatch> {
+fn entry_metadata(file_name: Option<String>, resource_name: Option<&str>) -> TikaMetadata {
     let mut entry = TikaMetadata::new();
     if let Some(name) = file_name.filter(|name| !is_blank(name)) {
         entry.set(INTERNAL_PATH, name.clone());
         entry.set(RESOURCE_NAME, name);
-    } else if let Some(name) = resource_name.map(entry_name).transpose()?.flatten() {
+    } else if let Some(name) = resource_name.and_then(entry_name) {
         entry.set(RESOURCE_NAME, name);
     }
-    Ok(entry)
+    entry
 }
 
 /// `setName`: the name of the compressed file `resource_name` without the compressor's
-/// extension, or none for a blank one.
-fn entry_name(resource_name: &str) -> Result<Option<String>, LowerCaseMismatch> {
+/// extension, or none for a blank one. Suffixes match in any case: Tika's own list matches them
+/// case-sensitively, so `FILE.GZ` and `file.gz` got different names (#100).
+fn entry_name(resource_name: &str) -> Option<String> {
     if is_blank(resource_name) {
-        return Ok(None);
+        return None;
     }
     let name = file_name(resource_name);
     let stem = |name: &str| name[..name.rfind('.').expect("a suffix")].to_owned();
-    let name = if [".tgz", ".tbz", ".tbz2"].iter().any(|s| name.ends_with(s)) {
-        format!("{}.tar", stem(name))
-    } else if [".bz", ".gz", ".bz2", ".xz", ".zlib", ".pack", ".br"]
-        .iter()
-        .any(|s| name.ends_with(s))
-    {
-        stem(name)
-    } else if name.is_empty() {
-        String::new()
-    } else {
-        gzip::uncompressed_file_name(name).ok_or(LowerCaseMismatch)?
+    let ends_with = |suffixes: &[&str]| {
+        suffixes
+            .iter()
+            .any(|suffix| gzip::ends_with_ignoring_case(name, suffix))
     };
-    Ok(Some(name))
+    Some(if ends_with(&[".tgz", ".tbz", ".tbz2"]) {
+        format!("{}.tar", stem(name))
+    } else if ends_with(&[".bz", ".gz", ".bz2", ".xz", ".zlib", ".pack", ".br"]) {
+        stem(name)
+    } else {
+        gzip::uncompressed_file_name(name)
+    })
 }
 
 /// Tika's `FilenameUtils.getName`: what follows the last slash, backslash or colon, nothing for
@@ -160,7 +155,7 @@ mod tests {
 
     #[test]
     fn names_the_entry_as_set_name_does() {
-        let named = |name: &str| Ok(Some(name.to_owned()));
+        let named = |name: &str| Some(name.to_owned());
         assert_eq!(entry_name("dir/a.tgz"), named("a.tar"));
         assert_eq!(entry_name("C:x.tar.gz"), named("x.tar"));
         assert_eq!(entry_name("a.TGZ"), named("a.tar"));
@@ -168,8 +163,10 @@ mod tests {
         assert_eq!(entry_name("x.Z"), named("x"));
         assert_eq!(entry_name("data.br"), named("data"));
         assert_eq!(entry_name("dir/.."), named(""));
-        assert_eq!(entry_name(" "), Ok(None));
-        assert_eq!(entry_name("\u{130}.Z"), Err(LowerCaseMismatch));
+        assert_eq!(entry_name(" "), None);
+        assert_eq!(entry_name("\u{130}.Z"), named("\u{130}"));
+        assert_eq!(entry_name("FILE.GZ"), named("FILE"));
+        assert_eq!(entry_name("A.TBZ2"), named("A.tar"));
     }
 
     #[test]
@@ -180,16 +177,7 @@ mod tests {
         let data = gzip(b"text", None);
         let reason = defers(&data[..data.len() - 3], "application/gzip", None).unwrap();
         assert!(reason.contains("reading it fails"), "{reason}");
-        let reason = defers(&data, "application/gzip", Some("\u{130}.Z")).unwrap();
-        assert!(reason.contains("lower-casing"), "{reason}");
-        assert_eq!(
-            defers(
-                &gzip(b"text", Some("named")),
-                "application/gzip",
-                Some("\u{130}.Z")
-            ),
-            None
-        );
+        assert_eq!(defers(&data, "application/gzip", Some("\u{130}.Z")), None);
     }
 
     #[test]
