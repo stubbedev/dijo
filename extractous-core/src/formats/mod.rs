@@ -3,69 +3,38 @@
 //! has one.
 
 mod access;
-mod apple_single;
 mod archive;
 #[cfg(all(test, feature = "tika"))]
 pub(crate) mod audit;
-mod chm;
-mod class_file;
 mod cms;
 mod composite;
 mod compound;
-mod dbf;
-mod dc_xml;
-mod dif;
 mod doc;
 mod docx;
-mod dwg;
-mod empty;
 mod escher;
-mod executable;
-mod feed;
-mod fiction_book;
-mod geogebra;
-mod hwpx;
-mod idml;
-mod iwork;
-mod iwork_package;
 mod mail;
-mod markdown;
-mod mif;
-mod mobi;
-mod ms_owner;
 mod msg;
-mod notebook;
 mod ole2;
-mod onenote;
 mod ooxml;
-mod open_pgp;
 #[cfg(any(test, feature = "parity"))]
 pub mod parity;
-pub(crate) mod plist;
 mod poi;
 mod ppt;
 mod pptx;
 mod protected;
-mod prt;
 mod pst;
 mod publisher;
 mod rtf;
-mod source_code;
 #[cfg(not(feature = "static-image"))]
 mod sqlite;
-mod subtitle;
 mod tnef;
-mod translation;
-mod tsd;
 #[cfg(all(test, feature = "tika"))]
 mod url_tests;
 mod visio;
 mod vsdx;
 mod warc;
-mod wordperfect;
 mod xls;
 mod xlsx;
-mod xml_2003;
 mod xps;
 
 use std::borrow::Cow;
@@ -86,6 +55,37 @@ pub(crate) use extractous_odf::formats::epub;
 pub(crate) use extractous_odf::formats::odf;
 pub(crate) use extractous_pdf::formats::font;
 pub(crate) use extractous_pdf::formats::pdf;
+pub(crate) use extractous_small::formats::apple_single;
+pub(crate) use extractous_small::formats::chm;
+pub(crate) use extractous_small::formats::class_file;
+pub(crate) use extractous_small::formats::dbf;
+pub(crate) use extractous_small::formats::dc_xml;
+pub(crate) use extractous_small::formats::dif;
+pub(crate) use extractous_small::formats::dwg;
+pub(crate) use extractous_small::formats::empty;
+pub(crate) use extractous_small::formats::executable;
+pub(crate) use extractous_small::formats::feed;
+pub(crate) use extractous_small::formats::fiction_book;
+pub(crate) use extractous_small::formats::geogebra;
+pub(crate) use extractous_small::formats::hwpx;
+pub(crate) use extractous_small::formats::idml;
+pub(crate) use extractous_small::formats::iwork;
+pub(crate) use extractous_small::formats::iwork_package;
+pub(crate) use extractous_small::formats::markdown;
+pub(crate) use extractous_small::formats::mif;
+pub(crate) use extractous_small::formats::mobi;
+pub(crate) use extractous_small::formats::ms_owner;
+pub(crate) use extractous_small::formats::notebook;
+pub(crate) use extractous_small::formats::onenote;
+pub(crate) use extractous_small::formats::open_pgp;
+pub(crate) use extractous_small::formats::plist;
+pub(crate) use extractous_small::formats::prt;
+pub(crate) use extractous_small::formats::source_code;
+pub(crate) use extractous_small::formats::subtitle;
+pub(crate) use extractous_small::formats::translation;
+pub(crate) use extractous_small::formats::tsd;
+pub(crate) use extractous_small::formats::wordperfect;
+pub(crate) use extractous_small::formats::xml_2003;
 
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
@@ -1269,7 +1269,7 @@ mod tests {
                         crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
                     }
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
-                        crate::formats::translation::tests::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
+                        crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }
                     _ => Vec::new(),
                 };

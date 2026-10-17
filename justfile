@@ -201,8 +201,8 @@ source-code-tables:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    java -cp "$jars/source-code/*" extractous-core/tests/fixtures/source_code/LexerTables.java \
-        extractous-core/src/formats/source_code/tables.rs
+    java -cp "$jars/source-code/*" extractous-small/tests/fixtures/source_code/LexerTables.java \
+        extractous-small/src/formats/source_code/tables.rs
 
 # Regenerate what Apache Tika's RTFParser makes of the code pages RTF names and of the dates in its
 # info group, which the Rust port is tested against, after refreshing the fixture zoneinfo files the

@@ -804,6 +804,7 @@ dependencies = [
  "extractous-native",
  "extractous-odf",
  "extractous-pdf",
+ "extractous-small",
  "extractous-tika",
  "fancy-regex",
  "flate2",
@@ -940,6 +941,25 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode-script",
+]
+
+[[package]]
+name = "extractous-small"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "extractous-mime",
+ "lzxd",
+ "md-5",
+ "memchr",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "snap",
+ "zip",
 ]
 
 [[package]]
