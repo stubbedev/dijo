@@ -65,9 +65,16 @@ const PDF_PARSER: &str = "extractous::PDFParser";
 const TIKA_PDF_PARSER: &str = "org.apache.tika.parser.pdf.PDFParser";
 #[cfg(test)]
 const TIKA_TEXT_LAYER_CHECKING_PARSER: &str = "ai.yobix.TextLayerCheckingPdfParser";
-/// The parser our `TextLayerCheckingPdfParser` records delegating to, under both names.
+/// The parser our `TextLayerCheckingPdfParser` records delegating to, and the OCR parser Tika's
+/// PDF parser hands the pages it OCRs itself, under both names.
 #[cfg(test)]
-const DELEGATES: [(&str, &str); 1] = [(PDF_PARSER, TIKA_PDF_PARSER)];
+const DELEGATES: [(&str, &str); 2] = [
+    (PDF_PARSER, TIKA_PDF_PARSER),
+    (
+        crate::formats::image::PREPARING_OCR_PARSER,
+        "ai.yobix.PreparingOcrParser",
+    ),
+];
 /// `AbstractPDF2XHTML.MAX_RECURSION_DEPTH`.
 const MAX_RECURSION_DEPTH: usize = 100;
 
@@ -122,27 +129,37 @@ fn prepare<'a>(
     limit: usize,
 ) -> Result<Prepared<'a>, Declined> {
     match record(input, metadata, configs, limit)? {
-        Recorded::Whole(mut recording, page_ocr) => Ok(Box::new(move |xhtml| {
+        Recorded::Whole {
+            mut recording,
+            page_ocr,
+            ocr_pages,
+        } => Ok(Box::new(move |xhtml| {
             let written = match page_ocr {
                 None => recording.flush(xhtml, None),
                 Some(page_ocr) => write_read(&page_ocr, &mut recording, xhtml, configs),
             };
-            ended(xhtml, written)
+            ended(xhtml, written, ocr_pages)
         })),
         Recorded::Large(loaded, settings) => {
             let metadata = metadata.clone();
             Ok(Box::new(move |xhtml| {
+                let ocr_pages = match settings.ocr.dispatches_every_page() {
+                    true => loaded.pdf.pages().map_err(late)?.len(),
+                    false => 0,
+                };
                 let written = stream(&loaded, input, settings, metadata, configs, xhtml);
-                ended(xhtml, written)
+                ended(xhtml, written, ocr_pages)
             }))
         }
     }
 }
 
-/// The document `written` to `xhtml`, with the count of pages Tika's `PDFParser` read by OCR,
-/// none, our `TextLayerCheckingPdfParser` reading them.
-fn ended(xhtml: &mut Xhtml, written: Result<(), Failure>) -> Result<(), Failure> {
-    xhtml.metadata_mut().set("pdf:ocr-page-count", "0");
+/// The document `written` to `xhtml`, with the count of pages Tika's `PDFParser` handed its OCR
+/// parser, `ocr_pages`: none where our `TextLayerCheckingPdfParser` reads them.
+fn ended(xhtml: &mut Xhtml, written: Result<(), Failure>, ocr_pages: usize) -> Result<(), Failure> {
+    xhtml
+        .metadata_mut()
+        .set("pdf:ocr-page-count", ocr_pages.to_string());
     written
 }
 
@@ -181,8 +198,13 @@ const RECORDING_LIMIT: usize = 16 << 20;
 
 /// What recording a document gave.
 enum Recorded {
-    /// The whole extraction, and the OCR of the pages our `TextLayerCheckingPdfParser` reads.
-    Whole(Box<Recording>, Option<PageOcr>),
+    /// The whole extraction, the OCR of the pages read, and how many pages Tika's PDF parser
+    /// hands its OCR parser.
+    Whole {
+        recording: Box<Recording>,
+        page_ocr: Option<PageOcr>,
+        ocr_pages: usize,
+    },
     /// The document, loaded, whose recording grew past its limit before a page to read by OCR:
     /// it is streamed.
     Large(Box<Loaded>, Settings),
@@ -246,15 +268,23 @@ fn record(
     if recorded?.is_break() {
         return Ok(Recorded::Large(Box::new(loaded), settings));
     }
+    let page_count = loaded.pdf.pages().map_err(deferred)?.len();
     let page_ocr = PageOcr::of(
         recording.pages_read(),
-        loaded.pdf.pages().map_err(deferred)?.len(),
+        page_count,
         settings.ocr,
         input,
         configs,
     )
     .map_err(deferred)?;
-    Ok(Recorded::Whole(Box::new(recording), page_ocr))
+    Ok(Recorded::Whole {
+        recording: Box::new(recording),
+        page_ocr,
+        ocr_pages: match settings.ocr.dispatches_every_page() {
+            true => page_count,
+            false => 0,
+        },
+    })
 }
 
 /// An object the extraction needed that lopdf lost or the cross-reference table does not list,
@@ -475,7 +505,7 @@ fn extract(
         out.set("Content-Type", "application/illustrator");
     }
     let tagged = match settings.marked_content {
-        _ if !has_marked_content => None,
+        _ if !has_marked_content || settings.ocr.reads_only_ocr() => None,
         MarkedContentStrategy::None => None,
         MarkedContentStrategy::Auto => Some(Tagged::new(pdf, settings.reading_order, true)),
         MarkedContentStrategy::Tags => Some(Tagged::new(pdf, settings.reading_order, false)),
@@ -759,7 +789,13 @@ mod tests {
             };
             let recorded = record(&input, &TikaMetadata::new(), &configs, RECORDING_LIMIT);
             assert!(
-                matches!(recorded, Ok(Recorded::Whole(_, Some(_)))),
+                matches!(
+                    recorded,
+                    Ok(Recorded::Whole {
+                        page_ocr: Some(_),
+                        ..
+                    })
+                ),
                 "the scan is not read by OCR with {language}"
             );
             assert_same_as_tika_delegating_with(&[&scan], tika_name(), &DELEGATES, &configs);
@@ -1276,19 +1312,38 @@ mod tests {
     }
 
     #[test]
+    fn reads_pages_by_ocr_under_the_ocr_strategies_as_tikas_path_does() {
+        assert!(ocr_runs(), "tesseract is not installed");
+        let scratch = Scratch::new("pdf-ocr-strategies");
+        let mut documents =
+            corpus_documents(&["eng-ocr.pdf", "danish.pdf", "notes.pdf", "table.pdf"]);
+        let embedding = scratch.write("embedding.pdf", &embedding("", ""));
+        documents.push(embedding);
+        for strategy in [
+            PdfOcrStrategy::OCR_ONLY,
+            PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION,
+        ] {
+            let configs = with_pdf(PdfParserConfig::new().set_ocr_strategy(strategy));
+            for document in &documents {
+                let input = std::fs::read(document).unwrap();
+                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
+                assert_eq!(deferral, None, "{} under {strategy}", document.display());
+            }
+            assert_same_as_tika_delegating_with(
+                &as_paths(&documents),
+                tika_name(),
+                &DELEGATES,
+                &configs,
+            );
+        }
+    }
+
+    #[test]
     fn defers_under_the_settings_the_port_does_not_read() {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
         for (pdf, start) in [
-            (
-                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_ONLY),
-                "the OCR strategy OCR_ONLY",
-            ),
-            (
-                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION),
-                "the OCR strategy OCR_AND_TEXT_EXTRACTION",
-            ),
             (
                 PdfParserConfig::new().set_extract_inline_images(true),
                 "the PDF setting setExtractInlineImages",

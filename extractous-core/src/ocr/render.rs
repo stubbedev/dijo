@@ -1,6 +1,7 @@
-//! PDF pages rendered for OCR, as our Java `TextLayerCheckingPdfParser` has PDFBox render them:
-//! the crop box at Tika's 300 dpi in grey, at a lower resolution where the page would have more
-//! than [`MAX_PIXELS`] pixels. hayro renders them, a renderer in pure Rust.
+//! PDF pages rendered for OCR in grey at Tika's 300 dpi, as our Java `TextLayerCheckingPdfParser`
+//! has PDFBox render them, at a lower resolution where the page would have more than
+//! [`MAX_PIXELS`] pixels, or as Tika's own renderer does for the pages its PDF parser OCRs.
+//! hayro renders them, a renderer in pure Rust.
 
 use std::sync::Arc;
 
@@ -16,6 +17,15 @@ use super::recognize::MAX_PIXELS;
 /// `RenderSettings`' default resolution.
 const DPI: f64 = 300.0;
 const POINTS_PER_INCH: f64 = 72.0;
+
+/// The resolution a page is rendered at for OCR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resolution {
+    /// 300 dpi, or the lower one that gives the page [`MAX_PIXELS`] pixels.
+    Capped,
+    /// 300 dpi.
+    Full,
+}
 
 /// A PDF's pages, as the renderer reads them.
 pub(crate) struct PdfPages {
@@ -34,9 +44,8 @@ impl PdfPages {
         self.pdf.pages().len()
     }
 
-    /// A page rendered in grey: at 300 dpi, or at the resolution that gives it [`MAX_PIXELS`]
-    /// pixels when that is lower.
-    pub(crate) fn render(&self, index: usize) -> Result<GrayImage, String> {
+    /// A page rendered in grey at `resolution`.
+    pub(crate) fn render(&self, index: usize, resolution: Resolution) -> Result<GrayImage, String> {
         let page = self
             .pdf
             .pages()
@@ -45,7 +54,10 @@ impl PdfPages {
         let crop_box = page.intersected_crop_box();
         let square_inches =
             crop_box.width() / POINTS_PER_INCH * (crop_box.height() / POINTS_PER_INCH);
-        let dpi = DPI.min((MAX_PIXELS as f64 / square_inches).sqrt());
+        let dpi = match resolution {
+            Resolution::Capped => DPI.min((MAX_PIXELS as f64 / square_inches).sqrt()),
+            Resolution::Full => DPI,
+        };
         let scale = dpi as f32 / POINTS_PER_INCH as f32;
         let pixmap = hayro::render(
             page,
@@ -133,7 +145,7 @@ mod tests {
     fn differing(pdf: Vec<u8>, expected: &GrayImage) -> usize {
         let rendered = PdfPages::open(Arc::new(pdf), "")
             .unwrap()
-            .render(0)
+            .render(0, Resolution::Capped)
             .unwrap();
         assert!(
             rendered.width().abs_diff(expected.width()) <= 1
