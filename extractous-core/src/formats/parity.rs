@@ -240,6 +240,7 @@ pub(super) fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharS
     }
 }
 
+const PARSED_BY: &str = "tk:parsed-by";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
@@ -283,6 +284,64 @@ pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extract
         }
     }
     extracted
+}
+
+/// The OCR enricher our Java path hands Tika's image parsers.
+const PREPARING_OCR_PARSER: &str = "ai.yobix.PreparingOcrParser";
+
+/// Tika's extraction, its text in `char_set`, under `configs`, and whether its XHTML head held
+/// what is left out: where OCR is skipped, [`PREPARING_OCR_PARSER`] among the parsers it
+/// records, in its metadata and in the XHTML head, which Tika's path records though it reads
+/// nothing and the native path does not (#114).
+fn without_skipped_ocr_parser(
+    mut tika: Extracted,
+    char_set: CharSet,
+    configs: &ParserConfigs,
+) -> (Extracted, bool) {
+    if !configs.ocr.skips_ocr() {
+        return (tika, false);
+    }
+    for (name, values) in &mut tika.metadata {
+        if name == PARSED_BY || name == PARSED_BY_FULL_SET {
+            values.retain(|value| value != PREPARING_OCR_PARSER);
+        }
+    }
+    tika.metadata.retain(|(_, values)| !values.is_empty());
+    let Some(mut text) = decoded(&tika.text, char_set) else {
+        return (tika, false);
+    };
+    let mut in_head = false;
+    for name in [PARSED_BY, PARSED_BY_FULL_SET] {
+        let meta = format!("<meta name=\"{name}\" content=\"{PREPARING_OCR_PARSER}\" />\n");
+        in_head |= text.contains(&meta);
+        text = text.replace(&meta, "");
+    }
+    tika.text.clear();
+    formats::encode(&text, char_set, &mut tika.text);
+    (tika, in_head)
+}
+
+/// A native string extraction, its text in `char_set`, with its head cut as Tika's is, where
+/// the length limit stopped Tika's in its head and the two agree up to there: Tika's head held
+/// an element left out of it since, so its limit stopped it sooner.
+fn with_the_head_cut_as_tikas(
+    mut native: Extracted,
+    tika: &Extracted,
+    char_set: CharSet,
+) -> Extracted {
+    let (Some(tika_text), Some(native_text)) = (
+        decoded(&tika.text, char_set),
+        decoded(&native.text, char_set),
+    ) else {
+        return native;
+    };
+    let Some(before) = tika_text.strip_suffix(CUT_HEAD) else {
+        return native;
+    };
+    if native_text.starts_with(before) && native_text[before.len()..].starts_with("<meta ") {
+        native.text = tika.text.clone();
+    }
+    native
 }
 
 /// The parser of our Java path whose document nests the document of the parser it hands an
@@ -1768,6 +1827,8 @@ fn compare(
                         char_set,
                         naming.departures,
                     );
+                    let (tika, skipped_ocr_parser) =
+                        without_skipped_ocr_parser(tika, char_set, configs);
                     let (mut tika, edit_time_longer) = with_native_edit_time(
                         without_departures(comparable(tika, char_set), char_set, naming.departures),
                         &native,
@@ -1786,6 +1847,9 @@ fn compare(
                         ),
                         None if entry == "string" => {
                             let mut native = cut_to(native, &tika);
+                            if skipped_ocr_parser {
+                                native = with_the_head_cut_as_tikas(native, &tika, char_set);
+                            }
                             if let Some(longer) = edit_time_longer {
                                 native.text = cut_sooner(native.text, &tika.text, longer);
                             }

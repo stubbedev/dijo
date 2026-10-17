@@ -61,6 +61,20 @@ fn same_as_tika(parser: &dyn Parser, tika_name: &str, roots: &[&Path]) -> Vec<Pa
     deferred
 }
 
+/// With OCR skipped, the OCR enricher is not recorded among the parsers, where Tika's path
+/// records it though it reads nothing (#114).
+#[test]
+fn records_no_ocr_parser_where_ocr_is_skipped() {
+    let (_, metadata) = crate::Extractor::new()
+        .set_ocr_config(TesseractOcrConfig::new().set_skip_ocr(true))
+        .extract_file_to_string("../test_files/documents/ara-ocr.png")
+        .unwrap();
+    assert_eq!(metadata["tk:parsed-by"], ["extractous::ImageParser"]);
+    assert!(!metadata["tk:parsed-by-full-set"]
+        .iter()
+        .any(|parser| parser == PREPARING_OCR_PARSER));
+}
+
 #[test]
 fn reads_local_jpegs_as_tika_does() {
     let deferred = same_as_tika(
