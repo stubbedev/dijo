@@ -409,7 +409,7 @@ impl Picture {
             PictureType::Wmf => {
                 let at = CHECKSUM * self.checksums;
                 let header = MetafileHeader::read(raw, at)?;
-                let mut data = header.placeable();
+                let mut data = header.placeable()?;
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
                         .ok_or_else(|| recorded("a WMF picture that does not inflate"))?,
@@ -447,13 +447,18 @@ fn bmp(data: &[u8]) -> Result<Vec<u8>, Unported> {
     Ok(out)
 }
 
-/// `Metafile.Header`: the bounds of a metafile picture.
+/// `Metafile.Header`: the bounds of a metafile picture, in its logical units, and its width in
+/// EMUs.
 struct MetafileHeader {
     left: i32,
     top: i32,
     right: i32,
     bottom: i32,
+    width_emus: i32,
 }
+
+/// EMUs in an inch.
+const EMUS_PER_INCH: i64 = 914_400;
 
 impl MetafileHeader {
     fn read(raw: &[u8], at: usize) -> Result<MetafileHeader, Unported> {
@@ -466,19 +471,40 @@ impl MetafileHeader {
             top: int(8),
             right: int(12),
             bottom: int(16),
+            width_emus: int(20),
         })
     }
 
-    /// `ImageHeaderWMF(getBounds()).write`: the placeable header of a WMF of these bounds.
-    fn placeable(&self) -> Vec<u8> {
+    /// How many of the picture's logical units make an inch: its width in them over its width
+    /// in inches, where those give one a placeable header holds.
+    fn units_per_inch(&self) -> Option<u16> {
+        let units = i64::from(self.right) - i64::from(self.left);
+        let emus = i64::from(self.width_emus);
+        if units <= 0 || emus <= 0 {
+            return None;
+        }
+        let inch = (units * EMUS_PER_INCH + emus / 2) / emus;
+        u16::try_from(inch).ok().filter(|&inch| inch > 0)
+    }
+
+    /// `ImageHeaderWMF(getBounds()).write`: the placeable header of a WMF of these bounds, its
+    /// units per inch those the picture's size gives, where POI writes 72 whatever the units
+    /// (#119); none where the size gives none.
+    fn placeable(&self) -> Result<Vec<u8>, Unported> {
         const KEY: i32 = 0x9AC6_CDD7_u32 as i32;
+        let inch = i32::from(self.units_per_inch().ok_or_else(|| {
+            Unported(
+                "a WMF picture whose bounds and size give no units per inch for its placeable \
+                 header"
+                    .to_owned(),
+            )
+        })?);
         let width = self.right.wrapping_sub(self.left);
         let height = self.bottom.wrapping_sub(self.top);
         let left = self.left;
         let top = self.top;
         let right = left.wrapping_add(width);
         let bottom = top.wrapping_add(height);
-        let inch = 72i32;
         let mut checksum = 0i32;
         checksum ^= KEY & 0x0000_FFFF;
         checksum ^= (KEY & (0xFFFF_0000_u32 as i32)) >> 16;
@@ -493,7 +519,7 @@ impl MetafileHeader {
         }
         out.extend(0i32.to_le_bytes());
         out.extend((checksum as u16).to_le_bytes());
-        out
+        Ok(out)
     }
 }
 
@@ -568,17 +594,27 @@ mod tests {
     }
 
     #[test]
-    fn writes_a_placeable_header_as_poi_does() {
-        let header = MetafileHeader {
+    fn writes_a_placeable_header_of_the_pictures_units_per_inch() {
+        let header = |right, width_emus| MetafileHeader {
             left: 0,
             top: 0,
-            right: 100,
+            right,
             bottom: 50,
+            width_emus,
         };
-        let placeable = header.placeable();
+        let placeable = header(100, 1_270_000).placeable().unwrap();
         assert_eq!(placeable.len(), 22);
         assert_eq!(&placeable[..4], &[0xD7, 0xCD, 0xC6, 0x9A]);
         assert_eq!(&placeable[10..12], &100u16.to_le_bytes());
+        assert_eq!(&placeable[14..16], &72u16.to_le_bytes());
         assert_eq!(&placeable[20..], &[0x0F, 0x57]);
+        let twips = header(2880, 2 * 914_400).placeable().unwrap();
+        assert_eq!(&twips[14..16], &1440u16.to_le_bytes());
+        let checksum = twips[..20].chunks(2).fold(0u16, |sum, word| {
+            sum ^ u16::from_le_bytes([word[0], word[1]])
+        });
+        assert_eq!(&twips[20..], &checksum.to_le_bytes());
+        assert!(header(100, 0).placeable().is_err());
+        assert!(header(0, 914_400).placeable().is_err());
     }
 }
