@@ -735,36 +735,19 @@ impl<'h> Xhtml<'h> {
         self.parse_embedded_opened(data, metadata, wrapping, Opened::WithMetadata)
     }
 
-    /// Parses a storage of a compound document embedded in this one, written as a compound
-    /// document of its own in `data`, as [`Xhtml::parse_embedded`] does but for what an
-    /// extraction that spools its embedded documents copies: nothing, as Tika hands the storage
-    /// on as an open container with a stream of no bytes (`TikaInputStream.getFromContainer`).
-    pub(crate) fn parse_embedded_container(
-        &mut self,
-        data: &[u8],
-        metadata: &TikaMetadata,
-        wrapping: Wrapping,
-    ) -> Result<(), Failure> {
-        if !self.enter_embedded(&[], metadata, wrapping)? {
-            return Ok(());
-        }
-        let mut open = Vec::new();
-        let target = Target::of(wrapping);
-        let ended = self.parse_routed(data, metadata, Opened::WithMetadata, &mut open, target);
-        self.leave_embedded(ended, open, wrapping)
-    }
-
     /// Parses a storage of a compound document embedded in this one with a native parser, as
-    /// [`Xhtml::parse_embedded_container`] parses it with Tika: `write`, which `parser` runs,
-    /// writes the document from `metadata`, and its body goes into this one.
+    /// [`Xhtml::parse_embedded`] parses a document: `write`, which `parser` runs, writes the
+    /// document from `metadata`, and its body goes into this one; an extraction that spools its
+    /// embedded documents copies `spooled`, the storage as a document of its own.
     pub(crate) fn parse_container_natively(
         &mut self,
+        spooled: &[u8],
         metadata: &TikaMetadata,
         wrapping: Wrapping,
         parser: &str,
         write: impl FnOnce(&mut Xhtml) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
-        if !self.enter_embedded(&[], metadata, wrapping)? {
+        if !self.enter_embedded(spooled, metadata, wrapping)? {
             return Ok(());
         }
         let mut open = Vec::new();

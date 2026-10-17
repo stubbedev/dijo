@@ -28,7 +28,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office, Summaries};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
-use crate::ole2::{EntryId, Ole2};
+use crate::ole2::{write, EntryId, EntryKind, Node, Ole2, Unreadable};
+use properties::{EMBEDDED_MESSAGE_HEADER, MESSAGE_HEADER, PROPERTIES};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-outlook";
 
@@ -83,10 +84,11 @@ const MAX_STORED_MESSAGES: usize = 16;
 
 /// A message stored in another document as Tika's `OfficeParser` reads it from the storage
 /// handed on as an open container: the storage's summary information, then the message, its
-/// properties read as those of an embedded message.
+/// properties read as those of an embedded message; and the message as a document of its own.
 pub(crate) struct EmbeddedMessage {
     summaries: Summaries,
     extracted: Extracted,
+    data: Vec<u8>,
 }
 
 impl EmbeddedMessage {
@@ -109,10 +111,21 @@ impl EmbeddedMessage {
             ))
         })?;
         let extracted = extract(file, message, configs)?;
+        let data = standalone(file, directory).map_err(|Unreadable(reason)| {
+            Unported(format!(
+                "a stored message POI cannot read, whose failure Tika records: {reason}"
+            ))
+        })?;
         Ok(EmbeddedMessage {
             summaries,
             extracted,
+            data,
         })
+    }
+
+    /// The message as a message file of its own, which an extraction spools.
+    pub(crate) fn data(&self) -> &[u8] {
+        &self.data
     }
 
     /// Writes the message as `OfficeParser` does: its summary information and type as metadata,
@@ -122,6 +135,36 @@ impl EmbeddedMessage {
         xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
         self.extracted.write(xhtml)
     }
+}
+
+/// The message stored in `directory` of `file` as a message file of its own: its properties
+/// stream with the header of a message, and the named properties of the message it is stored
+/// in, which a stored message shares (#112). Tika's path spools it empty (#116).
+fn standalone(file: &Ole2<'_>, directory: EntryId) -> Result<Vec<u8>, Unreadable> {
+    let mut storage = file.storage(directory)?;
+    let properties: Vec<u16> = PROPERTIES.encode_utf16().collect();
+    for (name, node) in &mut storage.entries {
+        if *name != properties {
+            continue;
+        }
+        if let Node::Document(data) = node {
+            if data.len() >= EMBEDDED_MESSAGE_HEADER {
+                let reserved = [0; MESSAGE_HEADER - EMBEDDED_MESSAGE_HEADER];
+                data.splice(EMBEDDED_MESSAGE_HEADER..EMBEDDED_MESSAGE_HEADER, reserved);
+            }
+        }
+    }
+    let name_id: Vec<u16> = chunks::NAME_ID.encode_utf16().collect();
+    let shares_names = !storage.entries.iter().any(|(name, _)| *name == name_id);
+    let names = file
+        .child(file.root(), chunks::NAME_ID)
+        .filter(|&names| file.kind(names) == EntryKind::Directory);
+    if let (true, Some(names)) = (shares_names, names) {
+        storage
+            .entries
+            .push((name_id, Node::Storage(file.storage(names)?)));
+    }
+    write(&storage)
 }
 
 #[cfg(test)]

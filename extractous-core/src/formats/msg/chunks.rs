@@ -5,17 +5,16 @@
 
 use std::collections::BTreeMap;
 
-use super::properties::{read_properties, PropertySet};
+use super::properties::{read_properties, PropertySet, PROPERTIES};
 use super::types::{property, Type, MULTIVALUED_FLAG};
 use crate::formats::poi::{Read, Thrown};
 use crate::java::parse_hex_int;
 use crate::ole2::{EntryId, EntryKind, Ole2};
 use crate::text::charset::Charset;
 
-const PROPERTIES: &str = "__properties_version1.0";
 const ATTACHMENT_PREFIX: &str = "__attach_version1.0_#";
 const RECIPIENT_PREFIX: &str = "__recip_version1.0_#";
-const NAME_ID: &str = "__nameid_version1.0";
+pub(super) const NAME_ID: &str = "__nameid_version1.0";
 const DEFAULT_ENCODING: &str = "CP1252";
 
 /// A string chunk, `StringChunk`: its bytes and its text as decoded.
