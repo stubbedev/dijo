@@ -112,6 +112,9 @@ fn assert_synthetic_parity(
 /// the entry's name in a paragraph besides recording its failure (#99).
 const ENCRYPTED_ENTRY_AS_TEXT: &str = "Tika writes the name of an encrypted entry as text";
 
+const PLIST_UIDS: &str = "holds keyed archives, whose UIDs the native property list parser \
+                          names by value where Tika names them by their object (#104)";
+
 #[test]
 fn extracts_zip_archives_as_tikas_path_does() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
@@ -206,6 +209,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
         &[
             ("testOpenOfficeInAZip.zip", FOREIGN_PARAGRAPHS),
             ("testZipEncrypted.zip", ENCRYPTED_ENTRY_AS_TEXT),
+            ("testIPA.ipa", PLIST_UIDS),
         ],
         Some(as_tika_checks_zips),
     );

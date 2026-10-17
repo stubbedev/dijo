@@ -549,17 +549,28 @@ mod tests {
         let (parsed, deferred) = documents(&FlatOpenDocumentParser, &[&corpus]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert!(!parsed.is_empty());
-        // Its master pages hold placeholders, which Tika's path leaves out (#69).
-        let master_pages = "testODPMacro.fodp";
-        let (master_pages, parsed): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| path.ends_with(master_pages));
+        // Their master pages hold placeholders, which Tika's path leaves out (#69), with what
+        // the native parser writes of them.
+        let with_master_pages = [
+            ("testODPMacro.fodp", "<body><div><p />\n</div>"),
+            ("testFODS_embeddedChart.fods", "<p>Oldal </p>"),
+            ("testODSMacro.fods", "<p>Page </p>"),
+        ];
+        let (master_pages, parsed): (Vec<&Path>, Vec<&Path>) =
+            parsed.iter().map(PathBuf::as_path).partition(|path| {
+                with_master_pages
+                    .iter()
+                    .any(|(name, _)| path.ends_with(name))
+            });
         assert_same_as_tika(&parsed, TIKA_NAME);
-        let [master_pages] = master_pages[..] else {
-            panic!("no {master_pages:?}");
-        };
-        let (xml, _) = extract(&std::fs::read(master_pages).unwrap());
-        assert!(xml.contains("<body><div><p />\n</div>"), "{xml}");
+        assert_eq!(master_pages.len(), with_master_pages.len());
+        for (name, written) in with_master_pages {
+            let path = master_pages
+                .iter()
+                .find(|path| path.ends_with(name))
+                .unwrap_or_else(|| panic!("no {name}"));
+            let (xml, _) = extract(&std::fs::read(path).unwrap());
+            assert!(xml.contains(written), "{name}: {written} in {xml}");
+        }
     }
 }
