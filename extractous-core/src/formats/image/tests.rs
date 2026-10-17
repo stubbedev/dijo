@@ -9,7 +9,8 @@ use crate::formats::parity::{
 
 /// What the image parsers give otherwise than Tika's path on purpose: the modified date of the
 /// file directory in UTC, where Tika writes it in the machine's zone (#114).
-const IMAGE_DEPARTURES: Departures = &[Departure::Values("img:File Modified Date", "#114")];
+pub(super) const IMAGE_DEPARTURES: Departures =
+    &[Departure::Values("img:File Modified Date", "#114")];
 
 /// Asserts that the image parser of `paths`, which Tika's path parses with `tika_name`,
 /// extracts what Tika's path does under `configs`, but for [`IMAGE_DEPARTURES`].

@@ -227,6 +227,7 @@ static PARSERS: &[&dyn Parser] = &[
     &image::HeifParser,
     &image::ImageParser,
     &image::JpegParser,
+    &image::RawTiffParser,
     &image::RecognizedImageParser,
     &image::TiffParser,
     &hwpx::HwpxParser,
