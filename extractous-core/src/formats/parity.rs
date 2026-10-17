@@ -41,7 +41,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::config::{ParserConfigs, Password};
-use crate::formats::embedded::EXCEPTION_WARNING;
+use crate::formats::embedded::{EXCEPTION_WARNING, ZERO_BYTES};
 use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
 use crate::tika::{self, Source};
@@ -253,6 +253,7 @@ const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded
 
 /// An extraction, its text in `char_set`, as the two paths are compared on it: each parser of
 /// the full set once, the failures of embedded documents without the frames that embedded them,
+/// that of an empty one without any frames, which the native path does not record (#68),
 /// and the exceptions a parser records without their frames, which a native parser does not
 /// have.
 pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
@@ -269,7 +270,11 @@ pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extract
             *values = once;
         } else if name == EMBEDDED_EXCEPTION {
             for value in values.iter_mut() {
-                *value = without_temporary_names(&without_embedding_frames(value));
+                *value = if value.starts_with(ZERO_BYTES) {
+                    without_frames(value)
+                } else {
+                    without_temporary_names(&without_embedding_frames(value))
+                };
             }
         } else if name == EMBEDDED_STREAM_EXCEPTION || name == EXCEPTION_WARNING {
             for value in values.iter_mut() {

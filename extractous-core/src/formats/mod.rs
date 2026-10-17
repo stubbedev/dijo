@@ -532,16 +532,7 @@ pub(crate) struct EmbeddedRoute<'a> {
 #[derive(Debug)]
 pub(crate) enum Bridged {
     /// No native parser prepares it.
-    Unrouted(
-        #[cfg_attr(
-            not(test),
-            expect(
-                dead_code,
-                reason = "only the tests ask why no native parser prepares it"
-            )
-        )]
-        Unrouted,
-    ),
+    Unrouted(Unrouted),
     /// Its native parser, of this name, declines it: Tika's path parses one the parser defers,
     /// and records the failure of one Tika's parser fails before it starts, which only that
     /// path can tell.

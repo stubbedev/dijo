@@ -219,6 +219,13 @@ impl<'c> Embedding<'c> {
         self.record.exceptions.extend(recorded);
     }
 
+    /// Records the failure of an embedded document of no bytes, as Tika's
+    /// `ParsingEmbeddedDocumentExtractor` records the [`ZERO_BYTES`] exception its
+    /// `AutoDetectParser` throws on one before any parser starts it.
+    pub(crate) fn record_zero_bytes(&mut self) {
+        self.record.exceptions.push(first_line(ZERO_BYTES));
+    }
+
     pub(crate) fn into_record(self) -> EmbeddedRecord {
         self.record
     }
@@ -305,6 +312,13 @@ impl ResourceType {
 pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
     !ResourceType::Thumbnail.is_of(metadata)
 }
+
+/// The first line of the stack trace of the `ZeroByteFileException` Tika's `AutoDetectParser`
+/// throws on an embedded document of no bytes, which its `ParsingEmbeddedDocumentExtractor`
+/// records in the embedding document's metadata. Its frames, all of them `AutoDetectParser`'s
+/// and those of the parsers below it, are Java's own, which the native routing replaces (#68).
+pub(crate) const ZERO_BYTES: &str =
+    "org.apache.tika.exception.ZeroByteFileException: InputStream must have > 0 bytes";
 
 /// `EmbeddedDocumentUtil.recordEmbeddedStreamException` of an exception a parser makes itself,
 /// `class: message`: the first line of the stack trace Tika records, without the frames of the
