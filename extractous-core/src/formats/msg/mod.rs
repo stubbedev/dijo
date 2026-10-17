@@ -14,7 +14,7 @@
 //! Tika, and macros extracted when asked to.
 
 mod chunks;
-mod extractor;
+pub(super) mod extractor;
 mod named;
 mod properties;
 mod property_table;

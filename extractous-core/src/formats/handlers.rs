@@ -893,6 +893,16 @@ impl ContentHandler for Discard {
 /// part of its document to another parser with its own `XHTMLContentHandler`, such as the mail
 /// parser's `handleInlineBodyPart`.
 pub(crate) fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    parse_inline_with(prepared, TikaMetadata::new(), xhtml).1
+}
+
+/// [`parse_inline`] from `metadata`, as a parser does that hands the other parser metadata of
+/// its own: the metadata as the other parser leaves it, and how the parse ended.
+pub(crate) fn parse_inline_with(
+    prepared: Prepared<'_>,
+    metadata: TikaMetadata,
+    xhtml: &mut Xhtml,
+) -> (TikaMetadata, Result<(), Failure>) {
     let context = xhtml.context();
     let mut open = Vec::new();
     let mut forward = Embedded {
@@ -901,8 +911,8 @@ pub(crate) fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<
         target: Target::Xhtml,
     };
     let mut body = Body::new(&mut forward);
-    let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);
-    result
+    let (metadata, _, result) = Xhtml::write(&mut body, metadata, context, prepared);
+    (metadata, result)
 }
 
 #[cfg(test)]

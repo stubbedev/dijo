@@ -89,6 +89,9 @@ hayro-jbig2 = "0.3.1"
 rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 memmap2 = "0.9.11"
+# SQLite compiled in. The static image with Tika leaves SQLite to Tika's path, as it links
+# sqlite-jdbc's own SQLite.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }
 
 [target.'cfg(windows)'.dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }

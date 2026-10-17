@@ -67,11 +67,14 @@ mod ppt;
 mod pptx;
 mod protected;
 mod prt;
+mod pst;
 mod publisher;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
 mod source_code;
+#[cfg(not(feature = "static-image"))]
+mod sqlite;
 mod subtitle;
 mod text;
 mod tnef;
@@ -337,10 +340,13 @@ static PARSERS: &[&dyn Parser] = &[
     &ppt::PptParser,
     &pptx::PptxParser,
     &protected::ProtectedParser,
+    &pst::OutlookPstParser,
     &publisher::PublisherParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &source_code::SourceCodeParser,
+    #[cfg(not(feature = "static-image"))]
+    &sqlite::Sqlite3Parser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
@@ -1898,29 +1904,29 @@ mod tests {
     #[cfg(not(feature = "tika"))]
     #[test]
     fn fails_documents_no_native_parser_reads_with_why() {
-        let sqlite = [b"SQLite format 3\0".as_slice(), &[0; 84]].concat();
-        let no_parser = Unsupported::Format("application/x-sqlite3".to_owned());
+        let matlab = [b"MATLAB 5.0 MAT-file".as_slice(), &[b' '; 109]].concat();
+        let no_parser = Unsupported::Format("application/x-matlab-data".to_owned());
         let extractor = crate::Extractor::new();
-        let failed = extractor.extract_bytes_to_string(&sqlite).unwrap_err();
+        let failed = extractor.extract_bytes_to_string(&matlab).unwrap_err();
         assert!(
             matches!(&failed, Error::Unsupported(why) if *why == no_parser),
             "{failed:?}"
         );
-        let streamed = extractor.extract_bytes(&sqlite).map(|_| ()).unwrap_err();
+        let streamed = extractor.extract_bytes(&matlab).map(|_| ()).unwrap_err();
         assert!(
             matches!(&streamed, Error::Unsupported(why) if *why == no_parser),
             "{streamed:?}"
         );
         let archive = crate::compress::zip::file::tests::zip(&[
             ("notes.txt", b"Plain text."),
-            ("data.sqlite", &sqlite),
+            ("data.mat", &matlab),
         ]);
         let (text, metadata) = extractor.extract_bytes_to_string(&archive).unwrap();
         assert!(text.contains("Plain text."), "{text}");
         assert_eq!(
             metadata["tk:exception:embedded-exception"],
             [format!(
-                "extractous could not parse the embedded document \"data.sqlite\": {no_parser}"
+                "extractous could not parse the embedded document \"data.mat\": {no_parser}"
             )]
         );
     }

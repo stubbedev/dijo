@@ -763,7 +763,9 @@ impl<'h> Xhtml<'h> {
 
     /// Parses a storage of a compound document embedded in this one with a native parser, as
     /// [`Xhtml::parse_embedded_container`] parses it with Tika: `write`, which `parser` runs,
-    /// writes the document from `metadata`, and its body goes into this one.
+    /// writes the document from `metadata`, and its body goes into this one. Where `write` finds
+    /// the document malformed, as Tika's parser would throw, the failure is recorded in this
+    /// document's metadata, which goes on, as for a document [`Xhtml::parse_embedded`] parses.
     pub(crate) fn parse_container_natively(
         &mut self,
         metadata: &TikaMetadata,
@@ -785,6 +787,11 @@ impl<'h> Xhtml<'h> {
             }
             Err(Failure::Stopped(stop)) => Ended::Stopped(stop),
             Err(Failure::Extraction(error)) => Ended::Failed(Failure::Embedded(error)),
+            Err(Failure::Malformed(reason)) => {
+                let failure = embedded::describe_failure(parser, metadata, &reason);
+                self.embedding.absorb_failures(&parsed, Some(failure));
+                Ended::Recorded
+            }
             Err(failure) => Ended::Failed(failure),
         };
         self.leave_embedded(ended, open, wrapping)
