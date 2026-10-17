@@ -559,16 +559,15 @@ fn hwpx_documents_are_read_as_paragraphs_and_tables() {
     assert_eq!(object["metadata"]["authors"][0], "Keeper");
     let text = object["text"].as_str().unwrap();
     assert!(
-        text.starts_with("Lighthouse\treport\nsecond line\nBefore the table.\nCell A\tCell B\n"),
+        text.starts_with(
+            "Running header\nLighthouse\treport\nsecond line\nBefore the table.\nCell A\tCell B\n"
+        ),
         "{text}"
     );
     assert!(text.contains("Cell A\tCell B"), "{text}");
     assert!(text.contains("After the table."), "{text}");
     assert!(text.contains("A footnote."), "{text}");
-    assert!(
-        !text.contains("Running header") && !text.contains("Style names"),
-        "{text}"
-    );
+    assert!(!text.contains("Style names"), "{text}");
 }
 
 #[test]
