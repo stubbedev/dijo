@@ -81,7 +81,7 @@ impl Parser for RawTiffParser {
         } else {
             extract_metadata(Format::Tiff, input, metadata.clone(), zone)?
         };
-        let previews = previews(input);
+        let previews = previews(input, MAX_TOTAL_PREVIEW_BYTES);
         Ok(Box::new(move |xhtml| {
             *xhtml.metadata_mut() = read.metadata;
             if read.reads_file {
@@ -230,9 +230,11 @@ fn structure(message: &str) -> String {
     format!("org.apache.tika.parser.image.RawTiffParser$TiffStructureException: {message}")
 }
 
-/// `locateJpegPreviews`: the JPEG previews the IFDs and their SubIFDs point to, or the exception
-/// Tika records where the TIFF's structure is broken.
-fn previews(data: &[u8]) -> Result<Vec<Preview>, String> {
+/// `locateJpegPreviews`: the JPEG previews the IFDs and their SubIFDs point to, together at
+/// most `max_total` bytes, or the exception Tika records where the TIFF's structure is broken.
+/// A preview past `max_total` is skipped and the walk goes on, where Tika stops at it and loses
+/// the smaller previews after it (#127).
+fn previews(data: &[u8], max_total: i64) -> Result<Vec<Preview>, String> {
     if data.len() < 8 {
         return Err(structure("file too short for a TIFF header"));
     }
@@ -306,12 +308,10 @@ fn previews(data: &[u8]) -> Result<Vec<Preview>, String> {
             && length > 4
             && length <= MAX_PREVIEW_LENGTH
             && offset <= file.length() - length
+            && total <= max_total - length
             && data[offset as usize..].starts_with(&[0xFF, 0xD8])
             && preview_offsets.insert(offset)
         {
-            if total > MAX_TOTAL_PREVIEW_BYTES - length {
-                break;
-            }
             total += length;
             previews.push(Preview { offset, length });
         }
@@ -486,24 +486,60 @@ mod tests {
         tiff.resize(40, 0);
         tiff.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xD9, 0, 0]);
         assert_eq!(
-            previews(&tiff).unwrap(),
+            previews(&tiff, MAX_TOTAL_PREVIEW_BYTES).unwrap(),
             [Preview {
                 offset: 40,
                 length: 6
             }]
         );
-        assert!(previews(b"XX*\0\0\0\0\0")
+        assert!(previews(b"XX*\0\0\0\0\0", MAX_TOTAL_PREVIEW_BYTES)
             .unwrap_err()
             .contains("byte order"));
-        assert!(previews(b"II").unwrap_err().contains("too short"));
+        assert!(previews(b"II", MAX_TOTAL_PREVIEW_BYTES)
+            .unwrap_err()
+            .contains("too short"));
         assert_eq!(
-            previews(b"II+\0\x08\0\0\0").unwrap_err(),
+            previews(b"II+\0\x08\0\0\0", MAX_TOTAL_PREVIEW_BYTES).unwrap_err(),
             "java.io.IOException: unexpected end of file"
         );
-        assert!(previews(b"II+\0\x04\0\0\0")
+        assert!(previews(b"II+\0\x04\0\0\0", MAX_TOTAL_PREVIEW_BYTES)
             .unwrap_err()
             .contains("BigTIFF header"));
         assert!(is_big_tiff(b"MM\0+") && !is_big_tiff(b"MM\0*"));
+    }
+
+    #[test]
+    fn skips_a_preview_past_the_total_and_walks_on() {
+        let entry = |tag: u16, value: u32| {
+            let mut entry = tag.to_le_bytes().to_vec();
+            entry.extend_from_slice(&4u16.to_le_bytes());
+            entry.extend_from_slice(&1u32.to_le_bytes());
+            entry.extend_from_slice(&value.to_le_bytes());
+            entry
+        };
+        let ifd = |offset: u32, length: u32, next: u32| {
+            let mut ifd = 2u16.to_le_bytes().to_vec();
+            ifd.extend(entry(TAG_JPEG_INTERCHANGE_FORMAT, offset));
+            ifd.extend(entry(TAG_JPEG_INTERCHANGE_FORMAT_LENGTH, length));
+            ifd.extend_from_slice(&next.to_le_bytes());
+            ifd
+        };
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend(ifd(100, 60, 38));
+        tiff.extend(ifd(200, 6, 0));
+        tiff.resize(300, 0);
+        for at in [100, 200] {
+            tiff[at..at + 2].copy_from_slice(&[0xFF, 0xD8]);
+        }
+        assert_eq!(
+            previews(&tiff, 50).unwrap(),
+            [Preview {
+                offset: 200,
+                length: 6
+            }]
+        );
+        assert_eq!(previews(&tiff, MAX_TOTAL_PREVIEW_BYTES).unwrap().len(), 2);
     }
 
     #[test]
