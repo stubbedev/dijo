@@ -7,6 +7,7 @@ use std::borrow::Cow;
 
 use crate::errors::Error;
 use crate::formats::Failure;
+use crate::input::{Input, Pages};
 use crate::xml::{self, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
 
 pub(crate) use crate::xml::{Attribute, XMLNS};
@@ -79,8 +80,35 @@ pub(crate) fn parse_sax(
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
+    parse_sax_paged(input, Pages::IN_MEMORY, what, handler)
+}
+
+/// How many events a parse reports between releases of the pages of its input.
+const RELEASE_EVERY_EVENTS: usize = 1 << 16;
+
+/// [`parse_sax`] of a part read from an archive, which may be spooled to a file of its own and
+/// mapped: its pages are released as the parse goes on.
+pub(crate) fn parse_part(
+    input: &Input<'_>,
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
+    parse_sax_paged(input, input.pages(), what, handler)
+}
+
+fn parse_sax_paged(
+    input: &[u8],
+    pages: Pages<'_>,
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
     let mut failure = None;
+    let mut events = 0usize;
     let result = xml::parse(input, &mut |event| {
+        events += 1;
+        if events.is_multiple_of(RELEASE_EVERY_EVENTS) {
+            pages.release();
+        }
         let handled = match event {
             Event::DocumentType => handler.document_type(),
             Event::Start(name, attributes) => {

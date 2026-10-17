@@ -3,7 +3,6 @@
 //! relationships of the package and of each part. A package POI would open in a degraded way or
 //! refuse, or one using what this port does not read, is [`Unported`].
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -15,6 +14,7 @@ use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::{self, central_directory_records};
 use crate::formats::Failure;
 pub(crate) use crate::formats::Unported;
+use crate::input::Input;
 use crate::java;
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
@@ -190,7 +190,7 @@ impl<'a> Package<'a> {
     }
 
     /// The bytes of `part`: the archive's own where it is stored.
-    pub(crate) fn read(&self, part: usize) -> Result<Cow<'a, [u8]>, Failure> {
+    pub(crate) fn read(&self, part: usize) -> Result<Input<'a>, Failure> {
         read_entry(
             &mut self.archive.clone(),
             self.input,
@@ -201,7 +201,7 @@ impl<'a> Package<'a> {
 
     /// The bytes of the archive's entry named `name` exactly, as `ZipPackage.getZipArchive()`
     /// finds it among the entries, if there is one.
-    pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Cow<'a, [u8]>, Failure>> {
+    pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Input<'a>, Failure>> {
         let entry = self.entry_names.iter().position(|entry| entry == name)?;
         Some(
             read_entry(&mut self.archive.clone(), self.input, entry)
@@ -383,7 +383,7 @@ fn read_entry<'a>(
     archive: &mut ZipArchive<Cursor<&'a [u8]>>,
     input: &'a [u8],
     index: usize,
-) -> Result<Cow<'a, [u8]>, Unported> {
+) -> Result<Input<'a>, Unported> {
     zip_file::read_entry(archive, input, index)
         .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))
 }

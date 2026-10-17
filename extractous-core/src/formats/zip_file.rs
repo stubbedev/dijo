@@ -3,13 +3,13 @@
 //! crate reads an archive differently, as it does with several entries of one name, a parser can
 //! tell and leave the document to Tika.
 
-use std::borrow::Cow;
-use std::io::{Cursor, Read};
+use std::io::{self, Cursor};
 
 use zip::{CompressionMethod, ZipArchive};
 
 use crate::compress::crc32;
 use crate::formats::Failure;
+use crate::input::{Input, Spool};
 
 const CENTRAL_DIRECTORY_SIGNATURE: &[u8] = b"PK\x01\x02";
 const CENTRAL_DIRECTORY_HEADER_LENGTH: usize = 46;
@@ -69,7 +69,7 @@ impl<'a> ZipFile<'a> {
     }
 
     /// The uncompressed content of `entry`: the archive's own bytes where it is stored.
-    pub(crate) fn read(&mut self, entry: &ZipEntry) -> Result<Cow<'a, [u8]>, Failure> {
+    pub(crate) fn read(&mut self, entry: &ZipEntry) -> Result<Input<'a>, Failure> {
         let unreadable = |e: &dyn std::fmt::Display| {
             Failure::Malformed(format!("{} cannot be read: {e}", entry.name))
         };
@@ -113,12 +113,13 @@ impl<'a> ZipFile<'a> {
 
 /// The uncompressed content of the entry `index` of `archive`, which reads `input`: the
 /// archive's own bytes where the entry is stored, checked against its CRC as the zip crate
-/// checks what it reads, so that reading a large archive copies none of its stored data.
+/// checks what it reads, so that reading a large archive copies none of its stored data; an
+/// inflated entry spooled as a stream is, to a file of its own past what is read whole.
 pub(crate) fn read_entry<'a>(
     archive: &mut ZipArchive<Cursor<&'a [u8]>>,
     input: &'a [u8],
     index: usize,
-) -> Result<Cow<'a, [u8]>, String> {
+) -> Result<Input<'a>, String> {
     let raw = archive.by_index_raw(index).map_err(|e| e.to_string())?;
     if raw.compression() == CompressionMethod::Stored && !raw.encrypted() {
         let start = raw
@@ -132,13 +133,13 @@ pub(crate) fn read_entry<'a>(
         if crc32(stored) != raw.crc32() {
             return Err("Invalid checksum".to_owned());
         }
-        return Ok(Cow::Borrowed(stored));
+        return Ok(Input::Borrowed(stored));
     }
     drop(raw);
     let mut file = archive.by_index(index).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::with_capacity(usize::try_from(file.size()).unwrap_or(0));
-    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    Ok(Cow::Owned(bytes))
+    let mut spool = Spool::new(Some(file.size()));
+    io::copy(&mut file, &mut spool).map_err(|e| e.to_string())?;
+    spool.finish().map_err(|e| e.to_string())
 }
 
 /// How many records the central directory starting at `start` in `input` holds, or `None` where

@@ -451,7 +451,7 @@ impl<'a> Workbook<'a> {
     /// Reads a part checked well-formed into `handler`.
     fn read<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
         let bytes = self.package.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
+        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
         Ok(handler)
     }
 
@@ -480,7 +480,7 @@ impl<'a> Workbook<'a> {
                 xhtml,
             );
             let bytes = self.package.read(sheet.part)?;
-            xml::parse_sax(&bytes, self.package.name(sheet.part), &mut reader)?;
+            xml::parse_part(&bytes, self.package.name(sheet.part), &mut reader)?;
             let captured = reader.captured;
             let metadata = xhtml.metadata_mut();
             if captured.hidden_column {

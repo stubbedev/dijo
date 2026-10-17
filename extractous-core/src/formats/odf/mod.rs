@@ -21,6 +21,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::Input;
 use crate::mime::{self, Origin};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -163,7 +164,7 @@ struct Archive<'a> {
     zip: ZipFile<'a>,
     entries: Vec<Entry>,
     /// The entries read ahead to check them, by name, each to be read once more.
-    read_ahead: HashMap<String, Cow<'a, [u8]>>,
+    read_ahead: HashMap<String, Input<'a>>,
 }
 
 impl<'a> Archive<'a> {
@@ -188,7 +189,7 @@ impl<'a> Archive<'a> {
         self.entries.iter().filter(move |entry| entry.kind == kind)
     }
 
-    fn read(&mut self, entry: &Entry) -> Result<Cow<'a, [u8]>, Failure> {
+    fn read(&mut self, entry: &Entry) -> Result<Input<'a>, Failure> {
         match self.read_ahead.remove(entry.name()) {
             Some(bytes) => Ok(bytes),
             None => self.zip.read(&entry.entry),
@@ -373,7 +374,7 @@ fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Re
             EntryKind::Body => {
                 let bytes = archive.read(entry)?;
                 let mut body = body::Body::new(xhtml, configs.office.includes_deleted_content());
-                xml::parse_sax(&bytes, entry.name(), &mut body)?;
+                xml::parse_part(&bytes, entry.name(), &mut body)?;
             }
             EntryKind::Embedded => {
                 let bytes = archive.read(entry)?;

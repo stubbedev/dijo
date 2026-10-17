@@ -5,8 +5,6 @@
 
 mod page;
 
-use std::borrow::Cow;
-
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping};
 use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
@@ -16,6 +14,7 @@ use crate::formats::ooxml::{Package, Properties, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Opened, Parser, Prepared};
+use crate::input::Input;
 
 use page::{Block, Images, PageHandler};
 
@@ -141,7 +140,7 @@ fn read_fixed_document(
 }
 
 /// `getZipStream`: the archive's entry at `path`, a leading slash dropped from a longer path.
-fn zip_entry<'a>(package: &Package<'a>, path: &str) -> Result<Cow<'a, [u8]>, Failure> {
+fn zip_entry<'a>(package: &Package<'a>, path: &str) -> Result<Input<'a>, Failure> {
     let target = if path.len() > 1 {
         path.strip_prefix('/').unwrap_or(path)
     } else {

@@ -10,7 +10,6 @@
 mod content;
 mod package;
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::config::ParserConfigs;
@@ -20,6 +19,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Declined, Deferral, Failure, Footprint, Parser, Prepared};
+use crate::input::Input;
 use crate::java;
 use crate::java::is_blank;
 
@@ -113,7 +113,7 @@ impl<'a> Book<'a> {
         self.zip.named(name).cloned()
     }
 
-    fn read(&mut self, entry: &ZipEntry) -> Result<Cow<'a, [u8]>, Failure> {
+    fn read(&mut self, entry: &ZipEntry) -> Result<Input<'a>, Failure> {
         self.zip.read(entry)
     }
 
@@ -185,7 +185,7 @@ fn write_content_document(
 ) -> Result<Option<Failure>, Thrown> {
     let bytes = book.read(entry).map_err(Thrown::Io)?;
     let mut document = ContentDocument::new(xhtml);
-    match xml::parse_sax(&bytes, &entry.name, &mut document) {
+    match xml::parse_part(&bytes, &entry.name, &mut document) {
         Ok(()) => Ok(None),
         Err(failure @ Failure::Stopped(_)) => Err(failure.into()),
         Err(failure) => {

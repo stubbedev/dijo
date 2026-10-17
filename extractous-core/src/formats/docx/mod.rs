@@ -14,7 +14,6 @@ pub(crate) mod numbering;
 mod styles;
 pub(crate) mod text;
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use body::{unreferenced_comment, Body, Context, OleReferences};
@@ -31,6 +30,7 @@ use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::Input;
 use crate::java::JavaHashMap;
 
 /// The WordprocessingML namespace.
@@ -179,7 +179,7 @@ impl<'a> Document<'a> {
         &self.package.parts[part].relationships
     }
 
-    fn read(&self, part: usize) -> Result<Cow<'a, [u8]>, Failure> {
+    fn read(&self, part: usize) -> Result<Input<'a>, Failure> {
         self.package.read(part)
     }
 
@@ -448,7 +448,7 @@ impl<'a> Document<'a> {
         };
         let mut handler = TextHandler::new(body, &relationships, options);
         let bytes = self.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
+        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
         Ok(handler.into_body().finish())
     }
 

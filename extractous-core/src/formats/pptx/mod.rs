@@ -388,7 +388,7 @@ impl<'a> Presentation<'a> {
 
     fn read<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
         let bytes = self.package.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
+        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
         Ok(handler)
     }
 
