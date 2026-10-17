@@ -422,29 +422,8 @@ impl Reader<'_> {
             .unwrap_or(contents.len());
         let bytes = &contents[TEXT_START..end];
         match self.version {
-            Version::V11 => {
-                let (units, rest) = bytes.as_chunks::<2>();
-                let mut text = String::from_utf16_lossy(
-                    &units
-                        .iter()
-                        .map(|pair| u16::from_le_bytes(*pair))
-                        .collect::<Vec<_>>(),
-                );
-                if !rest.is_empty() {
-                    text.push(char::REPLACEMENT_CHARACTER);
-                }
-                text
-            }
-            Version::V5 | Version::V6 => bytes
-                .iter()
-                .map(|&byte| {
-                    if byte.is_ascii() {
-                        char::from(byte)
-                    } else {
-                        char::REPLACEMENT_CHARACTER
-                    }
-                })
-                .collect(),
+            Version::V11 => crate::java::utf16le(bytes),
+            Version::V5 | Version::V6 => crate::java::ascii(bytes),
         }
     }
 }
