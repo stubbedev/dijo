@@ -894,6 +894,21 @@ fn clean_format_for_number(format: &str) -> Result<String, FormatError> {
         .map_err(|_| FormatError::Unported("a number format left with half a surrogate pair"))
 }
 
+/// The text of an error code, as POI's `FormulaError` names it; `None` for a code it lacks.
+pub(crate) fn error_text(code: u8) -> Option<&'static str> {
+    Some(match code {
+        0x00 => "#NULL!",
+        0x07 => "#DIV/0!",
+        0x0F => "#VALUE!",
+        0x17 => "#REF!",
+        0x1D => "#NAME?",
+        0x24 => "#NUM!",
+        0x2A => "#N/A",
+        0x2B => "#GETTING_DATA",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,7 +12,7 @@ use super::header_footer;
 use super::sheet::{SheetOutput, SheetSettings};
 use super::{excel, sheet_kind, write_sheet_numbers, Sheet, Workbook};
 use crate::config::{OfficeParserConfig, ParserConfigs};
-use crate::formats::data_format::{builtin_format, DataFormatter, FormatError};
+use crate::formats::data_format::{builtin_format, error_text, DataFormatter, FormatError};
 use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, kind, name};
@@ -34,6 +34,8 @@ const MAX_RECORD_LENGTH: u64 = 1_000_000;
 const MAX_ROW: i64 = 0x0010_0000;
 /// The length of a cell's header: its column and style.
 const CELL_HEADER: usize = 8;
+/// The byte of flags a `RichStr` starts with, before its text.
+const RICH_STRING_FLAGS: usize = 1;
 /// The relationship types of `XSSFBReader.WORKSHEET_RELS`.
 const SHEET_KINDS: [&str; 5] = [
     sheet_kind::WORKSHEET,
@@ -53,6 +55,7 @@ mod record {
     pub(super) const CELL_REAL: u32 = 5;
     pub(super) const CELL_ST: u32 = 6;
     pub(super) const CELL_ISST: u32 = 7;
+    pub(super) const CELL_RICH_STRING: u32 = 62;
     pub(super) const FORMULA_STRING: u32 = 8;
     pub(super) const FORMULA_NUMBER: u32 = 9;
     pub(super) const FORMULA_BOOL: u32 = 10;
@@ -302,10 +305,11 @@ fn wide_string(data: &[u8], offset: usize) -> Result<(String, usize), Thrown> {
     Ok((text, length + 4))
 }
 
-/// `XSSFBUtils.readXLNullableWideString`: none where the count says null, which takes no bytes.
+/// `XSSFBUtils.readXLNullableWideString`: none where the count says null, which takes the count's
+/// four bytes. POI takes no bytes for it, so the strings after it read it again (#127).
 fn nullable_wide_string(data: &[u8], offset: usize) -> Result<(String, usize), Thrown> {
     if u32_at(data, offset)? == u32::MAX {
-        return Ok((String::new(), 0));
+        return Ok((String::new(), 4));
     }
     wide_string(data, offset)
 }
@@ -379,16 +383,13 @@ impl Styles {
             match id {
                 record::BEGIN_CELL_XFS => in_cell_formats = true,
                 record::END_CELL_XFS => in_cell_formats = false,
-                record::XF if in_cell_formats => {
-                    let format = *data.get(2).ok_or_else(|| out_of_bounds(2, data))?;
-                    styles.style_formats.push(i16::from(format));
-                }
+                record::XF if in_cell_formats => styles.style_formats.push(i16_at(data, 2)?),
                 record::BEGIN_FORMATS => in_formats = true,
                 record::END_FORMATS => in_formats = false,
                 record::FORMAT if in_formats => {
-                    let format = *data.first().ok_or_else(|| out_of_bounds(0, data))?;
+                    let format = i16_at(data, 0)?;
                     let (text, _) = wide_string(data, 2)?;
-                    styles.formats.insert(i16::from(format), text);
+                    styles.formats.insert(format, text);
                 }
                 _ => {}
             }
@@ -418,6 +419,14 @@ impl Styles {
     }
 }
 
+/// The 16-bit number at `at`: a number format's id, which `BrtFmt` and `BrtXf` hold in two
+/// bytes. POI reads the low byte alone (#127).
+fn i16_at(data: &[u8], at: usize) -> Result<i16, Failure> {
+    data.get(at..at + 2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .ok_or_else(|| out_of_bounds(at + 1, data))
+}
+
 fn out_of_bounds(at: usize, data: &[u8]) -> Failure {
     Failure::Malformed(format!(
         "ArrayIndexOutOfBoundsException: Index {at} out of bounds for length {}",
@@ -430,7 +439,7 @@ fn shared_strings(data: &[u8]) -> Result<Vec<String>, Failure> {
     let mut strings = Vec::new();
     parse_records(data, &|_| true, |id, data| {
         if id == record::SST_ITEM {
-            strings.push(wide_string(data, 1)?.0);
+            strings.push(wide_string(data, RICH_STRING_FLAGS)?.0);
         }
         Ok(())
     })?;
@@ -457,7 +466,7 @@ fn comments(data: &[u8]) -> Result<BTreeMap<(i32, i32), Comment>, Failure> {
                 row = u32_at(data, 4)? as i32;
                 column = u32_at(data, 12)? as i32;
             }
-            record::COMMENT_TEXT => text = Some(wide_string(data, 1)?.0),
+            record::COMMENT_TEXT => text = Some(wide_string(data, RICH_STRING_FLAGS)?.0),
             record::END_COMMENT => {
                 let name = usize::try_from(author)
                     .ok()
@@ -654,6 +663,11 @@ impl SheetReader<'_, '_, '_> {
                 let (text, _) = wide_string(data, CELL_HEADER)?;
                 self.cell(column, &text)?;
             }
+            record::CELL_RICH_STRING => {
+                let column = self.column(data)?;
+                let (text, _) = wide_string(data, CELL_HEADER + RICH_STRING_FLAGS)?;
+                self.cell(column, &text)?;
+            }
             record::CELL_RK => {
                 let column = self.column(data)?;
                 let value = rk_number(data, CELL_HEADER)?;
@@ -672,13 +686,16 @@ impl SheetReader<'_, '_, '_> {
                 let value = *data
                     .get(CELL_HEADER)
                     .ok_or_else(|| out_of_bounds(CELL_HEADER, data))?;
-                self.cell(column, if value == 1 { "true" } else { "false" })?;
+                self.cell(column, if value == 1 { "TRUE" } else { "FALSE" })?;
             }
             record::CELL_ERROR | record::FORMULA_ERROR => {
                 let column = self.column(data)?;
-                data.get(CELL_HEADER)
+                let code = *data
+                    .get(CELL_HEADER)
                     .ok_or_else(|| out_of_bounds(CELL_HEADER, data))?;
-                self.cell(column, "ERROR")?;
+                if let Some(text) = error_text(code) {
+                    self.cell(column, text)?;
+                }
             }
             record::CELL_BLANK => {
                 self.column(data)?;
@@ -748,7 +765,7 @@ impl SheetReader<'_, '_, '_> {
     }
 
     /// `handleHeaderFooter`: each of the six headers and footers with text, as its sections
-    /// joined by spaces. A null one reads no bytes, so the ones after it read it again.
+    /// joined by spaces.
     fn headers_and_footers(&mut self, data: &[u8]) -> Result<(), Failure> {
         let mut offset = 2usize;
         for header in [true, false, true, false, true, false] {
@@ -794,10 +811,49 @@ fn rk_number(data: &[u8], offset: usize) -> Result<f64, Failure> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::super::tests::assert_same_as_tika;
+    use super::super::tests::assert_same_as_tika_rewriting;
     use super::*;
     use crate::formats::ooxml::testing::{package, relationship, relationships};
-    use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_fails_as_tika, conformance_corpus, documents, ComparedMetadata, Scratch,
+    };
+
+    /// Each boolean and error as the native parser writes it, as Excel shows it, with what
+    /// Tika's path writes for it instead: `true`, `false` and `ERROR` (#127).
+    fn as_tika_writes() -> Vec<(&'static str, &'static str)> {
+        let errors = (0..=u8::MAX).filter_map(error_text);
+        [("TRUE", "true"), ("FALSE", "false")]
+            .into_iter()
+            .chain(errors.map(|error| (error, "ERROR")))
+            .collect()
+    }
+
+    /// A native result with each cell's boolean or error written as Tika's path writes it: the
+    /// cells of the XHTML, and the tab-separated fields of the text.
+    fn as_tika_writes_cells(text: &mut String, _: &mut ComparedMetadata, _: &ComparedMetadata) {
+        let values = as_tika_writes();
+        for (native, tika) in &values {
+            *text = text.replace(&format!("<td>{native}</td>"), &format!("<td>{tika}</td>"));
+        }
+        let mut rewritten = String::with_capacity(text.len());
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                rewritten.push('\n');
+            }
+            for (index, field) in line.split('\t').enumerate() {
+                if index > 0 {
+                    rewritten.push('\t');
+                }
+                let tika = values.iter().find(|(native, _)| *native == field);
+                rewritten.push_str(tika.map_or(field, |(_, tika)| tika));
+            }
+        }
+        *text = rewritten;
+    }
+
+    fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
+        assert_same_as_tika_rewriting(documents, configs, as_tika_writes_cells);
+    }
 
     const RELATIONSHIPS: &str = "application/vnd.openxmlformats-package.relationships+xml";
 
@@ -850,6 +906,22 @@ mod tests {
     /// A binary workbook of one sheet named `name` holding `cells`, with the shared strings
     /// `strings`, two cell styles (General and a format of id 164) and the sheet's `comments`.
     fn workbook(name: &str, cells: &[Vec<u8>], strings: &[&str], comments: &[u8]) -> Vec<u8> {
+        let mut header_footer = vec![0, 0];
+        header_footer.extend(wide("&LLeft&CTitle"));
+        header_footer.extend(wide("&RPage &P"));
+        workbook_with(name, cells, strings, comments, 164, &header_footer)
+    }
+
+    /// [`workbook`], its second cell style of the format `format`, and the sheet's headers and
+    /// footers the record `header_footer`.
+    fn workbook_with(
+        name: &str,
+        cells: &[Vec<u8>],
+        strings: &[&str],
+        comments: &[u8],
+        format: u16,
+        header_footer: &[u8],
+    ) -> Vec<u8> {
         let mut sheet_entry = 0u32.to_le_bytes().to_vec();
         sheet_entry.extend_from_slice(&1u32.to_le_bytes());
         sheet_entry.extend(wide("rId1"));
@@ -857,13 +929,15 @@ mod tests {
         let mut book = record(record::BUNDLE_SHEET, &sheet_entry);
         book.extend(record(record::ABSOLUTE_PATH, &wide("C:\\Books\\")));
         let mut styles = record(record::BEGIN_FORMATS, &[]);
-        let mut format = vec![164, 0];
-        format.extend(wide("0.000"));
-        styles.extend(record(record::FORMAT, &format));
+        let mut format_record = format.to_le_bytes().to_vec();
+        format_record.extend(wide("0.000"));
+        styles.extend(record(record::FORMAT, &format_record));
         styles.extend(record(record::END_FORMATS, &[]));
         styles.extend(record(record::BEGIN_CELL_XFS, &[]));
         styles.extend(record(record::XF, &[0, 0, 0, 0]));
-        styles.extend(record(record::XF, &[0, 0, 164, 0]));
+        let mut xf = vec![0, 0];
+        xf.extend(format.to_le_bytes());
+        styles.extend(record(record::XF, &xf));
         styles.extend(record(record::END_CELL_XFS, &[]));
         let mut shared = Vec::new();
         for text in strings {
@@ -873,10 +947,7 @@ mod tests {
         }
         let mut sheet: Vec<u8> = cells.concat();
         sheet.extend(record(record::END_SHEET_DATA, &[]));
-        let mut header_footer = vec![0, 0];
-        header_footer.extend(wide("&LLeft&CTitle"));
-        header_footer.extend(wide("&RPage &P"));
-        sheet.extend(record(record::BEGIN_HEADER_FOOTER, &header_footer));
+        sheet.extend(record(record::BEGIN_HEADER_FOOTER, header_footer));
         let book_rels = relationships(&format!(
             "{}{}{}",
             relationship("rId1", sheet_kind::WORKSHEET, "worksheets/sheet1.bin"),
@@ -983,6 +1054,40 @@ mod tests {
         assert_fails_as_tika(&paths(&failing));
     }
 
+    /// What POI slips on, read as the format specifies (#127): a format id past one byte, a
+    /// null header before a footer, a cell of rich text, and booleans and errors as Excel shows
+    /// them.
+    #[test]
+    fn reads_what_poi_slips_on() {
+        let mut rich = vec![1];
+        rich.extend(wide("rich"));
+        let cells = [
+            row(0),
+            cell(record::CELL_REAL, 0, 1, &1.5f64.to_le_bytes()),
+            cell(record::CELL_RICH_STRING, 1, 0, &rich),
+            cell(record::CELL_BOOL, 2, 0, &[0]),
+            cell(record::FORMULA_ERROR, 3, 0, &[0x2A]),
+        ];
+        let mut header_footer = vec![0, 0];
+        header_footer.extend(u32::MAX.to_le_bytes());
+        header_footer.extend(wide("&CFooter"));
+        header_footer.extend(wide("&CEven header"));
+        let input = workbook_with("Sheet", &cells, &[], &[], 300, &header_footer);
+        let text = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&input)
+            .unwrap()
+            .0;
+        assert!(
+            text.contains(
+                "<tr>\t<td>1.500</td>\t<td>rich</td>\t<td>FALSE</td>\t<td>#N/A</td></tr>"
+            ),
+            "{text}"
+        );
+        let (header, footer) = (text.find("Even header"), text.find("Footer"));
+        assert!(header.is_some() && header < footer, "{text}");
+    }
+
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_binary_workbooks_as_tikas_path_does() {
@@ -1031,7 +1136,7 @@ mod tests {
         assert!(wide_string(&data[..6], 0).is_err());
         assert_eq!(
             nullable_wide_string(&u32::MAX.to_le_bytes(), 0).unwrap(),
-            (String::new(), 0)
+            (String::new(), 4)
         );
     }
 }

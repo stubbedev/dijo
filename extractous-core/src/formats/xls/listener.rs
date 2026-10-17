@@ -12,9 +12,9 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
-use super::records::{bof, error_text, sid, Cached, CellRef, Record, SharedString, Special};
+use super::records::{bof, sid, Cached, CellRef, Record, SharedString, Special};
 use crate::formats::data_format::{
-    builtin_format, default_number_format, DataFormatter, FormatError,
+    builtin_format, default_number_format, error_text, DataFormatter, FormatError,
 };
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::xlsx::header_footer;

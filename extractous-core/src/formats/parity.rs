@@ -1082,6 +1082,29 @@ pub(crate) fn assert_same_as_tika_adjusting(
     compare(documents, configs, expected, None, adjustments);
 }
 
+/// [`assert_same_as_tika_adjusting`], with each native result rewritten by `rewrite` before
+/// it is compared.
+pub(crate) fn assert_same_as_tika_adjusting_rewriting(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+    adjustments: Adjustments,
+    rewrite: NativeRewrite,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures: &[],
+    });
+    compare(
+        documents,
+        configs,
+        expected,
+        Some((rewrite, None)),
+        adjustments,
+    );
+}
+
 /// Tika's and the native result without their `adjustments` from each other: the metadata
 /// Tika's path leaves unset, with its `meta` element in the XHTML head, the native wrappers,
 /// Tika's repeated elements, and `line_breaks`, those the XHTML says the native parser adds,

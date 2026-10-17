@@ -70,6 +70,23 @@ pub(super) fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs
     assert_same_as_tika_adjusting(&documents, TIKA_PARSER, configs, DEPARTURES);
 }
 
+/// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
+/// compared.
+pub(super) fn assert_same_as_tika_rewriting(
+    documents: &[PathBuf],
+    configs: &ParserConfigs,
+    rewrite: parity::NativeRewrite,
+) {
+    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+    parity::assert_same_as_tika_adjusting_rewriting(
+        &documents,
+        TIKA_PARSER,
+        configs,
+        DEPARTURES,
+        rewrite,
+    );
+}
+
 /// The workbook of two million shared strings, which a debug build takes minutes over in the
 /// eight extractions each side of a comparison makes, compared on its own.
 const LARGE: &str = "many-shared-strings.xlsx";
