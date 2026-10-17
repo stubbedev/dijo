@@ -23,9 +23,10 @@ pub(crate) struct PdfPages {
 }
 
 impl PdfPages {
-    /// The pages of a PDF, opened with the empty password as Tika's PDF parser opens it.
-    pub(crate) fn open(data: Arc<Vec<u8>>) -> Result<Self, String> {
-        let pdf = Pdf::new(data).map_err(|e| format!("cannot read the PDF to render it: {e:?}"))?;
+    /// The pages of a PDF, opened with `password` as Tika's PDF parser opens it.
+    pub(crate) fn open(data: Arc<Vec<u8>>, password: &str) -> Result<Self, String> {
+        let pdf = Pdf::new_with_password(data, password)
+            .map_err(|e| format!("cannot read the PDF to render it: {e:?}"))?;
         Ok(Self { pdf })
     }
 
@@ -130,7 +131,10 @@ mod tests {
     /// Renders the page, of `expected`'s size but for a row or column the page's size in points
     /// rounds away, and counts its pixels more than 64 levels off `expected`'s.
     fn differing(pdf: Vec<u8>, expected: &GrayImage) -> usize {
-        let rendered = PdfPages::open(Arc::new(pdf)).unwrap().render(0).unwrap();
+        let rendered = PdfPages::open(Arc::new(pdf), "")
+            .unwrap()
+            .render(0)
+            .unwrap();
         assert!(
             rendered.width().abs_diff(expected.width()) <= 1
                 && rendered.height().abs_diff(expected.height()) <= 1,

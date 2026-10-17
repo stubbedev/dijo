@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::quality::{self, Assessment, Unmapped};
 use super::Unported;
-use crate::config::{PdfOcrStrategy, PdfParserConfig};
+use crate::config::{ParserConfigs, Password, PdfOcrStrategy, PdfParserConfig};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::ocr::{
@@ -217,26 +217,33 @@ pub(super) struct PageOcr {
     unmapped: Unmapped,
     reader: Reader,
     document: Arc<Vec<u8>>,
+    /// The password the document opens with.
+    password: String,
 }
 
 impl PageOcr {
     /// The OCR of the `pages` of a document of `page_count` pages under `check`, rendered from
-    /// `input`, or none when it reads no page. A document the renderer cannot open, or whose
-    /// pages it counts otherwise, is left to Tika's path, as is one whose pages tesseract cannot
-    /// read in this process.
+    /// `input` opened with the password of `configs`, under its OCR settings, or none when it
+    /// reads no page. A document the renderer cannot open, or whose pages it counts otherwise,
+    /// is left to Tika's path, as is one whose pages tesseract cannot read in this process.
     pub(super) fn of(
         pages: Vec<usize>,
         page_count: usize,
         check: OcrCheck,
         input: &[u8],
-        skips_ocr: bool,
-        settings: OcrSettings,
+        configs: &ParserConfigs,
     ) -> Result<Option<Self>, Unported> {
         if pages.is_empty() {
             return Ok(None);
         }
         let document = Arc::new(input.to_vec());
-        let reader = if skips_ocr {
+        let password = configs
+            .password
+            .as_ref()
+            .map_or("", Password::expose)
+            .to_owned();
+        let settings = OcrSettings::of(&configs.ocr);
+        let reader = if configs.ocr.skips_ocr() {
             Reader::Skipping
         } else {
             let tesseract = ocr::tesseract().map_err(|reason| {
@@ -244,7 +251,7 @@ impl PageOcr {
                     "OCR of PDF pages in this process, which needs tesseract's library: {reason}"
                 ))
             })?;
-            let rendered = PdfPages::open(document.clone()).map_err(Unported)?;
+            let rendered = PdfPages::open(document.clone(), &password).map_err(Unported)?;
             if rendered.count() != page_count {
                 return Err(Unported(format!(
                     "a document the renderer finds {} pages in, where the parser finds \
@@ -262,6 +269,7 @@ impl PageOcr {
             unmapped: check.unmapped(),
             reader,
             document,
+            password,
         }))
     }
 
@@ -278,7 +286,9 @@ impl PageOcr {
             self.pages.len(),
             &first_page,
             || match &self.reader {
-                Reader::Tesseract { .. } => Some(PdfPages::open(self.document.clone())),
+                Reader::Tesseract { .. } => {
+                    Some(PdfPages::open(self.document.clone(), &self.password))
+                }
                 Reader::Skipping => None,
             },
             |pages, at, script| {

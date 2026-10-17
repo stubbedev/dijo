@@ -5,10 +5,11 @@
 //! `PDF2XHTML` in our reading order, or for a tagged document by `PDFMarkedContent2XHTML`
 //! through its structure tree, then the bookmarks, the files the document embeds, parsed as
 //! embedded documents, and the form. The pages `TextLayerCheckingPdfParser` reads by OCR are
-//! rendered and read with tesseract ([`ocr`]). Documents with a page Tika would OCR with no
-//! tesseract to run, and documents with what the port does not do (encryption the empty
-//! password does not open, XFA forms and fonts it cannot measure, among others), are left to
-//! Tika.
+//! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
+//! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
+//! Tika's path fails it where that password does not open it. Documents with a page Tika would
+//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms and
+//! fonts it cannot measure, among others), are left to Tika.
 
 mod afm;
 mod attachment;
@@ -29,6 +30,7 @@ mod position;
 mod quality;
 mod reading_order;
 mod recording;
+mod security;
 mod stripper;
 mod structure;
 mod tagged;
@@ -40,17 +42,18 @@ mod xref;
 
 use std::ops::ControlFlow;
 
-use lopdf::Document;
+use lopdf::{Document, LoadOptions};
 
-use crate::config::{MarkedContentStrategy, ParserConfigs, PdfParserConfig};
+use crate::config::{MarkedContentStrategy, ParserConfigs, Password, PdfParserConfig};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{crypt, Declined, Failure, Parser, Prepared, PASSWORD_USED};
 
 use cos::Pdf;
 use ocr::{OcrCheck, PageOcr};
 use recording::Recording;
+use security::{Access, Opening, Refusal, WRONG_PASSWORD};
 use structure::StructureIndex;
 use tagged::Tagged;
 use writer::{DocumentWriter, WriteFailure};
@@ -185,11 +188,15 @@ enum Recorded {
     Large(Box<Loaded>, Settings),
 }
 
-/// A recording of a document whose parser starts from `metadata`.
-fn new_recording(metadata: TikaMetadata) -> Recording {
+/// A recording of a document whose parser starts from `metadata`, marked as our Java's
+/// `PasswordProvider` marks it once `PDFParser` asks it for the password `configs` give.
+fn new_recording(metadata: TikaMetadata, configs: &ParserConfigs) -> Recording {
     let mut recording = Recording::new(metadata);
     if ocr_runs() {
         recording.delegate_to(PDF_PARSER);
+    }
+    if configs.password.is_some() {
+        recording.set(PASSWORD_USED, "true");
     }
     recording
 }
@@ -209,8 +216,8 @@ fn record(
 ) -> Result<Recorded, Declined> {
     let deferred = |Unported(reason)| Declined::Deferred(reason);
     let settings = Settings::of(&configs.pdf).map_err(deferred)?;
-    let loaded = load(input).map_err(deferred)?;
-    let mut recording = new_recording(metadata.clone());
+    let loaded = load(input, configs)?;
+    let mut recording = new_recording(metadata.clone(), configs);
     let mut large = |recording: &mut Recording| {
         if recording.size() > limit && !recording.reads_pages() {
             ControlFlow::Break(())
@@ -244,8 +251,7 @@ fn record(
         loaded.pdf.pages().map_err(deferred)?.len(),
         settings.ocr,
         input,
-        configs.ocr.skips_ocr(),
-        OcrSettings::of(&configs.ocr),
+        configs,
     )
     .map_err(deferred)?;
     if page_ocr.is_some() && recording.embeds_files() {
@@ -315,7 +321,7 @@ fn stream(
         embeds: false,
         reads: false,
     };
-    let mut recording = new_recording(metadata);
+    let mut recording = new_recording(metadata, configs);
     let mut flushed = Ok(());
     let written = extract(loaded, input, settings, &mut recording, &mut |recording| {
         flushed = pages.flush(recording, xhtml);
@@ -364,15 +370,8 @@ impl StreamedPages<'_> {
         if self.embeds && self.reads {
             return Err(late(Unported(EMBEDDED_AND_READ.to_owned())));
         }
-        let page_ocr = PageOcr::of(
-            pages,
-            self.page_count,
-            self.check,
-            self.input,
-            self.configs.ocr.skips_ocr(),
-            OcrSettings::of(&self.configs.ocr),
-        )
-        .map_err(late)?;
+        let page_ocr = PageOcr::of(pages, self.page_count, self.check, self.input, self.configs)
+            .map_err(late)?;
         match page_ocr {
             None => recording.flush(xhtml, None),
             Some(page_ocr) => write_read(&page_ocr, recording, xhtml, self.configs),
@@ -380,32 +379,47 @@ impl StreamedPages<'_> {
     }
 }
 
-/// A document's objects, as `lopdf` reads them, and what the empty password opens it with.
+/// A document's objects, as `lopdf` reads them, and what the password opens it with.
 struct Loaded {
     pdf: Pdf,
     access: Access,
 }
 
-/// The document's objects where PDFBox finds them, decrypted with the empty password as Tika's
-/// `PDFParser` opens an encrypted document without one. A document the empty password does
-/// not open is left to Tika, which asks for a password.
-fn load(input: &[u8]) -> Result<Loaded, Unported> {
+/// The document's objects where PDFBox finds them, decrypted with the password Tika's
+/// `PDFParser` asks its `PasswordProvider` for, or the empty one: a document that password does
+/// not open fails as Tika's path fails it.
+fn load(input: &[u8], configs: &ParserConfigs) -> Result<Loaded, Declined> {
     let resolution = xref::resolve(input)?;
-    let mut doc = match Document::load_mem(input) {
-        Ok(doc) if !resolution.needs_rewrite(&doc, input)? => doc,
-        _ => Document::load_mem(&resolution.rewritten(input)?)
-            .map_err(|error| Unported(format!("lopdf cannot read the document: {error}")))?,
+    let password = configs.password.as_ref().map_or("", Password::expose);
+    let opening = Opening::of(resolution.encryption(input)?, password).map_err(refused)?;
+    let lopdf_password = match &opening {
+        Opening::Rc4 { user_password, .. } => user_password.as_str(),
+        Opening::Unencrypted | Opening::Aes256 => password,
+    };
+    let read = |data: &[u8]| {
+        Document::load_mem_with_options(data, LoadOptions::with_password(lopdf_password))
+    };
+    let read = match read(input) {
+        Ok(doc) if !resolution.needs_rewrite(&doc, input)? => Ok(doc),
+        _ => read(&resolution.rewritten(input)?),
+    };
+    let mut doc = match (read, &opening) {
+        (Ok(doc), _) => doc,
+        (Err(lopdf::Error::InvalidPassword), Opening::Aes256) => {
+            return Err(refused(security::aes256_rejection(password)));
+        }
+        (Err(error), _) => {
+            return Err(Unported(format!("lopdf cannot read the document: {error}")).into())
+        }
     };
     resolution.set_trailer(&mut doc);
     if doc.trailer.has(b"Encrypt") {
-        return Err(Unported(
-            "encryption the empty password does not open, which Tika asks a password for"
-                .to_owned(),
-        ));
+        return Err(Unported("encryption lopdf does not decrypt".to_owned()).into());
     }
-    let access = match doc.encryption_state.clone() {
-        None => Access::Unencrypted,
-        Some(state) => Access::of(&mut doc, &state)?,
+    let access = match opening {
+        Opening::Unencrypted => Access::Unencrypted,
+        Opening::Rc4 { access, .. } => access,
+        Opening::Aes256 => security::aes256_access(&mut doc, password).map_err(refused)?,
     };
     Ok(Loaded {
         pdf: Pdf::new(doc, input, resolution.listed()),
@@ -413,51 +427,14 @@ fn load(input: &[u8]) -> Result<Loaded, Unported> {
     })
 }
 
-/// What a document lets the one who opened it do, as PDFBox's `AccessPermission` holds it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Access {
-    Unencrypted,
-    /// Opened with the owner password: everything.
-    Owner,
-    /// Opened with the user password: what the permission bits `P` grant.
-    User(u64),
-}
-
-impl Access {
-    /// `StandardSecurityHandler.prepareForDecryption` with the empty password, which opens the
-    /// document as its owner when it is the owner password too, else as a user.
-    fn of(doc: &mut Document, state: &lopdf::EncryptionState) -> Result<Self, Unported> {
-        let dictionary = state.encode().map_err(|error| {
-            Unported(format!(
-                "an encryption dictionary lopdf cannot restate: {error}"
-            ))
-        })?;
-        let id = (
-            doc.objects
-                .keys()
-                .next_back()
-                .map_or(1, |&(number, _)| number + 1),
-            0,
-        );
-        doc.objects
-            .insert(id, lopdf::Object::Dictionary(dictionary));
-        doc.trailer.set("Encrypt", lopdf::Object::Reference(id));
-        let owner = doc.authenticate_raw_owner_password(b"").is_ok();
-        doc.trailer.remove(b"Encrypt");
-        doc.objects.remove(&id);
-        Ok(if owner {
-            Self::Owner
-        } else {
-            Self::User(state.permissions().bits())
-        })
-    }
-
-    /// `AccessPermission.isPermissionBitOn`.
-    fn grants(self, bit: u32) -> bool {
-        match self {
-            Self::Unencrypted | Self::Owner => true,
-            Self::User(permissions) => permissions & (1 << (bit - 1)) != 0,
-        }
+/// How a document the password does not open declines: as Tika's path fails it, where PDFBox
+/// throws `InvalidPasswordException`.
+fn refused(refusal: Refusal) -> Declined {
+    match refusal {
+        Refusal::WrongPassword => Declined::Fails(crypt::encrypted(Some(&format!(
+            "org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException: {WRONG_PASSWORD}"
+        )))),
+        Refusal::Unported(unported) => unported.into(),
     }
 }
 
@@ -549,7 +526,7 @@ mod tests {
 
     const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
-    /// Why OCR reads pages of a document of the corpora, or the port leaves it to Tika.
+    /// Why OCR reads pages of a document of the corpora.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Why {
         /// Tika OCRs a page of next to no glyphs, whatever its text layer reads.
@@ -559,18 +536,15 @@ mod tests {
         Unmapped,
         /// Our `TextLayerCheckingPdfParser` doubts a page's text layer, when tesseract runs.
         Doubtful,
-        /// The port does not do what the document needs, as the reason starts.
-        Unported(&'static str),
     }
 
     impl Why {
         /// Whether the port leaves a document for this reason to Tika: one whose pages Tika's
-        /// PDF parser wants OCR for when no tesseract runs, and one it does not do.
+        /// PDF parser wants OCR for when no tesseract runs.
         fn defers(self) -> bool {
             match self {
                 Self::Ocr | Self::Unmapped => !ocr_runs(),
                 Self::Doubtful => false,
-                Self::Unported(_) => true,
             }
         }
 
@@ -582,7 +556,7 @@ mod tests {
 
     /// The documents of the corpora whose pages OCR reads, or which the port leaves to Tika,
     /// and why.
-    const NOT_THE_TEXT_LAYER: [(&str, Why); 9] = [
+    const NOT_THE_TEXT_LAYER: [(&str, Why); 8] = [
         ("arabic.pdf", Why::Unmapped),
         ("deu-ocr.pdf", Why::Ocr),
         ("eng-ocr.pdf", Why::Ocr),
@@ -591,10 +565,6 @@ mod tests {
         ("prose-broken-private-use.pdf", Why::Doubtful),
         ("prose-scan.pdf", Why::Ocr),
         ("thai.pdf", Why::Unmapped),
-        (
-            "user-password.pdf",
-            Why::Unported("encryption the empty password does not open"),
-        ),
     ];
 
     fn tika_name() -> &'static str {
@@ -1306,19 +1276,66 @@ mod tests {
         }
     }
 
+    /// Asserts that each encrypted document, named with the password that opens it, fails as
+    /// Tika's path fails on it without a password and with a wrong one, and extracts with its
+    /// password as Tika's path does.
+    fn assert_opens_as_tika(documents: &[(PathBuf, &str)]) {
+        for (document, password) in documents {
+            let configs = ParserConfigs::default().with_password(Some(&Password::new(*password)));
+            let input = std::fs::read(document).unwrap();
+            assert_eq!(
+                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                None,
+                "{}",
+                document.display()
+            );
+            assert_same_as_tika_delegating_with(&[document], tika_name(), &DELEGATES, &configs);
+            let wrong = ParserConfigs::default().with_password(Some(&Password::new("wrong")));
+            for configs in [ParserConfigs::default(), wrong] {
+                assert_eq!(
+                    PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                    None,
+                    "{}",
+                    document.display()
+                );
+                let (native, tika) = crate::formats::parity::errors(document, &configs);
+                assert_eq!(native, tika, "{}", document.display());
+            }
+        }
+    }
+
     #[test]
-    fn grants_what_the_permission_bits_grant_to_a_user() {
-        let user = Access::User(0xFFFF_FFEC);
-        assert!(user.grants(3) && user.grants(4) && !user.grants(2));
-        let no_extraction = Access::User(-532_i64 as u64);
-        assert!(!no_extraction.grants(5) && !no_extraction.grants(10) && no_extraction.grants(3));
-        assert!(Access::Owner.grants(5) && Access::Unencrypted.grants(10));
+    fn opens_documents_with_the_password_as_tikas_path_does() {
+        let document = PathBuf::from("../test_files/documents/encrypted/user-password.pdf");
+        assert_opens_as_tika(&[(document, "extractous")]);
+    }
+
+    #[test]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+    fn opens_the_conformance_documents_with_their_passwords_as_tikas_path_does() {
+        let (parsed, deferred) = documents(&PdfParser, &[&conformance_corpus()]);
+        let owner_user: Vec<PathBuf> = parsed
+            .into_iter()
+            .chain(deferred)
+            .filter(|path| path.to_string_lossy().ends_with("_owner_user.pdf"))
+            .collect();
+        assert_eq!(owner_user.len(), 2, "{owner_user:?}");
+        let documents: Vec<(PathBuf, &str)> = owner_user
+            .iter()
+            .flat_map(|path| [(path.clone(), "user"), (path.clone(), "owner")])
+            .collect();
+        assert_opens_as_tika(&documents);
     }
 
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, _) = documents(&PdfParser, &corpora());
-        assert_same_as_tika_delegating(&as_paths(&parsed), tika_name(), &DELEGATES);
+        let (locked, open): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
+            .into_iter()
+            .partition(|path| path.ends_with("encrypted/user-password.pdf"));
+        assert_eq!(locked.len(), 1, "{locked:?}");
+        crate::formats::parity::assert_fails_as_tika(&locked);
+        assert_same_as_tika_delegating(&open, tika_name(), &DELEGATES);
     }
 
     #[test]
@@ -1368,7 +1385,6 @@ mod tests {
                     reason.starts_with("page ") && reason.contains("wants OCR")
                 }
                 Why::Doubtful => unreachable!("{name} is deferred for a doubtful page"),
-                Why::Unported(start) => reason.starts_with(start),
             };
             assert!(as_expected, "{name}: {reason}");
         }
@@ -1386,6 +1402,11 @@ mod tests {
         let (copies, paths): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
             .into_iter()
             .partition(|path| path.ends_with("testPDF_multiFormatEmbFiles.pdf"));
+        let (locked, paths): (Vec<&Path>, Vec<&Path>) = paths
+            .into_iter()
+            .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
+        assert_eq!(locked.len(), 2, "{locked:?}");
+        crate::formats::parity::assert_fails_as_tika(&locked);
         assert_same_as_tika_delegating(&paths, tika_name(), &DELEGATES);
         let [copies] = copies[..] else {
             panic!("{copies:?}");
