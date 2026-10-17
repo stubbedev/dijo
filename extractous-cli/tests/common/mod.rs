@@ -81,8 +81,9 @@ impl Drop for Scratch {
 }
 
 /// Writes a ZIP archive of entries stored without compression, which is all a test needs to build
-/// an Office document. Each entry's data is streamed and its size and checksum filled in after,
-/// so an archive can be larger than memory, up to the 4 GiB of a ZIP without ZIP64.
+/// an Office document, or deflated, as Office writes them. Each entry's data is streamed and its
+/// sizes and checksum filled in after, so an archive can be larger than memory, up to the 4 GiB
+/// of a ZIP without ZIP64.
 pub struct StoredZip<W: Write + Seek> {
     out: W,
     directory: Vec<u8>,
@@ -90,6 +91,8 @@ pub struct StoredZip<W: Write + Seek> {
 }
 
 const ZIP_VERSION: u16 = 20;
+const STORED: u16 = 0;
+const DEFLATED: u16 = 8;
 
 fn zip_u32(value: u64) -> u32 {
     u32::try_from(value).expect("the archive outgrows a ZIP without ZIP64")
@@ -104,19 +107,37 @@ impl<W: Write + Seek> StoredZip<W> {
         }
     }
 
-    /// Adds the entry `name`, whose data `write` writes.
+    /// Adds the entry `name`, stored, whose data `write` writes.
     pub fn entry(
         &mut self,
         name: &str,
         write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.add(name, STORED, write)
+    }
+
+    /// Adds the entry `name`, deflated, whose data `write` writes.
+    pub fn deflated_entry(
+        &mut self,
+        name: &str,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.add(name, DEFLATED, write)
+    }
+
+    fn add(
+        &mut self,
+        name: &str,
+        method: u16,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<()> {
         let offset = self.out.stream_position()?;
-        let header = |crc: u32, size: u32| {
+        let header = |crc: u32, compressed: u32, size: u32| {
             let mut fields = Vec::new();
-            for field in [ZIP_VERSION, 0, 0, 0, 0] {
+            for field in [ZIP_VERSION, 0, method, 0, 0] {
                 fields.extend_from_slice(&field.to_le_bytes());
             }
-            for field in [crc, size, size] {
+            for field in [crc, compressed, size] {
                 fields.extend_from_slice(&field.to_le_bytes());
             }
             for field in [name.len() as u16, 0] {
@@ -125,24 +146,41 @@ impl<W: Write + Seek> StoredZip<W> {
             fields
         };
         self.out.write_all(&0x0403_4b50u32.to_le_bytes())?;
-        self.out.write_all(&header(0, 0))?;
+        self.out.write_all(&header(0, 0, 0))?;
         self.out.write_all(name.as_bytes())?;
-        let mut data = Checksummed {
-            out: &mut self.out,
-            hasher: crc32fast::Hasher::new(),
-            size: 0,
+        let start = self.out.stream_position()?;
+        let (crc, size) = if method == DEFLATED {
+            let mut encoder =
+                flate2::write::DeflateEncoder::new(&mut self.out, flate2::Compression::fast());
+            let mut data = Checksummed {
+                out: &mut encoder,
+                hasher: crc32fast::Hasher::new(),
+                size: 0,
+            };
+            write(&mut data)?;
+            let sums = (data.hasher.finalize(), zip_u32(data.size));
+            encoder.finish()?;
+            sums
+        } else {
+            let mut data = Checksummed {
+                out: &mut self.out,
+                hasher: crc32fast::Hasher::new(),
+                size: 0,
+            };
+            write(&mut data)?;
+            (data.hasher.finalize(), zip_u32(data.size))
         };
-        write(&mut data)?;
-        let (crc, size) = (data.hasher.finalize(), zip_u32(data.size));
         let end = self.out.stream_position()?;
+        let compressed = zip_u32(end - start);
         self.out.seek(SeekFrom::Start(offset + 4))?;
-        self.out.write_all(&header(crc, size))?;
+        self.out.write_all(&header(crc, compressed, size))?;
         self.out.seek(SeekFrom::Start(end))?;
 
         self.directory
             .extend_from_slice(&0x0201_4b50u32.to_le_bytes());
         self.directory.extend_from_slice(&ZIP_VERSION.to_le_bytes());
-        self.directory.extend_from_slice(&header(crc, size));
+        self.directory
+            .extend_from_slice(&header(crc, compressed, size));
         for field in [0u16, 0, 0] {
             self.directory.extend_from_slice(&field.to_le_bytes());
         }

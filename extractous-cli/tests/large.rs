@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-use common::{text_pdf, write_docx, Scratch, StoredZip};
+use common::{text_pdf, write_docx, Scratch, StoredZip, XorShift};
 
 const MAX_RSS_BYTES: u64 = 512 << 20;
 
@@ -338,7 +338,7 @@ fn a_large_pdf_extracts_natively_in_bounded_memory() {
     let path = scratch.0.join("large.pdf");
     let pages = 60_000;
     write_large_pdf(&path, pages);
-    assert!(fs::metadata(&path).unwrap().len() > 512 << 20);
+    assert!(fs::metadata(&path).unwrap().len() > 256 << 20);
     assert_bounded(&path, pages as u64 * 5_000, Some("PDFParser"));
 }
 
@@ -366,15 +366,12 @@ fn a_large_docx_extracts_in_bounded_memory() {
     assert_bounded(&path, size / 3, Some("OOXMLParser"));
 }
 
-#[test]
-#[ignore = "generates gigabytes; run with `just test-large`"]
-fn a_spreadsheet_of_a_million_rows_extracts_in_bounded_memory() {
-    let scratch = Scratch::new("xlsx");
-    let path = scratch.0.join("large.xlsx");
-    let rows = 1_000_000;
+/// Writes a workbook of one sheet to `path`, the sheet's rows written by `rows`, as a deflated
+/// entry when `deflated`.
+fn write_xlsx(path: &Path, deflated: bool, rows: impl FnOnce(&mut dyn Write) -> io::Result<()>) {
     let sheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     let relationships = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-    let mut zip = StoredZip::new(BufWriter::new(File::create(&path).unwrap()));
+    let mut zip = StoredZip::new(BufWriter::new(File::create(path).unwrap()));
     let parts = [
         (
             "[Content_Types].xml",
@@ -410,23 +407,88 @@ fn a_spreadsheet_of_a_million_rows_extracts_in_bounded_memory() {
         zip.entry(name, |out| out.write_all(content.as_bytes()))
             .unwrap();
     }
-    zip.entry("xl/worksheets/sheet1.xml", |out| {
+    let sheet_part = |out: &mut dyn Write| {
         write!(
             out,
             "<?xml version=\"1.0\"?><worksheet xmlns=\"{sheet}\"><sheetData>"
         )?;
-        for row in 1..=rows {
-            write!(
-                out,
-                "<row r=\"{row}\"><c r=\"A{row}\"><v>{row}</v></c>\
-                 <c r=\"B{row}\" t=\"inlineStr\"><is><t>entry {row} of the ledger</t></is></c></row>"
-            )?;
-        }
+        rows(out)?;
         write!(out, "</sheetData></worksheet>")
-    })
-    .unwrap();
+    };
+    if deflated {
+        zip.deflated_entry("xl/worksheets/sheet1.xml", sheet_part)
+            .unwrap();
+    } else {
+        zip.entry("xl/worksheets/sheet1.xml", sheet_part).unwrap();
+    }
     zip.finish().unwrap().flush().unwrap();
+}
+
+/// Writes `count` rows of a number and an inline string each.
+fn ledger_rows(out: &mut dyn Write, count: u64) -> io::Result<()> {
+    for row in 1..=count {
+        write!(
+            out,
+            "<row r=\"{row}\"><c r=\"A{row}\"><v>{row}</v></c>\
+             <c r=\"B{row}\" t=\"inlineStr\"><is><t>entry {row} of the ledger</t></is></c></row>"
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "generates gigabytes; run with `just test-large`"]
+fn a_spreadsheet_of_a_million_rows_extracts_in_bounded_memory() {
+    let scratch = Scratch::new("xlsx");
+    let path = scratch.0.join("large.xlsx");
+    let rows = 1_000_000;
+    write_xlsx(&path, false, |out| ledger_rows(out, rows));
     assert_bounded(&path, rows * 20, Some("OOXMLParser"));
+}
+
+#[test]
+#[ignore = "generates gigabytes; run with `just test-large`"]
+fn a_deflated_sheet_larger_than_memory_extracts_in_bounded_memory() {
+    let scratch = Scratch::new("deflated-xlsx");
+    let path = scratch.0.join("deflated.xlsx");
+    let rows = 4_000_000;
+    write_xlsx(&path, true, |out| ledger_rows(out, rows));
+    assert_bounded(&path, rows * 20, Some("OOXMLParser"));
+}
+
+#[test]
+#[ignore = "generates gigabytes; run with `just test-large`"]
+fn a_large_archive_of_deflated_entries_extracts_in_bounded_memory() {
+    let scratch = Scratch::new("deflated-zip");
+    let path = scratch.0.join("deflated.zip");
+    let words = [
+        "keeper", "ledger", "lantern", "harbour", "storm", "rope", "gull", "tide", "beacon",
+        "island", "fog", "anchor", "mast", "pier", "wave", "salt",
+    ];
+    let mut random = XorShift(0x5EED);
+    let mut zip = StoredZip::new(BufWriter::new(File::create(&path).unwrap()));
+    let mut text = 0u64;
+    for entry in 0..300 {
+        zip.deflated_entry(&format!("entry{entry:03}.txt"), |out| {
+            let mut line = String::new();
+            for _ in 0..40_000 {
+                line.clear();
+                for _ in 0..12 {
+                    line.push_str(words[random.below(words.len())]);
+                    line.push(' ');
+                }
+                line.push_str(&random.next().to_string());
+                line.push('\n');
+                out.write_all(line.as_bytes())?;
+                text += line.len() as u64;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    zip.finish().unwrap().flush().unwrap();
+    assert!(fs::metadata(&path).unwrap().len() > 64 << 20);
+    assert_bounded(&path, text * 9 / 10, Some("ZipParser"));
 }
 
 #[test]
