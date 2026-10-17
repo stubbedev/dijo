@@ -2,10 +2,11 @@
 //! throw past the limit, absolute reads that throw outside it, and a position that cannot pass
 //! it; and what Jackcess throws reading a database.
 
-/// Why reading a database stops: an exception Jackcess throws, of which only an
-/// `IllegalStateException` while reading a column's usage maps is ever caught, so that any other
-/// ends the parse; something the port leaves to Tika, which it then leaves the database to; or
-/// Office encryption, which needs a password.
+/// Why reading a database stops: an exception Jackcess throws, which ends the parse; something
+/// the port leaves to Tika, which it then leaves the database to; or Office encryption, which
+/// needs a password. The port reads no usage map but a table's owned pages, which hold its rows:
+/// Jackcess reads the others too, and fails the parse on any it cannot read but a column's
+/// (#122).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Thrown {
     IllegalState(String),

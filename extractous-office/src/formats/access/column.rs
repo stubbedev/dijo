@@ -6,7 +6,6 @@ use super::buffer::{Buffer, Thrown};
 use super::format::{Charset, Format};
 use super::pages::Pages;
 use super::table::{row_end, row_start};
-use crate::java::decimal::BigDecimal;
 
 const FIXED_LEN_FLAG_MASK: u8 = 0x01;
 const AUTO_NUMBER_FLAG_MASK: u8 = 0x04;
@@ -301,7 +300,7 @@ impl Column {
 
     /// `read(byte[])`: the value of the column's bytes in a row.
     pub(super) fn read(&self, data: &[u8], pages: &Pages<'_>) -> Result<Option<Value>, Thrown> {
-        let charset = pages.format.charset;
+        let charset = pages.charset;
         match self.kind {
             Kind::Unsupported => Ok(Some(Value::Binary(data.to_vec()))),
             Kind::LongValue if data.is_empty() => Ok(None),
@@ -319,7 +318,7 @@ impl Column {
 
     /// `CalculatedColumnUtil`'s columns' `read`.
     fn read_calculated(&self, data: &[u8], pages: &Pages<'_>) -> Result<Option<Value>, Thrown> {
-        let charset = pages.format.charset;
+        let charset = pages.charset;
         match self.data_type {
             DataType::Boolean => {
                 let data = unwrap_calculated(data)?;
@@ -371,7 +370,7 @@ pub(super) enum Value {
     Date(i64),
     /// An extended date, which the extractor never writes.
     ExtDate,
-    Numeric(BigDecimal),
+    Numeric(Decimal),
     Guid(String),
     Text(String),
     Binary(Vec<u8>),
@@ -452,13 +451,51 @@ pub(super) fn read_property(
     read_plain(data_type, data, 0, charset)
 }
 
+/// A decimal number: a magnitude, negated where asked, over ten to the `scale`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Decimal {
+    pub(super) negative: bool,
+    pub(super) magnitude: u128,
+    pub(super) scale: i64,
+}
+
+impl Decimal {
+    /// The number in positional notation, as many digits after the point as the scale says.
+    /// Zero has no sign.
+    pub(super) fn plain(self) -> String {
+        let digits = self.magnitude.to_string();
+        let sign = if self.negative && self.magnitude != 0 {
+            "-"
+        } else {
+            ""
+        };
+        let Ok(scale) = usize::try_from(self.scale) else {
+            if self.magnitude == 0 {
+                return digits;
+            }
+            let zeros = "0".repeat(self.scale.unsigned_abs() as usize);
+            return format!("{sign}{digits}{zeros}");
+        };
+        if scale == 0 {
+            return format!("{sign}{digits}");
+        }
+        let digits = format!("{digits:0>width$}", width = scale + 1);
+        let (integer, fraction) = digits.split_at(digits.len() - scale);
+        format!("{sign}{integer}.{fraction}")
+    }
+}
+
 /// `toBigDecimal`: a big-endian magnitude, negated where asked, over ten to the `scale`.
-fn numeric(magnitude: &[u8], negate: bool, scale: i64) -> BigDecimal {
+fn numeric(magnitude: &[u8], negate: bool, scale: i64) -> Decimal {
     let mut value: u128 = 0;
     for &byte in magnitude {
         value = value << 8 | u128::from(byte);
     }
-    BigDecimal::from_digits(negate, &value.to_string(), scale)
+    Decimal {
+        negative: negate,
+        magnitude: value,
+        scale,
+    }
 }
 
 /// `readGUIDValue`: the bytes as a GUID in braces, its first three groups little-endian.
@@ -475,10 +512,11 @@ fn guid(data: &[u8; 16]) -> String {
     )
 }
 
-/// `decodeTextValue`: text in the charset, or compressed after the header `FF FE`, its runs
-/// between zero bytes alternately one byte per character and in the charset.
+/// `decodeTextValue`: text in the charset, or, in Unicode, compressed after the header `FF FE`,
+/// its runs between zero bytes alternately one byte per character and in UTF-16LE. Jet 3, which
+/// has no compression, keeps `FF FE` as the characters they are in its code page.
 pub(super) fn decode_text(data: &[u8], charset: Charset) -> String {
-    if data.len() < 2 || data[..2] != TEXT_COMPRESSION_HEADER {
+    if charset != Charset::Unicode || !data.starts_with(&TEXT_COMPRESSION_HEADER) {
         return charset.decode(data);
     }
     let mut text = String::with_capacity(data.len());

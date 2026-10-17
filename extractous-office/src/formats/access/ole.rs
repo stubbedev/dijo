@@ -37,8 +37,8 @@ fn string_index(message: String) -> Thrown {
 }
 
 /// `readStr`: `length` bytes from `offset` of the whole value decoded, the buffer then after
-/// them, without one NUL at the end; an empty string throws where its last character is looked
-/// at.
+/// them, without one NUL at the end. An empty string is empty, where Jackcess throws looking at
+/// its last character (#122).
 fn read_string(
     buffer: &mut Buffer<'_>,
     offset: i64,
@@ -57,9 +57,6 @@ fn read_string(
     };
     let mut text = decode(slice);
     buffer.set_position(offset + length)?;
-    if text.is_empty() {
-        return Err(string_index("index -1, length 0".to_owned()));
-    }
     if text.ends_with('\0') {
         text.pop();
     }

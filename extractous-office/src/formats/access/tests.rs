@@ -12,8 +12,9 @@ use super::*;
 use crate::config::Password;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, errors,
-    spools_as_tika, Departure, Departures,
+    assert_same_as_tika, assert_same_as_tika_departing, assert_same_as_tika_normalising,
+    conformance_corpus, documents, errors, spools_as_tika_rewriting, ComparedMetadata, Departure,
+    Departures, NativeRewrite,
 };
 use crate::formats::parity::{deferral, Scratch};
 
@@ -65,8 +66,154 @@ fn extracts_access_databases_as_tikas_path_does() {
             "jet4-unicode-compression.mdb",
         ]
     );
-    let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(&parsed, JackcessParser.tika_name(), DEPARTURES);
+    assert_same_as_tika_formatting_cells(&parsed);
+}
+
+/// Asserts that the native parser extracts each of `databases` as Tika's path does, but for the
+/// cells and text it writes otherwise on purpose (#122): a Jet 3 database's text decoded from its
+/// code page, where Tika decodes it as UTF-8, and the cells [`as_tika_formats_cells`] makes
+/// alike.
+#[cfg(feature = "tika")]
+fn assert_same_as_tika_formatting_cells(databases: &[PathBuf]) {
+    let (jet3, others): (Vec<&Path>, Vec<&Path>) = databases
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|path| is_jet3(path));
+    let tika_name = JackcessParser.tika_name();
+    assert_same_as_tika_normalising(
+        &jet3,
+        tika_name,
+        as_tika_decodes_jet3,
+        as_tika_formats_cells,
+    );
+    assert_same_as_tika_normalising(&others, tika_name, as_tika_decodes, as_tika_formats_cells);
+}
+
+#[cfg(feature = "tika")]
+fn is_jet3(path: &Path) -> bool {
+    matches!(
+        format::detect(&std::fs::read(path).unwrap()),
+        Ok(Detected::Format(format)) if format.encoding == format::Encoding::CodePage
+    )
+}
+
+/// The native result of a database Tika decodes as the native parser does, as it is.
+#[cfg(feature = "tika")]
+fn as_tika_decodes(_: &mut String, _: &mut ComparedMetadata, _: &ComparedMetadata) {}
+
+/// The native result of a Jet 3 database in code page 1252, as each of the fixtures is, with
+/// its text and metadata decoded as Tika decodes them: the bytes of each run of characters past
+/// ASCII, in code page 1252, decoded as UTF-8.
+#[cfg(feature = "tika")]
+fn as_tika_decodes_jet3(text: &mut String, metadata: &mut ComparedMetadata, _: &ComparedMetadata) {
+    *text = decoded_as_utf8(text);
+    for (_, values) in metadata.iter_mut() {
+        for value in values.iter_mut() {
+            *value = decoded_as_utf8(value);
+        }
+    }
+}
+
+/// `text`, each run of characters past ASCII encoded in code page 1252 and decoded as Java
+/// decodes UTF-8.
+#[cfg(feature = "tika")]
+fn decoded_as_utf8(text: &str) -> String {
+    let cp1252 = crate::text::charset::Charset::named("windows-1252");
+    let byte_of = |c: char| {
+        (0x80..=0xFF_u8)
+            .find(|&byte| cp1252.decode(&[byte]).unwrap().starts_with(c))
+            .unwrap_or_else(|| panic!("{c:?} is in code page 1252"))
+    };
+    let mut decoded = String::with_capacity(text.len());
+    let mut run = Vec::new();
+    for c in text.chars().chain(std::iter::once('\0')) {
+        if c.is_ascii() {
+            decoded.push_str(&crate::java::utf8(&run));
+            run.clear();
+            decoded.push(c);
+        } else {
+            run.push(byte_of(c));
+        }
+    }
+    decoded.pop();
+    decoded
+}
+
+/// Both texts with their cells made alike where the native parser writes them otherwise on
+/// purpose (#122), and with nothing else changed:
+/// - a date's time, which only the native parser writes, left out;
+/// - a date before the Gregorian calendar of 1582, which Tika writes in the Julian calendar,
+///   and its year without leading zeros, as `early date`;
+/// - a currency amount, which Tika writes with the currency sign `¤` (`??` in US-ASCII) and
+///   grouped thousands, and a number with an exponent, which Tika writes as
+///   `BigDecimal.toString` does, as plain numbers; and every number with more than two decimals
+///   rounded to two, as Tika rounds a currency amount.
+#[cfg(feature = "tika")]
+fn as_tika_formats_cells(text: &mut String) {
+    use regex::{Captures, Regex};
+    let time = Regex::new(r"(\d{1,4}-\d\d-\d\d) \d\d:\d\d:\d\d(\.\d{3})?").unwrap();
+    let date = Regex::new(r"\b(\d{1,4})-\d\d-\d\d\b").unwrap();
+    let money = Regex::new("(-?)(?:\u{a4}\u{a0}|\\?\\?)([\\d,]+\\.\\d\\d)").unwrap();
+    let exponent = Regex::new(r"(-?)(\d)(?:\.(\d+))?E([+-]\d+)").unwrap();
+    let decimals = Regex::new(r"(-?\d+)\.(\d\d)(\d+)").unwrap();
+    let mut normalised = time.replace_all(text, "$1").into_owned();
+    normalised = date
+        .replace_all(&normalised, |captures: &Captures| {
+            if captures[1].parse::<u32>().unwrap() < 1583 {
+                "early date".to_owned()
+            } else {
+                captures[0].to_owned()
+            }
+        })
+        .into_owned();
+    normalised = money
+        .replace_all(&normalised, |captures: &Captures| {
+            format!("{}{}", &captures[1], captures[2].replace(',', ""))
+        })
+        .into_owned();
+    normalised = exponent
+        .replace_all(&normalised, |captures: &Captures| {
+            let digits = format!(
+                "{}{}",
+                &captures[2],
+                captures.get(3).map_or("", |m| m.as_str())
+            );
+            let fraction = captures.get(3).map_or(0, |m| m.len()) as i64;
+            let exponent: i64 = captures[4].parse().unwrap();
+            let negative = !captures[1].is_empty();
+            let decimal = Decimal {
+                negative,
+                magnitude: digits.parse().unwrap(),
+                scale: fraction - exponent,
+            };
+            decimal.plain()
+        })
+        .into_owned();
+    normalised = decimals
+        .replace_all(&normalised, |captures: &Captures| {
+            rounded_half_even(&captures[1], &captures[2], &captures[3])
+        })
+        .into_owned();
+    *text = normalised;
+}
+
+/// The number of integer part `integer`, two decimals `kept` and further decimals `dropped`,
+/// rounded half to even to its two decimals.
+#[cfg(feature = "tika")]
+fn rounded_half_even(integer: &str, kept: &str, dropped: &str) -> String {
+    let negative = integer.starts_with('-');
+    let hundredths: u128 = format!("{}{kept}", integer.trim_start_matches('-'))
+        .parse()
+        .unwrap();
+    let first = dropped.as_bytes()[0];
+    let rest_zero = dropped[1..].bytes().all(|b| b == b'0');
+    let up = first > b'5' || (first == b'5' && (!rest_zero || hundredths % 2 == 1));
+    Decimal {
+        negative,
+        magnitude: hundredths + u128::from(up),
+        scale: 2,
+    }
+    .plain()
 }
 
 /// Asserts that each of `encrypted`, one database, fails without a password as encrypted, with
@@ -98,10 +245,15 @@ fn fails_on_encrypted_databases_as_encrypted() {
     header[start] ^= 1;
     let scratch = Scratch::new("access-encrypted");
     let path = scratch.write("encrypted.accdb", &header);
-    let error = crate::Extractor::new()
-        .extract_file_to_string(path.to_str().unwrap())
-        .unwrap_err();
-    assert!(matches!(error, crate::Error::Encrypted(_)), "{error:?}");
+    for path in [
+        path.as_path(),
+        Path::new("../test_files/documents/encrypted/tika-password.accdb"),
+    ] {
+        let error = crate::Extractor::new()
+            .extract_file_to_string(path.to_str().unwrap())
+            .unwrap_err();
+        assert!(matches!(error, crate::Error::Encrypted(_)), "{error:?}");
+    }
 }
 
 #[cfg(feature = "tika")]
@@ -110,7 +262,17 @@ fn spools_embedded_objects_as_tikas_path_does() {
     for name in ["ace-ole.accdb", "jet3-ole.mdb"] {
         let path = Path::new(FIXTURES).join(name);
         for budget in [u64::MAX, 3000] {
-            let spooled = spools_as_tika(&path, budget);
+            let rewrite: NativeRewrite = if is_jet3(&path) {
+                as_tika_decodes_jet3
+            } else {
+                as_tika_decodes
+            };
+            let spooled = spools_as_tika_rewriting(
+                &path,
+                budget,
+                Some((rewrite, Some(as_tika_formats_cells))),
+                &[],
+            );
             assert!(matches!(spooled, Ok(1..)), "{name}: {spooled:?}");
         }
     }
@@ -153,7 +315,7 @@ fn reads_encoded_jet_databases_as_tikas_path_does() {
     for path in [&jet3, &jet4] {
         assert_eq!(deferral(&JackcessParser, path), None);
     }
-    assert_same_as_tika_departing(&[&jet3, &jet4], JackcessParser.tika_name(), DEPARTURES);
+    assert_same_as_tika_formatting_cells(&[jet3, jet4]);
 }
 
 /// Jet 4's header: where the database password lies, how long it is, and where the creation
@@ -229,20 +391,42 @@ fn replaced(mut bytes: Vec<u8>, from: &[u8], to: &[u8]) -> Vec<u8> {
     bytes
 }
 
+/// Where Jet 3's header names the database's code page.
+const JET3_CODE_PAGE: usize = 60;
+
 #[test]
-fn leaves_jet3_names_the_index_may_not_find_to_tika() {
-    let scratch = Scratch::new("access-jet3-names");
-    let renamed = scratch.write(
-        "renamed.mdb",
-        &replaced(fixture("jet3-queries.mdb"), b"Table2", b"T\xe4ble2"),
+fn reads_jet3_text_in_the_code_page_of_the_database() {
+    let scratch = Scratch::new("access-jet3-code-page");
+    let original = fixture("jet3-queries.mdb");
+    let danish = scratch.write(
+        "danish.mdb",
+        &replaced(original.clone(), b"Table2", b"Tr\xe6er\xf8"),
     );
-    assert_eq!(
-        deferral(&JackcessParser, &renamed).as_deref(),
-        Some(
-            "a table name Jackcess may not find through the catalog's index, as it decodes it \
-             otherwise than Access encoded it, which the port does not read"
-        )
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(danish.to_str().unwrap())
+        .unwrap();
+    assert!(xml.contains("<table name=\"Træerø\">"), "{xml}");
+    assert!(xml.contains("[Træerø].[col2]"), "{xml}");
+
+    let mut header = original;
+    let Ok(format::Detected::Format(format)) = format::detect(&header) else {
+        panic!("a Jet database");
+    };
+    let at = JET3_CODE_PAGE;
+    let mask = &format.header_mask[at - format.offset_masked_header..];
+    for (i, byte) in 1251u16.to_le_bytes().into_iter().enumerate() {
+        header[at + i] = byte ^ mask[i];
+    }
+    let cyrillic = scratch.write(
+        "cyrillic.mdb",
+        &replaced(header, b"Table2", b"\xd2\xe0\xe1\xeb\xe8\xf6"),
     );
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(cyrillic.to_str().unwrap())
+        .unwrap();
+    assert!(xml.contains("<table name=\"Таблиц\">"), "{xml}");
 }
 
 #[cfg(feature = "tika")]
@@ -265,6 +449,160 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
             "testAccess_V1997.mdb",
         ]
     );
-    let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(&parsed, JackcessParser.tika_name(), DEPARTURES);
+    assert_same_as_tika_formatting_cells(&parsed);
+}
+
+/// The XML the extractor writes of `database`, written as `db.mdb` in a directory of its own.
+fn xml_of(database: &[u8]) -> String {
+    let scratch = Scratch::new("access-xml");
+    let path = scratch.write("db.mdb", database);
+    crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap()
+        .0
+}
+
+#[test]
+fn reads_every_table_whatever_its_name() {
+    let renamed = replaced(fixture("jet3-queries.mdb"), b"Table2", b"Abl\xe6e2");
+    let xml = xml_of(&renamed);
+    let tables: Vec<&str> = xml
+        .match_indices("<table name=\"")
+        .map(|(at, start)| {
+            let name = &xml[at + start.len()..];
+            &name[..name.find('"').unwrap()]
+        })
+        .collect();
+    assert_eq!(tables, ["Ablæe2", "Table1", "Table3"]);
+}
+
+#[test]
+fn gives_each_column_of_a_name_its_own_values() {
+    let utf16 =
+        |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    let original = xml_of(&fixture("ace-calculated.accdb"));
+    let renamed = xml_of(&replaced(
+        fixture("ace-calculated.accdb"),
+        &utf16("LastFirst"),
+        &utf16("FirstName"),
+    ));
+    assert!(
+        renamed.contains("<th>FirstName</th>\t<th>LastName</th>\t<th>FirstName</th>"),
+        "{renamed:?}"
+    );
+    assert!(
+        renamed.contains("<td>Bruce</td>\t<td>Wayne</td>\t<td>Wayne, Bruce</td>"),
+        "{renamed:?}"
+    );
+    assert_eq!(renamed, original.replace("LastFirst", "FirstName"));
+}
+
+/// Where Jet 4's table definition refers to its free space usage map.
+const JET4_FREE_SPACE_PAGES: usize = 59;
+
+#[test]
+fn reads_tables_whose_unused_usage_maps_are_broken() {
+    let original = fixture("jet4-turkish.mdb");
+    let database = Database::open(&original).unwrap();
+    let page_size = database.pages.format.page_size;
+    let pages: Vec<i32> = database
+        .tables()
+        .unwrap()
+        .iter()
+        .map(|table| table.page)
+        .collect();
+    assert!(!pages.is_empty());
+    let mut broken = original.clone();
+    for page in pages {
+        let at = page as usize * page_size + JET4_FREE_SPACE_PAGES;
+        broken[at..at + 4].fill(0);
+    }
+    assert_eq!(xml_of(&broken), xml_of(&original));
+}
+
+#[test]
+fn writes_currency_amounts_exactly() {
+    assert_eq!(money(10_000_000_000), "1000000.00");
+    assert_eq!(money(833_333_333), "83333.3333");
+    assert_eq!(money(12_000), "1.20");
+    assert_eq!(money(12_345), "1.2345");
+    assert_eq!(money(-10_000), "-1.00");
+    assert_eq!(money(-1), "-0.0001");
+    assert_eq!(money(0), "0.00");
+    assert_eq!(money(i64::MIN), "-922337203685477.5808");
+}
+
+#[test]
+fn writes_numerics_in_positional_notation() {
+    let decimal = |negative, magnitude, scale| {
+        Decimal {
+            negative,
+            magnitude,
+            scale,
+        }
+        .plain()
+    };
+    assert_eq!(decimal(false, 0, 8), "0.00000000");
+    assert_eq!(
+        decimal(false, 2_787_019_289_824_216_980_830, 28),
+        "0.0000002787019289824216980830"
+    );
+    assert_eq!(decimal(true, 3_622, 2), "-36.22");
+    assert_eq!(decimal(true, 0, 2), "0.00");
+    assert_eq!(decimal(false, 12, 0), "12");
+    assert_eq!(decimal(false, 12, -3), "12000");
+}
+
+#[test]
+fn writes_dates_with_their_time_whatever_the_time_zone() {
+    use crate::java::time::civil::days_from_civil;
+    let serial = |year, month, day, fraction: f64| {
+        let days = days_from_civil(year, month, day) - days_from_civil(1899, 12, 30);
+        (days as f64 + fraction).to_bits() as i64
+    };
+    assert_eq!(date(serial(2006, 2, 3, 0.0)), "2006-02-03");
+    assert_eq!(date(serial(2006, 2, 3, 0.5)), "2006-02-03 12:00:00");
+    assert_eq!(
+        date(serial(
+            2006,
+            2,
+            3,
+            (22.0 * 3600.0 + 11.0 * 60.0 + 5.0) / 86_400.0
+        )),
+        "2006-02-03 22:11:05"
+    );
+    assert_eq!(date(serial(1265, 6, 14, 0.0)), "1265-06-14");
+    assert_eq!(date(serial(100, 6, 14, 0.0)), "0100-06-14");
+    assert_eq!(date((-1.25_f64).to_bits() as i64), "1899-12-29 06:00:00");
+}
+
+#[test]
+fn writes_rich_text_whole() {
+    let long = "æ".repeat(150_000);
+    let text = rich_text(
+        &format!("<div><b>{long}</b></div>"),
+        &ParserConfigs::default(),
+    )
+    .unwrap();
+    assert!(text.contains(&long), "{}", text.len());
+}
+
+#[test]
+fn reads_ole_objects_with_empty_names() {
+    let mut value = Vec::new();
+    value.extend(0x1C15_i16.to_le_bytes());
+    value.extend(20_i16.to_le_bytes());
+    value.extend(0_i32.to_le_bytes());
+    value.extend(0_i16.to_le_bytes());
+    value.extend(0_i16.to_le_bytes());
+    value.extend(20_i16.to_le_bytes());
+    value.extend(20_i16.to_le_bytes());
+    value.extend(0_i32.to_le_bytes());
+    value.extend(0_i32.to_le_bytes());
+    value.extend(0_i32.to_le_bytes());
+    assert!(matches!(
+        ole::read(&value, &ParserConfigs::default()),
+        Ok(Ole::Nothing)
+    ));
 }

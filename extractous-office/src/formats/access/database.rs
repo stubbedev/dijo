@@ -1,27 +1,23 @@
 //! Jackcess's `DatabaseImpl` as Tika opens it read-only: the format and codec of the file, the
 //! system catalog (`MSysObjects`) read whole, and the lookups its table finder makes in it: the
-//! parents of tables and of the database's own objects, table names, tables by name and the
-//! properties of objects.
+//! parents of tables and of the database's own objects, the user's tables, system tables by name
+//! and the properties of objects.
 //!
 //! Jackcess looks rows of the catalog up through its index on the parent and the name where the
 //! index is one it can read, and by scanning the catalog otherwise; the port always scans,
-//! which finds the same rows in a catalog whose index matches its rows, for each name whose
-//! index codes Jackcess computes as Access did.
+//! which finds the same rows in a catalog whose index matches its rows.
 
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use super::buffer::Thrown;
 use super::column::{Column, Complex, DataType, Value};
-use super::format::{self, Charset, Detected};
+use super::format::{self, Detected};
 use super::pages::Pages;
 use super::properties::PropertyMaps;
 use super::table::{Context, IndexMatch, Row, Table};
-use super::usage_map::UsageMap;
 
 const PAGE_SYSTEM_CATALOG: i32 = 2;
-const PAGE_GLOBAL_USAGE_MAP: i32 = 1;
-const ROW_GLOBAL_USAGE_MAP: i32 = 0;
 const DB_PARENT_ID: i32 = 0xF00_0000;
 const SYSTEM_OBJECT_FLAGS: i32 = 0x8000_0000_u32 as i32 | 0x02;
 const TYPE_TABLE: i16 = 1;
@@ -111,10 +107,23 @@ fn no_finder() -> Thrown {
     )
 }
 
-/// A catalog row's object, as a `TableInfo`.
+/// A catalog row's table, as a `TableInfo`: its name and the page its definition starts on.
 pub(super) struct TableInfo {
-    pub(super) name: Option<String>,
+    pub(super) name: String,
     pub(super) page: i32,
+}
+
+impl TableInfo {
+    /// The table of a row the lookup found by its name.
+    fn of_found(row: &CatalogRow) -> Self {
+        TableInfo {
+            name: row
+                .name
+                .clone()
+                .expect("a row found by its name has a name"),
+            page: row.id,
+        }
+    }
 }
 
 impl<'a> Database<'a> {
@@ -127,7 +136,6 @@ impl<'a> Database<'a> {
             }
         };
         let pages = Pages::open(file, format)?;
-        UsageMap::read(&pages, PAGE_GLOBAL_USAGE_MAP, ROW_GLOBAL_USAGE_MAP)?;
         let catalog_table = Table::read(
             &pages,
             TABLE_SYSTEM_CATALOG.to_owned(),
@@ -241,52 +249,41 @@ impl<'a> Database<'a> {
         PropertyMaps::read(bytes, &self.pages)
     }
 
-    /// `getTableNames()`: the names of the user's tables under the parent of tables, sorted as
-    /// `String.CASE_INSENSITIVE_ORDER` sorts them, each kept once whatever its case.
-    pub(super) fn table_names(&self) -> Result<Vec<String>, Thrown> {
-        let mut names: Vec<String> = Vec::new();
-        for row in self
-            .catalog
-            .iter()
-            .filter(|row| row.parent == self.table_parent)
-        {
-            if row.object_type != Some(TYPE_TABLE) || row.flags & SYSTEM_OBJECT_FLAGS != 0 {
-                continue;
-            }
+    /// The user's tables: each row of the catalog under the parent of tables that is a local
+    /// table and no system object, ordered by name as `String.CASE_INSENSITIVE_ORDER` orders
+    /// them, and in catalog order among names that differ only in case.
+    ///
+    /// Jackcess lists the names and then looks each up again, which stops Tika's iteration at
+    /// the first name the lookup does not find and keeps only one of two names that differ
+    /// only in case (#122); the rows themselves name every table.
+    pub(super) fn tables(&self) -> Result<Vec<TableInfo>, Thrown> {
+        let mut tables = Vec::new();
+        for row in self.catalog.iter().filter(|row| {
+            row.parent == self.table_parent
+                && row.object_type == Some(TYPE_TABLE)
+                && row.flags & SYSTEM_OBJECT_FLAGS == 0
+        }) {
             let Some(name) = &row.name else {
-                return Err(Thrown::other(
-                    "java.lang.NullPointerException: a table without a name in a TreeSet",
-                ));
+                return Err(Thrown::other(format!(
+                    "a user's table without a name in the catalog, its definition on page {}",
+                    row.id
+                )));
             };
-            if let Err(at) = names.binary_search_by(|n| crate::java::compare_ignore_case(n, name)) {
-                names.insert(at, name.clone());
-            }
+            tables.push(TableInfo {
+                name: name.clone(),
+                page: row.id,
+            });
         }
-        Ok(names)
+        tables.sort_by(|a, b| crate::java::compare_ignore_case(&a.name, &b.name));
+        Ok(tables)
     }
 
     /// `lookupTable(name, parent)`: the table row the finder finds.
-    ///
-    /// Through the index, Jackcess looks the name up by the index codes of the name as it
-    /// decoded it. Those match the codes Access stored where the decoding is faithful, which a
-    /// replaced character, or any non-ASCII character of a Jet 3 database Jackcess decodes as
-    /// UTF-8, may not be; the port, which does not compute index codes, leaves those to Tika.
     fn lookup(&self, name: &str, parent: i32) -> Result<Option<&CatalogRow>, Thrown> {
         let row = match self.finder {
-            Finder::Indexed => {
-                let unfaithful = match self.pages.format.charset {
-                    Charset::Utf8 => !name.is_ascii(),
-                    Charset::Utf16Le => name.contains(char::REPLACEMENT_CHARACTER),
-                };
-                if unfaithful {
-                    return Err(Thrown::unported(
-                        "a table name Jackcess may not find through the catalog's index, as it \
-                         decodes it otherwise than Access encoded it",
-                    ));
-                }
-                self.find(parent, name)
-                    .filter(|row| is_table_type(row.object_type))
-            }
+            Finder::Indexed => self
+                .find(parent, name)
+                .filter(|row| is_table_type(row.object_type)),
             Finder::Scanning { .. } => self.catalog.iter().find(|row| {
                 is_table_type(row.object_type) && row.parent == parent && is_named(row, name)
             }),
@@ -300,11 +297,10 @@ impl<'a> Database<'a> {
     }
 
     /// `getTable(name, true)`'s `TableInfo`: the user's table named so.
-    pub(super) fn table_info(&self, name: &str) -> Result<Option<TableInfo>, Thrown> {
-        Ok(self.lookup(name, self.table_parent)?.map(|row| TableInfo {
-            name: row.name.clone(),
-            page: row.id,
-        }))
+    fn table_info(&self, name: &str) -> Result<Option<TableInfo>, Thrown> {
+        Ok(self
+            .lookup(name, self.table_parent)?
+            .map(TableInfo::of_found))
     }
 
     /// `getSystemTable`: through the parent of the catalog's own row where the scanning finder
@@ -315,10 +311,7 @@ impl<'a> Database<'a> {
         } = self.finder
         {
             if let Some(row) = self.lookup(name, parent)? {
-                return Ok(Some(TableInfo {
-                    name: row.name.clone(),
-                    page: row.id,
-                }));
+                return Ok(Some(TableInfo::of_found(row)));
             }
         }
         self.table_info(name)
@@ -326,8 +319,7 @@ impl<'a> Database<'a> {
 
     /// `loadTable`: the definition of the table `info` names.
     pub(super) fn load_table(&self, info: &TableInfo) -> Result<Table, Thrown> {
-        let name = info.name.clone().unwrap_or_default();
-        Table::read(&self.pages, name, info.page, self)
+        Table::read(&self.pages, info.name.clone(), info.page, self)
     }
 
     /// `getTable(pageNumber)`: the table whose definition starts on `page`, named by its row of

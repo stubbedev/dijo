@@ -6,8 +6,12 @@
 //! The port reads the whole database while it prepares, so that whatever Jackcess would throw
 //! leaves the database to Tika before anything is written. A database under Office encryption
 //! fails as encrypted without a password and is left to Tika with one. The port also leaves to
-//! Tika an MSISAM database, and a Jet 3 table name Jackcess may not find through the catalog's
-//! index.
+//! Tika an MSISAM database.
+//!
+//! Where Tika is wrong, the port departs from it (#122): it keeps the database password out of
+//! the metadata, decodes Jet 3 text in the database's code page, writes every table with each
+//! column's own values, currency amounts, numerics and dates as they are kept, and rich text
+//! whole, and reads no usage map but those that hold a table's rows.
 
 mod buffer;
 mod column;
@@ -24,7 +28,7 @@ mod usage_map;
 mod tests;
 
 use buffer::Thrown;
-use column::{Complex, DataType, Value};
+use column::{DataType, Decimal, Value};
 use database::Database;
 use ole::Ole;
 use properties::{PropertyMap, PropertyMaps};
@@ -38,12 +42,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{Embedded, Handed};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, Declined, Deferral, Failure, Opened, Parser, Prepared, StringOut};
-use crate::java::decimal::{BigDecimal, Rounding};
-use crate::java::decimal_format::{DecimalFormat, ROOT_CURRENCY};
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
-use crate::java::simple_date_format::SimpleDateFormat;
-use crate::java::time::TimeZone;
-use crate::java::utf16_length;
+use crate::java::time::civil::civil_from_days;
 
 /// What Jackcess throws opening a database under Office encryption without its password.
 const INCORRECT_PASSWORD: &str =
@@ -60,12 +60,9 @@ const AUTHOR_PROPERTY: &str = "Author";
 const COMPANY_PROPERTY: &str = "Company";
 const TEXT_FORMAT_PROPERTY: &str = "TextFormat";
 const RICH_TEXT_FORMAT: i8 = 1;
-/// `NumberFormat.getCurrencyInstance(Locale.ROOT)`'s pattern.
-const CURRENCY_PATTERN: &str = "\u{a4}\u{a0}#,##0.00";
-/// `DateFormat.getDateInstance(DateFormat.SHORT, Locale.ROOT)`'s pattern.
-const SHORT_DATE_PATTERN: &str = "y-MM-dd";
-/// The default limit of the `BodyContentHandler` the text of rich text goes through.
-const RICH_TEXT_WRITE_LIMIT: usize = 100_000;
+/// The decimals a currency amount is kept with, and the fewest it is written with.
+const MONEY_SCALE: i64 = 4;
+const MONEY_MIN_DECIMALS: usize = 2;
 const MILLIS_PER_DAY: i64 = 86_400_000;
 const MILLIS_BETWEEN_EPOCH_AND_1900: i64 = 25_569 * MILLIS_PER_DAY;
 
@@ -181,96 +178,102 @@ impl Extraction {
     }
 }
 
-/// How `JackcessExtractor.toString` writes dates and currency amounts.
-struct Formats {
-    currency: DecimalFormat,
-    date: SimpleDateFormat,
-    zone: &'static TimeZone,
+/// `JackcessExtractor.toString`: a value as its column's or property's type writes it; a value
+/// of another class throws.
+///
+/// A currency amount is written exactly, as a plain number with at least two decimals, where
+/// Tika writes it through a double with the root locale's currency sign `¤` and two decimals; a
+/// numeric in positional notation, where Tika's `BigDecimal.toString` may use an exponent; and
+/// a date as its own date and time, where Tika takes it through the machine's time zone and
+/// drops the time (#122).
+fn text(value: Option<&Value>, data_type: DataType) -> Result<String, Thrown> {
+    let Some(value) = value else {
+        return Ok(String::new());
+    };
+    let mismatch = || {
+        Err(Thrown::other(format!(
+            "java.lang.ClassCastException: {value:?} as {data_type:?}"
+        )))
+    };
+    Ok(match (data_type, value) {
+        (DataType::Long, Value::Long(v)) => v.to_string(),
+        (DataType::Text | DataType::Memo, Value::Text(v)) => v.clone(),
+        (DataType::Money, Value::Money(v)) => money(*v),
+        (DataType::ShortDateTime, Value::Date(bits)) => date(*bits),
+        (DataType::Boolean, Value::Boolean(v)) => v.to_string(),
+        (DataType::Int, Value::Int(v)) => v.to_string(),
+        (DataType::Double, Value::Double(v)) => java_double_to_string(*v),
+        (DataType::Float, Value::Float(v)) => java_float_to_string(*v),
+        (DataType::Numeric, Value::Numeric(v)) => v.plain(),
+        (DataType::Byte, Value::Byte(v)) => v.to_string(),
+        (DataType::Guid, Value::Guid(v)) => v.clone(),
+        (
+            DataType::Long
+            | DataType::Text
+            | DataType::Memo
+            | DataType::Money
+            | DataType::ShortDateTime
+            | DataType::Boolean
+            | DataType::Int
+            | DataType::Double
+            | DataType::Float
+            | DataType::Byte
+            | DataType::Numeric
+            | DataType::Guid,
+            _,
+        ) => return mismatch(),
+        _ => String::new(),
+    })
 }
 
-impl Formats {
-    fn new() -> Result<Self, Deferral> {
-        Ok(Self {
-            currency: DecimalFormat::with_currency(
-                CURRENCY_PATTERN,
-                Rounding::HalfEven,
-                ROOT_CURRENCY,
-            )
-            .expect("the currency pattern compiles"),
-            date: SimpleDateFormat::new(SHORT_DATE_PATTERN).expect("the date pattern compiles"),
-            zone: TimeZone::java_default()?,
-        })
+/// A currency amount, kept in ten-thousandths: exactly, with at least two decimals.
+fn money(ten_thousandths: i64) -> String {
+    let mut amount = Decimal {
+        negative: ten_thousandths < 0,
+        magnitude: u128::from(ten_thousandths.unsigned_abs()),
+        scale: MONEY_SCALE,
     }
+    .plain();
+    let decimals = MONEY_SCALE as usize;
+    let trailing = amount.bytes().rev().take_while(|&b| b == b'0').count();
+    amount.truncate(amount.len() - trailing.min(decimals - MONEY_MIN_DECIMALS));
+    amount
+}
 
-    /// `JackcessExtractor.toString`: a value as its column's or property's type writes it; a
-    /// value of another class throws.
-    fn text(&self, value: Option<&Value>, data_type: DataType) -> Result<String, Thrown> {
-        let Some(value) = value else {
-            return Ok(String::new());
-        };
-        let mismatch = || {
-            Err(Thrown::other(format!(
-                "java.lang.ClassCastException: {value:?} as {data_type:?}"
-            )))
-        };
-        Ok(match (data_type, value) {
-            (DataType::Long, Value::Long(v)) => v.to_string(),
-            (DataType::Text | DataType::Memo, Value::Text(v)) => v.clone(),
-            (DataType::Money, Value::Money(v)) => {
-                let amount = BigDecimal::from_digits(*v < 0, &v.unsigned_abs().to_string(), 4);
-                self.currency.format_f64(amount.to_f64())
-            }
-            (DataType::ShortDateTime, Value::Date(bits)) => self.date(*bits),
-            (DataType::Boolean, Value::Boolean(v)) => v.to_string(),
-            (DataType::Int, Value::Int(v)) => v.to_string(),
-            (DataType::Double, Value::Double(v)) => java_double_to_string(*v),
-            (DataType::Float, Value::Float(v)) => java_float_to_string(*v),
-            (DataType::Numeric, Value::Numeric(v)) => v.to_java_string(),
-            (DataType::Byte, Value::Byte(v)) => v.to_string(),
-            (DataType::Guid, Value::Guid(v)) => v.clone(),
-            (
-                DataType::Long
-                | DataType::Text
-                | DataType::Memo
-                | DataType::Money
-                | DataType::ShortDateTime
-                | DataType::Boolean
-                | DataType::Int
-                | DataType::Double
-                | DataType::Float
-                | DataType::Byte
-                | DataType::Numeric
-                | DataType::Guid,
-                _,
-            ) => return mismatch(),
-            _ => String::new(),
-        })
+/// A date as Access keeps it, the days from 1899-12-30 as a double whose fraction, unsigned
+/// for the days before, is the time of day: its date as `yyyy-MM-dd`, followed by its time as
+/// `HH:mm:ss` where that is not midnight, and by the milliseconds where there are any.
+fn date(bits: i64) -> String {
+    let value = f64::from_bits(bits as u64);
+    let date_part = i128::from(value as i64) * i128::from(MILLIS_PER_DAY);
+    let time_part = i128::from(crate::java::round(
+        (value.abs() % 1.0) * MILLIS_PER_DAY as f64,
+    ));
+    let millis = date_part + time_part - i128::from(MILLIS_BETWEEN_EPOCH_AND_1900);
+    let day_millis = i128::from(MILLIS_PER_DAY);
+    let days = i64::try_from(millis.div_euclid(day_millis)).expect("days of an i64 date");
+    let of_day = millis.rem_euclid(day_millis) as i64;
+    let (year, month, day) = civil_from_days(days);
+    let mut text = format!("{year:04}-{month:02}-{day:02}");
+    if of_day != 0 {
+        let seconds = of_day / 1000;
+        text.push_str(&format!(
+            " {:02}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        ));
+        if of_day % 1000 != 0 {
+            text.push_str(&format!(".{:03}", of_day % 1000));
+        }
     }
-
-    /// `formatShortDateTime` of the `Date` Jackcess makes of a date's bits: the local date and
-    /// time the double counts in days from 1899-12-30, in the default zone.
-    fn date(&self, bits: i64) -> String {
-        let value = f64::from_bits(bits as u64);
-        let date_part = (value as i64).wrapping_mul(MILLIS_PER_DAY);
-        let time_part = crate::java::round((value.abs() % 1.0) * MILLIS_PER_DAY as f64);
-        let local = date_part
-            .wrapping_add(time_part)
-            .wrapping_sub(MILLIS_BETWEEN_EPOCH_AND_1900);
-        let offset = self
-            .zone
-            .offset_at_utc(local.wrapping_sub(self.zone.raw_offset()));
-        let epoch = local.wrapping_sub(offset);
-        self.date
-            .format(epoch, self.zone)
-            .expect("the short date pattern names no time zone")
-    }
+    text
 }
 
 /// Reads the database as `JackcessExtractor.parse` does. A database under Office encryption
 /// fails as encrypted where no password is given, as Tika's path fails on it, and is left to
 /// Tika where one is.
 fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined> {
-    let formats = Formats::new()?;
     let thrown = Thrown::reason;
     let database = Database::open(input).map_err(|thrown| match thrown {
         Thrown::Encrypted if configs.password.is_none() => {
@@ -281,7 +284,7 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined
     let mut metadata = Vec::new();
     let add_all = |maps: PropertyMaps, prefix: &'static str, metadata: &mut Vec<Entry>| {
         for property in maps.default_map().iter() {
-            let value = formats.text(property.value.as_ref(), property.data_type)?;
+            let value = text(property.value.as_ref(), property.data_type)?;
             metadata.push(Entry::AddPrefixed(prefix, property.name.clone(), value));
         }
         Ok::<_, Thrown>(())
@@ -300,28 +303,13 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined
     .map_err(thrown)?;
     summary(
         &database.summary_properties().map_err(thrown)?.default_map(),
-        &formats,
         &mut metadata,
     )
     .map_err(thrown)?;
     let mut tables = Vec::new();
-    let mut iterated = Vec::new();
-    for name in database.table_names().map_err(thrown)? {
-        let Some(info) = database.table_info(&name).map_err(thrown)? else {
-            break;
-        };
-        if iterated.contains(&info.page) {
-            return Err(Declined::Deferred(
-                "two names for one table definition, which Jackcess may hand out as one table \
-                 whose rows were read"
-                    .to_owned(),
-            ));
-        }
-        iterated.push(info.page);
+    for info in database.tables().map_err(thrown)? {
         let table = database.load_table(&info).map_err(thrown)?;
-        tables.push(table_content(
-            &database, &table, info.page, &formats, configs,
-        )?);
+        tables.push(table_content(&database, &table, info.page, configs)?);
     }
     let mut queries = Vec::new();
     for definition in database.queries().map_err(thrown)? {
@@ -339,12 +327,12 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined
 
 /// The summary properties: the title, author and company as Tika's properties, the others under
 /// their own names.
-fn summary(map: &PropertyMap, formats: &Formats, metadata: &mut Vec<Entry>) -> Result<(), Thrown> {
+fn summary(map: &PropertyMap, metadata: &mut Vec<Entry>) -> Result<(), Thrown> {
     let mut found = Vec::new();
     if let Some(title) = map.get(TITLE_PROPERTY) {
         metadata.push(Entry::Set(
             TITLE,
-            formats.text(title.value.as_ref(), title.data_type)?,
+            text(title.value.as_ref(), title.data_type)?,
         ));
         found.push(title.name.clone());
     }
@@ -354,20 +342,20 @@ fn summary(map: &PropertyMap, formats: &Formats, metadata: &mut Vec<Entry>) -> R
     {
         metadata.push(Entry::AddMulti(
             CREATOR,
-            formats.text(author.value.as_ref(), author.data_type)?,
+            text(author.value.as_ref(), author.data_type)?,
         ));
         found.push(author.name.clone());
     }
     if let Some(company) = map.get(COMPANY_PROPERTY) {
         metadata.push(Entry::Set(
             COMPANY,
-            formats.text(company.value.as_ref(), company.data_type)?,
+            text(company.value.as_ref(), company.data_type)?,
         ));
         found.push(company.name.clone());
     }
     for property in map.iter() {
         if !found.contains(&property.name) {
-            let value = formats.text(property.value.as_ref(), property.data_type)?;
+            let value = text(property.value.as_ref(), property.data_type)?;
             metadata.push(Entry::AddPrefixed(
                 SUMMARY_PREFIX,
                 property.name.clone(),
@@ -378,25 +366,16 @@ fn summary(map: &PropertyMap, formats: &Formats, metadata: &mut Vec<Entry>) -> R
     Ok(())
 }
 
-/// A table's headers and rows as `JackcessExtractor` writes them.
+/// A table's headers and rows as `JackcessExtractor` writes them, each column with its own
+/// values, where Tika gives two columns of one name both the later one's (#122).
 fn table_content(
     database: &Database<'_>,
     table: &table::Table,
     page: i32,
-    formats: &Formats,
     configs: &ParserConfigs,
 ) -> Result<TableContent, Deferral> {
     let thrown = Thrown::reason;
     let columns = &table.columns;
-    let sources: Vec<usize> = columns
-        .iter()
-        .map(|column| {
-            columns
-                .iter()
-                .rposition(|other| other.name == column.name)
-                .expect("a column is named as itself")
-        })
-        .collect();
     let mut rich: Option<Vec<bool>> = None;
     let mut rows = Vec::new();
     for row in table.rows(&database.pages, vec![true; columns.len()]) {
@@ -407,7 +386,7 @@ fn table_content(
         };
         let mut cells = Vec::with_capacity(columns.len());
         for (index, column) in columns.iter().enumerate() {
-            let value = row[sources[index]].as_ref();
+            let value = row[index].as_ref();
             cells.push(match column.data_type {
                 DataType::Ole => match value {
                     None => Cell::Text(String::new()),
@@ -437,7 +416,7 @@ fn table_content(
                     }
                 },
                 data_type => {
-                    let text = formats.text(value, data_type).map_err(thrown)?;
+                    let text = text(value, data_type).map_err(thrown)?;
                     if rich[index] {
                         Cell::Text(rich_text(&text, configs)?)
                     } else {
@@ -457,9 +436,9 @@ fn table_content(
 
 /// `isRichText` of each column: a memo whose `TextFormat` property is the byte of rich text.
 ///
-/// Tika reads a column's properties for each cell it writes as text, so where a row has such a
-/// cell the table's properties are read, and the properties of the value column of each
-/// multi-valued field.
+/// Only a table with a memo reads its properties for it. Tika reads the properties of every
+/// column it writes as text, those of each multi-valued field's flat table too, so that any of
+/// them it cannot read fails the whole parse (#122).
 fn rich_text_columns(
     database: &Database<'_>,
     table: &table::Table,
@@ -468,14 +447,9 @@ fn rich_text_columns(
     if table
         .columns
         .iter()
-        .all(|column| matches!(column.data_type, DataType::Ole | DataType::Binary))
+        .all(|column| column.data_type != DataType::Memo)
     {
         return Ok(vec![false; table.columns.len()]);
-    }
-    for column in &table.columns {
-        if let Some(Complex::MultiValue { flat_table_page }) = &column.complex {
-            database.object_properties(*flat_table_page)?;
-        }
     }
     let read;
     let properties = match &table.properties {
@@ -496,7 +470,8 @@ fn rich_text_columns(
         .collect())
 }
 
-/// What `JSoupParser` writes of rich text through a `BodyContentHandler`, as text.
+/// What `JSoupParser` writes of rich text, as text, all of it: Tika writes it through a
+/// `BodyContentHandler` whose write limit of 100,000 characters fails the parse (#122).
 fn rich_text(html: &str, configs: &ParserConfigs) -> Result<String, Deferral> {
     let mut metadata = TikaMetadata::new();
     metadata.set("Content-Type", "text/html; charset=UTF-8");
@@ -507,12 +482,5 @@ fn rich_text(html: &str, configs: &ParserConfigs) -> Result<String, Deferral> {
     let mut handler = Body::new(ToText::new(&mut out));
     let (_, _, result) = Xhtml::write(&mut handler, metadata, &context, prepared);
     result.map_err(|failure| format!("rich text in an Access table that fails: {failure:?}"))?;
-    if utf16_length(&out.0) > RICH_TEXT_WRITE_LIMIT {
-        return Err(
-            "rich text in an Access table past the write limit of the BodyContentHandler its \
-             text goes through, which fails the parse"
-                .to_owned(),
-        );
-    }
     Ok(out.0)
 }
