@@ -801,6 +801,7 @@ dependencies = [
  "extractous-image",
  "extractous-mime",
  "extractous-native",
+ "extractous-pdf",
  "extractous-tika",
  "fancy-regex",
  "flate2",
@@ -896,6 +897,29 @@ dependencies = [
  "libloading",
  "object",
  "walkdir",
+]
+
+[[package]]
+name = "extractous-pdf"
+version = "0.2.1"
+dependencies = [
+ "arrayvec",
+ "extractous-base",
+ "extractous-core",
+ "extractous-image",
+ "flate2",
+ "image",
+ "lopdf",
+ "lzma-rust2",
+ "md-5",
+ "memchr",
+ "png",
+ "rc4",
+ "tar",
+ "unicode-bidi",
+ "unicode-general-category",
+ "unicode-normalization",
+ "unicode-script",
 ]
 
 [[package]]

@@ -48,9 +48,11 @@ use crate::config::Password;
 use crate::formats::embedded::{EXCEPTION_WARNING, ZERO_BYTES};
 #[cfg(any(test, feature = "tika"))]
 use crate::formats::Output;
-use crate::formats::{self, Parser};
 #[cfg(feature = "tika")]
-use crate::formats::{Routed, StreamOptions};
+use crate::formats::StreamOptions;
+use crate::formats::{self, Parser};
+/// The native path's routing and string extraction, for the tests that drive a parser through them.
+pub use crate::formats::{parse_to_string, route_file, Routed};
 #[cfg(feature = "tika")]
 use crate::input::Source;
 #[cfg(feature = "tika")]

@@ -34,7 +34,7 @@ fn international_date(seconds: i64) -> String {
     format_instant(MILLIS_1904.wrapping_add(seconds.wrapping_mul(1000)))
 }
 
-pub(crate) struct TrueTypeParser;
+pub struct TrueTypeParser;
 
 impl Parser for TrueTypeParser {
     fn name(&self) -> &'static str {
@@ -91,7 +91,7 @@ impl Parser for TrueTypeParser {
     }
 }
 
-pub(crate) struct AdobeFontMetricParser;
+pub struct AdobeFontMetricParser;
 
 impl Parser for AdobeFontMetricParser {
     fn name(&self) -> &'static str {

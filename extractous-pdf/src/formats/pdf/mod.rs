@@ -83,7 +83,7 @@ pub(super) use crate::formats::Unported;
 use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
 
 /// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
-pub(crate) struct PdfParser;
+pub struct PdfParser;
 
 impl Parser for PdfParser {
     fn name(&self) -> &'static str {
@@ -909,14 +909,14 @@ mod tests {
         let mut streamed = 0;
         for path in &paths {
             let path = path.to_str().unwrap();
-            let routed = crate::formats::route_file(path).unwrap();
+            let routed = crate::formats::parity::route_file(path).unwrap();
             let input = &routed.input;
             let recorded = record(input, input.pages(), &TikaMetadata::new(), &configs, 0);
             streamed += usize::from(matches!(recorded, Ok(Recorded::Large(..))));
             for output in [crate::formats::Output::Text, crate::formats::Output::Xml] {
                 for limit in [200, usize::MAX >> 1] {
                     let extract = |parser: &dyn Parser| {
-                        let extracted = crate::formats::parse_to_string(
+                        let extracted = crate::formats::parity::parse_to_string(
                             parser,
                             input,
                             &routed.detected,

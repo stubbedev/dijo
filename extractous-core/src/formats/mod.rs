@@ -24,7 +24,6 @@ mod escher;
 mod executable;
 mod feed;
 mod fiction_book;
-mod font;
 mod geogebra;
 mod hwpx;
 mod idml;
@@ -45,7 +44,6 @@ mod ooxml;
 mod open_pgp;
 #[cfg(any(test, feature = "parity"))]
 pub mod parity;
-pub(crate) mod pdf;
 pub(crate) mod plist;
 mod poi;
 mod ppt;
@@ -86,6 +84,8 @@ pub(crate) use extractous_html::formats::text;
 pub(crate) use extractous_image::formats::djvu;
 pub(crate) use extractous_image::formats::image;
 pub(crate) use extractous_image::formats::metafile;
+pub(crate) use extractous_pdf::formats::font;
+pub(crate) use extractous_pdf::formats::pdf;
 
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
@@ -335,10 +335,10 @@ pub(crate) fn open_to_extract(
 }
 
 /// A document a native parser reads, and what its detection found.
-pub(crate) struct Routed<'a> {
+pub struct Routed<'a> {
     pub(crate) parser: &'static dyn Parser,
-    pub(crate) detected: Detected,
-    pub(crate) input: Input<'a>,
+    pub detected: Detected,
+    pub input: Input<'a>,
 }
 
 /// Routes a document to its native parser, if its format has one, or says why it stays with
@@ -368,8 +368,8 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
 }
 
 /// Routes the file at `path` as an extraction of it does.
-#[cfg(any(test, all(feature = "parity", feature = "tika")))]
-pub(crate) fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
+#[cfg(any(test, feature = "parity"))]
+pub fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }
 
@@ -446,7 +446,7 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
 
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
 /// handlers of [`Chain::String`]; why not when the parser leaves the document to Tika.
-pub(crate) fn parse_to_string(
+pub fn parse_to_string(
     parser: &dyn Parser,
     input: &Input<'_>,
     detected: &Detected,

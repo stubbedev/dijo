@@ -7,6 +7,7 @@ members = [
     "extractous-mime",
     "extractous-html",
     "extractous-image",
+    "extractous-pdf",
     "extractous-core",
     "extractous-cli",
 ]

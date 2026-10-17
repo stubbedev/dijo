@@ -134,7 +134,7 @@ pdf-resources:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     pdfbox="$jars/pdf/pdfbox-3.0.8.jar"
-    models=extractous-core/models/pdf
+    models=extractous-pdf/models/pdf
     mkdir -p "$models/afm"
     for list in glyphlist additional zapfdingbats; do
         unzip -p "$pdfbox" "org/apache/pdfbox/resources/glyphlist/$list.txt" > "$models/$list.txt"
@@ -147,8 +147,8 @@ pdf-resources:
         unzip -p "$pdfbox" "org/apache/pdfbox/resources/afm/$font.afm" | tr -d '\r' \
             | grep -v -e '^KPX' -e '^Comment' -e '^$' > "$models/afm/$font.afm"
     done
-    java -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/PdfEncodings.java "$models/encodings.tsv"
-    java -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
+    java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/PdfEncodings.java "$models/encodings.tsv"
+    java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
 
 # Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
 # html5lib's tree construction tests, the trees jsoup builds for them, and jsoup's named character references,
