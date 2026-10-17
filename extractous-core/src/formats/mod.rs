@@ -1411,6 +1411,18 @@ mod tests {
                 "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
             ),
             (
+                "testEXCEL_charts.xlsb",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_diagramData.xlsb",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_various.xlsb",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
                 "testEXCEL_headers_footers.xls",
                 "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
             ),
