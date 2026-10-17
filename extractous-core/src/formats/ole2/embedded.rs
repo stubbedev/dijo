@@ -42,15 +42,14 @@ pub(crate) struct Embedded {
     pub(crate) metadata: TikaMetadata,
 }
 
-/// What `handleEmbeddedOfficeDoc` hands on: a document, which Tika parses from its bytes; a
-/// storage, which Tika parses from the storage itself, handed on as an open container, and the
-/// native path from the storage written as a compound document of its own; or an Outlook
-/// message stored in another document, which Tika's `OfficeParser` reads from its storage as a
-/// message embedded in another, and the native one reads alike.
+/// What `handleEmbeddedOfficeDoc` hands on: a document, which Tika parses from its bytes, as
+/// the native path parses a storage written as a compound document of its own, where Tika
+/// parses the storage itself, handed on as an open container that spools empty (#116); or an
+/// Outlook message stored in another document, which Tika's `OfficeParser` reads from its
+/// storage as a message embedded in another, and the native one reads alike.
 #[derive(Debug)]
 pub(crate) enum Handed {
     Document(Embedded),
-    Storage(Embedded),
     Message(Box<StoredMessage>),
 }
 
@@ -76,14 +75,16 @@ impl Handed {
             Handed::Document(Embedded { data, metadata }) => {
                 xhtml.parse_embedded(&data, &metadata, wrapping)
             }
-            Handed::Storage(Embedded { data, metadata }) => {
-                xhtml.parse_embedded_container(&data, &metadata, wrapping)
-            }
             Handed::Message(stored) => {
                 let StoredMessage { message, metadata } = *stored;
-                xhtml.parse_container_natively(&metadata, wrapping, MsgParser.name(), |child| {
-                    message.write(child)
-                })
+                let data = message.data().to_vec();
+                xhtml.parse_container_natively(
+                    &data,
+                    &metadata,
+                    wrapping,
+                    MsgParser.name(),
+                    |child| message.write(child),
+                )
             }
         }
     }
@@ -202,7 +203,7 @@ pub(crate) fn office_document(
     }
     let storage = file.storage(directory).map_err(unreadable)?;
     let data = write(&storage).map_err(unreadable)?;
-    Ok(Some(Handed::Storage(Embedded { data, metadata })))
+    Ok(Some(Handed::Document(Embedded { data, metadata })))
 }
 
 /// `tryToGetMsgTitle`: the subject, conversation topic or display name of a message storage,
@@ -408,7 +409,7 @@ mod tests {
         )
         .unwrap()?
         {
-            Handed::Document(embedded) | Handed::Storage(embedded) => Some(embedded),
+            Handed::Document(embedded) => Some(embedded),
             Handed::Message(message) => panic!("a document, not {message:?}"),
         }
     }

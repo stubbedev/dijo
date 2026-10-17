@@ -30,6 +30,7 @@ pub(super) mod field {
     pub(in crate::formats::doc) const PLCFFLDEDN: usize = 48;
     pub(in crate::formats::doc) const DGGINFO: usize = 50;
     pub(in crate::formats::doc) const STTBFRMARK: usize = 51;
+    pub(in crate::formats::doc) const PLCFTXBXTXT: usize = 56;
     pub(in crate::formats::doc) const PLCFFLDTXBX: usize = 57;
     pub(in crate::formats::doc) const PLCFFLDHDRTXBX: usize = 59;
     pub(in crate::formats::doc) const STTBSAVEDBY: usize = 71;

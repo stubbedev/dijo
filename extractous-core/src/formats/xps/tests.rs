@@ -101,6 +101,69 @@ fn extracts_xps_documents_as_tikas_path_does() {
     assert_fails_as_tika(&paths(&failing));
 }
 
+fn xml(input: &[u8]) -> String {
+    crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(input)
+        .unwrap()
+        .0
+}
+
+/// What Tika slips on, read as it should be (#127): a visual brush ends with its element, so
+/// the runs after it share the canvas of those before; and each document sequence is read, not
+/// the first again.
+#[test]
+fn reads_what_tika_slips_on() {
+    let page = [
+        glyphs("Before", "10", "20", ""),
+        "<Path Data=\"M 0,0\"><Path.Fill><VisualBrush Transform=\"1,0,0,1,0,0\">\
+         </VisualBrush></Path.Fill></Path>"
+            .to_owned(),
+        glyphs("After", "10", "40", ""),
+    ]
+    .concat();
+    let text = xml(&xps(&[&page], 0));
+    assert!(
+        text.contains("<div class=\"canvas\"><p>Before</p>\n<p>After</p>\n</div>"),
+        "{text}"
+    );
+    let sequence = |document: &str| {
+        format!(
+            "<FixedDocumentSequence xmlns=\"{XPS_NAMESPACE}\">\
+             <DocumentReference Source=\"/{document}/FixedDocument.fdoc\"/></FixedDocumentSequence>"
+        )
+    };
+    let document = format!(
+        "<FixedDocument xmlns=\"{XPS_NAMESPACE}\"><PageContent Source=\"1.fpage\"/></FixedDocument>"
+    );
+    let page = |text: &str| {
+        format!(
+            "<FixedPage xmlns=\"{XPS_NAMESPACE}\" Width=\"816\" Height=\"1056\">{}</FixedPage>",
+            glyphs(text, "10", "20", "")
+        )
+    };
+    let (first, second) = (sequence("One"), sequence("Two"));
+    let (first_page, second_page) = (page("First"), page("Second"));
+    let input = package_with(
+        &[
+            relationship("rId1", XPS_DOCUMENT, "/One.fdseq"),
+            relationship("rId2", XPS_DOCUMENT, "/Two.fdseq"),
+        ]
+        .concat(),
+        &[
+            ("One.fdseq", SEQUENCE_TYPE, first.as_bytes()),
+            ("Two.fdseq", SEQUENCE_TYPE, second.as_bytes()),
+            ("One/FixedDocument.fdoc", DOCUMENT_TYPE, document.as_bytes()),
+            ("Two/FixedDocument.fdoc", DOCUMENT_TYPE, document.as_bytes()),
+            ("One/1.fpage", PAGE_TYPE, first_page.as_bytes()),
+            ("Two/1.fpage", PAGE_TYPE, second_page.as_bytes()),
+        ],
+    );
+    let text = xml(&input);
+    let (first, second) = (text.find("<p>First</p>"), text.find("<p>Second</p>"));
+    assert!(first.is_some() && first < second, "{text}");
+}
+
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_xps_documents_as_tikas_path_does() {

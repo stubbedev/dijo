@@ -361,18 +361,28 @@ fn leaves_xor_obfuscated_workbooks_to_tika() {
     ));
 }
 
+/// A workbook encrypted after a `WRITEPROTECT` of two bytes is decrypted from where its
+/// records are, where POI measures that record as four bytes and decrypts out of step (#119).
 #[test]
-fn leaves_workbooks_poi_decrypts_out_of_step_to_tika() {
+fn decrypts_from_where_the_encrypted_records_are() {
+    use crate::formats::crypt::{BinaryRc4, EncryptionInfo, DEFAULT_PASSWORD};
+    let rc4 = BinaryRc4::encrypting(DEFAULT_PASSWORD);
+    let mut file_pass = 1u16.to_le_bytes().to_vec();
+    file_pass.extend(rc4.written());
     let mut stream = bof(0x05);
     stream.extend(record(sid::WRITE_PROTECT, &[0, 0]));
-    let mut file_pass = 1u16.to_le_bytes().to_vec();
-    file_pass.extend([1, 0, 1, 0]);
-    file_pass.extend([0; 48]);
     stream.extend(record(sid::FILE_PASS, &file_pass));
-    assert!(matches!(
-        read(&stream),
-        Err(Declined::Deferred(reason)) if reason.contains("out of step")
-    ));
+    let encrypted = stream.len();
+    stream.extend(extended_format(0));
+    let mut hidden = vec![0, 0, 0, 0, 1, 0, 1, 0];
+    hidden.push(b'H');
+    stream.extend(record(sid::BOUND_SHEET, &hidden));
+    stream.extend(record(sid::EOF, &[]));
+    let keys = EncryptionInfo::BinaryRc4(rc4)
+        .verify(DEFAULT_PASSWORD)
+        .unwrap();
+    factory::decrypt_records(&keys, &mut stream, encrypted);
+    assert_eq!(read(&stream).unwrap().hidden_sheets, ["H"]);
 }
 
 #[test]

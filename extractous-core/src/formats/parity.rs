@@ -1046,6 +1046,82 @@ pub(crate) enum Departure<'a> {
 #[cfg(feature = "tika")]
 pub(crate) type Departures<'a> = &'a [Departure<'a>];
 
+#[cfg(feature = "tika")]
+/// The divs native parsers write around the parts Tika's path reads with a handler that never
+/// writes the div it is handed: those of a presentation's layouts, notes, masters, diagrams and
+/// charts (#102), and of a workbook's diagrams and charts (#93). Wherever Tika's XHTML of a
+/// document has none of one of them, the native XHTML's, of the document and of every document
+/// it embeds, are taken out, with the line break that ends each.
+pub(crate) const UNWRITTEN_DIVS: [&str; 7] = [
+    "<div class=\"slide-master-content\">",
+    "<div class=\"slide-notes\">",
+    "<div class=\"slide-notes-master\">",
+    "<div class=\"slide-master\">",
+    "<div class=\"slide-handout-master\">",
+    "<div class=\"diagram-data\">",
+    "<div class=\"chart\">",
+];
+
+#[cfg(feature = "tika")]
+/// The native XHTML `native` without the [`UNWRITTEN_DIVS`] that Tika's XHTML `tika` does not
+/// have where the native one does, found by reading both alike up to each, each with the line
+/// breaks that end it; and how many line breaks that takes out.
+fn without_unwritten(native: &str, tika: &str) -> (String, usize) {
+    let unwritten = |at: usize| {
+        UNWRITTEN_DIVS.iter().copied().find(|div| {
+            let rest = &native[at..];
+            rest.starts_with(div)
+                || rest.starts_with(div.trim_end_matches('>'))
+                    && rest[div.len() - 1..].starts_with(" />")
+        })
+    };
+    let (native_bytes, tika_bytes) = (native.as_bytes(), tika.as_bytes());
+    let mut kept = Vec::with_capacity(native.len());
+    let (mut at, mut tika_at, mut line_breaks) = (0, 0, 0);
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    let mut stripped = false;
+    while at < native_bytes.len() {
+        if let Some(index) = ends.iter().position(|&(start, _)| start == at) {
+            at = ends.swap_remove(index).1;
+            stripped = true;
+            continue;
+        }
+        let byte = native_bytes[at];
+        let div = (byte == b'<').then(|| unwritten(at)).flatten();
+        let tika_has = |div: &str| {
+            tika.get(tika_at..)
+                .is_some_and(|rest| rest.starts_with(div.trim_end_matches('>')))
+        };
+        if let Some(div) = div.filter(|div| !tika_has(div)) {
+            match element_end(native, at, div) {
+                Some((end, None)) => at = end,
+                Some((end, Some(close))) => {
+                    ends.push((close, end));
+                    at += div.len();
+                }
+                None => at += div.len(),
+            }
+            stripped = true;
+            continue;
+        }
+        if tika_bytes.get(tika_at) == Some(&byte) {
+            kept.push(byte);
+            (at, tika_at, stripped) = (at + 1, tika_at + 1, false);
+            continue;
+        }
+        if stripped && byte == b'\n' {
+            at += 1;
+            line_breaks += 1;
+            continue;
+        }
+        kept.push(byte);
+        at += 1;
+        stripped = false;
+    }
+    let kept = String::from_utf8(kept).expect("whole characters of the native XHTML");
+    (kept, line_breaks)
+}
+
 /// What stands for a value a departure leaves uncompared.
 #[cfg(feature = "tika")]
 const DEPARTED: &str = "<departed>";
@@ -1189,17 +1265,47 @@ pub(crate) fn assert_same_as_tika_adjusting(
     compare(documents, configs, expected, None, adjustments);
 }
 
+#[cfg(feature = "tika")]
+/// [`assert_same_as_tika_adjusting`], with each native result rewritten by `rewrite` before
+/// it is compared.
+pub(crate) fn assert_same_as_tika_adjusting_rewriting(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+    adjustments: Adjustments,
+    rewrite: NativeRewrite,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures: &[],
+    });
+    compare(
+        documents,
+        configs,
+        expected,
+        Some((rewrite, None)),
+        adjustments,
+    );
+}
+
 /// Tika's and the native result without their `adjustments` from each other: the metadata
 /// Tika's path leaves unset, with its `meta` element in the XHTML head, the native wrappers,
 /// Tika's repeated elements, and `line_breaks`, those the XHTML says the native parser adds,
-/// where they are its only other difference.
+/// where they are its only other difference; and the [`UNWRITTEN_DIVS`] of the native XHTML,
+/// or, in the text of a document with `unwritten` line breaks after them, the line breaks it
+/// has more than Tika's, any of them where the length limit cut it. The text ends a block with
+/// line breaks of its own, as many as the XHTML or more, so their count is not the XHTML's.
+#[allow(clippy::too_many_arguments)]
 #[cfg(feature = "tika")]
 fn without_adjustments(
     mut tika: Extracted,
     mut native: Extracted,
     char_set: CharSet,
+    output: Output,
     cut: Option<Output>,
     line_breaks: usize,
+    unwritten: usize,
     adjustments: Adjustments,
 ) -> (Extracted, Extracted) {
     let unset: Vec<&str> = adjustments
@@ -1268,6 +1374,24 @@ fn without_adjustments(
             }
         }
     }
+    let line_breaks = match output {
+        Output::Xml => {
+            let (stripped, unwritten) = without_unwritten(&native_text, &tika_text);
+            native_text = stripped;
+            spent += unwritten;
+            line_breaks
+        }
+        Output::Text if unwritten > 0 => {
+            let native_breaks = native_text.matches('\n').count();
+            match cut {
+                Some(_) => native_breaks,
+                None => {
+                    line_breaks.max(native_breaks.saturating_sub(tika_text.matches('\n').count()))
+                }
+            }
+        }
+        Output::Text => line_breaks,
+    };
     let text = without_line_breaks(&native_text, &tika_text, cut, line_breaks, spent)
         .unwrap_or(native_text);
     native.text = encoded_as(&text, char_set);
@@ -1283,39 +1407,77 @@ fn encoded_as(text: &str, char_set: CharSet) -> Vec<u8> {
     }
 }
 
-/// `xhtml` without each element that starts with `start`, its content kept: the start tag and
-/// the end tag that matches it.
+/// Where the element that starts with `start` at `at` of `xhtml` ends: past its empty tag, or
+/// past the end tag that matches its start tag, with the start of that end tag; none where the
+/// length limit cut it.
 #[cfg(feature = "tika")]
-fn without_wrapper(xhtml: &str, start: &str) -> String {
+fn element_end(xhtml: &str, at: usize, start: &str) -> Option<(usize, Option<usize>)> {
+    if let Some(attributes) = start.strip_suffix('>') {
+        let empty = format!("{attributes} />");
+        if xhtml[at..].starts_with(&empty) {
+            return Some((at + empty.len(), None));
+        }
+    }
     let name: String = start
         .trim_start_matches('<')
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric())
         .collect();
     let (open, close) = (format!("<{name}"), format!("</{name}>"));
-    let mut text = xhtml.to_owned();
-    while let Some(at) = text.find(start) {
-        let mut depth = 0;
-        let mut index = at + start.len();
-        let end = loop {
-            let next_open = text[index..].find(&open).map(|found| index + found);
-            let Some(next_close) = text[index..].find(&close).map(|found| index + found) else {
-                return text;
-            };
-            match next_open {
-                Some(next_open) if next_open < next_close => {
+    let mut depth = 0;
+    let mut index = at + start.len();
+    loop {
+        let next_open = xhtml[index..].find(&open).map(|found| index + found);
+        let next_close = xhtml[index..].find(&close).map(|found| index + found)?;
+        match next_open {
+            Some(next_open) if next_open < next_close => {
+                let tag_end = xhtml[next_open..]
+                    .find('>')
+                    .map(|found| next_open + found)?;
+                if !xhtml[..tag_end].ends_with('/') {
                     depth += 1;
-                    index = next_open + open.len();
                 }
-                _ if depth > 0 => {
-                    depth -= 1;
-                    index = next_close + close.len();
-                }
-                _ => break next_close,
+                index = tag_end + 1;
             }
-        };
-        text.replace_range(end..end + close.len(), "");
-        text.replace_range(at..at + start.len(), "");
+            _ if depth > 0 => {
+                depth -= 1;
+                index = next_close + close.len();
+            }
+            _ => return Some((next_close + close.len(), Some(next_close))),
+        }
+    }
+}
+
+/// `xhtml` without each element that starts with `start`, its content kept: the start tag and
+/// the end tag that matches it, or the start tag alone where the length limit cut the element,
+/// and the whole element where it is empty.
+#[cfg(feature = "tika")]
+fn without_wrapper(xhtml: &str, start: &str) -> String {
+    let empty = start
+        .strip_suffix('>')
+        .map(|attributes| format!("{attributes} />"));
+    let mut text = xhtml.to_owned();
+    let mut from = 0;
+    while let Some(at) = text[from..]
+        .find(start.trim_end_matches('>'))
+        .map(|at| from + at)
+    {
+        let is_empty = empty
+            .as_ref()
+            .is_some_and(|empty| text[at..].starts_with(empty));
+        if !is_empty && !text[at..].starts_with(start) {
+            from = at + 1;
+            continue;
+        }
+        match element_end(&text, at, start) {
+            Some((end, None)) => text.replace_range(at..end, ""),
+            Some((end, Some(close))) => {
+                text.replace_range(close..end, "");
+                text.replace_range(at..at + start.len(), "");
+            }
+            None => text.replace_range(at..at + start.len(), ""),
+        }
+        from = at;
     }
     text
 }
@@ -1860,7 +2022,8 @@ pub(crate) fn without_doubled_breaks(xhtml: &str) -> String {
 /// Asserts that the native parser of each document, which Tika's path parses with
 /// `tika_name`, streams the UTF-8 XHTML and metadata Tika's path does under the settings
 /// `configs`, once `tika_as_native` has made Tika's XHTML what the native path writes on
-/// purpose. Its other outputs are not compared.
+/// purpose, and the native XHTML is without the [`UNWRITTEN_DIVS`] Tika's has not. Its other
+/// outputs are not compared.
 #[cfg(feature = "tika")]
 pub(crate) fn assert_same_xhtml_as_tika_with(
     documents: &[&Path],
@@ -1883,6 +2046,17 @@ pub(crate) fn assert_same_xhtml_as_tika_with(
                 Err(_) => tika,
             }
         });
+        let native = match (native, &tika) {
+            (Ok(mut native), Ok(tika)) => {
+                let (native_text, tika_text) = (
+                    std::str::from_utf8(&native.text).expect("UTF-8"),
+                    std::str::from_utf8(&tika.text).expect("UTF-8"),
+                );
+                native.text = without_unwritten(native_text, tika_text).0.into_bytes();
+                Ok(native)
+            }
+            (native, _) => native,
+        };
         if tika != native {
             differences.push(format!(
                 "{path}:\n  tika   {}\n  native {}",
@@ -1951,16 +2125,18 @@ fn compare(
                 .collect(),
         };
         comparisons.extend(rest.into_iter().map(|way| extracted(path, configs, way)));
-        let line_breaks = match (
-            &comparisons[0].3,
-            &comparisons[0].4,
-            adjustments.line_breaks,
-        ) {
-            (Ok(tika), Ok(native), Some(count)) => count(
-                &String::from_utf8_lossy(&tika.text),
-                &String::from_utf8_lossy(&native.text),
-            ),
-            _ => 0,
+        let (line_breaks, unwritten) = match (&comparisons[0].3, &comparisons[0].4) {
+            (Ok(tika), Ok(native)) => {
+                let (tika, native) = (
+                    String::from_utf8_lossy(&tika.text),
+                    String::from_utf8_lossy(&native.text),
+                );
+                let adjusted = adjustments
+                    .line_breaks
+                    .map_or(0, |line_breaks| line_breaks(&tika, &native));
+                (adjusted, without_unwritten(&native, &tika).1)
+            }
+            _ => (0, 0),
         };
         let unset_breaks = match (&expected, &comparisons[0].3) {
             (Expected::Same(naming), Ok(tika)) => {
@@ -2041,8 +2217,10 @@ fn compare(
                         tika,
                         native,
                         char_set,
+                        output,
                         (entry == "string").then_some(output),
                         line_breaks,
+                        unwritten,
                         adjustments,
                     );
                     if tika == native {
@@ -2254,30 +2432,49 @@ const COMPOUND_FILE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 
 /// The files the native path spooled, with each embedded OLE storage that Tika's path spooled
 /// empty taken as Tika's: Tika hands `EmbeddedSpooler` the storage as an opened container, whose
 /// stream holds no bytes, while the native path writes the storage as a compound file, or
-/// nothing but a cut where the budget is spent.
+/// nothing but a cut where the budget is spent (#116). The bytes those take of the budget move
+/// where it cuts the files after them: a file the native path cut sooner, by no more than those
+/// bytes left over, is taken as Tika's where Tika's starts with it.
 #[cfg(feature = "tika")]
 fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
+    let mut moved = 0u64;
     native
         .into_iter()
         .enumerate()
-        .map(|(index, native)| match tika.get(index) {
-            Some(tika)
-                if tika.size == 0
-                    && !tika.truncated
-                    && tika.name == native.name
-                    && tika.content_type == native.content_type
-                    && tika.file == native.file
-                    && (native.content.starts_with(&COMPOUND_FILE_MAGIC)
-                        || (native.truncated && native.content.is_empty())) =>
-            {
-                Spooled {
+        .map(|(index, native)| {
+            let Some(tika) = tika.get(index) else {
+                return native;
+            };
+            let same_file = tika.name == native.name
+                && tika.content_type == native.content_type
+                && tika.file == native.file;
+            let storage = tika.size == 0
+                && !tika.truncated
+                && (native.content.starts_with(&COMPOUND_FILE_MAGIC)
+                    || (native.truncated && native.content.is_empty()));
+            if same_file && storage {
+                moved += native.size;
+                return Spooled {
                     size: 0,
                     truncated: false,
                     content: Vec::new(),
                     ..native
-                }
+                };
             }
-            _ => native,
+            let cut_sooner = native.truncated
+                && tika.size > native.size
+                && tika.size - native.size <= moved
+                && tika.content.starts_with(&native.content);
+            if same_file && cut_sooner {
+                moved -= tika.size - native.size;
+                return Spooled {
+                    size: tika.size,
+                    truncated: tika.truncated,
+                    content: tika.content.clone(),
+                    ..native
+                };
+            }
+            native
         })
         .collect()
 }
@@ -2499,6 +2696,12 @@ fn spools_as_tika_under(
             let (mut tika_extracted, mut native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
             with_native_failures_masked(&mut tika_extracted, &mut native_extracted);
+            native_extracted.text = without_unwritten(
+                &String::from_utf8_lossy(&native_extracted.text),
+                &String::from_utf8_lossy(&tika_extracted.text),
+            )
+            .0
+            .into_bytes();
             let line_breaks = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::LineBreaks(_)));

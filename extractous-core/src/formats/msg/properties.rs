@@ -56,12 +56,20 @@ impl PropertySet {
     }
 }
 
-/// Reads a properties stream: a message's after a header of 24 bytes, 32 where it is no
-/// embedded message's, a storage's after 8, `message` saying which and whether embedded.
+/// The properties stream of a message, a recipient or an attachment.
+pub(super) const PROPERTIES: &str = "__properties_version1.0";
+/// The length of the header of a message's properties stream.
+pub(super) const MESSAGE_HEADER: usize = 32;
+/// The length of the header of the properties stream of a message embedded in another, which
+/// lacks the last reserved eight bytes of a message's.
+pub(super) const EMBEDDED_MESSAGE_HEADER: usize = 24;
+
+/// Reads a properties stream: a message's after its header, an embedded message's after its
+/// shorter one, a storage's after 8 bytes, `message` saying which and whether embedded.
 pub(super) fn read_properties(data: &[u8], message: Option<bool>) -> PropertySet {
     let header = match message {
-        Some(true) => 24,
-        Some(false) => 32,
+        Some(true) => EMBEDDED_MESSAGE_HEADER,
+        Some(false) => MESSAGE_HEADER,
         None => 8,
     };
     let mut set = PropertySet::default();

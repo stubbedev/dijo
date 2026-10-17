@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 #[cfg(feature = "tika")]
-use crate::formats::parity;
+use crate::config::OfficeParserConfig;
 #[cfg(feature = "tika")]
-use crate::formats::parity::assert_same_as_tika_with_passwords;
+use crate::formats::parity::{self, assert_same_as_tika_with, assert_same_as_tika_with_passwords};
 
 #[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
@@ -81,6 +81,110 @@ fn without_departures(documents: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 #[cfg(feature = "tika")]
+/// The paragraphs of the text boxes anchored in the main text of the Word 97 document at
+/// `path`, which the native parser writes before the paragraph of their anchor where Tika
+/// writes them after the main text (#111).
+fn anchored_textboxes(path: &Path) -> Vec<String> {
+    let input = std::fs::read(path).unwrap();
+    let configs = ParserConfigs::default();
+    let file = office::open(&input, &configs, MEDIA_TYPE, "Word document").unwrap();
+    let Ok(Word::Modern(document)) = Document::read(&file, file.root(), &configs) else {
+        return Vec::new();
+    };
+    let anchored = document.anchored_textboxes().unwrap();
+    let (start, end) = document.story(fib::Story::Textbox);
+    let story = document.range(start, end).unwrap();
+    let mut paragraphs = Vec::new();
+    for index in 0..document.paragraph_count(story).unwrap() {
+        let paragraph = document.paragraph(story, index).unwrap();
+        let span = paragraph.span;
+        if anchored
+            .iter()
+            .any(|(_, textbox)| span.start >= textbox.start && span.start < textbox.end)
+        {
+            let text = extractor::strip_fields(document.text_of(span).unwrap()).unwrap();
+            let text = String::from_utf16_lossy(&extractor::clean(&text));
+            let text = text.trim();
+            if !text.is_empty() {
+                paragraphs.push(text.to_owned());
+            }
+        }
+    }
+    paragraphs
+}
+
+#[cfg(feature = "tika")]
+/// Of `documents`, those whose text boxes are anchored in the main text, after checking that
+/// the native text holds each of their paragraphs, compared with Tika's path without the text
+/// boxes: the setting that leaves them out leaves out what the native parser moves, and nothing
+/// else (#111).
+fn with_anchored_textboxes(documents: &[PathBuf]) -> Vec<PathBuf> {
+    let mut anchored = Vec::new();
+    for document in documents {
+        let paragraphs = anchored_textboxes(document);
+        if paragraphs.is_empty() {
+            continue;
+        }
+        let (text, _) = crate::Extractor::new()
+            .extract_file_to_string(document.to_str().unwrap())
+            .unwrap();
+        for paragraph in &paragraphs {
+            assert!(
+                text.contains(paragraph.as_str()),
+                "{paragraph:?} in\n{text}"
+            );
+        }
+        anchored.push(document.clone());
+    }
+    anchored
+}
+
+#[cfg(feature = "tika")]
+/// The settings documents with anchored text boxes are compared under.
+fn without_textboxes() -> ParserConfigs {
+    ParserConfigs {
+        office: OfficeParserConfig::new().set_include_shape_based_content(false),
+        ..ParserConfigs::default()
+    }
+}
+
+#[cfg(feature = "tika")]
+/// Compares `documents` with Tika's path, those with anchored text boxes without the text
+/// boxes, and checks that `textboxes` of them have such text boxes.
+fn assert_same_as_tika(documents: &[PathBuf], textboxes: usize) {
+    let anchored = with_anchored_textboxes(documents);
+    assert_eq!(anchored.len(), textboxes, "{anchored:?}");
+    let others: Vec<PathBuf> = documents
+        .iter()
+        .filter(|document| !anchored.contains(document))
+        .cloned()
+        .collect();
+    assert_same_as_tika_with_passwords(&others, TIKA_PARSER, &ENCRYPTED);
+    let anchored: Vec<&Path> = anchored.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_with(&anchored, TIKA_PARSER, &without_textboxes());
+}
+
+#[cfg(feature = "tika")]
+/// A text box is written before the paragraph its anchor is in (#111).
+#[test]
+fn writes_a_text_box_where_it_is_anchored() {
+    let path = Path::new("../quality/corpus/notes.doc");
+    assert_eq!(
+        anchored_textboxes(path),
+        ["Sidebar: the tower was painted white in 1921."]
+    );
+    let (text, _) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    let at = |part: &str| {
+        text.find(part)
+            .unwrap_or_else(|| panic!("{part:?} in {text}"))
+    };
+    assert!(at("The Keeper's Notes") < at("Sidebar:"), "{text}");
+    assert!(at("Sidebar:") < at("The keeper wrote"), "{text}");
+}
+
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
@@ -148,7 +252,7 @@ fn extracts_what_tikas_path_extracts_from_the_repositorys_documents() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
     let ported = ported(&corpus(&roots));
     assert_eq!(ported.len(), 5);
-    assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+    assert_same_as_tika(&ported, 1);
 }
 
 #[cfg(feature = "tika")]
@@ -159,5 +263,5 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     assert_eq!(ported.len(), 42);
     let alike = without_departures(&ported);
     assert_eq!(ported.len() - alike.len(), DEPARTURES.len());
-    assert_same_as_tika_with_passwords(&alike, TIKA_PARSER, &ENCRYPTED);
+    assert_same_as_tika(&alike, 2);
 }

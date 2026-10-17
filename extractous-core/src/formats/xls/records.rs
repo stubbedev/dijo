@@ -411,21 +411,6 @@ impl Cached {
     }
 }
 
-/// The text of an error code, as POI's `FormulaError` names it; `None` for a code it lacks.
-pub(super) fn error_text(code: u8) -> Option<&'static str> {
-    Some(match code {
-        0x00 => "#NULL!",
-        0x07 => "#DIV/0!",
-        0x0F => "#VALUE!",
-        0x17 => "#REF!",
-        0x1D => "#NAME?",
-        0x24 => "#NUM!",
-        0x2A => "#N/A",
-        0x2B => "#GETTING_DATA",
-        _ => return None,
-    })
-}
-
 /// `RKUtil.decodeNumber`.
 pub(super) fn decode_rk(number: i32) -> f64 {
     let raw = i64::from(number) >> 2;

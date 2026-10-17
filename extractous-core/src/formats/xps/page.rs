@@ -270,7 +270,7 @@ impl SaxHandler for PageHandler {
 
     fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
         match local_name {
-            "Canvas" => {
+            "Canvas" | "VisualBrush" => {
                 self.canvas_stack.pop();
             }
             "Path" => {
@@ -338,12 +338,13 @@ fn compare_floats(a: f32, b: f32) -> std::cmp::Ordering {
 
 /// `buildRows`: each run in the row whose last run is closest in height, unless its first run
 /// is too far, and then in a row of its own, the rows sorted by height when a new row starts
-/// above the lowest yet.
+/// above the lowest yet. The first run counts towards the lowest, where Tika's does not (#127).
 fn build_rows(runs: Vec<GlyphRun>) -> Result<Vec<Vec<GlyphRun>>, Failure> {
     let mut rows: Vec<Vec<GlyphRun>> = Vec::new();
-    let mut max_y = -1.0f32;
+    let mut max_y: Option<f32> = None;
     for run in runs {
         if rows.is_empty() {
+            max_y = Some(run.origin_y);
             rows.push(vec![run]);
             continue;
         }
@@ -362,7 +363,7 @@ fn build_rows(runs: Vec<GlyphRun>) -> Result<Vec<Vec<GlyphRun>>, Failure> {
             rows.push(vec![run]);
             added_row = true;
         }
-        if max_y > -1.0 && added_row && origin_y < max_y {
+        if added_row && max_y.is_some_and(|max_y| origin_y < max_y) {
             if rows.iter().any(|row| row[0].origin_y.is_nan()) {
                 return Err(Failure::Malformed(
                     "rows of no height, which Java's sort orders as it finds them".to_owned(),
@@ -374,8 +375,8 @@ fn build_rows(runs: Vec<GlyphRun>) -> Result<Vec<Vec<GlyphRun>>, Failure> {
                     .expect("heights that are numbers")
             });
         }
-        if origin_y > max_y {
-            max_y = origin_y;
+        if max_y.is_some_and(|max_y| origin_y > max_y) {
+            max_y = Some(origin_y);
         }
     }
     Ok(rows)
@@ -432,8 +433,8 @@ fn substring(text: &[u16], start: usize, end: usize) -> Result<Vec<u16>, Failure
 }
 
 /// `splitRow`: each left-to-right run split after each glyph that advances more than the split
-/// threshold. The glyph a run is split after keeps no advance in the part before, which shares
-/// the advances with what follows; the scan goes on from the second glyph of what follows.
+/// threshold, the glyph keeping no advance in the part before. The scan goes on from the first
+/// glyph of what follows, where Tika's skips it (#127).
 fn split_row(row: Vec<GlyphRun>) -> Result<Vec<GlyphRun>, Failure> {
     let mut split = Vec::with_capacity(row.len());
     for run in row {
@@ -459,6 +460,7 @@ fn split_row(row: Vec<GlyphRun>) -> Result<Vec<GlyphRun>, Failure> {
                 text = after;
                 i = 0;
                 width = 0.0;
+                continue;
             }
             i += 1;
         }
@@ -528,12 +530,19 @@ mod tests {
     }
 
     #[test]
+    fn splits_after_a_wide_advance_at_the_start_of_what_follows_a_split() {
+        let split = split_row(vec![run("a b", 0.0, 0.0, &[2.0, 2.0, 0.5])]).unwrap();
+        assert_eq!(texts(&split), ["a", " ", "b"]);
+        assert_eq!(split[2].origin_x, 40.0);
+    }
+
+    #[test]
     fn fails_where_the_advances_outrun_the_text() {
         assert!(split_row(vec![run("a", 0.0, 0.0, &[0.5, 2.0, 0.5, 0.5])]).is_err());
     }
 
     #[test]
-    fn rows_runs_by_height_and_sorts_rows_started_above_the_lowest_after_the_first() {
+    fn rows_runs_by_height_and_sorts_rows_started_above_the_lowest() {
         let rows = |runs: Vec<GlyphRun>| -> Vec<Vec<String>> {
             build_rows(runs)
                 .unwrap()
@@ -541,12 +550,12 @@ mod tests {
                 .map(|row| texts(row))
                 .collect()
         };
-        let first_unsorted = rows(vec![
+        let below_the_first = rows(vec![
             run("low", 0.0, 100.0, &[]),
             run("high", 0.0, 10.0, &[]),
             run("low too", 50.0, 102.0, &[]),
         ]);
-        assert_eq!(first_unsorted, [vec!["low", "low too"], vec!["high"]]);
+        assert_eq!(below_the_first, [vec!["high"], vec!["low", "low too"]]);
         let sorted = rows(vec![
             run("middle", 0.0, 50.0, &[]),
             run("low", 0.0, 100.0, &[]),

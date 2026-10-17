@@ -410,8 +410,6 @@ struct Header {
     cipher: Cipher,
     hash: Hash,
     key_bits: i32,
-    /// The UTF-16 units of the CSP name, before its terminator.
-    csp_units: usize,
 }
 
 impl Header {
@@ -436,17 +434,13 @@ impl Header {
             at: input.at,
         }
         .i32()?;
-        let mut csp_units = 0;
         if check_for_salt != 16 {
-            while input.u16()? != 0 {
-                csp_units += 1;
-            }
+            while input.u16()? != 0 {}
         }
         Ok(Header {
             cipher,
             hash,
             key_bits,
-            csp_units,
         })
     }
 }
@@ -562,15 +556,6 @@ impl BlockKeys for Rc4Keys {
 }
 
 impl EncryptionInfo {
-    /// The length POI writes the info in (`FilePassRecord.getDataSize` past its type), which
-    /// a workbook measures its first records with: an absent CSP name written empty.
-    pub(crate) fn written_length(&self) -> usize {
-        match self {
-            EncryptionInfo::BinaryRc4(_) => 4 + 48,
-            EncryptionInfo::CryptoApi(api) => 4 + 4 + 4 + 32 + 2 * api.csp_units + 2 + 60,
-        }
-    }
-
     /// `Decryptor.verifyPassword`: the key, where the password opens the encryption.
     pub(crate) fn verify(&self, password: &str) -> Option<Rc4Keys> {
         match self {
@@ -615,6 +600,38 @@ impl BinaryRc4 {
     }
 }
 
+#[cfg(test)]
+impl BinaryRc4 {
+    /// Binary RC4's encryption of a verifier with `password`, as Office writes it.
+    pub(crate) fn encrypting(password: &str) -> BinaryRc4 {
+        let salt = [9u8; 16];
+        let hashed = Hash::Md5.digest(&[&password_bytes(password, Some(MAX_PASSWORD_UNITS))]);
+        let mut repeated = Vec::new();
+        for _ in 0..16 {
+            repeated.extend_from_slice(&hashed[..5]);
+            repeated.extend_from_slice(&salt);
+        }
+        let key = BinaryRc4Key(Hash::Md5.digest(&[&repeated])[..5].to_vec());
+        let mut encrypted = [4u8; 16].to_vec();
+        encrypted.extend(Hash::Md5.digest(&[&[4u8; 16]]));
+        key.block(0).decrypt(&mut encrypted);
+        BinaryRc4 {
+            salt,
+            verifier: encrypted[..16].try_into().unwrap(),
+            verifier_hash: encrypted[16..].try_into().unwrap(),
+        }
+    }
+
+    /// The encryption as a document writes it: its version, 1.1, then its salt and verifier.
+    pub(crate) fn written(&self) -> Vec<u8> {
+        let mut written = vec![1, 0, 1, 0];
+        written.extend(self.salt);
+        written.extend(self.verifier);
+        written.extend(self.verifier_hash);
+        written
+    }
+}
+
 /// The secret key of binary RC4.
 #[derive(Debug, Clone)]
 pub(crate) struct BinaryRc4Key(Vec<u8>);
@@ -631,7 +648,6 @@ impl BlockKeys for BinaryRc4Key {
 pub(crate) struct CryptoApi {
     hash: Hash,
     key_bits: i32,
-    csp_units: usize,
     verifier: Verifier,
 }
 
@@ -646,7 +662,6 @@ impl CryptoApi {
         Ok(CryptoApi {
             hash: header.hash,
             key_bits: header.key_bits,
-            csp_units: header.csp_units,
             verifier,
         })
     }
@@ -861,7 +876,6 @@ mod tests {
         CryptoApi {
             hash: Hash::Sha1,
             key_bits,
-            csp_units: 0,
             verifier: Verifier {
                 salt,
                 verifier: encrypted[..16].try_into().unwrap(),
@@ -954,29 +968,9 @@ mod tests {
         ));
     }
 
-    /// Binary RC4's encryption of a verifier with `password`, as Office writes it.
-    fn binary_rc4(password: &str) -> BinaryRc4 {
-        let salt = [9u8; 16];
-        let hashed = Hash::Md5.digest(&[&password_bytes(password, Some(MAX_PASSWORD_UNITS))]);
-        let mut repeated = Vec::new();
-        for _ in 0..16 {
-            repeated.extend_from_slice(&hashed[..5]);
-            repeated.extend_from_slice(&salt);
-        }
-        let key = BinaryRc4Key(Hash::Md5.digest(&[&repeated])[..5].to_vec());
-        let mut encrypted = [4u8; 16].to_vec();
-        encrypted.extend(Hash::Md5.digest(&[&[4u8; 16]]));
-        key.block(0).decrypt(&mut encrypted);
-        BinaryRc4 {
-            salt,
-            verifier: encrypted[..16].try_into().unwrap(),
-            verifier_hash: encrypted[16..].try_into().unwrap(),
-        }
-    }
-
     #[test]
     fn opens_binary_rc4_with_the_right_password_only() {
-        let rc4 = binary_rc4("pw");
+        let rc4 = BinaryRc4::encrypting("pw");
         assert!(rc4.verify("pw").is_some());
         assert!(rc4.verify("other").is_none());
     }

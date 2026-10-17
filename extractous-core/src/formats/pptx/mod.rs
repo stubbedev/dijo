@@ -31,7 +31,6 @@ use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 use crate::java::is_blank;
-use crate::java::JavaHashMap;
 
 /// Relationship types, as POI's `XSLFRelation` and Tika name them.
 mod kind {
@@ -356,7 +355,7 @@ impl<'a> Presentation<'a> {
             .metadata_mut()
             .add(name::PARSED_BY, POWERPOINT_EXTRACTOR);
         properties.write(xhtml.metadata_mut());
-        for name in authors.names.iter().map(|(_, name)| name) {
+        for name in &authors.names {
             if !is_blank(name) {
                 xhtml
                     .metadata_mut()
@@ -457,20 +456,17 @@ impl<'a> Presentation<'a> {
             }
         }
         let mut comments = Comments::new(xhtml, authors);
-        extractor::write_general_text_parts(
-            &self.package,
-            slide,
-            kind::COMMENTS,
-            "",
-            &mut comments,
-        )?;
+        for part in self.related(slide, kind::COMMENTS) {
+            extractor::write_general_text_part(&self.package, part, &mut comments)?;
+        }
         self.write_text_part(kind::DIAGRAM_DATA, "diagram-data", slide, false, xhtml)?;
         self.write_text_part(kind::CHART, "chart", slide, false, xhtml)?;
         Ok(hidden)
     }
 
     /// `handleGeneralTextContainingPart` with the text handler, behind a `PlaceHolderSkipper`
-    /// when `skip_placeholders`, each part resolving links by its own relationships.
+    /// when `skip_placeholders`, in a div of the class `label`, each part resolving links by its
+    /// own relationships. Tika hands the div to the text handler, which never writes it (#102).
     fn write_text_part(
         &self,
         kind: &str,
@@ -479,35 +475,31 @@ impl<'a> Presentation<'a> {
         skip_placeholders: bool,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        let links: HashMap<usize, HashMap<String, String>> = self
+        let parts: Vec<(usize, HashMap<String, String>)> = self
             .related(parent, kind)
             .into_iter()
             .map(|part| (part, self.links(part)))
             .collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
+        xhtml.start_element_with("div", &[("class", label)])?;
         let none = HashMap::new();
         let mut lists = ListManager::default();
         let inline = InlineParts::default();
         let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
         let mut handler = TextHandler::new(body, &none, TextOptions::default());
-        if !skip_placeholders {
-            return extractor::write_general_text_parts_each(
-                &self.package,
-                parent,
-                kind,
-                label,
-                &mut handler,
-                |handler, part| handler.set_relationships(&links[&part]),
-            );
+        for (part, links) in &parts {
+            handler.set_relationships(links);
+            if skip_placeholders {
+                let mut skipper = PlaceHolderSkipper::new(&mut handler);
+                extractor::write_general_text_part(&self.package, *part, &mut skipper)?;
+            } else {
+                extractor::write_general_text_part(&self.package, *part, &mut handler)?;
+            }
         }
-        let mut skipper = PlaceHolderSkipper::new(&mut handler);
-        extractor::write_general_text_parts_each(
-            &self.package,
-            parent,
-            kind,
-            label,
-            &mut skipper,
-            |skipper, part| skipper.inner.set_relationships(&links[&part]),
-        )
+        drop(handler);
+        Ok(xhtml.end_element("div")?)
     }
 }
 
@@ -526,11 +518,29 @@ impl Read<'_> {
     }
 }
 
-/// `CommentAuthors`: the names and initials of the authors of comments, by id.
+/// `CommentAuthors`: the names and initials of the authors of comments, by id, the names in the
+/// order the part first gives their ids. Tika keeps the names in Java `HashMap` order (#102).
 #[derive(Default)]
 struct CommentAuthors {
-    names: JavaHashMap<String>,
+    names: Vec<String>,
+    name_at: HashMap<String, usize>,
     initials: HashMap<String, String>,
+}
+
+impl CommentAuthors {
+    fn set_name(&mut self, id: String, name: String) {
+        match self.name_at.get(&id) {
+            Some(&at) => self.names[at] = name,
+            None => {
+                self.name_at.insert(id, self.names.len());
+                self.names.push(name);
+            }
+        }
+    }
+
+    fn name(&self, id: &str) -> Option<&str> {
+        self.name_at.get(id).map(|&at| self.names[at].as_str())
+    }
 }
 
 /// `XSLFCommentAuthorHandler`.
@@ -554,11 +564,11 @@ impl SaxHandler for CommentAuthors {
         let Some(id) = value("id") else {
             return Ok(());
         };
-        if let Some(name) = value("name") {
-            self.names.insert(&id, name);
-        }
         if let Some(initials) = value("initials") {
-            self.initials.insert(id, initials);
+            self.initials.insert(id.clone(), initials);
+        }
+        if let Some(name) = value("name") {
+            self.set_name(id, name);
         }
         Ok(())
     }
@@ -622,7 +632,7 @@ impl SaxHandler for Comments<'_, '_, '_> {
         self.xhtml
             .start_element_with("p", &[("class", "slide-comment")])?;
         let id = self.author.take();
-        let name = id.as_deref().and_then(|id| self.authors.names.get(id));
+        let name = id.as_deref().and_then(|id| self.authors.name(id));
         let initials = id.as_deref().and_then(|id| self.authors.initials.get(id));
         if name.is_some() || initials.is_some() {
             self.xhtml.start_element("b")?;

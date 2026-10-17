@@ -35,19 +35,16 @@ fn reads_the_text_of_an_excel_95_workbook_as_poi_does() {
     formula.extend([0; 8]);
     stream.extend(record(sid::FORMULA, &formula));
     stream.extend(record(sid::EOF, &[]));
-    assert_eq!(
-        text(&stream).unwrap(),
-        "Sheet: Лис\0\nАБ\n1.5\n7.0\n1.0E20\n"
-    );
+    assert_eq!(text(&stream).unwrap(), "Sheet: Лис\nАБ\n1.5\n7.0\n1.0E20\n");
 }
 
 #[test]
-fn reads_an_excel_2_label_short_of_its_length_as_zeros() {
+fn reads_an_excel_2_label_short_of_its_length_as_far_as_it_goes() {
     let mut stream = bof(old_sid::BOF_BIFF2);
     let mut label = vec![0; 7];
     label.extend([3, b'a']);
     stream.extend(record(old_sid::LABEL_BIFF2, &label));
-    assert_eq!(text(&stream).unwrap(), "a\0\0\n");
+    assert_eq!(text(&stream).unwrap(), "a\n");
 }
 
 #[test]

@@ -1,9 +1,13 @@
 //! Tika's `WordExtractor` over the document POI reads, as extractous runs it: the headers, the
-//! body's paragraphs, tables, lists, fields, hyperlinks and pictures, the text boxes,
-//! footnotes, comments and endnotes as POI's `WordExtractor` gives their paragraphs, the
+//! body's paragraphs, tables, lists, fields, hyperlinks and pictures, each text box anchored in
+//! the body before the paragraph its anchor is in (where Tika writes them after the body, #111),
+//! the other text boxes, footnotes, comments and endnotes as POI's `WordExtractor` gives their
+//! paragraphs, the
 //! footers, the pictures no run claims, the objects of the object pool, and the metadata of the
 //! document's features. Text is cleaned as our `WordText` cleans it, and the paragraphs of the
 //! other stories as our substitute for POI's `getParagraphText` gives them.
+
+use std::collections::VecDeque;
 
 use super::document::Document;
 use super::fib::Story;
@@ -256,6 +260,14 @@ fn hyperlink_end(text: &[u16], start: usize) -> usize {
     text.len()
 }
 
+/// The paragraphs of the text box story: those of each text box anchored in the main text,
+/// with the position of its anchor, in the order of the anchors, and the others.
+#[derive(Default)]
+struct Textboxes {
+    anchored: VecDeque<(i32, Vec<Vec<u16>>)>,
+    unanchored: Vec<Vec<u16>>,
+}
+
 struct Extractor<'d> {
     document: &'d Document,
     file: &'d Ole2<'d>,
@@ -386,19 +398,20 @@ impl Extractor<'_> {
         let (start, end) = document.story(Story::Main);
         let main = document.range(start, end)?;
         let mut lists = ListManager::new();
+        let mut textboxes = if self.config.includes_shape_based_content() {
+            self.textboxes()?
+        } else {
+            Textboxes::default()
+        };
         let mut index = 0;
         while index < document.paragraph_count(main)? {
             let paragraph = document.paragraph(main, index)?;
+            self.anchored_textboxes(&mut textboxes, paragraph.span.end);
             index += self.paragraph(&paragraph, 0, main, Part::Main, &mut lists)?;
             index += 1;
         }
-        if self.config.includes_shape_based_content() {
-            for text in self.story_paragraphs(Story::Textbox)? {
-                if !is_blank(&text) {
-                    self.element("p", text);
-                }
-            }
-        }
+        self.anchored_textboxes(&mut textboxes, i32::MAX);
+        self.textbox_paragraphs(textboxes.unanchored);
         for text in self.story_paragraphs(Story::Footnote)? {
             if !is_blank(&text) {
                 self.element("p", text);
@@ -429,15 +442,78 @@ impl Extractor<'_> {
     /// Our `WordExtractor.getParagraphText(range)` of a story: each paragraph's text with its
     /// fields' codes stripped, cleaned.
     fn story_paragraphs(&self, story: Story) -> Read<Vec<Vec<u16>>> {
+        Ok(self
+            .story_paragraph_spans(story)?
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect())
+    }
+
+    /// [`Extractor::story_paragraphs`], each paragraph with its range of the text.
+    fn story_paragraph_spans(&self, story: Story) -> Read<Vec<(Span, Vec<u16>)>> {
         let document = self.document;
         let (start, end) = document.story(story);
         let range = document.range(start, end)?;
         (0..document.paragraph_count(range)?)
             .map(|index| {
                 let paragraph = document.paragraph(range, index)?;
-                Ok(clean(&strip_fields(document.text_of(paragraph.span)?)?))
+                let text = clean(&strip_fields(document.text_of(paragraph.span)?)?);
+                Ok((paragraph.span, text))
             })
             .collect()
+    }
+
+    /// The paragraphs of the text box story: those of each text box anchored in the main text,
+    /// by its anchor, and the others in order.
+    fn textboxes(&self) -> Read<Textboxes> {
+        let mut paragraphs: Vec<Option<(Span, Vec<u16>)>> = self
+            .story_paragraph_spans(Story::Textbox)?
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut anchored = VecDeque::new();
+        for (anchor, textbox) in self.document.anchored_textboxes()? {
+            let inside: Vec<Vec<u16>> = paragraphs
+                .iter_mut()
+                .filter(|paragraph| {
+                    paragraph.as_ref().is_some_and(|(span, _)| {
+                        span.start >= textbox.start && span.start < textbox.end
+                    })
+                })
+                .filter_map(|paragraph| paragraph.take().map(|(_, text)| text))
+                .collect();
+            anchored.push_back((anchor, inside));
+        }
+        Ok(Textboxes {
+            anchored,
+            unanchored: paragraphs
+                .into_iter()
+                .flatten()
+                .map(|(_, text)| text)
+                .collect(),
+        })
+    }
+
+    /// The paragraphs of each text box anchored before `end`, before the paragraph that ends
+    /// there, where Tika writes every text box after the main text (#111).
+    fn anchored_textboxes(&mut self, textboxes: &mut Textboxes, end: i32) {
+        while let Some((anchor, _)) = textboxes.anchored.front() {
+            if *anchor >= end {
+                break;
+            }
+            if let Some((_, paragraphs)) = textboxes.anchored.pop_front() {
+                self.textbox_paragraphs(paragraphs);
+            }
+        }
+    }
+
+    /// Each paragraph of a text box that is not blank.
+    fn textbox_paragraphs(&mut self, paragraphs: Vec<Vec<u16>>) {
+        for text in paragraphs {
+            if !is_blank(&text) {
+                self.element("p", text);
+            }
+        }
     }
 
     /// `HeaderStories.getSubrangeAt` of each index: the stories with text, within the header

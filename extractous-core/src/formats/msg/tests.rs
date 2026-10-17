@@ -131,6 +131,42 @@ fn reads_a_stored_message_as_tikas_path_reads_it() {
 }
 
 #[cfg(feature = "tika")]
+/// A stored message spools as a message file of its own, its properties stream headed as a
+/// message's is (#112), where Tika's path spools it empty (#116).
+#[test]
+fn spools_a_stored_message_as_a_message_of_its_own() {
+    let input = message_with_a_stored_message();
+    let file = Ole2::open(&input).unwrap();
+    let attachment = file
+        .child(file.root(), "__attach_version1.0_#00000000")
+        .unwrap();
+    let stored = file.child(attachment, "__substg1.0_3701000D").unwrap();
+    let data = standalone(&file, stored).unwrap();
+    let message = Ole2::open(&data).unwrap();
+    let properties = message.child(message.root(), PROPERTIES).unwrap();
+    assert_eq!(message.read(properties).unwrap().len(), MESSAGE_HEADER);
+    let (text, _) = crate::Extractor::new()
+        .extract_bytes_to_string(&data)
+        .unwrap();
+    assert!(text.contains("The minutes of the meeting"), "{text}");
+    let scratch = crate::formats::parity::Scratch::new("msg-stored-spool");
+    let path = scratch.write("stored.msg", &input);
+    let spool = crate::EmbeddedSpool {
+        dir: scratch.directory().to_path_buf(),
+        byte_budget: u64::MAX,
+    };
+    let (mut reader, _) = crate::Extractor::new()
+        .extract_file_spooling_embedded(path.to_str().unwrap(), &spool)
+        .unwrap();
+    std::io::copy(&mut reader, &mut std::io::sink()).unwrap();
+    let embedded = reader.embedded().unwrap();
+    let [spooled] = &embedded[..] else {
+        panic!("one spooled message: {embedded:?}");
+    };
+    assert_eq!(std::fs::read(&spooled.path).unwrap(), data);
+}
+
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {

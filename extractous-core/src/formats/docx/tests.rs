@@ -264,6 +264,66 @@ fn names_embedded_objects_as_the_pictures_of_their_icons_do() {
     assert_same_as_tika(&documents, &ParserConfigs::default());
 }
 
+#[cfg(feature = "tika")]
+/// Each part names the objects it embeds by its own relationships, where Tika keys what a part
+/// says of an object by the relationship id alone, so the document's object named by `rId9`
+/// renamed the header's (#127).
+#[test]
+fn names_the_objects_of_each_part_by_its_own_relationships() {
+    let icon = |name: &str| {
+        metafile::testing::emf(&[
+            metafile::testing::emf_comment(&metafile::testing::utf16("IconOnly\0")),
+            metafile::testing::emf_comment(&metafile::testing::utf16(&format!("{name}\0"))),
+            metafile::testing::emf_text(name, 0, 0, true),
+        ])
+    };
+    let object = "<w:p><w:r><w:object xmlns:v=\"urn:schemas-microsoft-com:vml\" \
+                  xmlns:o=\"urn:schemas-microsoft-com:office:office\"><v:shape>\
+                  <v:imagedata r:id=\"rId8\" o:title=\"\"/></v:shape>\
+                  <o:OLEObject Type=\"Embed\" ProgID=\"Package\" DrawAspect=\"Icon\" \
+                  r:id=\"rId9\"/></w:object></w:r></w:p>";
+    let objects = |media: &str, embedding: &str| {
+        ooxml::testing::relationships(&format!(
+            "{}{}",
+            relationship("rId8", kind::IMAGE, &format!("media/{media}")),
+            relationship("rId9", kind::PACKAGE, &format!("embeddings/{embedding}"))
+        ))
+    };
+    let header = format!("<w:hdr {W}>{object}</w:hdr>");
+    let (header_icon, document_icon) = (icon("Header notes.txt"), icon("Body notes.txt"));
+    let header_relationships = objects("header.emf", "header.txt");
+    let input = document(
+        object,
+        &format!(
+            "{}{}{}",
+            relationship("rId8", kind::IMAGE, "media/body.emf"),
+            relationship("rId9", kind::PACKAGE, "embeddings/body.txt"),
+            relationship("rId10", kind::HEADER, "header1.xml"),
+        ),
+        &[
+            (
+                "word/header1.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+                header.as_bytes(),
+            ),
+            (
+                "word/_rels/header1.xml.rels",
+                "application/vnd.openxmlformats-package.relationships+xml",
+                header_relationships.as_bytes(),
+            ),
+            ("word/media/header.emf", "image/x-emf", &header_icon),
+            ("word/media/body.emf", "image/x-emf", &document_icon),
+            ("word/embeddings/header.txt", "text/plain", b"Header."),
+            ("word/embeddings/body.txt", "text/plain", b"Body."),
+        ],
+    );
+    assert_eq!(defers(&input), None);
+    let text = text_of(&input, &ParserConfigs::default());
+    for heading in ["<h1>Header notes.txt</h1>", "<h1>Body notes.txt</h1>"] {
+        assert!(text.contains(heading), "{heading} in {text}");
+    }
+}
+
 #[test]
 fn defers_ole_objects_tika_opens_only() {
     let ole = |size: usize| {

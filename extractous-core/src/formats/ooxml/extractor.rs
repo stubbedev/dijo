@@ -174,51 +174,6 @@ fn file_name(uri: &str) -> String {
         .to_owned()
 }
 
-/// `handleGeneralTextContainingPart`: hands `handler` a `div` of class `class` around the parts
-/// `parent`'s relationships of `kind` lead to, each read behind an `XHTMLBalancingHandler`. The
-/// handlers Tika passes are no XHTML handlers, so the div is never written. The parts' XML is
-/// expected to have been checked well-formed: a failure ends the extraction, after the elements
-/// the part opened are ended.
-pub(crate) fn write_general_text_parts<H: SaxHandler>(
-    package: &Package,
-    parent: usize,
-    kind: &str,
-    class: &str,
-    handler: &mut H,
-) -> Result<(), Failure> {
-    write_general_text_parts_each(package, parent, kind, class, handler, |_, _| {})
-}
-
-/// [`write_general_text_parts`], with `before` given the handler and each part before it is
-/// read.
-pub(crate) fn write_general_text_parts_each<H: SaxHandler>(
-    package: &Package,
-    parent: usize,
-    kind: &str,
-    class: &str,
-    handler: &mut H,
-    mut before: impl FnMut(&mut H, usize),
-) -> Result<(), Failure> {
-    let mut parts = Package::relationships_of(&package.parts[parent].relationships, kind)
-        .map(|relationship| relationship.part)
-        .peekable();
-    if parts.peek().is_none() {
-        return Ok(());
-    }
-    let div = Attribute {
-        qualified_name: "class".to_owned(),
-        namespace: String::new(),
-        local_name: "class".to_owned(),
-        value: class.to_owned(),
-    };
-    handler.start_element("", "div", &[div])?;
-    for part in parts.flatten() {
-        before(handler, part);
-        write_general_text_part(package, part, handler)?;
-    }
-    handler.end_element("", "div")
-}
-
 /// Hands `handler` the events of `part`, read behind an `XHTMLBalancingHandler`: a failure ends
 /// the extraction, after the elements the part opened are ended.
 pub(crate) fn write_general_text_part<H: SaxHandler>(
@@ -359,8 +314,10 @@ pub(crate) struct DescribedPart {
     pub(crate) full_name: Option<String>,
 }
 
-/// The `EmbeddedPartMetadata` of an extractor, by the id of the relationship to the part.
-pub(crate) type DescribedParts = HashMap<String, DescribedPart>;
+/// The `EmbeddedPartMetadata` of an extractor, by the part that describes it and the id of that
+/// part's relationship to it. Tika keys it by the id alone, so a part describing an object by an
+/// id another part has described one by replaces what that part said (#127).
+pub(crate) type DescribedParts = HashMap<usize, HashMap<String, DescribedPart>>;
 
 /// `updateMetadata`: an OLE 2.0 object's program and its name, even an absent one.
 fn describe_object(described: Option<&DescribedPart>, metadata: &mut TikaMetadata) {
@@ -434,7 +391,9 @@ pub(crate) fn write_embedded_parts_but(
                 source_description(package.name(source)),
                 relationship.id
             );
-            let described = described.get(&relationship.id);
+            let described = described
+                .get(&source)
+                .and_then(|described| described.get(&relationship.id));
             match embedding {
                 Embedding::File(resource_type) => {
                     let file = EmbeddedFile {

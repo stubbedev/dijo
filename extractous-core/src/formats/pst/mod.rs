@@ -309,6 +309,7 @@ fn write_folder(folder: &Folder, path: &str, xhtml: &mut Xhtml) -> Result<(), Fa
                 estimate_size(&message).map_err(Failure::from)?.to_string(),
             );
             xhtml.parse_container_natively(
+                &[],
                 &metadata,
                 Wrapping::PackageEntry,
                 MAIL_ITEM_PARSER,
@@ -446,6 +447,7 @@ fn write_attachment(message: &Message, index: usize, xhtml: &mut Xhtml) -> Resul
         ResourceType::Attachment.set(&mut metadata);
         metadata.set(name::CONTENT_LENGTH, size);
         xhtml.parse_container_natively(
+            &[],
             &metadata,
             Wrapping::PackageEntry,
             MAIL_ITEM_PARSER,

@@ -9,7 +9,7 @@ use regex::Regex;
 
 use super::chunks::{Chunk, Message, Submission};
 use super::named;
-use super::properties::Value;
+use super::properties::{Value, PROPERTIES};
 use super::types::{property, Type};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
@@ -118,7 +118,6 @@ const INLINEABLE_TYPES: [&str; 7] = [
     "image/wmf",
     "image/emf",
 ];
-const PROPERTIES: &str = "__properties_version1.0";
 
 /// The body as `handleBodyChunks` writes it.
 enum Body {
