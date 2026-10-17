@@ -113,7 +113,7 @@ struct Binary<'a> {
 }
 
 fn open<'a>(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Binary<'a>, Unported> {
-    let package = Package::open(input)?;
+    let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
     let Some(core) =
         Package::relationships_of(&package.relationships, kind::OFFICE_DOCUMENT).next()
     else {

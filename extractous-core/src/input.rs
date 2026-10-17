@@ -26,6 +26,9 @@ pub(crate) enum Input<'a> {
     Read(Arc<Vec<u8>>),
     /// Mapped from a file larger than [`MAX_READ_WHOLE`].
     Mapped(Arc<Mmap>),
+    /// Part of other bytes, read in place, whose pages are theirs: an entry stored in an
+    /// archive.
+    Within(&'a [u8], Pages<'a>),
 }
 
 impl Deref for Input<'_> {
@@ -36,6 +39,7 @@ impl Deref for Input<'_> {
             Input::Borrowed(bytes) => bytes,
             Input::Read(bytes) => bytes,
             Input::Mapped(map) => map,
+            Input::Within(bytes, _) => bytes,
         }
     }
 }
@@ -44,7 +48,9 @@ impl Input<'_> {
     /// The same bytes, owned: the caller's copied, the others shared.
     pub(crate) fn to_static(&self) -> Input<'static> {
         match self {
-            Input::Borrowed(bytes) => Input::Read(Arc::new(bytes.to_vec())),
+            Input::Borrowed(bytes) | Input::Within(bytes, _) => {
+                Input::Read(Arc::new(bytes.to_vec()))
+            }
             Input::Read(bytes) => Input::Read(Arc::clone(bytes)),
             Input::Mapped(map) => Input::Mapped(Arc::clone(map)),
         }
@@ -60,6 +66,7 @@ impl Input<'_> {
         match self {
             Input::Borrowed(_) | Input::Read(_) => Pages::IN_MEMORY,
             Input::Mapped(map) => Pages(Some(map)),
+            Input::Within(_, pages) => *pages,
         }
     }
 }
@@ -118,9 +125,11 @@ fn map(file: &File) -> io::Result<Input<'static>> {
 
 /// How many bytes of a mapped document a parser reads between releases of its pages.
 const RELEASE_EVERY: usize = 64 << 20;
+/// The bytes [`Paging::find`] and [`Paging::scan`] read at a time.
+pub(crate) const WINDOW: usize = 16 << 20;
 
 /// The pages of a document's bytes as a parser reading all of them uses them: released each
-/// time it has read [`RELEASE_EVERY`] bytes since.
+/// time it has read [`RELEASE_EVERY`] bytes since, and once it is done with them.
 #[derive(Debug)]
 pub(crate) struct Paging<'a> {
     pages: Pages<'a>,
@@ -145,10 +154,46 @@ impl<'a> Paging<'a> {
         self.release();
     }
 
+    /// Where `needle` first stands in `haystack`, searched a window at a time, each window
+    /// counted read, so that a search of all of a mapped file stays bounded too.
+    pub(crate) fn find(&self, haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        let finder = memchr::memmem::Finder::new(needle);
+        let mut start = 0;
+        while start < haystack.len() {
+            let end = haystack.len().min(start + WINDOW + needle.len());
+            if let Some(found) = finder.find(&haystack[start..end]) {
+                self.read(found + needle.len());
+                return Some(start + found);
+            }
+            self.read(end - start);
+            if end == haystack.len() {
+                break;
+            }
+            start += WINDOW;
+        }
+        None
+    }
+
+    /// Hands `each` the bytes of `bytes` a window at a time, each window counted read.
+    pub(crate) fn scan(&self, bytes: &[u8], mut each: impl FnMut(&[u8])) {
+        for window in bytes.chunks(WINDOW) {
+            each(window);
+            self.read(window.len());
+        }
+    }
+
     /// Releases the pages read so far.
     pub(crate) fn release(&self) {
         self.pages.release();
         self.read.set(0);
+    }
+}
+
+impl Drop for Paging<'_> {
+    fn drop(&mut self) {
+        if self.read.get() > 0 {
+            self.release();
+        }
     }
 }
 
@@ -266,6 +311,17 @@ mod tests {
         assert!(mapped.is_mapped());
         assert_eq!(mapped.len() as u64, MAX_READ_WHOLE + 1);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn finds_across_search_windows() {
+        let paging = Paging::new(Pages::IN_MEMORY);
+        let mut haystack = vec![b'.'; WINDOW + 8];
+        haystack[WINDOW - 2..WINDOW + 3].copy_from_slice(b"found");
+        assert_eq!(paging.find(&haystack, b"found"), Some(WINDOW - 2));
+        assert_eq!(paging.find(&haystack, b"missing"), None);
+        assert_eq!(paging.find(b"a found b", b"found"), Some(2));
+        assert_eq!(paging.find(b"", b"found"), None);
     }
 
     #[test]

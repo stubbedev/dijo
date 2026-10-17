@@ -31,6 +31,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
 use crate::input::Input;
+use crate::input::Pages;
 use crate::java::JavaHashMap;
 
 /// The WordprocessingML namespace.
@@ -128,10 +129,20 @@ impl Parser for DocxParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Document::open(input, &configs.office)
+        let read = Document::open(input, pages, &configs.office)
             .and_then(Document::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -148,8 +159,12 @@ struct Document<'a> {
 }
 
 impl<'a> Document<'a> {
-    fn open(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Self, Unported> {
-        let package = Package::open(input)?;
+    fn open(
+        input: &'a [u8],
+        pages: Pages<'a>,
+        config: &'a OfficeParserConfig,
+    ) -> Result<Self, Unported> {
+        let package = Package::open(input, pages)?;
         let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()
             .find_map(|kind| Package::relationships_of(&package.relationships, kind).next())

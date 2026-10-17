@@ -35,7 +35,7 @@ pub(crate) fn read_quietly<H: SaxHandler>(
         inner: handler,
         declared: false,
     };
-    let result = xml::parse_sax(&bytes, package.name(part), &mut watch);
+    let result = xml::parse_part(&bytes, package.name(part), &mut watch);
     if watch.declared {
         return Err(Unported(format!(
             "{} declares a document type",

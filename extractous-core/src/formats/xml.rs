@@ -7,7 +7,7 @@ use std::borrow::Cow;
 
 use crate::errors::Error;
 use crate::formats::Failure;
-use crate::input::{Input, Pages};
+use crate::input::{Input, Pages, Paging};
 use crate::xml::{self, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
 
 pub(crate) use crate::xml::{Attribute, XMLNS};
@@ -104,10 +104,11 @@ fn parse_sax_paged(
 ) -> Result<(), Failure> {
     let mut failure = None;
     let mut events = 0usize;
-    let result = xml::parse(input, &mut |event| {
+    let paging = Paging::new(pages);
+    let result = xml::parse_paged(input, &paging, &mut |event| {
         events += 1;
         if events.is_multiple_of(RELEASE_EVERY_EVENTS) {
-            pages.release();
+            paging.release();
         }
         let handled = match event {
             Event::DocumentType => handler.document_type(),

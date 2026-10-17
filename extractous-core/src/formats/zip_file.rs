@@ -7,9 +7,8 @@ use std::io::{self, Cursor};
 
 use zip::{CompressionMethod, ZipArchive};
 
-use crate::compress::crc32;
 use crate::formats::Failure;
-use crate::input::{Input, Spool};
+use crate::input::{Input, Pages, Paging, Spool};
 
 const CENTRAL_DIRECTORY_SIGNATURE: &[u8] = b"PK\x01\x02";
 const CENTRAL_DIRECTORY_HEADER_LENGTH: usize = 46;
@@ -27,13 +26,14 @@ pub(crate) struct ZipEntry {
 /// An opened archive.
 pub(crate) struct ZipFile<'a> {
     input: &'a [u8],
+    pages: Pages<'a>,
     zip: ZipArchive<Cursor<&'a [u8]>>,
     entries: Vec<ZipEntry>,
 }
 
 impl<'a> ZipFile<'a> {
     /// Opens `input`, an archive `what` names in errors.
-    pub(crate) fn open(input: &'a [u8], what: &str) -> Result<Self, Failure> {
+    pub(crate) fn open(input: &'a [u8], pages: Pages<'a>, what: &str) -> Result<Self, Failure> {
         let zip = ZipArchive::new(Cursor::new(input))
             .map_err(|e| Failure::Malformed(format!("The {what} archive cannot be read: {e}")))?;
         let entries = (0..zip.len())
@@ -53,6 +53,7 @@ impl<'a> ZipFile<'a> {
             .collect::<Result<_, Failure>>()?;
         Ok(Self {
             input,
+            pages,
             zip,
             entries,
         })
@@ -86,7 +87,7 @@ impl<'a> ZipFile<'a> {
                 "it is compressed with {compression:?}"
             )));
         }
-        read_entry(&mut self.zip, self.input, entry.index).map_err(|e| unreadable(&e))
+        read_entry(&mut self.zip, self.input, self.pages, entry.index).map_err(|e| unreadable(&e))
     }
 
     /// Whether every entry is stored or deflated and not encrypted, so that the zip crate reads
@@ -111,13 +112,14 @@ impl<'a> ZipFile<'a> {
     }
 }
 
-/// The uncompressed content of the entry `index` of `archive`, which reads `input`: the
-/// archive's own bytes where the entry is stored, checked against its CRC as the zip crate
+/// The uncompressed content of the entry `index` of `archive`, which reads `input`, whose pages
+/// are `pages`: the archive's own bytes where the entry is stored, checked against its CRC as the zip crate
 /// checks what it reads, so that reading a large archive copies none of its stored data; an
 /// inflated entry spooled as a stream is, to a file of its own past what is read whole.
 pub(crate) fn read_entry<'a>(
     archive: &mut ZipArchive<Cursor<&'a [u8]>>,
     input: &'a [u8],
+    pages: Pages<'a>,
     index: usize,
 ) -> Result<Input<'a>, String> {
     let raw = archive.by_index_raw(index).map_err(|e| e.to_string())?;
@@ -130,10 +132,13 @@ pub(crate) fn read_entry<'a>(
             .zip(length)
             .and_then(|(start, length)| input.get(start..start.checked_add(length)?))
             .ok_or("its data lies outside the archive")?;
-        if crc32(stored) != raw.crc32() {
+        let paging = Paging::new(pages);
+        let mut crc = flate2::Crc::new();
+        paging.scan(stored, |window| crc.update(window));
+        if crc.sum() != raw.crc32() {
             return Err("Invalid checksum".to_owned());
         }
-        return Ok(Input::Borrowed(stored));
+        return Ok(Input::Within(stored, pages));
     }
     drop(raw);
     let mut file = archive.by_index(index).map_err(|e| e.to_string())?;

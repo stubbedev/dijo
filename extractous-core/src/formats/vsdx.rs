@@ -67,7 +67,7 @@ struct Drawing<'a> {
 
 impl<'a> Drawing<'a> {
     fn open(input: &'a [u8]) -> Result<Self, Unported> {
-        let package = Package::open(input)?;
+        let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
         let pages = page_parts(&package);
         for &page in &pages {
             ooxml::read_quietly(&package, page, Ignore)?;
@@ -90,7 +90,7 @@ impl<'a> Drawing<'a> {
                 xhtml: &mut *xhtml,
                 text: None,
             };
-            xml::parse_sax(&bytes, self.package.name(page), &mut handler)?;
+            xml::parse_part(&bytes, self.package.name(page), &mut handler)?;
             xhtml.end_element("div")?;
         }
         extractor::write_thumbnails(&self.package, xhtml)?;

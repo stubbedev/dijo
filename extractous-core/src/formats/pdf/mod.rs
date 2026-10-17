@@ -45,7 +45,7 @@ use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
-use crate::input::Pages;
+use crate::input::{Pages, Paging};
 
 use cos::Pdf;
 use ocr::{OcrCheck, PageOcr};
@@ -405,8 +405,9 @@ struct Loaded<'a> {
 /// `PDFParser` opens an encrypted document without one. A document the empty password does
 /// not open is left to Tika, which asks for a password.
 fn load<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Loaded<'a>, Unported> {
-    let resolution = xref::resolve(input)?;
-    let mut pdf = Pdf::new(input, pages, &resolution)?;
+    let paging = Paging::new(pages);
+    let resolution = xref::resolve(input, &paging)?;
+    let mut pdf = Pdf::new(input, paging, &resolution)?;
     let Some(encryption) = pdf.encryption_document() else {
         return Ok(Loaded {
             pdf,
@@ -470,14 +471,13 @@ fn extract(
 ) -> Result<ControlFlow<()>, WriteFailure> {
     let pdf = &loaded.pdf;
     let mut startxrefs = 0;
-    for offset in metadata::scan_startxrefs(input) {
+    for offset in metadata::scan_startxrefs(input, pdf.paging()) {
         if offset.startxref == 0 {
             continue;
         }
         startxrefs += 1;
         out.add("pdf:eof-offsets", offset.end_eof_offset.to_string());
     }
-    pdf.release_pages();
     let updates = (startxrefs - 1).max(0).to_string();
     out.set("pdf:incremental-update-count", updates.clone());
     out.set("tk:version-count", updates);

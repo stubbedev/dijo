@@ -19,7 +19,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Declined, Deferral, Failure, Footprint, Parser, Prepared};
-use crate::input::Input;
+use crate::input::{Input, Pages};
 use crate::java;
 use crate::java::is_blank;
 
@@ -336,9 +336,10 @@ fn read_fallback(book: &mut Book, reason: &str, xhtml: &mut Xhtml) -> Result<(),
 /// Tika's path should read it.
 fn prepare<'a>(
     input: &'a [u8],
+    pages: Pages<'a>,
     metadata: &mut TikaMetadata,
 ) -> Result<(Book<'a>, Result<Reading, Failure>), Deferral> {
-    let Ok(zip) = ZipFile::open(input, "EPUB") else {
+    let Ok(zip) = ZipFile::open(input, pages, "EPUB") else {
         return Err("its archive is not one the zip crate reads".to_owned());
     };
     if !zip.has_every_record(input) {
@@ -417,10 +418,20 @@ impl Parser for EpubParser {
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let mut metadata = metadata.clone();
-        let (mut book, reading) = prepare(input, &mut metadata)?;
+        let (mut book, reading) = prepare(input, pages, &mut metadata)?;
         Ok(Box::new(move |xhtml| {
             *xhtml.metadata_mut() = metadata;
             write(&mut book, reading, xhtml)

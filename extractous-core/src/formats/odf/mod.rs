@@ -21,7 +21,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
-use crate::input::Input;
+use crate::input::{Input, Pages};
 use crate::mime::{self, Origin};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -168,8 +168,8 @@ struct Archive<'a> {
 }
 
 impl<'a> Archive<'a> {
-    fn open(input: &'a [u8]) -> Result<Self, Failure> {
-        let zip = ZipFile::open(input, "OpenDocument")?;
+    fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Failure> {
+        let zip = ZipFile::open(input, pages, "OpenDocument")?;
         let entries = zip
             .entries()
             .iter()
@@ -281,8 +281,8 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
 
 /// The archive of the document in `input`, its metadata, type and bodies read ahead, or why
 /// Tika's path should read it rather than this parser.
-fn read_ahead(input: &[u8]) -> Result<Archive<'_>, &'static str> {
-    let Ok(mut archive) = Archive::open(input) else {
+fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, &'static str> {
+    let Ok(mut archive) = Archive::open(input, pages) else {
         return Err(UNREADABLE_ARCHIVE);
     };
     if !archive.has_every_record(input) {
@@ -347,10 +347,20 @@ impl Parser for OpenDocumentParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let archive = read_ahead(input).map_err(str::to_owned)?;
+        let archive = read_ahead(input, pages).map_err(str::to_owned)?;
         Ok(Box::new(move |xhtml| write(archive, configs, xhtml)))
     }
 }

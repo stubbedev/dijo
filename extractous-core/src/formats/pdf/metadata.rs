@@ -13,6 +13,7 @@ use super::Unported;
 use crate::formats::xmp::{
     self, date, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
 };
+use crate::input::Paging;
 use crate::java::is_blank;
 use crate::java::time::format_instant;
 
@@ -33,11 +34,11 @@ fn is_whitespace(c: Option<u8>) -> bool {
 
 /// `StartXRefScanner.scan`: every `startxref` keyword with the number after it and the end of
 /// the `%%EOF` marker that follows, if any.
-pub(super) fn scan_startxrefs(input: &[u8]) -> Vec<StartXRef> {
+pub(super) fn scan_startxrefs(input: &[u8], paging: &Paging) -> Vec<StartXRef> {
     let mut offsets = Vec::new();
     let mut position = 0;
     while position + STARTXREF.len() <= input.len() {
-        let Some(found) = memchr::memmem::find(&input[position..], STARTXREF) else {
+        let Some(found) = paging.find(&input[position..], STARTXREF) else {
             break;
         };
         let start = position + found;
@@ -454,7 +455,7 @@ mod tests {
     #[test]
     fn scans_startxrefs_as_tika_does() {
         let input = b"%PDF-1.4\n...startxref\n123\n%%EOF\n...startxref 456 %%EOF\r\n";
-        let offsets = scan_startxrefs(input);
+        let offsets = scan_startxrefs(input, &Paging::new(crate::input::Pages::IN_MEMORY));
         assert_eq!(offsets.len(), 2);
         assert_eq!(offsets[0].startxref, 123);
         assert_eq!(
@@ -463,7 +464,11 @@ mod tests {
         );
         assert_eq!(offsets[1].startxref, 456);
         assert_eq!(offsets[1].end_eof_offset, input.len() - 1);
-        assert!(scan_startxrefs(b"startxref 12").is_empty());
+        assert!(scan_startxrefs(
+            b"startxref 12",
+            &Paging::new(crate::input::Pages::IN_MEMORY)
+        )
+        .is_empty());
     }
 
     #[test]

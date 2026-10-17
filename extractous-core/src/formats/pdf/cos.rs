@@ -14,13 +14,13 @@ use lopdf::{Dictionary, Document, EncryptionState, Object, ObjectId, Stream};
 use super::content::Lexer;
 use super::xref::{self, java_trim, Placement, Read, Resolution, Source, Thrown};
 use super::Unported;
-use crate::input::{Pages, Paging};
+use crate::input::Paging;
 use crate::text::charset::Charset;
 
 /// How many references in a row are followed before a chain counts as broken.
 const MAX_REFERENCE_CHAIN: usize = 32;
 /// What reading an object counts as having read of the document: at least a page of it.
-const OBJECT_READ: usize = 4096;
+pub(super) const OBJECT_READ: usize = 4096;
 /// `PDFObjectStreamParser`'s check of a metadata stream an encrypted document leaves in clear.
 const XPACKET: &[u8] = b"<?xpacket ";
 
@@ -85,7 +85,7 @@ impl<'d> Pdf<'d> {
     /// released as it is read.
     pub(super) fn new(
         data: &'d [u8],
-        pages: Pages<'d>,
+        paging: Paging<'d>,
         resolution: &Resolution,
     ) -> Result<Self, Unported> {
         let objects = resolution
@@ -99,9 +99,10 @@ impl<'d> Pdf<'d> {
                 (id, slot)
             })
             .collect();
+        let spells_filespec = paging.find(data, b"Filespec").is_some();
         let pdf = Self {
             data,
-            paging: Paging::new(pages),
+            paging,
             objects,
             trailer: resolution.trailer().clone(),
             crypt: None,
@@ -110,7 +111,7 @@ impl<'d> Pdf<'d> {
             loading: RefCell::new(HashSet::new()),
             unread: RefCell::new(None),
             unlisted_needed: RefCell::new(BTreeSet::new()),
-            spells_filespec: memchr::memmem::find(data, b"Filespec").is_some(),
+            spells_filespec,
         };
         pdf.release_pages();
         Ok(pdf)
@@ -119,6 +120,11 @@ impl<'d> Pdf<'d> {
     /// Releases the pages of the document read so far, after a search of all of it.
     pub(super) fn release_pages(&self) {
         self.paging.release();
+    }
+
+    /// How the document's pages are released as it is read.
+    pub(super) fn paging(&self) -> &Paging<'d> {
+        &self.paging
     }
 
     /// The trailer, as PDFBox merges it.

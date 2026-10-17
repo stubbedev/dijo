@@ -14,7 +14,7 @@ use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::{self, central_directory_records};
 use crate::formats::Failure;
 pub(crate) use crate::formats::Unported;
-use crate::input::Input;
+use crate::input::{Input, Pages};
 use crate::java;
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
@@ -91,6 +91,7 @@ pub(crate) struct Part {
 /// An opened package.
 pub(crate) struct Package<'a> {
     input: &'a [u8],
+    pages: Pages<'a>,
     archive: ZipArchive<Cursor<&'a [u8]>>,
     /// The names of the archive's entries, in its order.
     entry_names: Vec<String>,
@@ -101,8 +102,8 @@ pub(crate) struct Package<'a> {
 }
 
 impl<'a> Package<'a> {
-    /// Opens `input` as `OPCPackage.open` does.
-    pub(crate) fn open(input: &'a [u8]) -> Result<Self, Unported> {
+    /// Opens `input`, whose pages are `pages`, as `OPCPackage.open` does.
+    pub(crate) fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unported> {
         let mut archive = ZipArchive::new(Cursor::new(input))
             .map_err(|e| Unported(format!("the ZIP archive cannot be read as a whole: {e}")))?;
         if archive.len() > MAX_ENTRIES {
@@ -116,8 +117,12 @@ impl<'a> Package<'a> {
             .iter()
             .position(|name| name == CONTENT_TYPES)
             .ok_or_else(|| Unported(format!("the package has no {CONTENT_TYPES}")))?;
-        let content_types =
-            ContentTypes::read(&read_entry(&mut archive, input, content_types_entry)?)?;
+        let content_types = ContentTypes::read(&read_entry(
+            &mut archive,
+            input,
+            pages,
+            content_types_entry,
+        )?)?;
         let mut entries: Vec<(String, String, usize)> = Vec::new();
         for (index, name) in names.iter().enumerate() {
             if name.eq_ignore_ascii_case(CONTENT_TYPES)
@@ -173,6 +178,7 @@ impl<'a> Package<'a> {
         }
         let mut package = Package {
             input,
+            pages,
             archive,
             entry_names: names,
             parts,
@@ -194,6 +200,7 @@ impl<'a> Package<'a> {
         read_entry(
             &mut self.archive.clone(),
             self.input,
+            self.pages,
             self.parts[part].entry,
         )
         .map_err(|Unported(reason)| Failure::Malformed(reason))
@@ -204,7 +211,7 @@ impl<'a> Package<'a> {
     pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Input<'a>, Failure>> {
         let entry = self.entry_names.iter().position(|entry| entry == name)?;
         Some(
-            read_entry(&mut self.archive.clone(), self.input, entry)
+            read_entry(&mut self.archive.clone(), self.input, self.pages, entry)
                 .map_err(|Unported(reason)| Failure::Malformed(reason)),
         )
     }
@@ -264,7 +271,12 @@ impl<'a> Package<'a> {
         let Some(&rels_part) = by_name.get(&rels_name.to_ascii_lowercase()) else {
             return Ok(Vec::new());
         };
-        let bytes = read_entry(&mut self.archive, self.input, self.parts[rels_part].entry)?;
+        let bytes = read_entry(
+            &mut self.archive,
+            self.input,
+            self.pages,
+            self.parts[rels_part].entry,
+        )?;
         let mut reader = RelationshipsReader::default();
         xml::parse_sax(&bytes, &rels_name, &mut reader)
             .map_err(|e| Unported(format!("POI fails on {rels_name}: {}", describe(&e))))?;
@@ -382,9 +394,10 @@ fn entry_names(archive: &ZipArchive<Cursor<&[u8]>>, input: &[u8]) -> Result<Vec<
 fn read_entry<'a>(
     archive: &mut ZipArchive<Cursor<&'a [u8]>>,
     input: &'a [u8],
+    pages: Pages<'a>,
     index: usize,
 ) -> Result<Input<'a>, Unported> {
-    zip_file::read_entry(archive, input, index)
+    zip_file::read_entry(archive, input, pages, index)
         .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))
 }
 

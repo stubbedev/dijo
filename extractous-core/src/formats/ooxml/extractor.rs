@@ -231,7 +231,7 @@ pub(crate) fn write_general_text_part<H: SaxHandler>(
         open: Vec::new(),
     };
     let bytes = package.read(part)?;
-    if let Err(failure) = xml::parse_sax(&bytes, package.name(part), &mut balancer) {
+    if let Err(failure) = xml::parse_part(&bytes, package.name(part), &mut balancer) {
         balancer.drain()?;
         return Err(failure);
     }
@@ -676,7 +676,7 @@ mod tests {
                 ("oleObject1.bin", OLE_OBJECT_TYPE, content),
             ],
         );
-        let package = Package::open(&input).unwrap();
+        let package = Package::open(&input, crate::input::Pages::IN_MEMORY).unwrap();
         let [part] = package.parts_by_content_type(OLE_OBJECT_TYPE)[..] else {
             panic!("one OLE object");
         };

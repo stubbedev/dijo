@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 use super::content::{is_digit, is_end_of_name, is_whitespace, Lexer};
+use super::cos::OBJECT_READ;
 use super::Unported;
+use crate::input::Paging;
 
 /// `COSParser.DEFAULT_TRAIL_BYTECOUNT`: the bytes at the end searched for `startxref`.
 const TRAIL_BYTES: usize = 2048;
@@ -109,8 +111,8 @@ pub(super) struct Resolution {
 
 /// Reads the cross-reference of `data` as PDFBox's lenient `COSParser.retrieveTrailer` does,
 /// or says why the port leaves the document to Tika.
-pub(super) fn resolve(data: &[u8]) -> Result<Resolution, Unported> {
-    let mut parser = Parser::new(data);
+pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unported> {
+    let mut parser = Parser::new(data, paging);
     let trailer = match parser.retrieve() {
         Ok(trailer) => trailer,
         Err(Thrown::Io) => None,
@@ -811,15 +813,18 @@ impl Resolver {
 /// `COSParser` as far as the cross-reference goes.
 struct Parser<'a> {
     source: Source<'a>,
+    /// Counts the objects each check of the table reads.
+    paging: &'a Paging<'a>,
     resolver: Resolver,
     resolved: Resolved,
     brute: BruteForce<'a>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    fn new(data: &'a [u8], paging: &'a Paging<'a>) -> Self {
         Self {
             source: Source::new(data),
+            paging,
             resolver: Resolver::default(),
             resolved: Resolved::default(),
             brute: BruteForce {
@@ -1137,6 +1142,7 @@ impl<'a> Parser<'a> {
             let Location::File(offset) = location else {
                 continue;
             };
+            self.paging.read(OBJECT_READ);
             match self.find_object_key(key, offset)? {
                 None => return Ok(false),
                 Some(found) if found != key => corrected.push((key, found)),
