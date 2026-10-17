@@ -3,7 +3,8 @@
 # need (FreeType and what it reads fonts with), tesseract with Leptonica and the image libraries
 # it reads with (whose licenses ci/ocr-static.nix collects), libheif (ci/image-decoders.nix),
 # with the compiler and linker flags for them in extractous/, the licenses of the libraries
-# linked beyond tesseract's in extractous/licenses, and what
+# linked beyond tesseract's in extractous/licenses (extractous/decoder-licenses for the
+# executable without Tika, which links no AWT), and what
 # sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh).
 { nixpkgs, system }:
 let
@@ -36,6 +37,9 @@ let
       (lib.concatMapStrings (import ./licenses.nix "$out/extractous/licenses") (
         awtLibraries ++ decoderLibraries
       ));
+  decoderLicenses =
+    pkgs.runCommand "extractous-decoder-licenses" { }
+      (lib.concatMapStrings (import ./licenses.nix "$out/extractous/decoder-licenses") decoderLibraries);
   decoderFlags =
     pkgs.runCommand "extractous-image-decoder-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
       ''
@@ -67,6 +71,7 @@ pkgs.symlinkJoin {
     tesseractFlags
     decoderFlags
     licenses
+    decoderLicenses
     pkgs.gnumake
     pkgs.gcc
     pkgs.tcl

@@ -362,6 +362,12 @@ language-accuracy file:
 static:
     ci/static-image.sh target/static-image/extractous
 
+# Build the statically linked Linux executable without Tika, target/static/extractous: the program alone, with
+# musl, tesseract and libheif linked in, needing nothing at run time and no GraalVM to build.
+[linux]
+static-native:
+    ci/static.sh target/static/extractous
+
 # Run the server under load for SOAK_SECONDS (120 by default) per test with a release build:
 # answers stay alike and memory level over a long run, and damaged documents are answered while
 # worker processes recover; SOAK_SEED repeats a run's damage.

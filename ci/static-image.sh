@@ -17,10 +17,7 @@ case "$(uname -m)" in
     *) echo "No static build for $(uname -m)" >&2; exit 1 ;;
 esac
 
-rev=$(nix eval --raw --impure --expr \
-    "(builtins.fromJSON (builtins.readFile $root/devenv.lock)).nodes.nixpkgs.locked.rev")
-toolchain=$(nix build --no-link --print-out-paths --impure --expr \
-    "import $here/static-toolchain.nix { nixpkgs = builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\"; system = builtins.currentSystem; }")
+toolchain=$("$here/static-toolchain.sh")
 cc="$toolchain/bin/$triple-gcc"
 
 work="$root/target/static-image"
