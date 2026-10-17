@@ -1,5 +1,7 @@
 //! Apple icon images, as Tika's `ICNSParser` reads them: the kinds of the icons and masks the
-//! file holds, by their type codes, and an empty document.
+//! file holds, by their type codes, and an empty document. Each icon is written width by
+//! height, where Tika writes height by width, and an entry of a kind not listed is skipped,
+//! where Tika stops at it and leaves out the icons after it (#132).
 
 use super::fails;
 use crate::config::ParserConfigs;
@@ -39,8 +41,8 @@ const fn icon(
     }
 }
 
-/// `ICNSType.allImageTypes`.
-const ICON_TYPES: [IconType; 32] = [
+/// `ICNSType.allImageTypes`, and the 128 by 128 icon in PNG or JPEG 2000 it leaves out.
+const ICON_TYPES: [IconType; 33] = [
     icon(b"ICON", 32, 32, 1, false, false),
     icon(b"icm#", 16, 12, 1, true, false),
     icon(b"icm4", 16, 12, 4, false, false),
@@ -66,6 +68,7 @@ const ICON_TYPES: [IconType; 32] = [
     icon(b"icp5", 32, 32, 0, false, false),
     icon(b"icp6", 64, 64, 0, false, false),
     icon(b"icp7", 128, 128, 0, false, false),
+    icon(b"ic07", 128, 128, 0, false, false),
     icon(b"ic08", 256, 256, 0, false, false),
     icon(b"ic09", 512, 512, 0, false, false),
     icon(b"ic10", 1024, 1024, 0, false, true),
@@ -107,20 +110,17 @@ fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Declined> {
     let mut icons = Vec::new();
     let mut masks = Vec::new();
     let mut offset: i32 = 0;
-    while offset < length - 8 {
+    while offset <= length - 8 {
         let at = usize::try_from(offset).map_err(|_| {
             fails(format!(
                 "Index {offset} out of bounds for length {length} in the ICNS file"
             ))
         })?;
         let code: [u8; 4] = file[at..at + 4].try_into().expect("four bytes");
-        let Some(kind) = ICON_TYPES.iter().find(|kind| kind.code == code) else {
-            break;
-        };
-        if kind.has_mask {
-            masks.push(kind);
-        } else {
-            icons.push(kind);
+        match ICON_TYPES.iter().find(|kind| kind.code == code) {
+            Some(kind) if kind.has_mask => masks.push(kind),
+            Some(kind) => icons.push(kind),
+            None => {}
         }
         let icon_length = i32::from_be_bytes(file[at + 4..at + 8].try_into().expect("four bytes"));
         if icon_length <= 0 {
@@ -139,7 +139,7 @@ fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Declined> {
                     "JPEG 2000 or PNG format".to_owned()
                 };
                 let retina = if icon.retina { "@2X" } else { "" };
-                format!("{}x{}{retina} ({bits})", icon.height, icon.width)
+                format!("{}x{}{retina} ({bits})", icon.width, icon.height)
             })
             .collect();
         metadata.set("Icon count", icons.len().to_string());
@@ -151,7 +151,7 @@ fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Declined> {
             .map(|mask| {
                 format!(
                     "{}x{} ({} bpp)",
-                    mask.height, mask.width, mask.bits_per_pixel
+                    mask.width, mask.height, mask.bits_per_pixel
                 )
             })
             .collect();
@@ -190,5 +190,46 @@ impl Parser for IcnsParser {
             *xhtml.metadata_mut() = read_metadata;
             Ok(())
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An icon file of entries of the given type codes, each of `data` bytes.
+    fn icns(entries: &[(&[u8; 4], usize)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (code, data) in entries {
+            body.extend_from_slice(*code);
+            body.extend_from_slice(&(8 + *data as u32).to_be_bytes());
+            body.extend(std::iter::repeat_n(0x55, *data));
+        }
+        let mut file = SIGNATURE.to_vec();
+        file.extend_from_slice(&(8 + body.len() as u32).to_be_bytes());
+        file.extend(body);
+        file
+    }
+
+    #[test]
+    fn lists_icons_width_by_height_past_entries_of_other_kinds() {
+        let file = icns(&[
+            (b"TOC ", 16),
+            (b"icm#", 48),
+            (b"ic07", 20),
+            (b"name", 4),
+            (b"is32", 30),
+            (b"icnV", 0),
+        ]);
+        let mut metadata = TikaMetadata::new();
+        read(&file, &mut metadata).unwrap();
+        let value = |name: &str| metadata.values(name).join("|");
+        assert_eq!(value("Icon count"), "2");
+        assert_eq!(
+            value("Icon details"),
+            "128x128 (JPEG 2000 or PNG format), 16x16 (24 bpp)"
+        );
+        assert_eq!(value("Masked icon count"), "1");
+        assert_eq!(value("Masked icon details"), "16x12 (1 bpp)");
     }
 }

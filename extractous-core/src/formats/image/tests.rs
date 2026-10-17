@@ -842,18 +842,92 @@ fn reads_tikas_test_jpeg_xl_images_as_tika_does() {
     crate::formats::parity::assert_same_as_tika(&paths, JxlParser.tika_name());
 }
 
-/// Tika's `BPGParser` reads the header and extensions of a BPG image, and its `ICNSParser` the
-/// icons an Apple icon file lists, as the port does.
+/// Tika's `ICNSParser` reads the icons an Apple icon file lists as the port does, where they
+/// are square and of the kinds it knows.
 #[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
-fn reads_tikas_test_bpg_and_icns_images_as_tika_does() {
+fn reads_tikas_test_icns_images_as_tika_does() {
     let roots = conformance_roots();
     let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-    for (parser, count) in [(&BpgParser as &dyn Parser, 4), (&IcnsParser, 2)] {
-        let (parsed, deferred) = documents_with(parser, &roots, &skipping_ocr());
-        assert_eq!(parsed.len(), count, "{parsed:?}");
-        assert!(deferred.is_empty(), "{deferred:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        crate::formats::parity::assert_same_as_tika(&paths, parser.tika_name());
+    let (parsed, deferred) = documents_with(&IcnsParser, &roots, &skipping_ocr());
+    assert_eq!(parsed.len(), 2, "{parsed:?}");
+    assert!(deferred.is_empty(), "{deferred:?}");
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    crate::formats::parity::assert_same_as_tika(&paths, IcnsParser.tika_name());
+}
+
+/// Tika's `BPGParser` reads the header of a BPG image as the port does, but for the bit depth
+/// and the extensions, which it reads from the wrong end of the header's bytes (#132).
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_bpg_images_as_tika_does_but_for_the_header_it_misreads() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let (parsed, deferred) = documents_with(&BpgParser, &roots, &skipping_ocr());
+    let names = |paths: &[PathBuf]| -> Vec<String> {
+        paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(
+        names(&parsed),
+        [
+            "testBPG.bpg",
+            "testBPG_GEO.bpg",
+            "testBPG_commented_xnviewmp026.bpg",
+        ]
+    );
+    assert_eq!(
+        names(&deferred),
+        ["testBPG_commented.bpg"],
+        "left to Tika for its XMP date in CEST"
+    );
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    crate::formats::parity::assert_same_as_tika_rewriting(
+        &paths,
+        BpgParser.tika_name(),
+        bpg::as_tika_misreads_the_header,
+    );
+}
+
+/// The port reads the bit depth of a BPG image and the Exif and XMP of its extensions, and
+/// keeps the header's size over the one the Exif records (#132).
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_the_header_and_extensions_of_bpg_images() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let (parsed, _) = documents_with(&BpgParser, &roots, &skipping_ocr());
+    let read = |name: &str| {
+        let path = parsed
+            .iter()
+            .find(|path| path.ends_with(name))
+            .unwrap_or_else(|| panic!("{name} is not parsed natively"));
+        crate::Extractor::new()
+            .extract_file_to_string(path.to_str().unwrap())
+            .unwrap()
+            .1
+    };
+    let value = |metadata: &crate::Metadata, name: &str| metadata[name].join("|");
+    let geo = read("testBPG_GEO.bpg");
+    for (name, expected) in [
+        ("tiff:BitsPerSample", "8"),
+        ("tiff:ImageWidth", "100"),
+        ("tiff:ImageLength", "68"),
+        ("photoshop:ColorMode", "YCbCr Colour"),
+        ("geo:lat", "12.54321"),
+        ("geo:long", "-54.1234"),
+        ("tiff:Model", "Canon EOS 40D"),
+        ("exif:DateTimeOriginal", "2009-08-11T09:09:45"),
+    ] {
+        assert_eq!(value(&geo, name), expected, "{name}");
     }
+    let commented = read("testBPG_commented_xnviewmp026.bpg");
+    assert_eq!(
+        value(&commented, "dc:subject"),
+        "bird watching|coast|nature reserve|grazelands"
+    );
+    assert_eq!(value(&commented, "geo:alt"), "37");
+    assert_eq!(value(&commented, "tiff:ImageWidth"), "102");
 }

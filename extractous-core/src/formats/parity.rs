@@ -1249,6 +1249,55 @@ pub(crate) type ComparedMetadata = Vec<(String, Vec<String>)>;
 /// it names the issue of the quirk, and undoes only what that fix changes.
 pub(crate) type NativeRewrite = fn(&mut String, &mut ComparedMetadata, &ComparedMetadata);
 
+/// For a [`NativeRewrite`]: the native result without the metadata `name`, in its metadata and
+/// as each `meta` element of the XHTML head, the one a length limit cut included.
+pub(crate) fn without_metadata(text: &mut String, metadata: &mut ComparedMetadata, name: &str) {
+    metadata.retain(|(native_name, _)| native_name != name);
+    let meta = format!("<meta name=\"{name}\" content=\"");
+    while let Some(start) = text.find(&meta) {
+        let end = text[start..]
+            .find("\" />")
+            .map_or(text.len(), |end| start + end + "\" />".len());
+        let end = end + usize::from(text[end..].starts_with('\n'));
+        text.replace_range(start..end, "");
+    }
+}
+
+/// For a [`NativeRewrite`]: the native result with the values Tika's path gives the metadata
+/// `name` in place of its own, in its metadata and in the content of each `meta` element of the
+/// XHTML head, which must be as many and hold no characters XML escapes.
+pub(crate) fn with_tikas_values(
+    text: &mut String,
+    metadata: &mut ComparedMetadata,
+    tika: &ComparedMetadata,
+    name: &str,
+) {
+    let Some((_, values)) = tika.iter().find(|(tika_name, _)| tika_name == name) else {
+        return without_metadata(text, metadata, name);
+    };
+    let Some((_, native)) = metadata
+        .iter_mut()
+        .find(|(native_name, _)| native_name == name)
+    else {
+        return;
+    };
+    assert_eq!(native.len(), values.len(), "the values of {name}");
+    native.clone_from(values);
+    let meta = format!("<meta name=\"{name}\" content=\"");
+    let mut at = 0;
+    for value in values {
+        let Some(found) = text[at..].find(&meta) else {
+            return;
+        };
+        let start = at + found + meta.len();
+        let end = text[start..]
+            .find('"')
+            .map_or(text.len(), |end| start + end);
+        text.replace_range(start..end, value);
+        at = start + value.len();
+    }
+}
+
 /// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
 /// compared.
 pub(crate) fn assert_same_as_tika_rewriting(
