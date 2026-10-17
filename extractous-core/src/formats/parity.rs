@@ -932,7 +932,9 @@ fn without_departures(
         kept.push_str(rest);
         text = kept;
     }
-    extracted.text = text.into_bytes();
+    let mut encoded = Vec::with_capacity(extracted.text.len());
+    formats::encode(&text, char_set, &mut encoded);
+    extracted.text = encoded;
     extracted
 }
 
