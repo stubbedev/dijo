@@ -3,19 +3,28 @@
 //! directory order, handed to the embedded document extractor with the metadata Tika gives it,
 //! an encrypted or unreadable one recorded as a failure instead, its name decoded as UTF-8 when
 //! flagged so, else in the charset Tika detects for it.
+//!
+//! An archive `ZipFile` cannot open, which has no end of central directory record, is read front
+//! to back by its local headers, as Tika's `parseWithStream` reads it, the first segment of a
+//! split archive included. Where an entry's data is cut short, as the last entry of such a
+//! segment or of a truncated archive is, Tika's stream fails the whole document; the native
+//! parser records the entry as unreadable and keeps the entries before it.
 
 use std::collections::HashSet;
 
 use super::nesting::Scan;
-use super::write_entry_div;
+use super::{record_unreadable, write_entry_div};
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::salvage;
-use crate::compress::zip::stream::ZipStream;
+use crate::compress::zip::stream::{self, ZipStream};
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
 use crate::config::ParserConfigs;
-use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
+use crate::formats::embedded::{
+    record_exception, record_stream_exception, Wrapping, ENCRYPTED_DOCUMENT, INTERNAL_PATH,
+    RESOURCE_NAME,
+};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
@@ -172,11 +181,8 @@ impl Parser for ZipParser {
             }));
         }
         if metadata.get(Key::Salvaged.name()) != Some("true") {
-            return Err(Declined::Deferred(
-                "commons-compress's ZipFile cannot open the archive, nor did Tika's detector \
-                 salvage it, which Tika then reads entry by entry"
-                    .to_owned(),
-            ));
+            let streamed = Streamed::scan(input)?;
+            return Ok(Box::new(move |xhtml| streamed.write(input, xhtml)));
         }
         let salvaged = salvage(input).map_err(|unsalvaged| {
             Declined::Deferred(format!(
@@ -279,10 +285,7 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
         if entry.uses_encryption() {
             record_unread(
                 xhtml,
-                &format!(
-                    "org.apache.tika.exception.EncryptedDocumentException: stream ({name}) is \
-                     encrypted"
-                ),
+                &format!("{ENCRYPTED_DOCUMENT}: stream ({name}) is encrypted"),
             );
             continue;
         }
@@ -344,12 +347,158 @@ fn update_media_type(zip: &ZipFile, metadata: &mut TikaMetadata) {
     } else {
         ZIP
     };
+    set_media_type(kind, metadata);
+}
+
+/// `setMediaTypeIfNotSpecialization`: `kind`, unless the archive was detected as a
+/// specialization of ZIP.
+fn set_media_type(kind: &str, metadata: &mut TikaMetadata) {
     let specialization = metadata
         .get("Content-Type")
         .and_then(MediaType::parse)
         .is_some_and(|incoming| ZIP_SPECIALIZATIONS.contains(&incoming.as_str()));
     if !specialization {
         metadata.set("Content-Type", kind);
+    }
+}
+
+/// The stream an archive `ZipFile` cannot open is read with: one that allows stored entries
+/// with a data descriptor, as Tika's retry does, and skips a split archive's signature.
+fn local_headers(input: &[u8]) -> ZipStream<'_> {
+    ZipStream::new(input, true).skipping_split_signature()
+}
+
+/// What reading an archive by its local headers finds before it is written: the names of the
+/// entries that occur more than once, at most a hundred, in order.
+struct Streamed {
+    duplicates: Vec<String>,
+}
+
+impl Streamed {
+    /// Reads each entry of the archive `input`, to rule out what the native path does not read
+    /// as Tika's does, and finds the duplicate names.
+    fn scan(input: &[u8]) -> Result<Self, Declined> {
+        let mut stream = local_headers(input);
+        let mut scan = Scan::new();
+        let mut seen = HashSet::new();
+        let mut duplicates = Vec::new();
+        while let Ok(Some(entry)) = stream.next_entry() {
+            if entry.is_directory() {
+                continue;
+            }
+            if entry_name(&entry).is_none() {
+                return Err(Declined::Deferred(format!(
+                    "the name of the entry {} is detected in a charset the native decoders do \
+                     not decode",
+                    entry.name
+                )));
+            }
+            match stream.content() {
+                Ok(Content::Complete(content)) => {
+                    if let Some(reason) = scan.entry(&content) {
+                        return Err(Declined::Deferred(reason));
+                    }
+                }
+                Ok(Content::Oversized(_)) => {
+                    return Err(Declined::Deferred(format!(
+                        "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
+                         path streams",
+                        entry.name
+                    )))
+                }
+                Err(stream::Failure::Method(method)) => {
+                    return Err(Declined::Deferred(format!(
+                        "the entry {} is compressed with method {method}, which the port does \
+                         not decompress",
+                        entry.name
+                    )))
+                }
+                Ok(Content::Truncated(_)) => break,
+                Err(_) => continue,
+            }
+            if !seen.insert(entry.name.clone()) && duplicates.len() < MAX_INTEGRITY_CHECK_ENTRIES {
+                duplicates.push(entry.name);
+            }
+        }
+        if let Some(reason) = scan.document(input.len()) {
+            return Err(Declined::Deferred(reason));
+        }
+        Ok(Streamed { duplicates })
+    }
+
+    /// `parseWithStream`: the duplicate names as the integrity check's result, which cannot
+    /// compare the entries with a central directory, then each entry but a directory up to
+    /// the first whose data cannot be read whole or where the stream fails.
+    fn write(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let metadata = xhtml.metadata_mut();
+        set_media_type(ZIP, metadata);
+        if self.duplicates.is_empty() {
+            metadata.set("zip:integrity-check-result", "PARTIAL");
+        } else {
+            metadata.set("zip:integrity-check-result", "FAIL");
+            for name in &self.duplicates {
+                metadata.add("zip:duplicate-entry-names", name.clone());
+            }
+        }
+        let mut stream = local_headers(input);
+        loop {
+            let entry = match stream.next_entry() {
+                Ok(Some(entry)) => entry,
+                Ok(None) => return Ok(()),
+                Err(failure) => {
+                    record_exception(
+                        xhtml.metadata_mut(),
+                        &format!(
+                            "java.util.zip.ZipException: the local header after the last entry \
+                             cannot be read: {failure:?}"
+                        ),
+                    );
+                    return Ok(());
+                }
+            };
+            if entry.is_directory() {
+                continue;
+            }
+            let name = entry_name(&entry).ok_or_else(|| {
+                Failure::Malformed(format!("the name of {} cannot be decoded", entry.name))
+            })?;
+            let name = zip_file::entry_name(name, entry.version_made_by);
+            if entry.uses_encryption() {
+                record_unread(
+                    xhtml,
+                    &format!("{ENCRYPTED_DOCUMENT}: stream ({name}) is encrypted"),
+                );
+                continue;
+            }
+            match stream.content() {
+                Ok(Content::Complete(content)) => {
+                    let metadata = entry_metadata(&entry, &name);
+                    write_entry_div(xhtml, &name)?;
+                    xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;
+                }
+                Ok(Content::Truncated(_)) => {
+                    record_unreadable(
+                        xhtml.metadata_mut(),
+                        &name,
+                        "Truncated ZIP file: its data ends with the archive, as the last entry \
+                         of a split archive's segment does",
+                    );
+                    return Ok(());
+                }
+                Err(_) => record_unread(
+                    xhtml,
+                    &format!(
+                        "org.apache.tika.exception.TikaException: Can't read archive stream \
+                         ({name})"
+                    ),
+                ),
+                Ok(Content::Oversized(_)) => {
+                    return Err(Failure::Malformed(format!(
+                        "the entry {name} was not deferred, but its data cannot be read"
+                    )))
+                }
+            }
+        }
     }
 }
 
@@ -492,14 +641,15 @@ mod tests {
     }
 
     #[test]
-    fn reads_archives_zip_file_cannot_open_as_the_detection_salvaged_them() {
+    fn reads_archives_zip_file_cannot_open_by_their_local_headers_or_as_salvaged() {
         let data = zip(&[("a", b"hej")]);
         let cut = &data[..data.len() - 10];
-        let reason = defers(cut).unwrap();
-        assert!(
-            reason.contains("nor did Tika's detector salvage it"),
-            "{reason}"
-        );
+        assert_eq!(defers(cut), None);
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(cut)
+            .unwrap();
+        assert!(xml.contains("<p>hej</p>"), "{xml}");
         let mut salvaged = TikaMetadata::new();
         salvaged.set(Key::Salvaged.name(), "true");
         assert_eq!(

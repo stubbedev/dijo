@@ -134,7 +134,7 @@ impl Unpack<'_> {
         }
         prg.kind = self.filters[parent].prg.kind;
         if prg.global.len() < FIXED {
-            prg.global = vec![None; FIXED];
+            prg.global = vec![0; FIXED];
         }
         for i in 0..7 {
             prg.set_global(i * 4, prg.init_r[i as usize])?;
@@ -144,7 +144,7 @@ impl Unpack<'_> {
         prg.set_global(0x24, 0)?;
         prg.set_global(0x28, 0)?;
         prg.set_global(0x2c, stack_filter.exec_count)?;
-        prg.global[0x30..FIXED].fill(Some(0));
+        prg.global[0x30..FIXED].fill(0);
         if first_byte & 8 != 0 {
             if input.overflows(3) {
                 return Ok(false);
@@ -153,16 +153,16 @@ impl Unpack<'_> {
             if data_size as u32 > (VM_GLOBALMEMSIZE - VM_FIXEDGLOBALSIZE) as u32 {
                 return Ok(false);
             }
-            let cur_size = prg.global.len() as i32;
-            if cur_size < data_size + VM_FIXEDGLOBALSIZE {
-                prg.resize_global(data_size + VM_FIXEDGLOBALSIZE - cur_size)?;
+            let size = data_size + VM_FIXEDGLOBALSIZE;
+            if (prg.global.len() as i32) < size {
+                prg.resize_global(size)?;
             }
             for i in 0..data_size as usize {
                 if input.overflows(3) {
                     return Ok(false);
                 }
                 let byte = (input.getbits()? >> 8) as u8;
-                *prg.global.get_mut(FIXED + i).ok_or(OUT_OF_BOUNDS)? = Some(byte);
+                *prg.global.get_mut(FIXED + i).ok_or(OUT_OF_BOUNDS)? = byte;
                 input.addbits(8);
             }
         }
@@ -232,7 +232,7 @@ impl Unpack<'_> {
                     return Err(NULL);
                 };
                 self.run_filter(&mut next)?;
-                filtered = filtered_from_global(&next.prg)?;
+                filtered = self.filtered_from_memory(&next.prg)?;
             }
             self.input.io.write(&filtered, 0, filtered.len() as i32)?;
             self.written_file_size += filtered.len() as i64;
@@ -254,14 +254,14 @@ impl Unpack<'_> {
             .ok_or(OUT_OF_BOUNDS)?;
         let parent_global = &self.filters[parent].prg.global;
         if parent_global.len() > FIXED {
-            filter.prg.global.resize(parent_global.len(), None);
+            filter.prg.global.resize(parent_global.len(), 0);
             filter.prg.global[FIXED..].copy_from_slice(&parent_global[FIXED..]);
         }
         self.execute_code(&mut filter.prg)?;
         let parent_global = &mut self.filters[parent].prg.global;
         if filter.prg.global.len() > FIXED {
             if parent_global.len() < filter.prg.global.len() {
-                parent_global.resize(filter.prg.global.len(), None);
+                parent_global.resize(filter.prg.global.len(), 0);
             }
             let length = filter.prg.global.len();
             parent_global[FIXED..length].copy_from_slice(&filter.prg.global[FIXED..]);
@@ -282,7 +282,8 @@ impl Unpack<'_> {
         self.vm.execute(prg)
     }
 
-    /// The output of the first filter run over a block, from the memory.
+    /// The output of a filter run over a block, from the memory, where unrar takes it from
+    /// for each filter of a chain; junrar takes a chained filter's from its global data (#122).
     fn filtered_from_memory(&self, prg: &Program) -> Result<Vec<u8>, Thrown> {
         let size = usize::try_from(prg.filtered_data_size).map_err(|_| NEGATIVE_SIZE)?;
         let offset = usize::try_from(prg.filtered_data_offset).map_err(|_| OUT_OF_BOUNDS)?;
@@ -323,23 +324,3 @@ impl Unpack<'_> {
 }
 
 const NEGATIVE_SIZE: Thrown = Thrown("a NegativeArraySizeException");
-
-/// The output of a filter run over the output of the one before it, which junrar takes from
-/// the filter's global data rather than from the memory, where the filter left it.
-fn filtered_from_global(prg: &Program) -> Result<Vec<u8>, Thrown> {
-    let size = usize::try_from(prg.filtered_data_size).map_err(|_| NEGATIVE_SIZE)?;
-    let offset = prg.filtered_data_offset;
-    (0..size)
-        .map(|i| {
-            let index = usize::try_from(offset)
-                .ok()
-                .and_then(|offset| offset.checked_add(i))
-                .ok_or(OUT_OF_BOUNDS)?;
-            match prg.global.get(index) {
-                Some(Some(byte)) => Ok(*byte),
-                Some(None) => Err(NULL),
-                None => Err(OUT_OF_BOUNDS),
-            }
-        })
-        .collect()
-}

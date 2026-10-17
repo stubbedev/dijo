@@ -8,19 +8,12 @@ use super::bits::{BitInput, MAX_SIZE};
 use super::{Thrown, OUT_OF_BOUNDS};
 use crate::compress::MAX_DECODED;
 
-/// Where an extraction's unpacked data goes: kept, or dropped as junrar's `NullOutputStream`
-/// drops the data of an entry it skips in a solid archive.
-pub(in crate::formats::archive::rar) enum Sink {
-    Keep(Vec<u8>),
-    Discard,
-}
-
 /// `ComprDataIO` over the archive's bytes.
 pub(super) struct DataIo<'a> {
     archive: &'a [u8],
     position: u64,
     packed_left: i64,
-    sink: Sink,
+    unpacked: Vec<u8>,
     crc: Crc,
     /// The bytes every extraction of the archive kept, which [`MAX_DECODED`] bounds.
     kept: usize,
@@ -32,24 +25,24 @@ impl<'a> DataIo<'a> {
             archive,
             position: 0,
             packed_left: 0,
-            sink: Sink::Discard,
+            unpacked: Vec::new(),
             crc: Crc::new(),
             kept: 0,
         }
     }
 
     /// `init(OutputStream)` and `init(FileHeader)`: the packed data of `packed` bytes from
-    /// `start` on, unpacked into `sink`, with a fresh CRC.
-    pub(super) fn start(&mut self, sink: Sink, start: u64, packed: i64) {
-        self.sink = sink;
+    /// `start` on, unpacked afresh, with a fresh CRC.
+    pub(super) fn start(&mut self, start: u64, packed: i64) {
+        self.unpacked = Vec::new();
         self.position = start;
         self.packed_left = packed;
         self.crc = Crc::new();
     }
 
-    /// What the extraction kept, once it is over.
-    pub(super) fn take_sink(&mut self) -> Sink {
-        std::mem::replace(&mut self.sink, Sink::Discard)
+    /// What the extraction unpacked, once it is over.
+    pub(super) fn take_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.unpacked)
     }
 
     /// The CRC-32 of the data written since [`DataIo::start`].
@@ -95,13 +88,11 @@ impl<'a> DataIo<'a> {
             .zip(usize::try_from(count).ok())
             .and_then(|(offset, count)| data.get(offset..offset.checked_add(count)?))
             .ok_or(OUT_OF_BOUNDS)?;
-        if let Sink::Keep(kept) = &mut self.sink {
-            self.kept += unpacked.len();
-            if self.kept > MAX_DECODED {
-                return Err(TOO_LARGE);
-            }
-            kept.extend_from_slice(unpacked);
+        self.kept += unpacked.len();
+        if self.kept > MAX_DECODED {
+            return Err(TOO_LARGE);
         }
+        self.unpacked.extend_from_slice(unpacked);
         self.crc.update(unpacked);
         Ok(())
     }

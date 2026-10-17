@@ -845,7 +845,7 @@ impl<'h> Xhtml<'h> {
             Err(bridged) => self.parse_with_tika(bridged, data, metadata, open, target),
             #[cfg(not(feature = "tika"))]
             Err(Bridged::Declined(parser, Declined::Fails(error))) => {
-                self.record_unread(parser, metadata, &error.to_string())
+                self.record_unread(parser, metadata, &embedded::error_reason(&error))
             }
             #[cfg(not(feature = "tika"))]
             Err(Bridged::Declined(parser, Declined::Deferred(reason))) => {
@@ -981,7 +981,7 @@ impl<'h> Xhtml<'h> {
             Err(Failure::Stopped(stop)) => return Ended::Stopped(stop),
             Err(failure @ Failure::Embedded(_)) => return Ended::Failed(failure),
             Err(Failure::Malformed(reason)) => reason,
-            Err(Failure::Extraction(error)) => error.to_string(),
+            Err(Failure::Extraction(error)) => embedded::error_reason(&error),
         };
         let failure = embedded::describe_failure(parser.name(), metadata, &reason);
         self.embedding.absorb_failures(&parsed, Some(failure));
