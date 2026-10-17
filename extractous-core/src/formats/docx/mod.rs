@@ -298,8 +298,7 @@ impl<'a> Document<'a> {
     }
 
     /// `resolveEmfNames` of what the `references` of `part` say of the OLE objects it embeds,
-    /// added to the `described` parts of the document, where a later part replaces what an
-    /// earlier one says of an object by the same relationship id.
+    /// added to the `described` parts of the document under `part`.
     fn describe(
         &self,
         part: usize,
@@ -324,7 +323,10 @@ impl<'a> Document<'a> {
                         .clone()
                 });
             let prog_id = reference.prog_id;
-            described.insert(id, DescribedPart { prog_id, full_name });
+            described
+                .entry(part)
+                .or_default()
+                .insert(id, DescribedPart { prog_id, full_name });
         }
     }
 

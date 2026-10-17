@@ -314,8 +314,10 @@ pub(crate) struct DescribedPart {
     pub(crate) full_name: Option<String>,
 }
 
-/// The `EmbeddedPartMetadata` of an extractor, by the id of the relationship to the part.
-pub(crate) type DescribedParts = HashMap<String, DescribedPart>;
+/// The `EmbeddedPartMetadata` of an extractor, by the part that describes it and the id of that
+/// part's relationship to it. Tika keys it by the id alone, so a part describing an object by an
+/// id another part has described one by replaces what that part said (#127).
+pub(crate) type DescribedParts = HashMap<usize, HashMap<String, DescribedPart>>;
 
 /// `updateMetadata`: an OLE 2.0 object's program and its name, even an absent one.
 fn describe_object(described: Option<&DescribedPart>, metadata: &mut TikaMetadata) {
@@ -389,7 +391,9 @@ pub(crate) fn write_embedded_parts_but(
                 source_description(package.name(source)),
                 relationship.id
             );
-            let described = described.get(&relationship.id);
+            let described = described
+                .get(&source)
+                .and_then(|described| described.get(&relationship.id));
             match embedding {
                 Embedding::File(resource_type) => {
                     let file = EmbeddedFile {
