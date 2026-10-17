@@ -569,6 +569,52 @@ fn decoded(text: &[u8], char_set: CharSet) -> Option<String> {
     }
 }
 
+/// The line breaks Tika's text output has for the `meta` elements of the metadata `departures`
+/// leave unset, in Tika's streamed UTF-8 XHTML `tika`: those of the heads nested in its body,
+/// which a parser that writes whole documents into its own writes, each followed by a line break
+/// that the text output keeps.
+#[cfg(feature = "tika")]
+fn nested_head_breaks(tika: &str, departures: Departures) -> usize {
+    let Some(body) = tika.find("<body") else {
+        return 0;
+    };
+    departures
+        .iter()
+        .filter_map(|departure| match departure {
+            Departure::Unset(name, _) => Some(
+                tika[body..]
+                    .matches(&format!("<meta name=\"{name}\" content=\""))
+                    .count(),
+            ),
+            _ => None,
+        })
+        .sum()
+}
+
+/// Tika's text output without the `breaks` line breaks of the nested `meta` elements of metadata
+/// the native parser leaves unset, where they are all that sets it apart from the native one:
+/// exactly that many, or, where the length limit `cut` both, up to that many, Tika's then taking
+/// the native text's end, which those line breaks had left no room for.
+#[cfg(feature = "tika")]
+fn without_nested_head_breaks(
+    mut tika: Extracted,
+    native: &Extracted,
+    char_set: CharSet,
+    cut: Option<Output>,
+    breaks: usize,
+) -> Extracted {
+    let (Some(tika_text), Some(native_text)) = (
+        decoded(&tika.text, char_set),
+        decoded(&native.text, char_set),
+    ) else {
+        return tika;
+    };
+    if let Some(text) = without_line_breaks(&tika_text, &native_text, cut, breaks, 0) {
+        tika.text = encoded_as(&text, char_set);
+    }
+    tika
+}
+
 /// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
 /// without their frames.
 fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
@@ -984,6 +1030,9 @@ struct Naming<'a> {
 pub(crate) enum Departure<'a> {
     /// The values of a metadata name, not compared, in the metadata nor in the XHTML head.
     Values(&'a str, &'a str),
+    /// A metadata name Tika's path sets wrongly and the native parser does not set: left out of
+    /// both results, in the metadata and as each `meta` element of the XHTML head.
+    Unset(&'a str, &'a str),
     /// Line breaks: the text is compared with each CRLF an LF, where Tika's path makes a line
     /// feed a CRLF.
     LineBreaks(&'a str),
@@ -1017,7 +1066,14 @@ fn without_departures(
         .iter()
         .filter_map(|departure| match departure {
             Departure::Values(name, _) => Some(*name),
-            Departure::LineBreaks(_) | Departure::PngImages(_) => None,
+            Departure::Unset(..) | Departure::LineBreaks(_) | Departure::PngImages(_) => None,
+        })
+        .collect();
+    let unset: Vec<&str> = departures
+        .iter()
+        .filter_map(|departure| match departure {
+            Departure::Unset(name, _) => Some(*name),
+            _ => None,
         })
         .collect();
     for (name, values) in &mut extracted.metadata {
@@ -1030,6 +1086,9 @@ fn without_departures(
     let Some(mut text) = decoded(&extracted.text, char_set) else {
         return extracted;
     };
+    for name in unset {
+        without_metadata(&mut text, &mut extracted.metadata, name);
+    }
     if departures
         .iter()
         .any(|departure| matches!(departure, Departure::LineBreaks(_)))
@@ -1902,6 +1961,12 @@ fn compare(
             ),
             _ => 0,
         };
+        let unset_breaks = match (&expected, &comparisons[0].3) {
+            (Expected::Same(naming), Ok(tika)) => {
+                nested_head_breaks(&String::from_utf8_lossy(&tika.text), naming.departures)
+            }
+            _ => 0,
+        };
         if let Some((tika, native)) = &ocr {
             for (tika, native) in tika.iter().zip(native) {
                 if !tika.trim().is_empty() && native.trim().is_empty() {
@@ -1949,12 +2014,27 @@ fn compare(
                             }
                             native.text = with_the_body_end_tika_leaks(native.text, &tika.text);
                             let (tika, native) = cut_alike(tika, native, naming.departures);
-                            match rewrite {
-                                Some(_) => cut_texts(tika, native),
-                                None => (tika, native),
+                            let unset = naming
+                                .departures
+                                .iter()
+                                .any(|departure| matches!(departure, Departure::Unset(..)));
+                            if rewrite.is_some() || unset {
+                                cut_texts(tika, native)
+                            } else {
+                                (tika, native)
                             }
                         }
                         None => (tika, native),
+                    };
+                    let tika = match output {
+                        Output::Text if unset_breaks > 0 => without_nested_head_breaks(
+                            tika,
+                            &native,
+                            char_set,
+                            (entry == "string").then_some(output),
+                            unset_breaks,
+                        ),
+                        _ => tika,
                     };
                     let (tika, native) = without_adjustments(
                         tika,

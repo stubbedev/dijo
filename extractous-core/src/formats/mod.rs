@@ -1629,13 +1629,17 @@ mod tests {
                     "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
                     _ => None,
                 };
-                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared.
+                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, and that of
+                // #118 the source language XLIFF stores as `original`.
                 let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
                     | "extractous::MboxParser" => crate::formats::mail::tests::DEPARTURES.to_vec(),
                     "extractous::OfficeParser" => {
                         crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
+                    }
+                    "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
+                        crate::formats::translation::tests::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }
                     _ => Vec::new(),
                 };
