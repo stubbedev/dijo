@@ -89,6 +89,65 @@ fn assert_bounded(path: &Path, min_output: u64) {
     );
 }
 
+/// Extracts the metadata of `path` as JSON with Tika's raw keys, returning the output and the
+/// peak resident memory of the extraction.
+fn extract_metadata(path: &Path) -> (String, u64) {
+    let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
+        .args(["--format", "json", "--raw-metadata"])
+        .arg(path)
+        .stderr(Stdio::inherit())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut usage) },
+        0
+    );
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        usage.ru_maxrss as u64 * 1024,
+    )
+}
+
+/// A file of `length` bytes that starts with `head`, the rest a hole that reads as zeros.
+fn sparse(path: &Path, head: &[u8], length: u64) {
+    fs::write(path, head).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_len(length)
+        .unwrap();
+}
+
+#[test]
+#[ignore = "generates gigabytes; run with `just test-large`"]
+fn a_long_recording_is_read_natively_and_only_in_part() {
+    let scratch = Scratch::new("recording");
+    let path = scratch.0.join("long.wav");
+    let samples: u32 = 3 << 30;
+    let mut wave = b"RIFF".to_vec();
+    wave.extend((36 + samples).to_le_bytes());
+    wave.extend(b"WAVEfmt ");
+    for field in [16u32, 0x0002_0001, 44_100, 44_100 * 4, 0x0010_0004] {
+        wave.extend(field.to_le_bytes());
+    }
+    wave.extend(b"data");
+    wave.extend(samples.to_le_bytes());
+    let length = wave.len() as u64 + u64::from(samples);
+    sparse(&path, &wave, length);
+    let (output, peak_rss) = extract_metadata(&path);
+    assert!(output.contains("extractous::AudioParser"), "{output}");
+    assert!(output.contains("\"xmpDM:audioSampleRate\""), "{output}");
+    assert!(
+        peak_rss < MAX_RSS_BYTES,
+        "peak RSS {} MiB for {} MiB of input",
+        peak_rss >> 20,
+        length >> 20
+    );
+}
+
 #[test]
 #[ignore = "generates gigabytes; run with `just test-large`"]
 fn large_text_extracts_in_bounded_memory() {
