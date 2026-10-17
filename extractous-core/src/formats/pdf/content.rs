@@ -155,6 +155,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// `BaseParser.parseDirObject` as `COSParser` reads an indirect object: the object, or
+    /// `Some(None)` where it reads none, or `None` where it throws. A lone `R` reads as `null`,
+    /// a reference to nothing.
+    pub(super) fn file_object(&mut self) -> Result<Option<Option<Object>>, Unported> {
+        match self.parse_direct_object() {
+            Ok(Direct::Object(object)) => Ok(Some(Some(object))),
+            Ok(Direct::Reference) => Ok(Some(Some(Object::Null))),
+            Ok(Direct::Skipped) => Ok(Some(None)),
+            Err(Nested::Stop) => Ok(None),
+            Err(Nested::Failed(unported)) => Err(unported),
+        }
+    }
+
     pub(super) fn peek(&self) -> Option<u8> {
         self.data.get(self.pos).copied()
     }

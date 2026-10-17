@@ -1648,6 +1648,8 @@ mod tests {
         sparse(&mp4, &mp4_header(7200, large - header.len() as u64), large);
         let pdf = dir.join("long.pdf");
         sparse(&pdf, b"%PDF-1.4\n", large);
+        let rtf = dir.join("long.rtf");
+        sparse(&rtf, b"{\\rtf1 ", large);
         for (path, parser) in [
             (&wave, "extractous::AudioParser"),
             (&mp4, "extractous::MP4Parser"),
@@ -1661,7 +1663,10 @@ mod tests {
                 routed.parser.tika_name(),
             );
         }
-        assert!(route_file(pdf.to_str().unwrap()).is_none());
+        let routed = route_file(pdf.to_str().unwrap()).unwrap();
+        assert_eq!(routed.parser.name(), pdf::PdfParser.name());
+        assert!(routed.input.is_mapped());
+        assert!(route_file(rtf.to_str().unwrap()).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

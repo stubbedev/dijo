@@ -77,7 +77,7 @@ pub(super) struct PageContent {
 
 /// The text extraction engine of one document.
 pub(super) struct Engine<'p> {
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     fonts: HashMap<Identity, Rc<Font>>,
     default_font: Option<Rc<Font>>,
     unshared: usize,
@@ -102,7 +102,7 @@ struct Frame {
 /// One page being processed.
 struct Run<'p, 'e> {
     engine: &'e mut Engine<'p>,
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     page: Page<'p>,
     rotation: i32,
     page_box: [f32; 4],

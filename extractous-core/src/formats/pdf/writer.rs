@@ -185,7 +185,7 @@ impl Callbacks for PageWriter<'_, '_> {
 
 /// The document being written.
 pub(super) struct DocumentWriter<'p, 'r> {
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     engine: Engine<'p>,
     pub(super) page: PageWriter<'p, 'r>,
     /// `getCurrentPageNo`.

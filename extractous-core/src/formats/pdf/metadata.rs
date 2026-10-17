@@ -37,10 +37,7 @@ pub(super) fn scan_startxrefs(input: &[u8]) -> Vec<StartXRef> {
     let mut offsets = Vec::new();
     let mut position = 0;
     while position + STARTXREF.len() <= input.len() {
-        let Some(found) = input[position..]
-            .windows(STARTXREF.len())
-            .position(|window| window == STARTXREF)
-        else {
+        let Some(found) = memchr::memmem::find(&input[position..], STARTXREF) else {
             break;
         };
         let start = position + found;
@@ -289,7 +286,7 @@ pub(super) fn document(
     }
     metadata.set("xmpTPg:NPages", pdf.number_of_pages()?.to_string());
     let empty = lopdf::Dictionary::new();
-    let info = pdf.dict(&pdf.doc.trailer, b"Info").unwrap_or(&empty);
+    let info = pdf.dict(pdf.trailer(), b"Info").unwrap_or(&empty);
     let title = pdf.text(info, b"Title");
     let author = pdf.text(info, b"Author");
     let creator = pdf.text(info, b"Creator");
