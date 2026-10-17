@@ -6,8 +6,12 @@
 //! - jsoup decodes the bytes with the detected charset's superset, unless they start with a byte
 //!   order mark, which overrides it (`DataUtil.detectCharsetFromBom`, without its padding of
 //!   a short input with zeros, which reads `FF FE` alone as UTF-32: #85);
-//! - a port of jsoup 1.23.2's tokeniser and tree builder, with Tika's tag set, builds the
-//!   document ([`tree_builder`]);
+//! - html5ever builds the document by the WHATWG parsing algorithm ([`tree_builder`]), where
+//!   Tika's jsoup departs from it (#84): jsoup keeps a CR and a NUL, reads U+FFFF as the end of
+//!   the input, closes `<div/>` and the other tags Tika lets close themselves, never fosters text
+//!   out of a table, keeps white space before `head` and after `body`, caps its stack of open
+//!   elements and its reconstruction of formatting elements, and reads `applet` scope and SVG
+//!   `foreignObject` wrongly;
 //! - Tika's traversal and `HtmlHandler` write it ([`handler`]).
 //!
 //! A document defers to Tika when a detector may name a charset the native decoders do not
@@ -15,12 +19,7 @@
 //! ([`handler::deferral`]).
 
 mod dom;
-mod entities;
 mod handler;
-mod reader;
-mod tags;
-mod token;
-mod tokeniser;
 mod tree_builder;
 
 #[cfg(test)]
@@ -29,7 +28,6 @@ mod reference;
 mod trees;
 
 use dom::Dom;
-use reader::Source;
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
@@ -37,6 +35,15 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
 use crate::text::charset::{self, Charset, Detection};
+
+/// Where the text the parser writes departs from Tika's, for the parity tests of every parser
+/// that hands it HTML: the WHATWG algorithm makes each line break an LF, drops the white space
+/// before `head`, and puts the white space after `</body>` in the body (#84).
+#[cfg(feature = "tika")]
+pub const DEPARTURES: extractous_base::formats::parity::Departures =
+    &[extractous_base::formats::parity::Departure::BlankLines(
+        "#84",
+    )];
 
 /// Tika's `JSoupParser`.
 pub struct JSoupParser;
@@ -87,9 +94,10 @@ pub fn prepare(input: &[u8], metadata: &TikaMetadata) -> Result<Prepared<'static
     }))
 }
 
-/// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units.
+/// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units: a
+/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it.
 pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Deferral> {
-    let dom = tree_builder::parse(html, Source::String);
+    let dom = tree_builder::parse(&String::from_utf16_lossy(html));
     if let Some(reason) = handler::deferral(&dom, None) {
         return Err(reason.to_owned());
     }
@@ -137,14 +145,13 @@ struct Document {
 fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
     let detection = charset::detect(input, content_type);
     let text = decode(input, detection.decode_as)?;
-    let units: Vec<u16> = text.encode_utf16().collect();
     Ok(Document {
         detection,
-        dom: tree_builder::parse(&units, Source::Stream),
+        dom: tree_builder::parse(&text),
     })
 }
 
-/// A document `Jsoup.parse` builds from a string, for a parser that walks its nodes itself.
+/// A document parsed from a string, for a parser that walks its nodes itself.
 pub struct ParsedDocument(Dom);
 
 /// A node of a [`ParsedDocument`], as a `NodeFilter` sees it.
@@ -155,18 +162,15 @@ pub enum ParsedNode<'d> {
         name: &'d str,
         attributes: Vec<(&'d str, &'d str)>,
     },
-    /// A text node (`TextNode`, which a CDATA section is too): its whole text.
+    /// A text node: its whole text, as adjacent text is one node.
     Text(&'d str),
-    /// The data of a `script` or `style` element (`DataNode`).
-    Data(&'d str),
     /// Any other node, by its name: `#comment` or `#doctype`.
     Other(&'static str),
 }
 
 impl ParsedDocument {
     pub fn parse(html: &str) -> Self {
-        let units: Vec<u16> = html.encode_utf16().collect();
-        Self(tree_builder::parse(&units, Source::String))
+        Self(tree_builder::parse(html))
     }
 
     /// The document node, the root of the tree.
@@ -180,23 +184,17 @@ impl ParsedDocument {
 
     pub fn node(&self, node: usize) -> ParsedNode<'_> {
         match &self.0.node(node).data {
-            dom::NodeData::Document { .. } => ParsedNode::Document,
-            dom::NodeData::Element { .. } => ParsedNode::Element {
-                name: &self.0.tag(node).name,
-                attributes: self
-                    .0
-                    .attributes(node)
+            dom::NodeData::Document => ParsedNode::Document,
+            dom::NodeData::Element {
+                name, attributes, ..
+            } => ParsedNode::Element {
+                name,
+                attributes: attributes
                     .iter()
-                    .map(|attribute| {
-                        (
-                            attribute.key.as_str(),
-                            attribute.value.as_deref().unwrap_or(""),
-                        )
-                    })
+                    .map(|attribute| (attribute.key.as_str(), attribute.value.as_str()))
                     .collect(),
             },
-            dom::NodeData::Text(text) | dom::NodeData::CData(text) => ParsedNode::Text(text),
-            dom::NodeData::Data(data) => ParsedNode::Data(data),
+            dom::NodeData::Text(text) => ParsedNode::Text(text),
             dom::NodeData::Comment(_) => ParsedNode::Other("#comment"),
             dom::NodeData::Doctype { .. } => ParsedNode::Other("#doctype"),
         }
@@ -230,10 +228,15 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    use crate::formats::parity::{assert_same_as_tika_departing, conformance_corpus, documents};
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.html.JSoupParser";
+
+    #[cfg(feature = "tika")]
+    fn assert_same_as_whatwg_tika(documents: &[&Path]) {
+        assert_same_as_tika_departing(documents, TIKA_NAME, DEPARTURES);
+    }
 
     #[cfg(feature = "tika")]
     #[test]
@@ -249,7 +252,7 @@ mod tests {
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         assert!(parsed.len() >= 3, "{} documents", parsed.len());
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
+        assert_same_as_whatwg_tika(&paths);
     }
 
     #[cfg(feature = "tika")]
@@ -278,7 +281,7 @@ mod tests {
             .map(PathBuf::as_path)
             .partition(|path| path.ends_with(TWO_TITLES));
         assert_eq!(departing.len(), 1);
-        assert_same_as_tika(&paths, TIKA_NAME);
+        assert_same_as_whatwg_tika(&paths);
         let (_, metadata) = crate::Extractor::new()
             .extract_file_to_string(departing[0].to_str().unwrap())
             .unwrap();
