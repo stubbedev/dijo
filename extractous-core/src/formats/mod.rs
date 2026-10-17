@@ -1230,7 +1230,7 @@ mod tests {
                 if exceptions.iter().any(|(exception, _)| *exception == name) {
                     continue;
                 }
-                // The fixes of #89, #99, #105 and #118 depart from Tika's path systematically.
+                // The fixes of #89, #99, #105, #118 and #132 depart from Tika's path systematically.
                 let head: crate::formats::parity::Normalisation =
                     crate::formats::dc_xml::without_head;
                 let departure: Option<(crate::formats::parity::NativeRewrite, _)> = match parser
@@ -1253,6 +1253,10 @@ mod tests {
                         Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
                     }
                     "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
+                    "extractous::ClassParser" => Some((
+                        crate::formats::class_file::as_written,
+                        Some(crate::formats::class_file::without_misread_access),
+                    )),
                     _ => None,
                 };
                 // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, and that of

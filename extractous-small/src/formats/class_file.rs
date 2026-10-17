@@ -29,10 +29,29 @@ const ACC_INTERFACE: u32 = 0x0200;
 const ACC_ABSTRACT: u32 = 0x0400;
 const ACC_SYNTHETIC: u32 = 0x1000;
 const ACC_ENUM: u32 = 0x4000;
-/// `writeAccess`'s keywords, in its order, each by the flag that writes it, whatever the flag
-/// means where it is set: a class's `ACC_SUPER` is `ACC_SYNCHRONIZED` to it, a method's
-/// `ACC_VARARGS` `ACC_TRANSIENT`.
-const ACCESS_KEYWORDS: [(u32, &str); 10] = [
+/// The keywords of a class's access flags, in `writeAccess`'s order. A class's `0x0020` is
+/// `ACC_SUPER`, which no source keyword writes.
+const CLASS_KEYWORDS: &[(u32, &str)] = &[
+    (ACC_PRIVATE, "private"),
+    (ACC_PROTECTED, "protected"),
+    (ACC_PUBLIC, "public"),
+    (ACC_STATIC, "static"),
+    (ACC_FINAL, "final"),
+    (ACC_ABSTRACT, "abstract"),
+];
+/// The keywords of a field's access flags, in `writeAccess`'s order.
+const FIELD_KEYWORDS: &[(u32, &str)] = &[
+    (ACC_PRIVATE, "private"),
+    (ACC_PROTECTED, "protected"),
+    (ACC_PUBLIC, "public"),
+    (ACC_STATIC, "static"),
+    (ACC_FINAL, "final"),
+    (ACC_TRANSIENT, "transient"),
+    (ACC_VOLATILE, "volatile"),
+];
+/// The keywords of a method's access flags, in `writeAccess`'s order. A method's `0x0040` is
+/// `ACC_BRIDGE` and its `0x0080` `ACC_VARARGS`, which no keyword writes.
+const METHOD_KEYWORDS: &[(u32, &str)] = &[
     (ACC_PRIVATE, "private"),
     (ACC_PROTECTED, "protected"),
     (ACC_PUBLIC, "public"),
@@ -40,8 +59,6 @@ const ACCESS_KEYWORDS: [(u32, &str); 10] = [
     (ACC_FINAL, "final"),
     (ACC_ABSTRACT, "abstract"),
     (ACC_SYNCHRONIZED, "synchronized"),
-    (ACC_TRANSIENT, "transient"),
-    (ACC_VOLATILE, "volatile"),
     (ACC_NATIVE, "native"),
 ];
 
@@ -601,9 +618,9 @@ fn read(bytes: &[u8]) -> Result<Class, Unread> {
 /// `XHTMLClassVisitor`'s writing of a class into the `pre` element.
 struct Writer<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
-    /// What a type's class name starts with where it is in the class's package: `null.` for a
-    /// class without one, as Tika's `packageName + "."` makes of it.
-    package_prefix: String,
+    /// What a type's class name starts with where it is in the class's package, none for a
+    /// class in the unnamed package.
+    package_prefix: Option<String>,
 }
 
 impl Writer<'_, '_> {
@@ -621,8 +638,8 @@ impl Writer<'_, '_> {
         self.span("java-keyword", keyword)
     }
 
-    fn access(&mut self, access: u32) -> Result<(), Failure> {
-        for (flag, keyword) in ACCESS_KEYWORDS {
+    fn access(&mut self, access: u32, keywords: &[(u32, &str)]) -> Result<(), Failure> {
+        for &(flag, keyword) in keywords {
             if access & flag != 0 {
                 self.keyword(keyword)?;
                 self.text(" ")?;
@@ -634,8 +651,10 @@ impl Writer<'_, '_> {
     /// `writeType`: the class name, without the class's package or `java.lang`.
     fn kind(&mut self, kind: &JavaType) -> Result<(), Failure> {
         let name = kind.class_name();
-        let shown = name
-            .strip_prefix(self.package_prefix.as_str())
+        let shown = self
+            .package_prefix
+            .as_deref()
+            .and_then(|prefix| name.strip_prefix(prefix))
             .or_else(|| name.strip_prefix("java.lang."))
             .unwrap_or(&name)
             .to_owned();
@@ -662,7 +681,7 @@ impl Writer<'_, '_> {
             self.keyword("package")?;
             self.text(&format!(" {package};\n"))?;
         }
-        self.access(class.access)?;
+        self.access(class.access, CLASS_KEYWORDS)?;
         if class.access & ACC_INTERFACE != 0 {
             self.keyword("interface")?;
             self.text(" ")?;
@@ -697,7 +716,7 @@ impl Writer<'_, '_> {
             return Ok(());
         }
         self.text("    ")?;
-        self.access(field.access)?;
+        self.access(field.access, FIELD_KEYWORDS)?;
         self.kind(&field.kind)?;
         self.text(" ")?;
         self.span("java-identifier", &field.name)?;
@@ -714,7 +733,7 @@ impl Writer<'_, '_> {
             return Ok(());
         }
         self.text("    ")?;
-        self.access(method.access)?;
+        self.access(method.access, METHOD_KEYWORDS)?;
         self.kind(&method.returned)?;
         self.text(" ")?;
         if method.name == "<init>" {
@@ -788,7 +807,7 @@ impl Parser for ClassParser {
             xhtml
                 .metadata_mut()
                 .set("tk:resource-name", format!("{simple}.class"));
-            let package_prefix = format!("{}.", package.as_deref().unwrap_or("null"));
+            let package_prefix = package.as_deref().map(|package| format!("{package}."));
             let mut writer = Writer {
                 xhtml,
                 package_prefix,
@@ -806,6 +825,43 @@ impl Parser for ClassParser {
     }
 }
 
+/// For a parity comparison (#132): a text without the keywords Tika's path writes for access
+/// flags that no keyword stands for where they are set, `synchronized` for a class's
+/// `ACC_SUPER` and `transient` for a method's `ACC_VARARGS`, which the native parser leaves out.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn without_misread_access(text: &mut String) {
+    let without = |line: &str, word: &str| {
+        let span = format!("<span class=\"java-keyword\">{word}</span> ");
+        if line.contains(&span) {
+            line.replacen(&span, "", 1)
+        } else {
+            line.replacen(&format!("{word} "), "", 1)
+        }
+    };
+    let mut normalised = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let member = line.starts_with("    ");
+        if !member && line.contains("synchronized") {
+            normalised.push_str(&without(line, "synchronized"));
+        } else if member && line.contains('(') {
+            normalised.push_str(&without(line, "transient"));
+        } else {
+            normalised.push_str(line);
+        }
+    }
+    *text = normalised;
+}
+
+/// For a parity comparison whose departure only a normalisation of both texts takes out: the
+/// native result as it is.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_written(
+    _: &mut String,
+    _: &mut crate::formats::parity::ComparedMetadata,
+    _: &crate::formats::parity::ComparedMetadata,
+) {
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "tika")]
@@ -813,7 +869,74 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    use crate::formats::parity::{assert_same_as_tika_normalising, conformance_corpus, documents};
+
+    /// A class file of the class `access` `name` in the unnamed package, extending `Object`,
+    /// with the fields and methods given by their access, name and descriptor.
+    fn class_file(
+        access: u16,
+        name: &str,
+        fields: &[(u16, &str, &str)],
+        methods: &[(u16, &str, &str)],
+    ) -> Vec<u8> {
+        fn utf8(pool: &mut Vec<Vec<u8>>, text: &str) -> u16 {
+            let mut entry = vec![UTF8];
+            entry.extend(u16::try_from(text.len()).unwrap().to_be_bytes());
+            entry.extend(text.as_bytes());
+            pool.push(entry);
+            u16::try_from(pool.len()).unwrap()
+        }
+        fn class(pool: &mut Vec<Vec<u8>>, name: &str) -> u16 {
+            let name = utf8(pool, name);
+            pool.push([&[CLASS][..], &name.to_be_bytes()].concat());
+            u16::try_from(pool.len()).unwrap()
+        }
+        fn members(pool: &mut Vec<Vec<u8>>, list: &[(u16, &str, &str)]) -> Vec<u8> {
+            let mut bytes = u16::try_from(list.len()).unwrap().to_be_bytes().to_vec();
+            for (access, name, descriptor) in list {
+                bytes.extend(access.to_be_bytes());
+                bytes.extend(utf8(pool, name).to_be_bytes());
+                bytes.extend(utf8(pool, descriptor).to_be_bytes());
+                bytes.extend(0u16.to_be_bytes());
+            }
+            bytes
+        }
+        let mut pool = Vec::new();
+        let this = class(&mut pool, name);
+        let object = class(&mut pool, "java/lang/Object");
+        let fields = members(&mut pool, fields);
+        let methods = members(&mut pool, methods);
+        let mut bytes = vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 52];
+        bytes.extend(u16::try_from(pool.len() + 1).unwrap().to_be_bytes());
+        bytes.extend(pool.concat());
+        bytes.extend(access.to_be_bytes());
+        bytes.extend(this.to_be_bytes());
+        bytes.extend(object.to_be_bytes());
+        bytes.extend(0u16.to_be_bytes());
+        bytes.extend(fields);
+        bytes.extend(methods);
+        bytes.extend(0u16.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn writes_the_keywords_of_the_flags_set_and_types_by_their_names() {
+        let bytes = class_file(
+            0x0021,
+            "Wave",
+            &[(0x0082, "height", "Lnull/Crest;")],
+            &[(0x0081, "sum", "([I)I"), (0x0021, "<init>", "()V")],
+        );
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&bytes)
+            .unwrap();
+        assert_eq!(metadata["dc:title"], ["Wave"]);
+        assert_eq!(
+            text.trim(),
+            "public class Wave {\n    private transient null.Crest height;\n    \
+             public int sum(int[]);\n    public synchronized void Wave();\n}"
+        );
+    }
 
     #[test]
     fn names_types_as_asm_does() {
@@ -840,6 +963,11 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 2, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, ClassParser.tika_name());
+        assert_same_as_tika_normalising(
+            &paths,
+            ClassParser.tika_name(),
+            as_written,
+            without_misread_access,
+        );
     }
 }
