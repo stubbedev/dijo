@@ -9,6 +9,7 @@ mod opc;
 use std::collections::HashSet;
 
 use crate::compress::zip::file::ZipFile;
+use crate::compress::zip::salvage::{salvage, Unsalvaged};
 use crate::compress::zip::stream::{Failure, StreamEntry, ZipStream};
 use crate::compress::zip::Content;
 use crate::mime::archive::{self, Archive};
@@ -24,7 +25,23 @@ pub(crate) struct ZipDetection {
     /// Whether the entry-by-entry reading needed stored entries with data descriptors allowed:
     /// `zip:detector-data-descriptor-required`.
     pub(crate) data_descriptor_required: bool,
+    /// Whether `ZipSalvager` rebuilt the archive `ZipFile` could not open, which then opened
+    /// it: `zip:salvaged`.
+    pub(crate) salvaged: bool,
 }
+
+/// Whether a parse follows the detection, as `AutoDetectParser` tells the detectors with
+/// `ParsingIntent.WILL_PARSE`: the ZIP detector then salvages an archive `ZipFile` cannot
+/// open, for the parser to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Intent {
+    Detect,
+    Parse,
+}
+
+/// Why the port does not detect an archive as Tika's detector does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unsalvageable(pub(crate) String);
 
 /// What `DefaultZipContainerDetector.detect` answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,31 +52,46 @@ pub(crate) enum Detected {
     Other(Option<MediaType>),
 }
 
-/// `DefaultZipContainerDetector.detect`.
-pub(crate) fn detect(data: &[u8]) -> Detected {
+/// `DefaultZipContainerDetector.detect`, with or without a parse to follow.
+pub(crate) fn detect(data: &[u8], intent: Intent) -> Result<Detected, Unsalvageable> {
     let prefix = &data[..data.len().min(1024)];
-    match archive::archive(prefix) {
+    Ok(match archive::archive(prefix) {
         Some(Archive::Tiff) => Detected::Other(Some(MediaType::named("image/tiff"))),
         Some(Archive::Other(kind)) => Detected::Other(Some(MediaType::named(kind))),
-        Some(Archive::Zip) => Detected::Zip(detect_zip(data)),
+        Some(Archive::Zip) => Detected::Zip(detect_zip(data, intent)?),
         None => Detected::Other(archive::compressor(prefix).map(MediaType::named)),
-    }
+    })
 }
 
-fn detect_zip(data: &[u8]) -> ZipDetection {
+/// `detectZipFormatOnFile`: the archive's entries by `ZipFile`, by the archive `ZipSalvager`
+/// rebuilds where a parse follows, or by the stream.
+fn detect_zip(data: &[u8], intent: Intent) -> Result<ZipDetection, Unsalvageable> {
+    let by_zip_file = |zip: &ZipFile, salvaged| ZipDetection {
+        media_type: by_file(zip).unwrap_or_else(|| MediaType::named("application/zip")),
+        opened: true,
+        data_descriptor_required: false,
+        salvaged,
+    };
     if let Ok(zip) = ZipFile::open(data) {
-        let media_type = by_file(&zip).unwrap_or_else(|| MediaType::named("application/zip"));
-        return ZipDetection {
-            media_type,
-            opened: true,
-            data_descriptor_required: false,
-        };
+        return Ok(by_zip_file(&zip, false));
     }
-    match by_stream(data, false) {
+    if intent == Intent::Parse {
+        match salvage(data) {
+            Ok(salvaged) => {
+                if let Ok(zip) = ZipFile::open(&salvaged) {
+                    return Ok(by_zip_file(&zip, true));
+                }
+            }
+            Err(Unsalvaged::Thrown) => {}
+            Err(Unsalvaged::Unported(reason)) => return Err(Unsalvageable(reason)),
+        }
+    }
+    Ok(match by_stream(data, false) {
         Streamed::Found(media_type) => ZipDetection {
             media_type,
             opened: false,
             data_descriptor_required: false,
+            salvaged: false,
         },
         Streamed::NeedsDataDescriptors => ZipDetection {
             media_type: match by_stream(data, true) {
@@ -70,8 +102,9 @@ fn detect_zip(data: &[u8]) -> ZipDetection {
             },
             opened: false,
             data_descriptor_required: true,
+            salvaged: false,
         },
-    }
+    })
 }
 
 /// Why a file-mode detector stopped the loop: `ZipFile.getInputStream` threw.
@@ -117,20 +150,44 @@ fn root_element(content: &[u8]) -> Option<(String, String)> {
 }
 
 /// `IWorkPackageParser.IWORK_CONTENT_ENTRIES`, a `HashSet`.
-const IWORK_CONTENT_ENTRIES: [&str; 3] = ["index.apxl", "index.xml", "presentation.apxl"];
+pub(crate) const IWORK_CONTENT_ENTRIES: [&str; 3] =
+    ["index.apxl", "index.xml", "presentation.apxl"];
 
-/// `IWORKDocumentType.detectType`: the iWork 2008 document a content entry's root names.
-fn iwork_type(content: &[u8]) -> Option<MediaType> {
-    let (namespace, local) = root_element(content)?;
-    let kind = match (namespace.as_str(), local.as_str()) {
-        ("http://developer.apple.com/namespaces/keynote2", "presentation") => {
-            "application/vnd.apple.keynote"
+/// An iWork 2008 document, as `IWORKDocumentType` names the ones its content entry's root
+/// element tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IworkDocument {
+    Keynote,
+    Numbers,
+    Pages,
+}
+
+impl IworkDocument {
+    /// `IWORKDocumentType.detectType`: the document a content entry's root names.
+    pub(crate) fn of(content: &[u8]) -> Option<Self> {
+        let (namespace, local) = root_element(content)?;
+        match (namespace.as_str(), local.as_str()) {
+            ("http://developer.apple.com/namespaces/keynote2", "presentation") => {
+                Some(Self::Keynote)
+            }
+            ("http://developer.apple.com/namespaces/ls", "document") => Some(Self::Numbers),
+            ("http://developer.apple.com/namespaces/sl", "document") => Some(Self::Pages),
+            _ => None,
         }
-        ("http://developer.apple.com/namespaces/ls", "document") => "application/vnd.apple.numbers",
-        ("http://developer.apple.com/namespaces/sl", "document") => "application/vnd.apple.pages",
-        _ => return None,
-    };
-    Some(MediaType::named(kind))
+    }
+
+    pub(crate) fn media_type(self) -> &'static str {
+        match self {
+            Self::Keynote => "application/vnd.apple.keynote",
+            Self::Numbers => "application/vnd.apple.numbers",
+            Self::Pages => "application/vnd.apple.pages",
+        }
+    }
+}
+
+/// The media type of the iWork 2008 document a content entry's root names.
+fn iwork_type(content: &[u8]) -> Option<MediaType> {
+    IworkDocument::of(content).map(|document| MediaType::named(document.media_type()))
 }
 
 /// `IWork18DocumentType.detectIfPossible`.
@@ -546,7 +603,7 @@ impl Streaming {
 
 /// What copying an entry through a `BoundedInputStream` of `limit` bytes gives, or what it
 /// throws.
-fn bounded(data: &Result<Content, Failure>, limit: usize) -> Result<&[u8], Failure> {
+fn bounded<'d>(data: &'d Result<Content<'_>, Failure>, limit: usize) -> Result<&'d [u8], Failure> {
     match data {
         Ok(Content::Complete(bytes) | Content::Oversized(bytes)) => {
             Ok(&bytes[..bytes.len().min(limit)])
@@ -604,7 +661,7 @@ mod tests {
     }
 
     fn detected(data: &[u8]) -> String {
-        match detect(data) {
+        match detect(data, Intent::Detect).unwrap() {
             Detected::Zip(found) => found.media_type.to_string(),
             Detected::Other(found) => found.map_or("none".into(), |t| t.to_string()),
         }
@@ -635,14 +692,19 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_broken_archive_entry_by_entry() {
+    fn reads_a_broken_archive_entry_by_entry_or_salvaged_for_a_parse() {
         let data = zip(&[("META-INF/MANIFEST.MF", b"x"), ("b", b"y")]);
         let cut = &data[..data.len() - 30];
-        let Detected::Zip(found) = detect(cut) else {
+        let Ok(Detected::Zip(found)) = detect(cut, Intent::Detect) else {
             panic!("a zip");
         };
-        assert!(!found.opened);
+        assert!(!found.opened && !found.salvaged);
         assert_eq!(found.media_type.as_str(), "application/java-archive");
+        let Ok(Detected::Zip(salvaged)) = detect(cut, Intent::Parse) else {
+            panic!("a zip");
+        };
+        assert!(salvaged.opened && salvaged.salvaged);
+        assert_eq!(salvaged.media_type.as_str(), "application/java-archive");
     }
 
     #[test]

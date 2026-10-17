@@ -17,6 +17,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::input::{Pages, Paging, WINDOW};
 use crate::text::charset::Charset;
 
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
@@ -133,11 +134,20 @@ pub(crate) enum Flow {
 /// Parses `bytes` as one XML document, handing each start and end tag to `handler` until it
 /// asks to stop. An error is what Xerces would throw before the handler stopped it.
 pub(crate) fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) -> Result<()> {
+    parse_paged(bytes, &Paging::new(Pages::IN_MEMORY), handler)
+}
+
+/// [`parse`] of `bytes` whose pages `paging` releases as their characters are first checked.
+pub(crate) fn parse_paged(
+    bytes: &[u8],
+    paging: &Paging,
+    handler: &mut dyn FnMut(Event<'_>) -> Flow,
+) -> Result<()> {
     let Some((detected, reader, start)) = detect_encoding(bytes) else {
         return malformed("UCS-4 in an unusual byte order is unsupported");
     };
     let mut parser = Parser {
-        text: Text::new(bytes, detected, reader, start),
+        text: Text::new(bytes, detected, reader, start, paging),
         position: 0,
         entities: HashMap::new(),
         expansions: Cell::new(0),
@@ -203,19 +213,20 @@ struct Text<'a> {
 }
 
 impl<'a> Text<'a> {
-    fn new(bytes: &'a [u8], detected: &'static str, reader: Reader, start: usize) -> Text<'a> {
+    fn new(
+        bytes: &'a [u8],
+        detected: &'static str,
+        reader: Reader,
+        start: usize,
+        paging: &Paging,
+    ) -> Text<'a> {
         let (text, malformed) = match reader {
             Reader::Utf8 => {
                 let body = &bytes[start.min(bytes.len())..];
-                let (valid, malformed) = match std::str::from_utf8(body) {
-                    Ok(text) => (text, false),
-                    Err(error) => (
-                        std::str::from_utf8(&body[..error.valid_up_to()])
-                            .expect("the prefix up to the error is valid UTF-8"),
-                        true,
-                    ),
-                };
-                if valid.contains('\r') {
+                let checked = Utf8Check::of(body, paging);
+                let valid = checked.valid(body);
+                let malformed = checked.malformed;
+                if checked.carriage_return {
                     (Cow::Owned(normalize_line_ends(valid)), malformed)
                 } else {
                     (Cow::Borrowed(valid), malformed)
@@ -305,6 +316,59 @@ impl<'a> Text<'a> {
 }
 
 /// `text` with each `\r\n` and lone `\r` made a `\n`.
+/// What a check of UTF-8 bytes found, a window at a time.
+struct Utf8Check {
+    /// How many bytes from the start are valid UTF-8.
+    valid_up_to: usize,
+    /// Whether a malformed sequence ends them, rather than the end.
+    malformed: bool,
+    /// Whether a carriage return stands among them.
+    carriage_return: bool,
+}
+
+impl Utf8Check {
+    /// Checks `bytes` a window at a time, each window counted read by `paging`, a character
+    /// cut by a window's end checked with the next.
+    fn of(bytes: &[u8], paging: &Paging) -> Self {
+        let mut at = 0;
+        let mut carriage_return = false;
+        while at < bytes.len() {
+            let end = bytes.len().min(at + WINDOW);
+            let window = &bytes[at..end];
+            let (good, malformed) = match std::str::from_utf8(window) {
+                Ok(_) => (window.len(), false),
+                Err(error) if error.error_len().is_none() && end < bytes.len() => {
+                    (error.valid_up_to(), false)
+                }
+                Err(error) => (error.valid_up_to(), true),
+            };
+            carriage_return |= memchr::memchr(b'\r', &window[..good]).is_some();
+            paging.read(good);
+            at += good;
+            if malformed {
+                return Self {
+                    valid_up_to: at,
+                    malformed,
+                    carriage_return,
+                };
+            }
+        }
+        Self {
+            valid_up_to: at,
+            malformed: false,
+            carriage_return,
+        }
+    }
+
+    /// The valid characters of `bytes`, which this check checked: valid UTF-8, window by
+    /// window, each window ending at a character's end. They are not checked again, which would
+    /// read all their pages at once a second time.
+    fn valid<'b>(&self, bytes: &'b [u8]) -> &'b str {
+        let valid = &bytes[..self.valid_up_to];
+        unsafe { std::str::from_utf8_unchecked(valid) }
+    }
+}
+
 fn normalize_line_ends(text: &str) -> String {
     let mut normalized = String::with_capacity(text.len());
     let mut rest = text;
@@ -1706,6 +1770,32 @@ fn is_encoding_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_utf8_across_windows_as_whole() {
+        let paging = Paging::new(Pages::IN_MEMORY);
+        let mut bytes = vec![b'a'; WINDOW + 16];
+        bytes[WINDOW - 1..WINDOW + 1].copy_from_slice("\u{e6}".as_bytes());
+        let check = Utf8Check::of(&bytes, &paging);
+        assert_eq!(
+            (check.valid_up_to, check.malformed, check.carriage_return),
+            (bytes.len(), false, false)
+        );
+        bytes[WINDOW + 4] = b'\r';
+        bytes[WINDOW + 8] = 0xFF;
+        let check = Utf8Check::of(&bytes, &paging);
+        assert_eq!(
+            (check.valid_up_to, check.malformed, check.carriage_return),
+            (WINDOW + 8, true, true)
+        );
+        assert_eq!(
+            check.valid(&bytes),
+            std::str::from_utf8(&bytes[..WINDOW + 8]).unwrap()
+        );
+        let cut = &"a\u{e6}".as_bytes()[..2];
+        let check = Utf8Check::of(cut, &paging);
+        assert_eq!((check.valid_up_to, check.malformed), (1, true));
+    }
 
     fn root(bytes: &[u8]) -> std::result::Result<Option<(String, String)>, XmlError> {
         let mut found = None;

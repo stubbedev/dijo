@@ -734,6 +734,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "extractous-core",
+ "flate2",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -2399,11 +2400,15 @@ version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a4f883677093690e91fef8ae81fad8bce9e2c3a079b61054f05ce0d3ecf681e"
 dependencies = [
+ "aes",
  "bzip2",
+ "cbc",
  "crc32fast",
  "flate2",
+ "getrandom 0.4.3",
  "js-sys",
  "lzma-rust2",
+ "sha2",
  "wasm-bindgen",
 ]
 

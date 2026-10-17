@@ -41,6 +41,11 @@ pub(crate) enum Undecoded {
     TooLarge,
     /// It holds what the native readers do not read the way Tika's path does.
     Unported(&'static str),
+    /// It is encrypted, and no password was given for it.
+    Encrypted,
+    /// It is encrypted, and the password given does not decrypt it, where Tika's decoders fail
+    /// on the garbled data with errors of their own.
+    BadPassword,
 }
 
 impl fmt::Display for Undecoded {
@@ -49,6 +54,13 @@ impl fmt::Display for Undecoded {
             Undecoded::Fails(reason) => write!(f, "reading it fails: {reason}"),
             Undecoded::TooLarge => write!(f, "it decodes into more than {MAX_DECODED} bytes"),
             Undecoded::Unported(what) => write!(f, "the native readers do not read {what}"),
+            Undecoded::Encrypted => write!(f, "it is encrypted, and no password was given"),
+            Undecoded::BadPassword => {
+                write!(
+                    f,
+                    "it is encrypted, and the password given does not decrypt it"
+                )
+            }
         }
     }
 }

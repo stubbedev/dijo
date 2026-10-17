@@ -16,6 +16,7 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Failure, InputFile};
+use crate::input::Pages;
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -39,6 +40,7 @@ pub(crate) struct ParseContext<'c> {
     file: InputFile,
     ocr_script: RefCell<Option<String>>,
     write_limit: Option<usize>,
+    pages: Pages<'c>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -50,6 +52,7 @@ impl<'c> ParseContext<'c> {
             file: InputFile::Spooled,
             ocr_script: RefCell::new(None),
             write_limit: None,
+            pages: Pages::IN_MEMORY,
         }
     }
 
@@ -65,6 +68,7 @@ impl<'c> ParseContext<'c> {
             file: InputFile::Spooled,
             ocr_script: RefCell::new(None),
             write_limit: None,
+            pages: Pages::IN_MEMORY,
         }
     }
 
@@ -89,6 +93,16 @@ impl<'c> ParseContext<'c> {
     /// The file Tika holds the document in.
     pub(crate) fn input_file(&self) -> &InputFile {
         &self.file
+    }
+
+    /// The extraction of a document whose bytes are `pages`.
+    pub(crate) fn paging(self, pages: Pages<'c>) -> Self {
+        Self { pages, ..self }
+    }
+
+    /// The pages of the document's bytes.
+    pub(crate) fn pages(&self) -> Pages<'c> {
+        self.pages
     }
 
     /// The script the next image of this extraction is first read in with the automatic OCR
@@ -219,6 +233,13 @@ impl<'c> Embedding<'c> {
         self.record.exceptions.extend(recorded);
     }
 
+    /// Records the failure of an embedded document of no bytes, as Tika's
+    /// `ParsingEmbeddedDocumentExtractor` records the [`ZERO_BYTES`] exception its
+    /// `AutoDetectParser` throws on one before any parser starts it.
+    pub(crate) fn record_zero_bytes(&mut self) {
+        self.record.exceptions.push(first_line(ZERO_BYTES));
+    }
+
     pub(crate) fn into_record(self) -> EmbeddedRecord {
         self.record
     }
@@ -305,6 +326,13 @@ impl ResourceType {
 pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
     !ResourceType::Thumbnail.is_of(metadata)
 }
+
+/// The first line of the stack trace of the `ZeroByteFileException` Tika's `AutoDetectParser`
+/// throws on an embedded document of no bytes, which its `ParsingEmbeddedDocumentExtractor`
+/// records in the embedding document's metadata. Its frames, all of them `AutoDetectParser`'s
+/// and those of the parsers below it, are Java's own, which the native routing replaces (#68).
+pub(crate) const ZERO_BYTES: &str =
+    "org.apache.tika.exception.ZeroByteFileException: InputStream must have > 0 bytes";
 
 /// `EmbeddedDocumentUtil.recordEmbeddedStreamException` of an exception a parser makes itself,
 /// `class: message`: the first line of the stack trace Tika records, without the frames of the

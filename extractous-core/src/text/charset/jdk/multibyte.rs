@@ -116,10 +116,17 @@ impl MultiByte {
     /// The text `new String(bytes, charset)` gives: each malformed or unmappable input, and input
     /// that ends inside a character, replaced by one U+FFFD.
     pub(super) fn decode(&self, bytes: &[u8]) -> String {
+        self.decode_prefix(bytes, bytes.len()).0
+    }
+
+    /// The text of the characters at the start of `bytes` that end at or past `at_least` bytes,
+    /// or at its end, as [`MultiByte::decode`] decodes them as part of the whole, and the bytes
+    /// they take.
+    pub(super) fn decode_prefix(&self, bytes: &[u8], at_least: usize) -> (String, usize) {
         let tables = self.tables();
-        let mut text = String::with_capacity(bytes.len());
+        let mut text = String::with_capacity(at_least.min(bytes.len()));
         let mut at = 0;
-        while at < bytes.len() {
+        while at < at_least && at < bytes.len() {
             match self.step(tables, &bytes[at..]) {
                 Step::Char { length, c } => {
                     text.push(c);
@@ -131,11 +138,11 @@ impl MultiByte {
                 }
                 Step::Truncated => {
                     text.push(char::REPLACEMENT_CHARACTER);
-                    break;
+                    at = bytes.len();
                 }
             }
         }
-        text
+        (text, at)
     }
 
     /// Whether the JDK's strict decoder, given `window` as the whole input and room for one

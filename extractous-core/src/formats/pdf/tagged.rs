@@ -222,7 +222,7 @@ pub(super) struct Tagged<'p> {
     /// gate, as `MarkedContentConfig.Strategy.AUTO` has it, rather than always, as `TAGS` has.
     gated: bool,
     index: Option<StructureIndex<'p, ElementSpec>>,
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     state: State,
     events: Vec<Event>,
     pending_page_start: bool,

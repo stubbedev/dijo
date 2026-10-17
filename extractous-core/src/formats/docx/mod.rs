@@ -29,7 +29,9 @@ use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts, Igno
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::Input;
+use crate::input::Pages;
 use crate::java::JavaHashMap;
 
 /// The WordprocessingML namespace.
@@ -108,6 +110,10 @@ impl Parser for DocxParser {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -123,10 +129,20 @@ impl Parser for DocxParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Document::open(input, &configs.office)
+        let read = Document::open(input, pages, &configs.office)
             .and_then(Document::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -143,8 +159,12 @@ struct Document<'a> {
 }
 
 impl<'a> Document<'a> {
-    fn open(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Self, Unported> {
-        let package = Package::open(input)?;
+    fn open(
+        input: &'a [u8],
+        pages: Pages<'a>,
+        config: &'a OfficeParserConfig,
+    ) -> Result<Self, Unported> {
+        let package = Package::open(input, pages)?;
         let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()
             .find_map(|kind| Package::relationships_of(&package.relationships, kind).next())
@@ -174,7 +194,7 @@ impl<'a> Document<'a> {
         &self.package.parts[part].relationships
     }
 
-    fn read(&self, part: usize) -> Result<Vec<u8>, Failure> {
+    fn read(&self, part: usize) -> Result<Input<'a>, Failure> {
         self.package.read(part)
     }
 
@@ -443,7 +463,7 @@ impl<'a> Document<'a> {
         };
         let mut handler = TextHandler::new(body, &relationships, options);
         let bytes = self.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
+        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
         Ok(handler.into_body().finish())
     }
 

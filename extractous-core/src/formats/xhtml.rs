@@ -8,7 +8,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, EmbeddedRoute, Failure, Opened};
+use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::isolate::isolate;
 use crate::memory;
 use crate::tika::{self, EmbeddedOutcome};
@@ -329,7 +329,14 @@ pub(crate) struct Xhtml<'h> {
     head: Head,
     ended: bool,
     embedding: Embedding<'h>,
+    /// The bytes of text written since the pages of the document's bytes were last released.
+    written: usize,
 }
+
+/// How many bytes of text a document writes between releases of the pages of the document's
+/// bytes: a parser reading a file mapped too large to read whole writes its text as it reads on,
+/// so that what it has read is released as it goes, whatever the parser.
+const RELEASE_EVERY_WRITTEN: usize = 8 << 20;
 
 impl<'h> Xhtml<'h> {
     /// Writes a document to `handler`: starts it, has `body` write its content, and ends it when
@@ -351,6 +358,7 @@ impl<'h> Xhtml<'h> {
             head: Head::NotStarted,
             ended: false,
             embedding: Embedding::new(context),
+            written: 0,
         };
         let result = xhtml
             .start_document()
@@ -520,6 +528,7 @@ impl<'h> Xhtml<'h> {
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
     pub(crate) fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
+        self.wrote(text.len());
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.safe_text(text, Text::Characters)
@@ -529,6 +538,7 @@ impl<'h> Xhtml<'h> {
     /// pair is invalid like the characters XML cannot hold, and each becomes U+FFFD.
     pub(crate) fn characters_utf16(&mut self, units: &[u16]) -> Result<(), Stop> {
         within_budget()?;
+        self.wrote(units.len() * 2);
         let frameset = self.frameset();
         self.end_head(frameset)?;
         let mut run = String::with_capacity(units.len());
@@ -672,6 +682,16 @@ impl<'h> Xhtml<'h> {
         self.out().end_document()
     }
 
+    /// Counts `bytes` of text written, releasing the pages of the document's bytes each time
+    /// [`RELEASE_EVERY_WRITTEN`] have been.
+    fn wrote(&mut self, bytes: usize) {
+        self.written += bytes;
+        if self.written >= RELEASE_EVERY_WRITTEN {
+            self.context().pages().release();
+            self.written = 0;
+        }
+    }
+
     /// What the parses of this extraction share, which a document parsed into this one shares.
     pub(crate) fn context(&self) -> &'h ParseContext<'h> {
         self.embedding.context()
@@ -789,7 +809,8 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Parses an embedded document with its native parser, if it has one, and with Tika's
-    /// path otherwise.
+    /// path otherwise. One of no bytes no parser starts: its failure is recorded as Tika's
+    /// zero-byte check fails it.
     fn parse_routed(
         &mut self,
         data: &[u8],
@@ -801,6 +822,16 @@ impl<'h> Xhtml<'h> {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, metadata, opened, configs) {
             Ok(route) => self.parse_natively(route, metadata, open, target),
+            Err(Bridged::Unrouted(Unrouted::Empty)) => {
+                self.embedding.record_zero_bytes();
+                Ended::Recorded
+            }
+            Err(Bridged::Declined(parser, Declined::Unwritten(start))) => {
+                let parsed = formats::unwritten(parser, start, configs).to_map();
+                self.embedding.absorb_parsers(&parsed);
+                self.embedding.absorb_failures(&parsed, None);
+                Ended::Clean
+            }
             #[cfg_attr(
                 not(test),
                 expect(unused_variables, reason = "only the tests record why")

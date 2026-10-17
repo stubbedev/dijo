@@ -1,6 +1,8 @@
 //! PDFBox's `PDImage`, as an image XObject (`PDImageXObject`) or an inline image
 //! (`PDInlineImage`) answers for its parameters, each under its own keys, and gives its data.
 
+use std::borrow::Cow;
+
 use lopdf::{Dictionary, Object, Stream};
 
 use super::super::content::InlineImage;
@@ -37,7 +39,7 @@ pub(super) enum Suffix {
 
 /// An image a page draws.
 pub(super) struct PdImage<'p> {
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     source: Source<'p>,
     /// The resources current where it is drawn, which name colour spaces.
     resources: Option<&'p Dictionary>,
@@ -57,7 +59,7 @@ enum Source<'p> {
 impl<'p> PdImage<'p> {
     /// `new PDImageXObject(stream, resources)`.
     pub(super) fn xobject(
-        pdf: &'p Pdf,
+        pdf: &'p Pdf<'p>,
         stream: &'p Stream,
         resources: Option<&'p Dictionary>,
     ) -> Self {
@@ -72,7 +74,7 @@ impl<'p> PdImage<'p> {
     /// none for an image `BeginInlineImage` skips: one without data, or whose data decodes to
     /// nothing.
     pub(super) fn inline(
-        pdf: &'p Pdf,
+        pdf: &'p Pdf<'p>,
         image: InlineImage,
         resources: Option<&'p Dictionary>,
     ) -> Result<Option<Self>, Unported> {
@@ -91,7 +93,7 @@ impl<'p> PdImage<'p> {
             )));
         }
         let decode_parameters = get2(pdf, &parameters, b"DP", b"DecodeParms");
-        let decoded = pdf.decode_data(&raw, filters, decode_parameters, &[])?;
+        let decoded = pdf.decode_data(Cow::Borrowed(&raw), filters, decode_parameters, &[])?;
         if decoded.is_empty() {
             return Ok(None);
         }
@@ -293,11 +295,11 @@ impl<'p> PdImage<'p> {
     }
 
     /// `isEmpty`.
-    pub(super) fn is_empty(&self) -> bool {
-        match &self.source {
-            Source::XObject(stream) => stream.content.is_empty(),
+    pub(super) fn is_empty(&self) -> Result<bool, Unported> {
+        Ok(match &self.source {
+            Source::XObject(stream) => self.pdf.raw(stream)?.is_empty(),
             Source::Inline { decoded, .. } => decoded.is_empty(),
-        }
+        })
     }
 
     /// `createInputStream(stopFilters)`: the data decoded up to the first filter of `stop`.
@@ -307,7 +309,7 @@ impl<'p> PdImage<'p> {
             Source::Inline {
                 parameters, raw, ..
             } => self.pdf.decode_data(
-                raw,
+                Cow::Borrowed(raw),
                 get2(self.pdf, parameters, b"F", b"Filter"),
                 get2(self.pdf, parameters, b"DP", b"DecodeParms"),
                 stop,

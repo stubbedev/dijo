@@ -6,8 +6,10 @@
 //! The enricher reads the image with tesseract, natively too; with OCR skipped it records itself
 //! but reads nothing.
 
+mod bpg;
 pub(super) mod enricher;
 mod extractor;
+mod icns;
 mod image_xmp;
 mod imageio;
 mod metadata_extractor;
@@ -30,6 +32,7 @@ use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepa
 use crate::java::time::TimeZone;
 use enricher::Enricher;
 use extractor::Target;
+pub(crate) use icns::IcnsParser;
 use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
 pub(crate) use raw::RawTiffParser;
 
@@ -92,6 +95,7 @@ enum Format {
     /// An image `ImageParser` reads with ImageIO.
     ImageIo,
     Heif,
+    Bpg,
 }
 
 /// Tika's `JpegParser`.
@@ -193,6 +197,62 @@ impl Parser for HeifParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         prepare(Format::Heif, input, metadata, configs)
+    }
+}
+
+/// Tika's `JXLParser`, which scans a JPEG XL image for an XMP packet and writes no document.
+pub(crate) struct JxlParser;
+
+impl Parser for JxlParser {
+    fn name(&self) -> &'static str {
+        "extractous::JXLParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.JXLParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &["image/jxl"]
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        _: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let mut metadata = metadata.clone();
+        image_xmp::scan_and_extract(input, &mut metadata)?;
+        Err(Declined::Unwritten(metadata))
+    }
+}
+
+/// Tika's `BPGParser`.
+pub(crate) struct BpgParser;
+
+impl Parser for BpgParser {
+    fn name(&self) -> &'static str {
+        "extractous::BPGParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.BPGParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &["image/x-bpg", "image/bpg"]
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        prepare(Format::Bpg, input, metadata, configs)
     }
 }
 
@@ -506,6 +566,7 @@ fn extract_metadata(
             jpeg::read(&segments, &mut directories)?;
         }
         Format::ImageIo => return image_io(input, metadata),
+        Format::Bpg => return bpg::extract_metadata(input, metadata),
         Format::Heif => {
             // Tika scans the whole file for a packet where the image has no XMP item (#114).
             image_xmp::extract_heif(input, &mut metadata)?;

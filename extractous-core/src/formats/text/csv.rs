@@ -10,25 +10,39 @@
 //! delimiter right before the text's end adds an empty last value; a line break right before the
 //! text's end adds no record.
 
+use std::iter::Peekable;
+
 const QUOTE: char = '"';
 const LINE_FEED: char = '\n';
 const CARRIAGE_RETURN: char = '\r';
 
-/// The records of a text, each a list of its values.
-pub(crate) fn records(text: &str, delimiter: char) -> Vec<Vec<String>> {
-    let mut lexer = Lexer {
-        reader: Reader {
-            rest: text.chars(),
-            last: Last::Undefined,
-        },
-        delimiter,
-        last_token_delimiter: false,
-    };
-    let mut records = Vec::new();
-    loop {
+/// The records of a text, read from its characters as they come, each a list of its values.
+pub(crate) struct Records<I: Iterator<Item = char>> {
+    lexer: Lexer<I>,
+}
+
+impl<I: Iterator<Item = char>> Records<I> {
+    pub(crate) fn new(text: I, delimiter: char) -> Self {
+        Self {
+            lexer: Lexer {
+                reader: Reader {
+                    rest: text.peekable(),
+                    last: Last::Undefined,
+                },
+                delimiter,
+                last_token_delimiter: false,
+            },
+        }
+    }
+}
+
+impl<I: Iterator<Item = char>> Iterator for Records<I> {
+    type Item = Vec<String>;
+
+    fn next(&mut self) -> Option<Vec<String>> {
         let mut values = Vec::new();
         loop {
-            let token = lexer.next_token();
+            let token = self.lexer.next_token();
             match token.kind {
                 Kind::Value => values.push(token.content),
                 Kind::RecordEnd => {
@@ -43,10 +57,7 @@ pub(crate) fn records(text: &str, delimiter: char) -> Vec<Vec<String>> {
                 }
             }
         }
-        if values.is_empty() {
-            return records;
-        }
-        records.push(values);
+        (!values.is_empty()).then_some(values)
     }
 }
 
@@ -58,20 +69,20 @@ enum Last {
     EndOfFile,
 }
 
-struct Reader<'a> {
-    rest: std::str::Chars<'a>,
+struct Reader<I: Iterator<Item = char>> {
+    rest: Peekable<I>,
     last: Last,
 }
 
-impl Reader<'_> {
+impl<I: Iterator<Item = char>> Reader<I> {
     fn read(&mut self) -> Option<char> {
         let c = self.rest.next();
         self.last = c.map_or(Last::EndOfFile, Last::Char);
         c
     }
 
-    fn peek(&self) -> Option<char> {
-        self.rest.clone().next()
+    fn peek(&mut self) -> Option<char> {
+        self.rest.peek().copied()
     }
 }
 
@@ -90,13 +101,13 @@ struct Token {
     content: String,
 }
 
-struct Lexer<'a> {
-    reader: Reader<'a>,
+struct Lexer<I: Iterator<Item = char>> {
+    reader: Reader<I>,
     delimiter: char,
     last_token_delimiter: bool,
 }
 
-impl Lexer<'_> {
+impl<I: Iterator<Item = char>> Lexer<I> {
     fn next_token(&mut self) -> Token {
         let token = self.token();
         self.last_token_delimiter = token.kind == Kind::Value;
@@ -185,7 +196,8 @@ mod tests {
             .iter()
             .map(|record| record.iter().map(|value| value.to_string()).collect())
             .collect();
-        assert_eq!(records(text, ','), expected, "{text:?}");
+        let records: Vec<Vec<String>> = Records::new(text.chars(), ',').collect();
+        assert_eq!(records, expected, "{text:?}");
     }
 
     #[test]

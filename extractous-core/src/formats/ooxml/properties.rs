@@ -137,7 +137,7 @@ fn core_properties(package: &Package) -> Result<Option<CoreProperties>, Unported
     for part in package.parts_by_content_type(CORE_PROPERTIES_CONTENT_TYPE) {
         let bytes = package.read(part).map_err(|_| unreadable(package, part))?;
         let mut reader = CoreReader::default();
-        if xml::parse_sax(&bytes, package.name(part), &mut reader).is_err() {
+        if xml::parse_part(&bytes, package.name(part), &mut reader).is_err() {
             continue;
         }
         if let Some(violation) = reader.violation {

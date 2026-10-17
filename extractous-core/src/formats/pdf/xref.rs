@@ -2,17 +2,16 @@
 //! last `startxref`, merged as `XrefTrailerResolver` merges it, with the repairs its lenient mode
 //! makes, which `BruteForceParser` searches the bytes for: a `startxref` or `/Prev` that misses
 //! its section, a table whose offsets miss their objects, and the object streams of a document
-//! whose table it replaces. `lopdf` reads the objects where PDFBox finds them: from the
-//! document as it is, when it finds the same, else from the document with PDFBox's table
-//! appended as a cross-reference stream.
+//! whose table it replaces.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lopdf::xref::XrefEntry;
-use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 use super::content::{is_digit, is_end_of_name, is_whitespace, Lexer};
+use super::cos::OBJECT_READ;
 use super::Unported;
+use crate::input::Paging;
 
 /// `COSParser.DEFAULT_TRAIL_BYTECOUNT`: the bytes at the end searched for `startxref`.
 const TRAIL_BYTES: usize = 2048;
@@ -61,6 +60,14 @@ impl Key {
     }
 }
 
+/// Where PDFBox's `parseObjectDynamically` reads an object the table lists: from the file at
+/// a positive offset, else from the object stream whose number the value negates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Placement {
+    File(usize),
+    Stream(u32),
+}
+
 /// Where the table puts an object: an offset in the file, or the number of the object stream
 /// holding it. PDFBox keeps a `Long`, the stream's number negated, so that an object in object
 /// stream 0 reads as at offset 0 (#115).
@@ -79,10 +86,9 @@ impl Location {
     }
 }
 
-/// Why reading the cross-reference stopped: an `IOException` PDFBox catches, or something the
-/// port does not do.
+/// Why reading stopped: an `IOException` PDFBox catches, or something the port does not do.
 #[derive(Debug)]
-enum Thrown {
+pub(super) enum Thrown {
     Io,
     Unported(Unported),
 }
@@ -93,7 +99,7 @@ impl From<Unported> for Thrown {
     }
 }
 
-type Read<T> = Result<T, Thrown>;
+pub(super) type Read<T> = Result<T, Thrown>;
 
 /// What PDFBox reads of a document's cross-reference: the objects it finds where, and the
 /// trailer.
@@ -105,8 +111,8 @@ pub(super) struct Resolution {
 
 /// Reads the cross-reference of `data` as PDFBox's lenient `COSParser.retrieveTrailer` does,
 /// or says why the port leaves the document to Tika.
-pub(super) fn resolve(data: &[u8]) -> Result<Resolution, Unported> {
-    let mut parser = Parser::new(data);
+pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unported> {
+    let mut parser = Parser::new(data, paging);
     let trailer = match parser.retrieve() {
         Ok(trailer) => trailer,
         Err(Thrown::Io) => None,
@@ -292,8 +298,9 @@ fn dereference(data: &[u8], objects: &HashMap<Key, Location>, key: Key) -> Optio
             if found != stream_key {
                 return None;
             }
-            let raw = source.stream_data(&dict).ok()?;
-            let decoded = decode(&dict, raw).ok()?;
+            source.start_stream();
+            let raw = source.stream_data(direct_length(&dict).ok()?).ok()?;
+            let decoded = decode(&dict, raw.data).ok()?;
             compressed_dictionary(&dict, &decoded, key.number)
         }
     }
@@ -335,31 +342,6 @@ fn compressed_dictionary(stream: &Dictionary, decoded: &[u8], number: i64) -> Op
 }
 
 impl Resolution {
-    /// The document as `lopdf` should read it to find the objects where PDFBox finds them:
-    /// `data` itself when `doc`, read from it, already does, else `data` with PDFBox's table
-    /// appended.
-    pub(super) fn needs_rewrite(&self, doc: &Document, data: &[u8]) -> Result<bool, Unported> {
-        let header = header_offset(data);
-        let ours = self.lopdf_entries(header)?;
-        let theirs = lopdf_table(doc);
-        let differs = ours
-            .iter()
-            .any(|(number, entry)| theirs.get(number) != Some(entry));
-        let read_more = theirs
-            .keys()
-            .filter(|number| !ours.contains_key(number))
-            .any(|&number| {
-                doc.objects
-                    .range((number, 0)..=(number, u16::MAX))
-                    .next()
-                    .is_some()
-            });
-        Ok(differs
-            || read_more
-            || self.trailer.get(b"ID").ok() != doc.trailer.get(b"ID").ok()
-            || self.trailer.get(b"Encrypt").ok() != lopdf_encrypt(doc).as_ref())
-    }
-
     /// The encryption dictionary the trailer names, as PDFBox reads it from `data`, and the
     /// first string of the trailer's `ID`, empty where it has none; `None` for a document the
     /// trailer names no encryption of.
@@ -398,105 +380,32 @@ impl Resolution {
         Ok(Some((dictionary, id)))
     }
 
-    /// The objects the table lists, as `lopdf` names them.
-    pub(super) fn listed(&self) -> BTreeSet<ObjectId> {
-        self.table
-            .iter()
-            .filter_map(|(key, location)| match location {
-                Location::File(_) => key.id(),
-                Location::Stream(_) => key.id().map(|(number, _)| (number, 0)),
-            })
-            .collect()
-    }
-
-    /// `data` with PDFBox's table and trailer appended as a cross-reference stream, which the
-    /// last `startxref` points to.
-    pub(super) fn rewritten(&self, data: &[u8]) -> Result<Vec<u8>, Unported> {
-        let header = header_offset(data);
-        let entries = self.lopdf_entries(header)?;
-        let size = entries.keys().next_back().map_or(1, |&number| number + 1);
-        let mut rows = Vec::with_capacity(size as usize * 11);
-        for number in 0..size {
-            let (kind, field, generation): (u8, u64, u16) = match entries.get(&number) {
-                None => (0, 0, 0),
-                Some(Entry::Normal { offset, generation }) => (1, u64::from(*offset), *generation),
-                Some(Entry::Compressed { container }) => (2, u64::from(*container), 0),
-            };
-            rows.push(kind);
-            rows.extend_from_slice(&field.to_be_bytes());
-            rows.extend_from_slice(&generation.to_be_bytes());
-        }
-        let mut out = Vec::with_capacity(data.len() + rows.len() + 256);
-        out.extend_from_slice(data);
-        out.push(b'\n');
-        let start = out.len() - header;
-        out.extend_from_slice(
-            format!(
-                "{size} 0 obj\n<< /Type /XRef /Size {size} /W [1 8 2] /Length {}",
-                rows.len()
-            )
-            .as_bytes(),
-        );
-        for key in [&b"Root"[..], b"Info", b"Encrypt", b"ID"] {
-            if let Ok(value) = self.trailer.get(key) {
-                out.push(b' ');
-                write_name(key, &mut out);
-                out.push(b' ');
-                write_object(value, &mut out)?;
-            }
-        }
-        out.extend_from_slice(b" >>\nstream\n");
-        out.extend_from_slice(&rows);
-        out.extend_from_slice(
-            format!("\nendstream\nendobj\nstartxref\n{start}\n%%EOF\n").as_bytes(),
-        );
-        Ok(out)
-    }
-
-    /// Gives `doc` PDFBox's trailer, without the encryption dictionary `lopdf` has decrypted
-    /// it with.
-    pub(super) fn set_trailer(&self, doc: &mut Document) {
-        let decrypted = doc.trailer.get(b"Encrypt").is_err();
-        doc.trailer = self.trailer.clone();
-        if decrypted {
-            doc.trailer.remove(b"Encrypt");
-        }
-    }
-
-    /// The table as `lopdf` holds one, its offsets from the header `lopdf` reads from.
-    fn lopdf_entries(&self, header: usize) -> Result<BTreeMap<u32, Entry>, Unported> {
-        let mut entries = BTreeMap::new();
+    /// Where each object the table lists is read from, by its key as `lopdf` names it.
+    pub(super) fn placements(&self) -> Result<HashMap<ObjectId, Placement>, Unported> {
+        let mut placements = HashMap::with_capacity(self.table.len());
         for (key, location) in &self.table {
-            let number = u32::try_from(key.number).map_err(|_| too_large(key.number))?;
-            let entry = match *location {
-                Location::File(offset) => {
-                    let offset = usize::try_from(offset)
-                        .ok()
-                        .and_then(|offset| offset.checked_sub(header))
-                        .and_then(|offset| u32::try_from(offset).ok())
-                        .ok_or_else(|| {
-                            Unported(format!(
-                                "object {number} at offset {offset}, which lopdf cannot read \
-                                 from there"
-                            ))
-                        })?;
-                    Entry::Normal {
-                        offset,
-                        generation: key.generation,
-                    }
-                }
-                Location::Stream(container) => Entry::Compressed {
-                    container: u32::try_from(container).map_err(|_| too_large(container))?,
+            let id = key.id().ok_or_else(|| {
+                Unported(format!(
+                    "object number {}, which lopdf cannot hold",
+                    key.number
+                ))
+            })?;
+            let value = location.value();
+            let placement = match usize::try_from(value) {
+                Ok(offset) if offset > 0 => Placement::File(offset),
+                _ => match u32::try_from(-value) {
+                    Ok(number) => Placement::Stream(number),
+                    Err(_) => continue,
                 },
             };
-            if entries.insert(number, entry).is_some() {
-                return Err(Unported(format!(
-                    "two generations of object {number} in the cross-reference table, which \
-                     lopdf cannot hold"
-                )));
-            }
+            placements.insert(id, placement);
         }
-        Ok(entries)
+        Ok(placements)
+    }
+
+    /// The trailer, as PDFBox merges it.
+    pub(super) fn trailer(&self) -> &Dictionary {
+        &self.trailer
     }
 }
 
@@ -522,73 +431,35 @@ pub(super) fn first_found(data: &[u8], ids: &[ObjectId]) -> Result<Option<Object
         .find(|&id| objects.contains_key(&Key::from_id(id))))
 }
 
-fn too_large(number: i64) -> Unported {
-    Unported(format!("object number {number}, which lopdf cannot hold"))
-}
-
-/// An entry of the table as `lopdf` holds it, without the index in an object stream, which
-/// `lopdf` does not read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Entry {
-    Normal { offset: u32, generation: u16 },
-    Compressed { container: u32 },
-}
-
-fn lopdf_table(doc: &Document) -> BTreeMap<u32, Entry> {
-    doc.reference_table
-        .entries
-        .iter()
-        .filter_map(|(&number, entry)| match *entry {
-            XrefEntry::Normal { offset, generation } => {
-                Some((number, Entry::Normal { offset, generation }))
-            }
-            XrefEntry::Compressed { container, .. } => {
-                Some((number, Entry::Compressed { container }))
-            }
-            XrefEntry::Free | XrefEntry::UnusableFree => None,
-        })
-        .collect()
-}
-
-/// The encryption dictionary `lopdf` read the document with.
-fn lopdf_encrypt(doc: &Document) -> Option<Object> {
-    match doc.trailer.get(b"Encrypt") {
-        Ok(encrypt) => Some(encrypt.clone()),
-        Err(_) => doc
-            .encryption_state
-            .as_ref()
-            .and_then(lopdf::EncryptionState::encrypt_object_id)
-            .map(Object::Reference),
-    }
-}
-
-/// Where `lopdf` takes the document to start: at its first `%PDF-`.
-fn header_offset(data: &[u8]) -> usize {
-    data.windows(5)
-        .position(|window| window == b"%PDF-")
-        .unwrap_or(0)
-}
-
 /// `BaseParser`'s reading of the document's bytes.
-struct Source<'a> {
+pub(super) struct Source<'a> {
     data: &'a [u8],
-    lexer: Lexer<'a>,
+    pub(super) lexer: Lexer<'a>,
+}
+
+/// The data of a stream as `COSParser.parseCOSStream` finds it.
+pub(super) struct StreamData<'a> {
+    /// Where it starts in the document.
+    pub(super) start: usize,
+    pub(super) data: &'a [u8],
+    /// Whether its length was measured up to `endstream`, the `/Length` given not fitting it.
+    pub(super) measured: bool,
 }
 
 impl<'a> Source<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(super) fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             lexer: Lexer::file(data, 0),
         }
     }
 
-    fn position(&self) -> i64 {
+    pub(super) fn position(&self) -> i64 {
         self.lexer.position() as i64
     }
 
     /// `RandomAccessRead.seek`, which refuses a negative position.
-    fn seek(&mut self, position: i64) -> Read<()> {
+    pub(super) fn seek(&mut self, position: i64) -> Read<()> {
         let position = usize::try_from(position).map_err(|_| Thrown::Io)?;
         self.lexer.seek(position);
         Ok(())
@@ -602,7 +473,7 @@ impl<'a> Source<'a> {
         self.lexer.read()
     }
 
-    fn rewind(&mut self, count: usize) {
+    pub(super) fn rewind(&mut self, count: usize) {
         self.lexer.rewind(count);
     }
 
@@ -610,12 +481,12 @@ impl<'a> Source<'a> {
         self.lexer.position() >= self.data.len()
     }
 
-    fn skip_spaces(&mut self) {
+    pub(super) fn skip_spaces(&mut self) {
         self.lexer.skip_spaces();
     }
 
     /// `BaseParser.readString`.
-    fn read_string(&mut self) -> Vec<u8> {
+    pub(super) fn read_string(&mut self) -> Vec<u8> {
         self.lexer.read_string()
     }
 
@@ -651,7 +522,7 @@ impl<'a> Source<'a> {
     }
 
     /// `BaseParser.readLine`, which fails at the end of the data.
-    fn read_line(&mut self) -> Read<Vec<u8>> {
+    pub(super) fn read_line(&mut self) -> Read<Vec<u8>> {
         if self.is_eof() {
             return Err(Thrown::Io);
         }
@@ -688,7 +559,7 @@ impl<'a> Source<'a> {
     }
 
     /// `BaseParser.readLong`.
-    fn read_long(&mut self) -> Read<i64> {
+    pub(super) fn read_long(&mut self) -> Read<i64> {
         self.skip_spaces();
         let digits = self.read_digits()?;
         parse_long(&digits).ok_or_else(|| {
@@ -710,7 +581,7 @@ impl<'a> Source<'a> {
         }
     }
 
-    fn read_object_number(&mut self) -> Read<i64> {
+    pub(super) fn read_object_number(&mut self) -> Read<i64> {
         let number = self.read_long()?;
         if !(0..OBJECT_NUMBER_THRESHOLD).contains(&number) {
             return Err(Thrown::Io);
@@ -718,7 +589,7 @@ impl<'a> Source<'a> {
         Ok(number)
     }
 
-    fn read_generation_number(&mut self) -> Read<i64> {
+    pub(super) fn read_generation_number(&mut self) -> Read<i64> {
         let generation = self.read_int()?;
         if !(0..=GENERATION_NUMBER_THRESHOLD).contains(&generation) {
             return Err(Thrown::Io);
@@ -727,7 +598,7 @@ impl<'a> Source<'a> {
     }
 
     /// `BaseParser.readExpectedString` with the spaces around it.
-    fn read_expected(&mut self, string: &[u8]) -> Read<()> {
+    pub(super) fn read_expected(&mut self, string: &[u8]) -> Read<()> {
         self.skip_spaces();
         for &expected in string {
             if self.read() != Some(expected) {
@@ -743,32 +614,18 @@ impl<'a> Source<'a> {
         self.lexer.file_dictionary()?.ok_or(Thrown::Io)
     }
 
-    /// `COSParser.parseCOSStream` of a stream whose dictionary has been read: its raw data,
-    /// after which the source stands after `endstream`.
-    fn stream_data(&mut self, dict: &Dictionary) -> Read<&'a [u8]> {
-        self.read_string();
-        self.skip_white_spaces();
-        let length = match dict.get(b"Length") {
-            Err(_) => None,
-            Ok(Object::Integer(length)) => Some(*length),
-            Ok(Object::Real(length)) => Some(*length as i64),
-            Ok(Object::Reference(_)) => {
-                return Err(Thrown::Unported(Unported(
-                    "a stream PDFBox reads while it finds the objects, whose length is an \
-                     object of its own"
-                        .to_owned(),
-                )))
-            }
-            Ok(_) => return Err(Thrown::Io),
-        };
+    /// `COSParser.parseCOSStream` of a stream whose dictionary has been read and whose
+    /// `/Length` is `length`, if it has one: its data, after which the source stands after
+    /// `endstream`.
+    pub(super) fn stream_data(&mut self, length: Option<i64>) -> Read<StreamData<'a>> {
         let start = self.lexer.position();
-        let data = match length.filter(|&length| self.valid_stream_length(length)) {
+        let (data, measured) = match length.filter(|&length| self.valid_stream_length(length)) {
             Some(length) => {
                 let end = start + length as usize;
                 self.lexer.seek(end);
-                &self.data[start..end]
+                (&self.data[start..end], false)
             }
-            None => self.read_until_end_stream(),
+            None => (self.read_until_end_stream(), true),
         };
         let end_stream = self.read_string();
         if end_stream == b"endobj" {
@@ -778,7 +635,17 @@ impl<'a> Source<'a> {
         } else if end_stream != b"endstream" {
             return Err(Thrown::Io);
         }
-        Ok(data)
+        Ok(StreamData {
+            start,
+            data,
+            measured,
+        })
+    }
+
+    /// The `stream` keyword and the line break after it, which the data follows.
+    pub(super) fn start_stream(&mut self) {
+        self.read_string();
+        self.skip_white_spaces();
     }
 
     /// `COSParser.validateStreamLength`.
@@ -794,21 +661,30 @@ impl<'a> Source<'a> {
         found
     }
 
-    /// `COSParser.readUntilEndStream`: the data up to the first `endstream` or `endobj`,
-    /// without the line break that ends it. PDFBox's `EndstreamFilterStream` keeps the line
-    /// break when the stream's first 10 bytes look like text (#115).
+    /// `COSParser.readUntilEndStream`: the data up to the first `endstream` or `endobj`, as
+    /// PDFBox's `EndstreamFilterStream` keeps it: without a line feed, or a carriage return and
+    /// a line feed, that ends it, unless the stream is longer than 10 bytes and its first 10 look
+    /// like text, which keeps the line break (#115).
     fn read_until_end_stream(&mut self) -> &'a [u8] {
         let start = self.lexer.position();
         let rest = &self.data[start..];
-        let end = (0..rest.len())
-            .find(|&at| rest[at..].starts_with(b"endstream") || rest[at..].starts_with(b"endobj"))
+        let end = [&b"endstream"[..], b"endobj"]
+            .iter()
+            .filter_map(|keyword| memchr::memmem::find(rest, keyword))
+            .min()
             .unwrap_or(rest.len());
         self.lexer.seek(start + end);
         let content = &rest[..end];
+        let text = content.len() > 10
+            && content[..10]
+                .iter()
+                .all(|&b| matches!(b, 0x09 | 0x0A | 0x0D | 0x20..=0x7F));
+        if text {
+            return content;
+        }
         content
             .strip_suffix(b"\r\n")
             .or_else(|| content.strip_suffix(b"\n"))
-            .or_else(|| content.strip_suffix(b"\r"))
             .unwrap_or(content)
     }
 
@@ -831,6 +707,22 @@ impl<'a> Source<'a> {
                 None
             }
         }
+    }
+}
+
+/// The `/Length` of a stream PDFBox reads while it finds the objects, which the port reads only
+/// when direct.
+fn direct_length(dict: &Dictionary) -> Read<Option<i64>> {
+    match dict.get(b"Length") {
+        Err(_) => Ok(None),
+        Ok(Object::Integer(length)) => Ok(Some(*length)),
+        Ok(Object::Real(length)) => Ok(Some(*length as i64)),
+        Ok(Object::Reference(_)) => Err(Thrown::Unported(Unported(
+            "a stream PDFBox reads while it finds the objects, whose length is an object of its \
+             own"
+            .to_owned(),
+        ))),
+        Ok(_) => Err(Thrown::Io),
     }
 }
 
@@ -959,15 +851,18 @@ impl Resolver {
 /// `COSParser` as far as the cross-reference goes.
 struct Parser<'a> {
     source: Source<'a>,
+    /// Counts the objects each check of the table reads.
+    paging: &'a Paging<'a>,
     resolver: Resolver,
     resolved: Resolved,
     brute: BruteForce<'a>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    fn new(data: &'a [u8], paging: &'a Paging<'a>) -> Self {
         Self {
             source: Source::new(data),
+            paging,
             resolver: Resolver::default(),
             resolved: Resolved::default(),
             brute: BruteForce {
@@ -1243,7 +1138,8 @@ impl<'a> Parser<'a> {
     /// stands alone, and its `/Prev`.
     fn parse_xref_stream(&mut self, offset: i64, standalone: bool) -> Read<i64> {
         let dict = self.xref_stream_dictionary()?;
-        let data = self.source.stream_data(&dict)?;
+        self.source.start_stream();
+        let data = self.source.stream_data(direct_length(&dict)?)?.data;
         if standalone {
             self.resolver.next_section(offset);
             self.resolver.set_trailer(dict.clone());
@@ -1284,6 +1180,7 @@ impl<'a> Parser<'a> {
             let Location::File(offset) = location else {
                 continue;
             };
+            self.paging.read(OBJECT_READ);
             match self.find_object_key(key, offset)? {
                 None => return Ok(false),
                 Some(found) if found != key => corrected.push((key, found)),
@@ -1377,7 +1274,7 @@ fn last_index_of(pattern: &[u8], buffer: &[u8], end: usize) -> Option<usize> {
 }
 
 /// Java's `String.trim`.
-fn java_trim(bytes: &[u8]) -> &[u8] {
+pub(super) fn java_trim(bytes: &[u8]) -> &[u8] {
     let start = bytes.iter().position(|&b| b > b' ').unwrap_or(bytes.len());
     let end = bytes
         .iter()
@@ -1874,8 +1771,9 @@ fn object_stream_numbers(data: &[u8], offset: i64) -> Read<Vec<i64>> {
         .and_then(|_| source.read_expected(b"obj"))
         .map_err(|_| Thrown::Unported(loading_fails()))?;
     let dict = source.dictionary()?;
-    let raw = source.stream_data(&dict)?;
-    let decoded = decode(&dict, raw)?;
+    source.start_stream();
+    let raw = source.stream_data(direct_length(&dict)?)?;
+    let decoded = decode(&dict, raw.data)?;
     let count = int_entry(&dict, b"N");
     let first = int_entry(&dict, b"First");
     if count < 0 || first < 0 {
@@ -1902,68 +1800,6 @@ fn int_entry(dict: &Dictionary, key: &[u8]) -> i64 {
         Ok(Object::Real(value)) => i64::from(*value as i32),
         _ => -1,
     }
-}
-
-/// A name as PDF writes it, each byte that is not a regular character as `#xx`.
-fn write_name(name: &[u8], out: &mut Vec<u8>) {
-    out.push(b'/');
-    for &byte in name {
-        let regular = byte.is_ascii_graphic()
-            && !matches!(
-                byte,
-                b'#' | b'/' | b'%' | b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}'
-            );
-        if regular {
-            out.push(byte);
-        } else {
-            out.extend_from_slice(format!("#{byte:02X}").as_bytes());
-        }
-    }
-}
-
-/// An object as PDF writes it, its strings in hexadecimal so that each byte survives.
-fn write_object(object: &Object, out: &mut Vec<u8>) -> Result<(), Unported> {
-    match object {
-        Object::Null => out.extend_from_slice(b"null"),
-        Object::Boolean(value) => out.extend_from_slice(value.to_string().as_bytes()),
-        Object::Integer(value) => out.extend_from_slice(value.to_string().as_bytes()),
-        Object::Real(value) => out.extend_from_slice(value.to_string().as_bytes()),
-        Object::Name(name) => write_name(name, out),
-        Object::String(bytes, _) => {
-            out.push(b'<');
-            for byte in bytes {
-                out.extend_from_slice(format!("{byte:02X}").as_bytes());
-            }
-            out.push(b'>');
-        }
-        Object::Array(items) => {
-            out.push(b'[');
-            for item in items {
-                write_object(item, out)?;
-                out.push(b' ');
-            }
-            out.push(b']');
-        }
-        Object::Dictionary(dict) => {
-            out.extend_from_slice(b"<<");
-            for (key, value) in dict.iter() {
-                write_name(key, out);
-                out.push(b' ');
-                write_object(value, out)?;
-                out.push(b' ');
-            }
-            out.extend_from_slice(b">>");
-        }
-        Object::Reference((number, generation)) => {
-            out.extend_from_slice(format!("{number} {generation} R").as_bytes());
-        }
-        Object::Stream(_) => {
-            return Err(Unported(
-                "a stream in the trailer, which a cross-reference stream cannot hold".to_owned(),
-            ))
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

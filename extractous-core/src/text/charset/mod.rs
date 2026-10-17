@@ -17,6 +17,7 @@ mod strip;
 mod structural;
 
 pub use jdk::Charset;
+pub(crate) use jdk::Pieces;
 use junk_filter::Arbitration;
 
 /// How a detector knows a charset, in the order Mojibuster trusts them: a proof from the

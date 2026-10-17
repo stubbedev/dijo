@@ -75,7 +75,7 @@ enum Content {
 }
 
 struct Engine<'p, 'f> {
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     page: Page<'p>,
     resources: Option<&'p Dictionary>,
     stack: Vec<State<'p>>,
@@ -94,7 +94,7 @@ struct Engine<'p, 'f> {
 /// `ImageGraphicsEngine.run`: the images `page` draws, handed to `found` in the order PDFBox
 /// draws them.
 pub(super) fn run<'p>(
-    pdf: &'p Pdf,
+    pdf: &'p Pdf<'p>,
     page: Page<'p>,
     found: Found<'_, 'p>,
 ) -> Result<(), WriteFailure> {
@@ -142,7 +142,7 @@ pub(super) fn run<'p>(
 
 /// The stream of a form whose group is a transparency group, as `PDXObject.createXObject`
 /// makes a `PDTransparencyGroup` of it.
-fn transparency_group<'p>(pdf: &'p Pdf, object: &'p Object) -> Option<&'p Stream> {
+fn transparency_group<'p>(pdf: &'p Pdf<'p>, object: &'p Object) -> Option<&'p Stream> {
     let Object::Stream(stream) = object else {
         return None;
     };

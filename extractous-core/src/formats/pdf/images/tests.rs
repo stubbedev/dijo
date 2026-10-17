@@ -6,8 +6,8 @@ use super::super::{PdfParser, DELEGATES};
 use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::parity::{
-    assert_same_as_tika_delegating_with, conformance_corpus, documents_with, spools_as_tika_with,
-    Scratch,
+    assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
+    documents_with, spools_as_tika_with, Scratch,
 };
 use crate::formats::Parser;
 
@@ -559,11 +559,12 @@ fn extracts_the_images_of_the_corpora_as_tikas_path_does() {
     let configs = without_page_ocr(false);
     let roots = CORPORA.map(Path::new);
     let (parsed, deferred) = documents_with(&PdfParser, &roots, &configs);
-    let deferred: Vec<String> = deferred
-        .iter()
-        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+    assert_eq!(deferred, Vec::<PathBuf>::new());
+    // A document only its password opens fails on both paths, as the PDF tests compare.
+    let parsed: Vec<PathBuf> = parsed
+        .into_iter()
+        .filter(|path| !path.ends_with("user-password.pdf"))
         .collect();
-    assert_eq!(deferred, ["user-password.pdf"]);
     assert_same(&parsed, &configs);
     let weighed = PathBuf::from("../test_files/documents/2022_Q3_AAPL.pdf");
     assert_same(&[weighed], &skipping_ocr());
@@ -579,12 +580,8 @@ const TIKA_PATH_FAILS: [(&str, &str); 1] = [(
 
 /// The documents of Tika's tests that the port leaves to Tika with images extracted, by the
 /// start of the reason, the OCR of pages skipped.
-const DEFERRED: [(&str, &str); 7] = [
+const DEFERRED: [(&str, &str); 4] = [
     ("testPDFVarious.pdf", "a mask of other dimensions"),
-    (
-        "testPDF_bad_page_303226.pdf",
-        "a page's compressed content stream is damaged",
-    ),
     ("testPDF_childAttachments.pdf", "a CCITT image"),
     (
         "testPDF_incrementalUpdates.pdf",
@@ -593,14 +590,6 @@ const DEFERRED: [(&str, &str); 7] = [
     (
         "testPDF_malformedXFA.pdf",
         "an XFA form whose XML does not parse",
-    ),
-    (
-        "testPDF_no_extract_no_accessibility_owner_user.pdf",
-        "encryption the empty password",
-    ),
-    (
-        "testPDF_no_extract_yes_accessibility_owner_user.pdf",
-        "encryption the empty password",
     ),
 ];
 
@@ -635,6 +624,11 @@ fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {
             let (xml, _) = extracting(&std::fs::read(path).unwrap(), &configs);
             assert!(xml.contains("<div class=\"page\">"), "{xml}");
         }
+        let (locked, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+            .into_iter()
+            .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
+        assert_eq!(locked.len(), 2, "{locked:?}");
+        assert_fails_as_tika_with(&as_paths(&locked), &configs);
         // Tika extracts the Mac, DOS and Unix copies of one file as files of their own (#109).
         let compared: Vec<PathBuf> = parsed
             .into_iter()

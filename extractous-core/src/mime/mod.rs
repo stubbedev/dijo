@@ -28,6 +28,7 @@ pub(crate) mod uri;
 pub(crate) use crate::ole2::tests::compound as compound_document;
 pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
+pub(crate) use detectors::zip::{Intent, IworkDocument, IWORK_CONTENT_ENTRIES};
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
@@ -69,6 +70,8 @@ pub(crate) enum Key {
     ZipFileOpened,
     /// `zip:detector-data-descriptor-required`.
     DataDescriptorRequired,
+    /// `zip:salvaged`.
+    Salvaged,
 }
 
 impl Key {
@@ -78,6 +81,7 @@ impl Key {
             Key::ContentLength => "Content-Length",
             Key::ZipFileOpened => "zip:detector-zip-file-opened",
             Key::DataDescriptorRequired => "zip:detector-data-descriptor-required",
+            Key::Salvaged => "zip:salvaged",
         }
     }
 }
@@ -105,6 +109,9 @@ pub(crate) enum DetectionError {
     /// A `RuntimeException`, which escapes `TikaNativeMain` altogether.
     #[error("Tika's {0} detector fails on the input with a RuntimeException")]
     Crashes(&'static str),
+    /// An archive the ZIP detector salvages otherwise than the port.
+    #[error("Tika's ZIP detector salvages an archive the port does not: {0}")]
+    Unsalvageable(String),
 }
 
 fn thrown(detector: &'static str) -> impl Fn(Thrown) -> DetectionError {
@@ -180,14 +187,32 @@ pub(crate) fn registered_extension(media_type: &MediaType) -> &'static str {
 /// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an
 /// archive or compression format by its first bytes, or `application/octet-stream`.
 pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
-    match zip::detect(data) {
-        zip::Detected::Zip(found) => found.media_type,
-        zip::Detected::Other(found) => found.unwrap_or_else(|| MediaType::named(OCTET_STREAM)),
+    match zip::detect(data, Intent::Detect) {
+        Ok(zip::Detected::Zip(found)) => found.media_type,
+        Ok(zip::Detected::Other(found)) => found.unwrap_or_else(|| MediaType::named(OCTET_STREAM)),
+        Err(_) => unreachable!("only a detection a parse follows salvages"),
     }
 }
 
 /// `DefaultDetector.detect` on a document, as `TikaNativeMain.detect` runs it.
 pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
+    detect_with(data, origin, Intent::Detect)
+}
+
+/// `DefaultDetector.detect` on a document, as `AutoDetectParser` runs it before it parses the
+/// document.
+pub(crate) fn detect_to_parse(
+    data: &[u8],
+    origin: Origin<'_>,
+) -> Result<Detection, DetectionError> {
+    detect_with(data, origin, Intent::Parse)
+}
+
+fn detect_with(
+    data: &[u8],
+    origin: Origin<'_>,
+    intent: Intent,
+) -> Result<Detection, DetectionError> {
     let types = mime_types();
     let registry = types.registry();
     let (name, content_type) = match origin {
@@ -221,13 +246,18 @@ pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, Detec
         ogg::detect(data).map_err(thrown("Ogg"))?,
         ole::misc(data, ole_file.as_ref()),
     ];
-    answers.push(match zip::detect(data) {
+    let zip = zip::detect(data, intent)
+        .map_err(|zip::Unsalvageable(reason)| DetectionError::Unsalvageable(reason))?;
+    answers.push(match zip {
         zip::Detected::Other(found) => found,
         zip::Detected::Zip(found) => {
             written.spool(origin);
             written.set(Key::ZipFileOpened, found.opened.to_string());
             if found.data_descriptor_required {
                 written.set(Key::DataDescriptorRequired, "true".to_owned());
+            }
+            if found.salvaged {
+                written.set(Key::Salvaged, "true".to_owned());
             }
             Some(found.media_type)
         }

@@ -3,6 +3,8 @@
 //! what `ZipArchiveEntry` reports of them: names and comments with their Unicode extra fields,
 //! sizes, CRC, attributes and times.
 
+use std::borrow::Cow;
+
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
     decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG, DEFLATED, LFH_SIG,
@@ -376,7 +378,7 @@ impl<'a> ZipFile<'a> {
 
     /// `getInputStream(entry)` read to its end, `None` for an entry encrypted or compressed a
     /// way the port does not decompress.
-    pub(crate) fn read(&self, entry: &ZipEntry) -> Option<Content> {
+    pub(crate) fn read(&self, entry: &ZipEntry) -> Option<Content<'a>> {
         if entry.uses_encryption() {
             return None;
         }
@@ -386,9 +388,9 @@ impl<'a> ZipFile<'a> {
         let raw = self.data.get(start.min(end)..end)?;
         match entry.method {
             STORED => Some(if raw.len() == length {
-                Content::Complete(raw.to_vec())
+                Content::Complete(Cow::Borrowed(raw))
             } else {
-                Content::Truncated(raw.to_vec())
+                Content::Truncated(Cow::Borrowed(raw))
             }),
             DEFLATED => Some(inflate(raw)),
             _ => None,
@@ -471,7 +473,10 @@ pub(crate) mod tests {
         let names: Vec<&str> = file.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["mimetype", "a/b.xml"]);
         let entry = file.entry("a/b.xml").unwrap();
-        assert_eq!(file.read(entry), Some(Content::Complete(b"<a/>".to_vec())));
+        assert_eq!(
+            file.read(entry),
+            Some(Content::Complete(Cow::Borrowed(&b"<a/>"[..])))
+        );
         assert_eq!(entry.size, 4);
         assert_eq!(entry.method, DEFLATED);
         assert!(entry.can_read());

@@ -7,6 +7,7 @@ use std::borrow::Cow;
 
 use crate::errors::Error;
 use crate::formats::Failure;
+use crate::input::{Input, Pages, Paging};
 use crate::xml::{self, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
 
 pub(crate) use crate::xml::{Attribute, XMLNS};
@@ -53,6 +54,17 @@ pub(crate) trait SaxHandler {
         self.start_element(tag.namespace, tag.local_name, tag.attributes)
     }
 
+    /// The end of an element with its qualified name, which SAX also reports. A handler that
+    /// needs no more than [`SaxHandler::end_element`] leaves this to call it.
+    fn end_tag(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        _qualified_name: &str,
+    ) -> Result<(), Failure> {
+        self.end_element(namespace, local_name)
+    }
+
     /// A document type declaration, which Tika's parsers skip and POI's refuse.
     fn document_type(&mut self) -> Result<(), Failure> {
         Ok(())
@@ -79,8 +91,36 @@ pub(crate) fn parse_sax(
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
+    parse_sax_paged(input, Pages::IN_MEMORY, what, handler)
+}
+
+/// How many events a parse reports between releases of the pages of its input.
+const RELEASE_EVERY_EVENTS: usize = 1 << 16;
+
+/// [`parse_sax`] of a part read from an archive, which may be spooled to a file of its own and
+/// mapped: its pages are released as the parse goes on.
+pub(crate) fn parse_part(
+    input: &Input<'_>,
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
+    parse_sax_paged(input, input.pages(), what, handler)
+}
+
+fn parse_sax_paged(
+    input: &[u8],
+    pages: Pages<'_>,
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
     let mut failure = None;
-    let result = xml::parse(input, &mut |event| {
+    let mut events = 0usize;
+    let paging = Paging::new(pages);
+    let result = xml::parse_paged(input, &paging, &mut |event| {
+        events += 1;
+        if events.is_multiple_of(RELEASE_EVERY_EVENTS) {
+            paging.release();
+        }
         let handled = match event {
             Event::DocumentType => handler.document_type(),
             Event::Start(name, attributes) => {
@@ -102,7 +142,9 @@ pub(crate) fn parse_sax(
                     declarations: &declarations,
                 })
             }
-            Event::End(name) => handler.end_element(name.namespace(), name.local_name()),
+            Event::End(name) => {
+                handler.end_tag(name.namespace(), name.local_name(), name.qualified_name())
+            }
             Event::Text(text, TextKind::Data) => {
                 for_each_sax_piece(text, |piece| handler.characters(piece))
             }

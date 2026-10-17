@@ -41,7 +41,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::config::{ParserConfigs, Password};
-use crate::formats::embedded::EXCEPTION_WARNING;
+use crate::formats::embedded::{EXCEPTION_WARNING, ZERO_BYTES};
 use crate::formats::{self, Output, Parser, Routed, StreamOptions};
 use crate::isolate::isolate;
 use crate::tika::{self, Source};
@@ -253,6 +253,7 @@ const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded
 
 /// An extraction, its text in `char_set`, as the two paths are compared on it: each parser of
 /// the full set once, the failures of embedded documents without the frames that embedded them,
+/// that of an empty one without any frames, which the native path does not record (#68),
 /// and the exceptions a parser records without their frames, which a native parser does not
 /// have.
 pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
@@ -269,7 +270,11 @@ pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extract
             *values = once;
         } else if name == EMBEDDED_EXCEPTION {
             for value in values.iter_mut() {
-                *value = without_temporary_names(&without_embedding_frames(value));
+                *value = if value.starts_with(ZERO_BYTES) {
+                    without_frames(value)
+                } else {
+                    without_temporary_names(&without_embedding_frames(value))
+                };
             }
         } else if name == EMBEDDED_STREAM_EXCEPTION || name == EXCEPTION_WARNING {
             for value in values.iter_mut() {
@@ -1355,6 +1360,16 @@ pub(crate) fn assert_same_as_tika_departing(
     );
 }
 
+/// What a native parser does with a document a wrong password was given for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WrongPassword {
+    /// It fails as Tika's path fails, with the same error.
+    FailsAsTika,
+    /// It leaves the document to Tika's path, whose decoders fail on the garbled data with
+    /// errors of their own.
+    Defers,
+}
+
 /// Asserts that of `documents`, each one `passwords` names, by file name with the password that
 /// opens it, fails without a password and with a wrong one as Tika's path fails on it, with the
 /// same error, and extracts with its password as Tika's path extracts it; and that the rest
@@ -1363,6 +1378,22 @@ pub(crate) fn assert_same_as_tika_with_passwords(
     documents: &[PathBuf],
     tika_name: &str,
     passwords: &[(&str, &str)],
+) {
+    assert_same_as_tika_with_passwords_but(
+        documents,
+        tika_name,
+        passwords,
+        WrongPassword::FailsAsTika,
+    );
+}
+
+/// [`assert_same_as_tika_with_passwords`], each document a wrong password is given for handled
+/// as `wrong` says.
+pub(crate) fn assert_same_as_tika_with_passwords_but(
+    documents: &[PathBuf],
+    tika_name: &str,
+    passwords: &[(&str, &str)],
+    wrong_password: WrongPassword,
 ) {
     let password_of = |document: &Path| {
         let name = document.file_name().unwrap().to_string_lossy();
@@ -1382,7 +1413,25 @@ pub(crate) fn assert_same_as_tika_with_passwords(
         let password = password_of(document).expect("an encrypted document");
         let configs = ParserConfigs::default().with_password(Some(&password));
         assert_same_as_tika_with(&[document], tika_name, &configs);
-        for configs in [ParserConfigs::default(), wrong.clone()] {
+        let failing = match wrong_password {
+            WrongPassword::FailsAsTika => vec![ParserConfigs::default(), wrong.clone()],
+            WrongPassword::Defers => {
+                let routed = routed(document.to_str().unwrap());
+                assert!(
+                    routed
+                        .parser
+                        .defers(
+                            &routed.input,
+                            &routed.detected.metadata_for(routed.parser),
+                            &wrong
+                        )
+                        .is_some(),
+                    "{document:?} with a wrong password"
+                );
+                vec![ParserConfigs::default()]
+            }
+        };
+        for configs in failing {
             assert_eq!(
                 format!("{:?}", native_error(document, &configs)),
                 format!("{:?}", tika_error(document, &configs)),
@@ -1779,8 +1828,12 @@ fn read_by_ocr(xhtml: &Comparison) -> Option<OcrTexts> {
 pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
     let name = path.to_str().unwrap();
     let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
-    let detected = formats::Detected::detect(&formats::OpenedFrom::File(name.into()), &input)
-        .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
+    let detected = formats::Detected::detect(
+        &formats::OpenedFrom::File(name.into()),
+        &input,
+        crate::mime::Intent::Parse,
+    )
+    .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
     parser.defers(
         &input,
         &detected.metadata_for(parser),
@@ -1819,8 +1872,12 @@ pub(crate) fn documents_with(
         if input.is_empty() {
             continue;
         }
-        let detected = formats::Detected::detect(&formats::OpenedFrom::File(path.into()), &input)
-            .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
+        let detected = formats::Detected::detect(
+            &formats::OpenedFrom::File(path.into()),
+            &input,
+            crate::mime::Intent::Parse,
+        )
+        .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
         let routed = formats::parser_for(&detected.media_type).is_ok_and(|routed| {
             routed.name() == parser.name() && routed.media_types() == parser.media_types()
         });
@@ -1923,6 +1980,30 @@ fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
                 }
             }
             _ => native,
+        })
+        .collect()
+}
+
+/// The spooled files, where a [`Departure::LineBreaks`] applies, with each CRLF of the whole
+/// ones an LF, as their text is compared: the line breaks of a part the departure decodes
+/// otherwise are in its bytes too. Where the budget cuts the spool, the departure moves the cut,
+/// which no comparison of the cut files can take out.
+fn with_line_feeds(spooled: Vec<Spooled>, line_breaks: bool) -> Vec<Spooled> {
+    if !line_breaks {
+        return spooled;
+    }
+    spooled
+        .into_iter()
+        .map(|file| {
+            if file.truncated {
+                return file;
+            }
+            let content = replace_bytes(&file.content, b"\r\n", b"\n");
+            Spooled {
+                size: content.len() as u64,
+                content,
+                ..file
+            }
         })
         .collect()
 }
@@ -2069,10 +2150,22 @@ fn spools_as_tika_under(
             let (mut tika_extracted, mut native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
             with_native_failures_masked(&mut tika_extracted, &mut native_extracted);
-            let tika = (tika_extracted, spooled(embedded, tika_spool.directory()));
+            let line_breaks = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::LineBreaks(_)));
+            let tika = (
+                tika_extracted,
+                with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
+            );
             let native = (
                 native_extracted,
-                as_tika_spools(spooled(native_embedded, native_spool.directory()), &tika.1),
+                as_tika_spools(
+                    with_line_feeds(
+                        spooled(native_embedded, native_spool.directory()),
+                        line_breaks,
+                    ),
+                    &tika.1,
+                ),
             );
             if native == tika {
                 Ok(tika.1.len())

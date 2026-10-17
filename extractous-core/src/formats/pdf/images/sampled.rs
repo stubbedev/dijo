@@ -52,7 +52,7 @@ enum Mask {
 
 /// `SampledImageReader.getRGBImage`.
 fn rgb_image(image: &PdImage, color_key: Option<&[Object]>) -> Result<Bitmap, Unwritten> {
-    if image.is_empty() {
+    if image.is_empty()? {
         return Err(thrown("Image stream is empty"));
     }
     let color_space = image.color_space()?;

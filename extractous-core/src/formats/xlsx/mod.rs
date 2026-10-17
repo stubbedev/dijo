@@ -42,7 +42,8 @@ use crate::formats::ooxml::{
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =
@@ -121,6 +122,10 @@ impl Parser for XlsxParser {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -136,10 +141,20 @@ impl Parser for XlsxParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Workbook::open(input, &configs.office)
+        let read = Workbook::open(input, pages, &configs.office)
             .and_then(Workbook::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -165,8 +180,12 @@ struct Workbook<'a> {
 }
 
 impl<'a> Workbook<'a> {
-    fn open(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Self, Unported> {
-        let package = Package::open(input)?;
+    fn open(
+        input: &'a [u8],
+        pages: Pages<'a>,
+        config: &'a OfficeParserConfig,
+    ) -> Result<Self, Unported> {
+        let package = Package::open(input, pages)?;
         let Some(core) =
             Package::relationships_of(&package.relationships, kind::OFFICE_DOCUMENT).next()
         else {
@@ -447,7 +466,7 @@ impl<'a> Workbook<'a> {
     /// Reads a part checked well-formed into `handler`.
     fn read<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
         let bytes = self.package.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
+        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
         Ok(handler)
     }
 
@@ -476,7 +495,7 @@ impl<'a> Workbook<'a> {
                 xhtml,
             );
             let bytes = self.package.read(sheet.part)?;
-            xml::parse_sax(&bytes, self.package.name(sheet.part), &mut reader)?;
+            xml::parse_part(&bytes, self.package.name(sheet.part), &mut reader)?;
             let captured = reader.captured;
             let metadata = xhtml.metadata_mut();
             if captured.hidden_column {

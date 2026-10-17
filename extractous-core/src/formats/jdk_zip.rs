@@ -63,7 +63,7 @@ pub(crate) fn open(input: &[u8]) -> Result<ZipFile<'_>, Refusal> {
 
 /// `zip.getInputStream(entry)` read to its end: all of it, or its first [`MAX_DECODED`] bytes
 /// and more of an entry that inflates past them.
-pub(crate) fn read(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Content, Refusal> {
+pub(crate) fn read<'a>(zip: &ZipFile<'a>, entry: &ZipEntry) -> Result<Content<'a>, Refusal> {
     match zip.read(entry) {
         Some(content @ (Content::Complete(_) | Content::Oversized(_))) => Ok(content),
         Some(Content::Truncated(_)) | None => Err(Refusal::Unread("a damaged entry")),
@@ -74,7 +74,7 @@ pub(crate) fn read(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Content, Refus
 /// left to Tika's path.
 pub(crate) fn read_whole(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusal> {
     match read(zip, entry)? {
-        Content::Complete(bytes) => Ok(bytes),
+        Content::Complete(bytes) => Ok(bytes.into_owned()),
         _ => Err(Refusal::Unread("an entry larger than the port reads")),
     }
 }

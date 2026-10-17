@@ -21,10 +21,10 @@ pub(super) struct Page<'a> {
     pub(super) dict: &'a Dictionary,
 }
 
-impl Pdf {
+impl Pdf<'_> {
     /// The document catalog, `/Root` of the trailer.
     pub(super) fn catalog(&self) -> Option<&Dictionary> {
-        self.get(&self.doc.trailer, b"Root").and_then(as_dict)
+        self.get(self.trailer(), b"Root").and_then(as_dict)
     }
 
     /// The root of the page tree.
@@ -194,7 +194,7 @@ impl<'a> Page<'a> {
                     Some(Object::Name(name)) if name == b"FlateDecode"
                 );
                 if flate_only {
-                    return Ok(inflate_leniently(&stream.content));
+                    return Ok(inflate_leniently(&pdf.raw(stream)?));
                 }
                 pdf.decode(stream).map_err(|unported| {
                     Unported(format!("a page's content stream: {}", unported.0))

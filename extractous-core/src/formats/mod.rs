@@ -10,6 +10,7 @@ mod archive;
 pub(crate) mod audit;
 mod auto_detect_reader;
 mod chm;
+mod class_file;
 mod cms;
 mod composite;
 mod compound;
@@ -38,6 +39,7 @@ mod hwpx;
 mod idml;
 mod image;
 mod iwork;
+mod iwork_package;
 mod jdk_zip;
 mod list_numbering;
 mod mail;
@@ -74,6 +76,7 @@ mod subtitle;
 mod text;
 mod tnef;
 mod translation;
+mod tsd;
 #[cfg(test)]
 mod url_tests;
 mod visio;
@@ -99,10 +102,10 @@ use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
 use crate::fetch::{self, Headers, Located};
-use crate::input::{self, Input};
+use crate::input::{self, Input, Pages};
 use crate::isolate::{heap_cap, isolate};
 use crate::memory;
-use crate::mime::{self, Detection, MediaType, Origin};
+use crate::mime::{self, Detection, Intent, MediaType, Origin};
 use crate::tika::{self, Source};
 use crate::{CharSet, Metadata};
 use embedded::ParseContext;
@@ -151,6 +154,9 @@ pub(crate) enum Declined {
     /// Tika's parser throws this on it before it starts the document: the extraction fails at
     /// once, without output, as Tika's path does.
     Fails(Error),
+    /// Tika's parser writes no document of it, not even its start and end, and leaves only
+    /// this metadata: what it started from, with what it found.
+    Unwritten(TikaMetadata),
 }
 
 impl From<Deferral> for Declined {
@@ -229,6 +235,18 @@ pub(crate) trait Parser: Sync {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined>;
 
+    /// [`Parser::prepare`], given the `pages` of `input`, which a parser of
+    /// [`Footprint::Bounded`] that reads all of a mapped file releases as it reads on.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        _pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare(input, metadata, configs)
+    }
+
     /// Why Tika's path should extract `input`, if it should.
     #[cfg(test)]
     fn defers(
@@ -239,7 +257,7 @@ pub(crate) trait Parser: Sync {
     ) -> Option<Deferral> {
         match self.prepare(input, metadata, configs) {
             Err(Declined::Deferred(deferral)) => Some(deferral),
-            Ok(_) | Err(Declined::Fails(_)) => None,
+            Ok(_) | Err(Declined::Fails(_) | Declined::Unwritten(_)) => None,
         }
     }
 }
@@ -252,6 +270,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::SevenZParser,
     &archive::ZipParser,
     &chm::ChmParser,
+    &class_file::ClassParser,
     &cms::CmsParser,
     &compound::CompoundDocumentParser,
     &dc_xml::DcXmlParser,
@@ -264,15 +283,19 @@ static PARSERS: &[&dyn Parser] = &[
     &fiction_book::FictionBookParser,
     &geogebra::GeoGebraParser,
     &html::JSoupParser,
+    &image::BpgParser,
     &image::HeifParser,
+    &image::IcnsParser,
     &image::ImageParser,
     &image::JpegParser,
+    &image::JxlParser,
     &image::RawTiffParser,
     &image::RecognizedImageParser,
     &image::TiffParser,
     &hwpx::HwpxParser,
     &idml::IdmlParser,
     &iwork::IworkArchiveParser,
+    &iwork_package::IworkPackageParser,
     &mail::EmlxParser,
     &metafile::EmfParser,
     &metafile::WmfParser,
@@ -318,6 +341,7 @@ static PARSERS: &[&dyn Parser] = &[
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
+    &tsd::TsdParser,
     &visio::VisioParser,
     &xls::XlsParser,
     &warc::WarcParser,
@@ -492,8 +516,8 @@ pub(crate) enum Unrouted {
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
 pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unrouted> {
-    let detected =
-        Detected::detect(&document.from, &document.input).map_err(|_| Unrouted::Undetected)?;
+    let detected = Detected::detect(&document.from, &document.input, Intent::Parse)
+        .map_err(|_| Unrouted::Undetected)?;
     let parser = parser_for(&detected.media_type)?;
     if document.input.is_mapped() && parser.footprint() == Footprint::Proportional {
         return Err(Unrouted::Unbounded);
@@ -532,41 +556,17 @@ pub(crate) struct EmbeddedRoute<'a> {
     pub(crate) prepared: Prepared<'a>,
 }
 
-/// Why a document embedded in one a native parser reads goes to Tika's path.
+/// Why no native parser prepares a document embedded in one a native parser reads: Tika's path
+/// parses it, unless it is empty or its parser writes no document of it, which the native path
+/// records as Tika does.
 #[derive(Debug)]
 pub(crate) enum Bridged {
     /// No native parser prepares it.
-    Unrouted(
-        #[cfg_attr(
-            not(test),
-            expect(
-                dead_code,
-                reason = "only the tests ask why no native parser prepares it"
-            )
-        )]
-        Unrouted,
-    ),
+    Unrouted(Unrouted),
     /// Its native parser, of this name, declines it: Tika's path parses one the parser defers,
     /// and records the failure of one Tika's parser fails before it starts, which only that
     /// path can tell.
-    Declined(
-        #[cfg_attr(
-            not(test),
-            expect(
-                dead_code,
-                reason = "only the tests ask which parser declines a document"
-            )
-        )]
-        &'static str,
-        #[cfg_attr(
-            not(test),
-            expect(
-                dead_code,
-                reason = "only the tests ask why a parser declines a document"
-            )
-        )]
-        Declined,
-    ),
+    Declined(&'static str, Declined),
 }
 
 /// The native parser of a document embedded in one a native parser reads, with the metadata it
@@ -617,7 +617,7 @@ pub(crate) fn route_embedded<'a>(
 /// for a document Tika's detection throws on, so the failure is Tika's own.
 pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     let document = open(source, None)?;
-    match Detected::detect(&document.from, &document.input) {
+    match Detected::detect(&document.from, &document.input, Intent::Detect) {
         Ok(detected) => Ok(detected.media_type),
         Err(_) => tika::detect(isolate()?, source),
     }
@@ -632,13 +632,15 @@ pub(crate) fn java_file_name(path: &str) -> &str {
 }
 
 impl Detected {
-    /// Detects `input`, opened as `from` says, with the metadata `TikaNativeMain.detect` holds
-    /// after Tika's detection: what `TikaInputStream` writes as it opens the input (for a file
-    /// its name and length, for a fetched document what the server said of it), then what the
-    /// detectors write, in the order they write it.
+    /// Detects `input`, opened as `from` says, with the metadata Tika holds after its
+    /// detection, alone as `TikaNativeMain.detect` runs it or before a parse as
+    /// `AutoDetectParser` runs it, as `intent` says: what `TikaInputStream` writes as it opens
+    /// the input (for a file its name and length, for a fetched document what the server said
+    /// of it), then what the detectors write, in the order they write it.
     pub(crate) fn detect(
         from: &OpenedFrom<'_>,
         input: &[u8],
+        intent: Intent,
     ) -> Result<Self, mime::DetectionError> {
         let mut metadata = TikaMetadata::new();
         let (origin, file) = match from {
@@ -675,7 +677,10 @@ impl Detected {
         let Detection {
             media_type,
             metadata: entries,
-        } = mime::detect(input, origin)?;
+        } = match intent {
+            Intent::Detect => mime::detect(input, origin)?,
+            Intent::Parse => mime::detect_to_parse(input, origin)?,
+        };
         for entry in entries {
             metadata.set(entry.key.name(), entry.value);
         }
@@ -702,7 +707,7 @@ impl Detected {
         let Detection {
             media_type,
             metadata: entries,
-        } = mime::detect(input, origin)?;
+        } = mime::detect_to_parse(input, origin)?;
         let mut metadata = metadata.clone();
         for entry in entries {
             metadata.set(entry.key.name(), entry.value);
@@ -734,10 +739,29 @@ fn run<'h>(
     let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
-    if result.is_ok() && context.configs().password.is_some() {
-        metadata.set(PASSWORD_USED, "true");
+    if result.is_ok() {
+        mark_password_used(&mut metadata, context.configs());
     }
     (metadata, result)
+}
+
+/// The metadata of a document the parser named `parser` writes nothing of, as Tika leaves it
+/// once that parser has returned, from the `metadata` the parser left.
+pub(crate) fn unwritten(
+    parser: &str,
+    mut metadata: TikaMetadata,
+    configs: &ParserConfigs,
+) -> TikaMetadata {
+    embedded::EmbeddedRecord::default().finish(&mut metadata, parser);
+    mark_password_used(&mut metadata, configs);
+    metadata
+}
+
+/// Marks a document parsed under `configs` as parsed with a password, if one was given.
+fn mark_password_used(metadata: &mut TikaMetadata, configs: &ParserConfigs) {
+    if configs.password.is_some() {
+        metadata.set(PASSWORD_USED, "true");
+    }
 }
 
 /// What our Java `LegacyOfficePasswordParser` records once a document a password was given for
@@ -883,7 +907,7 @@ impl Write for StringOut {
 /// handlers of [`Chain::String`]; `None` when the parser leaves the document to Tika.
 pub(crate) fn parse_to_string(
     parser: &dyn Parser,
-    input: &[u8],
+    input: &Input<'_>,
     detected: &Detected,
     configs: &ParserConfigs,
     max_length: usize,
@@ -901,7 +925,7 @@ pub(crate) fn parse_to_string(
 /// [`parse_to_string`] through the handlers of `chain`, a string extraction's.
 pub(crate) fn parse_to_string_through(
     parser: &dyn Parser,
-    input: &[u8],
+    input: &Input<'_>,
     detected: &Detected,
     configs: &ParserConfigs,
     chain: Chain,
@@ -911,15 +935,20 @@ pub(crate) fn parse_to_string_through(
         .expect("a string extraction's chain limits its text");
     within_budget(|| {
         let metadata = detected.metadata_for(parser);
-        let prepared = match parser.prepare(input, &metadata, configs) {
+        let prepared = match parser.prepare_paged(input, input.pages(), &metadata, configs) {
             Ok(prepared) => prepared,
             Err(Declined::Deferred(_)) => return Ok(None),
             Err(Declined::Fails(error)) => return Err(error),
+            Err(Declined::Unwritten(metadata)) => {
+                let metadata = unwritten(parser.name(), metadata, configs);
+                return Ok(Some((String::new(), metadata.to_map())));
+            }
         };
         prepared_within_budget(parser)?;
         let mut out = StringOut::default();
         let context = ParseContext::new(configs)
             .reading(detected.file.clone())
+            .paging(input.pages())
             .with_write_limit(max_length);
         let (metadata, result) = chain.write_to(&mut out, |handler| {
             run(parser, prepared, metadata, &context, handler)
@@ -1039,12 +1068,21 @@ pub(crate) fn parse_to_stream(
         .spawn(move || {
             within_budget(|| {
                 let metadata = start;
-                let prepared = parser.prepare(&input, &metadata, &configs);
+                let prepared = parser.prepare_paged(&input, input.pages(), &metadata, &configs);
                 let _ = decided.send(!matches!(prepared, Err(Declined::Deferred(_))));
                 let prepared = match prepared {
                     Ok(prepared) => prepared_within_budget(parser).map(|()| prepared),
                     Err(Declined::Deferred(_)) => return,
                     Err(Declined::Fails(error)) => Err(error),
+                    Err(Declined::Unwritten(metadata)) => {
+                        let metadata = unwritten(parser.name(), metadata, &configs);
+                        let _ = sender.send(Message::Done {
+                            tail: Vec::new(),
+                            outcome: Ok(metadata.to_map()),
+                            spooled: Vec::new(),
+                        });
+                        return;
+                    }
                 };
                 let prepared = match prepared {
                     Ok(prepared) => prepared,
@@ -1070,7 +1108,8 @@ pub(crate) fn parse_to_stream(
                     Some(spool) => ParseContext::spooling(&configs, spool),
                     None => ParseContext::new(&configs),
                 }
-                .reading(detected.file.clone());
+                .reading(detected.file.clone())
+                .paging(input.pages());
                 let (metadata, result) = chain.write_to(&mut out, |handler| {
                     run(parser, prepared, metadata, &context, handler)
                 });
@@ -1397,6 +1436,18 @@ mod tests {
                 "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
             ),
             (
+                "testEXCEL_charts.xlsb",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_diagramData.xlsb",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
+                "testEXCEL_various.xlsb",
+                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
+            ),
+            (
                 "testEXCEL_headers_footers.xls",
                 "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
             ),
@@ -1499,6 +1550,11 @@ mod tests {
             (
                 "testRFC822_oddfrom",
                 "its quoted-printable parts keep their own line ends (#73)",
+            ),
+            (
+                "testMHTMLFirefox.mhtml",
+                "its quoted-printable parts keep their own line ends (#73), which moves where a \
+                 budget cuts the spool; mail::tests compares its spool unbudgeted",
             ),
         ];
         let mut differences = Vec::new();
@@ -1731,6 +1787,8 @@ mod tests {
         sparse(&mp4, &mp4_header(7200, large - header.len() as u64), large);
         let pdf = dir.join("long.pdf");
         sparse(&pdf, b"%PDF-1.4\n", large);
+        let rtf = dir.join("long.rtf");
+        sparse(&rtf, b"{\\rtf1 ", large);
         for (path, parser) in [
             (&wave, "extractous::AudioParser"),
             (&mp4, "extractous::MP4Parser"),
@@ -1744,8 +1802,11 @@ mod tests {
                 routed.parser.tika_name(),
             );
         }
+        let routed = route_file(pdf.to_str().unwrap()).unwrap();
+        assert_eq!(routed.parser.name(), pdf::PdfParser.name());
+        assert!(routed.input.is_mapped());
         assert!(matches!(
-            route_file(pdf.to_str().unwrap()),
+            route_file(rtf.to_str().unwrap()),
             Err(Unrouted::Unbounded)
         ));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1763,7 +1824,8 @@ mod tests {
     fn detects_files_with_the_metadata_tika_opens_them_with() {
         let path = "../test_files/documents/simple.odt";
         let input = std::fs::read(path).unwrap();
-        let detected = Detected::detect(&OpenedFrom::File(path.into()), &input).unwrap();
+        let detected =
+            Detected::detect(&OpenedFrom::File(path.into()), &input, Intent::Parse).unwrap();
         assert_eq!(
             detected.media_type,
             "application/vnd.oasis.opendocument.text"
@@ -1781,7 +1843,7 @@ mod tests {
             detected.metadata.get("tk:resource-name"),
             Some("simple.odt")
         );
-        let bytes = Detected::detect(&OpenedFrom::Bytes, &input).unwrap();
+        let bytes = Detected::detect(&OpenedFrom::Bytes, &input, Intent::Parse).unwrap();
         assert_eq!(bytes.metadata.get("tk:resource-name"), None);
         assert_eq!(
             bytes.metadata.get("Content-Length"),
