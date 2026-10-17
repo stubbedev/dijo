@@ -1,21 +1,26 @@
+#[cfg(feature = "tika")]
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+#[cfg(feature = "tika")]
 use jni::{Env, JavaVM};
 
 use crate::errors::{Error, ExtractResult};
+#[cfg(feature = "tika")]
 use crate::tika::{self, native};
 
 /// The GraalVM isolate Tika runs in. There is one per process: the JDK's AWT native libraries,
 /// which PDF page rendering for OCR needs, keep process-wide state tied to the first isolate
 /// that loads them, so in any further isolate rendering silently produces empty page images.
+#[cfg(feature = "tika")]
 pub(crate) struct Isolate {
     vm: JavaVM,
 }
 
+#[cfg(feature = "tika")]
 impl Isolate {
     /// Runs `f` on the current thread attached to the isolate, in a local frame of its own: the
     /// local references `f` creates are freed when it returns. A thread attached only for `f` is
@@ -28,25 +33,29 @@ impl Isolate {
     }
 }
 
+#[cfg(feature = "tika")]
 impl fmt::Debug for Isolate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Isolate").finish_non_exhaustive()
     }
 }
 
-/// How the process-wide isolate is set up. The isolate reads these once, when it starts.
+/// How the process extracts: where its temporary files go, the memory an extraction may take
+/// and the processors it may use. In a build with Tika, the process-wide isolate Tika runs in is
+/// set up with them too, and reads them once, when it starts.
 #[derive(Debug, Clone, Default)]
 pub struct IsolateSettings {
-    /// Where Tika puts its temporary files (PDF scratch files, spooled streams) instead of the
-    /// system temporary directory.
+    /// Where temporary files go (spooled streams, decoded images, and Tika's PDF scratch files)
+    /// instead of the system temporary directory.
     pub temp_dir: Option<PathBuf>,
-    /// The most memory the Java heap may take, and a native extraction may hold. Beyond it an
-    /// extraction fails, with an OutOfMemoryError on Tika's path and
-    /// [`crate::Error::MemoryLimit`] on the native one, and the next one runs normally. By
-    /// default the heap may grow to a large share of physical memory. The heap is sized to at
-    /// least 512 MiB, or the cap when it is lower. A native extraction is held to the cap only
-    /// in a program that counts allocations with [`crate::memory::CountingAllocator`]; in any
-    /// other, every document is extracted on Tika's path while a cap is set.
+    /// The most memory a native extraction may hold, and the Java heap may take. Beyond it an
+    /// extraction fails, with [`crate::Error::MemoryLimit`] on the native path and an
+    /// OutOfMemoryError on Tika's, and the next one runs normally. By default the heap may grow
+    /// to a large share of physical memory. The heap is sized to at least 512 MiB, or the cap
+    /// when it is lower. A native extraction is held to the cap only in a program that counts
+    /// allocations with [`crate::memory::CountingAllocator`]; in any other, while a cap is set,
+    /// every document is extracted on Tika's path, and in a build without Tika every extraction
+    /// fails with [`crate::Unsupported::UncountedMemoryCap`].
     pub max_heap_bytes: Option<NonZeroU64>,
     /// The processors this process may use, when it shares the machine with other extracting
     /// processes: OCR divides them among the readings running at once. All of the machine's by
@@ -57,8 +66,10 @@ pub struct IsolateSettings {
 /// The heap the isolate keeps at least: GraalVM CE collects only with its serial collector, which
 /// with its default sizing collects the young generation every few dozen megabytes, a sixth of
 /// the time spent on office documents.
+#[cfg(feature = "tika")]
 const MIN_HEAP_BYTES: u64 = 512 << 20;
 
+#[cfg(feature = "tika")]
 impl IsolateSettings {
     /// The heap the isolate keeps at least, which may not exceed the cap.
     pub(crate) fn min_heap_bytes(&self) -> u64 {
@@ -67,6 +78,7 @@ impl IsolateSettings {
     }
 }
 
+#[cfg(feature = "tika")]
 static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
 static SETTINGS: OnceLock<IsolateSettings> = OnceLock::new();
 
@@ -79,6 +91,7 @@ pub(crate) fn temp_dir() -> PathBuf {
 }
 
 /// The process-wide isolate, created on first use.
+#[cfg(feature = "tika")]
 pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
     ISOLATE
         .get_or_init(|| {
@@ -89,7 +102,8 @@ pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
         .map_err(|message| Error::NativeLibrary(message.clone()))
 }
 
-/// The cap on the Java heap, which a native extraction is held to as well, if one is set.
+/// The cap on the memory a native extraction may hold, and the Java heap may take, if one is
+/// set.
 pub(crate) fn heap_cap() -> Option<u64> {
     SETTINGS
         .get()
@@ -108,13 +122,14 @@ pub(crate) fn processors() -> usize {
 }
 
 /// Whether the process has created its isolate, which nothing but Tika's path needs.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn isolate_created() -> bool {
     ISOLATE.get().is_some()
 }
 
-/// Sets up the isolate; only once, and before the first extraction starts it.
+/// Sets up the process; only once, and before the first extraction starts the isolate.
 pub fn configure_isolate(settings: IsolateSettings) -> ExtractResult<()> {
+    #[cfg(feature = "tika")]
     if ISOLATE.get().is_some() {
         return Err(Error::Unknown(
             "The isolate must be configured before the first extraction".to_string(),
@@ -125,24 +140,28 @@ pub fn configure_isolate(settings: IsolateSettings) -> ExtractResult<()> {
         .map_err(|_| Error::Unknown("The isolate was already configured".to_string()))
 }
 
-/// Waits, for at most `timeout`, until every extraction has ended, including those whose reader
-/// stopped early: they are cancelled but still wind down and kill the tesseract they started.
-/// Call it before the process exits. Returns whether they all ended; at once, and true, when no
-/// extraction ever started the isolate.
+/// Waits, for at most `timeout`, until every extraction on Tika's path has ended, including those
+/// whose reader stopped early: they are cancelled but still wind down and kill the tesseract
+/// they started. Call it before the process exits. Returns whether they all ended; at once, and
+/// true, when no extraction ever started the isolate, as in a build without Tika.
 pub fn wait_for_extractions(timeout: Duration) -> ExtractResult<bool> {
-    match ISOLATE.get() {
-        Some(Ok(isolate)) => tika::await_idle_parses(isolate, timeout),
-        Some(Err(_)) | None => Ok(true),
+    #[cfg(feature = "tika")]
+    if let Some(Ok(isolate)) = ISOLATE.get() {
+        return tika::await_idle_parses(isolate, timeout);
     }
+    #[cfg(not(feature = "tika"))]
+    let _ = timeout;
+    Ok(true)
 }
 
 /// Attaches the current thread to the isolate until the thread exits, so extractions on it skip
 /// attaching and detaching each time. Worth it for long-lived worker threads.
+#[cfg(feature = "tika")]
 pub fn keep_current_thread_attached() -> ExtractResult<()> {
     isolate()?.vm.attach_current_thread(|_| Ok::<_, Error>(()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use super::*;
 

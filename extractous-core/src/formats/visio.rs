@@ -523,9 +523,12 @@ fn exact_int(value: i32) -> Read<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
@@ -537,6 +540,7 @@ mod tests {
     }
 
     /// `data` compressed as HDGF reads it: every byte a literal.
+    #[cfg(feature = "tika")]
     fn literally(data: &[u8]) -> Vec<u8> {
         data.chunks(8)
             .flat_map(|chunk| std::iter::once(0xFF).chain(chunk.iter().copied()))
@@ -544,6 +548,7 @@ mod tests {
     }
 
     /// A Visio 2003 pointer: its type, offset, length and format.
+    #[cfg(feature = "tika")]
     fn pointer(kind: u32, offset: usize, length: usize, format: u16) -> Vec<u8> {
         let mut bytes = kind.to_le_bytes().to_vec();
         bytes.extend(0u32.to_le_bytes());
@@ -554,6 +559,7 @@ mod tests {
     }
 
     /// A text chunk of Visio 2003 holding `text`, and a chunk of type 0x2c with a trailer.
+    #[cfg(feature = "tika")]
     fn chunks(text: &str) -> Vec<u8> {
         let mut contents = vec![0u8; TEXT_START];
         contents.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
@@ -574,6 +580,7 @@ mod tests {
 
     /// A Visio 2003 drawing whose trailer points to a compressed stream of chunks holding
     /// `first` and an uncompressed stream of pointers to one holding `second`.
+    #[cfg(feature = "tika")]
     fn drawing(first: &str, second: &str) -> Vec<u8> {
         use crate::ole2::{write, Node, Storage};
         let mut document = VISIO_HEADER.to_vec();
@@ -612,6 +619,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_the_texts_of_compressed_and_nested_streams_as_tikas_path_does() {
         let scratch = crate::formats::parity::Scratch::new("visio");

@@ -499,15 +499,20 @@ impl Parser for IworkArchiveParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::compress::zip::file::tests::zip;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.IworkArchiveParser";
+    #[cfg(feature = "tika")]
     const BUILD_HISTORY: &[u8] = b"<plist version=\"1.0\"><array/></plist>";
 
     fn varint(mut value: u64) -> Vec<u8> {
@@ -551,6 +556,7 @@ mod tests {
         [varint(info.len() as u64), info, payload.to_vec()].concat()
     }
 
+    #[cfg(feature = "tika")]
     fn storage(text: &str) -> Vec<u8> {
         record(
             2001,
@@ -558,6 +564,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tika")]
     fn string_list(list_type: u64, strings: &[(u64, &str)]) -> Vec<u8> {
         let mut payload = varint_field(1, list_type);
         for (key, string) in strings {
@@ -579,6 +586,7 @@ mod tests {
         archive
     }
 
+    #[cfg(feature = "tika")]
     fn package(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let borrowed: Vec<(&str, &[u8])> = entries
             .iter()
@@ -631,6 +639,7 @@ mod tests {
         assert_eq!(text(&stream).unwrap(), ["Kept"]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_packages_as_tikas_path_does() {
         let scratch = Scratch::new("iwork");
@@ -721,6 +730,7 @@ mod tests {
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_the_corpus_packages_as_tikas_path_does() {
         let (parsed, deferred) =
@@ -731,6 +741,7 @@ mod tests {
         assert_same_as_tika(&paths, TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_packages_as_tikas_path_does() {

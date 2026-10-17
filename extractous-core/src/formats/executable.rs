@@ -465,7 +465,7 @@ fn read_architectures<'a>(input: &'a [u8], found: &mut Vec<&'a [u8]>) -> Result<
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

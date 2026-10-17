@@ -1,15 +1,19 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::testing::*;
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
 };
 
+#[cfg(feature = "tika")]
 fn paths(files: &[PathBuf]) -> Vec<&Path> {
     files.iter().map(PathBuf::as_path).collect()
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_metafiles_as_tikas_path_does() {
     let scratch = Scratch::new("metafile");
@@ -89,6 +93,7 @@ fn reads_the_name_an_icon_only_comment_gives() {
     assert_eq!(unicode_string(&[0]), None);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_metafiles_as_tikas_path_does() {

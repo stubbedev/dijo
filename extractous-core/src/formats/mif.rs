@@ -203,7 +203,7 @@ impl Mif<'_, '_> {
 
 /// A native result as Tika's path writes it (#118): typed `application/x-mif`, the first of
 /// the parser's types in `HashSet` order, and the text of each paragraph escaped once more.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn as_tika_writes_it(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -253,9 +253,11 @@ pub(crate) fn as_tika_writes_it(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
     };
@@ -293,6 +295,7 @@ mod tests {
         assert!(MEDIA_TYPES.contains(&metadata["Content-Type"][0].as_str()));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_mif_files_as_tikas_path_does() {
         let scratch = Scratch::new("mif");
@@ -309,6 +312,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_mif_files_as_tikas_path_does() {

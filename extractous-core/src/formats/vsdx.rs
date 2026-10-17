@@ -155,7 +155,7 @@ impl SaxHandler for PageHandler<'_, '_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

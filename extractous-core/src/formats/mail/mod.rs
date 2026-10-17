@@ -286,18 +286,24 @@ fn prepare_message(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{
-        assert_same_as_tika_departing, conformance_corpus, documents, Departure, Departures,
-    };
+    #[cfg(feature = "tika")]
+    use crate::formats::parity::assert_same_as_tika_departing;
+    use crate::formats::parity::{conformance_corpus, documents};
+    #[cfg(feature = "tika")]
+    use crate::formats::parity::{Departure, Departures};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.mail.RFC822Parser";
+    #[cfg(feature = "tika")]
     const EMLX_NAME: &str = "ai.yobix.EmlxParser";
 
     /// What the port does otherwise than Tika on purpose: Tika names a message after its
     /// subject, and makes each line feed of a quoted-printable part a CRLF.
+    #[cfg(feature = "tika")]
     pub(crate) const DEPARTURES: Departures = &[
         Departure::Values("tk:resource-name", "#79"),
         Departure::LineBreaks("#73"),
@@ -305,10 +311,12 @@ pub(crate) mod tests {
 
     /// The documents whose sender's name Tika's regular expression takes otherwise than the
     /// port takes it from the parsed mailbox (#77), by file name.
+    #[cfg(feature = "tika")]
     pub(crate) const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
 
     /// Asserts parity on the documents of `parser` under `roots`, which it must parse all of,
     /// and that there are `count`, but for those named in `except`, which it returns.
+    #[cfg(feature = "tika")]
     fn assert_parity(
         parser: &dyn Parser,
         tika_name: &str,
@@ -369,24 +377,28 @@ pub(crate) mod tests {
         assert_eq!(metadata.get("tk:resource-name"), None);
     }
 
+    #[cfg(feature = "tika")]
     const ROOTS: [&str; 3] = [
         "../test_files/documents",
         "../quality/corpus",
         "../quality/truth",
     ];
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_messages_as_tikas_path_does() {
         let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
         assert_parity(&Rfc822Parser, TIKA_NAME, &roots, 3, &[]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_apple_mail_messages_as_tikas_path_does() {
         let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
         assert_parity(&EmlxParser, EMLX_NAME, &roots, 1, &[]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_messages_as_tikas_path_does() {
@@ -412,6 +424,7 @@ pub(crate) mod tests {
     /// parser of `message/rfc822`, its supertype, spool their parts as Tika's path does, once
     /// the line breaks of their quoted-printable parts are taken alike (#73). Where a budget
     /// cuts the spool, the departure moves the cut.
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn spools_the_parts_of_tikas_mhtml_documents_as_tikas_path_does() {
@@ -434,6 +447,7 @@ pub(crate) mod tests {
         assert!(spooled > 0);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_apple_mail_messages_as_tikas_path_does() {

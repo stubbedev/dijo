@@ -810,9 +810,11 @@ impl Parser for ClassParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
     #[test]
@@ -832,6 +834,7 @@ mod tests {
         assert!(JavaType::of_descriptor("Ljava/lang/String").is_err());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_classes_as_tikas_path_does() {

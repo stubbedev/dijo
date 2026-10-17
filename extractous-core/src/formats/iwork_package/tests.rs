@@ -1,11 +1,14 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::compress::zip::file::tests::zip;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
 };
 
+#[cfg(feature = "tika")]
 const TIKA_NAME: &str = "org.apache.tika.parser.iwork.IWorkPackageParser";
 const HISTORY: (&str, &[u8]) = (
     "buildVersionHistory.plist",
@@ -39,6 +42,7 @@ const PAGES: &[u8] = br#"<?xml version="1.0"?>
 </sl:document>"#;
 
 /// A Numbers '09 document of one sheet with a table and a pop-up menu cell.
+#[cfg(feature = "tika")]
 const NUMBERS: &[u8] = br#"<?xml version="1.0"?>
 <ls:document xmlns:ls="http://developer.apple.com/namespaces/ls" xmlns:sf="http://developer.apple.com/namespaces/sf" xmlns:sfa="http://developer.apple.com/namespaces/sfa">
 <sf:metadata><sf:title><sf:string sfa:string="Sums"/></sf:title><sf:keywords><sf:string sfa:string="k"/></sf:keywords></sf:metadata>
@@ -64,6 +68,7 @@ fn reads_the_kind_of_each_content_entry() {
     assert!(read(&zip(&[HISTORY])).unwrap().entries.is_empty());
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_synthetic_packages_as_tikas_path_does() {
     let scratch = Scratch::new("iwork-package");
@@ -87,6 +92,7 @@ fn extracts_synthetic_packages_as_tikas_path_does() {
     assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_packages_as_tikas_path_does() {

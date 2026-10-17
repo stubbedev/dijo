@@ -14,7 +14,7 @@ pub(crate) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<GrayImag
     imp::decode(input, timeout)
 }
 
-#[cfg(feature = "static-image")]
+#[cfg(feature = "static")]
 mod imp {
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::sync::Once;
@@ -197,7 +197,7 @@ mod imp {
     }
 }
 
-#[cfg(not(feature = "static-image"))]
+#[cfg(not(feature = "static"))]
 mod imp {
     use std::io::Read;
     use std::path::{Path, PathBuf};
@@ -356,7 +356,7 @@ mod imp {
             )?;
             return decoded(outcome, &png);
         }
-        let bundled = crate::tika::native::bundled_heif_decoder()
+        let bundled = crate::bundle::bundled_heif_decoder()
             .map_err(|e| Undecoded::Failed(format!("Cannot unpack the bundled heif-png: {e}")))?;
         if let Some(bundled) = bundled {
             let outcome = run(

@@ -25,7 +25,7 @@ use crate::formats::Failure;
 use crate::java::time::format_instant;
 
 /// The metadata of the ZIP integrity check.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 const INTEGRITY_CHECK: [&str; 4] = [
     "zip:integrity-check-result",
     "zip:duplicate-entry-names",
@@ -36,7 +36,7 @@ const INTEGRITY_CHECK: [&str; 4] = [
 /// A native ZIP result as Tika's path writes it, with the integrity check as late as Tika runs
 /// it (#99): after the document has ended, so not in its head, and not at all when the parse
 /// failed, as at the write limit.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn as_tika_checks_zips(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,

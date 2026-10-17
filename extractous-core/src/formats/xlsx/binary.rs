@@ -792,20 +792,27 @@ fn rk_number(data: &[u8], offset: usize) -> Result<f64, Failure> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     use super::super::tests::assert_same_as_tika;
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::ooxml::testing::{package, relationship, relationships};
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const RELATIONSHIPS: &str = "application/vnd.openxmlformats-package.relationships+xml";
 
+    #[cfg(feature = "tika")]
     fn paths(files: &[PathBuf]) -> Vec<&Path> {
         files.iter().map(PathBuf::as_path).collect()
     }
 
     /// A record of type `id` holding `data`, its id and length as XLSB writes them.
+    #[cfg(feature = "tika")]
     fn record(id: u32, data: &[u8]) -> Vec<u8> {
         let mut bytes = if id < 0x80 {
             vec![id as u8]
@@ -826,6 +833,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "tika")]
     fn wide(text: &str) -> Vec<u8> {
         let units: Vec<u16> = text.encode_utf16().collect();
         let mut bytes = (units.len() as u32).to_le_bytes().to_vec();
@@ -833,6 +841,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "tika")]
     fn cell(id: u32, column: u32, style: u32, value: &[u8]) -> Vec<u8> {
         let mut data = column.to_le_bytes().to_vec();
         data.extend_from_slice(&style.to_le_bytes()[..3]);
@@ -841,6 +850,7 @@ mod tests {
         record(id, &data)
     }
 
+    #[cfg(feature = "tika")]
     fn row(number: u32) -> Vec<u8> {
         let mut data = number.to_le_bytes().to_vec();
         data.extend_from_slice(&[0; 13]);
@@ -849,6 +859,7 @@ mod tests {
 
     /// A binary workbook of one sheet named `name` holding `cells`, with the shared strings
     /// `strings`, two cell styles (General and a format of id 164) and the sheet's `comments`.
+    #[cfg(feature = "tika")]
     fn workbook(name: &str, cells: &[Vec<u8>], strings: &[&str], comments: &[u8]) -> Vec<u8> {
         let mut sheet_entry = 0u32.to_le_bytes().to_vec();
         sheet_entry.extend_from_slice(&1u32.to_le_bytes());
@@ -919,6 +930,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tika")]
     fn comment(author: u32, row: u32, column: u32, text: &str) -> Vec<u8> {
         let mut begin = author.to_le_bytes().to_vec();
         for value in [row, row, column, column] {
@@ -934,6 +946,7 @@ mod tests {
         .concat()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_binary_workbooks_as_tikas_path_does() {
         let scratch = Scratch::new("xlsb");
@@ -983,6 +996,7 @@ mod tests {
         assert_fails_as_tika(&paths(&failing));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_binary_workbooks_as_tikas_path_does() {

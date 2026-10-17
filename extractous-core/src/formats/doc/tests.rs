@@ -1,15 +1,23 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
+#[cfg(feature = "tika")]
+use crate::formats::parity;
+#[cfg(feature = "tika")]
+use crate::formats::parity::assert_same_as_tika_with_passwords;
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
+#[cfg(feature = "tika")]
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 
 /// The documents this port leaves to Tika, by file name, with a part of the reason.
+#[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 0] = [];
 
 /// The encrypted documents, by file name, with the password that opens them.
+#[cfg(feature = "tika")]
 const ENCRYPTED: [(&str, &str); 2] = [
     ("testWORD_protected_passtika.doc", "tika"),
     ("tika-password.doc", "tika"),
@@ -17,6 +25,7 @@ const ENCRYPTED: [(&str, &str); 2] = [
 
 /// Tika's test documents this port reads otherwise than Tika does where Tika slips (#111), each
 /// with what the native XHTML holds where Tika's does not, or the comment persons in order.
+#[cfg(feature = "tika")]
 const DEPARTURES: [(&str, Departure); 3] = [
     // A hyperlink whose text holds a page reference field ends with its own end mark.
     (
@@ -38,6 +47,7 @@ const DEPARTURES: [(&str, Departure); 3] = [
 ];
 
 /// What a departure's native extraction holds.
+#[cfg(feature = "tika")]
 enum Departure {
     Holds(&'static str),
     Persons(&'static [&'static str]),
@@ -45,6 +55,7 @@ enum Departure {
 
 /// Of `documents`, those Tika's path extracts alike, after checking that each departure holds
 /// what it should.
+#[cfg(feature = "tika")]
 fn without_departures(documents: &[PathBuf]) -> Vec<PathBuf> {
     let mut alike = Vec::new();
     for document in documents {
@@ -69,12 +80,14 @@ fn without_departures(documents: &[PathBuf]) -> Vec<PathBuf> {
     alike
 }
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
 /// Of `documents`, those this port reads, after checking that it leaves exactly those
 /// [`DEFERRED`] names to Tika.
+#[cfg(feature = "tika")]
 fn ported(documents: &[PathBuf]) -> Vec<PathBuf> {
     let mut ported = Vec::new();
     let mut unexpected = Vec::new();
@@ -93,6 +106,7 @@ fn ported(documents: &[PathBuf]) -> Vec<PathBuf> {
     ported
 }
 
+#[cfg(feature = "tika")]
 fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     let (mut documents, deferred) = parity::documents(&DocParser, roots);
     documents.extend(deferred);
@@ -127,6 +141,7 @@ fn decrypts_an_encrypted_document_with_its_password_only() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "runs Tika on every Word document of the repository"]
 fn extracts_what_tikas_path_extracts_from_the_repositorys_documents() {
@@ -136,6 +151,7 @@ fn extracts_what_tikas_path_extracts_from_the_repositorys_documents() {
     assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {

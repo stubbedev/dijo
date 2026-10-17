@@ -337,11 +337,14 @@ impl Parser for MboxParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.mbox.MboxParser";
 
     #[test]
@@ -412,6 +415,7 @@ Third.\n";
         assert!(messages.iter().all(|message| !message.cut));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_mailboxes_as_tikas_path_does() {
         let scratch = Scratch::new("mbox");
@@ -454,6 +458,7 @@ Body.";
     }
 
     /// Mailboxes whose first message passes the write limit, in plain text and in HTML.
+    #[cfg(feature = "tika")]
     fn past_the_limit(scratch: &Scratch) -> (PathBuf, Vec<PathBuf>) {
         let text = "word ".repeat(40);
         let html = format!("<html><body><p>{text}</p></body></html>");
@@ -483,6 +488,7 @@ Body.";
         )
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn cuts_messages_at_the_limit_as_tikas_path_does() {
         let scratch = Scratch::new("mbox-limit");
@@ -500,6 +506,7 @@ Body.";
         assert!(xhtml.ends_with("word </p></div>"), "{xhtml}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_mailboxes_as_tikas_path_does() {

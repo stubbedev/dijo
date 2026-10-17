@@ -48,6 +48,23 @@ const LICENSES: &str = concat!(
     include_str!("../../THIRD-PARTY-LICENSES.md")
 );
 
+/// Where THIRD-PARTY-LICENSES.md starts on the Java libraries compiled into Tika's native image,
+/// which a build without Tika holds none of.
+#[cfg(not(feature = "tika"))]
+const JAVA_LICENSES: &str = "\n## Java libraries compiled into libtika_native\n";
+
+/// The licences of what this build holds: without Tika, all but the Java libraries'.
+fn licenses() -> &'static str {
+    #[cfg(feature = "tika")]
+    let licenses = LICENSES;
+    #[cfg(not(feature = "tika"))]
+    let licenses = LICENSES
+        .find(JAVA_LICENSES)
+        .map(|java| &LICENSES[..=java])
+        .expect("THIRD-PARTY-LICENSES.md has a section on the Java libraries");
+    licenses
+}
+
 /// Runs the command line on the process's arguments.
 pub fn main() -> ExitCode {
     if run_program(std::env::args_os().collect()) {
@@ -78,14 +95,14 @@ pub extern "C" fn extractous_main(
 /// musl's allocator, which the static executable would otherwise use, is slow under
 /// concurrent allocation. Each allocation is counted against the memory budget of the
 /// extraction that makes it, which `--max-heap-bytes` sets for native extractions.
-#[cfg(feature = "static-image")]
+#[cfg(feature = "static")]
 #[global_allocator]
 static ALLOCATOR: extractous_core::memory::CountingAllocator<mimalloc::MiMalloc> =
     extractous_core::memory::CountingAllocator(mimalloc::MiMalloc);
 
 /// Each allocation is counted against the memory budget of the extraction that makes it, which
 /// `--max-heap-bytes` sets for native extractions.
-#[cfg(not(feature = "static-image"))]
+#[cfg(not(feature = "static"))]
 #[global_allocator]
 static ALLOCATOR: extractous_core::memory::CountingAllocator<std::alloc::System> =
     extractous_core::memory::CountingAllocator(std::alloc::System);
@@ -198,7 +215,7 @@ fn print_licenses() -> bool {
         ),
     ];
     let mut stdout = io::stdout().lock();
-    let written = stdout.write_all(LICENSES.as_bytes()).and_then(|()| {
+    let written = stdout.write_all(licenses().as_bytes()).and_then(|()| {
         sections
             .iter()
             .filter_map(|(title, licenses)| licenses.map(|licenses| (title, licenses)))

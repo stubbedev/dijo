@@ -507,6 +507,7 @@ mod tests {
     }
 
     /// What `SummaryReference.java` wrote for each document, by its key.
+    #[cfg(feature = "tika")]
     fn reference() -> Vec<(String, Vec<String>)> {
         use std::io::Read;
         const SUMMARIES: &[u8] = include_bytes!("../../../tests/fixtures/ole2/summaries.tsv.gz");
@@ -524,6 +525,7 @@ mod tests {
         documents
     }
 
+    #[cfg(feature = "tika")]
     fn escape(text: &str) -> String {
         text.replace('\\', "\\\\")
             .replace('\t', "\\t")
@@ -533,6 +535,7 @@ mod tests {
 
     /// The lines `SummaryReference.java` writes for a document, or why the port leaves it to
     /// Tika.
+    #[cfg(feature = "tika")]
     fn lines(data: &[u8]) -> Result<Vec<String>, Unported> {
         let Ok(file) = Ole2::open(data) else {
             return Ok(vec!["!unreadable".to_owned()]);
@@ -552,10 +555,12 @@ mod tests {
             .collect())
     }
 
+    #[cfg(feature = "tika")]
     const TOTAL_TIME: &str = "extended-properties:TotalTime\t";
 
     /// Tika's lines with the edit time as this port writes it, where the port's agrees (#106):
     /// the raw file time in whole minutes, and no line for Tika's `0` where the port has none.
+    #[cfg(feature = "tika")]
     fn with_edit_minutes(expected: &[String], actual: &[String]) -> Vec<String> {
         let edit_time = |lines: &[String]| {
             lines
@@ -582,6 +587,7 @@ mod tests {
     }
 
     /// Compares the documents under `root`, named `name` in the reference.
+    #[cfg(feature = "tika")]
     fn assert_same_as_tika(name: &str, root: &std::path::Path) {
         let mut compared = 0;
         let mut unported = Vec::new();
@@ -605,11 +611,13 @@ mod tests {
         assert!(compared > 0);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_the_test_documents_as_tika_does() {
         assert_same_as_tika("documents", std::path::Path::new("../test_files/documents"));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn reads_tikas_test_documents_as_tika_does() {

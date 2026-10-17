@@ -1,25 +1,32 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::records::sid;
 use super::stream::tests::record;
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
+#[cfg(feature = "tika")]
 const DEFERRED_CONFORMANCE: [(&str, &str); 1] = [("testMSChart-govdocs-428996.xls", "MS Graph")];
 
 /// The encrypted workbooks, by file name, with the password that opens them.
+#[cfg(feature = "tika")]
 const ENCRYPTED: [(&str, &str); 2] = [
     ("testEXCEL_protected_passtika.xls", "tika"),
     ("tika-password.xls", "tika"),
 ];
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
+#[cfg(feature = "tika")]
 fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
     let input = std::fs::read(path).unwrap();
     XlsParser.defers(&input, &TikaMetadata::new(), configs)
@@ -27,6 +34,7 @@ fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
 
 /// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
 /// `deferred` to Tika, by file name and a part of the reason.
+#[cfg(feature = "tika")]
 fn ported(
     documents: &[PathBuf],
     deferred: &[(&str, &str)],
@@ -49,6 +57,7 @@ fn ported(
     ported
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
@@ -86,6 +95,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
 /// (#107), with XHTML it writes for each: a sheet kept together around its charts, whose cells
 /// are text outside the table; headers and footers without their codes; linked cells once, in
 /// the table.
+#[cfg(feature = "tika")]
 const DEPARTING: [(&str, &[&str]); 5] = [
     (
         "testEXCEL-charts.xls",
@@ -110,12 +120,14 @@ const DEPARTING: [(&str, &[&str]); 5] = [
     ),
 ];
 
+#[cfg(feature = "tika")]
 #[test]
 fn opens_the_repositorys_encrypted_workbook_as_tikas_path_does() {
     let encrypted = PathBuf::from("../test_files/documents/encrypted/tika-password.xls");
     assert_same_as_tika_with_passwords(&[encrypted], TIKA_PARSER, &ENCRYPTED);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_old_excel_parser_extracts_from_tikas_test_documents() {

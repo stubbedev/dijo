@@ -319,14 +319,17 @@ impl Parser for PListParser {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    #[cfg(feature = "tika")]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     use super::binary::tests::{bplist, Item};
     use super::*;
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
+    #[cfg(feature = "tika")]
+    use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, conformance_corpus};
+    use crate::formats::parity::{documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.apple.PListParser";
 
     #[test]
@@ -338,10 +341,10 @@ mod tests {
         assert_eq!(base64(&[0xFF, 0xEE, 0xDD, 0xCC]), "/+7dzA==");
     }
 
-    #[test]
-    fn extracts_property_lists_as_tikas_path_does() {
+    /// A binary property list of every kind of object the parser reads, and one of a set, which
+    /// it leaves to Tika, written to `scratch`.
+    fn typical_and_set(scratch: &Scratch) -> (PathBuf, PathBuf) {
         use Item::*;
-        let scratch = Scratch::new("plist");
         let typical = bplist(
             &[
                 Dict(vec![
@@ -391,15 +394,47 @@ mod tests {
             0,
         );
         let set = bplist(&[Set(vec![1]), Ascii("member")], 0);
-        let read = [scratch.write("typical.bplist", &typical)];
-        let deferred_set = scratch.write("set.bplist", &set);
+        (
+            scratch.write("typical.bplist", &typical),
+            scratch.write("set.bplist", &set),
+        )
+    }
+
+    #[test]
+    fn reads_every_kind_of_object_but_sets() {
+        let scratch = Scratch::new("plist-kinds");
+        let (typical, set) = typical_and_set(&scratch);
         let (parsed, deferred) = documents(&PListParser, &[scratch.directory()]);
-        assert_eq!(deferred, [deferred_set]);
-        assert_eq!(parsed.len(), read.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
+        assert_eq!(deferred, [set]);
+        assert_eq!(parsed, [typical]);
+    }
+
+    /// A build without Tika fails a document its native parser defers with the parser's reason.
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn fails_sets_with_why() {
+        let set = bplist(&[Item::Set(vec![1]), Item::Ascii("member")], 0);
+        let failed = crate::Extractor::new()
+            .extract_bytes_to_string(&set)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &failed,
+                Error::Unsupported(crate::Unsupported::Deferred {
+                    parser: "extractous::PListParser",
+                    ..
+                })
+            ),
+            "{failed:?}"
         );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_property_lists_as_tikas_path_does() {
+        let scratch = Scratch::new("plist");
+        let (typical, _) = typical_and_set(&scratch);
+        assert_same_as_tika(&[typical.as_path()], TIKA_NAME);
     }
 
     /// The body the native path writes of the property list `input`, or how it fails.
@@ -470,6 +505,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_xml_property_lists_as_tikas_path_does() {
         let scratch = Scratch::new("xml-plist");
@@ -526,6 +562,7 @@ mod tests {
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_property_lists_as_tikas_path_does() {

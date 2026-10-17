@@ -128,7 +128,7 @@ impl SaxHandler for Text<'_, '_> {
 /// A native result without the Dublin Core Tika's path has not read: it reads the metadata
 /// as it writes the text, so it stops at the length limit before what comes after, where
 /// the native parser reads it all first (#105).
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn without_unread_dublin_core(
     _text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -151,14 +151,14 @@ pub(crate) fn without_unread_dublin_core(
 
 /// A text without its head (#105): the head now shows the Dublin Core, which also titles the
 /// document and reorders the other names, the metadata being compared on their own.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn without_head(text: &mut String) {
     if let (Some(start), Some(end)) = (text.find("<head>"), text.find("</head>")) {
         text.replace_range(start..end + "</head>".len(), "");
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

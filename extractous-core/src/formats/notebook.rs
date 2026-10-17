@@ -282,11 +282,14 @@ impl Parser for NotebookParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.NotebookParser";
 
     #[test]
@@ -332,6 +335,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_notebooks_as_tikas_path_does() {
         let scratch = Scratch::new("notebooks");
@@ -362,6 +366,7 @@ mod tests {
         assert_fails_as_tika(&[&not_object]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_the_corpus_notebook_as_tikas_path_does() {
         let (parsed, deferred) =

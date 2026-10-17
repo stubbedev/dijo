@@ -458,12 +458,16 @@ fn long_values(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     use super::super::tests::IMAGE_DEPARTURES;
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika_departing, conformance_corpus, documents};
 
+    #[cfg(feature = "tika")]
     fn paths(files: &[PathBuf]) -> Vec<&Path> {
         files.iter().map(PathBuf::as_path).collect()
     }
@@ -506,6 +510,7 @@ mod tests {
         assert!(is_big_tiff(b"MM\0+") && !is_big_tiff(b"MM\0*"));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_raw_images_as_tikas_path_does() {

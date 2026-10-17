@@ -170,7 +170,7 @@ fn read(input: &[u8]) -> Result<Content<'_>, String> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

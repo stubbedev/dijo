@@ -1,15 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "tika")]
+use std::path::PathBuf;
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::config::TesseractOcrConfig;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
     documents_with, Scratch,
 };
 
+#[cfg(feature = "tika")]
 const TIKA_NAME: &str = "ai.yobix.DjvuParser";
+#[cfg(feature = "tika")]
 const DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
 
+#[cfg(feature = "tika")]
 fn local_roots() -> [&'static Path; 2] {
     [
         Path::new("../test_files/documents"),
@@ -17,6 +24,7 @@ fn local_roots() -> [&'static Path; 2] {
     ]
 }
 
+#[cfg(feature = "tika")]
 fn skipping_ocr() -> ParserConfigs {
     ParserConfigs {
         ocr: TesseractOcrConfig::new().set_skip_ocr(true),
@@ -24,6 +32,7 @@ fn skipping_ocr() -> ParserConfigs {
     }
 }
 
+#[cfg(feature = "tika")]
 fn automatic_language() -> ParserConfigs {
     ParserConfigs {
         ocr: TesseractOcrConfig::new().set_language(TesseractOcrConfig::AUTO_LANGUAGE),
@@ -32,6 +41,7 @@ fn automatic_language() -> ParserConfigs {
 }
 
 /// The DjVu documents under `roots`, none of which the parser defers.
+#[cfg(feature = "tika")]
 fn djvu_documents(roots: &[&Path], configs: &ParserConfigs) -> Vec<PathBuf> {
     let (parsed, deferred) = documents_with(&DjvuParser, roots, configs);
     assert!(deferred.is_empty(), "{deferred:?}");
@@ -39,6 +49,7 @@ fn djvu_documents(roots: &[&Path], configs: &ParserConfigs) -> Vec<PathBuf> {
     parsed
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn reads_text_layers_as_tika_does() {
     let configs = skipping_ocr();
@@ -49,6 +60,7 @@ fn reads_text_layers_as_tika_does() {
 
 /// The pages without a text layer are rendered and read as Tika's path reads them, and every
 /// page Tika's path reads text on is read to text natively too.
+#[cfg(feature = "tika")]
 #[test]
 fn reads_pages_without_text_by_ocr_as_tikas_path_does() {
     assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
@@ -60,6 +72,7 @@ fn reads_pages_without_text_by_ocr_as_tikas_path_does() {
 
 /// Tika's one DjVu test document, `testDJVU.djvu`, is an indirect document, whose pages are
 /// files of their own, which both paths fail on.
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
 fn fails_on_tikas_test_djvu_as_tika_does() {
@@ -73,6 +86,7 @@ fn fails_on_tikas_test_djvu_as_tika_does() {
 /// Documents cut short inside their chunks, and a bundled document whose directory says its
 /// pages are files of their own, fail on both paths: before any output where the document's
 /// structure is read, or at the page that cannot be read.
+#[cfg(feature = "tika")]
 #[test]
 fn fails_on_documents_tika_fails_on() {
     let scratch = Scratch::new("djvu-fails");

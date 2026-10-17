@@ -3,6 +3,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use bytes::Bytes;
+#[cfg(feature = "tika")]
 use extractous_core::keep_current_thread_attached;
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
@@ -100,9 +101,12 @@ impl Worker {
     /// Readies the current thread to run jobs.
     fn start(workers: Workers) -> Result<Self, String> {
         match workers {
+            #[cfg(feature = "tika")]
             Workers::Threads(cache) => keep_current_thread_attached()
                 .map(|()| Worker::Thread(cache))
                 .map_err(|e| e.to_string()),
+            #[cfg(not(feature = "tika"))]
+            Workers::Threads(cache) => Ok(Worker::Thread(cache)),
             Workers::Processes(options) => WorkerProcess::start(&options)
                 .map(|process| Worker::Process(options, process))
                 .map_err(|e| format!("Failed to start a worker process: {e}")),

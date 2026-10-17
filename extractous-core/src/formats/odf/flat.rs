@@ -294,15 +294,22 @@ fn write(input: &[u8], configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(),
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use super::*;
-    use crate::formats::odf::tests::{document, heading_and_note_ends, MANIFEST};
+    #[cfg(feature = "tika")]
+    use crate::formats::odf::tests::heading_and_note_ends;
+    use crate::formats::odf::tests::{document, MANIFEST};
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, documents,
         Adjustments, Scratch,
     };
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.odf.FlatOpenDocumentParser";
+    #[cfg(feature = "tika")]
     const DOCUMENTS: [&str; 3] = [
         "../test_files/documents/notes.fodt",
         "../test_files/documents/revisions.fodt",
@@ -325,6 +332,7 @@ mod tests {
 
     /// How the native parser departs from Tika's path: it ends headings and notes as blocks
     /// (#90), and sets the document's version, which Tika's path never does (#91).
+    #[cfg(feature = "tika")]
     const DEPARTURES: Adjustments = Adjustments {
         line_breaks: Some(heading_and_note_ends),
         metadata: &["odf:version"],
@@ -333,6 +341,7 @@ mod tests {
         final_in_head: &[],
     };
 
+    #[cfg(feature = "tika")]
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
         assert_same_as_tika_adjusting(documents, tika_name, &ParserConfigs::default(), DEPARTURES);
     }
@@ -353,6 +362,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
@@ -369,6 +379,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_the_outermost_meta_and_body_as_tikas_path_does() {
         let scratch = Scratch::new("flat-sections");
@@ -465,6 +476,7 @@ mod tests {
         assert!(!metadata.contains_key("dc:title"));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn fails_where_tikas_path_fails() {
         let scratch = Scratch::new("flat-failures");
@@ -490,6 +502,7 @@ mod tests {
         assert!(xml.contains("<p>before</p>\n<h1>h t</h1>\n"), "{xml}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_binary_data_in_the_body_as_tikas_path_does() {
         let scratch = Scratch::new("flat-binary-data");
@@ -542,6 +555,7 @@ mod tests {
         assert!(!settings.contains("Hej verden!"), "{settings}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore]
     fn extracts_what_tikas_path_extracts_from_tikas_documents() {

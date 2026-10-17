@@ -1,8 +1,11 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
+#[cfg(feature = "tika")]
 const NOTES: &str = r#"# Mødenoter æøå
 
 Første afsnit med *kursiv*, **fed**, ~~slettet~~, `kode` og en [henvisning](https://example.dk "Titel").
@@ -75,6 +78,7 @@ fn reads_titles_and_tables_as_commonmark_java_does() {
     assert_eq!(titles, [Some(String::new()), None]);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_markdown_as_tikas_path_does() {
     let roots = [
@@ -108,6 +112,7 @@ fn extracts_markdown_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {

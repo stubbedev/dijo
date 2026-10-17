@@ -1,14 +1,19 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::formats::ooxml::testing::{self, relationship};
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_same_as_tika, assert_same_as_tika_with, conformance_corpus, documents, Scratch,
 };
+#[cfg(feature = "tika")]
 use crate::mime::compound_document;
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
+#[cfg(feature = "tika")]
 const DOCUMENTS: [&str; 3] = [
     "../test_files/documents/simple.pptx",
     "../test_files/documents/ooxml/issue4.pptx",
@@ -17,6 +22,7 @@ const DOCUMENTS: [&str; 3] = [
 
 /// The documents this port reads otherwise than Tika does where Tika slips (#102), each with
 /// what the native XHTML holds in order where Tika's does not.
+#[cfg(feature = "tika")]
 const DEPARTURES: [(&str, &[&str]); 7] = [
     // A layout's picture is named by the layout's own relationships.
     (
@@ -52,12 +58,14 @@ const DEPARTURES: [(&str, &[&str]); 7] = [
     ),
 ];
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
 /// Of `documents`, those Tika's path extracts alike, after checking that each departure holds
 /// what it should.
+#[cfg(feature = "tika")]
 fn without_departures<'p>(documents: &[&'p Path]) -> Vec<&'p Path> {
     let mut alike = Vec::new();
     for &document in documents {
@@ -171,11 +179,13 @@ fn sheet(root: &str, attributes: &str, content: &str, after: &str) -> String {
     )
 }
 
+#[cfg(feature = "tika")]
 fn native_record(body: &[u8]) -> Vec<u8> {
     [&i32::try_from(body.len()).unwrap().to_le_bytes()[..], body].concat()
 }
 
 /// A parsed `Ole10Native` record of a file labelled `label`.
+#[cfg(feature = "tika")]
 fn parsed_native(label: &str, data: &[u8]) -> Vec<u8> {
     let mut body = vec![2, 0];
     body.extend_from_slice(label.as_bytes());
@@ -191,6 +201,7 @@ fn parsed_native(label: &str, data: &[u8]) -> Vec<u8> {
 /// A presentation of two slides exercising what the extractor writes: a hidden, animated slide
 /// with a title, a link and a table, its layout and master with placeholders, notes and
 /// comments; and a slide embedding OLE objects of each kind.
+#[cfg(feature = "tika")]
 fn rich_presentation() -> Vec<u8> {
     let mut built = Built::new(&[
         ("rId1", kind::SLIDE, "slides/slide1.xml"),
@@ -366,6 +377,7 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts() {
     let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
@@ -376,6 +388,7 @@ fn extracts_what_tikas_path_extracts() {
     assert!(without_departures(&departures).is_empty());
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts_from_built_presentations() {
     let input = rich_presentation();
@@ -585,6 +598,7 @@ fn defers_macros_only_when_they_are_extracted() {
         .is_some_and(|reason| reason.contains("vbaProject.bin")));
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore]
 fn extracts_what_tikas_path_extracts_from_tikas_documents() {

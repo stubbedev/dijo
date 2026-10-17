@@ -25,6 +25,16 @@ Building compiles Tika, so the build machine needs the GraalVM release pinned in
 GraalVM releases do not emit the AWT libraries on macOS. The first build takes a few minutes; later
 builds reuse the compiled library until the Tika sources or the GraalVM release change.
 
+Tika is the `tika` feature, on by default. Built without it (`cargo install --locked --no-default-features
+--git https://github.com/stubbedev/extractous extractous`), extractous needs no GraalVM, JNI or Java at all: the
+native parsers read everything they read in the default build, and a document that would reach Tika's path fails
+with an `unsupported` error naming why (no native parser for its type, or what of it the native parser does not read
+yet); an embedded document of that kind is reported unread in its container, which is extracted. Unpacking embedded
+documents whole (`extract_embedded_*`) is Tika's alone. `just static-native` builds the statically linked musl
+executable without Tika, with tesseract and libheif linked in, into `target/static/extractous`. The tests that compare
+with Tika's path, or that exercise it, are compiled only with the feature; `cargo nextest run --no-default-features`
+runs the rest.
+
 The compiled library and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...) are
 embedded in the binary, compressed (about 36 MB). On first use they are unpacked into
 `$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
@@ -401,6 +411,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just build` | Build the workspace, compiling Tika on first run |
 | `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
 | `just static` | Build the statically linked Linux executable with tesseract and libheif linked in, into `target/static-image/extractous` (uses nix) |
+| `just static-native` | Build the statically linked Linux executable without Tika, into `target/static/extractous` (uses nix, no GraalVM) |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
 | `just language-groups` | Retrain the models that tell closely related languages apart, from pinned Wikipedia shards (about 7 GB) |
