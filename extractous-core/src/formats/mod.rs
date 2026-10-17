@@ -94,7 +94,7 @@ use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
 use crate::fetch::{self, Headers, Located};
-use crate::input::{self, Input};
+use crate::input::{self, Input, Pages};
 use crate::isolate::{heap_cap, isolate};
 use crate::memory;
 use crate::mime::{self, Detection, Origin};
@@ -224,6 +224,18 @@ pub(crate) trait Parser: Sync {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined>;
+
+    /// [`Parser::prepare`], given the `pages` of `input`, which a parser of
+    /// [`Footprint::Bounded`] that reads all of a mapped file releases as it reads on.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        _pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare(input, metadata, configs)
+    }
 
     /// Why Tika's path should extract `input`, if it should.
     #[cfg(test)]
@@ -798,7 +810,7 @@ impl Write for StringOut {
 /// handlers of [`Chain::String`]; `None` when the parser leaves the document to Tika.
 pub(crate) fn parse_to_string(
     parser: &dyn Parser,
-    input: &[u8],
+    input: &Input<'_>,
     detected: &Detected,
     configs: &ParserConfigs,
     max_length: usize,
@@ -816,7 +828,7 @@ pub(crate) fn parse_to_string(
 /// [`parse_to_string`] through the handlers of `chain`, a string extraction's.
 pub(crate) fn parse_to_string_through(
     parser: &dyn Parser,
-    input: &[u8],
+    input: &Input<'_>,
     detected: &Detected,
     configs: &ParserConfigs,
     chain: Chain,
@@ -826,7 +838,7 @@ pub(crate) fn parse_to_string_through(
         .expect("a string extraction's chain limits its text");
     within_budget(|| {
         let metadata = detected.metadata_for(parser);
-        let prepared = match parser.prepare(input, &metadata, configs) {
+        let prepared = match parser.prepare_paged(input, input.pages(), &metadata, configs) {
             Ok(prepared) => prepared,
             Err(Declined::Deferred(_)) => return Ok(None),
             Err(Declined::Fails(error)) => return Err(error),
@@ -835,6 +847,7 @@ pub(crate) fn parse_to_string_through(
         let mut out = StringOut::default();
         let context = ParseContext::new(configs)
             .reading(detected.file.clone())
+            .paging(input.pages())
             .with_write_limit(max_length);
         let (metadata, result) = chain.write_to(&mut out, |handler| {
             run(parser, prepared, metadata, &context, handler)
@@ -954,7 +967,7 @@ pub(crate) fn parse_to_stream(
         .spawn(move || {
             within_budget(|| {
                 let metadata = start;
-                let prepared = parser.prepare(&input, &metadata, &configs);
+                let prepared = parser.prepare_paged(&input, input.pages(), &metadata, &configs);
                 let _ = decided.send(!matches!(prepared, Err(Declined::Deferred(_))));
                 let prepared = match prepared {
                     Ok(prepared) => prepared_within_budget(parser).map(|()| prepared),
@@ -985,7 +998,8 @@ pub(crate) fn parse_to_stream(
                     Some(spool) => ParseContext::spooling(&configs, spool),
                     None => ParseContext::new(&configs),
                 }
-                .reading(detected.file.clone());
+                .reading(detected.file.clone())
+                .paging(input.pages());
                 let (metadata, result) = chain.write_to(&mut out, |handler| {
                     run(parser, prepared, metadata, &context, handler)
                 });

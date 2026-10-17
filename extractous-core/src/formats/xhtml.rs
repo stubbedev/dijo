@@ -255,7 +255,14 @@ pub(crate) struct Xhtml<'h> {
     head: Head,
     ended: bool,
     embedding: Embedding<'h>,
+    /// The bytes of text written since the pages of the document's bytes were last released.
+    written: usize,
 }
+
+/// How many bytes of text a document writes between releases of the pages of the document's
+/// bytes: a parser reading a file mapped too large to read whole writes its text as it reads on,
+/// so that what it has read is released as it goes, whatever the parser.
+const RELEASE_EVERY_WRITTEN: usize = 8 << 20;
 
 impl<'h> Xhtml<'h> {
     /// Writes a document to `handler`: starts it, has `body` write its content, and ends it when
@@ -276,6 +283,7 @@ impl<'h> Xhtml<'h> {
             head: Head::NotStarted,
             ended: false,
             embedding: Embedding::new(context),
+            written: 0,
         };
         let result = xhtml
             .start_document()
@@ -400,6 +408,7 @@ impl<'h> Xhtml<'h> {
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
     pub(crate) fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
+        self.wrote(text.len());
         let frameset = self.frameset();
         self.end_head(frameset)?;
         self.safe_text(text, Text::Characters)
@@ -409,6 +418,7 @@ impl<'h> Xhtml<'h> {
     /// pair is invalid like the characters XML cannot hold, and each becomes U+FFFD.
     pub(crate) fn characters_utf16(&mut self, units: &[u16]) -> Result<(), Stop> {
         within_budget()?;
+        self.wrote(units.len() * 2);
         let frameset = self.frameset();
         self.end_head(frameset)?;
         let mut run = String::with_capacity(units.len());
@@ -550,6 +560,16 @@ impl<'h> Xhtml<'h> {
             .end_element(if frameset { "frameset" } else { "body" })?;
         self.handler.end_element("html")?;
         self.handler.end_document()
+    }
+
+    /// Counts `bytes` of text written, releasing the pages of the document's bytes each time
+    /// [`RELEASE_EVERY_WRITTEN`] have been.
+    fn wrote(&mut self, bytes: usize) {
+        self.written += bytes;
+        if self.written >= RELEASE_EVERY_WRITTEN {
+            self.context().pages().release();
+            self.written = 0;
+        }
     }
 
     /// What the parses of this extraction share, which a document parsed into this one shares.

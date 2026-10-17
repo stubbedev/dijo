@@ -1,6 +1,7 @@
 //! A document's bytes as native detection and parsing read them: the caller's, read into memory,
 //! or mapped from a file too large to read whole, of which only the parts read are paged in.
 
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::ops::Deref;
@@ -53,6 +54,41 @@ impl Input<'_> {
     pub(crate) fn is_mapped(&self) -> bool {
         matches!(self, Input::Mapped(_))
     }
+
+    /// The pages of the bytes: those of the map, if they are mapped.
+    pub(crate) fn pages(&self) -> Pages<'_> {
+        match self {
+            Input::Borrowed(_) | Input::Read(_) => Pages::IN_MEMORY,
+            Input::Mapped(map) => Pages(Some(map)),
+        }
+    }
+}
+
+/// The pages of a document's bytes, as a parser that reads them in bounded memory lets go of
+/// them: the pages of a file mapped too large to read whole stay the process' memory once read,
+/// until they are released; bytes held in memory have nothing to release.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pages<'a>(Option<&'a Mmap>);
+
+impl Pages<'_> {
+    /// The pages of bytes held in memory.
+    pub(crate) const IN_MEMORY: Pages<'static> = Pages(None);
+
+    /// Lets go of every page of the map read so far: they stop counting as the process' memory,
+    /// and reading them again pages them in afresh, from the operating system's cache of the
+    /// file or from the file. A parser reading a mapped file releases what it has read as it
+    /// goes, so that its memory stays bounded whatever the file's size.
+    ///
+    /// The map is a read-only shared map of a file, so `MADV_DONTNEED` loses none of its bytes.
+    /// Elsewhere than on Unix the operating system trims the pages of a map no longer read by
+    /// itself, and nothing is asked of it.
+    pub(crate) fn release(self) {
+        #[cfg(unix)]
+        if let Some(map) = self.0 {
+            unsafe { map.unchecked_advise(memmap2::UncheckedAdvice::DontNeed) }
+                .expect("a read-only map of a file releases its pages");
+        }
+    }
 }
 
 /// The bytes of the file at `path`: read whole, or mapped when it is larger than
@@ -78,6 +114,42 @@ pub(crate) fn read_file(path: &str) -> ExtractResult<Input<'static>> {
 fn map(file: &File) -> io::Result<Input<'static>> {
     let map = unsafe { Mmap::map(file) }?;
     Ok(Input::Mapped(Arc::new(map)))
+}
+
+/// How many bytes of a mapped document a parser reads between releases of its pages.
+const RELEASE_EVERY: usize = 64 << 20;
+
+/// The pages of a document's bytes as a parser reading all of them uses them: released each
+/// time it has read [`RELEASE_EVERY`] bytes since.
+#[derive(Debug)]
+pub(crate) struct Paging<'a> {
+    pages: Pages<'a>,
+    read: Cell<usize>,
+}
+
+impl<'a> Paging<'a> {
+    pub(crate) fn new(pages: Pages<'a>) -> Self {
+        Self {
+            pages,
+            read: Cell::new(0),
+        }
+    }
+
+    /// Counts `bytes` more read, and releases the pages once enough have been.
+    pub(crate) fn read(&self, bytes: usize) {
+        let read = self.read.get().saturating_add(bytes);
+        if read < RELEASE_EVERY {
+            self.read.set(read);
+            return;
+        }
+        self.release();
+    }
+
+    /// Releases the pages read so far.
+    pub(crate) fn release(&self) {
+        self.pages.release();
+        self.read.set(0);
+    }
 }
 
 /// Collects a stream of a document's bytes, as Tika's `CachingSource` caches a stream: in memory
