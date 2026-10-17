@@ -15,6 +15,7 @@
 //! records failing on, and one using what this port does not read: see
 //! [`Workbook::prepare`].
 
+mod binary;
 mod cell;
 mod handlers;
 pub(crate) mod header_footer;
@@ -23,6 +24,7 @@ mod sheet;
 
 use std::collections::{BTreeSet, HashMap};
 
+pub(crate) use binary::XlsbParser;
 use handlers::{
     Connections, DrawingShapes, ExternalLinks, Persons, PivotCache, Protection, SheetRefs,
     ThreadedComments, WorkbookMetadata,
@@ -497,13 +499,21 @@ impl<'a> Workbook<'a> {
                 }
             }
             if self.config.includes_shape_based_content() {
-                for drawing in self.internal_related(sheet.part, sheet_kind::DRAWING) {
-                    // Tika looks a shape's link up among those of every drawing of the sheets
-                    // so far, so it may find another drawing's (#93).
-                    let hyperlinks: HashMap<String, String> = Package::relationships_of(
-                        self.relationships(drawing),
-                        HYPERLINK_RELATIONSHIP,
-                    )
+                self.write_drawings(sheet.part, xhtml)?;
+            }
+            self.write_links(sheet.part, xhtml)?;
+            xhtml.end_element("div")?;
+        }
+        Ok(())
+    }
+
+    /// `processDrawings`: the text of each drawing's shapes, then its diagrams and charts.
+    fn write_drawings(&self, sheet: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        for drawing in self.internal_related(sheet, sheet_kind::DRAWING) {
+            // Tika looks a shape's link up among those of every drawing of the sheets so far,
+            // so it may find another drawing's (#93).
+            let hyperlinks: HashMap<String, String> =
+                Package::relationships_of(self.relationships(drawing), HYPERLINK_RELATIONSHIP)
                     .map(|relationship| {
                         (
                             relationship.id.clone(),
@@ -511,24 +521,27 @@ impl<'a> Workbook<'a> {
                         )
                     })
                     .collect();
-                    self.read(drawing, DrawingShapes::new(xhtml, &hyperlinks))?;
-                    self.write_text_parts(drawing, xhtml)?;
-                }
+            self.read(drawing, DrawingShapes::new(xhtml, &hyperlinks))?;
+            self.write_text_parts(drawing, xhtml)?;
+        }
+        Ok(())
+    }
+
+    /// `extractHyperLinks`: a link for each of the sheet's hyperlink relationships, separated by
+    /// spaces.
+    fn write_links(&self, sheet: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let mut first = true;
+        for relationship in
+            Package::relationships_of(self.relationships(sheet), HYPERLINK_RELATIONSHIP)
+        {
+            if !first {
+                xhtml.characters(" ")?;
             }
-            let mut first = true;
-            for relationship in
-                Package::relationships_of(self.relationships(sheet.part), HYPERLINK_RELATIONSHIP)
-            {
-                if !first {
-                    xhtml.characters(" ")?;
-                }
-                first = false;
-                let url = relationship.target_uri();
-                xhtml.start_element_with("a", &[("href", url)])?;
-                xhtml.characters(url)?;
-                xhtml.end_element("a")?;
-            }
-            xhtml.end_element("div")?;
+            first = false;
+            let url = relationship.target_uri();
+            xhtml.start_element_with("a", &[("href", url)])?;
+            xhtml.characters(url)?;
+            xhtml.end_element("a")?;
         }
         Ok(())
     }

@@ -76,7 +76,7 @@ const DEPARTURES: Adjustments = Adjustments {
     final_in_head: &["msoffice:excel:protected-worksheet"],
 };
 
-fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
+pub(super) fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
     let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_adjusting(&documents, TIKA_PARSER, configs, DEPARTURES);
 }
