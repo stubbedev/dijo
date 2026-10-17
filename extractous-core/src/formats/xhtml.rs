@@ -322,6 +322,12 @@ impl<'h> Xhtml<'h> {
         self.characters_chunk(text)
     }
 
+    /// Ends the head and starts the body, as the first content of the body does: the head shows
+    /// the metadata as it stands now.
+    pub(crate) fn start_body(&mut self) -> Result<(), Stop> {
+        self.end_head(false)
+    }
+
     /// Writes `text`, as Tika's `characters(char[], int, int)`: empty text still ends the head.
     pub(crate) fn characters_chunk(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;

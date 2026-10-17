@@ -311,7 +311,8 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
 /// Our Java `RecognizedImageParser`: the parser Tika has for the image's type reads its
 /// metadata, and the image is then handed to the OCR enricher. Our Java lets that parser write
 /// a whole document of its own, `html`, `meta` and `body` elements, into the image's body
-/// (#114).
+/// (#114); the image's own head, which that document followed, shows the metadata as it stood
+/// before the enricher.
 pub(crate) struct RecognizedImageParser;
 
 /// The parser Tika has for a type `RecognizedImageParser` reads.
@@ -386,6 +387,7 @@ impl Parser for RecognizedImageParser {
             if let Some((zone, prefix_route_names)) = file_directory {
                 add_file_directory(xhtml, input.len(), true, zone, prefix_route_names)?;
             }
+            xhtml.start_body()?;
             enricher.enrich(xhtml, input.len())
         }))
     }
