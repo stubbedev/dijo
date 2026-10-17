@@ -935,6 +935,87 @@ mod tests {
         objects
     }
 
+    /// A page showing `codes` in a composite font of the CMap `encoding` whose descendant, not
+    /// embedded, is of the character collection `ordering` of `kind`.
+    fn composite(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<u8> {
+        let content = format!("BT /F1 12 Tf 72 720 Td <{codes}> Tj ET");
+        let mut objects = page_objects(&content);
+        objects[4] = format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /CJKFont /Encoding /{encoding} \
+             /DescendantFonts [6 0 R] >>"
+        );
+        objects.extend([
+            format!(
+                "<< /Type /Font /Subtype /{kind} /BaseFont /CJKFont \
+                 /CIDSystemInfo << /Registry (Adobe) /Ordering ({ordering}) /Supplement 2 >> \
+                 /FontDescriptor 7 0 R /DW 1000 >>"
+            ),
+            "<< /Type /FontDescriptor /FontName /CJKFont /Flags 4 /FontBBox [0 -200 1000 900] \
+             /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>"
+                .to_owned(),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        document(&objects, b"", &[])
+    }
+
+    #[test]
+    fn maps_predefined_cmaps_to_unicode_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-predefined-cmaps");
+        let documents = [
+            (
+                "unijis.pdf",
+                composite(
+                    "UniJIS-UCS2-H",
+                    "Japan1",
+                    "CIDFontType0",
+                    "30423044304630483048",
+                ),
+            ),
+            (
+                "rksj.pdf",
+                composite("90ms-RKSJ-H", "Japan1", "CIDFontType0", "82a082a282a441"),
+            ),
+            (
+                "uniks.pdf",
+                composite("UniKS-UCS2-H", "Korea1", "CIDFontType2", "D55CAE00"),
+            ),
+            (
+                "gbk.pdf",
+                composite("GBK-EUC-H", "GB1", "CIDFontType0", "D6D0CEC4"),
+            ),
+            (
+                "b5.pdf",
+                composite("ETen-B5-H", "CNS1", "CIDFontType0", "A4A4A4E5"),
+            ),
+            (
+                "identity.pdf",
+                composite("Identity-H", "Japan1", "CIDFontType0", "034B034C"),
+            ),
+            (
+                "vertical.pdf",
+                composite("UniJIS-UCS2-HW-V", "Japan1", "CIDFontType0", "30423044"),
+            ),
+        ];
+        let paths: Vec<PathBuf> = documents
+            .iter()
+            .map(|(name, bytes)| scratch.write(name, bytes))
+            .collect();
+        for path in &paths {
+            assert_eq!(deferral(path), None, "{}", path.display());
+        }
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+        for ((_, bytes), text) in documents.iter().zip([
+            "\u{3042}\u{3044}\u{3046}\u{3048}\u{3048}",
+            "\u{3042}\u{3044}\u{3046}A",
+            "\u{d55c}\u{ae00}",
+            "\u{4e2d}\u{6587}",
+            "\u{4e2d}\u{6587}",
+        ]) {
+            let (xml, _) = native_xml(bytes);
+            assert!(xml.contains(text), "{text}: {xml}");
+        }
+    }
+
     #[test]
     fn extracts_form_fields_and_signatures_as_tikas_path_does() {
         let objects = form_objects("", "");
