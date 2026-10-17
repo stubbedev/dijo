@@ -1,6 +1,22 @@
 [workspace]
 resolver = "2"
-members = ["extractous-core", "extractous-cli"]
+members = [
+    "extractous-base",
+    "extractous-native",
+    "extractous-tika",
+    "extractous-mime",
+    "extractous-html",
+    "extractous-image",
+    "extractous-pdf",
+    "extractous-media",
+    "extractous-odf",
+    "extractous-small",
+    "extractous-mail",
+    "extractous-office",
+    "extractous-ooxml",
+    "extractous-core",
+    "extractous-cli",
+]
 
 [profile.dev]
 opt-level = 1

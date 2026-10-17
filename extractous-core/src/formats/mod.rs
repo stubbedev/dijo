@@ -1,99 +1,14 @@
-//! Extraction in Rust, format by format (#41). A [`Parser`] writes a document as XHTML through an
-//! [`Xhtml`], the port of Tika's `XHTMLContentHandler`, into the same handler chains extractous
-//! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
-//! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
+//! Extraction in Rust, format by format (#41): the native parsers gathered, on the common ground
+//! of `extractous_base::formats`. [`parser_for`] routes a media type to its native parser, if it
+//! has one.
 
-mod access;
-mod apple_single;
-mod archive;
 #[cfg(all(test, feature = "tika"))]
 pub(crate) mod audit;
-mod auto_detect_reader;
-mod chm;
-mod class_file;
-mod cms;
 mod composite;
-mod compound;
-mod crypt;
-pub(crate) mod data_format;
-mod dbf;
-mod dc_xml;
-mod dif;
-mod djvu;
-mod doc;
-mod docx;
-mod dwg;
-mod element_metadata;
-pub(crate) mod embedded;
-mod empty;
-mod epub;
-mod escher;
-mod executable;
-mod feed;
-mod fiction_book;
-mod font;
-mod geogebra;
-pub(crate) mod handlers;
-pub(crate) mod html;
-mod hwpx;
-mod idml;
-mod image;
-mod iwork;
-mod iwork_package;
-mod jdk_zip;
-mod list_numbering;
-mod mail;
-mod markdown;
-pub(crate) mod media;
-pub(crate) mod metadata;
-mod metafile;
-mod mif;
-mod mobi;
-mod ms_owner;
-mod msg;
-mod notebook;
-mod odf;
-mod ole10_native;
-mod ole2;
-mod onenote;
-mod ooxml;
-mod open_pgp;
-#[cfg(test)]
-pub(crate) mod parity;
-pub(crate) mod pdf;
-pub(crate) mod plist;
-mod poi;
-mod ppt;
-mod pptx;
-mod protected;
-mod prt;
-mod pst;
-mod publisher;
-#[cfg(test)]
-pub(crate) mod reference;
-mod rtf;
-mod source_code;
-#[cfg(not(feature = "static-image"))]
-mod sqlite;
-mod subtitle;
-mod text;
-mod tnef;
-mod translation;
-mod tsd;
+#[cfg(any(test, feature = "parity"))]
+pub mod parity;
 #[cfg(all(test, feature = "tika"))]
 mod url_tests;
-mod visio;
-mod vsdx;
-mod warc;
-mod wordperfect;
-pub(crate) mod xhtml;
-mod xls;
-mod xlsx;
-pub(crate) mod xml;
-mod xml_2003;
-pub(crate) mod xmp;
-mod xps;
-mod zip_file;
 
 use std::borrow::Cow;
 use std::io::{self, Read};
@@ -101,21 +16,88 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
 use std::time::Instant;
 
+pub(crate) use crate::mime::{Detected, OpenedFrom};
+pub(crate) use extractous_base::formats::*;
+pub(crate) use extractous_html::formats::html;
+pub(crate) use extractous_html::formats::text;
+pub(crate) use extractous_image::formats::djvu;
+pub(crate) use extractous_image::formats::image;
+pub(crate) use extractous_image::formats::metafile;
+pub(crate) use extractous_mail::formats::archive;
+pub(crate) use extractous_mail::formats::cms;
+pub(crate) use extractous_mail::formats::mail;
+#[cfg(not(feature = "static-image"))]
+pub(crate) use extractous_mail::formats::sqlite;
+pub(crate) use extractous_mail::formats::warc;
+pub(crate) use extractous_media::formats::media;
+pub(crate) use extractous_odf::formats::epub;
+pub(crate) use extractous_odf::formats::odf;
+pub(crate) use extractous_office::formats::access;
+pub(crate) use extractous_office::formats::compound;
+pub(crate) use extractous_office::formats::doc;
+pub(crate) use extractous_office::formats::msg;
+pub(crate) use extractous_office::formats::ppt;
+pub(crate) use extractous_office::formats::pst;
+pub(crate) use extractous_office::formats::publisher;
+pub(crate) use extractous_office::formats::rtf;
+pub(crate) use extractous_office::formats::tnef;
+pub(crate) use extractous_office::formats::visio;
+pub(crate) use extractous_office::formats::xls;
+pub(crate) use extractous_ooxml::formats::docx;
+pub(crate) use extractous_ooxml::formats::pptx;
+pub(crate) use extractous_ooxml::formats::protected;
+pub(crate) use extractous_ooxml::formats::vsdx;
+pub(crate) use extractous_ooxml::formats::xlsx;
+pub(crate) use extractous_ooxml::formats::xps;
+pub(crate) use extractous_pdf::formats::font;
+pub(crate) use extractous_pdf::formats::pdf;
+pub(crate) use extractous_small::formats::apple_single;
+pub(crate) use extractous_small::formats::chm;
+pub(crate) use extractous_small::formats::class_file;
+pub(crate) use extractous_small::formats::dbf;
+pub(crate) use extractous_small::formats::dc_xml;
+pub(crate) use extractous_small::formats::dif;
+pub(crate) use extractous_small::formats::dwg;
+pub(crate) use extractous_small::formats::empty;
+pub(crate) use extractous_small::formats::executable;
+pub(crate) use extractous_small::formats::feed;
+pub(crate) use extractous_small::formats::fiction_book;
+pub(crate) use extractous_small::formats::geogebra;
+pub(crate) use extractous_small::formats::hwpx;
+pub(crate) use extractous_small::formats::idml;
+pub(crate) use extractous_small::formats::iwork;
+pub(crate) use extractous_small::formats::iwork_package;
+pub(crate) use extractous_small::formats::markdown;
+pub(crate) use extractous_small::formats::mif;
+pub(crate) use extractous_small::formats::mobi;
+pub(crate) use extractous_small::formats::ms_owner;
+pub(crate) use extractous_small::formats::notebook;
+pub(crate) use extractous_small::formats::onenote;
+pub(crate) use extractous_small::formats::open_pgp;
+pub(crate) use extractous_small::formats::plist;
+pub(crate) use extractous_small::formats::prt;
+pub(crate) use extractous_small::formats::source_code;
+pub(crate) use extractous_small::formats::subtitle;
+pub(crate) use extractous_small::formats::translation;
+pub(crate) use extractous_small::formats::tsd;
+pub(crate) use extractous_small::formats::wordperfect;
+pub(crate) use extractous_small::formats::xml_2003;
+
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult, Unsupported};
-use crate::fetch::{self, Headers, Located};
-use crate::input::{self, Input, Pages, Source};
+use crate::fetch::{self, Located};
+use crate::input::{self, Input, Source};
 use crate::isolate::heap_cap;
 #[cfg(feature = "tika")]
 use crate::isolate::isolate;
 use crate::memory;
-use crate::mime::{self, Detection, Intent, MediaType, Origin};
+use crate::mime::{self, Intent, MediaType};
 #[cfg(feature = "tika")]
 use crate::tika;
 use crate::{CharSet, Metadata};
 use embedded::ParseContext;
-use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Write, WriteLimit};
+use handlers::Write;
 use metadata::TikaMetadata;
 use xhtml::{ContentHandler, Stop, Xhtml};
 
@@ -123,150 +105,6 @@ use xhtml::{ContentHandler, Stop, Xhtml};
 const CHUNK_BYTES: usize = 8192;
 /// The chunks a streamed extraction writes ahead of its reader.
 const CHUNKS_AHEAD: usize = 16;
-
-/// Why a native parser leaves a document to Tika: what of it the port does not reproduce.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unported(pub(crate) String);
-
-/// Why a native parser did not finish its document.
-#[derive(Debug)]
-pub(crate) enum Failure {
-    /// The output stopped taking content.
-    Stopped(Stop),
-    /// The document is not well-formed in its format, with what was wrong where.
-    Malformed(String),
-    /// An extraction the document depends on failed.
-    Extraction(Error),
-    /// A document embedded in it failed in a way that fails every document it is embedded in,
-    /// as an exception Tika's embedded document extractor does not catch does.
-    Embedded(Error),
-}
-
-impl From<Stop> for Failure {
-    fn from(stop: Stop) -> Self {
-        Self::Stopped(stop)
-    }
-}
-
-/// Why Tika's path should extract a document rather than its native parser: a feature of the
-/// document the parser does not handle as Tika does yet.
-pub(crate) type Deferral = String;
-
-/// Why a native parser writes nothing of a document.
-#[derive(Debug)]
-pub(crate) enum Declined {
-    /// Tika's path should extract it.
-    Deferred(Deferral),
-    /// Tika's parser throws this on it before it starts the document: the extraction fails at
-    /// once, without output, as Tika's path does.
-    Fails(Error),
-    /// Tika's parser writes no document of it, not even its start and end, and leaves only
-    /// this metadata: what it started from, with what it found.
-    Unwritten(TikaMetadata),
-}
-
-impl From<Deferral> for Declined {
-    fn from(deferral: Deferral) -> Self {
-        Self::Deferred(deferral)
-    }
-}
-
-impl Unported {
-    pub(crate) fn new(reason: impl Into<String>) -> Self {
-        Self(reason.into())
-    }
-}
-
-impl From<Unported> for Declined {
-    fn from(Unported(reason): Unported) -> Self {
-        Self::Deferred(reason)
-    }
-}
-
-/// How the memory a native parser takes grows with its input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Footprint {
-    /// With the input: it reads all of it into structures of its own. A file larger than
-    /// [`input::MAX_READ_WHOLE`] is left to Tika, which streams it.
-    Proportional,
-    /// Bounded whatever the input's size: it reads only bounded parts of its input, such as
-    /// headers and indexes, in place, and skips the rest. It reads a file of any size, mapped.
-    Bounded,
-}
-
-/// A document its parser has read as far as deciding it extracts it: what writes the document's
-/// content as XHTML and adds the metadata it finds, holding what the parser read on the way, so
-/// that nothing is read twice. The document is started before and ended after it.
-pub(crate) type Prepared<'a> = Box<dyn FnOnce(&mut Xhtml<'_>) -> Result<(), Failure> + 'a>;
-
-/// A format's native parser.
-pub(crate) trait Parser: Sync {
-    /// The name recorded in `tk:parsed-by` for the documents it parses.
-    fn name(&self) -> &'static str;
-
-    /// The class name of the parser Tika's path parses its documents with, which it replaces.
-    #[cfg(test)]
-    fn tika_name(&self) -> &'static str;
-
-    /// The parsers it records delegating to, each native name paired with the class name of
-    /// Tika's.
-    #[cfg(all(test, feature = "tika"))]
-    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
-        &[]
-    }
-
-    /// The media types it parses, as Tika's detection names them.
-    fn media_types(&self) -> &'static [&'static str];
-
-    /// The types of its [`Parser::media_types`] whose subtypes it parses too, as the parser it
-    /// replaces parses those Tika's composite parser has no parser of their own for.
-    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// How the memory it takes grows with its input, which decides whether it reads a file too
-    /// large to read whole.
-    fn footprint(&self) -> Footprint {
-        Footprint::Proportional
-    }
-
-    /// Reads `input`, from the `metadata` Tika's parser starts from and under the parser
-    /// settings `configs` the extraction was given, as far as deciding whether it extracts the
-    /// document as the Tika parser it replaces does: what then writes it, or why it writes
-    /// nothing. Nothing is written before the decision.
-    fn prepare<'a>(
-        &self,
-        input: &'a [u8],
-        metadata: &TikaMetadata,
-        configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined>;
-
-    /// [`Parser::prepare`], given the `pages` of `input`, which a parser of
-    /// [`Footprint::Bounded`] that reads all of a mapped file releases as it reads on.
-    fn prepare_paged<'a>(
-        &self,
-        input: &'a [u8],
-        _pages: Pages<'a>,
-        metadata: &TikaMetadata,
-        configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        self.prepare(input, metadata, configs)
-    }
-
-    /// Why Tika's path should extract `input`, if it should.
-    #[cfg(test)]
-    fn defers(
-        &self,
-        input: &[u8],
-        metadata: &TikaMetadata,
-        configs: &ParserConfigs,
-    ) -> Option<Deferral> {
-        match self.prepare(input, metadata, configs) {
-            Err(Declined::Deferred(deferral)) => Some(deferral),
-            Ok(_) | Err(Declined::Fails(_) | Declined::Unwritten(_)) => None,
-        }
-    }
-}
 
 static PARSERS: &[&dyn Parser] = &[
     &access::JackcessParser,
@@ -375,6 +213,7 @@ static PARSERS: &[&dyn Parser] = &[
 /// default types do not declare, whose parser in Tika's composite parser only a parse could
 /// tell, Tika's path reads the document.
 fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
+    install_routes(&Registry);
     let Some(parsed) = MediaType::parse(media_type) else {
         return Ok(&empty::EmptyParser);
     };
@@ -402,39 +241,45 @@ fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
     Ok(&empty::EmptyParser)
 }
 
-/// What a document is and what Tika knows about it before its parser runs: the metadata of the
-/// input (its resource name and length) and of its detection.
-#[derive(Debug, Clone)]
-pub(crate) struct Detected {
-    pub(crate) media_type: String,
-    pub(crate) metadata: TikaMetadata,
-    pub(crate) file: InputFile,
-}
+/// The native parsers gathered, which route the documents embedded in those they read.
+pub(crate) struct Registry;
 
-/// The file Tika's `TikaInputStream` holds a document in, which a parser that asks it for a path
-/// (`getPath`) is given.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum InputFile {
-    /// The file the document was read from, at this path.
-    Original(String),
-    /// None yet: a document read from memory or fetched, which Tika spools to a temporary file of
-    /// its own the first time a parser asks for a path.
-    Spooled,
-}
+impl Routes for Registry {
+    fn embedded_parser(
+        &self,
+        data: &[u8],
+        metadata: &TikaMetadata,
+        opened: Opened,
+    ) -> Result<(&'static dyn Parser, TikaMetadata), Unrouted> {
+        if data.is_empty() {
+            return Err(Unrouted::Empty);
+        }
+        let detected = Detected::detect_embedded(data, metadata, opened)
+            .map_err(|error| Unrouted::Unsupported(Unsupported::Undetected(error.to_string())))?;
+        let parsed_as = metadata
+            .get(PARSER_OVERRIDE)
+            .unwrap_or(&detected.media_type);
+        let parser = parser_for(parsed_as).map_err(Unrouted::Unsupported)?;
+        let start = detected.metadata_for(parser);
+        Ok((parser, start))
+    }
 
-/// How Tika's `TikaInputStream` opens a document, which sets the metadata it starts with.
-#[derive(Debug, Clone)]
-pub(crate) enum OpenedFrom<'a> {
-    /// The file at this path, as `TikaInputStream.get(Path, metadata)` opens it, or as
-    /// `TikaInputStream.get(URL, metadata)` opens a `file:` URL of a regular file.
-    File(Cow<'a, str>),
-    /// Bytes without a name.
-    Bytes,
-    /// A document fetched from a URL, as `TikaInputStream.get(URL, metadata)` opens it, with
-    /// what the server said of it. Its `Content-Length` is the server's, or where the server
-    /// sends none, the length of what it sent: Tika's path records that only once a detector or
-    /// parser happens to spool the stream to a file.
-    Url(Headers),
+    #[cfg(feature = "tika")]
+    fn parse_with_tika(
+        &self,
+        #[cfg_attr(
+            not(test),
+            expect(unused_variables, reason = "only the tests record why")
+        )]
+        bridged: Bridged,
+        data: &[u8],
+        pairs: &[(&str, &str)],
+        configs: &ParserConfigs,
+    ) -> ExtractResult<tika::EmbeddedEvents> {
+        #[cfg(test)]
+        audit::bridged(bridged);
+        isolate().and_then(|isolate| tika::parse_embedded(isolate, data, pairs, configs))
+    }
 }
 
 /// A document opened from its source, for its detection and native parse.
@@ -486,28 +331,10 @@ pub(crate) fn open_to_extract(
 }
 
 /// A document a native parser reads, and what its detection found.
-pub(crate) struct Routed<'a> {
+pub struct Routed<'a> {
     pub(crate) parser: &'static dyn Parser,
-    pub(crate) detected: Detected,
-    pub(crate) input: Input<'a>,
-}
-
-/// Why no native parser prepares a document embedded in one a native parser reads.
-#[derive(Debug)]
-pub(crate) enum Unrouted {
-    /// It is without content, which Tika's zero-byte check fails.
-    Empty,
-    /// No native parser reads it, which Tika's path parses in a build with Tika.
-    Unsupported(
-        #[cfg_attr(
-            all(feature = "tika", not(test)),
-            expect(
-                dead_code,
-                reason = "Tika's path parses it, and only the tests ask why it does"
-            )
-        )]
-        Unsupported,
-    ),
+    pub detected: Detected,
+    pub input: Input<'a>,
 }
 
 /// Routes a document to its native parser, if its format has one, or says why it stays with
@@ -537,88 +364,13 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
 }
 
 /// Routes the file at `path` as an extraction of it does.
-#[cfg(test)]
-pub(crate) fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
+#[cfg(any(test, feature = "parity"))]
+pub fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }
 
 /// The metadata key naming the type whose parser parses a document, whatever it is detected as.
 const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
-
-/// How the `TikaInputStream` of an embedded document was opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Opened {
-    /// With its metadata, as `TikaInputStream.get(stream, tmp, metadata)` opens it: reading it
-    /// to its end records its length there.
-    WithMetadata,
-    /// Alone, as `TikaInputStream.get(stream)` opens it: its metadata never learns its length.
-    Alone,
-}
-
-/// A document embedded in one a native parser reads, as its native parser prepared it.
-pub(crate) struct EmbeddedRoute<'a> {
-    pub(crate) parser: &'static dyn Parser,
-    /// The metadata the parser starts from.
-    pub(crate) start: TikaMetadata,
-    pub(crate) prepared: Prepared<'a>,
-}
-
-/// Why no native parser prepares a document embedded in one a native parser reads: Tika's path
-/// parses it, unless it is empty or its parser writes no document of it, which the native path
-/// records as Tika does.
-#[derive(Debug)]
-pub(crate) enum Bridged {
-    /// No native parser prepares it.
-    Unrouted(Unrouted),
-    /// Its native parser, of this name, declines it: Tika's path parses one the parser defers,
-    /// and records the failure of one Tika's parser fails before it starts, which only that
-    /// path can tell.
-    Declined(&'static str, Declined),
-}
-
-/// The native parser of a document embedded in one a native parser reads, with the metadata it
-/// starts from, given its `data`, the `metadata` its embedding parser gives it and how its
-/// stream was `opened`, as Tika's `AutoDetectParser` and `CompositeParser` route it: detected
-/// with the resource name and `Content-Type` of its metadata as hints, then parsed by the parser
-/// of the type the metadata overrides the parser with, else of the detected type. Otherwise why
-/// Tika's path parses it: that parser is not native, the document is empty, which Tika's
-/// zero-byte check fails, or Tika's detection throws on it.
-pub(crate) fn embedded_parser(
-    data: &[u8],
-    metadata: &TikaMetadata,
-    opened: Opened,
-) -> Result<(&'static dyn Parser, TikaMetadata), Unrouted> {
-    if data.is_empty() {
-        return Err(Unrouted::Empty);
-    }
-    let detected = Detected::detect_embedded(data, metadata, opened)
-        .map_err(|error| Unrouted::Unsupported(Unsupported::Undetected(error.to_string())))?;
-    let parsed_as = metadata
-        .get(PARSER_OVERRIDE)
-        .unwrap_or(&detected.media_type);
-    let parser = parser_for(parsed_as).map_err(Unrouted::Unsupported)?;
-    let start = detected.metadata_for(parser);
-    Ok((parser, start))
-}
-
-/// Routes a document embedded in one a native parser reads to its [`embedded_parser`], and
-/// returns what that parser prepared, if it takes the document, or why Tika's path parses it.
-pub(crate) fn route_embedded<'a>(
-    data: &'a [u8],
-    metadata: &TikaMetadata,
-    opened: Opened,
-    configs: &'a ParserConfigs,
-) -> Result<EmbeddedRoute<'a>, Bridged> {
-    let (parser, start) = embedded_parser(data, metadata, opened).map_err(Bridged::Unrouted)?;
-    let prepared = parser
-        .prepare(data, &start, configs)
-        .map_err(|declined| Bridged::Declined(parser.name(), declined))?;
-    Ok(EmbeddedRoute {
-        parser,
-        start,
-        prepared,
-    })
-}
 
 /// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust, and with Tika
 /// for a document Tika's detection throws on, so the failure is Tika's own. A build without Tika
@@ -631,112 +383,6 @@ pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
         Err(_) => tika::detect(isolate()?, source),
         #[cfg(not(feature = "tika"))]
         Err(error) => Err(Unsupported::Undetected(error.to_string()).into()),
-    }
-}
-
-/// `Path.getFileName().toString()` of a path as Java's `Paths.get` reads it on this platform:
-/// the last name, trailing separators ignored.
-pub(crate) fn java_file_name(path: &str) -> &str {
-    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
-    let trimmed = path.trim_end_matches(separators);
-    trimmed.rsplit(separators).next().unwrap_or(trimmed)
-}
-
-impl Detected {
-    /// Detects `input`, opened as `from` says, with the metadata Tika holds after its
-    /// detection, alone as `TikaNativeMain.detect` runs it or before a parse as
-    /// `AutoDetectParser` runs it, as `intent` says: what `TikaInputStream` writes as it opens
-    /// the input (for a file its name and length, for a fetched document what the server said
-    /// of it), then what the detectors write, in the order they write it.
-    pub(crate) fn detect(
-        from: &OpenedFrom<'_>,
-        input: &[u8],
-        intent: Intent,
-    ) -> Result<Self, mime::DetectionError> {
-        let mut metadata = TikaMetadata::new();
-        let (origin, file) = match from {
-            OpenedFrom::File(path) => {
-                let name = java_file_name(path);
-                metadata.set("tk:resource-name", name);
-                metadata.set("Content-Length", input.len().to_string());
-                (Origin::File { name }, InputFile::Original(path.to_string()))
-            }
-            OpenedFrom::Bytes => (Origin::Bytes, InputFile::Spooled),
-            OpenedFrom::Url(headers) => {
-                let hints = [
-                    ("tk:resource-name", &headers.name),
-                    ("Content-Type", &headers.content_type),
-                    ("Content-Encoding", &headers.content_encoding),
-                ];
-                for (name, value) in hints {
-                    if let Some(value) = value {
-                        metadata.set(name, value.as_str());
-                    }
-                }
-                let length = headers
-                    .content_length
-                    .map_or_else(|| input.len().to_string(), |length| length.to_string());
-                metadata.set("Content-Length", length);
-                let origin = Origin::Stream {
-                    name: headers.name.as_deref(),
-                    content_type: headers.content_type.as_deref(),
-                    learns_length: false,
-                };
-                (origin, InputFile::Spooled)
-            }
-        };
-        let Detection {
-            media_type,
-            metadata: entries,
-        } = match intent {
-            Intent::Detect => mime::detect(input, origin)?,
-            Intent::Parse => mime::detect_to_parse(input, origin)?,
-        };
-        for entry in entries {
-            metadata.set(entry.key.name(), entry.value);
-        }
-        Ok(Self {
-            media_type: media_type.to_string(),
-            metadata,
-            file,
-        })
-    }
-
-    /// Detects an embedded document `input`, its stream `opened` as given, with the `metadata`
-    /// its embedding parser gives it, which hints at its type and which the detection's
-    /// metadata is added to.
-    pub(crate) fn detect_embedded(
-        input: &[u8],
-        metadata: &TikaMetadata,
-        opened: Opened,
-    ) -> Result<Self, mime::DetectionError> {
-        let origin = Origin::Stream {
-            name: metadata.get(embedded::RESOURCE_NAME),
-            content_type: metadata.get("Content-Type"),
-            learns_length: opened == Opened::WithMetadata,
-        };
-        let Detection {
-            media_type,
-            metadata: entries,
-        } = mime::detect_to_parse(input, origin)?;
-        let mut metadata = metadata.clone();
-        for entry in entries {
-            metadata.set(entry.key.name(), entry.value);
-        }
-        Ok(Self {
-            media_type: media_type.to_string(),
-            metadata,
-            file: InputFile::Spooled,
-        })
-    }
-
-    /// The metadata a parser starts from, as Tika's `AutoDetectParser` and `CompositeParser`
-    /// leave it: the detected `Content-Type` and the parser in `tk:parsed-by`.
-    pub(crate) fn metadata_for(&self, parser: &dyn Parser) -> TikaMetadata {
-        let mut metadata = self.metadata.clone();
-        metadata.set("Content-Type", self.media_type.clone());
-        metadata.add("tk:parsed-by", parser.name());
-        metadata
     }
 }
 
@@ -755,29 +401,6 @@ fn run<'h>(
     }
     (metadata, result)
 }
-
-/// The metadata of a document the parser named `parser` writes nothing of, as Tika leaves it
-/// once that parser has returned, from the `metadata` the parser left.
-pub(crate) fn unwritten(
-    parser: &str,
-    mut metadata: TikaMetadata,
-    configs: &ParserConfigs,
-) -> TikaMetadata {
-    embedded::EmbeddedRecord::default().finish(&mut metadata, parser);
-    mark_password_used(&mut metadata, configs);
-    metadata
-}
-
-/// Marks a document parsed under `configs` as parsed with a password, if one was given.
-fn mark_password_used(metadata: &mut TikaMetadata, configs: &ParserConfigs) {
-    if configs.password.is_some() {
-        metadata.set(PASSWORD_USED, "true");
-    }
-}
-
-/// What our Java `LegacyOfficePasswordParser` records once a document a password was given for
-/// is parsed, and its `PasswordProvider` once a parser asks it for the password.
-pub(crate) const PASSWORD_USED: &str = "extractous:password-used";
 
 /// Why `parser` leaves a document to Tika: the `reason` it defers it for.
 fn deferred(parser: &dyn Parser, reason: Deferral) -> Unsupported {
@@ -817,118 +440,9 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
     }
 }
 
-/// What a parse writes: the text of the body, or the whole document as XHTML.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Output {
-    Text,
-    Xml,
-}
-
-/// The handlers extractous puts behind a parser. Both entry points hold back anchored blocks,
-/// which only Tika's streamed extraction (`ParsingInputStream`) does: its string extraction
-/// (`TikaNativeMain.parseToString`) leaves them where they cut the paragraph they are anchored
-/// in (#63).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Chain {
-    /// A stream's: XML declaring its `encoding`.
-    Stream {
-        output: Output,
-        encoding: &'static str,
-    },
-    /// A string's: at most `max_length` UTF-16 code units of text.
-    String { output: Output, max_length: usize },
-    /// `TikaNativeMain.parseToString`'s, without anchored blocks held back, which the parity
-    /// tests compare a native parser's string extraction with Tika's under (#63).
-    #[cfg(test)]
-    TikaString { output: Output, max_length: usize },
-}
-
-impl Chain {
-    /// Runs `write` with the handler at the head of this chain, writing to `out`.
-    pub(crate) fn write_to<W: Write, R>(
-        self,
-        out: &mut W,
-        write: impl FnOnce(&mut dyn ContentHandler) -> R,
-    ) -> R {
-        match self {
-            Chain::Stream {
-                output: Output::Xml,
-                encoding,
-            } => write(&mut AnchoredBlocks::new(WellFormed::new(ToXml::new(
-                out,
-                Some(encoding),
-            )))),
-            Chain::Stream {
-                output: Output::Text,
-                ..
-            } => write(&mut Body::new(AnchoredBlocks::new(BlockBreaks::new(
-                ToText::new(out),
-            )))),
-            Chain::String {
-                output: Output::Xml,
-                max_length,
-            } => write(&mut AnchoredBlocks::new(WriteLimit::new(
-                WellFormed::new(ToXml::new(out, None)),
-                max_length,
-            ))),
-            Chain::String {
-                output: Output::Text,
-                max_length,
-            } => write(&mut Body::new(AnchoredBlocks::new(BlockBreaks::new(
-                WriteLimit::new(ToText::new(out), max_length),
-            )))),
-            #[cfg(test)]
-            Chain::TikaString {
-                output: Output::Xml,
-                max_length,
-            } => write(&mut WriteLimit::new(
-                WellFormed::new(ToXml::new(out, None)),
-                max_length,
-            )),
-            #[cfg(test)]
-            Chain::TikaString {
-                output: Output::Text,
-                max_length,
-            } => write(&mut Body::new(BlockBreaks::new(WriteLimit::new(
-                ToText::new(out),
-                max_length,
-            )))),
-        }
-    }
-
-    /// The limit of the text this chain writes, if it has one.
-    fn max_length(self) -> Option<usize> {
-        match self {
-            Chain::Stream { .. } => None,
-            Chain::String { max_length, .. } => Some(max_length),
-            #[cfg(test)]
-            Chain::TikaString { max_length, .. } => Some(max_length),
-        }
-    }
-}
-
-/// Collects written text into a string.
-#[derive(Debug, Default)]
-pub(crate) struct StringOut(pub(crate) String);
-
-impl Write for StringOut {
-    fn write(&mut self, text: &str) -> Result<(), Stop> {
-        self.0.push_str(text);
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<(), Stop> {
-        Ok(())
-    }
-}
-
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
 /// handlers of [`Chain::String`]; why not when the parser leaves the document to Tika.
-pub(crate) fn parse_to_string(
+pub fn parse_to_string(
     parser: &dyn Parser,
     input: &Input<'_>,
     detected: &Detected,
@@ -1307,8 +821,106 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+    use crate::formats::embedded::Wrapping;
     #[cfg(feature = "tika")]
     use crate::Extractor;
+
+    #[test]
+    fn closes_an_embedded_document_the_output_stops_in() {
+        install_routes(&Registry);
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "lines.txt");
+        let text = "A line of text the write limit cuts short.\n".repeat(4);
+        let mut out = StringOut::default();
+        let chain = Chain::String {
+            output: Output::Xml,
+            max_length: 100,
+        };
+        let result = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &ParseContext::new(&configs),
+                |xhtml| xhtml.parse_embedded(text.as_bytes(), &entry, Wrapping::PackageEntry),
+            )
+            .2
+        });
+        assert!(matches!(result, Err(Failure::Stopped(_))));
+        assert!(out.0.ends_with("</p></div>"), "{}", out.0);
+    }
+
+    /// An embedded HTML document the length limit stops in its body ends its own document,
+    /// whose `</body>` stays out of the embedding document, which Tika's path writes (#113).
+    #[test]
+    fn keeps_the_body_end_of_an_embedded_document_cut_short_out() {
+        install_routes(&Registry);
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "page.html");
+        let html = format!(
+            "<html><head><title>t</title></head><body><p>{}</p></body></html>",
+            "Words the write limit cuts short. ".repeat(8)
+        );
+        let mut out = StringOut::default();
+        let chain = Chain::String {
+            output: Output::Xml,
+            max_length: 100,
+        };
+        let result = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &ParseContext::new(&configs),
+                |xhtml| xhtml.parse_embedded(html.as_bytes(), &entry, Wrapping::PackageEntry),
+            )
+            .2
+        });
+        assert!(matches!(result, Err(Failure::Stopped(_))));
+        assert!(!out.0.contains("</body>"), "{}", out.0);
+        assert!(out.0.ends_with("</p></div>"), "{}", out.0);
+    }
+
+    /// A native parser's failure on an embedded document is recorded in the embedding
+    /// document's metadata on one line, naming the parser, the document and why, and the
+    /// embedding document goes on (#68).
+    #[test]
+    fn records_a_native_parsers_failure_on_an_embedded_document_concisely() {
+        install_routes(&Registry);
+        let configs = ParserConfigs::default();
+        let mut entry = TikaMetadata::new();
+        entry.set("tk:resource-name", "broken.xml");
+        // XML whose elements do not nest, which the native parser fails on.
+        let xml = br#"<?xml version="1.0"?><a><b>text</a>"#;
+        let mut out = StringOut::default();
+        let chain = Chain::Stream {
+            output: Output::Text,
+            encoding: "UTF-8",
+        };
+        let (mut metadata, record, result) = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &ParseContext::new(&configs),
+                |xhtml| {
+                    xhtml.parse_embedded(xml, &entry, Wrapping::PackageEntry)?;
+                    xhtml.element("p", "After.").map_err(Failure::from)
+                },
+            )
+        });
+        result.unwrap();
+        record.finish(&mut metadata, "outer");
+        let [failure] = metadata.values("tk:exception:embedded-exception") else {
+            panic!("{metadata:?}");
+        };
+        assert!(
+            failure.starts_with("extractous::")
+                && failure.contains(" could not parse the embedded document \"broken.xml\": ")
+                && !failure.contains('\n'),
+            "{failure}"
+        );
+        assert!(out.0.contains("After."), "{}", out.0);
+    }
 
     #[cfg(feature = "tika")]
     const CHILD: &str = "EXTRACTOUS_NATIVE_ROUTING_CHILD";
@@ -1648,16 +1260,14 @@ mod tests {
                 let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
-                    | "extractous::MboxParser" => crate::formats::mail::tests::DEPARTURES.to_vec(),
-                    "extractous::OfficeParser" => {
-                        crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
-                    }
+                    | "extractous::MboxParser" => crate::formats::mail::DEPARTURES.to_vec(),
+                    "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
-                        crate::formats::translation::tests::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
+                        crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }
                     _ => Vec::new(),
                 };
-                if crate::formats::mail::tests::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
+                if crate::formats::mail::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
                     departures.push(crate::formats::parity::Departure::Values(
                         "message:from-name",
                         "#77",

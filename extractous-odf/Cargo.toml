@@ -1,0 +1,26 @@
+[package]
+name = "extractous-odf"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "extractous's native parsers of OpenDocument and EPUB"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/extractous"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+default = ["tika"]
+# Tika's path, which the tests compare the native parsers with, and which takes the embedded
+# documents no native parser reads.
+tika = ["extractous-base/tika", "extractous-core/tika", "extractous-mime/tika"]
+# What the tests of the crates built on this one share with its own.
+testing = ["extractous-base/testing"]
+
+[dependencies]
+extractous-base = { path = "../extractous-base", default-features = false }
+extractous-mime = { path = "../extractous-mime", default-features = false }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
+extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }

@@ -46,11 +46,11 @@ encoding-reference:
     ci/fetch-reference-jars.sh "$jars"
     for model in nb-bigram.bin utf16-specialist.bin; do
         unzip -p "$jars"/tika-encoding-detector-mojibuster-*.jar "org/apache/tika/ml/chardetect/$model" \
-            | cmp - "extractous-core/models/$model"
+            | cmp - "extractous-base/models/$model"
     done
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    fixtures=extractous-core/tests/fixtures/charset
-    java "$fixtures/CharsetTables.java" extractous-core/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
+    fixtures=extractous-base/tests/fixtures/charset
+    java "$fixtures/CharsetTables.java" extractous-base/models/java-charsets.bin "$fixtures/decoder-reference.tsv"
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*" "$fixtures/EncodingReference.java" quality/truth quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/encoding-reference.tsv.gz"
@@ -66,19 +66,19 @@ native-image-rules:
     rules=target/native-image-rules
     rm -rf "$rules"
     mkdir -p "$rules"
-    java extractous-core/tests/fixtures/charset/NativeImageRules.java \
+    java extractous-base/tests/fixtures/charset/NativeImageRules.java \
         "$jars/sources/tika-encoding-detector-mojibuster-4.1.0-sources.jar" "$jars/*" "$rules" >&2
     echo "$rules"
 
 # Regenerate what Tika's XHTMLContentHandler and our handler chains write for the parser calls in
-# extractous-core/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.
+# extractous-base/tests/fixtures/handlers/scripts.txt, which the Rust handlers are tested against.
 [unix]
 handler-reference:
     #!/usr/bin/env bash
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/handlers
+    fixtures=extractous-base/tests/fixtures/handlers
     sources=target/handler-reference/ai/yobix
     rm -rf "$sources"
     mkdir -p "$sources"
@@ -96,7 +96,7 @@ djvu-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/djvu
+    fixtures=extractous-image/tests/fixtures/djvu
     sources=target/djvu-reference/ai/yobix
     rm -rf "$sources"
     mkdir -p "$sources"
@@ -116,10 +116,10 @@ text-reference:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    fixtures=extractous-core/tests/fixtures/text
+    fixtures=extractous-html/tests/fixtures/text
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
-        extractous-core/tests/fixtures/formats/TextReference.java \
+        extractous-html/tests/fixtures/formats/TextReference.java \
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
@@ -134,7 +134,7 @@ pdf-resources:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     pdfbox="$jars/pdf/pdfbox-3.0.8.jar"
-    models=extractous-core/models/pdf
+    models=extractous-pdf/models/pdf
     mkdir -p "$models/afm"
     for list in glyphlist additional zapfdingbats; do
         unzip -p "$pdfbox" "org/apache/pdfbox/resources/glyphlist/$list.txt" > "$models/$list.txt"
@@ -147,8 +147,8 @@ pdf-resources:
         unzip -p "$pdfbox" "org/apache/pdfbox/resources/afm/$font.afm" | tr -d '\r' \
             | grep -v -e '^KPX' -e '^Comment' -e '^$' > "$models/afm/$font.afm"
     done
-    java -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/PdfEncodings.java "$models/encodings.tsv"
-    java -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
+    java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/PdfEncodings.java "$models/encodings.tsv"
+    java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
 
 # Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
 # html5lib's tree construction tests, the trees jsoup builds for them, and jsoup's named character references,
@@ -169,11 +169,11 @@ html-reference:
     rm -rf "$tests"
     mkdir -p "$tests"
     tar -xzf "$tests.tar.gz" -C "$tests" --strip-components 1
-    mkdir -p extractous-core/tests/fixtures/html
+    mkdir -p extractous-html/tests/fixtures/html
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
-        extractous-core/tests/fixtures/formats/HtmlReference.java \
-        extractous-core/tests/fixtures/html extractous-core/models \
+        extractous-html/tests/fixtures/formats/HtmlReference.java \
+        extractous-html/tests/fixtures/html extractous-html/models \
         "$tests/tree-construction" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
@@ -186,10 +186,10 @@ mail-reference:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    mkdir -p extractous-core/tests/fixtures/mail
+    mkdir -p extractous-mail/tests/fixtures/mail
     java -cp "$jars/*:extractous-core/tika-native/src/main/resources" \
-        extractous-core/tests/fixtures/formats/MailReference.java \
-        extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
+        extractous-html/tests/fixtures/formats/MailReference.java \
+        extractous-mail/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
         corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
 
@@ -201,8 +201,8 @@ source-code-tables:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    java -cp "$jars/source-code/*" extractous-core/tests/fixtures/source_code/LexerTables.java \
-        extractous-core/src/formats/source_code/tables.rs
+    java -cp "$jars/source-code/*" extractous-small/tests/fixtures/source_code/LexerTables.java \
+        extractous-small/src/formats/source_code/tables.rs
 
 # Regenerate what Apache Tika's RTFParser makes of the code pages RTF names and of the dates in its
 # info group, which the Rust port is tested against, after refreshing the fixture zoneinfo files the
@@ -213,7 +213,7 @@ rtf-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/rtf
+    fixtures=extractous-base/tests/fixtures/rtf
     system=$(readlink -f /etc/localtime | sed 's|/zoneinfo/.*|/zoneinfo|')
     (cd "$fixtures/zoneinfo" && find . -type f) | while IFS= read -r zone; do
         cp -L "$system/$zone" "$fixtures/zoneinfo/$zone"
@@ -229,7 +229,7 @@ xlsx-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/xlsx
+    fixtures=extractous-base/tests/fixtures/xlsx
     java -Duser.language=en -Duser.country=US -Duser.timezone=Europe/Copenhagen \
         -cp "$jars/mime/*" "$fixtures/FormatReference.java" "$fixtures"
 
@@ -241,7 +241,7 @@ bmp-reference:
     : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/image
+    fixtures=extractous-image/tests/fixtures/image
     java -Djava.awt.headless=true -cp "$jars/mime/*:$jars/image/*" "$fixtures/BmpReference.java" "$fixtures" \
         "$CONFORMANCE_CORPUS/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testBMP.bmp"
 
@@ -253,7 +253,7 @@ ole2-reference:
     : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/ole2
+    fixtures=extractous-office/tests/fixtures/ole2
     java -cp "$jars/mime/*" "$fixtures/SummaryReference.java" "$fixtures/summaries.tsv.gz" \
         documents=test_files/documents corpus="$CONFORMANCE_CORPUS"
 
@@ -266,15 +266,15 @@ junk-reference:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     model=org/apache/tika/ml/junkdetect/junkdetect.bin
-    unzip -p "$jars"/tika-ml-junkdetect-*.jar "$model" | cmp - "extractous-core/models/$(basename "$model")"
-    fixtures=extractous-core/tests/fixtures/junk
+    unzip -p "$jars"/tika-ml-junkdetect-*.jar "$model" | cmp - "extractous-base/models/$(basename "$model")"
+    fixtures=extractous-base/tests/fixtures/junk
     java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
         extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
 
-# Regenerate the static media type tables (extractous-core/src/mime/mime_types/tables.rs) from tika-mimetypes.xml
+# Regenerate the static media type tables (extractous-mime/src/mime/mime_types/tables.rs) from tika-mimetypes.xml
 # and custom-mimetypes.xml.
 mime-tables:
-    MIME_TABLES_BLESS=1 cargo nextest run --package {{core}} --lib the_tables_are_generated_from_the_xml
+    MIME_TABLES_BLESS=1 cargo nextest run --package extractous-mime --lib the_tables_are_generated_from_the_xml
 
 # Regenerate the media types and detection metadata of Apache Tika's own default detector that the Rust port
 # is tested against, on the jars of the native image's class path in its order, which decides the order of
@@ -286,7 +286,7 @@ mime-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    unzip -p "$jars"/mime/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - {{core}}/models/tika-mimetypes.xml
+    unzip -p "$jars"/mime/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - extractous-mime/models/tika-mimetypes.xml
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     classpath={{core}}/tika-native/src/main/resources
     for jar in slf4j-nop-2.0.20 log4j-to-slf4j-2.26.1 tika-parser-microsoft-module-4.1.0 \
@@ -298,7 +298,7 @@ mime-reference:
         curvesapi-1.08; do
         classpath="$classpath:$jars/mime/$jar.jar"
     done
-    fixtures={{core}}/tests/fixtures/mime
+    fixtures=extractous-mime/tests/fixtures/mime
     java -cp "$classpath" "$fixtures/MimeReference.java" test_files/documents quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/mime-reference.tsv"
 
@@ -331,8 +331,8 @@ ocr-image-reference:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    fixtures=extractous-core/tests/fixtures/ocr
-    java -Djava.awt.headless=true "$fixtures/JdkSrgbProfile.java" extractous-core/models/jdk-srgb.icc
+    fixtures=extractous-image/tests/fixtures/ocr
+    java -Djava.awt.headless=true "$fixtures/JdkSrgbProfile.java" extractous-image/models/jdk-srgb.icc
     java -Djava.awt.headless=true "$fixtures/ImageReference.java" "$fixtures/image-reference.tsv.gz" \
         documents=test_files/documents corpus=quality/corpus tika="$CONFORMANCE_CORPUS"
 
@@ -413,15 +413,15 @@ parity *args:
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     target={{justfile_directory()}}/target
-    for libs in "$target"/debug/build/extractous-core-*/out/libs "$target"/release/build/extractous-core-*/out/libs; do
+    for libs in "$target"/debug/build/extractous-*/out/libs "$target"/release/build/extractous-*/out/libs; do
         [ -f "$libs/.fingerprint" ] || continue
-        seed="$target/parity/build/extractous-core-seed-$(cat "$libs/.fingerprint")/out/libs"
+        seed="$target/parity/build/extractous-native-seed-$(cat "$libs/.fingerprint")/out/libs"
         if [ ! -f "$seed/.fingerprint" ]; then
             mkdir -p "$seed"
             cp -a "$libs/." "$seed/"
         fi
     done
-    cargo nextest run --package extractous-core --lib --cargo-profile parity --run-ignored only \
+    cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
         -E 'not test(/^formats::audit::/)' "$@"
 
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on

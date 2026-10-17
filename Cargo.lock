@@ -753,47 +753,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "extractous-core"
+name = "extractous-base"
 version = "0.2.1"
 dependencies = [
  "aes",
  "ar",
- "arrayvec",
- "bytemuck",
  "bzip2",
  "cpio",
- "criterion",
  "encoding_rs",
- "fancy-regex",
  "flate2",
- "hayro",
- "hayro-jbig2",
- "hayro-jpeg2000",
- "image",
  "jiff",
  "jiff-tzdb",
  "jni",
- "lcms2-sys",
  "libc",
- "libloading",
- "lopdf",
  "lz4_flex",
  "lzma-rust2",
- "lzxd",
  "md-5",
  "memchr",
  "memmap2",
- "object",
- "png",
- "pulldown-cmark",
- "quick-xml",
- "rav1d",
  "rc4",
  "regex",
- "rusqlite",
  "ruzstd",
- "serde",
- "serde_json",
  "sevenz-rust2",
  "sha1",
  "sha2",
@@ -801,18 +781,213 @@ dependencies = [
  "strum 0.28.0",
  "strum_macros 0.28.0",
  "tar",
+ "thiserror",
+ "unicode-general-category",
+ "unicode-normalization",
+ "unicode-script",
+ "zip",
+]
+
+[[package]]
+name = "extractous-core"
+version = "0.2.1"
+dependencies = [
+ "criterion",
+ "extractous-base",
+ "extractous-html",
+ "extractous-image",
+ "extractous-mail",
+ "extractous-media",
+ "extractous-mime",
+ "extractous-native",
+ "extractous-odf",
+ "extractous-office",
+ "extractous-ooxml",
+ "extractous-pdf",
+ "extractous-small",
+ "extractous-tika",
+ "png",
+ "quick-xml",
+ "regex",
+ "serde",
+ "serde_json",
  "test-case",
  "textdistance",
- "thiserror",
+ "ureq",
+]
+
+[[package]]
+name = "extractous-html"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-mime",
+ "flate2",
+]
+
+[[package]]
+name = "extractous-image"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-mime",
+ "extractous-native",
+ "flate2",
+ "hayro",
+ "hayro-jbig2",
+ "hayro-jpeg2000",
+ "image",
+ "lcms2-sys",
+ "libloading",
+ "rav1d",
+ "regex",
+ "sha2",
  "tiff",
+ "unicode-script",
+ "zip",
+]
+
+[[package]]
+name = "extractous-mail"
+version = "0.2.1"
+dependencies = [
+ "ar",
+ "cpio",
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "extractous-mime",
+ "extractous-small",
+ "flate2",
+ "regex",
+ "rusqlite",
+ "tar",
+ "zip",
+]
+
+[[package]]
+name = "extractous-media"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+]
+
+[[package]]
+name = "extractous-mime"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-tika",
+ "fancy-regex",
+ "flate2",
+ "memchr",
+ "thiserror",
+ "unicode-general-category",
+ "unicode-normalization",
+ "zip",
+]
+
+[[package]]
+name = "extractous-native"
+version = "0.2.1"
+dependencies = [
+ "flate2",
+ "libloading",
+ "object",
+ "walkdir",
+]
+
+[[package]]
+name = "extractous-odf"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-mime",
+ "zip",
+]
+
+[[package]]
+name = "extractous-office"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "extractous-mail",
+ "extractous-mime",
+ "flate2",
+ "rc4",
+ "regex",
+]
+
+[[package]]
+name = "extractous-ooxml"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-image",
+ "extractous-mime",
+ "extractous-office",
+ "zip",
+]
+
+[[package]]
+name = "extractous-pdf"
+version = "0.2.1"
+dependencies = [
+ "arrayvec",
+ "extractous-base",
+ "extractous-core",
+ "extractous-image",
+ "flate2",
+ "image",
+ "lopdf",
+ "lzma-rust2",
+ "md-5",
+ "memchr",
+ "png",
+ "rc4",
+ "tar",
  "unicode-bidi",
  "unicode-general-category",
  "unicode-normalization",
  "unicode-script",
- "ureq",
- "walkdir",
- "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "extractous-small"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "extractous-mime",
+ "lzxd",
+ "md-5",
+ "memchr",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "snap",
  "zip",
+]
+
+[[package]]
+name = "extractous-tika"
+version = "0.2.1"
+dependencies = [
+ "bytemuck",
+ "extractous-base",
+ "extractous-native",
+ "jni",
+ "libloading",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
