@@ -4,7 +4,7 @@
 //! Tika reads the metadata as it writes the paragraph, after the head (#105).
 
 use crate::config::ParserConfigs;
-use crate::formats::element_metadata::DublinCore;
+use crate::formats::element_metadata::ElementHandlers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
@@ -48,7 +48,7 @@ impl Parser for DcXmlParser {
         Ok(Box::new(move |xhtml| {
             let mut metadata = DublinCoreReader {
                 metadata: xhtml.metadata_mut(),
-                dublin_core: DublinCore::new(),
+                dublin_core: ElementHandlers::dublin_core(),
             };
             // A malformed document fails the second reading, as far as which it is written.
             let _ = xml::parse_sax(input, "the XML document", &mut metadata);
@@ -70,7 +70,7 @@ impl Parser for DcXmlParser {
 /// The Dublin Core handlers `DcXMLParser` tees the events to.
 struct DublinCoreReader<'m> {
     metadata: &'m mut TikaMetadata,
-    dublin_core: DublinCore,
+    dublin_core: ElementHandlers,
 }
 
 impl SaxHandler for DublinCoreReader<'_> {
@@ -194,7 +194,7 @@ mod tests {
     fn metadata_of(input: &[u8]) -> TikaMetadata {
         struct Metadata {
             metadata: TikaMetadata,
-            dublin_core: DublinCore,
+            dublin_core: ElementHandlers,
         }
         impl SaxHandler for Metadata {
             fn start_element(
@@ -217,7 +217,7 @@ mod tests {
         }
         let mut handler = Metadata {
             metadata: TikaMetadata::new(),
-            dublin_core: DublinCore::new(),
+            dublin_core: ElementHandlers::dublin_core(),
         };
         xml::parse_sax(input, "test", &mut handler).unwrap();
         handler.metadata

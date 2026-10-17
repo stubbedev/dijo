@@ -229,6 +229,11 @@ impl TimeZone {
         }
     }
 
+    /// `getRawOffset`: the current standard offset, in milliseconds.
+    pub(crate) fn raw_offset(&self) -> i64 {
+        self.raw_offset * 1000
+    }
+
     /// The offset, in milliseconds, of the wall time `wall` (milliseconds since the epoch as if
     /// it were UTC), as `ZoneInfo.getOffsetsByWall` resolves it: in a gap, the offset before the
     /// change; in an overlap, the offset after it.

@@ -1,5 +1,25 @@
 documents	2022_Q3_AAPL.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 documents	2022_Q3_AAPL.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+documents	access/ace-calculated.accdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-calculated.accdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-complex.accdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-complex.accdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-extended-dates.accdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-extended-dates.accdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-ole.accdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-ole.accdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-rich-text.accdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/ace-rich-text.accdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet3-ole.mdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet3-ole.mdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet3-overflow.mdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet3-overflow.mdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet3-queries.mdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet3-queries.mdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet4-turkish.mdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet4-turkish.mdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet4-unicode-compression.mdb	file	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
+documents	access/jet4-unicode-compression.mdb	bytes	application/x-msaccess	tk:content-type-magic-detected=application/x-msaccess
 documents	ara-ocr.png	file	image/png	tk:content-type-magic-detected=image/png
 documents	ara-ocr.png	bytes	image/png	tk:content-type-magic-detected=image/png
 documents	book-cp1251.fb2	file	application/x-fictionbook+xml	tk:content-type-magic-detected=application/x-fictionbook+xml
@@ -70,6 +90,14 @@ documents	notes.sqlite	file	application/x-sqlite3	tk:content-type-magic-detected
 documents	notes.sqlite	bytes	application/x-sqlite3	tk:content-type-magic-detected=application/x-sqlite3
 documents	offline-folder.ost	file	application/vnd.ms-outlook-pst	tk:content-type-magic-detected=application/vnd.ms-outlook-pst
 documents	offline-folder.ost	bytes	application/vnd.ms-outlook-pst	tk:content-type-magic-detected=application/vnd.ms-outlook-pst
+documents	onenote/embedded-word.one	file	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/embedded-word.one	bytes	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/section.one	file	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/section.one	bytes	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/short-header.one	file	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/short-header.one	bytes	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/truncated.one	file	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
+documents	onenote/truncated.one	bytes	application/onenote; format=one	tk:content-type-magic-detected=application/onenote; format=one
 documents	ooxml/issue2-v2.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 documents	ooxml/issue2-v2.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=519367	zip:detector-zip-file-opened=true
 documents	ooxml/issue2.xlsx	file	application/vnd.openxmlformats-officedocument.spreadsheetml.sheet	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet	zip:detector-zip-file-opened=true
@@ -96,6 +124,66 @@ documents	partially-damaged.zip	file	application/zip	tk:content-type-magic-detec
 documents	partially-damaged.zip	bytes	application/zip	tk:content-type-magic-detected=application/zip	Content-Length=5585	zip:detector-zip-file-opened=true
 documents	photo.heic	file	image/heic	tk:content-type-magic-detected=image/heic
 documents	photo.heic	bytes	image/heic	tk:content-type-magic-detected=image/heic
+documents	rar/ansi-name.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/ansi-name.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/best-compression.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/best-compression.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/broken-header.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/broken-header.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/corrupt-data.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/corrupt-data.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/directories.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/directories.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/encrypted-entry.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/encrypted-entry.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/encrypted-headers.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/encrypted-headers.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/extended-times.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/extended-times.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/file-comment.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/file-comment.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/looping-blocks.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/looping-blocks.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/mac-subblock.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/mac-subblock.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/method36.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/method36.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/no-main-header.rar	file	application/x-rar-compressed	tk:content-type-magic-detected=application/x-rar-compressed
+documents	rar/no-main-header.rar	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+documents	rar/old-subblock.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/old-subblock.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/ppmd-smallest-model.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/ppmd-smallest-model.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/ppmd.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/ppmd.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/rar5.rar	file	application/x-rar-compressed; version=5	tk:content-type-magic-detected=application/x-rar-compressed; version=5
+documents	rar/rar5.rar	bytes	application/x-rar-compressed; version=5	tk:content-type-magic-detected=application/x-rar-compressed; version=5
+documents	rar/recovery-record.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/recovery-record.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/solid.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/solid.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/stored-unpack29.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/stored-unpack29.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unicode-names.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unicode-names.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack15.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack15.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack20-audio.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack20-audio.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack20.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack20.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29-audio-filter.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29-audio-filter.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29-e8-filter.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29-e8-filter.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29-low-distances.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29-low-distances.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/unpack29.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/utf8-name-split.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/utf8-name-split.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/volume.part1.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
+documents	rar/volume.part1.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
 documents	revisions.fodt	file	application/vnd.oasis.opendocument.flat.text	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.text
 documents	revisions.fodt	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	sample.eml	file	message/rfc822	tk:content-type-magic-detected=message/rfc822

@@ -79,6 +79,12 @@ impl MimeTypes {
         &self.registry
     }
 
+    /// Every type the tables declare, by its printed form, in the order they declare them.
+    #[cfg(test)]
+    pub(crate) fn declared(&self) -> impl Iterator<Item = &'static str> {
+        self.types.iter().map(|declared| declared.name)
+    }
+
     fn type_of(&self, media_type: &MediaType) -> Option<TypeId> {
         sorted_get(self.by_type, media_type.as_str())
     }

@@ -21,6 +21,9 @@ use std::collections::HashMap;
 use crate::text::charset::Charset;
 use crate::unicode::{decimal_digit, is_whitespace};
 
+/// `System.lineSeparator()`.
+pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
+
 const INITIAL_CAPACITY: usize = 16;
 const TREEIFY_THRESHOLD: usize = 8;
 const MIN_TREEIFY_CAPACITY: usize = 64;
@@ -292,6 +295,39 @@ pub(crate) fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
+/// Commons Codec's `new Base64().decode(text)`: the text's UTF-8 bytes decoded leniently in the
+/// standard and the URL-safe alphabet at once, everything outside them skipped, up to the first
+/// `=`, the bits of an unfinished unit beyond its whole bytes dropped.
+pub(crate) fn commons_base64_decode(text: &str) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(text.len() / 4 * 3);
+    let mut bits: u32 = 0;
+    let mut count = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'=' => break,
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => continue,
+        };
+        bits = (bits << 6) | u32::from(value);
+        count += 1;
+        if count == 4 {
+            decoded.extend_from_slice(&bits.to_be_bytes()[1..]);
+            bits = 0;
+            count = 0;
+        }
+    }
+    match count {
+        2 => decoded.push((bits >> 4) as u8),
+        3 => decoded.extend_from_slice(&((bits >> 2) as u16).to_be_bytes()),
+        _ => {}
+    }
+    decoded
+}
+
 /// `new String(bytes, ISO_8859_1)`, without a copy for ASCII bytes it owns.
 pub(crate) fn latin1(bytes: impl Into<Vec<u8>>) -> String {
     let bytes = bytes.into();
@@ -313,6 +349,18 @@ pub(crate) fn ascii(bytes: &[u8]) -> String {
             }
         })
         .collect()
+}
+
+/// `new String(bytes, UTF_16LE)`: each unpaired surrogate, and an odd byte at the end,
+/// decoded as U+FFFD, as the JDK's decoder replaces them.
+pub(crate) fn utf16le(bytes: &[u8]) -> String {
+    let (pairs, rest) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
+    let mut text = String::from_utf16_lossy(&units);
+    if !rest.is_empty() {
+        text.push('\u{FFFD}');
+    }
+    text
 }
 
 /// `new String(bytes, UTF_8)`: malformed input replaced as the JDK's decoder replaces it.
@@ -368,14 +416,28 @@ pub(crate) fn compare_ignore_case(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// `Character.toUpperCase` on a code point: its mapping where that is one character.
+/// `Character.toUpperCase` on a code point: its simple mapping, which is its full mapping where
+/// that is one character, and for the Greek small letters with ypogegrammeni their capitals with
+/// prosgegrammeni.
 fn upper(character: char) -> char {
-    single(character.to_uppercase()).unwrap_or(character)
+    match character {
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            char::from_u32(u32::from(character) + 8).expect("a Greek capital")
+        }
+        '\u{1FB3}' => '\u{1FBC}',
+        '\u{1FC3}' => '\u{1FCC}',
+        '\u{1FF3}' => '\u{1FFC}',
+        _ => single(character.to_uppercase()).unwrap_or(character),
+    }
 }
 
-/// `Character.toLowerCase` on a code point: its mapping where that is one character.
+/// `Character.toLowerCase` on a code point: its simple mapping, which is its full mapping where
+/// that is one character, and `i` for the capital I with dot above.
 fn lower(character: char) -> char {
-    single(character.to_lowercase()).unwrap_or(character)
+    match character {
+        '\u{130}' => 'i',
+        _ => single(character.to_lowercase()).unwrap_or(character),
+    }
 }
 
 fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
@@ -617,6 +679,19 @@ mod tests {
     }
 
     #[test]
+    fn decodes_base64_as_commons_codec_does() {
+        assert_eq!(commons_base64_decode("SGVq"), b"Hej");
+        assert_eq!(commons_base64_decode("SG\nVq IGRp*"), b"Hej di");
+        assert_eq!(commons_base64_decode("SGVqIGQ="), b"Hej d");
+        assert_eq!(commons_base64_decode("SGVq=IGRp"), b"Hej");
+        assert_eq!(commons_base64_decode("-_-_"), [0xFB, 0xFF, 0xBF]);
+        assert_eq!(commons_base64_decode("+/+/"), [0xFB, 0xFF, 0xBF]);
+        assert_eq!(commons_base64_decode("SGVqI"), b"Hej");
+        assert_eq!(commons_base64_decode("øSGVq"), b"Hej");
+        assert!(commons_base64_decode("").is_empty());
+    }
+
+    #[test]
     fn hashes_strings_as_java_does() {
         assert_eq!(string_hash(""), 0);
         assert_eq!(string_hash("Content-Type") as i32, 949_037_134);
@@ -692,6 +767,13 @@ mod tests {
         );
         assert_eq!(compare_ignore_case("_x", "a"), Ordering::Less);
         assert_eq!(compare_ignore_case("ab", "A"), Ordering::Greater);
+        assert_eq!(
+            compare_ignore_case("\u{130}stanbul", "Table1"),
+            Ordering::Less
+        );
+        assert!(equals_ignore_case("\u{130}", "i"));
+        assert!(equals_ignore_case("\u{1FB3}", "\u{1FBC}"));
+        assert!(equals_ignore_case("\u{1F80}", "\u{1F88}"));
     }
 
     #[test]

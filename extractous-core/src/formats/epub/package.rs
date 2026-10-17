@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::formats::element_metadata::{set_unless_equal, DublinCore, DUBLIN_CORE_NS};
+use crate::formats::element_metadata::{set_unless_equal, ElementHandlers, DUBLIN_CORE_NS};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -135,7 +135,7 @@ impl Date {
 /// `OPFHandler` after them for a package document, with the dates read apart.
 struct MetadataHandlers<'m> {
     metadata: &'m mut TikaMetadata,
-    dublin_core: DublinCore,
+    dublin_core: ElementHandlers,
     date: Option<Date>,
     rendition: Option<Rendition>,
 }
@@ -218,7 +218,7 @@ pub(super) fn read_metadata(
     }
     let mut handler = MetadataHandlers {
         metadata,
-        dublin_core: DublinCore::without_date(),
+        dublin_core: ElementHandlers::dublin_core_without_date(),
         date: None,
         rendition: (parser == MetadataParser::Package).then(Rendition::default),
     };

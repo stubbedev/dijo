@@ -5,7 +5,7 @@
 //! [`ToXml`] (`ToXMLContentHandler`).
 
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::{ContentHandler, Embedded, Stop, Xhtml, XHTML_NAMESPACE};
+use crate::formats::xhtml::{ContentHandler, Embedded, Stop, Target, Xhtml, XHTML_NAMESPACE};
 use crate::formats::{Failure, Prepared};
 use crate::java::{is_blank, utf16_length};
 
@@ -864,6 +864,7 @@ pub(crate) fn parse_inline(prepared: Prepared<'_>, xhtml: &mut Xhtml) -> Result<
     let mut forward = Embedded {
         outer: xhtml,
         open: &mut open,
+        target: Target::Xhtml,
     };
     let mut body = Body::new(&mut forward);
     let (_, _, result) = Xhtml::write(&mut body, TikaMetadata::new(), context, prepared);

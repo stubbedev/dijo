@@ -12,6 +12,7 @@
 //! and compressed files the port reads; what other formats' parsers write for the documents
 //! embedded in them is not counted.
 
+use super::rar;
 use crate::compress::archiver::Archiver;
 use crate::compress::compressor::Compressor;
 use crate::compress::zip::file::ZipFile;
@@ -107,16 +108,19 @@ impl Scan {
         }
         let files = match Archiver::detect(data) {
             Some(Archiver::Zip) => return (1 + self.zip_depth(data, limit - 1)).min(limit),
-            Some(Archiver::Tar) => tar::files(data),
-            Some(Archiver::Ar) => ar::files(data),
-            Some(Archiver::Cpio) => cpio::files(data),
-            Some(Archiver::SevenZ) => seven_z::files(data),
+            Some(Archiver::Tar) => tar::files(data).ok(),
+            Some(Archiver::Ar) => ar::files(data).ok(),
+            Some(Archiver::Cpio) => cpio::files(data).ok(),
+            Some(Archiver::SevenZ) => seven_z::files(data).ok(),
+            Some(Archiver::Arj | Archiver::Dump) | None if rar::is_rar(data) => {
+                rar::archive_files(data)
+            }
             Some(Archiver::Arj | Archiver::Dump) | None => {
                 self.documents = self.documents.saturating_add(data.len());
                 return 0;
             }
         };
-        let Ok(files) = files else {
+        let Some(files) = files else {
             return 1;
         };
         if !self.spend(files.iter().map(|file| file.content.len()).sum()) {

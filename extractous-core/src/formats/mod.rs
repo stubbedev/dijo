@@ -3,9 +3,11 @@
 //! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
 //! path gives. [`parser_for`] routes a media type to its native parser, if it has one.
 
+mod access;
 mod apple_single;
 mod archive;
 mod auto_detect_reader;
+mod chm;
 mod cms;
 mod crypt;
 pub(crate) mod data_format;
@@ -17,20 +19,24 @@ mod doc;
 mod docx;
 mod element_metadata;
 pub(crate) mod embedded;
+mod empty;
 mod epub;
 mod escher;
 mod executable;
 mod feed;
 mod fiction_book;
 mod font;
+mod geogebra;
 pub(crate) mod handlers;
-mod html;
+pub(crate) mod html;
 mod hwpx;
+mod idml;
 mod image;
 mod iwork;
 mod jdk_zip;
 mod list_numbering;
 mod mail;
+mod markdown;
 pub(crate) mod media;
 pub(crate) mod metadata;
 mod mif;
@@ -41,6 +47,7 @@ mod notebook;
 mod odf;
 mod ole10_native;
 mod ole2;
+mod onenote;
 mod ooxml;
 mod open_pgp;
 #[cfg(test)]
@@ -55,14 +62,18 @@ mod prt;
 #[cfg(test)]
 pub(crate) mod reference;
 mod rtf;
+mod source_code;
 mod subtitle;
 mod text;
+mod tnef;
 mod translation;
 mod warc;
+mod wordperfect;
 pub(crate) mod xhtml;
 mod xls;
 mod xlsx;
 pub(crate) mod xml;
+mod xml_2003;
 pub(crate) mod xmp;
 mod zip_file;
 
@@ -123,13 +134,7 @@ pub(crate) type Deferral = String;
 #[derive(Debug)]
 pub(crate) enum Declined {
     /// Tika's path should extract it.
-    Deferred(
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "only the tests ask why a document is deferred")
-        )]
-        Deferral,
-    ),
+    Deferred(Deferral),
     /// Tika's parser throws this on it before it starts the document: the extraction fails at
     /// once, without output, as Tika's path does.
     Fails(Error),
@@ -174,8 +179,15 @@ pub(crate) trait Parser: Sync {
         &[]
     }
 
-    /// The media types it parses, without parameters, as Tika's detection names them.
+    /// The media types it parses, as Tika's detection names them.
     fn media_types(&self) -> &'static [&'static str];
+
+    /// Whether it parses a type whose parameters its media types do not name, such as a
+    /// `charset`, by the type without them, as Tika's `CompositeParser` walks to the type
+    /// without its parameters when no parser takes the type with them.
+    fn takes_base_types(&self) -> bool {
+        true
+    }
 
     /// Reads `input`, from the `metadata` Tika's parser starts from and under the parser
     /// settings `configs` the extraction was given, as far as deciding whether it extracts the
@@ -204,10 +216,13 @@ pub(crate) trait Parser: Sync {
 }
 
 static PARSERS: &[&dyn Parser] = &[
+    &access::JackcessParser,
     &archive::CompressorParser,
     &archive::PackageParser,
+    &archive::RarParser,
     &archive::SevenZParser,
     &archive::ZipParser,
+    &chm::ChmParser,
     &cms::CmsParser,
     &dc_xml::DcXmlParser,
     &doc::DocParser,
@@ -216,6 +231,7 @@ static PARSERS: &[&dyn Parser] = &[
     &font::AdobeFontMetricParser,
     &font::TrueTypeParser,
     &fiction_book::FictionBookParser,
+    &geogebra::GeoGebraParser,
     &html::JSoupParser,
     &image::HeifParser,
     &image::ImageParser,
@@ -223,9 +239,11 @@ static PARSERS: &[&dyn Parser] = &[
     &image::RecognizedImageParser,
     &image::TiffParser,
     &hwpx::HwpxParser,
+    &idml::IdmlParser,
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
     &mail::MboxParser,
+    &markdown::MarkdownParser,
     &media::FlacParser,
     &media::OpusParser,
     &media::VorbisParser,
@@ -238,6 +256,7 @@ static PARSERS: &[&dyn Parser] = &[
     &executable::UniversalExecutableParser,
     &translation::TmxParser,
     &translation::Xliff12Parser,
+    &translation::XlzParser,
     &dif::DifParser,
     &djvu::DjvuParser,
     &mif::MifParser,
@@ -251,6 +270,7 @@ static PARSERS: &[&dyn Parser] = &[
     &epub::EpubParser,
     &odf::OpenDocumentParser,
     &odf::FlatOpenDocumentParser,
+    &onenote::OneNoteParser,
     &open_pgp::OpenPgpParser,
     &pdf::PdfParser,
     &plist::PListParser,
@@ -259,23 +279,37 @@ static PARSERS: &[&dyn Parser] = &[
     &protected::ProtectedParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
+    &source_code::SourceCodeParser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
+    &tnef::TnefParser,
     &xls::XlsParser,
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,
+    &wordperfect::QuattroProParser,
+    &wordperfect::WordPerfectParser,
     &xls::OldExcelParser,
     &xlsx::XlsxParser,
+    &xml_2003::SpreadsheetMlParser,
+    &xml_2003::WordMlParser,
+    &empty::EmptyParser,
 ];
 
-/// The native parser for `media_type` (parameters such as `charset` are ignored), if any.
-fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
-    let base = media_type.split(';').next().unwrap_or_default().trim();
-    PARSERS
-        .iter()
-        .copied()
-        .find(|parser| parser.media_types().contains(&base))
+/// The native parser for `media_type`, if any, as Tika's `CompositeParser` looks one up: for
+/// the type with its parameters, such as a version, then for the type without them, such as
+/// `charset`.
+pub(crate) fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
+    let full = media_type.trim();
+    let base = full.split(';').next().unwrap_or_default().trim();
+    let serving = |name: &str, base: bool| {
+        PARSERS
+            .iter()
+            .copied()
+            .filter(|parser| !base || parser.takes_base_types())
+            .find(|parser| parser.media_types().contains(&name))
+    };
+    serving(full, false).or_else(|| serving(base, true))
 }
 
 /// Whether any format has a native parser yet, which decides whether routing needs a detection.
@@ -481,7 +515,7 @@ impl Detected {
     /// Detects an embedded document `input`, its stream `opened` as given, with the `metadata`
     /// its embedding parser gives it, which hints at its type and which the detection's
     /// metadata is added to.
-    fn detect_embedded(
+    pub(crate) fn detect_embedded(
         input: &[u8],
         metadata: &TikaMetadata,
         opened: Opened,

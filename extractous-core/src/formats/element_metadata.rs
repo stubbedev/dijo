@@ -150,24 +150,36 @@ const DC_XML_ELEMENTS: [(&str, &str, Values); 13] = [
     ("rights", "dc:rights", Values::Bag),
 ];
 
-/// The handlers `DcXMLParser` tees an XML document's events to, one for each Dublin Core
+/// The `ElementMetadataHandler`s a parser tees an XML document's events to, one for each
 /// element it reads.
 #[derive(Debug)]
-pub(crate) struct DublinCore(Vec<ElementMetadata>);
+pub(crate) struct ElementHandlers(Vec<ElementMetadata>);
 
-impl DublinCore {
-    pub(crate) fn new() -> Self {
+impl ElementHandlers {
+    /// One handler for each of the `elements` of `namespace`, as `(element, name, values)`.
+    pub(crate) fn new(
+        namespace: &'static str,
+        elements: &[(&'static str, &'static str, Values)],
+    ) -> Self {
         Self(
-            DC_XML_ELEMENTS
+            elements
                 .iter()
-                .map(|&(element, name, values)| ElementMetadata::dublin_core(element, name, values))
+                .map(|&(element, name, values)| {
+                    ElementMetadata::new(namespace, element, name, values)
+                })
                 .collect(),
         )
     }
 
-    /// The handlers without the one for `dc:date`, for a reader that names dates itself.
-    pub(crate) fn without_date() -> Self {
-        let mut dublin_core = Self::new();
+    /// The handlers of `DcXMLParser`, one for each Dublin Core element it reads.
+    pub(crate) fn dublin_core() -> Self {
+        Self::new(DUBLIN_CORE_NS, &DC_XML_ELEMENTS)
+    }
+
+    /// The Dublin Core handlers without the one for `dc:date`, for a reader that names dates
+    /// itself.
+    pub(crate) fn dublin_core_without_date() -> Self {
+        let mut dublin_core = Self::dublin_core();
         dublin_core.0.retain(|element| element.local_name != "date");
         dublin_core
     }

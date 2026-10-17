@@ -1820,13 +1820,8 @@ pub(crate) fn documents_with(
         }
         let detected = formats::Detected::detect(Source::File(path), &input)
             .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
-        let base = detected
-            .media_type
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim();
-        if !parser.media_types().contains(&base) {
+        let routed = formats::parser_for(&detected.media_type);
+        if !routed.is_some_and(|routed| routed.media_types() == parser.media_types()) {
             continue;
         }
         if parser
