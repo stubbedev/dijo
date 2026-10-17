@@ -53,6 +53,17 @@ pub(crate) trait SaxHandler {
         self.start_element(tag.namespace, tag.local_name, tag.attributes)
     }
 
+    /// The end of an element with its qualified name, which SAX also reports. A handler that
+    /// needs no more than [`SaxHandler::end_element`] leaves this to call it.
+    fn end_tag(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        _qualified_name: &str,
+    ) -> Result<(), Failure> {
+        self.end_element(namespace, local_name)
+    }
+
     /// A document type declaration, which Tika's parsers skip and POI's refuse.
     fn document_type(&mut self) -> Result<(), Failure> {
         Ok(())
@@ -102,7 +113,9 @@ pub(crate) fn parse_sax(
                     declarations: &declarations,
                 })
             }
-            Event::End(name) => handler.end_element(name.namespace(), name.local_name()),
+            Event::End(name) => {
+                handler.end_tag(name.namespace(), name.local_name(), name.qualified_name())
+            }
             Event::Text(text, TextKind::Data) => {
                 for_each_sax_piece(text, |piece| handler.characters(piece))
             }

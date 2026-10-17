@@ -20,6 +20,9 @@ const PREAMBLE_GARBAGE_MAX_SIZE: usize = 4096;
 const DEFLATE64: u16 = 9;
 const XZ: u16 = 95;
 const ZSTD: [u16; 2] = [93, 20];
+const UNSHRINKING: u16 = 1;
+const IMPLODING: u16 = 6;
+const BZIP2: u16 = 12;
 /// Where an entry whose data the input cuts short ends: nowhere a next entry can start.
 const TRUNCATED: usize = usize::MAX;
 
@@ -28,6 +31,12 @@ const TRUNCATED: usize = usize::MAX;
 pub(crate) enum Failure {
     /// An entry with a data descriptor the stream cannot read past as configured.
     DataDescriptor,
+    /// An encrypted entry, or one compressed with a method commons-compress has no
+    /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`.
+    Unsupported,
+    /// An entry compressed with this method, which commons-compress decompresses and the port
+    /// does not.
+    Method(u16),
     /// Anything else the stream throws.
     Io,
 }
@@ -186,7 +195,7 @@ impl<'a> ZipStream<'a> {
     /// data descriptor its method cannot be read past with.
     fn check(&self, current: &Current) -> Result<(), Failure> {
         if current.flags & 0x0001 != 0 {
-            return Err(Failure::Io);
+            return Err(Failure::Unsupported);
         }
         let method = current.method;
         if current.has_data_descriptor()
@@ -230,7 +239,7 @@ impl<'a> ZipStream<'a> {
                 }
                 Ok(content)
             }
-            _ => Err(Failure::Io),
+            method => Err(unread(method)),
         }
     }
 
@@ -259,7 +268,7 @@ impl<'a> ZipStream<'a> {
                     None => Ok(TRUNCATED),
                 }
             }
-            _ => Err(Failure::Io),
+            method => Err(unread(method)),
         }
     }
 
@@ -339,6 +348,19 @@ impl<'a> ZipStream<'a> {
             TRUNCATED => Err(Failure::Io),
             end => Ok(end),
         }
+    }
+}
+
+/// Why the data of an entry compressed with `method`, neither stored nor deflated, is not
+/// read: the port does not decompress the methods commons-compress's `ZipUtil.supportsMethodOf`
+/// accepts, and commons-compress refuses the others.
+fn unread(method: u16) -> Failure {
+    let decompressed =
+        [UNSHRINKING, IMPLODING, DEFLATE64, BZIP2, XZ].contains(&method) || ZSTD.contains(&method);
+    if decompressed {
+        Failure::Method(method)
+    } else {
+        Failure::Unsupported
     }
 }
 

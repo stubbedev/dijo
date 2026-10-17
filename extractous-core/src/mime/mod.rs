@@ -28,6 +28,7 @@ pub(crate) mod uri;
 pub(crate) use crate::ole2::tests::compound as compound_document;
 pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
+pub(crate) use detectors::zip::{IworkDocument, IWORK_CONTENT_ENTRIES};
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};

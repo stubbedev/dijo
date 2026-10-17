@@ -38,6 +38,7 @@ mod hwpx;
 mod idml;
 mod image;
 mod iwork;
+mod iwork_package;
 mod jdk_zip;
 mod list_numbering;
 mod mail;
@@ -277,6 +278,7 @@ static PARSERS: &[&dyn Parser] = &[
     &hwpx::HwpxParser,
     &idml::IdmlParser,
     &iwork::IworkArchiveParser,
+    &iwork_package::IworkPackageParser,
     &mail::EmlxParser,
     &metafile::EmfParser,
     &metafile::WmfParser,

@@ -117,20 +117,44 @@ fn root_element(content: &[u8]) -> Option<(String, String)> {
 }
 
 /// `IWorkPackageParser.IWORK_CONTENT_ENTRIES`, a `HashSet`.
-const IWORK_CONTENT_ENTRIES: [&str; 3] = ["index.apxl", "index.xml", "presentation.apxl"];
+pub(crate) const IWORK_CONTENT_ENTRIES: [&str; 3] =
+    ["index.apxl", "index.xml", "presentation.apxl"];
 
-/// `IWORKDocumentType.detectType`: the iWork 2008 document a content entry's root names.
-fn iwork_type(content: &[u8]) -> Option<MediaType> {
-    let (namespace, local) = root_element(content)?;
-    let kind = match (namespace.as_str(), local.as_str()) {
-        ("http://developer.apple.com/namespaces/keynote2", "presentation") => {
-            "application/vnd.apple.keynote"
+/// An iWork 2008 document, as `IWORKDocumentType` names the ones its content entry's root
+/// element tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IworkDocument {
+    Keynote,
+    Numbers,
+    Pages,
+}
+
+impl IworkDocument {
+    /// `IWORKDocumentType.detectType`: the document a content entry's root names.
+    pub(crate) fn of(content: &[u8]) -> Option<Self> {
+        let (namespace, local) = root_element(content)?;
+        match (namespace.as_str(), local.as_str()) {
+            ("http://developer.apple.com/namespaces/keynote2", "presentation") => {
+                Some(Self::Keynote)
+            }
+            ("http://developer.apple.com/namespaces/ls", "document") => Some(Self::Numbers),
+            ("http://developer.apple.com/namespaces/sl", "document") => Some(Self::Pages),
+            _ => None,
         }
-        ("http://developer.apple.com/namespaces/ls", "document") => "application/vnd.apple.numbers",
-        ("http://developer.apple.com/namespaces/sl", "document") => "application/vnd.apple.pages",
-        _ => return None,
-    };
-    Some(MediaType::named(kind))
+    }
+
+    pub(crate) fn media_type(self) -> &'static str {
+        match self {
+            Self::Keynote => "application/vnd.apple.keynote",
+            Self::Numbers => "application/vnd.apple.numbers",
+            Self::Pages => "application/vnd.apple.pages",
+        }
+    }
+}
+
+/// The media type of the iWork 2008 document a content entry's root names.
+fn iwork_type(content: &[u8]) -> Option<MediaType> {
+    IworkDocument::of(content).map(|document| MediaType::named(document.media_type()))
 }
 
 /// `IWork18DocumentType.detectIfPossible`.
