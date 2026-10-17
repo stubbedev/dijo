@@ -9,6 +9,7 @@ mod archive;
 mod auto_detect_reader;
 mod chm;
 mod cms;
+mod compound;
 mod crypt;
 pub(crate) mod data_format;
 mod dbf;
@@ -17,6 +18,7 @@ mod dif;
 mod djvu;
 mod doc;
 mod docx;
+mod dwg;
 mod element_metadata;
 pub(crate) mod embedded;
 mod empty;
@@ -39,6 +41,7 @@ mod mail;
 mod markdown;
 pub(crate) mod media;
 pub(crate) mod metadata;
+mod metafile;
 mod mif;
 mod mobi;
 mod ms_owner;
@@ -67,6 +70,7 @@ mod subtitle;
 mod text;
 mod tnef;
 mod translation;
+mod vsdx;
 mod warc;
 mod wordperfect;
 pub(crate) mod xhtml;
@@ -75,6 +79,7 @@ mod xlsx;
 pub(crate) mod xml;
 mod xml_2003;
 pub(crate) mod xmp;
+mod xps;
 mod zip_file;
 
 use std::borrow::Cow;
@@ -224,9 +229,11 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::ZipParser,
     &chm::ChmParser,
     &cms::CmsParser,
+    &compound::CompoundDocumentParser,
     &dc_xml::DcXmlParser,
     &doc::DocParser,
     &docx::DocxParser,
+    &dwg::DwgParser,
     &feed::FeedParser,
     &font::AdobeFontMetricParser,
     &font::TrueTypeParser,
@@ -236,12 +243,15 @@ static PARSERS: &[&dyn Parser] = &[
     &image::HeifParser,
     &image::ImageParser,
     &image::JpegParser,
+    &image::RawTiffParser,
     &image::RecognizedImageParser,
     &image::TiffParser,
     &hwpx::HwpxParser,
     &idml::IdmlParser,
     &iwork::IworkArchiveParser,
     &mail::EmlxParser,
+    &metafile::EmfParser,
+    &metafile::WmfParser,
     &mail::MboxParser,
     &markdown::MarkdownParser,
     &media::FlacParser,
@@ -293,6 +303,9 @@ static PARSERS: &[&dyn Parser] = &[
     &xlsx::XlsxParser,
     &xml_2003::SpreadsheetMlParser,
     &xml_2003::WordMlParser,
+    &xlsx::XlsbParser,
+    &vsdx::VsdxParser,
+    &xps::XpsParser,
     &empty::EmptyParser,
 ];
 

@@ -1,0 +1,111 @@
+use std::path::{Path, PathBuf};
+
+use super::*;
+use crate::formats::ooxml::testing::{package_with, relationship};
+use crate::formats::parity::{
+    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+};
+
+const SEQUENCE_TYPE: &str = "application/vnd.ms-package.xps-fixeddocumentsequence+xml";
+const DOCUMENT_TYPE: &str = "application/vnd.ms-package.xps-fixeddocument+xml";
+const PAGE_TYPE: &str = "application/vnd.ms-package.xps-fixedpage+xml";
+const XPS_NAMESPACE: &str = "http://schemas.microsoft.com/xps/2005/06";
+
+fn paths(files: &[PathBuf]) -> Vec<&Path> {
+    files.iter().map(PathBuf::as_path).collect()
+}
+
+/// An XPS package of one document of `pages`, each the content of a fixed page, which lists
+/// `missing` pages more that the package lacks.
+fn xps(pages: &[&str], missing: usize) -> Vec<u8> {
+    let sequence = format!(
+        "<FixedDocumentSequence xmlns=\"{XPS_NAMESPACE}\">\
+         <DocumentReference Source=\"/Documents/1/FixedDocument.fdoc\"/></FixedDocumentSequence>"
+    );
+    let references: String = (1..=pages.len() + missing)
+        .map(|page| format!("<PageContent Source=\"Pages/{page}.fpage\"/>"))
+        .collect();
+    let document = format!("<FixedDocument xmlns=\"{XPS_NAMESPACE}\">{references}</FixedDocument>");
+    let pages: Vec<(String, String)> = pages
+        .iter()
+        .enumerate()
+        .map(|(index, content)| {
+            (
+                format!("Documents/1/Pages/{}.fpage", index + 1),
+                format!(
+                    "<FixedPage xmlns=\"{XPS_NAMESPACE}\" Width=\"816\" Height=\"1056\">{content}</FixedPage>"
+                ),
+            )
+        })
+        .collect();
+    let mut parts: Vec<(&str, &str, &[u8])> = vec![
+        ("FixedDocSeq.fdseq", SEQUENCE_TYPE, sequence.as_bytes()),
+        (
+            "Documents/1/FixedDocument.fdoc",
+            DOCUMENT_TYPE,
+            document.as_bytes(),
+        ),
+    ];
+    for (name, page) in &pages {
+        parts.push((name, PAGE_TYPE, page.as_bytes()));
+    }
+    package_with(
+        &relationship("rId1", XPS_DOCUMENT, "/FixedDocSeq.fdseq"),
+        &parts,
+    )
+}
+
+fn glyphs(text: &str, x: &str, y: &str, indices: &str) -> String {
+    format!(
+        "<Glyphs OriginX=\"{x}\" OriginY=\"{y}\" FontRenderingEmSize=\"12\" \
+         UnicodeString=\"{text}\" Indices=\"{indices}\"/>"
+    )
+}
+
+#[test]
+fn extracts_xps_documents_as_tikas_path_does() {
+    let scratch = Scratch::new("xps");
+    let first = [
+        glyphs("Hello", "10", "20", ""),
+        glyphs("world", "60", "21", ""),
+        glyphs("Next line", "10", "60", ";,50;,50;,250;,50"),
+        "<Canvas Clip=\"M 0,0 L 10,10\">".to_owned(),
+        glyphs("In a canvas", "10", "90", ""),
+        glyphs("\u{5e9}\u{5dc}\u{5d5}\u{5dd}", "300", "90", ""),
+        "</Canvas>".to_owned(),
+        "<Path FixedPage.NavigateUri=\"https://example.com/\" Data=\"M 0,0\"/>".to_owned(),
+        glyphs("Above", "10", "5", ""),
+    ]
+    .concat();
+    let second = [
+        glyphs("Right to left", "200", "20", "").replace("/>", " BidiLevel=\"1\"/>"),
+        glyphs("Second page", "10", "40", ""),
+        glyphs("No origin", "", "", ""),
+    ]
+    .concat();
+    let read = [
+        scratch.write("pages.xps", &xps(&[&first, &second], 0)),
+        scratch.write("empty.xps", &xps(&[], 0)),
+    ];
+    let failing = [
+        scratch.write(
+            "bad-size.xps",
+            &xps(&[&glyphs("x", "1", "1", "").replace("12", "big")], 0),
+        ),
+        scratch.write("missing-page.xps", &xps(&[&first], 1)),
+    ];
+    let (parsed, deferred) = documents(&XpsParser, &[scratch.directory()]);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
+    assert_same_as_tika(&paths(&read), XpsParser.tika_name());
+    assert_fails_as_tika(&paths(&failing));
+}
+
+#[test]
+#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+fn extracts_tikas_test_xps_documents_as_tikas_path_does() {
+    let (parsed, deferred) = documents(&XpsParser, &[&conformance_corpus()]);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    assert_eq!(parsed.len(), 6, "{parsed:?}");
+    assert_same_as_tika(&paths(&parsed), XpsParser.tika_name());
+}

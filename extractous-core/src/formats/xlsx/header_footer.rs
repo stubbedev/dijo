@@ -52,7 +52,7 @@ fn find_code(text: &str, code: &str) -> Option<usize> {
 /// `HeaderFooterHelper.getParts`: the left, centre and right sections, each from its code to
 /// the next code after it, found from the end. An escaped `&&` followed by `L`, `C` or `R` is
 /// text, where POI takes it for a code.
-fn sections(text: &str) -> [&str; 3] {
+pub(crate) fn sections(text: &str) -> [&str; 3] {
     let mut sections = [""; 3];
     let mut text = text;
     loop {

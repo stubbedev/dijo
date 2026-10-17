@@ -276,7 +276,7 @@ impl<'a> Presentation<'a> {
                 if is_anchor(relationship) {
                     continue;
                 }
-                extractor::check_embedded(&self.package, self.config, source, relationship, false)?;
+                extractor::check_embedded(&self.package, self.config, source, relationship)?;
             }
         }
         let properties = Properties::read(&self.package)?;
@@ -370,6 +370,7 @@ impl<'a> Presentation<'a> {
         extractor::write_embedded_parts(
             &self.package,
             &self.embedding_parts(),
+            &extractor::DescribedParts::new(),
             xhtml,
             &|part, metadata| {
                 if let Some(pages) = pages.get(&part) {
