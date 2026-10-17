@@ -44,7 +44,8 @@ pub enum NameSource {
     UnicodeExtraField,
 }
 
-/// An entry of the central directory, as `ZipArchiveEntry`.
+/// An entry of the central directory, or of a local header read front to back, as
+/// `ZipArchiveEntry`.
 #[derive(Debug, Clone)]
 pub struct ZipEntry {
     pub name: String,
@@ -52,15 +53,15 @@ pub struct ZipEntry {
     pub name_source: NameSource,
     pub comment: String,
     pub version_made_by: u16,
-    flags: u16,
+    pub(super) flags: u16,
     pub method: u16,
-    dos_time: i64,
+    pub(super) dos_time: i64,
     pub crc: i64,
     pub compressed_size: i64,
     pub size: i64,
-    external_attributes: i64,
-    times: Times,
-    data_offset: i64,
+    pub(super) external_attributes: i64,
+    pub(super) times: Times,
+    pub(super) data_offset: i64,
 }
 
 impl ZipEntry {

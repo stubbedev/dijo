@@ -18,7 +18,7 @@ pub use seven_z::SevenZParser;
 pub use zip::ZipParser;
 
 use crate::compress::ArchiveFile;
-use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
+use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
@@ -84,6 +84,17 @@ fn entry_metadata(file: &ArchiveFile, xhtml: &mut Xhtml) -> Result<TikaMetadata,
         write_entry_div(xhtml, &file.name)?;
     }
     Ok(metadata)
+}
+
+/// An entry whose data cannot be read whole, for `reason`: recorded as a failure of the archive
+/// in the form Tika's `ZipParser` records an unreadable entry in.
+fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
+    record_stream_exception(
+        metadata,
+        &format!(
+            "org.apache.tika.exception.TikaException: Can't read archive stream ({name}): {reason}"
+        ),
+    );
 }
 
 /// The loop of `PackageParser` and `SevenZParser` over the files but the directories, each

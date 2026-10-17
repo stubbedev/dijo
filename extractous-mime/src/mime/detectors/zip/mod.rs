@@ -8,9 +8,9 @@ mod opc;
 
 use std::collections::HashSet;
 
-use crate::compress::zip::file::ZipFile;
+use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
-use crate::compress::zip::stream::{Failure, StreamEntry, ZipStream};
+use crate::compress::zip::stream::{Failure, ZipStream};
 use crate::compress::zip::Content;
 use crate::mime::archive::{self, Archive};
 use crate::mime::media_type::MediaType;
@@ -488,7 +488,7 @@ impl Streaming {
     /// The detectors' `streamingDetectUpdate` for one entry, in order.
     fn update(
         &mut self,
-        entry: &StreamEntry,
+        entry: &ZipEntry,
         stream: &ZipStream,
     ) -> Result<Option<MediaType>, Failure> {
         let name = entry.name.as_str();

@@ -19,12 +19,12 @@ mod unpack;
 use extract::Extracted;
 use headers::{Name, Unopened};
 
-use super::entry_metadata;
 use super::nesting::Scan;
+use super::{entry_metadata, record_unreadable};
 use crate::compress::{ArchiveFile, MAX_DECODED};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::embedded::{record_stream_exception, Wrapping};
+use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Deferral, Opened, Parser, Prepared};
 
@@ -86,14 +86,7 @@ impl Parser for RarParser {
                         Wrapping::UnderlyingPackageEntry,
                         Opened::Alone,
                     )?,
-                    Some(reason) => record_stream_exception(
-                        xhtml.metadata_mut(),
-                        &format!(
-                            "org.apache.tika.exception.TikaException: Can't read archive stream \
-                             ({}): {reason}",
-                            file.name
-                        ),
-                    ),
+                    Some(reason) => record_unreadable(xhtml.metadata_mut(), &file.name, reason),
                 }
             }
             Ok(())
