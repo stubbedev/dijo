@@ -1,7 +1,8 @@
 //! dBase tables, as Tika's `DBFParser` reads them: the header's version as the type and its date
 //! as the modification date, the columns' names as a table head, every record but a deleted one
-//! as a row, and the text decoded in the charset detected from the first ten records' character
-//! data.
+//! as a row, and the text decoded in the code page the header's language driver names, or,
+//! where it names none, the charset detected from the first ten records' character data. Tika's
+//! always detects (#118).
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -24,6 +25,39 @@ const END_OF_HEADER: u8 = 13;
 const SECONDS_PER_DAY: i64 = 86_400;
 /// The mark that begins a deleted record.
 const DELETED: u8 = b'*';
+
+/// The JDK charset of the code page a header's language driver ID names, as dBase, FoxPro and
+/// Clipper number them.
+fn code_page(driver: u8) -> Option<&'static str> {
+    Some(match driver {
+        0x01 | 0x09 | 0x0B | 0x0D | 0x0F | 0x11 | 0x15 | 0x18 | 0x19 | 0x1B => "IBM437",
+        0x02 | 0x0A | 0x0E | 0x10 | 0x12 | 0x14 | 0x16 | 0x1A | 0x1D | 0x25 | 0x37 => "IBM850",
+        0x03 | 0x57 | 0x58 | 0x59 => "windows-1252",
+        0x04 => "x-MacRoman",
+        0x08 | 0x17 | 0x66 => "IBM865",
+        0x13 | 0x7B => "windows-31j",
+        0x1C | 0x6C => "IBM863",
+        0x1F | 0x22 | 0x23 | 0x40 | 0x64 | 0x87 => "IBM852",
+        0x24 => "IBM860",
+        0x26 | 0x65 => "IBM866",
+        0x4D | 0x7A => "GBK",
+        0x4E | 0x79 => "x-windows-949",
+        0x4F | 0x78 => "x-windows-950",
+        0x50 | 0x7C => "x-windows-874",
+        0x67 => "IBM861",
+        0x6A | 0x86 => "x-IBM737",
+        0x6B | 0x88 => "IBM857",
+        0x96 => "x-MacCyrillic",
+        0x97 => "x-MacCentralEurope",
+        0x98 => "x-MacGreek",
+        0xC8 => "windows-1250",
+        0xC9 => "windows-1251",
+        0xCA => "windows-1254",
+        0xCB => "windows-1253",
+        0xCC => "windows-1257",
+        _ => return None,
+    })
+}
 
 /// `DBFReader.Version`: the table's format and type, by its first byte.
 fn version(first: u8) -> Option<(&'static str, &'static str)> {
@@ -51,7 +85,10 @@ enum Kind {
     Character,
     /// A date, `yyyyMMdd`, written `MM/dd/yyyy`.
     Date,
-    /// A Visual FoxPro date and time.
+    /// A Visual FoxPro date and time: the Julian day number and the milliseconds since midnight,
+    /// little-endian, written `yyyy-MM-ddTHH:mm:ss`, a wall-clock time of no zone. Tika's writes
+    /// the day alone, from a lenient Julian-Gregorian calendar, in the JVM's time zone, as if it
+    /// were UTC (#118).
     DateTime,
     /// Anything else, as ASCII.
     Other,
@@ -84,6 +121,8 @@ struct Column {
 struct Header {
     content_type: String,
     modified: Option<i64>,
+    /// The charset of the code page the language driver names, if it names one.
+    code_page: Option<Charset>,
     columns: Vec<Column>,
 }
 
@@ -123,18 +162,6 @@ impl Parser for DbfParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let table = table(input).map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
-        if table
-            .header
-            .columns
-            .iter()
-            .any(|column| column.kind == Kind::DateTime)
-        {
-            return Err(Declined::Deferred(
-                "a date and time column, which Tika writes from a lenient calendar in the JVM's \
-                 time zone"
-                    .to_owned(),
-            ));
-        }
         Ok(Box::new(move |xhtml| write(&table, xhtml)))
     }
 }
@@ -217,7 +244,12 @@ fn header(stream: &mut Stream<'_>) -> Result<Header, String> {
     stream.number::<4>()?;
     let header_length = i16::from_le_bytes(stream.number()?);
     let record_length = i16::from_le_bytes(stream.number()?);
-    stream.take(20)?;
+    let reserved = stream.take(20)?;
+    let driver = reserved[29 - 12];
+    let code_page = code_page(driver).map(|name| {
+        Charset::for_name(name)
+            .unwrap_or_else(|| panic!("the JDK has the charset {name} of code page mark {driver}"))
+    });
     let mut columns = Vec::new();
     let mut accounted = 0;
     loop {
@@ -251,6 +283,7 @@ fn header(stream: &mut Stream<'_>) -> Result<Header, String> {
     Ok(Header {
         content_type,
         modified,
+        code_page,
         columns,
     })
 }
@@ -293,9 +326,13 @@ fn table(input: &[u8]) -> Result<Table<'_>, String> {
     })
 }
 
-/// `getCharset`: the charset detected from the character data of the first rows, ISO-8859-1
-/// where there is too little of it, and the charset it is decoded as.
+/// The code page the header names, or, as `getCharset` gives it, the charset detected from the
+/// character data of the first rows, ISO-8859-1 where there is too little of it; and the charset
+/// it is decoded as.
 fn charsets(table: &Table<'_>) -> (Charset, Charset) {
+    if let Some(code_page) = table.header.code_page {
+        return (code_page, code_page);
+    }
     let mut data = Vec::new();
     for row in table.rows.iter().take(ROWS_FOR_DETECTION) {
         for (cell, column) in row.iter().zip(&table.header.columns) {
@@ -329,6 +366,30 @@ fn date(cell: &[u8]) -> String {
         return String::new();
     }
     format!("{month}/{day}/{year}")
+}
+
+/// The Julian day number of 1970-01-01.
+const JULIAN_DAY_OF_EPOCH: i64 = 2_440_588;
+
+/// A Visual FoxPro date and time, `yyyy-MM-ddTHH:mm:ss` on the proleptic Gregorian calendar, or
+/// nothing for one that is blank or out of range.
+fn date_time(cell: &[u8]) -> String {
+    let Some((day, time)) = cell.get(..8).map(|bytes| bytes.split_at(4)) else {
+        return String::new();
+    };
+    let day = i64::from(i32::from_le_bytes(day.try_into().expect("four bytes")));
+    let millis = i64::from(i32::from_le_bytes(time.try_into().expect("four bytes")));
+    if day <= 0 || !(0..SECONDS_PER_DAY * 1000).contains(&millis) {
+        return String::new();
+    }
+    let (year, month, day) = civil::civil_from_days(day - JULIAN_DAY_OF_EPOCH);
+    let seconds = millis / 1000;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
 }
 
 fn decode(charset: Charset, bytes: &[u8]) -> Result<String, Failure> {
@@ -377,9 +438,7 @@ fn write(table: &Table<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
                 Kind::Character => java::trim(&decode(decode_as, cell)?).to_owned(),
                 Kind::Date => date(cell),
                 Kind::Other => java::trim(&java::ascii(cell)).to_owned(),
-                Kind::DateTime => {
-                    unreachable!("a table with a date and time column is left to Tika")
-                }
+                Kind::DateTime => date_time(cell),
             };
             xhtml.start_element("td")?;
             xhtml.characters(&text)?;
@@ -403,7 +462,8 @@ mod tests {
     use super::*;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_rewriting,
+        conformance_corpus, documents, ComparedMetadata, Scratch,
     };
 
     /// A table of the `columns`, each a name, type and length, and the `records`, each a deletion
@@ -493,18 +553,93 @@ mod tests {
             scratch.write("tidlig.dbf", &early),
             scratch.write("type.dbf", &table(0x03, &[("X", b'Q', 4)], &[])),
         ];
-        let deferred = scratch.write(
+        let timed = scratch.write(
             "tid.dbf",
-            &table(0x30, &[("TID", b'T', 8)], &[(b' ', vec![&[0; 8][..]])]),
+            &table(
+                0x30,
+                &[("NAVN", b'C', 10), ("TID", b'T', 8)],
+                &[
+                    (
+                        b' ',
+                        vec![&b"Morgen"[..], &date_time_cell(2_460_380, 30_645_000)],
+                    ),
+                    (b' ', vec![&b"Midnat"[..], &date_time_cell(2_299_161, 0)]),
+                ],
+            ),
         );
         let (parsed, left) = documents(&DbfParser, &[scratch.directory()]);
-        assert_eq!(left, [deferred]);
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
+        assert!(left.is_empty(), "{left:?}");
+        assert_eq!(parsed.len(), read.len() + failing.len() + 1, "{parsed:?}");
+        assert_same_as_tika_rewriting(&[timed.as_path()], DbfParser.tika_name(), as_tika_times);
         assert_same_as_tika(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             DbfParser.tika_name(),
         );
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    /// A Visual FoxPro date and time cell of the Julian day number `day` and the milliseconds
+    /// since midnight `millis`.
+    fn date_time_cell(day: i32, millis: i32) -> Vec<u8> {
+        [day.to_le_bytes(), millis.to_le_bytes()].concat()
+    }
+
+    /// The native text with each date and time of a cell, from 1582-10-15 on, as Tika's path
+    /// writes it: the day's midnight in UTC, without its time, written in the JVM's time zone and
+    /// marked as UTC (#118).
+    #[cfg(feature = "tika")]
+    fn as_tika_times(text: &mut String, _: &mut ComparedMetadata, _: &ComparedMetadata) {
+        let zone = crate::java::time::TimeZone::java_default().unwrap();
+        let time = regex::Regex::new(r"(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(Z?)").unwrap();
+        *text = time
+            .replace_all(text, |found: &regex::Captures| {
+                if &found[4] == "Z" {
+                    return found[0].to_owned();
+                }
+                let [year, month, day] = [1, 2, 3].map(|group| found[group].parse().unwrap());
+                let midnight = civil::days_from_civil(year, month, day) * SECONDS_PER_DAY * 1000;
+                format_instant(midnight + zone.offset_at_utc(midnight))
+            })
+            .into_owned();
+    }
+
+    #[test]
+    fn writes_date_and_time_cells_as_written() {
+        assert_eq!(
+            date_time(&date_time_cell(2_460_380, 30_645_999)),
+            "2024-03-10T08:30:45"
+        );
+        assert_eq!(
+            date_time(&date_time_cell(2_299_161, 0)),
+            "1582-10-15T00:00:00"
+        );
+        assert_eq!(date_time(&date_time_cell(0, 0)), "");
+        assert_eq!(date_time(&date_time_cell(2_460_380, 86_400_000)), "");
+        assert_eq!(date_time(b"        "), "");
+        assert_eq!(date_time(&[1, 2, 3]), "");
+    }
+
+    #[test]
+    fn decodes_text_in_the_code_page_the_header_names() {
+        let columns = [("NAVN", b'C', 30)];
+        let records = [
+            (b' ', vec![&b"S\x9brensen fra \x8frhus"[..]]),
+            (b' ', vec![&b"\x92bler og \x9dstersvamp"[..]]),
+        ];
+        let mut file = table(0x03, &columns, &records);
+        file[29] = 0x66;
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&file)
+            .unwrap();
+        assert_eq!(metadata["Content-Encoding"], ["IBM865"]);
+        assert!(text.contains("Sørensen fra Århus"), "{text}");
+        assert!(text.contains("Æbler og Østersvamp"), "{text}");
+        assert_eq!(code_page(0), None);
+        for driver in 0..=u8::MAX {
+            if let Some(name) = code_page(driver) {
+                assert!(Charset::for_name(name).is_some(), "{name}");
+            }
+        }
     }
 
     #[test]

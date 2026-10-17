@@ -290,8 +290,6 @@ impl SaxHandler for Xliff<'_, '_> {
         match local_name {
             "file" => {
                 self.files += 1;
-                let source_language = attribute_named(attributes, "source-language");
-                add_present(self.xhtml.metadata_mut(), "original", source_language);
                 self.xhtml.start_element("div")?;
                 self.xhtml.start_element("h1")?;
                 if let Some(original) = attribute_named(attributes, "original") {
@@ -299,7 +297,11 @@ impl SaxHandler for Xliff<'_, '_> {
                 }
                 self.xhtml.end_element("h1")?;
                 let metadata = self.xhtml.metadata_mut();
-                add_present(metadata, "source-language", source_language);
+                add_present(
+                    metadata,
+                    "source-language",
+                    attribute_named(attributes, "source-language"),
+                );
                 add_present(
                     metadata,
                     "target-language",
@@ -423,13 +425,18 @@ impl Parser for XlzParser {
 }
 
 #[cfg(all(test, feature = "tika"))]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Departure, Departures, Scratch,
     };
+
+    /// Tika's XLIFF handler stores each file's source language as `original` too (#118).
+    pub(crate) const SOURCE_LANGUAGE_AS_ORIGINAL: Departures =
+        &[Departure::Unset("original", "#118")];
 
     const TMX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <tmx version="1.4">
@@ -484,9 +491,10 @@ mod tests {
         assert_eq!(deferred, [spaced]);
         assert_eq!(parsed.len(), 2, "{parsed:?}");
         assert_same_as_tika(&[tmx.as_path()], "org.apache.tika.parser.tmx.TMXParser");
-        assert_same_as_tika(
+        assert_same_as_tika_departing(
             &[xliff.as_path()],
             "org.apache.tika.parser.xliff.XLIFF12Parser",
+            SOURCE_LANGUAGE_AS_ORIGINAL,
         );
         assert_fails_as_tika(&[broken_tmx.as_path(), broken_xliff.as_path()]);
     }
@@ -527,7 +535,11 @@ mod tests {
         let (parsed, deferred) = documents(&XlzParser, &[scratch.directory()]);
         assert_eq!(deferred, [spaced, empty]);
         assert_eq!(parsed, std::slice::from_ref(&archive));
-        assert_same_as_tika(&[archive.as_path()], XlzParser.tika_name());
+        assert_same_as_tika_departing(
+            &[archive.as_path()],
+            XlzParser.tika_name(),
+            SOURCE_LANGUAGE_AS_ORIGINAL,
+        );
     }
 
     #[test]
@@ -538,7 +550,16 @@ mod tests {
             assert!(deferred.is_empty(), "{deferred:?}");
             assert_eq!(parsed.len(), 1, "{parsed:?}");
             let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-            assert_same_as_tika(&paths, parser.tika_name());
+            assert_same_as_tika_departing(&paths, parser.tika_name(), SOURCE_LANGUAGE_AS_ORIGINAL);
         }
+    }
+
+    #[test]
+    fn keeps_the_source_language_out_of_original() {
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(XLIFF.as_bytes())
+            .unwrap();
+        assert!(!metadata.contains_key("original"), "{metadata:?}");
+        assert_eq!(metadata["source-language"], ["da"]);
     }
 }

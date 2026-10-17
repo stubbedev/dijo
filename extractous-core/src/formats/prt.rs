@@ -1,6 +1,7 @@
 //! CADKEY part files, as Tika's `PRTParser` reads them: the date and description of the header,
 //! and the note texts and view names it finds by their markers and the five bytes before them,
-//! decoded as code page 437.
+//! decoded as code page 437. A description that fills its field keeps its last byte, which
+//! Tika's drops, and an empty text is skipped, where Tika's fails on it (#118).
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -107,18 +108,10 @@ impl Last5 {
     }
 }
 
-/// `extractText`: the bytes up to the first zero when `trim`, else all but the last, as code
-/// page 437, with φ read as Ø.
-fn text(data: &[u8], trim: bool) -> String {
-    let length = if trim {
-        data.iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(data.len() - 1)
-    } else {
-        data.len() - 1
-    };
+/// `extractText`: `data` as code page 437, with φ read as Ø.
+fn text(data: &[u8]) -> String {
     Charset::named("cp437")
-        .decode(&data[..length])
+        .decode(data)
         .expect("the JDK decoders decode code page 437")
         .replace('\u{3C6}', "\u{D8}")
 }
@@ -142,7 +135,8 @@ fn parse(stream: &mut Stream<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
         metadata.set("dcterms:modified", formatted);
     }
     metadata.set("Content-Type", "application/x-prt");
-    let description = text(stream.read_fully(500)?, true);
+    let field = stream.read_fully(500)?;
+    let description = text(&field[..memchr::memchr(0, field).unwrap_or(field.len())]);
     if !description.is_empty() {
         metadata.set("dc:description", description);
     }
@@ -200,20 +194,14 @@ fn view_name(stream: &mut Stream<'_>, xhtml: &mut Xhtml, last: &mut Last5) -> Re
     Ok(())
 }
 
-/// `handleText`: a paragraph of `length` bytes that end in a zero; an empty one fails as its
-/// index does.
+/// `handleText`: a paragraph of `length` bytes that end in a zero.
 fn paragraph(stream: &mut Stream<'_>, length: usize, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let data = stream.read_fully(length)?;
-    let Some(&last) = data.last() else {
-        return Err(Failure::Malformed(
-            "ArrayIndexOutOfBoundsException: Index -1 out of bounds for length 0".into(),
-        ));
-    };
-    if last != 0 {
+    let Some((0, text_bytes)) = data.split_last() else {
         return Ok(());
-    }
+    };
     xhtml.start_element("p")?;
-    xhtml.characters(&text(data, false))?;
+    xhtml.characters(&text(text_bytes))?;
     xhtml.end_element("p")?;
     Ok(())
 }
@@ -224,7 +212,8 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Departure, Scratch,
     };
 
     fn part(date: &[u8; 12], description: &[u8], body: &[u8]) -> Vec<u8> {
@@ -278,23 +267,38 @@ mod tests {
         let failing = [
             scratch.write("cut.prt", &part(b"200803201052", b"Bolt", &[])[..300]),
             scratch.write("cut-note.prt", &part(b"200803201052", b"Bolt", &body[..40])),
-            scratch.write(
-                "empty-note.prt",
-                &part(
-                    b"200803201052",
-                    b"Bolt",
-                    &[note(b"")[..18].to_vec(), vec![0, 0]].concat(),
-                ),
-            ),
         ];
+        let full = scratch.write("full.prt", &part(b"200803201052", &[b'M'; 500], &body));
         let (parsed, deferred) = documents(&PrtParser, &[scratch.directory()]);
         assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
+        assert_eq!(parsed.len(), read.len() + failing.len() + 1, "{parsed:?}");
         assert_same_as_tika(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             PrtParser.tika_name(),
         );
+        assert_same_as_tika_departing(
+            &[full.as_path()],
+            PrtParser.tika_name(),
+            &[Departure::Values("dc:description", "#118")],
+        );
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn keeps_the_whole_of_a_description_that_fills_its_field() {
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&part(b"200803201052", &[b'M'; 500], &note(b"Bolt")))
+            .unwrap();
+        assert_eq!(metadata["dc:description"], ["M".repeat(500)]);
+    }
+
+    #[test]
+    fn skips_an_empty_note() {
+        let empty = [note(b"")[..18].to_vec(), vec![0, 0], note(b"Bolt")].concat();
+        let (text, _) = crate::Extractor::new()
+            .extract_bytes_to_string(&part(b"200803201052", b"Bolt", &empty))
+            .unwrap();
+        assert_eq!(text.trim(), "Bolt");
     }
 
     #[test]
