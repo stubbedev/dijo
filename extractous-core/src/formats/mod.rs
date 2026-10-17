@@ -74,6 +74,7 @@ mod subtitle;
 mod text;
 mod tnef;
 mod translation;
+mod tsd;
 #[cfg(test)]
 mod url_tests;
 mod vsdx;
@@ -323,6 +324,7 @@ static PARSERS: &[&dyn Parser] = &[
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
+    &tsd::TsdParser,
     &xls::XlsParser,
     &warc::WarcParser,
     &warc::HttpParser,
