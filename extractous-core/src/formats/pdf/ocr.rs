@@ -125,6 +125,9 @@ pub(super) enum PageCheck {
     /// Its text layer is doubtful or garbage: OCR text replaces it when it reads better, or
     /// whenever the layer is garbage.
     Weigh(Assessment),
+    /// Its text, which the files it embeds add to, is assessed once they are parsed, the page of
+    /// `glyphs` glyphs, `unmapped` of them without characters, read for a doubtful layer.
+    Settle { glyphs: i32, unmapped: i32 },
 }
 
 impl OcrCheck {
@@ -158,14 +161,14 @@ impl OcrCheck {
     }
 
     /// What is done with page `page` of `glyphs` glyphs, `unmapped` of them without
-    /// characters, whose `div` holds `text` when the pages are held, or why Tika's path takes
-    /// the document: a page Tika's PDF parser wants OCR for with no OCR parser to run.
+    /// characters, whose `div` holds `layer`, or why Tika's path takes the document: a page
+    /// Tika's PDF parser wants OCR for with no OCR parser to run.
     pub(super) fn page(
         self,
         page: usize,
         glyphs: i32,
         unmapped: i32,
-        text: Option<&str>,
+        layer: Layer<'_>,
     ) -> Result<PageCheck, Unported> {
         let thresholds = match self {
             Self::Never => return Ok(PageCheck::Keep),
@@ -184,7 +187,11 @@ impl OcrCheck {
         if glyphs <= thresholds.total_chars {
             return Ok(PageCheck::Add);
         }
-        let text = text.expect("a held page's text is kept for its assessment");
+        let text = match layer {
+            Layer::Text(text) => text,
+            Layer::Embedding => return Ok(PageCheck::Settle { glyphs, unmapped }),
+            Layer::Unheld => unreachable!("a page is held for its assessment"),
+        };
         let assessment = quality::assess(text, glyphs, unmapped, thresholds.unmapped);
         if assessment.badness < quality::DOUBTFUL {
             return Ok(PageCheck::Keep);
@@ -199,6 +206,17 @@ impl OcrCheck {
             Self::Wanted(thresholds) | Self::Assessed(thresholds) => thresholds.unmapped,
         }
     }
+}
+
+/// What a page's `div` holds, as our `TextLayerCheckingPdfParser` sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Layer<'t> {
+    /// Nothing: pages are not held.
+    Unheld,
+    /// This text.
+    Text(&'t str),
+    /// Files it embeds too, whose text is known once they are parsed.
+    Embedding,
 }
 
 /// How the pages to read are read: with tesseract, or with OCR skipped, reading nothing.
@@ -379,6 +397,17 @@ impl PageReading {
             || reads_better(attempt.text().unwrap_or_default(), layer, unmapped)
     }
 
+    /// Notes a page `index` that could not be read, as our `TextLayerCheckingPdfParser` notes
+    /// it once the page is passed on.
+    fn warn(&self, xhtml: &mut Xhtml, index: usize) {
+        if let Self::Failed(failure) = self {
+            xhtml.metadata_mut().add(
+                WARNING,
+                format!("OCR of page {} failed: {failure}", index + 1),
+            );
+        }
+    }
+
     /// `TextLayerCheckingPdfParser.useOcr`: the reading's text in a div of class `ocr`, as the
     /// OCR parser's own handler wrote it, then its report.
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Stop> {
@@ -430,29 +459,50 @@ impl EndPage for PageHook<'_, '_, '_> {
             Some(Err(never)) => match never {},
             None => unreachable!("a page to read has its reading"),
         };
-        if let PageReading::Failed(failure) = &reading {
-            xhtml.metadata_mut().add(
-                WARNING,
-                format!("OCR of page {} failed: {failure}", index + 1),
-            );
-        }
         match check {
             PageCheck::Keep => held(xhtml),
             PageCheck::Add => {
+                reading.warn(xhtml, index);
                 held(xhtml)?;
                 Ok(reading.write(xhtml)?)
             }
             PageCheck::Weigh(layer) => {
+                reading.warn(xhtml, index);
                 if !reading.replaces(&layer, self.ocr.unmapped) {
                     return held(xhtml);
                 }
-                xhtml.metadata_mut().add(
-                    REJECTED_TEXT_LAYER,
-                    format!("{}:{}", index + 1, layer.fault),
-                );
-                Ok(reading.write(xhtml)?)
+                self.replace(xhtml, index, &layer, &reading)
+            }
+            PageCheck::Settle { glyphs, unmapped } => {
+                let page = xhtml.hold(|xhtml| held(xhtml))?;
+                let layer = quality::assess(page.text(), glyphs, unmapped, self.ocr.unmapped);
+                if layer.badness < quality::DOUBTFUL {
+                    return Ok(xhtml.release(page)?);
+                }
+                reading.warn(xhtml, index);
+                if !reading.replaces(&layer, self.ocr.unmapped) {
+                    return Ok(xhtml.release(page)?);
+                }
+                self.replace(xhtml, index, &layer, &reading)
             }
         }
+    }
+}
+
+impl PageHook<'_, '_, '_> {
+    /// Writes `reading` in place of page `index`'s text layer, assessed as `layer`.
+    fn replace(
+        &self,
+        xhtml: &mut Xhtml,
+        index: usize,
+        layer: &Assessment,
+        reading: &PageReading,
+    ) -> Result<(), Failure> {
+        xhtml.metadata_mut().add(
+            REJECTED_TEXT_LAYER,
+            format!("{}:{}", index + 1, layer.fault),
+        );
+        Ok(reading.write(xhtml)?)
     }
 }
 
@@ -534,14 +584,25 @@ mod tests {
     #[test]
     fn checks_pages_as_text_layer_checking_pdf_parser_does() {
         let assessed = OcrCheck::Assessed(DEFAULT);
-        assert_eq!(assessed.page(1, 3, 0, Some("ab")), Ok(PageCheck::Add));
+        assert_eq!(
+            assessed.page(1, 3, 0, Layer::Text("ab")),
+            Ok(PageCheck::Add)
+        );
         let prose = "The keeper climbed the stairs every evening and wrote one line. ".repeat(5);
-        assert_eq!(assessed.page(1, 300, 0, Some(&prose)), Ok(PageCheck::Keep));
+        assert_eq!(
+            assessed.page(1, 300, 0, Layer::Text(&prose)),
+            Ok(PageCheck::Keep)
+        );
         assert!(matches!(
-            assessed.page(1, 300, 200, Some(&prose)),
+            assessed.page(1, 300, 200, Layer::Text(&prose)),
             Ok(PageCheck::Weigh(_))
         ));
-        assert!(OcrCheck::Wanted(DEFAULT).page(1, 3, 0, None).is_err());
-        assert_eq!(OcrCheck::Never.page(1, 3, 0, None), Ok(PageCheck::Keep));
+        assert!(OcrCheck::Wanted(DEFAULT)
+            .page(1, 3, 0, Layer::Unheld)
+            .is_err());
+        assert_eq!(
+            OcrCheck::Never.page(1, 3, 0, Layer::Unheld),
+            Ok(PageCheck::Keep)
+        );
     }
 }

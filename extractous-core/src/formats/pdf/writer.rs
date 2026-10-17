@@ -12,7 +12,7 @@ use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
 use super::form;
-use super::ocr::PageCheck;
+use super::ocr::{Layer, PageCheck};
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
@@ -66,6 +66,8 @@ pub(super) struct PageWriter<'p, 'r> {
     pub(super) tagged: Option<Tagged<'p>>,
     /// The text of the current page's `div`, while it is kept for the page's assessment.
     layer_text: Option<String>,
+    /// Whether the current page's `div` holds files an annotation embeds.
+    embeds: bool,
 }
 
 impl PageWriter<'_, '_> {
@@ -218,6 +220,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 in_paragraph: false,
                 tagged,
                 layer_text: None,
+                embeds: false,
             },
             page_number: 0,
             settings,
@@ -276,6 +279,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             self.page.out.hold();
             self.page.layer_text = Some(String::new());
         }
+        self.page.embeds = false;
         match self.page.tagged.as_mut() {
             Some(tagged) => tagged.start_page(),
             None => self.page.plain_paragraph_start()?,
@@ -297,12 +301,16 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         self.total_unmapped += i64::from(content.unmapped);
         self.annotations(page)?;
         let layer_text = self.page.layer_text.take();
-        match self.settings.ocr.page(
-            self.page_number,
-            content.glyphs,
-            content.unmapped,
-            layer_text.as_deref(),
-        )? {
+        let layer = match (layer_text.as_deref(), self.page.embeds) {
+            (None, _) => Layer::Unheld,
+            (Some(_), true) => Layer::Embedding,
+            (Some(text), false) => Layer::Text(text),
+        };
+        match self
+            .settings
+            .ocr
+            .page(self.page_number, content.glyphs, content.unmapped, layer)?
+        {
             PageCheck::Keep => self.page.out.release(),
             check => self.page.out.release_read(self.page_number - 1, check),
         }
@@ -527,8 +535,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// `processDocOnAction` for the file specification of an annotation: its files, written
     /// in the page's `div` unless an annotation led to the specification before. Our
-    /// `TextLayerCheckingPdfParser` weighs the text of such a file with the page's, which the
-    /// port does not.
+    /// `TextLayerCheckingPdfParser` weighs the text of such a file with the page's, once it is
+    /// parsed ([`PageCheck::Settle`]).
     fn annotation_file(
         &mut self,
         source: &str,
@@ -549,14 +557,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                     Written::Embedded { attributes, file } => {
                         self.page.start("div", &borrowed(&attributes))?;
                         self.page.end("div")?;
-                        if self.settings.ocr.holds_pages() {
-                            return Err(Unported(
-                                "a file an annotation embeds, whose text our \
-                                 TextLayerCheckingPdfParser weighs with the page's"
-                                    .to_owned(),
-                            )
-                            .into());
-                        }
+                        self.page.embeds = true;
                         self.page.out.embedded(file)?;
                     }
                 }

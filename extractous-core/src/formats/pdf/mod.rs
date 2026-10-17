@@ -254,15 +254,8 @@ fn record(
         configs,
     )
     .map_err(deferred)?;
-    if page_ocr.is_some() && recording.embeds_files() {
-        return Err(Declined::Deferred(EMBEDDED_AND_READ.to_owned()));
-    }
     Ok(Recorded::Whole(Box::new(recording), page_ocr))
 }
-
-/// Why a document that embeds files and has pages read by OCR is left to Tika.
-const EMBEDDED_AND_READ: &str = "files the document embeds, which Tika's path parses while our \
-     TextLayerCheckingPdfParser holds back the pages it reads by OCR";
 
 /// An object the extraction needed that lopdf lost or the cross-reference table does not list,
 /// which PDFBox recovers or finds, if any.
@@ -313,13 +306,11 @@ fn stream(
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
     let page_count = loaded.pdf.pages().map_err(late)?.len();
-    let mut pages = StreamedPages {
+    let pages = StreamedPages {
         input,
         page_count,
         check: settings.ocr,
         configs,
-        embeds: false,
-        reads: false,
     };
     let mut recording = new_recording(metadata, configs);
     let mut flushed = Ok(());
@@ -350,26 +341,18 @@ fn late(Unported(reason): Unported) -> Failure {
     )))
 }
 
-/// What a streamed document's pages need to be written: what reads pages by OCR, and whether
-/// the document embedded files or had pages read so far.
+/// What a streamed document's pages need to be written: what reads pages by OCR.
 struct StreamedPages<'a> {
     input: &'a [u8],
     page_count: usize,
     check: OcrCheck,
     configs: &'a ParserConfigs,
-    embeds: bool,
-    reads: bool,
 }
 
 impl StreamedPages<'_> {
     /// Writes what `recording` holds to `xhtml`, a page OCR reads read first.
-    fn flush(&mut self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn flush(&self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let pages = recording.pages_read();
-        self.embeds |= recording.embeds_files();
-        self.reads |= !pages.is_empty();
-        if self.embeds && self.reads {
-            return Err(late(Unported(EMBEDDED_AND_READ.to_owned())));
-        }
         let page_ocr = PageOcr::of(pages, self.page_count, self.check, self.input, self.configs)
             .map_err(late)?;
         match page_ocr {
@@ -992,6 +975,52 @@ mod tests {
         assert_same_as_tika_delegating(&[&embedding], tika_name(), &DELEGATES);
     }
 
+    /// A document of a page drawn by `content` with a file attachment annotation embedding a
+    /// text file of `text`.
+    fn attaching(content: &str, text: &str) -> Vec<u8> {
+        let mut objects = page_objects(content);
+        objects[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+                      /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>"
+            .to_owned();
+        objects.extend([
+            "<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] /FS 7 0 R >>".to_owned(),
+            "<< /Type /Filespec /F (vedlagt.txt) /EF << /F 8 0 R >> >>".to_owned(),
+            format!(
+                "<< /Type /EmbeddedFile /Length {} >>\nstream\n{text}\nendstream",
+                text.len()
+            ),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        document(&objects, b"", &[])
+    }
+
+    #[test]
+    fn weighs_the_files_an_annotation_embeds_with_the_page_as_tikas_path_does() {
+        assert!(ocr_runs(), "tesseract is not installed");
+        let scratch = Scratch::new("pdf-annotation-file");
+        let prose = "Det var en gang en konge, som havde tre d\u{f8}tre, og den yngste var den \
+                     smukkeste af dem alle sammen.";
+        let documents = [
+            (
+                "few-glyphs.pdf",
+                attaching("BT /F1 12 Tf 72 720 Td (Kort.) Tj ET", prose),
+            ),
+            ("prose.pdf", attaching(TEXT, prose)),
+            (
+                "noise.pdf",
+                attaching(TEXT, &"#%&/ {}[] 0x7f ~^ ".repeat(40)),
+            ),
+        ];
+        let paths: Vec<PathBuf> = documents
+            .iter()
+            .map(|(name, bytes)| scratch.write(name, bytes))
+            .collect();
+        for path in &paths {
+            assert_eq!(deferral(path), None, "{}", path.display());
+        }
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+    }
+
     #[test]
     fn parses_each_embedded_file_once_and_every_name_of_the_tree() {
         // Tika extracts the Mac copy apart, under its name `  ` before `UF`, keeps only the
@@ -1390,6 +1419,32 @@ mod tests {
         }
     }
 
+    /// Why the extraction of a PDF that embeds PDFs, while tesseract runs, is not compared with
+    /// Tika's path.
+    const NESTED_PAGES: &str = "our TextLayerCheckingPdfParser takes the pages of a PDF a PDF \
+                                embeds outside its pages for pages of its own, assessing them \
+                                by the embedding document's last page and mangling them";
+
+    /// Asserts that the PDF at `path`, a chain of PDFs each embedding the next, each of one page
+    /// showing `a`, is read with every page whole, its text and OCR in it, where Tika's path
+    /// mangles the embedded pages ([`NESTED_PAGES`]).
+    fn assert_reads_the_pages_of_embedded_pdfs(path: &Path) {
+        let (xml, _) = native_xml(&std::fs::read(path).unwrap());
+        let pages = xml.matches("<div class=\"page\">").count();
+        let embedded = xml.matches("class=\"embedded\"").count();
+        assert_eq!(pages, embedded + 1, "{NESTED_PAGES}: {xml}");
+        assert_eq!(
+            xml.matches("<p>a</p>").count(),
+            pages,
+            "{NESTED_PAGES}: {xml}"
+        );
+        assert_eq!(
+            xml.matches("class=\"ocr\"").count(),
+            pages,
+            "{NESTED_PAGES}: {xml}"
+        );
+    }
+
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
@@ -1407,6 +1462,13 @@ mod tests {
             .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
         assert_eq!(locked.len(), 2, "{locked:?}");
         crate::formats::parity::assert_fails_as_tika(&locked);
+        let (nested, paths): (Vec<&Path>, Vec<&Path>) = paths
+            .into_iter()
+            .partition(|path| path.ends_with("testPDF_deeplyEmbeddedAttachments.pdf"));
+        assert_eq!(nested.len(), usize::from(ocr_runs()), "{nested:?}");
+        for path in nested {
+            assert_reads_the_pages_of_embedded_pdfs(path);
+        }
         assert_same_as_tika_delegating(&paths, tika_name(), &DELEGATES);
         let [copies] = copies[..] else {
             panic!("{copies:?}");
