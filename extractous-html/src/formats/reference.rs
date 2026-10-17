@@ -87,8 +87,18 @@ pub(crate) fn cases(reference: &[u8]) -> Vec<Case> {
         .collect()
 }
 
-/// How `parser` differs from Tika on a case: its metadata, or its body's events.
-pub(crate) fn difference(parser: &dyn Parser, case: &Case) -> Option<String> {
+/// What of a case's result is compared with Tika's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Compared {
+    /// The metadata and the body's events.
+    Everything,
+    /// The metadata alone.
+    Metadata,
+}
+
+/// How `parser` differs from Tika on a case: its metadata, or its body's events where they are
+/// `compared`.
+pub(crate) fn difference(parser: &dyn Parser, case: &Case, compared: Compared) -> Option<String> {
     let mut recorder = Recorder::default();
     let mut given = TikaMetadata::new();
     if let Some(name) = case.resource_name() {
@@ -115,6 +125,9 @@ pub(crate) fn difference(parser: &dyn Parser, case: &Case) -> Option<String> {
             "{}: metadata\n  Tika {:?}\n  port {metadata:?}",
             case.label, case.metadata
         ));
+    }
+    if compared == Compared::Metadata {
+        return None;
     }
     let (events, counts) = recorder.summary();
     ((&events, &counts) != (&case.events, &case.counts)).then(|| {

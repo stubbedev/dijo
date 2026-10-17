@@ -20,6 +20,7 @@ testing = ["extractous-base/testing"]
 extractous-base = { path = "../extractous-base", default-features = false }
 extractous-mime = { path = "../extractous-mime", default-features = false }
 flate2 = "1.1.5"
+html5ever = "0.40.1"
 
 [dev-dependencies]
 extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }

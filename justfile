@@ -151,8 +151,8 @@ pdf-resources:
     java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
 
 # Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
-# html5lib's tree construction tests, the trees jsoup builds for them, and jsoup's named character references,
-# which the Rust port of the parser is tested against and reads.
+# html5lib's tree construction tests, the trees jsoup builds for them, and the trees html5lib's tests expect,
+# which the Rust parser is tested against.
 [unix]
 html-reference:
     #!/usr/bin/env bash
@@ -173,7 +173,7 @@ html-reference:
     rules=$(just native-image-rules)
     java -cp "$rules:$jars/*:extractous-core/tika-native/src/main/resources" \
         extractous-html/tests/fixtures/formats/HtmlReference.java \
-        extractous-html/tests/fixtures/html extractous-html/models \
+        extractous-html/tests/fixtures/html \
         "$tests/tree-construction" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 

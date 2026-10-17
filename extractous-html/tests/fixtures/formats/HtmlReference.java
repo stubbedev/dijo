@@ -6,7 +6,6 @@ import org.apache.tika.parser.html.JSoupParser;
 import org.apache.tika.utils.StringUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Attribute;
-import org.jsoup.nodes.CDataNode;
 import org.jsoup.nodes.Comment;
 import org.jsoup.nodes.DataNode;
 import org.jsoup.nodes.Document;
@@ -31,7 +30,7 @@ import java.util.TreeMap;
 import java.util.stream.Stream;
 
 /**
- * Writes what Apache Tika's JSoupParser makes of every input the Rust port is checked against,
+ * Writes what Apache Tika's JSoupParser makes of every input the Rust parser is checked against,
  * and the trees jsoup builds for them.
  *
  * <p>{@code html-reference.tsv.gz} holds, in ParserReference's form with one more column, the
@@ -40,22 +39,18 @@ import java.util.stream.Stream;
  * extractous tells it, detects as one of JSoupParser's types, parsed through AutoDetectParser as
  * extractous parses a file; synthetic inputs written to files and parsed the same way; and the
  * documents of html5lib's tree construction tests, in UTF-8, handed to JSoupParser directly as
- * text/html.
+ * text/html. Where the Rust parser builds the same tree, it must write what Tika writes.
  *
- * <p>It also writes jsoup's named character references and JSoupParser's self-closing tags,
- * which the port reads.
+ * <p>{@code html5lib-trees.tsv.gz} holds, for each document of html5lib's tree construction
+ * tests that does not need scripting, its label, its base64 UTF-8 text and the base64 UTF-8 tree
+ * the test expects, in html5lib's form: the oracle of the Rust parser's trees.
  *
- * <p>{@code html-trees.tsv.gz} holds, for each document of html5lib's tree construction tests,
- * its label, its base64 UTF-8 text and the CRC-32 and UTF-8 length of the tree jsoup builds from
- * the text itself, with Tika's tag set. With a third argument, the trees themselves are written
- * there, a line each, for debugging.
- *
- * <p>The form of a tree, in document order: {@code S name namespace[ key[=length:value]...]\n}
+ * <p>The form of a tree, in document order: {@code S name namespace[ key=length:value...]\n}
  * where an element (or the document, {@code #document}) starts, its children, then {@code E\n};
- * {@code T}, {@code D}, {@code X} and {@code C} then {@code length:text\n} for a text, data,
- * CDATA and comment node; {@code Y name|public|system\n} for a doctype. Lengths count UTF-16
- * units; a lone surrogate, which a numeric character reference can make, is written as U+FFFD,
- * as Tika's output writes it.
+ * {@code T} and {@code C} then {@code length:text\n} for text and a comment, where the text of
+ * adjacent text, data and CDATA nodes is one; {@code Y name|public|system\n} for a doctype.
+ * Lengths count UTF-16 units; a lone surrogate, which a numeric character reference can make, is
+ * written as U+FFFD, as Tika's output writes it.
  */
 public final class HtmlReference {
 
@@ -63,20 +58,14 @@ public final class HtmlReference {
             "application/vnd.wap.xhtml+xml", "application/x-asp");
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 4) {
-            System.err.println("usage: HtmlReference <fixture dir> <models dir>"
-                    + " <html5lib tree-construction dir> [debug trees] <label=dir>...");
+        if (args.length < 2) {
+            System.err.println("usage: HtmlReference <fixture dir>"
+                    + " <html5lib tree-construction dir> <label=dir>...");
             System.exit(2);
         }
         final Path fixtures = Path.of(args[0]);
-        writeModels(Path.of(args[1]));
-        final List<Html5libTest> html5lib = html5lib(Path.of(args[2]));
-        int roots = 3;
-        Path debug = null;
-        if (!args[3].contains("=")) {
-            debug = Path.of(args[3]);
-            roots = 4;
-        }
+        final List<Html5libTest> html5lib = html5lib(Path.of(args[1]));
+        final int roots = 2;
         final TagSet tags = tika(JSoupParser.class);
         final Detector detector = new DefaultDetector();
         final List<ParserReference.Input> inputs = new ArrayList<>(ParserReference.detected(
@@ -101,42 +90,19 @@ public final class HtmlReference {
         ParserReference.write(fixtures.resolve("html-reference.tsv.gz"), lines);
 
         final List<String> trees = new ArrayList<>();
-        final List<String> debugTrees = new ArrayList<>();
         for (Html5libTest test : html5lib) {
-            final String tree = tree(Jsoup.parse(test.data(),
-                    org.jsoup.parser.Parser.htmlParser().tagSet(new TagSet(tags))));
-            trees.add(test.label() + '\t' + Base64.getEncoder().encodeToString(
-                    test.data().getBytes(StandardCharsets.UTF_8)) + '\t'
-                    + ParserReference.digest(tree));
-            debugTrees.add(test.label() + '\t' + tree.replace("\\", "\\\\").replace("\n", "\\n")
-                    .replace("\t", "\\t").replace("\r", "\\r"));
+            if (test.expected() != null) {
+                trees.add(test.label() + '\t' + base64(test.data()) + '\t'
+                        + base64(test.expected()));
+            }
         }
-        ParserReference.write(fixtures.resolve("html-trees.tsv.gz"), trees);
-        if (debug != null) {
-            Files.write(debug, debugTrees);
-        }
+        ParserReference.write(fixtures.resolve("html5lib-trees.tsv.gz"), trees);
         System.err.println("HtmlReference: " + inputs.size() + " inputs, " + trees.size()
                 + " html5lib trees");
     }
 
-    /**
-     * Writes what the Rust port reads of jsoup and Tika: jsoup's named character references as
-     * it packs them (EntitiesData), the base set's on the first line and the full set's on the
-     * second, and JSoupParser's list of the tags it lets close themselves.
-     */
-    private static void writeModels(Path dir) throws ReflectiveOperationException, IOException {
-        final Class<?> data = Class.forName("org.jsoup.nodes.EntitiesData");
-        final List<String> lines = new ArrayList<>();
-        for (String name : List.of("basePoints", "fullPoints")) {
-            final java.lang.reflect.Field field = data.getDeclaredField(name);
-            field.setAccessible(true);
-            lines.add((String) field.get(null));
-        }
-        Files.write(dir.resolve("jsoup-entities.txt"), lines);
-        try (java.io.InputStream tags =
-                     JSoupParser.class.getResourceAsStream("self-closeable-tags.txt")) {
-            Files.write(dir.resolve("tika-self-closeable-tags.txt"), tags.readAllBytes());
-        }
+    private static String base64(String text) {
+        return Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8));
     }
 
     /** The tag set JSoupParser parses with: jsoup's, with Tika's self-closing tags. */
@@ -164,14 +130,19 @@ public final class HtmlReference {
         return out.toString();
     }
 
+    /** The text of a text, data or CDATA node, or null for another node. */
+    private static String text(Node node) {
+        if (node instanceof TextNode text) {
+            return text.getWholeText();
+        }
+        if (node instanceof DataNode data) {
+            return data.getWholeData();
+        }
+        return null;
+    }
+
     private static void node(Node node, StringBuilder out) {
-        if (node instanceof CDataNode cdata) {
-            text('X', cdata.getWholeText(), out);
-        } else if (node instanceof TextNode text) {
-            text('T', text.getWholeText(), out);
-        } else if (node instanceof DataNode data) {
-            text('D', data.getWholeData(), out);
-        } else if (node instanceof Comment comment) {
+        if (node instanceof Comment comment) {
             text('C', comment.getData(), out);
         } else if (node instanceof DocumentType doctype) {
             out.append("Y ").append(StringUtils.wellFormed(doctype.name())).append('|')
@@ -181,15 +152,26 @@ public final class HtmlReference {
             out.append("S ").append(StringUtils.wellFormed(element.nodeName())).append(' ')
                     .append(namespace(element.tag().namespace()));
             for (Attribute attribute : element.attributes()) {
-                out.append(' ').append(StringUtils.wellFormed(attribute.getKey()));
-                if (attribute.hasDeclaredValue()) {
-                    final String value = StringUtils.wellFormed(attribute.getValue());
-                    out.append('=').append(value.length()).append(':').append(value);
-                }
+                final String value = StringUtils.wellFormed(attribute.getValue());
+                out.append(' ').append(StringUtils.wellFormed(attribute.getKey())).append('=')
+                        .append(value.length()).append(':').append(value);
             }
             out.append('\n');
+            final StringBuilder text = new StringBuilder();
             for (Node child : element.childNodes()) {
+                final String childText = text(child);
+                if (childText != null) {
+                    text.append(childText);
+                    continue;
+                }
+                if (!text.isEmpty()) {
+                    text('T', text.toString(), out);
+                    text.setLength(0);
+                }
                 node(child, out);
+            }
+            if (!text.isEmpty()) {
+                text('T', text.toString(), out);
             }
             out.append("E\n");
         } else {
@@ -212,7 +194,11 @@ public final class HtmlReference {
         };
     }
 
-    private record Html5libTest(String label, String data) {
+    /**
+     * A document of html5lib's tree construction tests, and the tree it expects without
+     * scripting, or null where it expects one only with scripting.
+     */
+    private record Html5libTest(String label, String data, String expected) {
     }
 
     /** The documents (not fragments) of html5lib's tree construction tests. */
@@ -220,7 +206,8 @@ public final class HtmlReference {
         final List<Html5libTest> tests = new ArrayList<>();
         try (Stream<Path> files = Files.list(dir)) {
             for (Path file : files.filter(f -> f.toString().endsWith(".dat")).sorted().toList()) {
-                final List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                final List<String> lines =
+                        List.of(Files.readString(file, StandardCharsets.UTF_8).split("\n", -1));
                 int number = 0;
                 for (int i = 0; i < lines.size(); i++) {
                     if (!lines.get(i).equals("#data")) {
@@ -237,12 +224,23 @@ public final class HtmlReference {
                         j++;
                     }
                     boolean fragment = false;
+                    boolean scripting = false;
+                    final List<String> expected = new ArrayList<>();
+                    boolean inDocument = false;
                     for (int k = j; k < lines.size() && !lines.get(k).equals("#data"); k++) {
                         fragment |= lines.get(k).equals("#document-fragment");
+                        scripting |= lines.get(k).equals("#script-on");
+                        if (inDocument) {
+                            expected.add(lines.get(k));
+                        }
+                        inDocument |= lines.get(k).equals("#document");
+                    }
+                    while (!expected.isEmpty() && expected.get(expected.size() - 1).isEmpty()) {
+                        expected.remove(expected.size() - 1);
                     }
                     if (!fragment) {
                         tests.add(new Html5libTest("html5lib/" + file.getFileName() + "#" + number,
-                                data.toString()));
+                                data.toString(), scripting ? null : String.join("\n", expected)));
                     }
                 }
             }

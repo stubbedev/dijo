@@ -337,7 +337,6 @@ fn walk(
         ParsedNode::Document => "#document",
         ParsedNode::Element { name, .. } => name,
         ParsedNode::Text(_) => "#text",
-        ParsedNode::Data(_) => "#data",
         ParsedNode::Other(name) => name,
     };
     if name == "html" {
@@ -350,7 +349,7 @@ fn walk(
         }
         match &parsed {
             _ if matches!(name, "html" | "body") => {}
-            ParsedNode::Text(text) | ParsedNode::Data(text) => xhtml.characters(text)?,
+            ParsedNode::Text(text) => xhtml.characters(text)?,
             ParsedNode::Element { attributes, .. } => {
                 xhtml.start_element_with(name, attributes)?;
                 emitted = true;
