@@ -19,6 +19,8 @@ const TYPE_USER: u8 = 0x4E;
 const PRIMARY_KEY_INDEX_TYPE: u8 = 1;
 const MAX_INDEX_COLUMNS: usize = 10;
 const COLUMN_UNUSED: i16 = -1;
+/// A usage map's reference in a table definition: its row and its page number.
+const USAGE_MAP_REFERENCE: usize = 4;
 const MAX_BYTE: i64 = 256;
 const VALIDATION_RULE: &str = "ValidationRule";
 const VALIDATION_TEXT: &str = "ValidationText";
@@ -126,8 +128,6 @@ impl Table {
         let index_count = buffer.i32_at(at(format.offset_num_indexes))?;
         buffer.set_position(at(format.offset_owned_pages))?;
         let owned_pages = UsageMap::read_at(pages, &mut buffer)?;
-        buffer.set_position(at(format.offset_free_space_pages))?;
-        UsageMap::read_at(pages, &mut buffer)?;
         for i in 0..i64::from(index_count.max(0)) {
             buffer.i32_at(
                 at(format.offset_index_def_block) + i * format.size_index_definition as i64 + 4,
@@ -144,7 +144,6 @@ impl Table {
         let page_context = (context, page);
         table.read_columns(pages, &mut buffer, column_count, index_count, page_context)?;
         table.read_indexes(pages, &mut buffer, index_count, logical_index_count)?;
-        while buffer.remaining() >= 2 && read_column_usage_maps(pages, &mut buffer)? {}
         table.check_version_histories()?;
         if table_type == TYPE_USER {
             table.check_validation_rule(page_context)?;
@@ -223,7 +222,7 @@ impl Table {
         )?;
         let mut names = Vec::new();
         for _ in 0..column_count.max(0) {
-            names.push(read_name(buffer, format)?);
+            names.push(read_name(buffer, pages)?);
         }
         for (index, name) in names.into_iter().enumerate() {
             let offset = column_offset + index as i64 * format.size_column_header as i64;
@@ -286,7 +285,7 @@ impl Table {
                 valid &= is_indexable(&self.columns[position]);
                 columns.push(position);
             }
-            UsageMap::read_at(pages, buffer)?;
+            buffer.forward(USAGE_MAP_REFERENCE)?;
             buffer.i32()?;
             buffer.forward(format.skip_before_index_flags)?;
             buffer.u8()?;
@@ -317,7 +316,7 @@ impl Table {
             });
         }
         for _ in 0..logical_index_count.max(0) {
-            read_name(buffer, format)?;
+            read_name(buffer, pages)?;
         }
         self.indexes.sort_by_key(|index| index.number);
         Ok(())
@@ -421,28 +420,10 @@ fn complete_definition<'a>(
 }
 
 /// `TableImpl.readName`: a name after its length, in the database's charset.
-fn read_name(buffer: &mut Buffer<'_>, format: &Format) -> Result<String, Thrown> {
-    let length = buffer.unsigned(format.size_name_length)?;
+fn read_name(buffer: &mut Buffer<'_>, pages: &Pages<'_>) -> Result<String, Thrown> {
+    let length = buffer.unsigned(pages.format.size_name_length)?;
     let bytes = buffer.take(i64::from(length))?;
-    Ok(format.charset.decode(bytes))
-}
-
-/// `readColumnUsageMaps`: one column's owned and free space maps, `false` at the end of them.
-/// An `IllegalStateException` reading them is caught and the maps skipped.
-fn read_column_usage_maps(pages: &Pages<'_>, buffer: &mut Buffer<'_>) -> Result<bool, Thrown> {
-    if buffer.i16()? == COLUMN_UNUSED {
-        return Ok(false);
-    }
-    let position = buffer.position() as i64;
-    let read = UsageMap::read_at(pages, buffer).and_then(|_| UsageMap::read_at(pages, buffer));
-    match read {
-        Ok(_) => Ok(true),
-        Err(Thrown::IllegalState(_)) => {
-            buffer.set_position(position + 8)?;
-            Ok(true)
-        }
-        Err(thrown) => Err(thrown),
-    }
+    Ok(pages.charset.decode(bytes))
 }
 
 /// The values of a row's columns, `None` for a null or a column not read.

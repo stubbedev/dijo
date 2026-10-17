@@ -4,9 +4,11 @@
 use std::borrow::Cow;
 
 use super::buffer::Thrown;
-use super::format::{CodecType, Format};
+use super::format::{Charset, CodecType, Encoding, Format};
 
 pub(super) const PAGE_TYPE_DATA: u8 = 0x01;
+/// Where Jet 3's header names the database's code page.
+const OFFSET_CODE_PAGE: usize = 60;
 pub(super) const PAGE_TYPE_TABLE_DEF: u8 = 0x02;
 pub(super) const PAGE_TYPE_USAGE_MAP: u8 = 0x05;
 const ENCODING_KEY_LENGTH: usize = 4;
@@ -15,20 +17,35 @@ const ENCODING_KEY_LENGTH: usize = 4;
 pub(super) struct Pages<'a> {
     file: &'a [u8],
     pub(super) format: &'static Format,
+    /// The charset of the database's text: the code page its header names, in Jet 3.
+    pub(super) charset: Charset,
     /// The RC4 key of the Jet codec, where the database's encoding key is not blank.
     encoding_key: Option<[u8; ENCODING_KEY_LENGTH]>,
 }
 
 impl<'a> Pages<'a> {
-    /// `PageChannel.initialize`'s codec: `CryptCodecProvider.createHandler`. Office encryption
-    /// needs a password, which the port does not take.
+    /// `PageChannel.initialize`'s codec: `CryptCodecProvider.createHandler`, which the port has
+    /// for the Jet codec; a database under Office encryption is refused as encrypted.
     pub(super) fn open(file: &'a [u8], format: &'static Format) -> Result<Self, Thrown> {
         let mut pages = Self {
             file,
             format,
+            charset: Charset::Unicode,
             encoding_key: None,
         };
         let root = pages.root()?;
+        if format.encoding == Encoding::CodePage {
+            let code_page = u16::from_le_bytes(
+                root[OFFSET_CODE_PAGE..OFFSET_CODE_PAGE + 2]
+                    .try_into()
+                    .expect("two bytes"),
+            );
+            pages.charset = Charset::of_code_page(code_page).ok_or_else(|| {
+                Thrown::unported(format!(
+                    "a Jet 3 database in code page {code_page}, a charset the port does not have"
+                ))
+            })?;
+        }
         let start = format.offset_encoding_key;
         let key: [u8; ENCODING_KEY_LENGTH] = root[start..start + ENCODING_KEY_LENGTH]
             .try_into()
@@ -38,11 +55,7 @@ impl<'a> Pages<'a> {
         }
         match format.codec {
             CodecType::Jet => pages.encoding_key = Some(key),
-            CodecType::Office => {
-                return Err(Thrown::unported(
-                    "an encrypted database, which needs a password",
-                ))
-            }
+            CodecType::Office => return Err(Thrown::Encrypted),
         }
         Ok(pages)
     }

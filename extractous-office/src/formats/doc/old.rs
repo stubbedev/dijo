@@ -3,6 +3,12 @@
 //! the sections as POI reads them, failing where it fails, and the paragraphs as
 //! `Word6Extractor.getParagraphText` gives them through our substitute of POI's
 //! `getParagraphText`, or, where reading them throws, the text pieces whole.
+//!
+//! The piece and run positions of Word 6 and 95 count bytes, also in a double-byte code page, so
+//! the text is kept as its bytes, one unit each, and decoded in the code page the fonts name once
+//! a paragraph is cut out of it. POI decodes it first, and, where a double-byte code page makes
+//! fewer characters than bytes, decodes it in code page 1252 instead, or throws on a complex
+//! document (#119).
 
 use super::bins::{
     bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
@@ -33,6 +39,8 @@ fn throws(Thrown(reason): Thrown) -> Unported {
 
 /// A Word 6 or 95 document, read.
 pub(super) struct OldDocument {
+    /// The charset of the text, which the pieces and the text hold as bytes.
+    charset: Charset,
     pieces: ComplexFileTable,
     text: Vec<u16>,
     paragraphs: Vec<PropertyRun>,
@@ -71,6 +79,7 @@ impl OldDocument {
         )
         .map_err(throws)?;
         Ok(OldDocument {
+            charset,
             pieces,
             text,
             paragraphs,
@@ -84,6 +93,9 @@ impl OldDocument {
     pub(super) fn paragraph_text(&self) -> Vec<Vec<u16>> {
         self.paragraphs_of_range()
             .unwrap_or_else(|_| self.pieces.pieces.iter().map(piece_text).collect())
+            .iter()
+            .map(|paragraph| decoded(paragraph, self.charset))
+            .collect()
     }
 
     /// Our `getParagraphText(getRange())`: each paragraph of the range, its fields stripped and
@@ -109,12 +121,11 @@ impl OldDocument {
     }
 }
 
-/// A piece's text, each carriage return and each U+FFFE ended as a line, as `Word6Extractor`
-/// replaces the one by the other and that by a line end.
+/// A piece's text, each carriage return ended as a line, as `Word6Extractor` ends it.
 fn piece_text(piece: &TextPiece) -> Vec<u16> {
     let mut text = Vec::with_capacity(piece.text().len());
     for &unit in piece.text() {
-        if unit == 0x0D || unit == 0xFFFE {
+        if unit == 0x0D {
             text.extend(LINE_END);
         } else {
             text.push(unit);
@@ -166,8 +177,8 @@ fn read_sections(main: &[u8], offset: i32, size: i32) -> Read<()> {
     Ok(())
 }
 
-/// The text pieces of a complex document, each in `charset`, at the file positions the piece
-/// descriptors give as they are.
+/// The text pieces of a complex document, each as its bytes in `charset`, at the file positions
+/// the piece descriptors give as they are.
 fn complex_pieces(
     main: &[u8],
     offset: i32,
@@ -183,7 +194,7 @@ fn complex_pieces(
             MAX_PIECE_LENGTH,
         )
         .map_err(throws)?;
-        let text = decode(charset, &bytes)?;
+        let text = undecoded(charset, &bytes)?;
         pieces.push(
             TextPiece::new(
                 descriptor.start,
@@ -199,8 +210,7 @@ fn complex_pieces(
     Ok(ComplexFileTable::new(grpprls, pieces))
 }
 
-/// `buildTextPiece`: the text from `fcMin` to `fcMac` as one piece, in `charset`, else, where
-/// it does not decode to as many characters as bytes, in code page 1252.
+/// `buildTextPiece`: the text from `fcMin` to `fcMac` as one piece, as its bytes in `charset`.
 fn whole_text(
     main: &[u8],
     fc_min: i32,
@@ -210,25 +220,48 @@ fn whole_text(
     let bytes = safely_clone(main, fc_min, fc_mac.wrapping_sub(fc_min), MAX_RECORD_LENGTH)
         .map_err(throws)?;
     let length = i32::try_from(bytes.len()).expect("a record of at most ten million bytes");
-    let mut text = decode(charset, &bytes)?;
-    if text.len() != bytes.len() {
-        text = decode(Charset::named("windows-1252"), &bytes)?;
-    }
+    let text = undecoded(charset, &bytes)?;
     let piece = TextPiece::new(0, length, fc_min, false, 0, text).map_err(throws)?;
     Ok(ComplexFileTable::new(Vec::new(), vec![piece]))
 }
 
-/// The bytes as `new String(bytes, charset)` gives them, in UTF-16 units.
-fn decode(charset: Charset, bytes: &[u8]) -> Result<Vec<u16>, Unported> {
-    charset
-        .decode_exactly(bytes)
-        .map(|text| text.encode_utf16().collect())
-        .ok_or_else(|| {
-            Unported(format!(
-                "text in {}, which this port does not decode as Java does",
-                charset.name()
-            ))
-        })
+/// The bytes of text in `charset`, one unit each, once they are known to decode as
+/// `new String(bytes, charset)` decodes them.
+fn undecoded(charset: Charset, bytes: &[u8]) -> Result<Vec<u16>, Unported> {
+    charset.decode_exactly(bytes).ok_or_else(|| {
+        Unported(format!(
+            "text in {}, which this port does not decode as Java does",
+            charset.name()
+        ))
+    })?;
+    Ok(bytes.iter().map(|&byte| u16::from(byte)).collect())
+}
+
+/// Text kept as bytes, one unit each, decoded in `charset`; a unit past a byte, which cleaning a
+/// paragraph puts in, kept as it is.
+fn decoded(units: &[u16], charset: Charset) -> Vec<u16> {
+    let mut text = Vec::with_capacity(units.len());
+    let mut bytes = Vec::new();
+    let flush = |bytes: &mut Vec<u8>, text: &mut Vec<u16>| {
+        if !bytes.is_empty() {
+            let decoded = charset
+                .decode(bytes)
+                .expect("text in a charset the port decodes");
+            text.extend(decoded.encode_utf16());
+            bytes.clear();
+        }
+    };
+    for &unit in units {
+        match u8::try_from(unit) {
+            Ok(byte) => bytes.push(byte),
+            Err(_) => {
+                flush(&mut bytes, &mut text);
+                text.push(unit);
+            }
+        }
+    }
+    flush(&mut bytes, &mut text);
+    text
 }
 
 /// `FontCharset`'s Java charset of a Windows character set, `None` for one it does not know,
