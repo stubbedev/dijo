@@ -267,6 +267,8 @@ pub(super) fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharS
 }
 
 #[cfg(feature = "tika")]
+const PARSED_BY: &str = "tk:parsed-by";
+#[cfg(feature = "tika")]
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 #[cfg(feature = "tika")]
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
@@ -313,6 +315,67 @@ pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extract
         }
     }
     extracted
+}
+
+/// The OCR enricher our Java path hands Tika's image parsers.
+#[cfg(feature = "tika")]
+const PREPARING_OCR_PARSER: &str = "ai.yobix.PreparingOcrParser";
+
+/// Tika's extraction, its text in `char_set`, under `configs`, and whether its XHTML head held
+/// what is left out: where OCR is skipped, [`PREPARING_OCR_PARSER`] among the parsers it
+/// records, in its metadata and in the XHTML head, which Tika's path records though it reads
+/// nothing and the native path does not (#114).
+#[cfg(feature = "tika")]
+fn without_skipped_ocr_parser(
+    mut tika: Extracted,
+    char_set: CharSet,
+    configs: &ParserConfigs,
+) -> (Extracted, bool) {
+    if !configs.ocr.skips_ocr() {
+        return (tika, false);
+    }
+    for (name, values) in &mut tika.metadata {
+        if name == PARSED_BY || name == PARSED_BY_FULL_SET {
+            values.retain(|value| value != PREPARING_OCR_PARSER);
+        }
+    }
+    tika.metadata.retain(|(_, values)| !values.is_empty());
+    let Some(mut text) = decoded(&tika.text, char_set) else {
+        return (tika, false);
+    };
+    let mut in_head = false;
+    for name in [PARSED_BY, PARSED_BY_FULL_SET] {
+        let meta = format!("<meta name=\"{name}\" content=\"{PREPARING_OCR_PARSER}\" />\n");
+        in_head |= text.contains(&meta);
+        text = text.replace(&meta, "");
+    }
+    tika.text.clear();
+    formats::encode(&text, char_set, &mut tika.text);
+    (tika, in_head)
+}
+
+/// A native string extraction, its text in `char_set`, with its head cut as Tika's is, where
+/// the length limit stopped Tika's in its head and the two agree up to there: Tika's head held
+/// an element left out of it since, so its limit stopped it sooner.
+#[cfg(feature = "tika")]
+fn with_the_head_cut_as_tikas(
+    mut native: Extracted,
+    tika: &Extracted,
+    char_set: CharSet,
+) -> Extracted {
+    let (Some(tika_text), Some(native_text)) = (
+        decoded(&tika.text, char_set),
+        decoded(&native.text, char_set),
+    ) else {
+        return native;
+    };
+    let Some(before) = tika_text.strip_suffix(CUT_HEAD) else {
+        return native;
+    };
+    if native_text.starts_with(before) && native_text[before.len()..].starts_with("<meta ") {
+        native.text = tika.text.clone();
+    }
+    native
 }
 
 /// The parser of our Java path whose document nests the document of the parser it hands an
@@ -924,6 +987,9 @@ pub(crate) enum Departure<'a> {
     /// Line breaks: the text is compared with each CRLF an LF, where Tika's path makes a line
     /// feed a CRLF.
     LineBreaks(&'a str),
+    /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
+    /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
+    PngImages(&'a str),
 }
 
 /// What a native parser does otherwise than Tika's path on purpose.
@@ -951,7 +1017,7 @@ fn without_departures(
         .iter()
         .filter_map(|departure| match departure {
             Departure::Values(name, _) => Some(*name),
-            Departure::LineBreaks(_) => None,
+            Departure::LineBreaks(_) | Departure::PngImages(_) => None,
         })
         .collect();
     for (name, values) in &mut extracted.metadata {
@@ -1311,6 +1377,57 @@ pub(crate) type ComparedMetadata = Vec<(String, Vec<String>)>;
 /// it names the issue of the quirk, and undoes only what that fix changes.
 #[cfg(feature = "tika")]
 pub(crate) type NativeRewrite = fn(&mut String, &mut ComparedMetadata, &ComparedMetadata);
+
+/// For a [`NativeRewrite`]: the native result without the metadata `name`, in its metadata and
+/// as each `meta` element of the XHTML head, the one a length limit cut included.
+#[cfg(feature = "tika")]
+pub(crate) fn without_metadata(text: &mut String, metadata: &mut ComparedMetadata, name: &str) {
+    metadata.retain(|(native_name, _)| native_name != name);
+    let meta = format!("<meta name=\"{name}\" content=\"");
+    while let Some(start) = text.find(&meta) {
+        let end = text[start..]
+            .find("\" />")
+            .map_or(text.len(), |end| start + end + "\" />".len());
+        let end = end + usize::from(text[end..].starts_with('\n'));
+        text.replace_range(start..end, "");
+    }
+}
+
+/// For a [`NativeRewrite`]: the native result with the values Tika's path gives the metadata
+/// `name` in place of its own, in its metadata and in the content of each `meta` element of the
+/// XHTML head, which must be as many and hold no characters XML escapes.
+#[cfg(feature = "tika")]
+pub(crate) fn with_tikas_values(
+    text: &mut String,
+    metadata: &mut ComparedMetadata,
+    tika: &ComparedMetadata,
+    name: &str,
+) {
+    let Some((_, values)) = tika.iter().find(|(tika_name, _)| tika_name == name) else {
+        return without_metadata(text, metadata, name);
+    };
+    let Some((_, native)) = metadata
+        .iter_mut()
+        .find(|(native_name, _)| native_name == name)
+    else {
+        return;
+    };
+    assert_eq!(native.len(), values.len(), "the values of {name}");
+    native.clone_from(values);
+    let meta = format!("<meta name=\"{name}\" content=\"");
+    let mut at = 0;
+    for value in values {
+        let Some(found) = text[at..].find(&meta) else {
+            return;
+        };
+        let start = at + found + meta.len();
+        let end = text[start..]
+            .find('"')
+            .map_or(text.len(), |end| start + end);
+        text.replace_range(start..end, value);
+        at = start + value.len();
+    }
+}
 
 /// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
 /// compared.
@@ -1804,6 +1921,8 @@ fn compare(
                         char_set,
                         naming.departures,
                     );
+                    let (tika, skipped_ocr_parser) =
+                        without_skipped_ocr_parser(tika, char_set, configs);
                     let (mut tika, edit_time_longer) = with_native_edit_time(
                         without_departures(comparable(tika, char_set), char_set, naming.departures),
                         &native,
@@ -1822,6 +1941,9 @@ fn compare(
                         ),
                         None if entry == "string" => {
                             let mut native = cut_to(native, &tika);
+                            if skipped_ocr_parser {
+                                native = with_the_head_cut_as_tikas(native, &tika, char_set);
+                            }
                             if let Some(longer) = edit_time_longer {
                                 native.text = cut_sooner(native.text, &tika.text, longer);
                             }
@@ -2079,6 +2201,48 @@ fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
         .collect()
 }
 
+/// The spooled files, where a [`Departure::PngImages`] applies, with each whole PNG file the
+/// image it holds, and no size: its dimensions, colour type, bit depth and resolution, then its
+/// pixels.
+#[cfg(feature = "tika")]
+fn with_png_images(spooled: Vec<Spooled>, png_images: bool) -> Vec<Spooled> {
+    if !png_images {
+        return spooled;
+    }
+    spooled
+        .into_iter()
+        .map(|file| {
+            if file.truncated || !file.content.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return file;
+            }
+            let mut reader = png::Decoder::new(std::io::Cursor::new(&file.content))
+                .read_info()
+                .unwrap_or_else(|e| panic!("{} is no PNG file: {e}", file.name));
+            let info = reader.info();
+            let mut content = format!(
+                "{}x{} {:?} {:?} {:?}\n",
+                info.width,
+                info.height,
+                info.color_type,
+                info.bit_depth,
+                info.pixel_dims
+                    .map(|dims| (dims.xppu, dims.yppu, dims.unit == png::Unit::Meter)),
+            )
+            .into_bytes();
+            let mut pixels = vec![0; reader.output_buffer_size().expect("an image in memory")];
+            reader
+                .next_frame(&mut pixels)
+                .unwrap_or_else(|e| panic!("{} does not decode: {e}", file.name));
+            content.extend(pixels);
+            Spooled {
+                size: 0,
+                content,
+                ..file
+            }
+        })
+        .collect()
+}
+
 /// The spooled files, where a [`Departure::LineBreaks`] applies, with each CRLF of the whole
 /// ones an LF, as their text is compared: the line breaks of a part the departure decodes
 /// otherwise are in its bytes too. Where the budget cuts the spool, the departure moves the cut,
@@ -2145,14 +2309,15 @@ pub(crate) fn spools_as_tika_rewriting(
     spools_as_tika_under(path, budget, rewrite, departures, &ParserConfigs::default())
 }
 
-/// [`spools_as_tika`] under the settings `configs`.
+/// [`spools_as_tika`] under the settings `configs`, but for what `departures` name.
 #[cfg(feature = "tika")]
-pub(crate) fn spools_as_tika_with(
+pub(crate) fn spools_as_tika_departing_with(
     path: &Path,
     budget: u64,
+    departures: Departures,
     configs: &ParserConfigs,
 ) -> Result<usize, String> {
-    spools_as_tika_under(path, budget, None, &[], configs)
+    spools_as_tika_under(path, budget, None, departures, configs)
 }
 
 #[cfg(feature = "tika")]
@@ -2256,16 +2421,25 @@ fn spools_as_tika_under(
             let line_breaks = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::LineBreaks(_)));
+            let png_images = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::PngImages(_)));
             let tika = (
                 tika_extracted,
-                with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
+                with_png_images(
+                    with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
+                    png_images,
+                ),
             );
             let native = (
                 native_extracted,
                 as_tika_spools(
-                    with_line_feeds(
-                        spooled(native_embedded, native_spool.directory()),
-                        line_breaks,
+                    with_png_images(
+                        with_line_feeds(
+                            spooled(native_embedded, native_spool.directory()),
+                            line_breaks,
+                        ),
+                        png_images,
                     ),
                     &tika.1,
                 ),

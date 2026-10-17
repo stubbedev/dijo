@@ -3,10 +3,12 @@
 //! then `javax_imageio_1.0`) Tika walks, keeping each node's attributes under `img:` and the
 //! names of the nodes above it.
 
+pub(crate) mod bmp;
 mod creation_time;
 pub(crate) mod gif;
 pub(crate) mod jbig2;
 pub(crate) mod png;
+pub(crate) mod wbmp;
 
 use super::extractor::{Target, UNKNOWN_IMG};
 
@@ -170,6 +172,20 @@ impl<'a> Stream<'a> {
     pub(crate) fn u16_le(&mut self) -> Result<u16, Eof> {
         let bytes = self.bytes(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    pub(crate) fn i16_le(&mut self) -> Result<i16, Eof> {
+        let bytes = self.bytes(2)?;
+        Ok(i16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    pub(crate) fn i32_le(&mut self) -> Result<i32, Eof> {
+        let bytes = self.bytes(4)?;
+        Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    pub(crate) fn u32_le(&mut self) -> Result<u32, Eof> {
+        Ok(self.i32_le()? as u32)
     }
 
     /// `skipBytes`, which may move past the end.

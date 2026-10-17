@@ -15,7 +15,7 @@ use crate::formats::metadata::TikaMetadata;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
-    documents_with, spools_as_tika_with, Scratch,
+    documents_with, spools_as_tika_departing_with, Departure, Departures, Scratch,
 };
 use crate::formats::Parser;
 
@@ -48,13 +48,18 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<String> {
     PdfParser.defers(input, &TikaMetadata::new(), configs)
 }
 
+/// The images the native parser writes as PNG otherwise than the JDK's writer, which leaves
+/// every row unfiltered (#131): their spooled files are compared by the images they hold.
+#[cfg(feature = "tika")]
+const PNG_WRITER: Departures = &[Departure::PngImages("#131")];
+
 /// Compares the native parser with Tika's path on `paths`, and their spools of what the
-/// documents embed.
+/// documents embed, but for [`PNG_WRITER`].
 #[cfg(feature = "tika")]
 fn assert_same(paths: &[PathBuf], configs: &ParserConfigs) {
     assert_same_as_tika_delegating_with(&as_paths(paths), tika_name(), &DELEGATES, configs);
     for path in paths {
-        let spooled = spools_as_tika_with(path, u64::MAX, configs);
+        let spooled = spools_as_tika_departing_with(path, u64::MAX, PNG_WRITER, configs);
         assert!(spooled.is_ok(), "{}", spooled.unwrap_err());
     }
 }
@@ -270,28 +275,40 @@ fn extracts_images_of_every_colour_space_and_mask_as_tikas_path_does() {
     }
 }
 
-#[test]
-fn numbers_an_image_drawn_again_zero_unless_only_unique_ones_are_extracted() {
-    // Tika gives an image XObject drawn again the number 0 rather than its own (tika-quirk).
-    let input = sampled_images();
-    let (xml, _) = extracting(&input, &without_page_ocr(false));
-    let names: Vec<&str> = xml
-        .split("<img src=\"embedded:")
+/// The names of the images the XHTML `xml` shows, in order.
+fn image_names(xml: &str) -> Vec<&str> {
+    xml.split("<img src=\"embedded:")
         .skip(1)
         .map(|rest| &rest[..rest.find('"').unwrap()])
+        .collect()
+}
+
+/// An image XObject drawn again keeps its own number, where Tika numbers it 0 (#131), unless
+/// only unique images are extracted.
+#[test]
+fn numbers_an_image_drawn_again_by_its_own_number_unless_only_unique_ones_are_extracted() {
+    let images: Vec<String> = (0..3)
+        .map(|seed| {
+            image(
+                "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                "",
+                &samples(4, seed),
+            )
+        })
         .collect();
-    assert_eq!(names[16], "image-0.png", "{names:?}");
+    let content = "q 20 0 0 20 0 600 cm /Im0 Do Q q 20 0 0 20 30 600 cm /Im1 Do Q \
+                   q 20 0 0 20 60 600 cm /Im2 Do Q q 20 0 0 20 0 500 cm /Im1 Do Q";
+    let input = drawing(content, &xobjects(3), &images);
+    let (xml, _) = extracting(&input, &without_page_ocr(false));
     assert_eq!(
-        names[17..],
-        [
-            "image-16.png",
-            "image-17.png",
-            "image-18.png",
-            "image-19.png"
-        ]
+        image_names(&xml),
+        ["image-0.png", "image-1.png", "image-2.png", "image-1.png"]
     );
     let (xml, _) = extracting(&input, &without_page_ocr(true));
-    assert_eq!(xml.matches("<img ").count(), 20, "{xml}");
+    assert_eq!(
+        image_names(&xml),
+        ["image-0.png", "image-1.png", "image-2.png"]
+    );
 }
 
 fn extracting(input: &[u8], configs: &ParserConfigs) -> (String, crate::Metadata) {

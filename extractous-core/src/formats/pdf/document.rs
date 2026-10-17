@@ -225,8 +225,8 @@ const DECODED_CHUNK: usize = 4096;
 
 /// `FlateFilterDecoderStream`, read to its end: the two bytes of the zlib header skipped and the
 /// raw deflate data after them inflated, its checksum never read, until it ends, runs out or is
-/// damaged. Of the chunk the damage cuts short, PDFBox keeps what the inflater wrote up to its
-/// last byte that is not zero.
+/// damaged, everything inflated before the damage kept. PDFBox drops the zero bytes the chunk
+/// the damage cuts short ends in (#129).
 fn inflate_leniently(data: &[u8]) -> Vec<u8> {
     let mut chunks = data.get(2..).unwrap_or_default().chunks(RAW_CHUNK);
     let mut inflater = Decompress::new(false);
@@ -240,25 +240,13 @@ fn inflate_leniently(data: &[u8]) -> Vec<u8> {
                 None => return output,
             }
         }
-        decoded.fill(0);
         let (read, written) = (inflater.total_in(), inflater.total_out());
         let inflated = inflater.decompress(input, &mut decoded, FlushDecompress::None);
         input = &input[(inflater.total_in() - read) as usize..];
         let written = (inflater.total_out() - written) as usize;
-        match inflated {
-            Ok(Status::StreamEnd) => {
-                output.extend_from_slice(&decoded[..written]);
-                return output;
-            }
-            Ok(Status::Ok | Status::BufError) => output.extend_from_slice(&decoded[..written]),
-            Err(_) => {
-                let kept = decoded
-                    .iter()
-                    .rposition(|&byte| byte != 0)
-                    .map_or(0, |at| at + 1);
-                output.extend_from_slice(&decoded[..kept]);
-                return output;
-            }
+        output.extend_from_slice(&decoded[..written]);
+        if !matches!(inflated, Ok(Status::Ok | Status::BufError)) {
+            return output;
         }
     }
 }
@@ -271,7 +259,7 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn inflates_as_pdfbox_does_unchecked_truncated_and_damaged_streams() {
+    fn inflates_unchecked_truncated_and_damaged_streams_keeping_what_precedes_the_damage() {
         let text = b"BT /F1 12 Tf (Hello) Tj ET";
         let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(text).unwrap();
@@ -290,6 +278,6 @@ mod tests {
         let damaged = [
             0x78, 0x9C, 0x00, 3, 0, 0xFC, 0xFF, b'a', b'b', 0, 0x00, 3, 0, 0, 0,
         ];
-        assert_eq!(inflate_leniently(&damaged), b"ab");
+        assert_eq!(inflate_leniently(&damaged), b"ab\0");
     }
 }

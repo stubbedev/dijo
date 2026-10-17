@@ -1,14 +1,17 @@
 //! The images of the pages, as Tika's `PDF2XHTML.extractImages` extracts them under
 //! `setExtractInlineImages`: after the text of each page, every image the page draws
-//! ([`engine`]), numbered across the document, an image XObject drawn again numbered as
-//! `ImageGraphicsEngine` numbers it or, under `setExtractUniqueInlineImagesOnly`, skipped; each
-//! written as an `img` element and its file, as `writeToBuffer` writes it, parsed as an
-//! embedded document. JPEG, JPEG 2000 and JBIG2 data is copied as it is; other images are read
-//! as PDFBox reads them ([`sampled`]) and written as the JDK's PNG writer writes them.
+//! ([`engine`]), numbered across the document, an image XObject drawn again under its own
+//! number, where `ImageGraphicsEngine` numbers it 0, or, under
+//! `setExtractUniqueInlineImagesOnly`, skipped; each written as an `img` element and its file,
+//! as `writeToBuffer` writes it, parsed as an embedded document. JPEG, JPEG 2000 and JBIG2 data
+//! is copied as it is; other images, and those with masks, are read as PDFBox reads them
+//! ([`sampled`]) and written as PNG, with the Content-Type of PNG where Tika keeps that of the
+//! data it does not copy (#131).
 
 mod colorspace;
 mod engine;
 mod image;
+mod png;
 mod sampled;
 #[cfg(test)]
 mod tests;
@@ -24,7 +27,7 @@ use super::writer::{PageWriter, WriteFailure};
 use super::Unported;
 use crate::formats::embedded::{ResourceType, EXCEPTION_WARNING, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::java::png_writer;
+
 use engine::Drawn;
 use image::{PdImage, Suffix, JB2, JP2, JPEG};
 
@@ -128,7 +131,7 @@ impl Images {
                 } => {
                     let number = match self.processed.get(&identity) {
                         Some(_) if self.unique_only => return Ok(()),
-                        Some(_) => 0,
+                        Some(&number) => number,
                         None => {
                             let number = self.counter;
                             self.counter += 1;
@@ -170,6 +173,7 @@ impl Images {
         }
         let mut metadata = TikaMetadata::new();
         let (extension, content_type) = match image.suffix() {
+            _ if image.has_masks() => ("png", "image/png"),
             None | Some(Suffix::Png) => ("png", "image/png"),
             Some(Suffix::Jpg) => ("jpg", "image/jpeg"),
             Some(Suffix::Tiff) => ("tif", "image/tiff"),
@@ -177,7 +181,6 @@ impl Images {
             Some(Suffix::Jb2) => ("jb2", "image/x-jbig2"),
         };
         metadata.set("Content-Type", content_type);
-        let extension = if image.has_masks() { "png" } else { extension };
         let name = format!("image-{number}.{extension}");
         writer.start(
             "img",
@@ -246,7 +249,7 @@ fn write_to_buffer(image: &PdImage, extension: &str) -> Result<Vec<u8>, Unwritte
         )
         .into()),
         "jb2" => copied(image.data_until(&JB2)?),
-        _ => Ok(png_writer::write(&sampled::image(image)?)),
+        _ => Ok(png::write(&sampled::image(image)?)),
     }
 }
 

@@ -1614,16 +1614,73 @@ mod tests {
         assert_opens_as_tika(&documents);
     }
 
+    /// How many tests the documents of the corpora are compared in, each in time.
     #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts() {
-        let (parsed, _) = documents(&PdfParser, &corpora());
-        let (locked, open): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
+    const PARTS: usize = 4;
+
+    /// The documents of the corpora the native parser extracts, by size, dealt in turn to
+    /// [`PARTS`] parts of about the same size: those of `part`.
+    #[cfg(feature = "tika")]
+    fn part_of_the_corpora(part: usize) -> Vec<PathBuf> {
+        let (mut parsed, _) = documents(&PdfParser, &corpora());
+        parsed.sort_by_key(|path| (std::fs::metadata(path).unwrap().len(), path.clone()));
+        parsed
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| index % PARTS == part)
+            .map(|(_, path)| path)
+            .collect()
+    }
+
+    /// Compares the documents of `part` of the corpora, and the locked one in the first part:
+    /// it fails without its password, as on Tika's path.
+    #[cfg(feature = "tika")]
+    fn extracts_part_of_what_tikas_path_extracts(part: usize) {
+        let paths = part_of_the_corpora(part);
+        let (locked, open): (Vec<&Path>, Vec<&Path>) = as_paths(&paths)
             .into_iter()
             .partition(|path| path.ends_with("encrypted/user-password.pdf"));
-        assert_eq!(locked.len(), 1, "{locked:?}");
         crate::formats::parity::assert_fails_as_tika(&locked);
         assert_same_as_tika_delegating(&open, tika_name(), &DELEGATES);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn deals_every_document_of_the_corpora_to_one_part() {
+        let (mut parsed, _) = documents(&PdfParser, &corpora());
+        let mut dealt: Vec<PathBuf> = (0..PARTS).flat_map(part_of_the_corpora).collect();
+        parsed.sort();
+        dealt.sort();
+        assert_eq!(dealt, parsed);
+        let locked = parsed
+            .iter()
+            .filter(|path| path.ends_with("encrypted/user-password.pdf"))
+            .count();
+        assert_eq!(locked, 1);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_what_tikas_path_extracts_part_0() {
+        extracts_part_of_what_tikas_path_extracts(0);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_what_tikas_path_extracts_part_1() {
+        extracts_part_of_what_tikas_path_extracts(1);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_what_tikas_path_extracts_part_2() {
+        extracts_part_of_what_tikas_path_extracts(2);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_what_tikas_path_extracts_part_3() {
+        extracts_part_of_what_tikas_path_extracts(3);
     }
 
     #[cfg(feature = "tika")]

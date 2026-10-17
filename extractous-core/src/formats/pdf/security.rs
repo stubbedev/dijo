@@ -3,9 +3,10 @@
 //! password is the owner password, else as a user when it is the user password, which grants
 //! what the permission bits `P` grant; any other password fails the document.
 //!
-//! The RC4 revisions 2 to 4 are checked here as PDFBox checks them, its key derivation for the
-//! owner password included, which `lopdf` derives otherwise for 40-bit keys; `lopdf` then
-//! decrypts the document with the user password. The AES-256 revisions 5 and 6 are checked by
+//! The RC4 revisions 2 to 4 are checked here as PDFBox checks them, but for the key of an owner
+//! password shorter than 16 bytes: the specification hashes the whole digest again and again,
+//! PDFBox and qpdf only its first key-length bytes, and writers follow either, so both are tried
+//! (#129). `lopdf` then decrypts the document with the user password. The AES-256 revisions 5 and 6 are checked by
 //! `lopdf`, with the password encoded as PDFBox encodes it.
 
 use lopdf::encryption::PasswordAlgorithm;
@@ -179,8 +180,11 @@ impl Rc4Handler {
             .chars()
             .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
             .collect();
-        let recovered = self.user_password_of_owner(&bytes);
-        let (access, user_password) = if self.is_user_password(&recovered) {
+        let recovered = OwnerKeyHash::ALL
+            .into_iter()
+            .map(|hash| self.user_password_of_owner(&bytes, hash))
+            .find(|recovered| self.is_user_password(recovered));
+        let (access, user_password) = if let Some(recovered) = recovered {
             (Access::Owner, unpadded(&recovered))
         } else if self.is_user_password(&bytes) {
             (
@@ -243,12 +247,14 @@ impl Rc4Handler {
         data[..16] == self.user[..16]
     }
 
-    /// `getUserPassword234`: the padded user password `O` holds for the owner password.
-    fn user_password_of_owner(&self, owner_password: &[u8]) -> Vec<u8> {
+    /// `getUserPassword234`: the padded user password `O` holds for the owner password, its key
+    /// hashed as `hash` says.
+    fn user_password_of_owner(&self, owner_password: &[u8], hash: OwnerKeyHash) -> Vec<u8> {
         let mut digest = Md5::digest(padded(owner_password)).to_vec();
         if self.revision >= 3 {
+            let hashed = hash.hashed(self.length);
             for _ in 0..50 {
-                digest = Md5::digest(&digest[..self.length]).to_vec();
+                digest = Md5::digest(&digest[..hashed]).to_vec();
             }
         }
         let key = &digest[..self.length];
@@ -261,6 +267,28 @@ impl Rc4Handler {
             data = rc4(&iteration, &data);
         }
         data
+    }
+}
+
+/// How much of each digest the 50 rounds of revision 3 and later hash again when the key of an
+/// owner password is derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerKeyHash {
+    /// The first key-length bytes, as PDFBox's `computeRC4key` and qpdf hash them.
+    KeyLength,
+    /// All 16 bytes, as the specification's Algorithm 3 says.
+    Whole,
+}
+
+impl OwnerKeyHash {
+    const ALL: [Self; 2] = [Self::KeyLength, Self::Whole];
+
+    /// How many bytes of each digest are hashed again, for a key of `length` bytes.
+    fn hashed(self, length: usize) -> usize {
+        match self {
+            Self::KeyLength => length,
+            Self::Whole => 16,
+        }
     }
 }
 
@@ -377,8 +405,8 @@ mod tests {
     }
 
     /// The handler PDFBox's `computeOwnerPassword` and `computeUserPassword` would write for
-    /// the passwords, of revision 3 and a 40-bit key.
-    fn handler(owner_password: &[u8], user_password: &[u8]) -> Rc4Handler {
+    /// the passwords, of revision 3 and a 40-bit key, the owner key hashed as `hash` says.
+    fn handler(owner_password: &[u8], user_password: &[u8], hash: OwnerKeyHash) -> Rc4Handler {
         let mut handler = Rc4Handler {
             revision: 3,
             length: 5,
@@ -390,7 +418,7 @@ mod tests {
         };
         let mut digest = Md5::digest(padded(owner_password)).to_vec();
         for _ in 0..50 {
-            digest = Md5::digest(&digest[..handler.length]).to_vec();
+            digest = Md5::digest(&digest[..hash.hashed(handler.length)]).to_vec();
         }
         let key = &digest[..handler.length];
         let mut owner = rc4(key, &padded(user_password));
@@ -413,10 +441,9 @@ mod tests {
         handler
     }
 
-    #[test]
-    fn opens_with_the_owner_or_user_password_as_pdfbox_does() {
-        let handler = handler(b"ejer", b"bruger");
-        let opened = |password: &str| match handler.opening(password) {
+    /// What `handler` opens with `password`, and the user password it then decrypts with.
+    fn opened(handler: &Rc4Handler, password: &str) -> Option<(Access, String)> {
+        match handler.opening(password) {
             Ok(Opening::Rc4 {
                 access,
                 user_password,
@@ -424,7 +451,13 @@ mod tests {
             Ok(_) => unreachable!("RC4 encryption"),
             Err(Refusal::WrongPassword) => None,
             Err(Refusal::Unported(unported)) => panic!("{unported:?}"),
-        };
+        }
+    }
+
+    #[test]
+    fn opens_with_the_owner_or_user_password_as_pdfbox_does() {
+        let handler = handler(b"ejer", b"bruger", OwnerKeyHash::KeyLength);
+        let opened = |password: &str| opened(&handler, password);
         assert_eq!(opened("ejer"), Some((Access::Owner, "bruger".to_owned())));
         assert_eq!(
             opened("bruger"),
@@ -438,5 +471,17 @@ mod tests {
             assert_eq!(padded(&unpadded(&padded(password))), padded(password));
         }
         assert_eq!(unpadded(&padded(b"bruger")), b"bruger");
+    }
+
+    /// PDFBox opens a document whose owner key was hashed whole, as the specification says,
+    /// only with its user password (#129).
+    #[test]
+    fn opens_with_an_owner_password_hashed_as_the_specification_says() {
+        let handler = handler(b"ejer", b"bruger", OwnerKeyHash::Whole);
+        assert_eq!(
+            opened(&handler, "ejer"),
+            Some((Access::Owner, "bruger".to_owned()))
+        );
+        assert_eq!(opened(&handler, "forkert"), None);
     }
 }
