@@ -36,13 +36,6 @@ impl JInputStream {
         }
     }
 
-    pub(crate) fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        Ok(self.read_into(buf)?)
-    }
-
     fn read_into(&mut self, buf: &mut [u8]) -> ExtractResult<usize> {
         let read = self.isolate.with_env(|env| self.read_in_frame(env, buf))?;
         if read == 0 {
@@ -51,7 +44,7 @@ impl JInputStream {
         Ok(read)
     }
 
-    pub(crate) fn metadata(&self) -> ExtractResult<Metadata> {
+    pub fn metadata(&self) -> ExtractResult<Metadata> {
         if !self.finished {
             return Err(Error::StreamNotFinished);
         }
@@ -59,7 +52,7 @@ impl JInputStream {
             .with_env(|env| java_result_metadata(env, self.internal.as_obj()))
     }
 
-    pub(crate) fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
+    pub fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
         if !self.finished {
             return Err(Error::StreamNotFinished);
         }
@@ -95,6 +88,15 @@ impl JInputStream {
             read if read < 0 => Ok(0),
             read => Ok(read as usize),
         }
+    }
+}
+
+impl std::io::Read for JInputStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        Ok(self.read_into(buf)?)
     }
 }
 

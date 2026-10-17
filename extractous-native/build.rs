@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
+/// Tika's sources, which the native image is built from, relative to this crate.
+const TIKA_NATIVE_DIR: &str = "../extractous-core/tika-native";
 const TIKA_NATIVE_INPUTS: [&str; 5] = ["build.gradle", "gradle", "gradlew", "gradlew.bat", "src"];
 const FINGERPRINT_FILE: &str = ".fingerprint";
 const COMPRESSED_EXTENSION: &str = "gz";
@@ -128,7 +130,7 @@ fn link_static_libraries() {
 /// Embeds Tika's native image as a shared library: built with GraalVM unless a build with the
 /// same inputs left one, along with the OCR bundle.
 fn build_tika_library(out_dir: &Path, platform: Platform) {
-    let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join("tika-native");
+    let source_dir = PathBuf::from(required_env("CARGO_MANIFEST_DIR")).join(TIKA_NATIVE_DIR);
     for input in TIKA_NATIVE_INPUTS {
         println!(
             "cargo:rerun-if-changed={}",
@@ -670,8 +672,8 @@ fn relocate_graalvm_runpaths(content: &mut [u8], graalvm_home: &Path) -> Result<
 /// libraries linked into the image.
 fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle, linked_licenses: &Path) {
     let module = format!(
-        "pub(crate) const NATIVE_FINGERPRINT: &str = {:?};\n\
-         pub(crate) const LINKED_LICENSES: &str = include_str!({linked_licenses:?});\n{}",
+        "pub const NATIVE_FINGERPRINT: &str = {:?};\n\
+         pub const LINKED_LICENSES: &str = include_str!({linked_licenses:?});\n{}",
         format!("static-ocr-{}", ocr.fingerprint),
         ocr_items(Some(ocr))
     );
@@ -686,7 +688,7 @@ fn write_ocr_module(out_dir: &Path, ocr: Option<&OcrBundle>) {
         None => "no-ocr".to_string(),
     };
     let module = format!(
-        "pub(crate) const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n{}",
+        "pub const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n{}",
         ocr_items(ocr)
     );
     write_if_changed(&out_dir.join("native.rs"), &module);
@@ -707,17 +709,17 @@ fn ocr_items(ocr: Option<&OcrBundle>) -> String {
     let library = match ocr.map(|ocr| &ocr.tesseract) {
         Some(Tesseract::Linked) => String::new(),
         tesseract => format!(
-            "pub(crate) const OCR_TESSERACT_LIBRARY: Option<&str> = {:?};\n",
+            "pub const OCR_TESSERACT_LIBRARY: Option<&str> = {:?};\n",
             tesseract.and_then(Tesseract::library)
         ),
     };
     let heif_decoder = ocr.and_then(|ocr| ocr.heif_decoder.as_deref());
     format!(
         "{library}\
-         pub(crate) const OCR_HEIF_DECODER: Option<&str> = {heif_decoder:?};\n\
-         pub(crate) const OCR_MODELS: &str = {OCR_MODELS:?};\n\
-         pub(crate) static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
-         pub(crate) const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
+         pub const OCR_HEIF_DECODER: Option<&str> = {heif_decoder:?};\n\
+         pub const OCR_MODELS: &str = {OCR_MODELS:?};\n\
+         pub static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
+         pub const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
         ocr_files.len()
     )
 }
@@ -774,9 +776,9 @@ fn write_native_module(
         None => fingerprint.to_string(),
     };
     let module = format!(
-        "pub(crate) const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n\
-         pub(crate) const TIKA_LIBRARY: &str = {tika_library:?};\n\
-         pub(crate) static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n{}",
+        "pub const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n\
+         pub const TIKA_LIBRARY: &str = {tika_library:?};\n\
+         pub static NATIVE_LIBRARIES: [(&str, &[u8]); {}] = [\n{entries}];\n{}",
         libraries.len(),
         ocr_items(ocr)
     );

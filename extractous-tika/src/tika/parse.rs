@@ -3,13 +3,12 @@ use std::time::Duration;
 use crate::config::ParserConfigs;
 use crate::embedded::EmbeddedSpool;
 use crate::errors::{Error, ExtractResult};
-use crate::extractor::Stream;
 use crate::input::Source;
 use crate::isolate::Isolate;
 use crate::tika::jni_utils::*;
 use crate::tika::wrappers::*;
 use crate::unpack::EmbeddedExtractResult;
-use crate::{CharSet, Metadata, StreamReader};
+use crate::{CharSet, Metadata};
 use extractous_base::tika::EmbeddedEvents;
 use jni::objects::{JObject, JValue};
 use jni::Env;
@@ -106,20 +105,20 @@ fn timeout_millis(timeout: Option<Duration>) -> i64 {
 
 /// Parses a document into a stream of its text, decoded with `char_set`.
 /// How a streamed extraction is encoded, bounded and treats embedded documents.
-pub(crate) struct StreamOptions<'a> {
-    pub(crate) char_set: CharSet,
-    pub(crate) as_xml: bool,
-    pub(crate) timeout: Option<Duration>,
-    pub(crate) embedded: Option<&'a EmbeddedSpool>,
+pub struct StreamOptions<'a> {
+    pub char_set: CharSet,
+    pub as_xml: bool,
+    pub timeout: Option<Duration>,
+    pub embedded: Option<&'a EmbeddedSpool>,
 }
 
 /// Parses a document into a stream of its text.
-pub(crate) fn parse_to_stream(
+pub fn parse_to_stream(
     isolate: &'static Isolate,
     source: Source,
     configs: &ParserConfigs,
     options: &StreamOptions,
-) -> ExtractResult<(StreamReader, Metadata)> {
+) -> ExtractResult<(JInputStream, Metadata)> {
     let (stream, metadata) = isolate.with_env(|env| {
         let char_set_obj: JObject = jni_new_string(env, &options.char_set.to_string())?.into();
         let spool_dir_obj: JObject = match options.embedded {
@@ -157,17 +156,11 @@ pub(crate) fn parse_to_stream(
         let (stream, metadata) = reader_result(env, &result)?;
         Ok::<_, Error>((env.new_global_ref(stream)?, metadata))
     })?;
-    let inner = JInputStream::new(isolate, stream);
-    Ok((
-        StreamReader {
-            inner: Stream::Tika(inner),
-        },
-        metadata,
-    ))
+    Ok((JInputStream::new(isolate, stream), metadata))
 }
 
 /// Parses a document into a string of at most `max_length` characters.
-pub(crate) fn parse_to_string(
+pub fn parse_to_string(
     isolate: &Isolate,
     source: Source,
     max_length: i32,
@@ -191,7 +184,7 @@ pub(crate) fn parse_to_string(
 }
 
 /// Extracts the documents embedded in a document, such as images and attachments.
-pub(crate) fn extract_embedded(
+pub fn extract_embedded(
     isolate: &Isolate,
     source: Source,
     configs: &ParserConfigs,
@@ -213,13 +206,13 @@ pub(crate) fn extract_embedded(
 }
 
 /// Detects the media type of a document with Tika's default detector.
-pub(crate) fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String> {
+pub fn detect(isolate: &Isolate, source: Source) -> ExtractResult<String> {
     detect_with_metadata(isolate, source).map(|(media_type, _)| media_type)
 }
 
 /// Detects the media type of a document with Tika's default detector, with the metadata opening
 /// the input and detecting it set: the resource name, the length and what the detectors record.
-pub(crate) fn detect_with_metadata(
+pub fn detect_with_metadata(
     isolate: &Isolate,
     source: Source,
 ) -> ExtractResult<(String, Metadata)> {
@@ -241,7 +234,7 @@ pub(crate) fn detect_with_metadata(
 /// Parses a document embedded in one a native parser reads, as Tika parses an embedded document:
 /// with the embedding extraction's settings, given the metadata the embedding parser gives it as
 /// names with their values, in order, which go to Java as `EventRecorder` encodes strings.
-pub(crate) fn parse_embedded(
+pub fn parse_embedded(
     isolate: &Isolate,
     data: &[u8],
     metadata: &[(&str, &str)],
@@ -279,7 +272,7 @@ pub(crate) fn parse_embedded(
 
 /// Waits for every parse in the isolate to end, cancelled ones included, for at most `timeout`.
 /// Returns whether they all did.
-pub(crate) fn await_idle_parses(isolate: &Isolate, timeout: Duration) -> ExtractResult<bool> {
+pub fn await_idle_parses(isolate: &Isolate, timeout: Duration) -> ExtractResult<bool> {
     isolate.with_env(|env| {
         let millis = i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX);
         Ok(jni_call_static_method(

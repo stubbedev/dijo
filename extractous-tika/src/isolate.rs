@@ -12,14 +12,13 @@ use crate::errors::Error;
 use crate::errors::ExtractResult;
 #[cfg(feature = "tika")]
 use crate::tika::{self, native};
-use extractous_base::isolate::{self, IsolateSettings};
-pub(crate) use extractous_base::isolate::{heap_cap, processors, temp_dir};
+pub use extractous_base::isolate::*;
 
 /// The GraalVM isolate Tika runs in. There is one per process: the JDK's AWT native libraries,
 /// which PDF page rendering for OCR needs, keep process-wide state tied to the first isolate
 /// that loads them, so in any further isolate rendering silently produces empty page images.
 #[cfg(feature = "tika")]
-pub(crate) struct Isolate {
+pub struct Isolate {
     vm: JavaVM,
 }
 
@@ -28,7 +27,7 @@ impl Isolate {
     /// Runs `f` on the current thread attached to the isolate, in a local frame of its own: the
     /// local references `f` creates are freed when it returns. A thread attached only for `f` is
     /// detached again.
-    pub(crate) fn with_env<T>(
+    pub fn with_env<T>(
         &self,
         f: impl FnOnce(&mut Env<'_>) -> ExtractResult<T>,
     ) -> ExtractResult<T> {
@@ -48,16 +47,16 @@ static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
 
 /// The process-wide isolate, created on first use.
 #[cfg(feature = "tika")]
-pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
+pub fn isolate() -> ExtractResult<&'static Isolate> {
     ISOLATE
-        .get_or_init(|| native::create_isolate(isolate::settings()).map(|vm| Isolate { vm }))
+        .get_or_init(|| native::create_isolate(settings()).map(|vm| Isolate { vm }))
         .as_ref()
         .map_err(|message| Error::NativeLibrary(message.clone()))
 }
 
 /// Whether the process has created its isolate, which nothing but Tika's path needs.
-#[cfg(all(test, feature = "tika"))]
-pub(crate) fn isolate_created() -> bool {
+#[cfg(feature = "tika")]
+pub fn isolate_created() -> bool {
     ISOLATE.get().is_some()
 }
 
@@ -69,7 +68,7 @@ pub fn configure_isolate(settings: IsolateSettings) -> ExtractResult<()> {
             "The isolate must be configured before the first extraction".to_string(),
         ));
     }
-    isolate::configure(settings)
+    configure(settings)
 }
 
 /// Waits, for at most `timeout`, until every extraction on Tika's path has ended, including those

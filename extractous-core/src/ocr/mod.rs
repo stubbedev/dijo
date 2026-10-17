@@ -101,8 +101,18 @@ pub(crate) fn read_image(
 /// bundled (`EXTRACTOUS_OCR_BUNDLE`), linked into the static executable or loaded from the
 /// bundle's library, or `tesseract` on `PATH` as `tesseract --version` reports it.
 pub fn tesseract_version() -> ExtractResult<String> {
-    bundle::tesseract_version().map_err(Error::IoError)
+    linked_or_bundled_version().map_err(Error::IoError)
 }
+
+/// The version of the tesseract linked into the static executable, which native readings
+/// and Tika's path both run.
+#[cfg(feature = "static")]
+fn linked_or_bundled_version() -> Result<String, String> {
+    tesseract().map(|tesseract| bundle::linked_version(&tesseract.version()))
+}
+
+#[cfg(not(feature = "static"))]
+use bundle::tesseract_version as linked_or_bundled_version;
 
 /// Whether tesseract runs, found once per process as `TikaNativeMain` finds it once: the bundled
 /// one, or one on `PATH` that answers `--version`. With one, Tika reads images and PDF pages with

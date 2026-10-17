@@ -14,7 +14,7 @@ use flate2::read::GzDecoder;
 include!(concat!(env!("OUT_DIR"), "/native.rs"));
 
 /// The embedded files, unpacked once into a cache directory named after them.
-pub(crate) fn unpacked() -> Result<&'static Path, String> {
+pub fn unpacked() -> Result<&'static Path, String> {
     static UNPACKED: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     UNPACKED
         .get_or_init(install_dir)
@@ -116,7 +116,7 @@ fn make_executable(_: &Path) -> io::Result<()> {
 }
 
 /// The language data the build bundled, unpacked, or none when it bundled none.
-pub(crate) fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
+pub fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
     if OCR_FILES.is_empty() {
         return Ok(None);
     }
@@ -125,7 +125,7 @@ pub(crate) fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
 
 /// The tesseract library the build bundled, unpacked, if it bundled one.
 #[cfg(not(feature = "static"))]
-pub(crate) fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
+pub fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
     OCR_TESSERACT_LIBRARY
         .map(|library| Ok(unpacked()?.join(library)))
         .transpose()
@@ -133,7 +133,7 @@ pub(crate) fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
 
 /// The heif-png the build bundled, unpacked, if it bundled one.
 #[cfg(not(feature = "static"))]
-pub(crate) fn bundled_heif_decoder() -> Result<Option<PathBuf>, String> {
+pub fn bundled_heif_decoder() -> Result<Option<PathBuf>, String> {
     OCR_HEIF_DECODER
         .map(|decoder| Ok(unpacked()?.join(decoder)))
         .transpose()
@@ -142,18 +142,11 @@ pub(crate) fn bundled_heif_decoder() -> Result<Option<PathBuf>, String> {
 /// The version of the tesseract the build runs: the bundled library, or without a bundle the
 /// program on the PATH.
 #[cfg(not(feature = "static"))]
-pub(crate) fn tesseract_version() -> Result<String, String> {
+pub fn tesseract_version() -> Result<String, String> {
     match OCR_TESSERACT_LIBRARY {
         Some(library) => library_version(&unpacked()?.join(library)),
         None => program_version(Path::new("tesseract")),
     }
-}
-
-/// The version of the tesseract linked into the static executable, which native readings
-/// and Tika's path both run.
-#[cfg(feature = "static")]
-pub(crate) fn tesseract_version() -> Result<String, String> {
-    crate::ocr::tesseract().map(|tesseract| linked_version(&tesseract.version()))
 }
 
 #[cfg(not(feature = "static"))]
@@ -184,7 +177,7 @@ fn library_version(library: &Path) -> Result<String, String> {
     ))
 }
 
-fn linked_version(version: &str) -> String {
+pub fn linked_version(version: &str) -> String {
     format!("tesseract {version} (linked)")
 }
 

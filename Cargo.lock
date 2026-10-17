@@ -794,17 +794,17 @@ version = "0.2.1"
 dependencies = [
  "ar",
  "arrayvec",
- "bytemuck",
  "cpio",
  "criterion",
  "extractous-base",
+ "extractous-native",
+ "extractous-tika",
  "fancy-regex",
  "flate2",
  "hayro",
  "hayro-jbig2",
  "hayro-jpeg2000",
  "image",
- "jni",
  "lcms2-sys",
  "libc",
  "libloading",
@@ -813,7 +813,6 @@ dependencies = [
  "lzxd",
  "md-5",
  "memchr",
- "object",
  "png",
  "pulldown-cmark",
  "quick-xml",
@@ -835,9 +834,29 @@ dependencies = [
  "unicode-normalization",
  "unicode-script",
  "ureq",
- "walkdir",
- "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "extractous-native"
+version = "0.2.1"
+dependencies = [
+ "flate2",
+ "libloading",
+ "object",
+ "walkdir",
+]
+
+[[package]]
+name = "extractous-tika"
+version = "0.2.1"
+dependencies = [
+ "bytemuck",
+ "extractous-base",
+ "extractous-native",
+ "jni",
+ "libloading",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

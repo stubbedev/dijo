@@ -2,7 +2,7 @@
 //! image this crate is linked into.
 
 use crate::bundle::{unpacked, OCR_FILES, OCR_HEIF_DECODER, OCR_MODELS};
-use crate::IsolateSettings;
+use crate::isolate::IsolateSettings;
 
 #[cfg(not(feature = "static-image"))]
 pub(crate) use shared_library::create_isolate;
@@ -53,8 +53,8 @@ mod static_image {
 
     use super::system_properties;
     use crate::errors::Error;
+    use crate::isolate::IsolateSettings;
     use crate::tika::jni_utils::{jni_call_static_method, jni_new_string};
-    use crate::IsolateSettings;
 
     const STATIC_IMAGE: &str = "ai/yobix/StaticImage";
 
@@ -135,7 +135,7 @@ mod shared_library {
 
     use super::system_properties;
     use crate::bundle::{unpacked, TIKA_LIBRARY};
-    use crate::IsolateSettings;
+    use crate::isolate::IsolateSettings;
 
     type CreateJavaVm = unsafe extern "system" fn(
         *mut *mut sys::JavaVM,

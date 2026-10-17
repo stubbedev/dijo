@@ -85,7 +85,7 @@ impl std::io::Read for StreamReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match &mut self.inner {
             #[cfg(feature = "tika")]
-            Stream::Tika(stream) => stream.read(buf),
+            Stream::Tika(stream) => std::io::Read::read(stream, buf),
             Stream::Native(stream) => stream.read(buf),
         }
     }
@@ -376,7 +376,11 @@ impl Extractor {
             timeout: deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
             embedded,
         };
-        tika::parse_to_stream(isolate()?, source, configs, &options)
+        let (stream, metadata) = tika::parse_to_stream(isolate()?, source, configs, &options)?;
+        let reader = StreamReader {
+            inner: Stream::Tika(stream),
+        };
+        Ok((reader, metadata))
     }
 
     /// Fails a document no native parser reads, in a build without Tika, with why.

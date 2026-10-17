@@ -413,9 +413,9 @@ parity *args:
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     target={{justfile_directory()}}/target
-    for libs in "$target"/debug/build/extractous-core-*/out/libs "$target"/release/build/extractous-core-*/out/libs; do
+    for libs in "$target"/debug/build/extractous-*/out/libs "$target"/release/build/extractous-*/out/libs; do
         [ -f "$libs/.fingerprint" ] || continue
-        seed="$target/parity/build/extractous-core-seed-$(cat "$libs/.fingerprint")/out/libs"
+        seed="$target/parity/build/extractous-native-seed-$(cat "$libs/.fingerprint")/out/libs"
         if [ ! -f "$seed/.fingerprint" ]; then
             mkdir -p "$seed"
             cp -a "$libs/." "$seed/"

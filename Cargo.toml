@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["extractous-base", "extractous-core", "extractous-cli"]
+members = [
+    "extractous-base",
+    "extractous-native",
+    "extractous-tika",
+    "extractous-core",
+    "extractous-cli",
+]
 
 [profile.dev]
 opt-level = 1
