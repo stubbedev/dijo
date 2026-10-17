@@ -137,7 +137,7 @@ fn prepare(stream: &mut RecordStream<'_>) -> Read<Biff> {
 }
 
 /// `OldSheetRecord`'s name: its bytes past a leading zero byte, as many of the length it gives
-/// as the record holds, the rest zeros.
+/// as the record holds. POI fills the rest with zeros (#119).
 fn read_sheet_name(stream: &mut RecordStream<'_>) -> Read<Vec<u8>> {
     stream.read_i32()?;
     stream.read_u8()?;
@@ -146,9 +146,7 @@ fn read_sheet_name(stream: &mut RecordStream<'_>) -> Read<Vec<u8>> {
     if length > 0 && stream.peek_u8()? == 0 {
         stream.read_u8()?;
     }
-    let mut name = stream.read_up_to(length)?;
-    name.resize(length, 0);
-    Ok(name)
+    stream.read_up_to(length)
 }
 
 /// `OldCellRecord`: the row, column and attributes or style of a cell.
@@ -165,7 +163,7 @@ fn read_old_cell(stream: &mut RecordStream<'_>, biff2: bool) -> Read<()> {
 }
 
 /// The bytes of an `OldLabelRecord` or `OldStringRecord`: as many of the length it gives as
-/// the record holds, the rest zeros.
+/// the record holds. POI fills the rest with zeros (#119).
 fn read_string(stream: &mut RecordStream<'_>, biff2: bool) -> Read<Vec<u8>> {
     let length = if biff2 {
         i32::from(stream.read_u8()?)
@@ -174,9 +172,7 @@ fn read_string(stream: &mut RecordStream<'_>, biff2: bool) -> Read<Vec<u8>> {
     };
     let length = usize::try_from(length)
         .map_err(|_| Thrown(format!("Can't allocate an array of length {length}")))?;
-    let mut bytes = stream.read_up_to(length)?;
-    bytes.resize(length, 0);
-    Ok(bytes)
+    stream.read_up_to(length)
 }
 
 /// `OldFormulaRecord`'s number, `None` where its cached value is of another type.

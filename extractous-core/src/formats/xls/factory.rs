@@ -24,8 +24,6 @@ const NEVER_ENCRYPTED: [u16; 3] = [sid::BOF, 0x00E1, sid::FILE_PASS];
 /// `FilePassRecord`'s encryption types.
 const XOR_OBFUSCATION: u16 = 0;
 const RC4_ENCRYPTION: u16 = 1;
-/// What `WriteProtectRecord.getRecordSize` measures it as, whatever it holds.
-const WRITE_PROTECT_SIZE: usize = 4;
 
 /// What a record before a `CONTINUE` record makes of it, by the class of POI's `_lastRecord`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,15 +57,9 @@ pub(super) struct Records<'a> {
     last_was_eof_level_zero: bool,
     /// The data of each drawing group, joined with what followed it.
     pub(super) drawing_groups: Vec<Vec<u8>>,
-    /// The `FILEPASS` record the first records end with, after which POI decrypts.
-    file_pass: Option<FilePass>,
-}
-
-/// A `FILEPASS` record the first records end with.
-struct FilePass {
-    data: Vec<u8>,
-    /// What `StreamEncryptionInfo` measures the records before it as.
-    measured_before: usize,
+    /// The data of the `FILEPASS` record the first records end with, after which the stream is
+    /// encrypted.
+    file_pass: Option<Vec<u8>>,
 }
 
 fn last_of(record: &Record) -> Last {
@@ -87,19 +79,15 @@ impl<'a> Records<'a> {
         let mut stream = RecordStream::new(data);
         let mut unread = VecDeque::new();
         stream.next_record()?;
-        let mut measured = 4 + stream.remaining() as usize;
         let first = read_record(&mut stream)?;
         let has_bof = matches!(first, Record::Bof { .. });
         let mut last = first.clone();
         unread.extend(cells(stream.sid(), first)?);
-        let mut measured_before = measured;
         if has_bof && stream.has_next_record()? {
             stream.next_record()?;
             last = read_record(&mut stream)?;
             unread.extend(cells(stream.sid(), last.clone())?);
             if last == Record::WriteProtect && stream.has_next_record()? {
-                measured += WRITE_PROTECT_SIZE;
-                measured_before = measured;
                 stream.next_record()?;
                 last = read_record(&mut stream)?;
                 unread.extend(cells(stream.sid(), last.clone())?);
@@ -109,10 +97,7 @@ impl<'a> Records<'a> {
             }
         }
         let file_pass = match &last {
-            Record::FilePass(data) => Some(FilePass {
-                data: data.clone(),
-                measured_before,
-            }),
+            Record::FilePass(data) => Some(data.clone()),
             _ => None,
         };
         Ok(Records {
@@ -131,22 +116,15 @@ impl<'a> Records<'a> {
     /// decrypted as `Biff8DecryptingStream` reads them, each record's type and length plain and
     /// the data of every record but those `isNeverEncryptedRecord` names decrypted by its
     /// position in the stream; failing as Tika's path does where the password does not open
-    /// the encryption.
+    /// the encryption. The position is where the records are; POI measures the records before
+    /// as it would write them, a `WRITEPROTECT` of four bytes and a missing CSP name as an empty
+    /// one, and decrypts out of step where they are otherwise (#119).
     pub(super) fn decrypt(&mut self, configs: &ParserConfigs) -> Result<(), Declined> {
         let Some(file_pass) = &self.file_pass else {
             return Ok(());
         };
-        let info = file_pass_encryption(&file_pass.data)?;
-        let measured = file_pass.measured_before + 4 + 2 + info.written_length();
+        let info = file_pass_encryption(file_pass)?;
         let start = self.stream.position();
-        if measured != start {
-            return Err(Unported(
-                "an encrypted workbook whose first records POI measures otherwise than they are, \
-                 which it decrypts out of step"
-                    .to_owned(),
-            )
-            .into());
-        }
         let password = crypt::password(configs);
         let keys = info.verify(password).ok_or_else(|| {
             let given = if password == crypt::DEFAULT_PASSWORD {
@@ -301,7 +279,7 @@ fn file_pass_encryption(data: &[u8]) -> Result<EncryptionInfo, Unported> {
 }
 
 /// The records of `data` from `start` decrypted in place as `Biff8DecryptingStream` reads them.
-fn decrypt_records(keys: &Rc4Keys, data: &mut [u8], start: usize) {
+pub(super) fn decrypt_records(keys: &Rc4Keys, data: &mut [u8], start: usize) {
     let mut key_stream = ChunkedKeyStream::new(keys, RC4_REKEYING_INTERVAL);
     let mut at = start;
     while at + 4 <= data.len() {
