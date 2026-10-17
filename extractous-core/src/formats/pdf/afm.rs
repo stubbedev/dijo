@@ -2,10 +2,10 @@
 //! metrics files, without their kerning pairs (`models/pdf/afm/`, written by
 //! `just pdf-resources`), found by the names and aliases PDFBox maps to them.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use super::encoding::Encoding;
+use crate::hash::FastMap;
 
 /// The standard 14 fonts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,7 +79,7 @@ impl Standard14 {
     }
 }
 
-static METRICS: LazyLock<HashMap<Standard14, FontMetrics>> = LazyLock::new(|| {
+static METRICS: LazyLock<FastMap<Standard14, FontMetrics>> = LazyLock::new(|| {
     use Standard14::*;
     [
         TimesRoman,
@@ -120,7 +120,7 @@ pub(super) struct FontMetrics {
     pub(super) descender: f32,
     pub(super) cap_height: f32,
     pub(super) char_metrics: Vec<CharMetric>,
-    widths: HashMap<String, f32>,
+    widths: FastMap<String, f32>,
 }
 
 impl FontMetrics {
@@ -133,7 +133,7 @@ impl FontMetrics {
             descender: 0.0,
             cap_height: 0.0,
             char_metrics: Vec::new(),
-            widths: HashMap::new(),
+            widths: FastMap::default(),
         };
         let number = |text: &str| {
             text.parse::<f32>().unwrap_or_else(|e| {

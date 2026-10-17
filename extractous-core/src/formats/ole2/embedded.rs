@@ -5,29 +5,88 @@
 //! storage as a compound document of its own, written so that POI iterates it as it iterated the
 //! storage.
 
+use crate::config::ParserConfigs;
+use crate::formats::embedded::Wrapping;
 use crate::formats::embedded::{RELATIONSHIP_ID, RESOURCE_NAME};
 use crate::formats::metadata::office::{
     EMBEDDED_STORAGE_CLASS_ID, OCX_NAME, ORIGINAL_RESOURCE_NAME, RESOURCE_NAME_EXTENSION_INFERRED,
 };
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::msg::{EmbeddedMessage, MsgParser};
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
-use crate::formats::Unported;
+use crate::formats::xhtml::Xhtml;
+use crate::formats::{Failure, Parser, Unported};
 use crate::java::equals_ignore_case;
 use crate::java::is_blank;
 use crate::java::to_lower_case;
-use crate::mime::{self, ole_container_type, ole_directory_type, MediaType, Origin};
+use crate::mime::{self, ole_directory_type, MediaType, Origin};
 use crate::ole2::{class_id_string, write, EntryId, EntryKind, Ole2, Unreadable};
 
 const CONTENT_TYPE: &str = "Content-Type";
 const CONTENT_LENGTH: &str = "Content-Length";
 const OLE10_NATIVE: &str = "\u{1}Ole10Native";
 const OCX_NAME_ENTRY: &str = "\u{3}OCXNAME";
+const OUTLOOK: &str = "application/vnd.ms-outlook";
+const GRAPH: &str = "application/vnd.ms-graph";
+/// The streams `tryToGetMsgTitle` takes a message's title from, in order.
+const MESSAGE_TITLES: [&str; 3] = [
+    "__substg1.0_0037001F",
+    "__substg1.0_0E1D001F",
+    "__substg1.0_0070001F",
+];
 
 /// A document handed on to be parsed, with the metadata Tika gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Embedded {
     pub(crate) data: Vec<u8>,
     pub(crate) metadata: TikaMetadata,
+}
+
+/// What `handleEmbeddedOfficeDoc` hands on: a document, which Tika parses from its bytes; a
+/// storage, which Tika parses from the storage itself, handed on as an open container, and the
+/// native path from the storage written as a compound document of its own; or an Outlook
+/// message stored in another document, which Tika's `OfficeParser` reads from its storage as a
+/// message embedded in another, and the native one reads alike.
+#[derive(Debug)]
+pub(crate) enum Handed {
+    Document(Embedded),
+    Storage(Embedded),
+    Message(Box<StoredMessage>),
+}
+
+/// An Outlook message read from its storage, with the metadata Tika hands it on with.
+pub(crate) struct StoredMessage {
+    message: EmbeddedMessage,
+    metadata: TikaMetadata,
+}
+
+impl std::fmt::Debug for StoredMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredMessage")
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Handed {
+    /// `parseEmbedded` of what is handed on, wrapped as `wrapping` says.
+    pub(crate) fn write(self, xhtml: &mut Xhtml, wrapping: Wrapping) -> Result<(), Failure> {
+        match self {
+            Handed::Document(Embedded { data, metadata }) => {
+                xhtml.parse_embedded(&data, &metadata, wrapping)
+            }
+            Handed::Storage(Embedded { data, metadata }) => {
+                xhtml.parse_embedded_container(&data, &metadata, wrapping)
+            }
+            Handed::Message(stored) => {
+                let StoredMessage { message, metadata } = *stored;
+                xhtml.parse_container_natively(&metadata, wrapping, MsgParser.name(), |child| {
+                    message.write(child)
+                })
+            }
+        }
+    }
 }
 
 /// POI's `POIFSDocumentType`: what Tika's container detector names a storage, and the extension
@@ -65,14 +124,15 @@ fn document_type(media_type: &MediaType) -> (MediaType, &'static str) {
 }
 
 /// `handleEmbeddedOfficeDoc(dir, metadata, resourceName, xhtml, outputHtml)`: the document to
-/// hand on, with `metadata` and what Tika adds to it,
+/// hand on, with `metadata` and what Tika adds to it, an embedded message read under `configs`;
 /// `None` where Tika hands on nothing, or why Tika records a failure or fails instead.
 pub(crate) fn office_document(
     file: &Ole2<'_>,
     directory: EntryId,
     mut metadata: TikaMetadata,
     resource_name: Option<&str>,
-) -> Result<Option<Embedded>, Unported> {
+    configs: &ParserConfigs,
+) -> Result<Option<Handed>, Unported> {
     let name = file.name(directory);
     let class_id = class_id_string(&file.class_id(directory));
     let package = file
@@ -84,7 +144,7 @@ pub(crate) fn office_document(
         metadata.set(RELATIONSHIP_ID, name);
         metadata.set(EMBEDDED_STORAGE_CLASS_ID, class_id);
         metadata.set(CONTENT_TYPE, mime::zip_container_type(&data).to_string());
-        return Ok(Some(Embedded { data, metadata }));
+        return Ok(Some(Handed::Document(Embedded { data, metadata })));
     }
     metadata.set(RELATIONSHIP_ID, name.clone());
     metadata.set(EMBEDDED_STORAGE_CLASS_ID, class_id);
@@ -96,28 +156,20 @@ pub(crate) fn office_document(
         == MediaType::parse("application/x-tika-msoffice-embedded; format=ole10_native")
             .expect("a media type")
     {
-        return ole_native(file, directory, &resource, metadata);
+        return Ok(ole_native(file, directory, &resource, metadata)?.map(Handed::Document));
     }
     if kind
         == MediaType::parse("application/x-tika-msoffice-embedded; format=comp_obj")
             .expect("a media type")
     {
-        return contents(file, directory, &resource, metadata);
+        return Ok(contents(file, directory, &resource, metadata)?.map(Handed::Document));
     }
-    if kind == MediaType::named("application/vnd.ms-outlook") {
-        return Err(Unported(
-            "an embedded Outlook message, whose properties POI reads as those of a message \
-             stored in another, and as a message of its own once handed on"
-                .to_owned(),
-        ));
-    }
-    let contained = ole_container_type(file, directory);
-    if contained != detected {
-        return Err(Unported(format!(
-            "an embedded storage Tika hands on as its open container, which its detection names \
-             by its names alone, as {contained}, where its copy is {detected}"
-        )));
-    }
+    let outlook = kind == MediaType::named(OUTLOOK);
+    let resource = if outlook {
+        message_title(file, directory).unwrap_or(resource)
+    } else {
+        resource
+    };
     metadata.set(CONTENT_TYPE, kind.to_string());
     if !is_blank(&resource) {
         if extension.is_empty() {
@@ -134,9 +186,52 @@ pub(crate) fn office_document(
         .sum::<Result<usize, Unreadable>>()
         .map_err(unreadable)?;
     metadata.set(CONTENT_LENGTH, size.to_string());
+    if outlook && directory != file.root() {
+        let message = EmbeddedMessage::read(file, directory, configs)?;
+        return Ok(Some(Handed::Message(Box::new(StoredMessage {
+            message,
+            metadata,
+        }))));
+    }
+    if kind == MediaType::named(GRAPH) {
+        return Err(Unported(
+            "an MS Graph storage, which Tika's detection names by its class as the open container \
+             Tika hands on, and by its streams as the bytes our Java parses"
+                .to_owned(),
+        ));
+    }
     let storage = file.storage(directory).map_err(unreadable)?;
     let data = write(&storage).map_err(unreadable)?;
-    Ok(Some(Embedded { data, metadata }))
+    Ok(Some(Handed::Storage(Embedded { data, metadata })))
+}
+
+/// `tryToGetMsgTitle`: the subject, conversation topic or display name of a message storage,
+/// the first of its streams there is, decoded as UTF-16LE up to a NUL that ends it. POI takes the
+/// first 1000 bytes of the stream, which may cut a long title and split a character (#119).
+fn message_title(file: &Ole2<'_>, directory: EntryId) -> Option<String> {
+    MESSAGE_TITLES.iter().find_map(|name| {
+        let entry = file.child(directory, name)?;
+        if file.kind(entry) != EntryKind::Document {
+            return None;
+        }
+        let mut title = utf16_le(&file.read(entry).ok()?);
+        if let Some(end) = title.find('\0') {
+            title.truncate(end);
+        }
+        Some(title)
+    })
+}
+
+/// Bytes decoded as Java's UTF-16LE decoder replaces what it cannot decode: each surrogate
+/// without its pair, and a last odd byte, as U+FFFD.
+fn utf16_le(bytes: &[u8]) -> String {
+    let (pairs, rest) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    let mut text = String::from_utf16_lossy(&units);
+    if !rest.is_empty() {
+        text.push(char::REPLACEMENT_CHARACTER);
+    }
+    text
 }
 
 fn unreadable(Unreadable(reason): Unreadable) -> Unported {
@@ -304,7 +399,42 @@ mod tests {
     fn handed_on(data: &[u8]) -> Option<Embedded> {
         let file = Ole2::open(data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();
-        office_document(&file, object, TikaMetadata::new(), None).unwrap()
+        match office_document(
+            &file,
+            object,
+            TikaMetadata::new(),
+            None,
+            &ParserConfigs::default(),
+        )
+        .unwrap()?
+        {
+            Handed::Document(embedded) | Handed::Storage(embedded) => Some(embedded),
+            Handed::Message(message) => panic!("a document, not {message:?}"),
+        }
+    }
+
+    #[test]
+    fn leaves_an_ms_graph_storage_to_tika() {
+        let data = embedding(vec![
+            (units("Workbook"), Node::Document(vec![1; 10])),
+            (
+                units("\u{1}CompObj"),
+                Node::Document(b"..MSGraph.Chart.8..".to_vec()),
+            ),
+        ]);
+        let file = Ole2::open(&data).unwrap();
+        let object = file.child(file.root(), "_123").unwrap();
+        let handed = office_document(
+            &file,
+            object,
+            TikaMetadata::new(),
+            None,
+            &ParserConfigs::default(),
+        );
+        assert!(
+            matches!(&handed, Err(Unported(reason)) if reason.contains("MS Graph")),
+            "{handed:?}"
+        );
     }
 
     #[test]
@@ -341,17 +471,61 @@ mod tests {
     }
 
     #[test]
-    fn leaves_an_embedded_message_to_tika() {
-        let data = embedding(vec![(
-            units("__substg1.0_0037001F"),
-            Node::Document(vec![b'a', 0]),
-        )]);
+    fn reads_a_stored_message_natively_named_by_its_subject() {
+        let data = embedding(vec![
+            (
+                units("__substg1.0_0037001F"),
+                Node::Document(vec![b'H', 0, b'i', 0, 7]),
+            ),
+            (
+                units("__properties_version1.0"),
+                Node::Document(vec![0; 24]),
+            ),
+        ]);
         let file = Ole2::open(&data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();
-        assert!(matches!(
-            office_document(&file, object, TikaMetadata::new(), None),
-            Err(Unported(reason)) if reason.contains("Outlook message")
-        ));
+        let handed = office_document(
+            &file,
+            object,
+            TikaMetadata::new(),
+            None,
+            &ParserConfigs::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let Handed::Message(stored) = handed else {
+            panic!("a stored message, not {handed:?}");
+        };
+        assert_eq!(
+            stored.metadata.get(CONTENT_TYPE),
+            Some("application/vnd.ms-outlook")
+        );
+        assert_eq!(stored.metadata.get(RESOURCE_NAME), Some("Hi\u{fffd}.msg"));
+    }
+
+    #[test]
+    fn decodes_a_title_as_java_decodes_utf_16() {
+        assert_eq!(utf16_le(&[0x00, 0xD8, b'a', 0, 1]), "\u{fffd}a\u{fffd}");
+    }
+
+    #[test]
+    fn names_a_stored_message_by_its_whole_subject() {
+        let subject: Vec<u8> = "\u{e9}"
+            .repeat(600)
+            .encode_utf16()
+            .chain([0, 0x41])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let data = embedding(vec![
+            (units("__substg1.0_0037001F"), Node::Document(subject)),
+            (
+                units("__properties_version1.0"),
+                Node::Document(vec![0; 24]),
+            ),
+        ]);
+        let file = Ole2::open(&data).unwrap();
+        let object = file.child(file.root(), "_123").unwrap();
+        assert_eq!(message_title(&file, object), Some("\u{e9}".repeat(600)));
     }
 
     #[test]

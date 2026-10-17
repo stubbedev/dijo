@@ -7,8 +7,6 @@ pub(super) enum Thrown {
     /// A runtime exception: a read past the end, a position outside the bytes, or a length
     /// below zero or above a record's largest.
     Runtime,
-    /// `EOFException`: fewer bytes left than a length asks for.
-    EndOfFile,
 }
 
 /// The bytes of a document, read from a position up to a count, as
@@ -109,20 +107,6 @@ impl<'a> Reader<'a> {
             self.position += 1;
         }
     }
-
-    /// `IOUtils.toByteArray(stream, length, maxLength)`: `length` bytes, or with a negative
-    /// length as many as are left up to `max_length`.
-    pub(super) fn read_bounded(&mut self, length: i32, max_length: i32) -> Result<Vec<u8>, Thrown> {
-        if length > max_length {
-            return Err(Thrown::Runtime);
-        }
-        let wanted = if length >= 0 { length } else { max_length };
-        let bytes = self.read_up_to(wanted as usize);
-        if length >= 0 && bytes.len() < length as usize {
-            return Err(Thrown::EndOfFile);
-        }
-        Ok(bytes.to_vec())
-    }
 }
 
 /// `IOUtils.safelyAllocate`'s check: the length, if it lies between zero and `max_length`.
@@ -146,10 +130,6 @@ mod tests {
         reader.skip_padding();
         assert_eq!(reader.position(), 8);
         assert_eq!(reader.read_i32(), Err(Thrown::Runtime));
-        assert_eq!(reader.read_bounded(2, 10), Err(Thrown::EndOfFile));
-        let mut reader = Reader::new(&data, 6);
-        assert_eq!(reader.read_bounded(-1, 10), Ok(vec![0, 0, 7]));
-        assert_eq!(reader.read_bounded(11, 10), Err(Thrown::Runtime));
         assert_eq!(allocation(-1, 10), Err(Thrown::Runtime));
         assert_eq!(allocation(10, 10), Ok(10));
     }

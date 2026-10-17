@@ -3,7 +3,7 @@
 
 use image::GrayImage;
 
-use super::decode::luma;
+use super::bitmap::luma;
 
 /// Bytes read in turn, each read failing at the end.
 struct Bytes<'a> {
@@ -322,35 +322,5 @@ mod tests {
         unpack_bits(&[0xFE, 7, 1, 1, 2, 0x80], 5, &mut out).unwrap();
         assert_eq!(out, [7, 7, 7, 1, 2]);
         assert!(unpack_bits(&[2, 1], 3, &mut Vec::new()).is_err());
-    }
-
-    /// The corpus made its Photoshop file of the scan in grey, and its PCX image of the scan
-    /// reduced to a palette, which changes under one pixel in a hundred.
-    #[test]
-    fn decodes_the_corpus_scans_as_the_png_does() {
-        let png = image::open("../quality/corpus/prose-scan-300dpi.png")
-            .unwrap()
-            .to_luma8();
-        for (file, decode) in [
-            (
-                "prose-scan.psd",
-                photoshop as fn(&[u8]) -> Result<GrayImage, String>,
-            ),
-            ("prose-scan.pcx", pcx),
-        ] {
-            let image = decode(&std::fs::read(format!("../quality/corpus/{file}")).unwrap())
-                .unwrap_or_else(|e| panic!("{file}: {e}"));
-            assert_eq!(image.dimensions(), png.dimensions(), "{file}");
-            let differing = image
-                .pixels()
-                .zip(png.pixels())
-                .filter(|(a, b)| a.0[0].abs_diff(b.0[0]) > 2)
-                .count();
-            let pixels = (png.width() * png.height()) as usize;
-            assert!(
-                differing * 100 < pixels,
-                "{file}: {differing} pixels differ"
-            );
-        }
     }
 }

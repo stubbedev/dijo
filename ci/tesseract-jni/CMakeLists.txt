@@ -39,9 +39,35 @@ target_include_directories(extractous_tesseract PRIVATE
 get_directory_property(TESSERACT_DEFINITIONS DIRECTORY "${TESSERACT_SOURCE}" COMPILE_DEFINITIONS)
 target_compile_definitions(extractous_tesseract PRIVATE ${TESSERACT_DEFINITIONS})
 target_link_libraries(extractous_tesseract PRIVATE libtesseract)
-if(UNIX AND NOT APPLE)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/c-api.txt" C_API)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/c-api.txt")
+set(JNI_EXPORTS Java_ai_yobix_LinkedTesseract_* extractous_tesseract_version)
+if(WIN32)
+  list(JOIN C_API "\n  " DEF_EXPORTS)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/c-api.def" "EXPORTS\n  ${DEF_EXPORTS}\n")
+  target_sources(extractous_tesseract PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/c-api.def")
+elseif(APPLE)
+  list(TRANSFORM C_API PREPEND "_" OUTPUT_VARIABLE C_SYMBOLS)
+  list(TRANSFORM JNI_EXPORTS PREPEND "_" OUTPUT_VARIABLE JNI_SYMBOLS)
+  list(JOIN JNI_SYMBOLS "\n" JNI_LINES)
+  list(JOIN C_SYMBOLS "\n" C_LINES)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/exports.txt" "${JNI_LINES}\n${C_LINES}\n")
+  target_link_options(extractous_tesseract PRIVATE
+    "LINKER:-exported_symbols_list,${CMAKE_CURRENT_BINARY_DIR}/exports.txt")
+  foreach(symbol IN LISTS C_SYMBOLS)
+    target_link_options(extractous_tesseract PRIVATE "LINKER:-u,${symbol}")
+  endforeach()
+else()
+  list(APPEND JNI_EXPORTS ${C_API})
+  list(JOIN JNI_EXPORTS ";\n    " GLOBALS)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/exports.map"
+    "{\n  global:\n    ${GLOBALS};\n  local: *;\n};\n")
   target_link_options(extractous_tesseract PRIVATE -static-libstdc++ -static-libgcc -Wl,-Bsymbolic
-    -Wl,--exclude-libs,ALL)
+    "LINKER:--version-script=${CMAKE_CURRENT_BINARY_DIR}/exports.map")
+  foreach(symbol IN LISTS C_API)
+    target_link_options(extractous_tesseract PRIVATE "LINKER:--undefined=${symbol}")
+  endforeach()
 endif()
 set_target_properties(extractous_tesseract PROPERTIES
   CXX_VISIBILITY_PRESET hidden

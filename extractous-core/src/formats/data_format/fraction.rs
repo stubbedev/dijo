@@ -6,9 +6,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::decimal::BigDecimal;
 use super::FormatError;
 use crate::java::bigint::BigUint;
+use crate::java::decimal::BigDecimal;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::{parse_int, round};
 

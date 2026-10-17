@@ -11,13 +11,13 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use super::quality::{self, Assessment};
+use super::quality::{self, Assessment, Unmapped};
 use super::Unported;
 use crate::config::{PdfOcrStrategy, PdfParserConfig};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::ocr::{
-    self, Attempt, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
+    self, Attempt, Bitmap, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
     Recognizer, Tesseract,
 };
 
@@ -27,21 +27,22 @@ const REJECTED_TEXT_LAYER: &str = "extractous:rejected-text-layer";
 const WARNING: &str = "tk:exception:warn";
 
 /// `PagesConfig.Auto`: a page of at most `total_chars` glyphs is OCRed, and so is one with more
-/// glyphs without characters than `unmapped`, a share of the page's glyphs below 1 and a count
-/// from 1.
+/// glyphs without characters than `unmapped`. Our `PdfConfig` and Tika's `limit < 1` check
+/// took a limit below 1 as a share of the page's glyphs and one from 1 as a count, so that
+/// `100%` read as one glyph (#115).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Thresholds {
     total_chars: i32,
-    unmapped: f32,
+    unmapped: Unmapped,
 }
 
 /// `PagesConfig.Auto.defaults()`, which `better` keeps.
 const DEFAULT: Thresholds = Thresholds {
     total_chars: 10,
-    unmapped: 10.0,
+    unmapped: Unmapped::Count(10.0),
 };
 /// The unmapped glyphs `faster` takes: a tenth of the page's.
-const FASTER_UNMAPPED: f32 = 0.1;
+const FASTER_UNMAPPED: Unmapped = Unmapped::Share(0.1);
 
 impl Thresholds {
     /// `PdfConfig.setOcrStrategyAuto`: `better`, `faster` or `unmapped[%][,characters]`, as its
@@ -66,9 +67,9 @@ impl Thresholds {
                     if share > 100.0 {
                         return None;
                     }
-                    share / 100.0
+                    Unmapped::Share(share / 100.0)
                 }
-                None => digits(head)? as f32,
+                None => Unmapped::Count(digits(head)? as f32),
             },
         };
         Some(Self {
@@ -82,10 +83,9 @@ impl Thresholds {
         if glyphs <= self.total_chars {
             return true;
         }
-        if self.unmapped < 1.0 {
-            unmapped as f32 / glyphs as f32 > self.unmapped
-        } else {
-            unmapped as f32 > self.unmapped
+        match self.unmapped {
+            Unmapped::Share(share) => unmapped as f32 / glyphs as f32 > share,
+            Unmapped::Count(count) => unmapped as f32 > count,
         }
     }
 }
@@ -193,7 +193,7 @@ impl OcrCheck {
     }
 
     /// The unmapped glyphs that make a page garbage, which OCR text is weighed against.
-    fn unmapped(self) -> f32 {
+    fn unmapped(self) -> Unmapped {
         match self {
             Self::Never => DEFAULT.unmapped,
             Self::Wanted(thresholds) | Self::Assessed(thresholds) => thresholds.unmapped,
@@ -214,7 +214,7 @@ enum Reader {
 pub(super) struct PageOcr {
     /// The pages to read, by their index, in order.
     pages: Vec<usize>,
-    unmapped: f32,
+    unmapped: Unmapped,
     reader: Reader,
     document: Arc<Vec<u8>>,
 }
@@ -320,7 +320,8 @@ impl PageOcr {
             }
         };
         let pixels = u64::from(gray.width()) * u64::from(gray.height());
-        let image = Image::of(&gray, pixels, None);
+        let bitmap = Bitmap::Gray(gray);
+        let image = Image::of(&bitmap, None, pixels, None);
         match Recognizer::new(tesseract, settings).recognize(&image, script) {
             Ok(Recognized { read, learned }) => (
                 PageReading::Read {
@@ -356,15 +357,16 @@ pub(super) enum PageReading {
 }
 
 impl PageReading {
-    /// The text the reading writes, as Tika's page checker records it: the text, and the line
-    /// break after its `div`.
-    fn recorded_text(&self) -> String {
-        match self {
-            Self::Read { attempt, .. } => attempt
-                .text()
-                .map_or_else(String::new, |text| format!("{text}\n")),
-            Self::Skipped | Self::Failed(_) => String::new(),
-        }
+    /// Whether the reading replaces a page's text layer assessed as `layer`: when OCR read the
+    /// page, and the layer is garbage or the OCR text reads better. Our Java replaced a
+    /// garbage layer with the empty output of a skipped OCR too, so that the page's text
+    /// disappeared (#117).
+    fn replaces(&self, layer: &Assessment, unmapped: Unmapped) -> bool {
+        let Self::Read { attempt, .. } = self else {
+            return false;
+        };
+        layer.badness >= quality::GARBAGE
+            || reads_better(attempt.text().unwrap_or_default(), layer, unmapped)
     }
 
     /// `TextLayerCheckingPdfParser.useOcr`: the reading's text in a div of class `ocr`, as the
@@ -431,10 +433,7 @@ impl EndPage for PageHook<'_, '_, '_> {
                 Ok(reading.write(xhtml)?)
             }
             PageCheck::Weigh(layer) => {
-                let failed = matches!(reading, PageReading::Failed(_));
-                if failed
-                    || !(layer.badness >= quality::GARBAGE || self.reads_better(&reading, &layer))
-                {
+                if !reading.replaces(&layer, self.ocr.unmapped) {
                     return held(xhtml);
                 }
                 xhtml.metadata_mut().add(
@@ -447,30 +446,31 @@ impl EndPage for PageHook<'_, '_, '_> {
     }
 }
 
-impl PageHook<'_, '_, '_> {
-    /// Whether the OCR text reads better than the text layer it would replace.
-    fn reads_better(&self, reading: &PageReading, layer: &Assessment) -> bool {
-        let text = reading.recorded_text();
-        let length = text.encode_utf16().count() as i32;
-        quality::assess(&text, length, 0, self.ocr.unmapped).badness < layer.badness
-    }
+/// Whether the OCR text `text` reads better than the text layer it would replace, its glyphs
+/// counted as the characters it shows. Our Java counted the UTF-16 length of the text with the
+/// line break after it (#117).
+fn reads_better(text: &str, layer: &Assessment, unmapped: Unmapped) -> bool {
+    let glyphs = text.chars().filter(|c| !c.is_whitespace()).count();
+    let glyphs = i32::try_from(glyphs).unwrap_or(i32::MAX);
+    quality::assess(text, glyphs, 0, unmapped).badness < layer.badness
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parsed(setting: &str) -> Option<(i32, f32)> {
+    fn parsed(setting: &str) -> Option<(i32, Unmapped)> {
         Thresholds::parse(setting).map(|thresholds| (thresholds.total_chars, thresholds.unmapped))
     }
 
     #[test]
     fn reads_the_thresholds_as_our_pdf_config_does() {
-        assert_eq!(parsed("better"), Some((10, 10.0)));
-        assert_eq!(parsed(" faster,\t5 "), Some((5, 0.1)));
-        assert_eq!(parsed("25%"), Some((10, 0.25)));
-        assert_eq!(parsed("100%,0"), Some((0, 1.0)));
-        assert_eq!(parsed("7"), Some((10, 7.0)));
+        assert_eq!(parsed("better"), Some((10, Unmapped::Count(10.0))));
+        assert_eq!(parsed(" faster,\t5 "), Some((5, Unmapped::Share(0.1))));
+        assert_eq!(parsed("25%"), Some((10, Unmapped::Share(0.25))));
+        assert_eq!(parsed("100%,0"), Some((0, Unmapped::Share(1.0))));
+        assert_eq!(parsed("7"), Some((10, Unmapped::Count(7.0))));
+        assert_eq!(parsed("1"), Some((10, Unmapped::Count(1.0))));
         assert_eq!(parsed("faster , 5"), None);
         assert_eq!(parsed("101%"), None);
         assert_eq!(parsed("1000"), None);
@@ -486,13 +486,39 @@ mod tests {
         assert!(DEFAULT.ocr_wanted(11, 11));
         let share = Thresholds {
             total_chars: 10,
-            unmapped: 0.25,
+            unmapped: Unmapped::Share(0.25),
         };
         assert!(!share.ocr_wanted(100, 25));
         assert!(share.ocr_wanted(100, 26));
+        // Our Java read 100% as one glyph, wanting OCR for two (#115).
         let whole = Thresholds::parse("100%").unwrap();
-        assert!(!whole.ocr_wanted(100, 1));
-        assert!(whole.ocr_wanted(100, 2));
+        assert!(!whole.ocr_wanted(100, 2));
+        assert!(!whole.ocr_wanted(100, 100));
+        let one = Thresholds::parse("1").unwrap();
+        assert!(!one.ocr_wanted(100, 1));
+        assert!(one.ocr_wanted(100, 2));
+    }
+
+    #[test]
+    fn keeps_a_text_layer_ocr_did_not_read() {
+        let garbage = Assessment {
+            badness: quality::GARBAGE,
+            fault: "no-text",
+        };
+        for reading in [PageReading::Skipped, PageReading::Failed("no".to_owned())] {
+            assert!(!reading.replaces(&garbage, DEFAULT.unmapped));
+        }
+    }
+
+    #[test]
+    fn weighs_ocr_text_by_the_characters_it_shows() {
+        let doubtful = Assessment {
+            badness: 0.6,
+            fault: "symbols",
+        };
+        let prose = "The keeper climbed the stairs every evening and wrote one line.";
+        assert!(reads_better(prose, &doubtful, DEFAULT.unmapped));
+        assert!(!reads_better("", &doubtful, DEFAULT.unmapped));
     }
 
     #[test]

@@ -119,8 +119,25 @@ pub(crate) fn prepare(
     if let Some(reason) = AutoDetectReader::defers(input) {
         return Err(reason.to_owned());
     }
-    let document = read(input, metadata.get("Content-Type"));
+    let document = read(input, metadata.get("Content-Type"), Sniff::Table);
     Ok(Box::new(move |xhtml| document?.write(xhtml)))
+}
+
+/// What [`prepare`] prepares of a `text/plain` part of an email: plain text, never a table.
+/// Tika sniffs such a part for a table, and makes it `text/csv` when it looks like one (#82).
+pub(crate) fn prepare_plain(input: &[u8]) -> Result<Prepared<'static>, Deferral> {
+    if let Some(reason) = AutoDetectReader::defers(input) {
+        return Err(reason.to_owned());
+    }
+    let document = read(input, None, Sniff::Never);
+    Ok(Box::new(move |xhtml| document?.write(xhtml)))
+}
+
+/// Whether text without a content type, or of a type a table may be, is sniffed for a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sniff {
+    Table,
+    Never,
 }
 
 /// What TextAndCSVParser makes of an input.
@@ -137,10 +154,8 @@ struct Document {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Body {
     /// One paragraph of the whole decoded text, as `handleText` writes it: one `characters` event
-    /// for each read of 4096 UTF-16 units, the last read shorter. A read that ends between the
-    /// two halves of a surrogate pair writes a half surrogate at the end of one event and the
-    /// other half at the start of the next; each half, which no Rust string holds, is U+FFFD
-    /// here, as the `XHTMLContentHandler` writes it.
+    /// for each read of up to 4096 UTF-16 units, the last read shorter, no read splitting a
+    /// character.
     Paragraph(Vec<String>),
     /// A table of records of values, one `characters` event for each value.
     Table {
@@ -198,8 +213,9 @@ fn text_type(subtype: &str) -> MediaType {
 }
 
 /// What TextAndCSVParser makes of `input` when the metadata's `Content-Type` is `content_type`:
-/// without one, as for a part of an email Tika parses inline, it sniffs the text for a table.
-fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
+/// without one, or with a type a table may be, it sniffs the text for a table, unless `sniff`
+/// says never.
+fn read(input: &[u8], content_type: Option<&str>, sniff: Sniff) -> Result<Document, Failure> {
     let given = content_type
         .map(|content_type| {
             MediaType::parse(content_type).ok_or_else(|| {
@@ -217,6 +233,7 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
     };
     let (content_type, body) = match given {
         Some(given) if !sniffable(&given) => (given, Body::Paragraph(chunks(text))),
+        _ if sniff == Sniff::Never => (text_type("plain"), Body::Paragraph(chunks(text))),
         _ => match sniffer::sniff(text) {
             None => (text_type("plain"), Body::Paragraph(chunks(text))),
             Some(delimiter) => {
@@ -240,8 +257,9 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
     })
 }
 
-/// The text as reads of [`CHUNK`] UTF-16 units, a surrogate pair split between two reads written
-/// as U+FFFD in each.
+/// The text as reads of [`CHUNK`] UTF-16 units, a read that would end between the two halves of
+/// a surrogate pair ending before it. Tika's `handleText` splits the pair, and each half becomes
+/// U+FFFD (#66).
 fn chunks(text: &str) -> Vec<String> {
     let mut chunks = Vec::with_capacity(text.len() / CHUNK + 1);
     let mut chunk = String::new();
@@ -249,11 +267,8 @@ fn chunks(text: &str) -> Vec<String> {
     for c in text.chars() {
         let width = c.len_utf16();
         if units + width > CHUNK {
-            chunk.push(char::REPLACEMENT_CHARACTER);
             chunks.push(std::mem::take(&mut chunk));
-            chunk.push(char::REPLACEMENT_CHARACTER);
-            units = 1;
-            continue;
+            units = 0;
         }
         chunk.push(c);
         units += width;
@@ -319,18 +334,12 @@ mod tests {
     }
 
     #[test]
-    fn splits_reads_as_handle_text_does() {
+    fn splits_reads_between_characters() {
         assert_eq!(chunks(""), Vec::<String>::new());
         let full = "a".repeat(CHUNK);
         assert_eq!(chunks(&full), std::slice::from_ref(&full));
         let split = chunks(&format!("{}\u{1F600}b", "a".repeat(CHUNK - 1)));
-        assert_eq!(
-            split,
-            [
-                format!("{}\u{FFFD}", "a".repeat(CHUNK - 1)),
-                "\u{FFFD}b".to_string()
-            ]
-        );
+        assert_eq!(split, ["a".repeat(CHUNK - 1), "\u{1F600}b".to_string()]);
         let whole = chunks(&format!("{}\u{1F600}b", "a".repeat(CHUNK - 2)));
         assert_eq!(whole[0].chars().last(), Some('\u{1F600}'));
         assert_eq!(whole[1], "b");

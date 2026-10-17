@@ -184,7 +184,7 @@ impl Extractor {
         self
     }
 
-    /// Set the passwords tried, in order, on documents Tika reports as encrypted. Documents that
+    /// Set the passwords tried, in order, on documents that fail as encrypted. Documents that
     /// are not encrypted never use them.
     pub fn set_passwords(mut self, passwords: impl IntoIterator<Item = Password>) -> Self {
         self.passwords = passwords.into_iter().collect();
@@ -199,6 +199,11 @@ impl Extractor {
 
     /// Extracts text from a file path. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
+    ///
+    /// For a document a native parser reads, the metadata is what is known before the parse:
+    /// the input's and its detection's. The parse's final metadata comes from
+    /// [`StreamReader::metadata`] once the stream has been read. A document Tika reads returns
+    /// the metadata as Tika had it when the first output was written.
     pub fn extract_file(&self, file_path: &str) -> ExtractResult<(StreamReader, Metadata)> {
         self.extract_to_stream(Source::File(file_path), None)
     }
@@ -283,21 +288,21 @@ impl Extractor {
         tika::detect(isolate()?, Source::Url(url)).map(MediaType)
     }
 
-    /// Runs `attempt` without a password and, if Tika reports the document as encrypted, with
-    /// each configured password in turn. A wrong password does not always surface as an
+    /// Runs `attempt` with the extractor's settings and, if the document fails as encrypted,
+    /// with each configured password in turn. A wrong password does not always surface as an
     /// encryption error (a 7z archive fails its checksum), so any failure with a password moves
     /// on to the next one; when none opens the document, the encryption error is returned.
     fn with_passwords<T>(
         &self,
-        attempt: impl Fn(Option<&Password>) -> ExtractResult<T>,
+        attempt: impl Fn(&ParserConfigs) -> ExtractResult<T>,
     ) -> ExtractResult<T> {
-        let encrypted = match attempt(None) {
+        let encrypted = match attempt(&self.configs) {
             Err(error @ Error::Encrypted(_)) => error,
             result => return result,
         };
         self.passwords
             .iter()
-            .find_map(|password| attempt(Some(password)).ok())
+            .find_map(|password| attempt(&self.configs.with_password(Some(password))).ok())
             .ok_or(encrypted)
     }
 
@@ -314,79 +319,73 @@ impl Extractor {
         source: Source,
         embedded: Option<&EmbeddedSpool>,
     ) -> ExtractResult<(StreamReader, Metadata)> {
-        if let Ok(routed) = formats::route(source)? {
-            let options = formats::StreamOptions {
-                char_set: self.encoding,
-                output: self.output(),
-                timeout: self.timeout,
-                spool: embedded.cloned(),
-            };
-            let parsed = formats::parse_to_stream(
-                routed.parser,
-                routed.input.into_owned(),
-                routed.detected,
-                self.configs.clone(),
-                options,
-            )?;
-            if let Some((stream, metadata)) = parsed {
-                return Ok((
-                    StreamReader {
-                        inner: Stream::Native(stream),
-                    },
-                    metadata,
-                ));
+        self.with_passwords(|configs| {
+            if let Ok(routed) = formats::route(source)? {
+                let options = formats::StreamOptions {
+                    char_set: self.encoding,
+                    output: self.output(),
+                    timeout: self.timeout,
+                    spool: embedded.cloned(),
+                };
+                let parsed = formats::parse_to_stream(
+                    routed.parser,
+                    routed.input.into_owned(),
+                    routed.detected,
+                    configs.clone(),
+                    options,
+                )?;
+                if let Some((stream, metadata)) = parsed {
+                    return Ok((
+                        StreamReader {
+                            inner: Stream::Native(stream),
+                        },
+                        metadata,
+                    ));
+                }
             }
-        }
-        let isolate = isolate()?;
-        let options = StreamOptions {
-            char_set: self.encoding,
-            as_xml: self.xml_output,
-            timeout: self.timeout,
-            embedded,
-        };
-        self.with_passwords(|password| {
-            tika::parse_to_stream(isolate, source, &self.configs, password, &options)
+            let options = StreamOptions {
+                char_set: self.encoding,
+                as_xml: self.xml_output,
+                timeout: self.timeout,
+                embedded,
+            };
+            tika::parse_to_stream(isolate()?, source, configs, &options)
         })
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
-        if let Ok(routed) = formats::route(source)? {
-            let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
-                Error::ParseError(format!(
-                    "The maximum string length must not be negative: {}",
-                    self.extract_string_max_length
-                ))
-            })?;
-            let parsed = formats::parse_to_string(
-                routed.parser,
-                &routed.input,
-                &routed.detected,
-                &self.configs,
-                max_length,
-                self.output(),
-            )?;
-            if let Some(parsed) = parsed {
-                return Ok(parsed);
+        self.with_passwords(|configs| {
+            if let Ok(routed) = formats::route(source)? {
+                let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
+                    Error::ParseError(format!(
+                        "The maximum string length must not be negative: {}",
+                        self.extract_string_max_length
+                    ))
+                })?;
+                let parsed = formats::parse_to_string(
+                    routed.parser,
+                    &routed.input,
+                    &routed.detected,
+                    configs,
+                    max_length,
+                    self.output(),
+                )?;
+                if let Some(parsed) = parsed {
+                    return Ok(parsed);
+                }
             }
-        }
-        let isolate = isolate()?;
-        self.with_passwords(|password| {
             tika::parse_to_string(
-                isolate,
+                isolate()?,
                 source,
                 self.extract_string_max_length,
-                &self.configs,
-                password,
+                configs,
                 self.xml_output,
             )
         })
     }
 
     fn extract_embedded(&self, source: Source) -> ExtractResult<EmbeddedExtractResult> {
-        let isolate = isolate()?;
-        self.with_passwords(|password| {
-            tika::extract_embedded(isolate, source, &self.configs, password)
-        })
+        self.with_passwords(|configs| tika::extract_embedded(isolate()?, source, configs))
     }
 }
 

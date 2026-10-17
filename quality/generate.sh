@@ -175,6 +175,8 @@ magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.avi
 magick "$work/scan-300.png" -colorspace Gray -threshold 50% "$corpus/prose-scan.pbm"
 cjb2 -dpi 300 "$corpus/prose-scan.pbm" "$corpus/prose-scan.djvu"
 jbig2 "$corpus/prose-scan.pbm" > "$corpus/prose-scan.jb2"
+magick "$work/scan-300.png" -colorspace Gray -depth 8 "$work/scan-300.pgm"
+opj_compress -i "$work/scan-300.pgm" -o "$corpus/prose-scan.jp2" -r 30
 magick "$work/scan-300.png" -colorspace Gray -depth 8 "$corpus/prose-scan.psd"
 magick "$work/scan-300.png" -colorspace Gray -type Palette "$corpus/prose-scan.pcx"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -compress RLE "$corpus/prose-scan.tga"

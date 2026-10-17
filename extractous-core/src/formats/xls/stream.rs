@@ -2,6 +2,8 @@
 //! by records that run on into the `CONTINUE` records after them where POI's reads do, and the
 //! exceptions POI throws on records that end early or late.
 
+use std::borrow::Cow;
+
 use crate::formats::poi::{thrown, Read, Thrown};
 
 /// The type of a `CONTINUE` record.
@@ -15,7 +17,7 @@ pub(super) const MAX_STRING_LENGTH: i64 = 10_000_000;
 
 /// The records of a workbook stream, as `RecordInputStream` reads them.
 pub(super) struct RecordStream<'a> {
-    data: &'a [u8],
+    data: Cow<'a, [u8]>,
     position: usize,
     sid: u16,
     /// The length of the current record, `None` before it is read.
@@ -28,7 +30,7 @@ pub(super) struct RecordStream<'a> {
 impl<'a> RecordStream<'a> {
     pub(super) fn new(data: &'a [u8]) -> Self {
         let mut stream = RecordStream {
-            data,
+            data: Cow::Borrowed(data),
             position: 0,
             sid: 0,
             length: None,
@@ -42,6 +44,16 @@ impl<'a> RecordStream<'a> {
     /// The type of the current record.
     pub(super) fn sid(&self) -> u16 {
         self.sid
+    }
+
+    /// Where the stream is: past the type of the next record once `has_next_record` read it.
+    pub(super) fn position(&self) -> usize {
+        self.position
+    }
+
+    /// The stream's bytes, to decrypt in place: a copy of those it was made with.
+    pub(super) fn data_mut(&mut self) -> &mut [u8] {
+        self.data.to_mut()
     }
 
     /// `getNextSid`.
@@ -102,6 +114,29 @@ impl<'a> RecordStream<'a> {
             .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))?;
         self.position += N;
         Ok(bytes.try_into().expect("N bytes"))
+    }
+
+    /// `read(bytes, 0, length)`: as many of `length` bytes as the record holds, never into the
+    /// records after it.
+    pub(super) fn read_up_to(&mut self, length: usize) -> Read<Vec<u8>> {
+        let available = usize::try_from(self.remaining()).unwrap_or_default();
+        let length = length.min(available);
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        self.read_fully(length)
+    }
+
+    /// The next byte of the record, left to be read again (`mark` and `reset`), failing where
+    /// the record has none.
+    pub(super) fn peek_u8(&self) -> Read<u8> {
+        if self.remaining() < 1 {
+            return thrown("a byte past the end of its record, read on into the next");
+        }
+        self.data
+            .get(self.position)
+            .copied()
+            .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))
     }
 
     /// `remaining`.

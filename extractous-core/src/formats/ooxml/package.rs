@@ -311,6 +311,16 @@ impl<'a> Package<'a> {
         Ok(by_id)
     }
 
+    /// Orders the relationships of every part by id with runs of digits compared as numbers,
+    /// `rId2` before `rId10`, where POI orders them as strings (#102).
+    pub(crate) fn order_relationships_numerically(&mut self) {
+        for part in &mut self.parts {
+            part.relationships.sort_by(|a, b| {
+                compare_names(&a.id, &b.id).then_with(|| java::compare(&a.id, &b.id))
+            });
+        }
+    }
+
     /// The name of `part`, for messages.
     pub(crate) fn name(&self, part: usize) -> &str {
         &self.parts[part].name

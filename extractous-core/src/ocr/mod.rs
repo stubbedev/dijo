@@ -1,8 +1,16 @@
 //! OCR: the tesseract Tika's path runs, and the one native readings run in this process, with
 //! our Java `PreparingOcrParser`'s preparation of the images it reads.
 
+mod av1;
+mod avif;
+mod bitmap;
 mod decode;
 mod flatten;
+mod heif;
+mod icc;
+mod java2d;
+pub(crate) mod jbig2;
+mod jpeg;
 mod pages;
 mod prepare;
 mod raster;
@@ -17,7 +25,8 @@ use std::sync::OnceLock;
 
 use crate::errors::{Error, ExtractResult};
 use crate::tika::native;
-pub(crate) use decode::{decode, Decoded, Format};
+pub(crate) use bitmap::Bitmap;
+pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub(crate) use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
 pub(crate) use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
@@ -56,9 +65,9 @@ pub(crate) fn read_image(
 ) -> Result<ImageRead, OcrError> {
     let recognizer = Recognizer::new(tesseract, settings);
     match decoded {
-        Decoded::Single(gray) => {
-            let Recognized { read, learned } =
-                recognizer.recognize(&Image::of(&gray, file_size, orientation), assumed)?;
+        Decoded::Single { bitmap, file } => {
+            let image = Image::of(&bitmap, file, file_size, orientation);
+            let Recognized { read, learned } = recognizer.recognize(&image, assumed)?;
             Ok(ImageRead {
                 pages: ReadPages::One(read),
                 learned: learned.filter(|_| settings.auto()),
@@ -71,10 +80,10 @@ pub(crate) fn read_image(
                 &first_page,
                 || (),
                 |(), index, script| {
-                    let Ok(gray) = pages.page(index) else {
+                    let Ok(bitmap) = pages.page(index) else {
                         return Ok((None, None));
                     };
-                    let image = Image::of(&gray, file_size, orientation);
+                    let image = Image::of(&bitmap, None, file_size, orientation);
                     let Recognized { read, learned } = recognizer.recognize(&image, script)?;
                     Ok((Some(read), learned))
                 },
@@ -106,7 +115,7 @@ pub(crate) fn tesseract_runs() -> bool {
 /// The tesseract native readings run, set up once per process: the one linked into the static
 /// executable with the bundled language data, the bundled library with it, or the library of
 /// the `tesseract` on the `PATH`, which reads the language data that program reads. Why there is
-/// none otherwise, as for a bundled library that offers Tika's path its JNI functions alone.
+/// none otherwise, as for a bundled library built before it exported tesseract's C API.
 pub(crate) fn tesseract() -> Result<&'static Tesseract, String> {
     static TESSERACT: OnceLock<Result<Tesseract, String>> = OnceLock::new();
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)

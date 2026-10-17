@@ -64,3 +64,65 @@ pub(crate) fn safely_clone(data: &[u8], offset: i64, length: i64, max: i64) -> R
     let start = offset as usize;
     Ok(data[start..start + real as usize].to_vec())
 }
+
+/// `InflaterInputStream` read to its end, or to `limit` bytes where a `BoundedInputStream` stops
+/// it there: the inflated data, `None` where Java's stream throws first, the zlib stream broken
+/// or ending early.
+pub(crate) fn inflate(data: &[u8], limit: Option<usize>) -> Option<Vec<u8>> {
+    let mut inflater = flate2::Decompress::new(true);
+    let mut out = Vec::with_capacity(data.len().saturating_mul(4).max(64));
+    loop {
+        if let Some(limit) = limit {
+            if out.len() >= limit {
+                out.truncate(limit);
+                return Some(out);
+            }
+        }
+        if out.capacity() == out.len() {
+            out.reserve(out.len().max(64));
+        }
+        let consumed = inflater.total_in() as usize;
+        let written = inflater.total_out();
+        match inflater.decompress_vec(&data[consumed..], &mut out, flate2::FlushDecompress::None) {
+            Ok(flate2::Status::StreamEnd) => {
+                if let Some(limit) = limit {
+                    out.truncate(limit);
+                }
+                return Some(out);
+            }
+            Ok(_)
+                if inflater.total_in() as usize == data.len()
+                    && inflater.total_out() == written =>
+            {
+                return None
+            }
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inflates_only_a_complete_stream_or_as_far_as_a_limit() {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(b"metafile").unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(
+            inflate(&compressed, None).as_deref(),
+            Some(&b"metafile"[..])
+        );
+        assert_eq!(inflate(&compressed[..compressed.len() - 5], None), None);
+        assert_eq!(inflate(b"not zlib", None), None);
+        assert_eq!(inflate(&compressed, Some(4)).as_deref(), Some(&b"meta"[..]));
+        assert_eq!(
+            inflate(&compressed, Some(20)).as_deref(),
+            Some(&b"metafile"[..])
+        );
+    }
+}

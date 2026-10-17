@@ -8,13 +8,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use image::GrayImage;
-
+use super::bitmap::Bitmap;
 use super::flatten::flatten;
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{installed_language, language, written_in};
-use super::tesseract::{OcrError, PageSegMode, Pixels, Poor, Reading, Tesseract, Thresholding};
+use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
 use super::text::corrected;
 use crate::config::TesseractOcrConfig;
 
@@ -36,13 +35,6 @@ const OVERLOOKED_SCRIPTS: [&str; 2] = ["Armenian", "Georgian"];
 /// overlooked ones tried.
 const REPORTED_FOR: [(&str, &str); 1] = [("Malayalam", "Georgian")];
 const MIN_WORDS_TO_RETRY: usize = 20;
-/// The first words of a reading in the assumed script that show the page is in another one:
-/// the Latin model reads the first twenty words of a Cyrillic, Greek, Armenian or Georgian page
-/// with a mean confidence of at most about 55, and of a Latin page with at least about 88.
-const POOR: Poor = Poor {
-    after_words: 20,
-    below_confidence: 70,
-};
 /// Pages are segmented without tesseract's own orientation and script detection (mode 3, where
 /// Tika's default is 1): an image is turned upright before it is read, and detection runs only
 /// when a first reading needs it.
@@ -87,6 +79,11 @@ impl OcrSettings {
         }
     }
 
+    /// The time a run of tesseract, or of a program decoding an image for it, may take.
+    pub(crate) fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     /// Whether each image's script is detected, and its first script is learned.
     pub(crate) fn auto(&self) -> bool {
         self.language == Language::Auto
@@ -95,8 +92,11 @@ impl OcrSettings {
 
 /// An image to read.
 pub(crate) struct Image<'a> {
-    /// Its grey levels.
-    pub(crate) gray: &'a GrayImage,
+    /// Its pixels, as Java decoded them.
+    pub(crate) bitmap: &'a Bitmap,
+    /// Its file, when tesseract reads the file itself while the image needs no preparation, as
+    /// it does an image Java does not decode for it.
+    pub(crate) file: Option<&'a [u8]>,
     /// Whether it is small enough to prepare: [`MAX_PIXELS`] or fewer, and decoded as it is.
     pub(crate) preparable: bool,
     /// The size of the image's file, for the limits it is read within.
@@ -109,13 +109,16 @@ impl<'a> Image<'a> {
     /// An image of a file of `file_size` bytes, prepared unless it has more than [`MAX_PIXELS`]
     /// pixels.
     pub(crate) fn of(
-        gray: &'a GrayImage,
+        bitmap: &'a Bitmap,
+        file: Option<&'a [u8]>,
         file_size: u64,
         orientation: Option<Orientation>,
     ) -> Self {
+        let (width, height) = bitmap.dimensions();
         Self {
-            gray,
-            preparable: u64::from(gray.width()) * u64::from(gray.height()) <= MAX_PIXELS,
+            bitmap,
+            file,
+            preparable: u64::from(width) * u64::from(height) <= MAX_PIXELS,
             file_size,
             orientation,
         }
@@ -151,7 +154,7 @@ impl Attempt {
     fn words(&self) -> usize {
         self.reading
             .as_ref()
-            .map_or(0, |reading| java_word_count(&reading.text))
+            .map_or(0, |reading| word_count(&reading.text))
     }
 
     /// The more confident of this attempt and another, this one on a tie.
@@ -189,27 +192,20 @@ impl Attempt {
     }
 }
 
-/// `text.split("\\s+").length`: the pieces between runs of whitespace, a leading empty one
-/// counted and trailing ones not, and one for an empty text.
-fn java_word_count(text: &str) -> usize {
-    if text.is_empty() {
-        return 1;
-    }
-    let runs = text
-        .split(crate::java::is_regex_space)
+/// The words of `text`: the pieces between runs of whitespace. Our Java counted
+/// `text.split("\\s+").length`, one for an empty text and one more for leading whitespace
+/// (#117).
+fn word_count(text: &str) -> usize {
+    text.split(crate::java::is_regex_space)
         .filter(|piece| !piece.is_empty())
-        .count();
-    if runs == 0 {
-        return 0;
-    }
-    runs + usize::from(text.starts_with(crate::java::is_regex_space))
+        .count()
 }
 
 /// How an image was prepared to be read, and with which model.
 #[derive(Debug, Clone)]
 struct Prepared {
     /// The prepared image, or none when the image reads as it is.
-    image: Option<Arc<GrayImage>>,
+    image: Option<Arc<Bitmap>>,
     /// The model to read it with: the configured one, or with the automatic language the one
     /// for its script.
     model: String,
@@ -280,7 +276,7 @@ enum Upright {
     /// It is upright as it is.
     AsItIs,
     /// It was turned or made flat into this.
-    Made(GrayImage),
+    Made(Bitmap),
 }
 
 impl Oriented {
@@ -294,8 +290,8 @@ impl Oriented {
         }
         let upright = image
             .orientation
-            .map(|orientation| prepare::apply_orientation(image.gray, orientation));
-        let flat = flatten(upright.as_ref().unwrap_or(image.gray));
+            .map(|orientation| image.bitmap.oriented(orientation));
+        let flat = flatten(upright.as_ref().unwrap_or(image.bitmap)).map(Bitmap::Gray);
         Self {
             exif_orientation: upright.as_ref().and(image.orientation),
             flattened: flat.is_some(),
@@ -326,11 +322,7 @@ impl<'t> Recognizer<'t> {
     /// language, read with a model for the script it finds, unless that would read it as
     /// before. When no reading of an image with at least [`MIN_WORDS_TO_RETRY`] words is
     /// confident, the scripts detection overlooks are tried as well, and the most confident
-    /// reading is kept. With the automatic language, each of these readings is a guess, given up
-    /// once it goes [`POOR`]ly, as a page in another script or turned does; when every one is
-    /// given up, the image is read to the end as detection found it, in the first reading's
-    /// script when detection found none. Without a reading when the image is outside the
-    /// configured limits.
+    /// reading is kept. Without a reading when the image is outside the configured limits.
     ///
     /// `assumed` is the script to read it in first with the automatic language: the one
     /// detection last found in this extraction, or none for Latin, the most common kind.
@@ -353,37 +345,29 @@ impl<'t> Recognizer<'t> {
                 learned: None,
             });
         }
-        let optimistic = self.guess(image, &first)?;
-        if optimistic
-            .as_ref()
-            .is_some_and(|reading| reading.confidence > MIN_CONFIDENCE)
-        {
+        let optimistic = self.read(image, &first)?;
+        if optimistic.confidence > MIN_CONFIDENCE {
             return Ok(Recognized {
                 read: Attempt {
                     prepared: first,
-                    reading: optimistic,
+                    reading: Some(optimistic),
                 },
                 learned: None,
             });
         }
         let detected = self.tesseract.detect(pixels_of(image, &first))?;
         let reported = detected.script;
-        let script = match &reported {
-            _ if !auto => None,
-            None if optimistic.is_none() => first.script.clone(),
-            None => None,
-            Some(reported) => Some(
-                REPORTED_FOR
-                    .iter()
-                    .find(|(name, _)| name == reported)
-                    .map_or_else(|| reported.clone(), |(_, read)| (*read).to_owned()),
-            ),
-        };
+        let script = reported.as_ref().filter(|_| auto).map(|reported| {
+            REPORTED_FOR
+                .iter()
+                .find(|(name, _)| name == reported)
+                .map_or_else(|| reported.clone(), |(_, read)| (*read).to_owned())
+        });
         let model = self.model(script.as_deref())?;
         let mut learned = script.clone();
         let mut best = Attempt {
             prepared: first.clone(),
-            reading: optimistic,
+            reading: Some(optimistic),
         };
         let mut fallback = first.clone();
         if detected.clockwise_quarter_turns != 0 || model != first.model {
@@ -395,17 +379,13 @@ impl<'t> Recognizer<'t> {
                 model,
                 detected.clockwise_quarter_turns,
             );
-            if let Some(reading) = self.guess(image, &fallback)? {
-                best = best.or(Attempt {
-                    prepared: fallback.clone(),
-                    reading: Some(reading),
-                });
-            }
+            let reading = self.read(image, &fallback)?;
+            best = best.or(Attempt {
+                prepared: fallback.clone(),
+                reading: Some(reading),
+            });
         }
-        if auto
-            && !best.confident()
-            && (best.reading.is_none() || best.words() >= MIN_WORDS_TO_RETRY)
-        {
+        if auto && !best.confident() && best.words() >= MIN_WORDS_TO_RETRY {
             let tried: Vec<&str> = [&first, &fallback]
                 .into_iter()
                 .filter(|read| read.quarter_turns == 0)
@@ -417,22 +397,15 @@ impl<'t> Recognizer<'t> {
                 learned = best.prepared.script.clone();
             }
         }
-        if best.reading.is_none() {
-            let reading = self.read(image, &fallback)?;
-            best = Attempt {
-                prepared: fallback,
-                reading: Some(reading),
-            };
-        }
         Ok(Recognized {
             read: best,
             learned,
         })
     }
 
-    /// Reads an image in the given scripts in turn, until one reads it confidently, giving up
-    /// each reading that goes poorly and passing over each whose letters are mostly in another
-    /// script: the best reading, whose script the rest of the extraction then assumes.
+    /// Reads an image in the given scripts in turn, until one reads it confidently, passing over
+    /// each reading whose letters are mostly in another script: the best reading, whose script
+    /// the rest of the extraction then assumes.
     fn read_overlooked(
         &self,
         best: Attempt,
@@ -457,13 +430,12 @@ impl<'t> Recognizer<'t> {
                 model,
                 0,
             );
-            if let Some(reading) = self.read_unless_poor(image, &retried)? {
-                if written_in(&reading.text, script) {
-                    overlooked = overlooked.or(Attempt {
-                        prepared: retried,
-                        reading: Some(reading),
-                    });
-                }
+            let reading = self.read(image, &retried)?;
+            if written_in(&reading.text, script) {
+                overlooked = overlooked.or(Attempt {
+                    prepared: retried,
+                    reading: Some(reading),
+                });
             }
         }
         Ok(overlooked)
@@ -478,62 +450,28 @@ impl<'t> Recognizer<'t> {
         })
     }
 
-    /// A reading that may turn out a guess: with the automatic language given up when it goes
-    /// poorly, else read to the end.
-    fn guess(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Option<Reading>, OcrError> {
-        if self.settings.auto() {
-            self.read_unless_poor(image, prepared)
-        } else {
-            self.read(image, prepared).map(Some)
-        }
-    }
-
     fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
-        Ok(self
-            .run(image, prepared, None)?
-            .expect("a reading without a judge is never given up"))
-    }
-
-    fn read_unless_poor(
-        &self,
-        image: &Image<'_>,
-        prepared: &Prepared,
-    ) -> Result<Option<Reading>, OcrError> {
-        self.run(image, prepared, Some(POOR))
-    }
-
-    fn run(
-        &self,
-        image: &Image<'_>,
-        prepared: &Prepared,
-        poor: Option<Poor>,
-    ) -> Result<Option<Reading>, OcrError> {
         let reading = self.tesseract.read(
             pixels_of(image, prepared),
             &prepared.model,
             SEGMENTATION,
             prepared.thresholding(),
-            poor,
             self.settings.timeout,
         )?;
-        Ok(reading.map(|reading| Reading {
+        Ok(Reading {
             text: corrected(&reading.text),
             confidence: reading.confidence,
-        }))
+        })
     }
 }
 
-/// The image as tesseract reads it prepared, or as it is.
+/// The image as tesseract reads it: prepared, or else its file, as Java hands tesseract the
+/// file of an image it does not decode for it, or else its pixels.
 fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
-    gray_pixels(prepared.image.as_deref().unwrap_or(image.gray))
-}
-
-/// A grey image as tesseract reads it.
-pub(crate) fn gray_pixels(image: &GrayImage) -> Pixels<'_> {
-    Pixels {
-        data: image.as_raw(),
-        width: image.width(),
-        height: image.height(),
+    match (&prepared.image, image.file) {
+        (Some(prepared), _) => prepared.pixels(),
+        (None, Some(file)) => Pixels::Encoded(file.into()),
+        (None, None) => image.bitmap.pixels(),
     }
 }
 
@@ -584,10 +522,10 @@ fn finish(
 ) -> Prepared {
     let (oriented_image, mut changed) = match &oriented.image {
         Upright::Unprepared => return Prepared::unprepared(script, model),
-        Upright::AsItIs => (image.gray, false),
+        Upright::AsItIs => (image.bitmap, false),
         Upright::Made(upright) => (upright, true),
     };
-    let mut prepared = match prepare::turn_clockwise(oriented_image, quarter_turns) {
+    let mut prepared = match oriented_image.turned_clockwise(quarter_turns) {
         Some(turned) => {
             changed = true;
             turned
@@ -596,27 +534,27 @@ fn finish(
     };
     let inverted = prepare::inverted(&prepared);
     if inverted {
-        prepared = prepare::invert(prepared);
+        prepared = Bitmap::Gray(prepare::invert(&prepared));
         changed = true;
     }
     let despeckled = prepare::speckled(&prepared);
     if despeckled {
-        prepared = prepare::despeckle(&prepared);
+        prepared = Bitmap::Gray(prepare::despeckle(&prepared));
         changed = true;
     }
     let uneven_lighting = prepare::uneven_lighting(&prepared);
     if !uneven_lighting {
-        prepared = prepare::whiten_faint_marks(prepared);
+        prepared = Bitmap::Gray(prepare::whiten_faint_marks(&prepared));
         changed = true;
     }
     let skew_degrees = prepare::skew_degrees(&prepared);
     if skew_degrees != 0.0 {
-        prepared = prepare::rotate(&prepared, skew_degrees);
+        prepared = prepared.rotated(skew_degrees);
         changed = true;
     }
     let scale = prepare::scale_factor(&prepared, MAX_PIXELS, reducible(script.as_deref()));
     if scale != 1.0 {
-        prepared = prepare::scale(&prepared, scale);
+        prepared = Bitmap::Gray(prepare::scale(&prepared, scale));
         changed = true;
     }
     Prepared {
@@ -661,11 +599,11 @@ mod tests {
     }
 
     #[test]
-    fn counts_words_as_java_splits_them() {
-        assert_eq!(java_word_count(""), 1);
-        assert_eq!(java_word_count("   "), 0);
-        assert_eq!(java_word_count("one two\n\nthree "), 3);
-        assert_eq!(java_word_count(" one two"), 3);
+    fn counts_words_between_whitespace() {
+        assert_eq!(word_count(""), 0);
+        assert_eq!(word_count("   "), 0);
+        assert_eq!(word_count("one two\n\nthree "), 3);
+        assert_eq!(word_count(" one two"), 2);
     }
 
     #[test]

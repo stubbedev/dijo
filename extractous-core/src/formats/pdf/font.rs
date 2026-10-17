@@ -11,15 +11,17 @@ use lopdf::{Dictionary, Object, Stream};
 
 use super::afm::{FontMetrics, Standard14};
 use super::cff::{self, Cff};
-use super::cmap::{self, CMap, CMapError, CodeMap};
+use super::cmap::{self, CMap, CMapError};
 use super::content::{Lexer, Token};
 use super::cos::{as_dict, float_value, int_value, name_string, Identity, Pdf};
 use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
 use super::jfloat;
 use super::matrix::Matrix;
+use super::position::GlyphText;
 use super::truetype::{self, TrueType};
 use super::type1::{self, BuiltIn, Type1};
 use super::Unported;
+use crate::hash::FastMap;
 
 /// `PDFontDescriptor`, as far as text extraction reads it.
 #[derive(Debug, Clone)]
@@ -326,8 +328,9 @@ impl CharProc {
         }
     }
 
-    /// `PDType3CharProc.getGlyphBBox`: the box a `d1` of six numbers gives first, its upper
-    /// corner reached by adding the box's size in `float` as `PDRectangle` does.
+    /// `PDType3CharProc.getGlyphBBox`: the box a `d1` of six numbers gives first, its corners
+    /// as `d1` gives them. Tika reaches the upper corner by adding the box's size in `float`,
+    /// as `PDRectangle` does, which can round it off the corner (#109).
     fn glyph_bbox(&self) -> Result<Option<[f32; 4]>, Unported> {
         let Some((operator, operands)) = self.first.as_ref().map_err(Clone::clone)? else {
             return Ok(None);
@@ -342,8 +345,7 @@ impl CharProc {
         else {
             return Ok(None);
         };
-        let (x, y) = (values[2], values[3]);
-        Ok(Some([x, y, x + (values[4] - x), y + (values[5] - y)]))
+        Ok(Some([values[2], values[3], values[4], values[5]]))
     }
 }
 
@@ -355,7 +357,7 @@ fn first_operation(pdf: &Pdf, stream: &Stream) -> Result<Option<(String, Vec<Obj
     let mut operands = Vec::new();
     while let Some(token) = lexer.next_token()? {
         match token {
-            Token::Operator(name) => return Ok(Some((name, operands))),
+            Token::Operator(name) => return Ok(Some((name.into_owned(), operands))),
             Token::Operand(object) => operands.push(object),
         }
     }
@@ -376,11 +378,11 @@ struct SimpleFont {
 #[derive(Debug)]
 struct CidFont {
     descriptor: Option<Descriptor>,
-    widths: CodeMap<i32, f32>,
+    widths: FastMap<i32, f32>,
     width_order: Vec<(i32, f32)>,
     default_width: f32,
     dw2: [f32; 2],
-    vertical: CodeMap<i32, (f32, f32, f32)>,
+    vertical: FastMap<i32, (f32, f32, f32)>,
     vertical_ranges: Vec<(i32, i32, f32, f32, f32)>,
     kind: CidKind,
     cid_to_gid: Option<Vec<u32>>,
@@ -1041,7 +1043,7 @@ impl Font {
     }
 
     /// `PDFont.toUnicode(int)` as the base class maps a code with the `ToUnicode` map.
-    fn base_to_unicode(&self, code: u32) -> Result<Option<String>, Unported> {
+    fn base_to_unicode(&self, code: u32) -> Result<Option<GlyphText>, Unported> {
         let Some(cmap) = &self.to_unicode else {
             return Ok(None);
         };
@@ -1055,17 +1057,21 @@ impl Font {
         if code < 256 && self.is_simple() {
             if let Some(encoding) = &self.encoding_entry {
                 if !encoding.starts_with("Identity") {
-                    return Ok(cmap.to_unicode_length(code, 1).map(str::to_owned));
+                    return Ok(cmap.to_unicode_length(code, 1).map(GlyphText::new));
                 }
             }
         }
-        Ok(cmap.to_unicode(code).map(str::to_owned))
+        Ok(cmap.to_unicode(code).map(GlyphText::new))
     }
 
     /// `toUnicode`: the text of a code, a simple font's glyph names read with PDFBox's
     /// extended glyph list as `LegacyPDFStreamEngine` reads them when `extended`, or with the
     /// Adobe Glyph List as `toUnicode(int)` reads them.
-    pub(super) fn to_unicode(&self, code: u32, extended: bool) -> Result<Option<String>, Unported> {
+    pub(super) fn to_unicode(
+        &self,
+        code: u32,
+        extended: bool,
+    ) -> Result<Option<GlyphText>, Unported> {
         match &self.kind {
             FontKind::Simple(simple) => {
                 if let Some(unicode) = self.base_to_unicode(code)? {
@@ -1457,14 +1463,16 @@ impl Font {
         })
     }
 
-    /// `getAverageFontWidth`.
+    /// `getAverageFontWidth`. PDFBox's `PDType1CFont` takes 500 whatever the font's widths
+    /// (#109); the port averages its `/Widths` as for other simple fonts, taking 500 only
+    /// where they have no positive width.
     pub(super) fn average_width(&self) -> f32 {
         match &self.kind {
             FontKind::Type0(type0) => type0.descendant.average_width(),
             FontKind::Simple(SimpleFont {
                 kind: SimpleKind::Type1C(_),
                 ..
-            }) => 500.0,
+            }) if self.widths.average <= 0.0 => 500.0,
             FontKind::Simple(SimpleFont {
                 kind: SimpleKind::Type1(_),
                 ..
@@ -1683,9 +1691,9 @@ fn sniffed_cid_subtype(
 
 /// `(char) code` as a string: the low 16 bits of the code as one UTF-16 unit, unported when
 /// that unit is half of a surrogate pair.
-fn java_char(code: u32) -> Result<String, Unported> {
+fn java_char(code: u32) -> Result<GlyphText, Unported> {
     char::from_u32(code & 0xFFFF)
-        .map(String::from)
+        .map(GlyphText::from)
         .ok_or_else(|| Unported("a glyph mapped to half of a UTF-16 surrogate pair".to_owned()))
 }
 
@@ -1942,11 +1950,11 @@ impl CidFont {
             descriptor: pdf
                 .dict(dict, b"FontDescriptor")
                 .map(|fd| Descriptor::read(pdf, fd)),
-            widths: CodeMap::default(),
+            widths: FastMap::default(),
             width_order: Vec::new(),
             default_width: pdf.get(dict, b"DW").and_then(float_value).unwrap_or(1000.0),
             dw2: [880.0, -1000.0],
-            vertical: CodeMap::default(),
+            vertical: FastMap::default(),
             vertical_ranges: Vec::new(),
             kind: CidKind::TrueType(Program::Fallback),
             cid_to_gid: None,
@@ -2092,11 +2100,9 @@ impl CidFont {
     }
 
     /// `PDCIDFont.getAverageFontWidth`: the positive widths averaged in the order a Java
-    /// `HashMap<Integer, Float>` iterates them; `PDCIDFontType0` takes 500.
+    /// `HashMap<Integer, Float>` iterates them. PDFBox's `PDCIDFontType0` takes 500 whatever
+    /// its widths (#109); the port averages them as for other CID fonts.
     fn average_width(&self) -> f32 {
-        if matches!(self.kind, CidKind::Compact(_)) {
-            return 500.0;
-        }
         let mut total = 0.0f32;
         let mut count = 0;
         for (_, width) in encoding::java_integer_map_order(&self.width_order) {
@@ -2144,9 +2150,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn takes_type3_glyph_boxes_as_d1_gives_them() {
+        let proc = CharProc {
+            name: "a".to_owned(),
+            length: 0,
+            first: Ok(Some((
+                "d1".to_owned(),
+                [520.0, 0.0, -0.1, 0.3, 480.7, 700.1]
+                    .map(Object::Real)
+                    .to_vec(),
+            ))),
+        };
+        assert_eq!(proc.glyph_bbox().unwrap(), Some([-0.1, 0.3, 480.7, 700.1]));
+    }
+
+    #[test]
     fn coerces_codes_to_java_chars() {
-        assert_eq!(java_char(0x41).unwrap(), "A");
-        assert_eq!(java_char(0x10041).unwrap(), "A");
+        assert_eq!(java_char(0x41).unwrap().as_str(), "A");
+        assert_eq!(java_char(0x10041).unwrap().as_str(), "A");
         assert!(java_char(0xD800).is_err());
     }
 }

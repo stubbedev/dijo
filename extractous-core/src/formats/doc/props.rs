@@ -65,8 +65,10 @@ fn require(sprm: &SprmOperation<'_>, length: usize) -> Read<()> {
     Ok(())
 }
 
-/// `unCompressCHPOperation` for the properties tracked, failing where POI's reads fail.
-fn chp_operation(old: &Chp, new: &mut Chp, sprm: &SprmOperation<'_>) -> Read<()> {
+/// `unCompressCHPOperation` for the properties tracked, failing where POI's reads fail, with
+/// `sprmCPlain` setting the formatting back to `plain`, the paragraph style's, which POI leaves
+/// as it is (#111).
+fn chp_operation(old: &Chp, plain: &Chp, new: &mut Chp, sprm: &SprmOperation<'_>) -> Read<()> {
     let operation = sprm.operation();
     let operand = || sprm.operand();
     match operation {
@@ -95,6 +97,13 @@ fn chp_operation(old: &Chp, new: &mut Chp, sprm: &SprmOperation<'_>) -> Read<()>
             new.vanish = false;
             new.kul = 0;
         }
+        0x33 => {
+            new.bold = plain.bold;
+            new.italic = plain.italic;
+            new.strike = plain.strike;
+            new.vanish = plain.vanish;
+            new.kul = plain.kul;
+        }
         0x35 => new.bold = chp_flag(operand()? as i8, old.bold),
         0x36 => new.italic = chp_flag(operand()? as i8, old.italic),
         0x37 => new.strike = chp_flag(operand()? as i8, old.strike),
@@ -119,15 +128,21 @@ fn chp_operation(old: &Chp, new: &mut Chp, sprm: &SprmOperation<'_>) -> Read<()>
 }
 
 /// `applySprms`: the character sprms of a grpprl from `offset` applied to `target`, toggles
-/// against `parent`.
-fn apply_chp(parent: &Chp, grpprl: &[u8], offset: usize, target: &mut Chp) -> Read<()> {
+/// against `parent`, `sprmCPlain` back to `plain`.
+fn apply_chp(
+    parent: &Chp,
+    plain: &Chp,
+    grpprl: &[u8],
+    offset: usize,
+    target: &mut Chp,
+) -> Read<()> {
     let mut iterator = SprmIterator::new(grpprl, offset);
     while iterator.has_next() {
         let sprm = iterator.next_operation()?;
         if sprm.kind() != TYPE_CHP {
             continue;
         }
-        chp_operation(parent, target, &sprm)?;
+        chp_operation(parent, plain, target, &sprm)?;
     }
     Ok(())
 }
@@ -136,7 +151,7 @@ fn apply_chp(parent: &Chp, grpprl: &[u8], offset: usize, target: &mut Chp) -> Re
 /// which lets a failure through.
 pub(super) fn style_chp(parent: &Chp, grpprl: &[u8]) -> Read<Chp> {
     let mut properties = parent.clone();
-    apply_chp(parent, grpprl, 0, &mut properties)?;
+    apply_chp(parent, parent, grpprl, 0, &mut properties)?;
     Ok(properties)
 }
 
@@ -152,10 +167,10 @@ pub(super) fn run_chp(
     let mut properties = parent.clone();
     if let Some(style) = character_style_index(grpprl) {
         let style_grpprl = character_style(style);
-        let _ = apply_chp(&parent, &style_grpprl, 0, &mut properties);
+        let _ = apply_chp(&parent, &parent, &style_grpprl, 0, &mut properties);
     }
     let style_properties = properties.clone();
-    let _ = apply_chp(&style_properties, grpprl, 0, &mut properties);
+    let _ = apply_chp(&style_properties, &parent, grpprl, 0, &mut properties);
     properties
 }
 
@@ -319,4 +334,23 @@ pub(super) fn table_cell_count(grpprl: &[u8]) -> Read<i16> {
         }
     }
     Ok(cell_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sets_plain_formatting_back_to_the_paragraph_styles() {
+        let style = Chp {
+            italic: true,
+            ..Chp::default()
+        };
+        let bold = [0x35, 0x08, 0x01];
+        let plain = [0x33, 0x2A, 0x00];
+        let chp = run_chp(Some(&style), |_| Vec::new(), &bold);
+        assert!(chp.bold && chp.italic);
+        let chp = run_chp(Some(&style), |_| Vec::new(), &[bold, plain].concat());
+        assert!(!chp.bold && chp.italic);
+    }
 }

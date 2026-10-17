@@ -26,7 +26,6 @@ mod uri;
 
 #[cfg(test)]
 pub(crate) use crate::ole2::tests::compound as compound_document;
-pub(crate) use detectors::ole::container_type as ole_container_type;
 pub(crate) use detectors::ole::directory_type as ole_directory_type;
 pub(crate) use detectors::ole::is_ole10_native;
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
@@ -110,6 +109,14 @@ fn thrown(detector: &'static str) -> impl Fn(Thrown) -> DetectionError {
 
 const OCTET_STREAM: &str = "application/octet-stream";
 
+/// The value of `key` among `pairs` sorted by their unique keys.
+fn sorted_get<V: Copy>(pairs: &[(&'static str, V)], key: &str) -> Option<V> {
+    pairs
+        .binary_search_by(|(known, _)| (*known).cmp(key))
+        .ok()
+        .map(|index| pairs[index].1)
+}
+
 /// The metadata a detection writes, with the one-time `Content-Length` of a spooled stream.
 struct Written {
     entries: Vec<Entry>,
@@ -159,8 +166,14 @@ pub(crate) fn declares(kind: &MediaType) -> bool {
 
 /// Every type the default types declare.
 #[cfg(test)]
-pub(crate) fn known_types() -> impl Iterator<Item = &'static MediaType> {
+pub(crate) fn known_types() -> impl Iterator<Item = MediaType> {
     mime_types().known_types()
+}
+
+/// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type,
+/// with its dot, or nothing.
+pub(crate) fn registered_extension(media_type: &MediaType) -> &'static str {
+    mime_types().registered_extension(media_type)
 }
 
 /// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an

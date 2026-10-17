@@ -3,9 +3,8 @@
 //! a document, failing where FontBox fails. Text extraction reads its built-in encoding, font
 //! matrix, bounding box, glyph names, and the widths its charstrings set.
 
-use std::collections::HashMap;
-
 use super::Unported;
+use crate::hash::FastMap;
 
 const EEXEC_KEY: u32 = 55665;
 const CHARSTRING_KEY: u32 = 4330;
@@ -39,7 +38,7 @@ pub(super) struct Type1 {
     pub(super) encoding: Option<BuiltIn>,
     pub(super) font_matrix: Vec<f32>,
     pub(super) font_bbox: Vec<f32>,
-    charstrings: HashMap<String, Vec<u8>>,
+    charstrings: FastMap<String, Vec<u8>>,
 }
 
 /// Why parsing stopped: an `IOException`, which FontBox reports as a damaged font, a
@@ -656,7 +655,7 @@ fn parse(segment1: &[u8], segment2: &[u8]) -> Parsed<Type1> {
         encoding: None,
         font_matrix: Vec::new(),
         font_bbox: Vec::new(),
-        charstrings: HashMap::new(),
+        charstrings: FastMap::default(),
     };
     parse_ascii(segment1, &mut font).map_err(|failure| match failure {
         Failure::Number => Failure::Damaged,

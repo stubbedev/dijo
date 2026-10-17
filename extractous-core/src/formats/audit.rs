@@ -17,35 +17,16 @@ use crate::config::{ParserConfigs, PdfParserConfig, TesseractOcrConfig};
 use crate::formats::{self, Bridged, Declined, Output, Unrouted};
 use crate::tika::Source;
 
-/// How an embedded document of a natively read one reached Tika's path.
-#[derive(Debug)]
-pub(crate) enum Bridge {
-    /// Routing sent it there.
-    Routed(Bridged),
-    /// Its native parser, of this name, failed on it as Tika's would throw, and Tika's path
-    /// parsed it again for the exception Tika records, with why the native parse failed.
-    Reparsed(&'static str, String),
-}
-
 thread_local! {
-    static BRIDGES: RefCell<Vec<Bridge>> = const { RefCell::new(Vec::new()) };
+    static BRIDGES: RefCell<Vec<Bridged>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Records that an embedded document goes to Tika's path, and why.
 pub(crate) fn bridged(bridged: Bridged) {
-    BRIDGES.with(|bridges| bridges.borrow_mut().push(Bridge::Routed(bridged)));
+    BRIDGES.with(|bridges| bridges.borrow_mut().push(bridged));
 }
 
-/// Records that Tika's path parses an embedded document again after `parser` failed on it.
-pub(crate) fn reparsed(parser: &'static str, reason: &str) {
-    BRIDGES.with(|bridges| {
-        bridges
-            .borrow_mut()
-            .push(Bridge::Reparsed(parser, reason.to_owned()))
-    });
-}
-
-fn take_bridges() -> Vec<Bridge> {
+fn take_bridges() -> Vec<Bridged> {
     BRIDGES.with(|bridges| std::mem::take(&mut *bridges.borrow_mut()))
 }
 
@@ -61,26 +42,19 @@ fn short(reason: &str) -> String {
     }
 }
 
-impl Bridge {
-    /// The reason, as the report groups it.
-    fn reason(&self) -> String {
-        match self {
-            Bridge::Routed(Bridged::Unrouted(Unrouted::Unparsed(media_type))) => {
-                format!("no native parser for {}", base_type(media_type))
-            }
-            Bridge::Routed(Bridged::Unrouted(unrouted)) => format!("{unrouted:?}"),
-            Bridge::Routed(Bridged::Declined(parser, Declined::Deferred(reason))) => {
-                format!("{parser} defers: {}", short(reason))
-            }
-            Bridge::Routed(Bridged::Declined(parser, Declined::Fails(_))) => {
-                format!("{parser} fails it before starting: Tika records the exception")
-            }
-            Bridge::Reparsed(parser, reason) => {
-                format!(
-                    "{parser} failed, Tika reparses for the exception: {}",
-                    short(reason)
-                )
-            }
+/// Why an embedded document of a natively read one reached Tika's path, as the report groups
+/// it.
+fn bridge_reason(bridged: &Bridged) -> String {
+    match bridged {
+        Bridged::Unrouted(Unrouted::Unparsed(media_type)) => {
+            format!("no native parser for {}", base_type(media_type))
+        }
+        Bridged::Unrouted(unrouted) => format!("{unrouted:?}"),
+        Bridged::Declined(parser, Declined::Deferred(reason)) => {
+            format!("{parser} defers: {}", short(reason))
+        }
+        Bridged::Declined(parser, Declined::Fails(_)) => {
+            format!("{parser} fails it before starting: Tika records the exception")
         }
     }
 }
@@ -210,8 +184,8 @@ fn base_type(media_type: &str) -> String {
 fn cli_settings() -> ParserConfigs {
     ParserConfigs {
         pdf: PdfParserConfig::new().set_ocr_strategy_auto("50%,10"),
-        office: Default::default(),
         ocr: TesseractOcrConfig::new().set_language(TesseractOcrConfig::AUTO_LANGUAGE),
+        ..Default::default()
     }
 }
 
@@ -241,7 +215,6 @@ fn tika_parsers(name: &str) -> String {
         Source::File(name),
         1,
         &configs,
-        None,
         false,
     );
     let metadata = match parsed {
@@ -304,7 +277,7 @@ fn audit(name: &str, configs: &ParserConfigs) -> Found {
             usize::MAX,
             Output::Text,
         );
-        let bridges: Vec<String> = take_bridges().iter().map(Bridge::reason).collect();
+        let bridges: Vec<String> = take_bridges().iter().map(bridge_reason).collect();
         match parsed {
             Ok(Some(_)) if bridges.is_empty() => (Kind::Native, bridges),
             Ok(Some(_)) => (Kind::Bridging, bridges),

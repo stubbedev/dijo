@@ -52,10 +52,11 @@ prose-scan-upside-down.png	prose	ocr
 prose-scan.pdf	prose	ocr		
 prose-scan.webp	prose	ocr		
 prose-scan.heic	prose	ocr	heif-dec	
-prose-scan.avif	prose	ocr	heif-dec	
+prose-scan.avif	prose	ocr		
 prose-scan.pbm	prose	ocr		
 prose-scan.djvu	prose	ocr		
 prose-scan.jb2	prose	ocr		
+prose-scan.jp2	prose	ocr		
 prose-scan.psd	prose	ocr		
 prose-scan.pcx	prose	ocr		
 prose-scan.tga	prose	ocr		

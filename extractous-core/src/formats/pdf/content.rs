@@ -2,6 +2,8 @@
 //! operands and operators in order, a malformed dictionary or array ending the stream, numbers
 //! read with PDFBox's repairs, and inline image data skipped up to its `EI`.
 
+use std::borrow::Cow;
+
 use lopdf::{Dictionary, Object, StringFormat};
 
 use super::Unported;
@@ -12,11 +14,20 @@ const MAX_RECURSION_DEPTH: usize = 500;
 /// `BaseParser.MAX_LENGTH_LONG`, the digits of `Long.MAX_VALUE`.
 const MAX_BIN_CHAR_TEST_LENGTH: usize = 10;
 
-/// What a content stream holds: an operand, or the operator the operands before it belong to.
+/// What a content stream holds: an operand, or the operator the operands before it belong to,
+/// borrowed from the stream unless it is not ASCII.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum Token {
+pub(super) enum Token<'a> {
     Operand(Object),
-    Operator(String),
+    Operator(Cow<'a, str>),
+}
+
+/// The bytes of an operator as Java decodes them, ISO-8859-1.
+fn operator(bytes: &[u8]) -> Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) if bytes.is_ascii() => Cow::Borrowed(text),
+        _ => Cow::Owned(java::latin1(bytes)),
+    }
 }
 
 /// Why a token could not be read: the stream is malformed where PDFBox throws, which the port
@@ -190,20 +201,24 @@ impl<'a> Lexer<'a> {
 
     /// `BaseParser.readString`: the characters up to the end of a name.
     pub(super) fn read_string(&mut self) -> Vec<u8> {
+        self.read_word().to_vec()
+    }
+
+    /// [`Lexer::read_string`], as the bytes of the data it read.
+    fn read_word(&mut self) -> &'a [u8] {
         self.skip_spaces();
-        let mut buffer = Vec::new();
+        let start = self.pos;
         let mut c = self.read();
         while !is_end_of_name(c) {
-            buffer.push(c.unwrap_or_default());
             c = self.read();
         }
         self.unread(c);
-        buffer
+        &self.data[start..self.pos]
     }
 
     /// `PDFStreamParser.parseNextToken`: the next token, or `None` at the end of the stream or
     /// where PDFBox stops reading it.
-    pub(super) fn next_token(&mut self) -> Result<Option<Token>, Unported> {
+    pub(super) fn next_token(&mut self) -> Result<Option<Token<'a>>, Unported> {
         if self.closed {
             return Ok(None);
         }
@@ -238,32 +253,32 @@ impl<'a> Lexer<'a> {
             b'(' => self.parse_string().map(|s| Some(Token::Operand(s))),
             b'/' => Ok(Some(Token::Operand(self.parse_name()))),
             b'n' => {
-                let word = self.read_string();
+                let word = self.read_word();
                 Ok(Some(if word == b"null" {
                     Token::Operand(Object::Null)
                 } else {
-                    Token::Operator(java::latin1(word))
+                    Token::Operator(operator(word))
                 }))
             }
             b't' | b'f' => {
-                let word = self.read_string();
-                let boolean = match word.as_slice() {
+                let word = self.read_word();
+                let boolean = match word {
                     b"true" => Some(true),
                     b"false" => Some(false),
                     _ => None,
                 };
                 Ok(Some(match boolean {
                     Some(boolean) => Token::Operand(Object::Boolean(boolean)),
-                    None => Token::Operator(java::latin1(word)),
+                    None => Token::Operator(operator(word)),
                 }))
             }
             b'0'..=b'9' | b'-' | b'+' | b'.' => self.stream_number().map(Some),
             b'B' => {
-                let word = self.read_string();
+                let word = self.read_word();
                 if word == b"BI" {
                     self.inline_image()?;
                 }
-                Ok(Some(Token::Operator(java::latin1(word))))
+                Ok(Some(Token::Operator(operator(word))))
             }
             b'I' => {
                 let first = self.read();
@@ -276,29 +291,31 @@ impl<'a> Lexer<'a> {
                     ));
                 }
                 self.skip_inline_image_data();
-                Ok(Some(Token::Operator("ID".to_owned())))
+                Ok(Some(Token::Operator(Cow::Borrowed("ID"))))
             }
             b']' => {
                 self.read();
                 Ok(Some(Token::Operand(Object::Null)))
             }
             _ => {
-                let operator = java::latin1(self.read_operator());
-                let trimmed = operator.trim_matches(|c: char| c <= ' ');
-                if trimmed.is_empty() {
+                let control = |c: char| c <= ' ';
+                let operator = match operator(self.read_operator()) {
+                    Cow::Borrowed(text) => Cow::Borrowed(text.trim_matches(control)),
+                    Cow::Owned(text) if text.trim_matches(control).len() == text.len() => {
+                        Cow::Owned(text)
+                    }
+                    Cow::Owned(text) => Cow::Owned(text.trim_matches(control).to_owned()),
+                };
+                if operator.is_empty() {
                     return Ok(None);
                 }
-                Ok(Some(Token::Operator(if trimmed.len() == operator.len() {
-                    operator
-                } else {
-                    trimmed.to_owned()
-                })))
+                Ok(Some(Token::Operator(operator)))
             }
         }
     }
 
     /// The number `PDFStreamParser` reads where a token starts with a digit, a sign or a dot.
-    fn stream_number(&mut self) -> Result<Token, Unported> {
+    fn stream_number(&mut self) -> Result<Token<'a>, Unported> {
         let first = self.read().unwrap_or_default();
         let mut buffer = std::mem::take(&mut self.number);
         buffer.clear();
@@ -333,10 +350,10 @@ impl<'a> Lexer<'a> {
         token
     }
 
-    /// `PDFStreamParser.readOperator`.
-    fn read_operator(&mut self) -> Vec<u8> {
+    /// `PDFStreamParser.readOperator`, as the bytes of the data it read.
+    fn read_operator(&mut self) -> &'a [u8] {
         self.skip_spaces();
-        let mut buffer = Vec::new();
+        let start = self.pos;
         let mut next = self.peek();
         while let Some(c) = next {
             if is_whitespace(next) || matches!(c, b'[' | b'<' | b'(' | b'/' | b'%' | b'0'..=b'9') {
@@ -344,13 +361,12 @@ impl<'a> Lexer<'a> {
             }
             self.read();
             next = self.peek();
-            buffer.push(c);
             if c == b'd' && matches!(next, Some(b'0' | b'1')) {
-                buffer.push(self.read().unwrap_or_default());
+                self.read();
                 next = self.peek();
             }
         }
-        buffer
+        &self.data[start..self.pos]
     }
 
     /// The parameters of an inline image after `BI`, up to its data, which `ID` skips.
@@ -1031,7 +1047,7 @@ fn coerce(value: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn tokens(data: &[u8]) -> Vec<Token> {
+    fn tokens(data: &[u8]) -> Vec<Token<'_>> {
         let mut lexer = Lexer::new(data);
         let mut tokens = Vec::new();
         while let Some(token) = lexer.next_token().unwrap() {
@@ -1040,8 +1056,8 @@ mod tests {
         tokens
     }
 
-    fn op(name: &str) -> Token {
-        Token::Operator(name.to_owned())
+    fn op(name: &str) -> Token<'_> {
+        Token::Operator(Cow::Borrowed(name))
     }
 
     #[test]

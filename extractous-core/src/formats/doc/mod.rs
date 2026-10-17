@@ -7,9 +7,11 @@
 //! cleaned of control characters as our `WordText` cleans it, and the other stories' paragraphs
 //! are given as our substitute for POI's `getParagraphText` gives them.
 //!
-//! A document POI reads differently from this port is left to Tika, as is one before Word 97,
-//! which POI reads as `HWPFOldDocument`, an encrypted one, and macros extracted when asked to:
-//! see [`DocParser::defers`].
+//! A document before Word 97 is read as POI's `HWPFOldDocument` reads it for Tika's
+//! `parseWord6`: a paragraph for each of its paragraphs. An encrypted document is decrypted with
+//! the password, or failed as Tika's path fails it where the password does not open it. A
+//! document POI reads differently from this port is left to Tika, as are macros extracted when
+//! asked to: see [`DocParser::defers`].
 
 mod bins;
 mod bytes;
@@ -18,6 +20,7 @@ mod extractor;
 mod fib;
 mod fields;
 mod lists;
+mod old;
 mod pictures;
 mod props;
 mod range;
@@ -25,10 +28,10 @@ mod sprm;
 mod styles;
 mod text;
 
-use document::Document;
+use document::{Document, Word};
 use extractor::{extract, Extracted, Out};
 
-use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::config::ParserConfigs;
 use crate::formats::metadata::office::{
     COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
 };
@@ -57,16 +60,15 @@ impl Parser for DocParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers documents POI or Tika throws on, those before Word 97, encrypted ones, and
-    /// macros extracted when asked to.
+    /// Fails encrypted documents the password does not open, and defers documents POI or Tika
+    /// throws on and macros extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, extracted) =
-            read(input, &configs.office).map_err(|Unported(reason)| reason)?;
+        let (summaries, extracted) = read(input, configs)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             write(extracted, xhtml)
@@ -76,11 +78,12 @@ impl Parser for DocParser {
 
 /// The summary information and what Tika's extractor makes of the Word document in a compound
 /// document.
-fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Extracted), Unported> {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Declined> {
+    let config = &configs.office;
     if config.extracts_macros() {
-        return Err(Unported(
-            "macros are extracted, which this port does not do".to_owned(),
-        ));
+        return Err(
+            Unported("macros are extracted, which this port does not do".to_owned()).into(),
+        );
     }
     let file = Ole2::open(input).map_err(|Unreadable(reason)| {
         Unported(format!("POI cannot open the compound document: {reason}"))
@@ -88,16 +91,20 @@ fn read(input: &[u8], config: &OfficeParserConfig) -> Result<(Summaries, Extract
     if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
         return Err(Unported(format!(
             "POI reads the compound document from a stream differently: {reason}"
-        )));
+        ))
+        .into());
     }
     let root = file.root();
     if ole_directory_type(&file, root) != MediaType::named(MEDIA_TYPE) {
         return Err(Unported(
             "the compound document is no Word document to POI's container detection".to_owned(),
-        ));
+        )
+        .into());
     }
-    let document = Document::read(&file, root)?;
-    let extracted = extract(&document, &file, root, config)?;
+    let extracted = match Document::read(&file, root, configs)? {
+        Word::Modern(document) => extract(&document, &file, root, configs)?,
+        Word::Old(document) => Extracted::paragraphs(document.paragraph_text()),
+    };
     Ok((Summaries::read(&file, root)?, extracted))
 }
 
@@ -121,9 +128,7 @@ fn write(extracted: Extracted, xhtml: &mut Xhtml) -> Result<(), Failure> {
             }
             Out::End(tag) => xhtml.end_element(tag)?,
             Out::Text(text) => xhtml.characters_utf16(&text)?,
-            Out::Embedded(embedded, wrapping) => {
-                xhtml.parse_embedded(&embedded.data, &embedded.metadata, wrapping)?
-            }
+            Out::Embedded(handed, wrapping) => handed.write(xhtml, wrapping)?,
         }
     }
     let metadata = xhtml.metadata_mut();

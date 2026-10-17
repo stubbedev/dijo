@@ -4,7 +4,7 @@
 
 use super::descriptions::{base, indexed, Described};
 use super::{Directory, Kind, Metadata, Rational, Unported, Value};
-use crate::formats::data_format::printf;
+use crate::java::printf;
 
 pub(super) const TAG_RUN_TIME: i32 = 0x0003;
 const TAG_ACCELERATION_VECTOR: i32 = 0x0008;
@@ -113,6 +113,18 @@ enum Object {
     Long(i64),
 }
 
+impl Object {
+    /// The value of an integer of any size.
+    fn integer(&self) -> Option<i64> {
+        match *self {
+            Self::Byte(value) => Some(i64::from(value)),
+            Self::Integer(value) => Some(i64::from(value)),
+            Self::Long(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
 /// The exception `BplistReader.parse` throws: an `IOException` for data that ends early or holds
 /// an object it does not read, which `AppleRunTimeReader` records on the maker note.
 #[derive(Debug)]
@@ -144,9 +156,10 @@ pub(super) fn extract_run_time(
     Ok(())
 }
 
-/// `processAppleRunTime`: the flags, epoch, time scale and value of a valid time whose flags are
-/// a one-byte integer. Flags given as a string, and values not of the types it casts them to,
-/// which it parses or throws on, are unported.
+/// `processAppleRunTime`: the flags, epoch, time scale and value of a valid time, each an
+/// integer of any size. metadata-extractor takes flags only as a one-byte integer, parsing them
+/// as a string and skipping the time otherwise, and throws on values not of the size it casts
+/// them to (#114). Flags given as a string are unported.
 fn run_time(objects: &(Vec<Object>, usize)) -> Result<Directory, Unported> {
     let (objects, top) = objects;
     let mut directory = Directory::new(Kind::AppleRunTime);
@@ -178,31 +191,30 @@ fn run_time(objects: &(Vec<Object>, usize)) -> Result<Directory, Unported> {
             .find(|(key, _)| key == name)
             .map(|(_, value)| *value)
     };
-    let cast = || Unported::new("an Apple run time of values its reader casts to other types");
+    let integer = |name: &str| value(name).and_then(Object::integer);
     match value("flags") {
-        Some(Object::Byte(flags)) => {
-            if flags & 0x1 != 0x1 {
-                return Ok(directory);
-            }
-            let Some(Object::Byte(epoch)) = value("epoch") else {
-                return Err(cast());
-            };
-            let Some(Object::Long(scale)) = value("timescale") else {
-                return Err(cast());
-            };
-            let Some(Object::Long(time)) = value("value") else {
-                return Err(cast());
-            };
-            directory.set(CM_TIME_FLAGS, Value::Int(i32::from(*flags)));
-            directory.set(CM_TIME_EPOCH, Value::Int(i32::from(*epoch)));
-            directory.set(CM_TIME_SCALE, Value::Long(*scale));
-            directory.set(CM_TIME_VALUE, Value::Long(*time));
-            Ok(directory)
-        }
         Some(Object::String(_)) => Err(Unported::new(
             "an Apple run time whose flags are a string, which its reader parses",
         )),
-        _ => Ok(directory),
+        Some(flags) => {
+            let Some(flags) = flags.integer() else {
+                return Ok(directory);
+            };
+            if flags & 0x1 != 0x1 {
+                return Ok(directory);
+            }
+            let (Some(epoch), Some(scale), Some(time)) =
+                (integer("epoch"), integer("timescale"), integer("value"))
+            else {
+                return Ok(directory);
+            };
+            directory.set(CM_TIME_FLAGS, Value::Int(flags as i32));
+            directory.set(CM_TIME_EPOCH, Value::Int(epoch as i32));
+            directory.set(CM_TIME_SCALE, Value::Long(scale));
+            directory.set(CM_TIME_VALUE, Value::Long(time));
+            Ok(directory)
+        }
+        None => Ok(directory),
     }
 }
 
@@ -247,6 +259,9 @@ impl<'a> Bytes<'a> {
 
 /// `BplistReader.parse`: the objects, and the index of the top one. Offsets and sizes the reader
 /// would take as negative, which throw runtime exceptions in Java, are unported.
+///
+/// The offset table starts where the trailer says, its offsets unsigned. `BplistReader` reads it
+/// from the top object's index past that, and its one-byte offsets as signed (#114).
 fn parse(bplist: &[u8]) -> Result<Result<(Vec<Object>, usize), Malformed>, Unported> {
     let unported = |what: &str| Unported::new(format!("an Apple run time property list {what}"));
     if bplist.len() < BPLIST_HEADER.len() + TRAILER_SIZE {
@@ -268,7 +283,7 @@ fn parse(bplist: &[u8]) -> Result<Result<(Vec<Object>, usize), Malformed>, Unpor
         Ok(trailer) => trailer,
         Err(malformed) => return Ok(Err(malformed)),
     };
-    let start = usize::try_from(table.wrapping_add(top) as i32)
+    let start = usize::try_from(table as i32)
         .map_err(|_| unported("whose offset table starts before it"))?;
     let count = usize::try_from(count as i32)
         .ok()
@@ -282,8 +297,9 @@ fn parse(bplist: &[u8]) -> Result<Result<(Vec<Object>, usize), Malformed>, Unpor
     let mut offsets = Vec::with_capacity(count);
     for _ in 0..count {
         let offset = match offset_size {
-            1 => table.i8().map(i32::from),
+            1 => table.i8().map(|offset| i32::from(offset as u8)),
             2 => table.u16().map(i32::from),
+            4 => table.u32().map(|offset| offset as i32),
             _ => Ok(0),
         };
         match offset {

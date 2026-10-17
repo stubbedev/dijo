@@ -1,6 +1,7 @@
 //! XML documents without a parser of their own, as Tika's `DcXMLParser` reads them: all their
 //! character data in one paragraph, a space before each element, and the Dublin Core elements
-//! as metadata. The paragraph starts before the XML is read, so the head shows none of it.
+//! as metadata. The Dublin Core is read before the paragraph starts, so the head shows it:
+//! Tika reads the metadata as it writes the paragraph, after the head (#105).
 
 use crate::config::ParserConfigs;
 use crate::formats::element_metadata::DublinCore;
@@ -49,11 +50,14 @@ impl Parser for DcXmlParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         Ok(Box::new(move |xhtml| {
-            xhtml.start_element("p")?;
-            let mut handler = Handlers {
-                xhtml,
+            let mut metadata = DublinCoreReader {
+                metadata: xhtml.metadata_mut(),
                 dublin_core: DublinCore::new(),
             };
+            // A malformed document fails the second reading, as far as which it is written.
+            let _ = xml::parse_sax(input, "the XML document", &mut metadata);
+            xhtml.start_element("p")?;
+            let mut handler = Text { xhtml };
             let parsed = xml::parse_sax(input, "the XML document", &mut handler);
             xhtml.end_element("p")?;
             xhtml.end_document()?;
@@ -67,34 +71,90 @@ impl Parser for DcXmlParser {
     }
 }
 
-/// `TextContentHandler` with spaces between elements, teed with the Dublin Core handlers.
-struct Handlers<'x, 'h> {
-    xhtml: &'x mut Xhtml<'h>,
+/// The Dublin Core handlers `DcXMLParser` tees the events to.
+struct DublinCoreReader<'m> {
+    metadata: &'m mut TikaMetadata,
     dublin_core: DublinCore,
 }
 
-impl SaxHandler for Handlers<'_, '_> {
+impl SaxHandler for DublinCoreReader<'_> {
     fn start_element(
         &mut self,
         namespace: &str,
         local_name: &str,
         _attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        self.xhtml.characters(" ")?;
         self.dublin_core.start(namespace, local_name);
         Ok(())
     }
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        self.dublin_core
-            .end(namespace, local_name, self.xhtml.metadata_mut());
+        self.dublin_core.end(namespace, local_name, self.metadata);
+        Ok(())
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Failure> {
+        self.dublin_core.characters(text);
+        Ok(())
+    }
+}
+
+/// `TextContentHandler`, with a space before each element.
+struct Text<'x, 'h> {
+    xhtml: &'x mut Xhtml<'h>,
+}
+
+impl SaxHandler for Text<'_, '_> {
+    fn start_element(
+        &mut self,
+        _namespace: &str,
+        _local_name: &str,
+        _attributes: &[Attribute],
+    ) -> Result<(), Failure> {
+        self.xhtml.characters(" ")?;
+        Ok(())
+    }
+
+    fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
         Ok(())
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
         self.xhtml.characters(text)?;
-        self.dublin_core.characters(text);
         Ok(())
+    }
+}
+
+/// A native result without the Dublin Core Tika's path has not read: it reads the metadata
+/// as it writes the text, so it stops at the length limit before what comes after, where
+/// the native parser reads it all first (#105).
+#[cfg(test)]
+pub(crate) fn without_unread_dublin_core(
+    _text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    tika: &crate::formats::parity::ComparedMetadata,
+) {
+    let dublin_core = |name: &str| name.starts_with("dc:") || name == "dcterms:created";
+    metadata.retain_mut(|(name, values)| {
+        if !dublin_core(name) {
+            return true;
+        }
+        let Some((_, read)) = tika.iter().find(|(tika_name, _)| tika_name == name) else {
+            return false;
+        };
+        if values.starts_with(read) {
+            values.truncate(read.len());
+        }
+        true
+    });
+}
+
+/// A text without its head (#105): the head now shows the Dublin Core, which also titles the
+/// document and reorders the other names, the metadata being compared on their own.
+#[cfg(test)]
+pub(crate) fn without_head(text: &mut String) {
+    if let (Some(start), Some(end)) = (text.find("<head>"), text.find("</head>")) {
+        text.replace_range(start..end + "</head>".len(), "");
     }
 }
 
@@ -104,7 +164,35 @@ mod tests {
 
     use super::*;
     use crate::formats::metadata::TikaMetadata;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_same_as_tika_normalising, conformance_corpus, documents, Scratch,
+    };
+
+    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
+        assert_same_as_tika_normalising(
+            documents,
+            tika_name,
+            without_unread_dublin_core,
+            without_head,
+        );
+    }
+
+    #[test]
+    fn writes_dublin_core_in_the_head() {
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(
+                br#"<?xml version="1.0"?><r xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Titel</dc:title><p>foo<b>bar</b>baz</p>
+  <q>indented</q></r>"#,
+            )
+            .unwrap();
+        let head = &xml[..xml.find("<body>").unwrap()];
+        assert!(
+            head.contains(r#"<meta name="dc:title" content="Titel" />"#),
+            "{xml}"
+        );
+        assert!(head.contains("<title>Titel</title>"), "{xml}");
+    }
 
     /// The metadata `DcXMLParser` reads from `input`, for tests of the metadata alone.
     fn metadata_of(input: &[u8]) -> TikaMetadata {

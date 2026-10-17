@@ -18,8 +18,8 @@ pub(crate) mod photoshop;
 pub(crate) mod reader;
 pub(crate) mod webp;
 
-use crate::formats::data_format::decimal::Rounding;
-use crate::formats::data_format::decimal_format::DecimalFormat;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::parse_long;
 use crate::java::time::TimeZone;

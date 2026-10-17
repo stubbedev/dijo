@@ -9,12 +9,74 @@ use crate::mime::compound_document;
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
-const DOCUMENTS: [&str; 4] = [
+const DOCUMENTS: [&str; 3] = [
     "../test_files/documents/simple.pptx",
-    "../test_files/documents/science-exploration-1p.pptx",
     "../test_files/documents/ooxml/issue4.pptx",
     "../test_files/documents/ooxml/smartart.pptx",
 ];
+
+/// The documents this port reads otherwise than Tika does where Tika slips (#102), each with
+/// what the native XHTML holds in order where Tika's does not.
+const DEPARTURES: [(&str, &[&str]); 7] = [
+    // A layout's picture is named by the layout's own relationships.
+    (
+        "science-exploration-1p.pptx",
+        &["<img src=\"embedded:image2.png\" alt=\"\" />"],
+    ),
+    (
+        "test_embedded_zip.pptx",
+        &["<img src=\"embedded:image1.png\" alt=\"IBM100_PPT_BannerWhite\" />"],
+    ),
+    // The handout master's placeholders are skipped.
+    (
+        "testPPT.potm",
+        &["<p>Investment</p>\n<p />\n</div>\n<div class=\"embedded\""],
+    ),
+    (
+        "testPPT_autodate.pptx",
+        &["<p>2011-12-19 10:20:04 AM</p>\n<div class=\"embedded\""],
+    ),
+    // A link to an anchor is a link.
+    ("testPPT_various.pptx", &["<a href=\"#_ftn1\">[1]</a>"]),
+    // Slides and embedded documents in the order of their relationships' numbers.
+    (
+        "testPPT_various2.pptx",
+        &[
+            "<div class=\"slide-content\"><p>This is some content</p>",
+            "<p>This slide is hidden</p>",
+        ],
+    ),
+    (
+        "testWPSAttachment.pptx",
+        &["<h1>PDF.pdf</h1>", "<h1>Workbook1.xls</h1>"],
+    ),
+];
+
+fn file_name(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+/// Of `documents`, those Tika's path extracts alike, after checking that each departure holds
+/// what it should.
+fn without_departures<'p>(documents: &[&'p Path]) -> Vec<&'p Path> {
+    let mut alike = Vec::new();
+    for &document in documents {
+        let name = file_name(document);
+        let Some((_, expected)) = DEPARTURES.iter().find(|(departure, _)| *departure == name)
+        else {
+            alike.push(document);
+            continue;
+        };
+        let xml = xml(&std::fs::read(document).unwrap());
+        let mut from = 0;
+        for part in *expected {
+            let at = xml[from..].find(part).map(|at| from + at);
+            assert!(at.is_some(), "{name}: no {part:?} after {from} in\n{xml}");
+            from = at.unwrap() + part.len();
+        }
+    }
+    alike
+}
 
 const NAMESPACES: &str = "xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" \
      xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" \
@@ -205,12 +267,7 @@ fn rich_presentation() -> Vec<u8> {
         .part(
             "ppt/handoutMasters/handoutMaster1.xml",
             &pml("handoutMaster"),
-            &sheet(
-                "handoutMaster",
-                "",
-                &shape(Some("hdr"), "Handout header"),
-                "",
-            ),
+            &sheet("handoutMaster", "", &shape(None, "Handout text"), ""),
         )
         .part(
             "ppt/notesSlides/notesSlide1.xml",
@@ -313,6 +370,10 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
 fn extracts_what_tikas_path_extracts() {
     let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
     assert_same_as_tika(&documents, TIKA_PARSER);
+    let departures = [Path::new(
+        "../test_files/documents/science-exploration-1p.pptx",
+    )];
+    assert!(without_departures(&departures).is_empty());
 }
 
 #[test]
@@ -352,24 +413,160 @@ fn defers_ole_objects_tika_fails_to_read() {
         .is_some_and(|reason| reason.contains("Tika fails to read the OLE object")));
 }
 
+const HYPERLINK: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+
+/// A shape of text linked by the relationship `id`.
+fn linked(id: &str, text: &str) -> String {
+    format!(
+        "<p:sp><p:txBody><a:p><a:r><a:rPr><a:hlinkClick r:id=\"{id}\"/></a:rPr><a:t>{text}</a:t>\
+         </a:r></a:p></p:txBody></p:sp>"
+    )
+}
+
+fn xml(input: &[u8]) -> String {
+    crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(input)
+        .unwrap()
+        .0
+}
+
+/// What Tika slips on, read as it should be (#102): a link to an anchor, links of a layout and
+/// notes by their own relationships, a comment's own text, placeholders of the handout master,
+/// and slides past the ninth in order.
 #[test]
-fn defers_internal_links_tika_fails_to_resolve() {
-    let mut built = Built::new(&[("rId1", kind::SLIDE, "slides/slide1.xml")]);
+fn reads_what_tika_slips_on() {
+    let mut slides = vec![
+        (
+            "rId100",
+            kind::SLIDE_MASTER,
+            "slideMasters/slideMaster1.xml".to_owned(),
+        ),
+        (
+            "rId101",
+            kind::HANDOUT_MASTER,
+            "handoutMasters/handoutMaster1.xml".to_owned(),
+        ),
+        (
+            "rId102",
+            kind::COMMENT_AUTHORS,
+            "commentAuthors.xml".to_owned(),
+        ),
+    ];
+    let ids: Vec<String> = (1..=11).map(|number| format!("rId{number}")).collect();
+    for (number, id) in (1..=11).zip(&ids) {
+        slides.push((id, kind::SLIDE, format!("slides/slide{number}.xml")));
+    }
+    let listed: Vec<(&str, &str, &str)> = slides
+        .iter()
+        .map(|(id, kind, target)| (*id, *kind, target.as_str()))
+        .collect();
+    let mut built = Built::new(&listed);
+    for number in 2..=11 {
+        let name = format!("ppt/slides/slide{number}.xml");
+        built.part(
+            &name,
+            &pml("slide"),
+            &sheet("sld", "", &shape(None, &format!("Slide {number}")), ""),
+        );
+    }
     built
         .part(
             "ppt/slides/slide1.xml",
             &pml("slide"),
-            &sheet("sld", "", "", ""),
+            &sheet("sld", "", &linked("rId1", "To the note"), ""),
         )
         .relationships(
             "ppt/slides/slide1.xml",
-            &[(
-                "rId1",
-                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
-                "#anchor",
-            )],
+            &[
+                ("rId1", HYPERLINK, "#_ftn1"),
+                (
+                    "rId2",
+                    kind::SLIDE_LAYOUT,
+                    "../slideLayouts/slideLayout1.xml",
+                ),
+                ("rId3", kind::NOTES, "../notesSlides/notesSlide1.xml"),
+                ("rId4", kind::COMMENTS, "../comments/comment1.xml"),
+                ("rId5", HYPERLINK, "https://slide.example/"),
+            ],
+        )
+        .part(
+            "ppt/slideLayouts/slideLayout1.xml",
+            &pml("slideLayout"),
+            &sheet("sldLayout", "", &linked("rId5", "Layout link"), ""),
+        )
+        .relationships(
+            "ppt/slideLayouts/slideLayout1.xml",
+            &[("rId5", HYPERLINK, "https://layout.example/")],
+        )
+        .part(
+            "ppt/notesSlides/notesSlide1.xml",
+            &pml("notesSlide"),
+            &sheet("notes", "", &linked("rId5", "Notes link"), ""),
+        )
+        .relationships(
+            "ppt/notesSlides/notesSlide1.xml",
+            &[("rId5", HYPERLINK, "https://notes.example/")],
+        )
+        .part(
+            "ppt/slideMasters/slideMaster1.xml",
+            &pml("slideMaster"),
+            &sheet("sldMaster", "", &shape(None, "Master text"), ""),
+        )
+        .part(
+            "ppt/handoutMasters/handoutMaster1.xml",
+            &pml("handoutMaster"),
+            &sheet(
+                "handoutMaster",
+                "",
+                &format!(
+                    "{}{}",
+                    shape(Some("hdr"), "Handout header"),
+                    shape(None, "Handout text")
+                ),
+                "",
+            ),
+        )
+        .part(
+            "ppt/commentAuthors.xml",
+            &pml("commentAuthors"),
+            &format!(
+                "<p:cmAuthorLst {NAMESPACES}><p:cmAuthor id=\"0\" name=\"Ann\"/></p:cmAuthorLst>"
+            ),
+        )
+        .part(
+            "ppt/comments/comment1.xml",
+            &pml("comments"),
+            &format!(
+                "<p:cmLst {NAMESPACES}>Stray<p:cm authorId=\"0\"><p:pos x=\"1\" y=\"1\"/>\
+                 <p:text>First</p:text></p:cm>More<p:cm authorId=\"0\"><p:text>Second</p:text>\
+                 </p:cm></p:cmLst>"
+            ),
         );
-    assert!(defers(&built.bytes()).is_some_and(|reason| reason.contains("names no part for")));
+    let input = built.bytes();
+    assert_eq!(defers(&input), None);
+    let xml = xml(&input);
+    assert!(xml.contains("<a href=\"#_ftn1\">To the note</a>"), "{xml}");
+    assert!(
+        xml.contains("<a href=\"https://layout.example/\">Layout link</a>"),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<a href=\"https://notes.example/\">Notes link</a>"),
+        "{xml}"
+    );
+    assert!(xml.contains("<b>Ann</b>First</p>"), "{xml}");
+    assert!(xml.contains("<b>Ann</b>Second</p>"), "{xml}");
+    assert!(!xml.contains("Stray") && !xml.contains("More"), "{xml}");
+    assert!(
+        xml.contains("Handout text") && !xml.contains("Handout header"),
+        "{xml}"
+    );
+    let order: Vec<usize> = (2..=11)
+        .map(|number| xml.find(&format!("Slide {number}<")).unwrap())
+        .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{xml}");
 }
 
 #[test]
@@ -397,7 +594,9 @@ fn extracts_what_tikas_path_extracts_from_tikas_documents() {
         .iter()
         .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names, ["testPPT_various.pptx"]);
+    assert!(names.is_empty(), "{names:?}");
     let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&parsed, TIKA_PARSER);
+    let alike = without_departures(&parsed);
+    assert_eq!(parsed.len() - alike.len(), DEPARTURES.len() - 1);
+    assert_same_as_tika(&alike, TIKA_PARSER);
 }

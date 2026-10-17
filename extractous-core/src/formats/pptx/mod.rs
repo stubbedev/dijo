@@ -7,6 +7,12 @@
 //!
 //! A package POI would read in a degraded way or refuse, and one whose parts or OLE objects Tika
 //! records failing on, are left to Tika: see [`Presentation::check`].
+//!
+//! Where Tika slips, this port does not (#102): each comment holds its own text; only the
+//! content of a placeholder is skipped, in the handout master too; each part resolves links by
+//! its own relationships; relationships are ordered by the numbers of their ids, and slides
+//! numbered among those the package has; and a link to an anchor inside the document is a link,
+//! where Tika records it failing as a part POI cannot name.
 
 use std::collections::HashMap;
 
@@ -15,10 +21,11 @@ use crate::formats::docx::body::{Body, Context};
 use crate::formats::docx::notes::InlineParts;
 use crate::formats::docx::numbering::ListManager;
 use crate::formats::docx::text::{TextHandler, TextOptions};
-use crate::formats::docx::write_general_text_parts;
-use crate::formats::metadata::TikaMetadata;
+use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::ooxml::extractor::{self, Ignore};
-use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
+use crate::formats::ooxml::{
+    self, Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP,
+};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
@@ -87,11 +94,9 @@ const SLIDE_PART_KINDS: [&str; 6] = [
 mod name {
     pub(super) use crate::formats::ooxml::extractor::name::*;
 
-    pub(super) const HAS_HIDDEN_SLIDES: &str = "msoffice:ppt:has-hidden-slides";
-    pub(super) const NUM_HIDDEN_SLIDES: &str = "msoffice:ppt:num-hidden-slides";
-    pub(super) const HAS_ANIMATIONS: &str = "msoffice:ppt:has-animations";
-    pub(super) const PAGE_NUMBER: &str = "tk:page:number";
-    pub(super) const PAGE_NUMBERS: &str = "tk:page:numbers";
+    pub(super) use crate::formats::metadata::office::{
+        HAS_ANIMATIONS, HAS_HIDDEN_SLIDES, NUM_HIDDEN_SLIDES,
+    };
 }
 
 /// The extractor Tika records having used.
@@ -149,7 +154,8 @@ struct Presentation<'a> {
 
 impl<'a> Presentation<'a> {
     fn open(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Self, Unported> {
-        let package = Package::open(input)?;
+        let mut package = Package::open(input)?;
+        package.order_relationships_numerically();
         let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()
             .find_map(|kind| Package::relationships_of(&package.relationships, kind).next())
@@ -176,6 +182,19 @@ impl<'a> Presentation<'a> {
 
     fn relationships(&self, part: usize) -> &[Relationship] {
         &self.package.parts[part].relationships
+    }
+
+    /// `loadLinkedRelationships` of `part`, with its links to anchors inside the document,
+    /// which Tika fails on (#102).
+    fn links(&self, part: usize) -> HashMap<String, String> {
+        let relationships = self.relationships(part);
+        let mut links = extractor::linked_relationships(relationships, false);
+        for relationship in Package::relationships_of(relationships, HYPERLINK_RELATIONSHIP) {
+            if is_anchor(relationship) {
+                links.insert(relationship.id.clone(), relationship.target.clone());
+            }
+        }
+        links
     }
 
     /// The parts the relationships of `part` of `kind` lead to, skipping those that lead nowhere.
@@ -254,6 +273,9 @@ impl<'a> Presentation<'a> {
         }
         for source in self.embedding_parts() {
             for relationship in self.relationships(source) {
+                if is_anchor(relationship) {
+                    continue;
+                }
                 extractor::check_embedded(&self.package, self.config, source, relationship, false)?;
             }
         }
@@ -287,14 +309,11 @@ impl<'a> Presentation<'a> {
     }
 
     /// `recordPicturePageRefs`: the slides each picture is on, numbered by the slide's place among
-    /// the presentation's slide relationships.
+    /// the presentation's slides. Tika counts the slide relationships that lead to no part too
+    /// (#102).
     fn picture_pages(&self) -> HashMap<usize, Vec<i32>> {
         let mut pages: HashMap<usize, Vec<i32>> = HashMap::new();
-        let slides = Package::relationships_of(self.relationships(self.main), kind::SLIDE);
-        for (number, slide) in (1..).zip(slides) {
-            let Some(slide) = slide.part else {
-                continue;
-            };
+        for (number, slide) in (1..).zip(self.related(self.main, kind::SLIDE)) {
             for relationship in Package::relationships_of(self.relationships(slide), kind::IMAGE) {
                 if let (true, Some(picture)) = (relationship.is_internal(), relationship.part) {
                     let on = pages.entry(picture).or_default();
@@ -337,21 +356,13 @@ impl<'a> Presentation<'a> {
                 .set(name::NUM_HIDDEN_SLIDES, hidden.to_string());
         }
         if self.includes_master_content() {
-            let no_links = HashMap::new();
-            self.write_text_part(
-                kind::SLIDE_MASTER,
-                "slide-master",
-                self.main,
-                &no_links,
-                true,
-                xhtml,
-            )?;
+            self.write_text_part(kind::SLIDE_MASTER, "slide-master", self.main, true, xhtml)?;
+            // Tika skips no placeholder of the handout master (#102).
             self.write_text_part(
                 kind::HANDOUT_MASTER,
                 "slide-handout-master",
                 self.main,
-                &no_links,
-                false,
+                true,
                 xhtml,
             )?;
         }
@@ -377,14 +388,16 @@ impl<'a> Presentation<'a> {
     }
 
     /// `handleSlidePart`: the slide in a `slide-content` div, then its layouts, notes, notes
-    /// master, comments, diagram data and charts. Whether the slide is hidden.
+    /// master, comments, diagram data and charts, each part with its own links, where Tika
+    /// resolves those of the layouts and notes by the slide's (#102). Whether the slide is
+    /// hidden.
     fn write_slide(
         &self,
         slide: usize,
         authors: &CommentAuthors,
         xhtml: &mut Xhtml,
     ) -> Result<bool, Failure> {
-        let links = extractor::linked_relationships(self.relationships(slide), false);
+        let links = self.links(slide);
         xhtml.start_element_with("div", &[("class", "slide-content")])?;
         let mut lists = ListManager::default();
         let inline = InlineParts::default();
@@ -407,19 +420,17 @@ impl<'a> Presentation<'a> {
                 kind::SLIDE_LAYOUT,
                 "slide-master-content",
                 slide,
-                &links,
                 true,
                 xhtml,
             )?;
         }
         if self.includes_notes() {
-            self.write_text_part(kind::NOTES, "slide-notes", slide, &links, false, xhtml)?;
+            self.write_text_part(kind::NOTES, "slide-notes", slide, false, xhtml)?;
             if self.includes_master_content() {
                 self.write_text_part(
                     kind::NOTES_MASTER,
                     "slide-notes-master",
                     slide,
-                    &links,
                     false,
                     xhtml,
                 )?;
@@ -433,41 +444,50 @@ impl<'a> Presentation<'a> {
             "",
             &mut comments,
         )?;
-        self.write_text_part(
-            kind::DIAGRAM_DATA,
-            "diagram-data",
-            slide,
-            &links,
-            false,
-            xhtml,
-        )?;
-        self.write_text_part(kind::CHART, "chart", slide, &links, false, xhtml)?;
+        self.write_text_part(kind::DIAGRAM_DATA, "diagram-data", slide, false, xhtml)?;
+        self.write_text_part(kind::CHART, "chart", slide, false, xhtml)?;
         Ok(hidden)
     }
 
     /// `handleGeneralTextContainingPart` with the text handler, behind a `PlaceHolderSkipper`
-    /// when `skip_placeholders`.
+    /// when `skip_placeholders`, each part resolving links by its own relationships.
     fn write_text_part(
         &self,
         kind: &str,
         label: &str,
         parent: usize,
-        links: &HashMap<String, String>,
         skip_placeholders: bool,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        if !skip_placeholders {
-            return write_general_text_parts(&self.package, parent, kind, label, links, xhtml);
-        }
+        let links: HashMap<usize, HashMap<String, String>> = self
+            .related(parent, kind)
+            .into_iter()
+            .map(|part| (part, self.links(part)))
+            .collect();
+        let none = HashMap::new();
         let mut lists = ListManager::default();
         let inline = InlineParts::default();
         let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
-        let mut handler = TextHandler::new(body, links, TextOptions::default());
-        let mut skipper = PlaceHolderSkipper {
-            inner: &mut handler,
-            in_placeholder: false,
-        };
-        extractor::write_general_text_parts(&self.package, parent, kind, label, &mut skipper)
+        let mut handler = TextHandler::new(body, &none, TextOptions::default());
+        if !skip_placeholders {
+            return extractor::write_general_text_parts_each(
+                &self.package,
+                parent,
+                kind,
+                label,
+                &mut handler,
+                |handler, part| handler.set_relationships(&links[&part]),
+            );
+        }
+        let mut skipper = PlaceHolderSkipper::new(&mut handler);
+        extractor::write_general_text_parts_each(
+            &self.package,
+            parent,
+            kind,
+            label,
+            &mut skipper,
+            |skipper, part| skipper.inner.set_relationships(&links[&part]),
+        )
     }
 }
 
@@ -533,11 +553,12 @@ impl SaxHandler for CommentAuthors {
 }
 
 /// `XSLFCommentsHandler`: each comment in a paragraph headed by its author's name and initials,
-/// with all the text of the part since the previous comment.
+/// with its text. Tika gives it all the text of the part since the previous comment (#102).
 struct Comments<'a, 'x, 'h> {
     xhtml: &'a mut Xhtml<'x>,
     authors: &'h CommentAuthors,
     author: Option<String>,
+    in_text: bool,
     text: String,
 }
 
@@ -547,6 +568,7 @@ impl<'a, 'x, 'h> Comments<'a, 'x, 'h> {
             xhtml,
             authors,
             author: None,
+            in_text: false,
             text: String::new(),
         }
     }
@@ -559,13 +581,21 @@ impl SaxHandler for Comments<'_, '_, '_> {
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        if local_name == "cm" {
-            self.author = xml::attribute(attributes, "", "authorId").map(str::to_owned);
+        match local_name {
+            "cm" => {
+                self.author = xml::attribute(attributes, "", "authorId").map(str::to_owned);
+                self.text.clear();
+            }
+            "text" => self.in_text = true,
+            _ => {}
         }
         Ok(())
     }
 
     fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
+        if local_name == "text" {
+            self.in_text = false;
+        }
         if local_name != "cm" {
             return Ok(());
         }
@@ -595,15 +625,46 @@ impl SaxHandler for Comments<'_, '_, '_> {
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        self.text.push_str(text);
+        if self.in_text {
+            self.text.push_str(text);
+        }
         Ok(())
     }
 }
 
-/// `PlaceHolderSkipper`: drops a shape from its placeholder mark to its end.
+/// Whether `relationship` is a link to an anchor inside the document, such as `#_ftn1`.
+fn is_anchor(relationship: &Relationship) -> bool {
+    relationship.kind == HYPERLINK_RELATIONSHIP
+        && relationship.is_internal()
+        && relationship.target.starts_with('#')
+}
+
+/// The elements of a shape tree that may be a placeholder.
+const SHAPES: [&str; 5] = ["sp", "pic", "graphicFrame", "cxnSp", "grpSp"];
+
+/// `PlaceHolderSkipper`: drops what a placeholder shape holds from its placeholder mark to the
+/// shape's end, the elements open at the mark still ended. Tika drops their ends too, and ends a
+/// placeholder only at the end of a `sp`, so one of a picture or a frame goes on into the shapes
+/// after it (#102).
 struct PlaceHolderSkipper<'h, H> {
     inner: &'h mut H,
-    in_placeholder: bool,
+    /// The elements handed on that are open.
+    open: Vec<String>,
+    /// While a placeholder is skipped, how many elements of `open` stay open past its shape.
+    shape: Option<usize>,
+    /// The elements started and dropped since the mark that are open.
+    skipped: usize,
+}
+
+impl<'h, H> PlaceHolderSkipper<'h, H> {
+    fn new(inner: &'h mut H) -> Self {
+        Self {
+            inner,
+            open: Vec::new(),
+            shape: None,
+            skipped: 0,
+        }
+    }
 }
 
 impl<H: SaxHandler> SaxHandler for PlaceHolderSkipper<'_, H> {
@@ -613,48 +674,42 @@ impl<H: SaxHandler> SaxHandler for PlaceHolderSkipper<'_, H> {
         local_name: &str,
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        if local_name == "ph" {
-            self.in_placeholder = true;
+        if self.shape.is_none() && local_name == "ph" {
+            self.shape = Some(
+                self.open
+                    .iter()
+                    .rposition(|open| SHAPES.contains(&open.as_str()))
+                    .unwrap_or(self.open.len()),
+            );
         }
-        if self.in_placeholder {
+        if self.shape.is_some() {
+            self.skipped += 1;
             return Ok(());
         }
+        self.open.push(local_name.to_owned());
         self.inner.start_element(namespace, local_name, attributes)
     }
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        if !self.in_placeholder {
-            self.inner.end_element(namespace, local_name)?;
+        if self.skipped > 0 {
+            self.skipped -= 1;
+            if self.skipped == 0 && self.shape == Some(self.open.len()) {
+                self.shape = None;
+            }
+            return Ok(());
         }
-        if local_name == "sp" {
-            self.in_placeholder = false;
+        self.open.pop();
+        if self.shape == Some(self.open.len()) {
+            self.shape = None;
         }
-        Ok(())
+        self.inner.end_element(namespace, local_name)
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        if self.in_placeholder {
+        if self.shape.is_some() {
             return Ok(());
         }
         self.inner.characters(text)
-    }
-}
-
-/// `PageAnchoring.applyPageMetadata`: the slides a picture is on in order, and the slide when
-/// there is one.
-fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
-    let mut sorted = pages.to_vec();
-    sorted.sort_unstable();
-    if sorted.is_empty() {
-        sorted.push(-1);
-    }
-    for page in &sorted {
-        metadata.add(name::PAGE_NUMBERS, page.to_string());
-    }
-    if let [page] = sorted[..] {
-        if page != -1 {
-            metadata.set(name::PAGE_NUMBER, page.to_string());
-        }
     }
 }
 

@@ -3,9 +3,25 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::config::TesseractOcrConfig;
 use crate::formats::parity::{
-    assert_fails_as_tika_with, assert_same_as_tika_but_ocr, assert_same_as_tika_delegating_with,
-    conformance_corpus, deferral, documents_with,
+    assert_fails_as_tika_with, assert_same_as_tika_delegating_departing_with, conformance_corpus,
+    deferral, documents_with, Departure, Departures,
 };
+
+/// What the image parsers give otherwise than Tika's path on purpose: the modified date of the
+/// file directory in UTC, where Tika writes it in the machine's zone (#114).
+const IMAGE_DEPARTURES: Departures = &[Departure::Values("img:File Modified Date", "#114")];
+
+/// Asserts that the image parser of `paths`, which Tika's path parses with `tika_name`,
+/// extracts what Tika's path does under `configs`, but for [`IMAGE_DEPARTURES`].
+fn assert_same_as_tika_reading_images(paths: &[&Path], tika_name: &str, configs: &ParserConfigs) {
+    assert_same_as_tika_delegating_departing_with(
+        paths,
+        tika_name,
+        &TIKA_DELEGATES,
+        IMAGE_DEPARTURES,
+        configs,
+    );
+}
 
 fn skipping_ocr() -> ParserConfigs {
     ParserConfigs {
@@ -40,7 +56,7 @@ fn same_as_tika(parser: &dyn Parser, tika_name: &str, roots: &[&Path]) -> Vec<Pa
     let configs = skipping_ocr();
     let (parsed, deferred) = documents_with(parser, roots, &configs);
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_delegating_with(&paths, tika_name, &TIKA_DELEGATES, &configs);
+    assert_same_as_tika_reading_images(&paths, tika_name, &configs);
     deferred
 }
 
@@ -113,20 +129,44 @@ fn reads_tikas_test_heif_images_as_tika_does() {
     println!("deferred: {deferred:?}");
 }
 
-/// Reads images of the quality corpus with tesseract as Tika's path writes them, the OCR text
-/// aside, and reads text in each that Tika's path reads text in.
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_heif_images_with_tesseract_as_tikas_path_does() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let configs = automatic_language();
+    let (parsed, deferred) = documents_with(&HeifParser, &roots, &configs);
+    let reasons: Vec<_> = deferred
+        .iter()
+        .map(|path| (path, deferral(&HeifParser, path)))
+        .collect();
+    println!("read: {parsed:?}\ndeferred: {reasons:?}");
+    reads_with_tesseract_as_tikas_path_does(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &parsed,
+        &configs,
+    );
+}
+
+/// The images of the quality corpus with the given names.
+fn corpus(files: &[&str]) -> Vec<PathBuf> {
+    files
+        .iter()
+        .map(|file| Path::new("../quality/corpus").join(file))
+        .collect()
+}
+
+/// Reads images with tesseract as Tika's path writes them, the OCR text aside, and reads text
+/// in each that Tika's path reads text in.
 fn reads_with_tesseract_as_tikas_path_does(
     parser: &dyn Parser,
     tika_name: &str,
-    files: &[&str],
+    paths: &[PathBuf],
     configs: &ParserConfigs,
 ) {
     assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
-    let paths: Vec<PathBuf> = files
-        .iter()
-        .map(|file| Path::new("../quality/corpus").join(file))
-        .collect();
-    for path in &paths {
+    for path in paths {
         assert!(
             deferral(parser, path).is_none(),
             "{} is deferred: {:?}",
@@ -135,14 +175,7 @@ fn reads_with_tesseract_as_tikas_path_does(
         );
     }
     let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-    let texts = assert_same_as_tika_but_ocr(&paths, tika_name, &TIKA_DELEGATES, configs);
-    for (path, (tika, native)) in paths.iter().zip(texts) {
-        assert!(
-            tika.trim().is_empty() || !native.trim().is_empty(),
-            "{}: {tika:?} against {native:?}",
-            path.display()
-        );
-    }
+    assert_same_as_tika_reading_images(&paths, tika_name, configs);
 }
 
 fn automatic_language() -> ParserConfigs {
@@ -157,11 +190,50 @@ fn reads_scans_with_tesseract_as_tikas_path_does() {
     reads_with_tesseract_as_tikas_path_does(
         &ImageParser,
         "org.apache.tika.parser.image.ImageParser",
-        &[
+        &corpus(&[
             "danish-scan.png",
             "prose-scan-rotated.png",
             "greek-scan.png",
-        ],
+        ]),
+        &automatic_language(),
+    );
+}
+
+#[test]
+fn reads_right_to_left_scans_with_tesseract_as_tikas_path_does() {
+    let scan = [PathBuf::from("../test_files/documents/ara-ocr.png")];
+    let arabic = ParserConfigs {
+        ocr: TesseractOcrConfig::new().set_language("ara"),
+        ..ParserConfigs::default()
+    };
+    for configs in [automatic_language(), arabic] {
+        reads_with_tesseract_as_tikas_path_does(
+            &ImageParser,
+            "org.apache.tika.parser.image.ImageParser",
+            &scan,
+            &configs,
+        );
+    }
+}
+
+#[test]
+fn reads_jbig2_and_jpeg_2000_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &ImageParser,
+        "org.apache.tika.parser.image.ImageParser",
+        &corpus(&["prose-scan.jp2"]),
+        &automatic_language(),
+    );
+    let text = assert_jbig2_dimension_read_once(&corpus(&["prose-scan.jb2"])[0]);
+    assert!(text.contains("keeper"), "{text}");
+}
+
+#[test]
+fn reads_heic_and_avif_scans_with_tesseract_as_tikas_path_does() {
+    reads_with_tesseract_as_tikas_path_does(
+        &HeifParser,
+        "org.apache.tika.parser.image.HeifParser",
+        &corpus(&["prose-scan.heic", "prose-scan.avif"]),
         &automatic_language(),
     );
 }
@@ -171,7 +243,7 @@ fn reads_scans_in_the_configured_language_as_tikas_path_does() {
     reads_with_tesseract_as_tikas_path_does(
         &ImageParser,
         "org.apache.tika.parser.image.ImageParser",
-        &["prose-scan-150dpi.png"],
+        &corpus(&["prose-scan-150dpi.png"]),
         &ParserConfigs::default(),
     );
 }
@@ -181,13 +253,13 @@ fn reads_photos_and_tiff_pages_with_tesseract_as_tikas_path_does() {
     reads_with_tesseract_as_tikas_path_does(
         &JpegParser,
         "org.apache.tika.parser.image.JpegParser",
-        &["prose-photo-perspective.jpg"],
+        &corpus(&["prose-photo-perspective.jpg"]),
         &automatic_language(),
     );
     reads_with_tesseract_as_tikas_path_does(
         &TiffParser,
         "org.apache.tika.parser.image.TiffParser",
-        &["report-scan.tif"],
+        &corpus(&["report-scan.tif"]),
         &automatic_language(),
     );
 }
@@ -197,13 +269,13 @@ fn reads_images_tesseract_reads_as_they_are_as_tikas_path_does() {
     reads_with_tesseract_as_tikas_path_does(
         &RecognizedImageParser,
         "ai.yobix.RecognizedImageParser",
-        &[
+        &corpus(&[
             "prose-scan.webp",
             "prose-scan.pbm",
             "prose-scan.psd",
             "prose-scan.pcx",
             "prose-scan.tga",
-        ],
+        ]),
         &automatic_language(),
     );
 }
@@ -228,13 +300,53 @@ fn reads_local_webps_and_photoshop_images_as_tika_does() {
     assert!(deferred.is_empty(), "{deferred:?}");
 }
 
+/// Asserts that `ImageParser` reads the images under `roots` as Tika does, but for JBIG2 files,
+/// whose dimension node jbig2-imageio gives Tika twice, its pixel size off (#120): each of their
+/// dimension values is read once. The images left to Tika are returned.
+fn reads_apart_from_jbig2_as_tika_does(roots: &[&Path]) -> Vec<PathBuf> {
+    let configs = skipping_ocr();
+    let (parsed, deferred) = documents_with(&ImageParser, roots, &configs);
+    let (jbig2, paths): (Vec<&Path>, Vec<&Path>) = parsed
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|path| path.extension().is_some_and(|extension| extension == "jb2"));
+    assert_same_as_tika_reading_images(
+        &paths,
+        "org.apache.tika.parser.image.ImageParser",
+        &configs,
+    );
+    assert!(!jbig2.is_empty());
+    for jbig2 in jbig2 {
+        assert_jbig2_dimension_read_once(jbig2);
+    }
+    deferred
+}
+
+/// Asserts that the JBIG2 file at `jbig2` has each value of its dimension node once, where
+/// jbig2-imageio gives Tika the node twice, its pixel size off (#120); returns the text read.
+fn assert_jbig2_dimension_read_once(jbig2: &Path) -> String {
+    let (text, metadata) = crate::Extractor::new()
+        .extract_file_to_string(jbig2.to_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        metadata
+            .get("img:Dimension PixelAspectRatio")
+            .map(Vec::as_slice),
+        Some(&["1.0".to_owned()][..]),
+        "{jbig2:?}"
+    );
+    for (key, values) in metadata.iter() {
+        assert!(
+            !key.starts_with("img:Dimension") || values.len() == 1,
+            "{jbig2:?}: {key} {values:?}"
+        );
+    }
+    text
+}
+
 #[test]
 fn reads_local_pngs_and_gifs_as_tika_does() {
-    let deferred = same_as_tika(
-        &ImageParser,
-        "org.apache.tika.parser.image.ImageParser",
-        &local_roots(),
-    );
+    let deferred = reads_apart_from_jbig2_as_tika_does(&local_roots());
     assert!(deferred.is_empty(), "{deferred:?}");
 }
 
@@ -272,10 +384,9 @@ fn reads_images_imageio_has_no_reader_for_as_tika_does() {
         "{parsed:?} {deferred:?}"
     );
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_delegating_with(
+    assert_same_as_tika_reading_images(
         &paths,
         "org.apache.tika.parser.image.ImageParser",
-        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -314,11 +425,7 @@ fn defers_bmps_and_wbmps_tika_reads_with_a_reader_picked_at_random() {
 fn reads_tikas_test_pngs_and_gifs_as_tika_does() {
     let roots = conformance_roots();
     let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-    let deferred = same_as_tika(
-        &ImageParser,
-        "org.apache.tika.parser.image.ImageParser",
-        &roots,
-    );
+    let deferred = reads_apart_from_jbig2_as_tika_does(&roots);
     println!("deferred: {deferred:?}");
 }
 
@@ -343,10 +450,9 @@ fn reads_photoshop_captions_as_tika_does() {
         "caption.psd",
         &photoshop(1, b"8BIM\x03\xF0A\x00\x00\x00\x00\x05Hi\xE9!\x00\x008BIM\x04\x0B\x00\x00\x00\x00\x00\x01X\x00"),
     );
-    assert_same_as_tika_delegating_with(
+    assert_same_as_tika_reading_images(
         &[&caption],
         "ai.yobix.RecognizedImageParser",
-        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -407,12 +513,7 @@ fn reads_images_tika_has_no_parser_for_as_tika_does() {
         "{parsed:?} {deferred:?}"
     );
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_delegating_with(
-        &paths,
-        "ai.yobix.RecognizedImageParser",
-        &TIKA_DELEGATES,
-        &skipping_ocr(),
-    );
+    assert_same_as_tika_reading_images(&paths, "ai.yobix.RecognizedImageParser", &skipping_ocr());
 }
 
 #[test]
@@ -570,10 +671,9 @@ fn reads_apple_maker_notes_as_tika_does() {
     );
     let (parsed, deferred) = documents_with(&JpegParser, &[&jpeg], &skipping_ocr());
     assert_eq!((parsed.len(), deferred.len()), (1, 0), "{deferred:?}");
-    assert_same_as_tika_delegating_with(
+    assert_same_as_tika_reading_images(
         &[&jpeg],
         "org.apache.tika.parser.image.JpegParser",
-        &TIKA_DELEGATES,
         &skipping_ocr(),
     );
 }
@@ -582,6 +682,12 @@ fn reads_apple_maker_notes_as_tika_does() {
 /// picture handler, an image item and an Exif item, the image's properties, and the media data
 /// of both items.
 fn iphone_heic() -> Vec<u8> {
+    heic(false)
+}
+
+/// A HEIF image as [`iphone_heic`], or with `exif_first` the Exif item in a free box before
+/// the meta box.
+fn heic(exif_first: bool) -> Vec<u8> {
     let file_type = bmff(b"ftyp", &[&b"heic"[..], &[0; 4], b"mif1heic"].concat());
     let exif = [&6u32.to_be_bytes()[..], b"Exif\0\0", &iphone_exif()].concat();
     let image = b"not an image".to_vec();
@@ -652,6 +758,18 @@ fn iphone_heic() -> Vec<u8> {
             .concat(),
         )
     };
+    if exif_first {
+        let free = bmff(b"free", &exif);
+        let exif_at = (file_type.len() + 8) as u32;
+        let media_at = (file_type.len() + free.len() + meta(0, 0).len() + 8) as u32;
+        return [
+            file_type,
+            free,
+            meta(media_at, exif_at),
+            bmff(b"mdat", &image),
+        ]
+        .concat();
+    }
     let media_at = (file_type.len() + meta(0, 0).len() + 8) as u32;
     let exif_at = media_at + image.len() as u32;
     [
@@ -668,10 +786,44 @@ fn reads_heif_images_as_tika_does() {
     let heic = scratch.write("iphone.heic", &iphone_heic());
     let (parsed, deferred) = documents_with(&HeifParser, &[&heic], &skipping_ocr());
     assert_eq!((parsed.len(), deferred.len()), (1, 0), "{deferred:?}");
-    assert_same_as_tika_delegating_with(
+    assert_same_as_tika_reading_images(
         &[&heic],
         "org.apache.tika.parser.image.HeifParser",
-        &TIKA_DELEGATES,
         &skipping_ocr(),
+    );
+}
+
+#[test]
+fn reads_the_exif_item_of_a_heif_image_wherever_it_stands() {
+    // The Exif item before the media data, where metadata-extractor reads the image as the
+    // Exif (#114).
+    let swapped = heic(true);
+    let (_, metadata) = crate::Extractor::new()
+        .set_ocr_config(TesseractOcrConfig::new().set_skip_ocr(true))
+        .extract_bytes_to_string(&swapped)
+        .unwrap();
+    assert_eq!(
+        metadata.get("tiff:Model").map(Vec::as_slice),
+        Some(&["iPhone 8".to_owned()][..]),
+        "{metadata:?}"
+    );
+}
+
+#[test]
+fn describes_an_image_read_from_memory_by_its_size_alone() {
+    let input = std::fs::read("../quality/corpus/prose-scan.webp").unwrap();
+    let (_, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&input)
+        .unwrap();
+    // Tika describes the temporary file it spools the image to (#114).
+    assert_eq!(
+        metadata.get("img:File Size").map(Vec::as_slice),
+        Some(&[format!("{} bytes", input.len())][..]),
+        "{metadata:?}"
+    );
+    assert!(!metadata.contains_key("img:File Name"), "{metadata:?}");
+    assert!(
+        !metadata.contains_key("img:File Modified Date"),
+        "{metadata:?}"
     );
 }

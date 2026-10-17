@@ -2,13 +2,14 @@
 //! (`models/pdf/encodings.tsv`, written by `just pdf-resources`), encodings with differences,
 //! and the Adobe Glyph List with the names it maps to Unicode.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use lopdf::{Dictionary, Object};
 
 use super::cos::{name_string, Pdf};
+use super::position::GlyphText;
 use super::Unported;
+use crate::hash::FastMap;
 
 const ENCODINGS: &str = include_str!("../../../models/pdf/encodings.tsv");
 const GLYPH_LIST: &str = include_str!("../../../models/pdf/glyphlist.txt");
@@ -74,7 +75,7 @@ pub(super) enum Kind {
     /// `DictionaryEncoding`: a base encoding, if any, with differences.
     Dictionary {
         base: Option<Box<Encoding>>,
-        differences: HashMap<i32, String>,
+        differences: FastMap<i32, String>,
     },
     /// `BuiltInEncoding` or `Type1Encoding`: the encoding a font program has built in.
     FontProgram,
@@ -84,20 +85,20 @@ pub(super) enum Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Encoding {
     pub(super) kind: Kind,
-    code_to_name: HashMap<i32, String>,
-    name_to_code: HashMap<String, i32>,
+    code_to_name: FastMap<i32, String>,
+    name_to_code: FastMap<String, i32>,
 }
 
-static BUILTIN: LazyLock<HashMap<Builtin, Encoding>> = LazyLock::new(|| {
-    let mut encodings: HashMap<Builtin, Encoding> = Builtin::ALL
+static BUILTIN: LazyLock<FastMap<Builtin, Encoding>> = LazyLock::new(|| {
+    let mut encodings: FastMap<Builtin, Encoding> = Builtin::ALL
         .iter()
         .map(|&builtin| {
             (
                 builtin,
                 Encoding {
                     kind: Kind::Builtin(builtin),
-                    code_to_name: HashMap::new(),
-                    name_to_code: HashMap::new(),
+                    code_to_name: FastMap::default(),
+                    name_to_code: FastMap::default(),
                 },
             )
         })
@@ -166,8 +167,8 @@ impl Encoding {
     pub(super) fn font_program(entries: &[(i32, String)]) -> Encoding {
         let mut encoding = Encoding {
             kind: Kind::FontProgram,
-            code_to_name: HashMap::new(),
-            name_to_code: HashMap::new(),
+            code_to_name: FastMap::default(),
+            name_to_code: FastMap::default(),
         };
         for (code, name) in java_integer_map_order(entries) {
             encoding.add(code, name.clone());
@@ -186,24 +187,31 @@ impl Encoding {
     }
 
     /// The code `PDType1Font.getInvertedEncoding` gives a name: the first that has it in the
-    /// iteration order of the codes, which is ascending for the codes of a byte.
+    /// iteration order of the codes in `Encoding`'s `HashMap<Integer, String>(250)`, of 256
+    /// buckets or more: the codes of a byte each in the bucket of its value, and -1, which an
+    /// AFM file gives the glyphs it does not encode, in the first bucket with 0.
     pub(super) fn first_code(&self, name: &str) -> Result<Option<i32>, Unported> {
         if self
             .code_to_name
             .keys()
-            .any(|code| !(0..=255).contains(code))
+            .any(|code| !(-1..=255).contains(code))
         {
             return Err(Unported(
                 "an encoding with codes past a byte, whose inverse PDFBox takes in hash order"
                     .to_owned(),
             ));
         }
-        Ok(self
-            .code_to_name
-            .iter()
-            .filter(|(_, candidate)| *candidate == name)
-            .map(|(&code, _)| code)
-            .min())
+        let named = |code: i32| self.code_to_name.get(&code).is_some_and(|it| it == name);
+        match (named(0), named(-1)) {
+            (true, true) => Err(Unported(
+                "codes 0 and -1 of an encoding naming the same glyph, whose inverse PDFBox takes \
+                 in the order they were added"
+                    .to_owned(),
+            )),
+            (true, false) => Ok(Some(0)),
+            (false, true) => Ok(Some(-1)),
+            (false, false) => Ok((1..=255).find(|&code| named(code))),
+        }
     }
 
     /// The codes and names of the encoding, by code.
@@ -221,8 +229,8 @@ impl Encoding {
     pub(super) fn in_order(entries: &[(i32, String)]) -> Encoding {
         let mut encoding = Encoding {
             kind: Kind::FontProgram,
-            code_to_name: HashMap::new(),
-            name_to_code: HashMap::new(),
+            code_to_name: FastMap::default(),
+            name_to_code: FastMap::default(),
         };
         for (code, name) in entries {
             encoding.add(*code, name.clone());
@@ -286,7 +294,7 @@ impl Encoding {
         let mut encoding = Encoding {
             kind: Kind::Dictionary {
                 base: base.map(|base| Box::new(base.clone())),
-                differences: HashMap::new(),
+                differences: FastMap::default(),
             },
             code_to_name: base.map(|b| b.code_to_name.clone()).unwrap_or_default(),
             name_to_code: base.map(|b| b.name_to_code.clone()).unwrap_or_default(),
@@ -294,7 +302,7 @@ impl Encoding {
         let Some(array) = pdf.array(dict, b"Differences") else {
             return encoding;
         };
-        let mut differences = HashMap::new();
+        let mut differences = FastMap::default();
         let mut index: i32 = -1;
         for item in array {
             match pdf.resolve(item) {
@@ -337,7 +345,7 @@ pub(super) fn java_bucket(hash: i32, capacity: usize) -> usize {
 /// [`java_integer_map_order`] of a map whose table starts at `table` buckets, a power of two.
 pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize) -> Vec<(i32, &V)> {
     let mut unique: Vec<(i32, &V)> = Vec::with_capacity(entries.len());
-    let mut positions: HashMap<i32, usize> = HashMap::new();
+    let mut positions: FastMap<i32, usize> = FastMap::default();
     for (key, value) in entries {
         match positions.get(key) {
             Some(&position) => unique[position].1 = value,
@@ -364,15 +372,15 @@ pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize)
 /// PDFBox's `GlyphList`: glyph names to Unicode, and Unicode back to names.
 #[derive(Debug)]
 pub(super) struct GlyphList {
-    name_to_unicode: HashMap<String, String>,
-    unicode_to_name: HashMap<String, String>,
+    name_to_unicode: FastMap<String, String>,
+    unicode_to_name: FastMap<String, String>,
 }
 
 /// `GlyphList.getAdobeGlyphList`.
 pub(super) static ADOBE: LazyLock<GlyphList> = LazyLock::new(|| {
     let mut list = GlyphList {
-        name_to_unicode: HashMap::with_capacity(4281),
-        unicode_to_name: HashMap::with_capacity(4281),
+        name_to_unicode: FastMap::with_capacity_and_hasher(4281, Default::default()),
+        unicode_to_name: FastMap::with_capacity_and_hasher(4281, Default::default()),
     };
     list.load(GLYPH_LIST);
     list
@@ -381,8 +389,8 @@ pub(super) static ADOBE: LazyLock<GlyphList> = LazyLock::new(|| {
 /// `GlyphList.getZapfDingbats`.
 pub(super) static ZAPF_DINGBATS: LazyLock<GlyphList> = LazyLock::new(|| {
     let mut list = GlyphList {
-        name_to_unicode: HashMap::new(),
-        unicode_to_name: HashMap::new(),
+        name_to_unicode: FastMap::default(),
+        unicode_to_name: FastMap::default(),
     };
     list.load(ZAPF_DINGBATS_GLYPHS);
     list
@@ -446,9 +454,9 @@ impl GlyphList {
 
     /// `GlyphList.toUnicode`: the name's text, without a `.suffix`, or of a `uniXXXX` or
     /// `uXXXX` name.
-    pub(super) fn to_unicode(&self, name: &str) -> Option<String> {
+    pub(super) fn to_unicode(&self, name: &str) -> Option<GlyphText> {
         if let Some(unicode) = self.name_to_unicode.get(name) {
-            return Some(unicode.clone());
+            return Some(GlyphText::new(unicode));
         }
         if let Some(dot) = name.find('.').filter(|&dot| dot > 0) {
             return self.to_unicode(&name[..dot]);
@@ -465,7 +473,7 @@ impl GlyphList {
         if (0xD800..0xE000).contains(&code) {
             return None;
         }
-        char::from_u32(code).map(String::from)
+        char::from_u32(code).map(GlyphText::from)
     }
 }
 

@@ -11,14 +11,14 @@ use super::fields::Part;
 use super::lists::ListManager;
 use super::pictures::{has_picture, Pictures};
 use super::range::{CharacterRun, Paragraph, Span};
-use crate::config::OfficeParserConfig;
+use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::{Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office_document, Embedded};
+use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::Unported;
-use crate::java::{parse_int, JavaHashMap};
+use crate::java::parse_int;
 use crate::ole2::{EntryId, EntryKind, Ole2};
 use crate::unicode::is_whitespace;
 
@@ -36,27 +36,45 @@ const HEADERS: [usize; 3] = [10, 6, 7];
 const FOOTERS: [usize; 3] = [11, 8, 9];
 
 /// What the extractor writes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) enum Out {
     Start(&'static str),
     StartWith(&'static str, Vec<(&'static str, String)>),
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Embedded, Wrapping),
+    Embedded(Handed, Wrapping),
 }
 
 /// The output of a document and the metadata of its features.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) struct Extracted {
     /// `extractSavedByMetadata`: the places it was saved to, set before its content.
     pub(super) save_locations: Vec<String>,
     pub(super) out: Vec<Out>,
     pub(super) has_comments: bool,
-    /// The authors of its revisions, in the order of Java's `HashSet` of them.
+    /// The authors of its revisions, each once, in the order the document lists them.
     pub(super) revision_authors: Vec<String>,
     pub(super) has_hidden_text: bool,
     pub(super) has_track_changes: bool,
+}
+
+impl Extracted {
+    /// What `parseWord6` writes: an element for each paragraph that is not empty.
+    pub(super) fn paragraphs(paragraphs: Vec<Vec<u16>>) -> Extracted {
+        let mut out = Vec::new();
+        for paragraph in paragraphs.into_iter().filter(|text| !text.is_empty()) {
+            out.extend([Out::Start("p"), Out::Text(paragraph), Out::End("p")]);
+        }
+        Extracted {
+            save_locations: Vec::new(),
+            out,
+            has_comments: false,
+            revision_authors: Vec::new(),
+            has_hidden_text: false,
+            has_track_changes: false,
+        }
+    }
 }
 
 /// `FormattingUtils.Tag`, in the order of its declaration.
@@ -123,7 +141,8 @@ fn tag_and_style(name: &[u16], in_table: bool) -> TagAndStyle {
     }
     if text.starts_with("heading") || text.starts_with("Heading") {
         let last = String::from_utf16_lossy(&name[name.len() - 1..]);
-        let level = parse_int(&last).unwrap_or(1).min(6);
+        // Tika writes `Heading 0` as `h0`, which XHTML does not have (#111).
+        let level = parse_int(&last).unwrap_or(1).clamp(1, 6);
         return TagAndStyle {
             tag: format!("h{level}"),
             class: None,
@@ -242,6 +261,7 @@ struct Extractor<'d> {
     file: &'d Ole2<'d>,
     root: EntryId,
     config: &'d OfficeParserConfig,
+    configs: &'d ParserConfigs,
     pictures: Pictures,
     formatting: Vec<Tag>,
     out: Vec<Out>,
@@ -252,8 +272,9 @@ pub(super) fn extract(
     document: &Document,
     file: &Ole2<'_>,
     root: EntryId,
-    config: &OfficeParserConfig,
+    configs: &ParserConfigs,
 ) -> Result<Extracted, Unported> {
+    let config = &configs.office;
     let save_locations = match &document.save_locations {
         None => Vec::new(),
         Some(locations) => locations
@@ -271,6 +292,7 @@ pub(super) fn extract(
         file,
         root,
         config,
+        configs,
         pictures,
         formatting: Vec::new(),
         out: Vec::new(),
@@ -289,20 +311,22 @@ pub(super) fn extract(
     })
 }
 
-/// `extractFeatures`' authors: the distinct authors of the revisions, in the order Java's
-/// `HashSet` of them iterates.
+/// `extractFeatures`' authors: the distinct authors of the revisions, in the order the
+/// document lists them, where Tika gives them in the order of Java's `HashSet` of them (#111).
 fn revision_authors(document: &Document) -> Result<Vec<String>, Unported> {
     let Some(authors) = &document.revision_authors else {
         return Ok(Vec::new());
     };
-    let mut set: JavaHashMap<()> = JavaHashMap::for_hash_set(authors.len());
+    let mut distinct: Vec<String> = Vec::new();
     for author in authors {
         let author = author.as_deref().ok_or_else(|| {
             Unported("a revision author POI reads as null, which Tika adds".to_owned())
         })?;
-        set.insert_if_absent(author, ());
+        if !distinct.iter().any(|known| known == author) {
+            distinct.push(author.to_owned());
+        }
     }
-    Ok(set.iter().map(|(author, ())| author.to_owned()).collect())
+    Ok(distinct)
 }
 
 /// `extractFeatures`' runs: whether any run of the main text is hidden, and whether any is a
@@ -546,10 +570,17 @@ impl Extractor<'_> {
                 .first()
                 .ok_or_else(|| Thrown::new("Index 0 out of bounds for length 0"))?;
             if first == FIELD_BEGIN {
-                if let Some(field) = document.fields.at(part, run.span.start) {
+                // The fields of the headers count from the start of their story; Tika looks
+                // them up by the position in the whole text (#111).
+                let base = match part {
+                    Part::Header => document.story(Story::Header).0,
+                    _ => 0,
+                };
+                if let Some(field) = document.fields.at(part, run.span.start - base) {
                     if EMBEDDING_FIELDS.contains(&field.kind) {
                         let id = match field.separator {
                             Some(separator) => {
+                                let separator = separator.wrapping_add(base);
                                 let mark =
                                     document.subrange(separator, separator.wrapping_add(1))?;
                                 document
@@ -658,7 +689,9 @@ impl Extractor<'_> {
             let run = document.paragraph_run(paragraph, i)?;
             let text = document.text_of(run.span)?;
             if text == [FIELD_BEGIN] {
-                i += self.special_runs(paragraph, i + 1, skip_styling)?;
+                // Tika hands on the run after the nested field's begin mark as if it were the
+                // mark, skipping a run, and ends this field at the nested one's end (#111).
+                i += self.special_runs(paragraph, i, skip_styling)?;
             } else if text == [FIELD_SEPARATOR] {
                 has_separator = true;
             } else if text == [FIELD_END] {
@@ -747,8 +780,10 @@ impl Extractor<'_> {
             metadata.set(RESOURCE_NAME_EXTENSION_INFERRED, "true");
             metadata.set(RESOURCE_NAME, filename);
             metadata.set("Content-Type", kind.media_type());
-            self.out
-                .push(Out::Embedded(Embedded { data, metadata }, Wrapping::Bare));
+            self.out.push(Out::Embedded(
+                Handed::Document(Embedded { data, metadata }),
+                Wrapping::Bare,
+            ));
         }
         Ok(())
     }
@@ -770,7 +805,9 @@ impl Extractor<'_> {
             {
                 continue;
             }
-            if let Some(embedded) = office_document(self.file, entry, TikaMetadata::new(), None)? {
+            if let Some(embedded) =
+                office_document(self.file, entry, TikaMetadata::new(), None, self.configs)?
+            {
                 self.out
                     .push(Out::Embedded(embedded, Wrapping::PackageEntry));
             }
@@ -780,9 +817,9 @@ impl Extractor<'_> {
 }
 
 /// The element names a paragraph can be written as, so that its tag lives as long as the
-/// output: `p`, `pre` and the headings `h0` to `h6`.
+/// output: `p`, `pre` and the headings `h1` to `h6`.
 fn leak_tag(tag: &str) -> &'static str {
-    const TAGS: [&str; 9] = ["p", "pre", "h0", "h1", "h2", "h3", "h4", "h5", "h6"];
+    const TAGS: [&str; 8] = ["p", "pre", "h1", "h2", "h3", "h4", "h5", "h6"];
     TAGS.into_iter()
         .find(|&known| known == tag)
         .expect("a paragraph tag")
@@ -820,7 +857,7 @@ mod tests {
         let named = |name: &str, in_table: bool| tag_and_style(&units(name), in_table);
         assert_eq!(named("heading 3", false).tag, "h3");
         assert_eq!(named("Heading 9", false).tag, "h6");
-        assert_eq!(named("Heading 0", false).tag, "h0");
+        assert_eq!(named("Heading 0", false).tag, "h1");
         assert_eq!(named("Heading X", false).tag, "h1");
         assert_eq!(
             named("List Bullet", false).class.as_deref(),

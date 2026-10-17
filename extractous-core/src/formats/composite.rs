@@ -48,7 +48,6 @@ mod tests {
             b"x",
             &[(PARSER_OVERRIDE, kind)],
             &configs,
-            None,
         )
         .unwrap_or_else(|e| panic!("Tika's path does not parse a byte of {kind}: {e}"));
         let EmbeddedOutcome::Parsed { metadata, .. } = parsed.outcome else {
@@ -76,7 +75,7 @@ mod tests {
         let mut table = Vec::new();
         for kind in mime::known_types() {
             let class = class_of(kind.as_str());
-            let inherited = match mime::lineage(kind).nth(1) {
+            let inherited = match mime::lineage(&kind).nth(1) {
                 Some(supertype) => class_of(supertype.as_str()),
                 None => EMPTY_PARSER.to_owned(),
             };

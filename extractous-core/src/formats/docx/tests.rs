@@ -7,7 +7,7 @@ use super::*;
 use crate::formats::embedded::ParseContext;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
-use crate::formats::parity::{self, assert_same_as_tika_reading_by_ocr};
+use crate::formats::parity::{self, assert_same_as_tika_with};
 use crate::formats::{Chain, Output, StringOut};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
@@ -60,14 +60,6 @@ const DEFERRED_CONFORMANCE: [(&str, &str); 12] = [
         "test_recursive_embedded_npe.docx",
         "embeds /word/media/image1.emf",
     ),
-];
-
-/// The Word documents of Tika's own tests with pictures OCR finds text in, which the quality
-/// corpus scores rather than parity: compared with OCR skipped, and with OCR but for its text.
-const READ_BY_OCR: [&str; 3] = [
-    "headerPic.docx",
-    "testWORD_1img.docx",
-    "testWORD_3imgs.docx",
 ];
 
 /// Documents with tracked changes, notes, comments, lists, tables, headers, text boxes and
@@ -143,7 +135,7 @@ fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
 
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
     let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_reading_by_ocr(&documents, TIKA_PARSER, configs, &READ_BY_OCR);
+    assert_same_as_tika_with(&documents, TIKA_PARSER, configs);
 }
 
 #[test]
@@ -215,7 +207,8 @@ fn defers(input: &[u8]) -> Option<String> {
 
 fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
     let mut out = StringOut::default();
-    let chain = Chain::String {
+    // Tika's string chain, which leaves the blocks the parser writes where it writes them (#63).
+    let chain = Chain::TikaString {
         output: Output::Xml,
         max_length: 100_000,
     };

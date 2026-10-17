@@ -16,7 +16,6 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Failure, InputFile};
-use crate::java::LINE_SEPARATOR;
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -39,6 +38,7 @@ pub(crate) struct ParseContext<'c> {
     spooler: Option<RefCell<Spooler>>,
     file: InputFile,
     ocr_script: RefCell<Option<String>>,
+    write_limit: Option<usize>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -49,6 +49,7 @@ impl<'c> ParseContext<'c> {
             spooler: None,
             file: InputFile::Spooled,
             ocr_script: RefCell::new(None),
+            write_limit: None,
         }
     }
 
@@ -63,6 +64,16 @@ impl<'c> ParseContext<'c> {
             })),
             file: InputFile::Spooled,
             ocr_script: RefCell::new(None),
+            write_limit: None,
+        }
+    }
+
+    /// The extraction with its text limited to `limit` UTF-16 code units, as the write limit of
+    /// Tika's `WriteOutContentHandler`.
+    pub(crate) fn with_write_limit(self, limit: usize) -> Self {
+        Self {
+            write_limit: Some(limit),
+            ..self
         }
     }
 
@@ -89,6 +100,11 @@ impl<'c> ParseContext<'c> {
     /// Remembers the script OCR detection found, for the next images of this extraction.
     pub(crate) fn learn_ocr_script(&self, script: String) {
         *self.ocr_script.borrow_mut() = Some(script);
+    }
+
+    /// The limit of the extraction's text, if it has one.
+    pub(crate) fn write_limit(&self) -> Option<usize> {
+        self.write_limit
     }
 
     /// The embedded documents copied to the spool, in order.
@@ -299,9 +315,26 @@ pub(crate) fn record_exception(metadata: &mut TikaMetadata, exception: &str) {
     metadata.add(EXCEPTION_WARNING, first_line(exception));
 }
 
-/// The first line of the stack trace `printStackTrace` writes of `exception`.
+/// The first line of the stack trace `printStackTrace` writes of `exception`, ended by `\n` on
+/// every platform: Java ends it with the platform's line separator (#108).
 fn first_line(exception: &str) -> String {
-    format!("{exception}{LINE_SEPARATOR}")
+    format!("{exception}\n")
+}
+
+/// How the failure of the parser named `parser` on a document embedded with `metadata` is
+/// recorded in `tk:exception:embedded-exception` of the document embedding it: the parser, the
+/// embedded document by its resource name or internal path, and the `reason`, on one line.
+/// Tika records the stack trace of the exception its parser throws there (#68).
+pub(crate) fn describe_failure(parser: &str, metadata: &TikaMetadata, reason: &str) -> String {
+    let document = [RESOURCE_NAME, INTERNAL_PATH]
+        .iter()
+        .find_map(|name| metadata.get(name).filter(|value| !value.is_empty()))
+        .map_or_else(
+            || "an embedded document without a name".to_owned(),
+            |name| format!("the embedded document \"{name}\""),
+        );
+    let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{parser} could not parse {document}: {reason}")
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.
@@ -418,6 +451,25 @@ mod tests {
         );
         assert!(decode(&bytes[..bytes.len() - 1]).is_err());
         assert!(decode(b"X").is_err());
+    }
+
+    #[test]
+    fn describes_failures_on_one_line() {
+        let mut metadata = TikaMetadata::new();
+        assert_eq!(
+            describe_failure("p", &metadata, "no\n\tgood"),
+            "p could not parse an embedded document without a name: no good"
+        );
+        metadata.set(INTERNAL_PATH, "/a/b.xml");
+        assert_eq!(
+            describe_failure("p", &metadata, "why"),
+            "p could not parse the embedded document \"/a/b.xml\": why"
+        );
+        metadata.set(RESOURCE_NAME, "b.xml");
+        assert_eq!(
+            describe_failure("p", &metadata, "why"),
+            "p could not parse the embedded document \"b.xml\": why"
+        );
     }
 
     #[test]

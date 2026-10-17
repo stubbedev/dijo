@@ -88,6 +88,25 @@ handler-reference:
     cp "$fixtures/HandlerChainReference.java" "$sources/"
     java -cp "$jars/*" "$sources/HandlerChainReference.java" "$fixtures/scripts.txt" "$fixtures/chains.tsv"
 
+# Regenerate how our Java DjvuRenderer renders each page of the DjVu documents of the corpora, which the
+# Rust renderer is tested against.
+[unix]
+djvu-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/djvu
+    sources=target/djvu-reference/ai/yobix
+    rm -rf "$sources"
+    mkdir -p "$sources"
+    for class in BzzDecoder DjvuDocument DjvuRenderer Iw44Decoder Jb2Decoder ZpDecoder; do
+        cp "extractous-core/tika-native/src/main/java/ai/yobix/$class.java" "$sources/"
+    done
+    cp "$fixtures/DjvuReference.java" "$sources/"
+    mapfile -t documents < <(find test_files/documents quality/corpus "$fixtures" -name '*.djvu' | sort)
+    java -cp "$jars/*" "$sources/DjvuReference.java" "$fixtures/renders.tsv" "${documents[@]}"
+
 # Regenerate what Apache Tika's TextAndCSVParser makes of the plain text, CSV and TSV inputs of the corpora,
 # which the Rust port of its decisions is tested against.
 [unix]
@@ -228,6 +247,11 @@ junk-reference:
     java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
         extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
 
+# Regenerate the static media type tables (extractous-core/src/mime/mime_types/tables.rs) from tika-mimetypes.xml
+# and custom-mimetypes.xml.
+mime-tables:
+    MIME_TABLES_BLESS=1 cargo nextest run --package {{core}} --lib the_tables_are_generated_from_the_xml
+
 # Regenerate the media types and detection metadata of Apache Tika's own default detector that the Rust port
 # is tested against, on the jars of the native image's class path in its order, which decides the order of
 # the ZIP container detectors, and with its custom-mimetypes.xml, after checking that the embedded
@@ -274,6 +298,19 @@ charsoup-reference:
     unzip -p "$jars"/tika-langdetect-charsoup-core-*.jar "$model" | cmp - "extractous-cli/models/$(basename "$model")"
     fixtures=extractous-cli/tests/fixtures/language
     java -cp "$jars/*" "$fixtures/CharSoupReference.java" "$fixtures" quality/truth "$fixtures/charsoup-reference.tsv"
+
+# Regenerate the sRGB profile the JDK's JPEG reader converts embedded ICC profiles to, and the grey pixels ImageIO and
+# Java2D give our Java PreparingOcrParser for every JPEG, PNG, GIF and BMP of the corpora, loose or stored in a ZIP-based
+# file, which the native OCR's image decoding is tested against.
+[unix]
+ocr-image-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    fixtures=extractous-core/tests/fixtures/ocr
+    java -Djava.awt.headless=true "$fixtures/JdkSrgbProfile.java" extractous-core/models/jdk-srgb.icc
+    java -Djava.awt.headless=true "$fixtures/ImageReference.java" "$fixtures/image-reference.tsv.gz" \
+        documents=test_files/documents corpus=quality/corpus tika="$CONFORMANCE_CORPUS"
 
 # Build the container image extractous:local, FROM scratch around the static executable that
 # `just static` built.
@@ -335,6 +372,27 @@ fuzz seconds="300":
 # build; BENCH_OUTPUT writes the Markdown table to a file, BENCH_ROUNDS sets the repetitions.
 throughput:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test bench --no-capture
+
+# Built optimised with debug assertions and overflow checks kept, reusing the prebuilt native
+# library; arguments, such as `-E 'test(/xlsx/)'`, go to nextest.
+# Compare every native parser with Tika's path on Tika's own test documents.
+[unix]
+[positional-arguments]
+parity *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    target={{justfile_directory()}}/target
+    for libs in "$target"/debug/build/extractous-core-*/out/libs "$target"/release/build/extractous-core-*/out/libs; do
+        [ -f "$libs/.fingerprint" ] || continue
+        seed="$target/parity/build/extractous-core-seed-$(cat "$libs/.fingerprint")/out/libs"
+        if [ ! -f "$seed/.fingerprint" ]; then
+            mkdir -p "$seed"
+            cp -a "$libs/." "$seed/"
+        fi
+    done
+    cargo nextest run --package extractous-core --lib --cargo-profile parity --run-ignored only \
+        -E 'not test(/^formats::audit::/)' "$@"
 
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
 # any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.
@@ -406,7 +464,7 @@ quality-corpus:
     set -euo pipefail
     fonts=$(nix build --no-link --print-out-paths nixpkgs#noto-fonts nixpkgs#noto-fonts-cjk-sans)
     # shellcheck disable=SC2086
-    nix shell nixpkgs#libreoffice nixpkgs#pandoc nixpkgs#poppler-utils nixpkgs#imagemagick nixpkgs#exiftool nixpkgs#python3 nixpkgs#texliveSmall nixpkgs#djvulibre nixpkgs#jbig2enc \
+    nix shell nixpkgs#libreoffice nixpkgs#pandoc nixpkgs#poppler-utils nixpkgs#imagemagick nixpkgs#exiftool nixpkgs#python3 nixpkgs#texliveSmall nixpkgs#djvulibre nixpkgs#jbig2enc nixpkgs#openjpeg \
         --command quality/generate.sh $fonts
 
 # Lint every target; every warning fails.
