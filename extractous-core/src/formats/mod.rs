@@ -68,6 +68,7 @@ mod xls;
 mod xlsx;
 pub(crate) mod xml;
 pub(crate) mod xmp;
+mod xps;
 mod zip_file;
 
 use std::borrow::Cow;
@@ -276,6 +277,7 @@ static PARSERS: &[&dyn Parser] = &[
     &xls::OldExcelParser,
     &xlsx::XlsxParser,
     &vsdx::VsdxParser,
+    &xps::XpsParser,
 ];
 
 /// The native parser for `media_type` (parameters such as `charset` are ignored), if any.

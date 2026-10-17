@@ -105,12 +105,9 @@ impl Input<'_> {
     }
 }
 
-/// `Float.parseFloat`: Java's syntax, the value rounded once to a `float`.
+/// `Float.parseFloat`, which fails the document where it throws.
 fn parse_float(text: &str) -> Result<f32, Thrown> {
-    let number_format = || format!("Error parsing AFM document: {text}");
-    let value = java::parse_double(text).ok_or_else(number_format)?;
-    let plain = java::trim(text).trim_end_matches(['f', 'F', 'd', 'D']);
-    Ok(plain.parse::<f32>().unwrap_or(value as f32))
+    java::parse_float(text).ok_or_else(|| format!("Error parsing AFM document: {text}"))
 }
 
 /// `Integer.parseInt(text, radix)`.

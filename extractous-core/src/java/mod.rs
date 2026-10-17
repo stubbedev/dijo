@@ -410,6 +410,14 @@ pub(crate) fn parse_double(text: &str) -> Option<f64> {
     Some(if negative { -magnitude } else { magnitude })
 }
 
+/// The float `Float.parseFloat(text)` gives, or `None` where it throws: Java's syntax, the value
+/// rounded once to a `float`.
+pub(crate) fn parse_float(text: &str) -> Option<f32> {
+    let value = parse_double(text)?;
+    let plain = trim(text).trim_end_matches(['f', 'F', 'd', 'D']);
+    Some(plain.parse::<f32>().unwrap_or(value as f32))
+}
+
 /// `Math.round(double)`: the nearest `long`, a tie towards positive infinity, NaN as 0 and the
 /// infinities and anything beyond saturated.
 pub(crate) fn round(value: f64) -> i64 {

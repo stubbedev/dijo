@@ -88,12 +88,7 @@ const LINKED_FILE_KINDS: [&str; 5] = [
 /// What `OOXMLExtractorFactory` records of the package before the extractor runs: a digital
 /// signature, and the parts no relationship reaches (`markUnreferencedParts`).
 pub(crate) fn write_package_metadata(package: &Package, metadata: &mut TikaMetadata) {
-    if Package::relationships_of(&package.relationships, kind::SIGNATURE)
-        .next()
-        .is_some()
-    {
-        metadata.set(name::HAS_SIGNATURE, "true");
-    }
+    write_signature(package, metadata);
     let mut reachable = vec![false; package.parts.len()];
     let mut queue = VecDeque::new();
     for relationship in &package.relationships {
@@ -120,6 +115,17 @@ pub(crate) fn write_package_metadata(package: &Package, metadata: &mut TikaMetad
             metadata.set(name::HAS_UNREFERENCED_PARTS, "true");
             metadata.add(name::UNREFERENCED_PART_NAMES, part.name.clone());
         }
+    }
+}
+
+/// What `OOXMLExtractorFactory` records of a package with a digital signature, the only thing it
+/// records of a package of a type without relationships it follows, such as XPS.
+pub(crate) fn write_signature(package: &Package, metadata: &mut TikaMetadata) {
+    if Package::relationships_of(&package.relationships, kind::SIGNATURE)
+        .next()
+        .is_some()
+    {
+        metadata.set(name::HAS_SIGNATURE, "true");
     }
 }
 
