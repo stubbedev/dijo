@@ -14,6 +14,7 @@ use super::fib::{
 use super::fields::Fields;
 use super::lists::ListTables;
 use super::old::OldDocument;
+use super::range::Span;
 use super::styles::StyleSheet;
 use super::text::{ComplexFileTable, Plex};
 use crate::config::ParserConfigs;
@@ -44,6 +45,10 @@ const WRONG_PASSWORD: &str = "org.apache.poi.EncryptedDocumentException: documen
 const DOP_SIZE: i32 = 500;
 const SED_SIZE: i32 = 12;
 const FSPA_SIZE: i32 = 26;
+/// `FTXBXS`'s size, and where it holds `fReusable` and `lid`.
+const FTXBXS_SIZE: i32 = 22;
+const FTXBXS_REUSABLE: usize = 8;
+const FTXBXS_LID: usize = 14;
 const BKF_SIZE: i32 = 4;
 const FRD_SIZE: i32 = 2;
 const BSTORE_CONTAINER: u16 = 0xF001;
@@ -219,6 +224,45 @@ impl Document {
             picture_store,
             table,
         })
+    }
+
+    /// The text boxes anchored in the main text: for each shape anchored there (`PlcSpaMom`)
+    /// that a text box of the text box story is in (`PlcftxbxTxt`, whose `lid` is the shape's
+    /// id), the position of its anchor and the text box's range of the text, in the order of
+    /// the anchors.
+    pub(super) fn anchored_textboxes(&self) -> Read<Vec<(i32, Span)>> {
+        let anchors = Plex::read(
+            &self.table,
+            self.fib.offset(field::PLCSPAMOM)?,
+            self.fib.size(field::PLCSPAMOM)?,
+            FSPA_SIZE,
+        )?;
+        let textboxes = Plex::read(
+            &self.table,
+            self.fib.offset(field::PLCFTXBXTXT)?,
+            self.fib.size(field::PLCFTXBXTXT)?,
+            FTXBXS_SIZE,
+        )?;
+        let (story, _) = self.story(Story::Textbox);
+        let mut shapes = Vec::with_capacity(textboxes.entries.len());
+        for (start, end, ftxbxs) in &textboxes.entries {
+            if i16_at(ftxbxs, FTXBXS_REUSABLE)? != 0 {
+                continue;
+            }
+            let span = Span {
+                start: story.wrapping_add(*start),
+                end: story.wrapping_add(*end),
+            };
+            shapes.push((i32_at(ftxbxs, FTXBXS_LID)?, span));
+        }
+        let mut anchored = Vec::new();
+        for (position, _, fspa) in &anchors.entries {
+            let id = i32_at(fspa, 0)?;
+            if let Some(at) = shapes.iter().position(|(shape, _)| *shape == id) {
+                anchored.push((*position, shapes.swap_remove(at).1));
+            }
+        }
+        Ok(anchored)
     }
 
     /// The `PlcfHdd` `new HeaderStories(document)` reads where the header story is not empty.

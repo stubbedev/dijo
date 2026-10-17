@@ -1400,6 +1400,14 @@ mod tests {
                 "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
             ),
             (
+                "testWORD_numbered_list.doc",
+                "a text box is written where it is anchored, not after the main text (#111)",
+            ),
+            (
+                "testWORD_various.doc",
+                "a text box is written where it is anchored, not after the main text (#111)",
+            ),
+            (
                 "testJBIG2.jb2",
                 "Tika records the JBIG2 dimension node twice (#120)",
             ),
