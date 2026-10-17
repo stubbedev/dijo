@@ -23,8 +23,8 @@ mod text;
 
 use std::sync::OnceLock;
 
+use crate::bundle;
 use crate::errors::{Error, ExtractResult};
-use crate::tika::native;
 pub(crate) use bitmap::Bitmap;
 pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub(crate) use pages::{read_pages, FirstPage, Outputs};
@@ -101,7 +101,7 @@ pub(crate) fn read_image(
 /// bundled (`EXTRACTOUS_OCR_BUNDLE`), linked into the static executable or loaded from the
 /// bundle's library, or `tesseract` on `PATH` as `tesseract --version` reports it.
 pub fn tesseract_version() -> ExtractResult<String> {
-    native::tesseract_version().map_err(Error::IoError)
+    bundle::tesseract_version().map_err(Error::IoError)
 }
 
 /// Whether tesseract runs, found once per process as `TikaNativeMain` finds it once: the bundled
@@ -121,22 +121,22 @@ pub(crate) fn tesseract() -> Result<&'static Tesseract, String> {
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)
 }
 
-#[cfg(feature = "static-image")]
+#[cfg(feature = "static")]
 fn set_up() -> Result<Tesseract, String> {
-    let tessdata = native::bundled_tessdata()?
+    let tessdata = bundle::bundled_tessdata()?
         .ok_or("The static build links tesseract but bundled no language data")?;
     Tesseract::linked(&tessdata)
 }
 
-#[cfg(not(feature = "static-image"))]
+#[cfg(not(feature = "static"))]
 fn set_up() -> Result<Tesseract, String> {
-    if let Some(library) = native::bundled_tesseract_library()? {
-        let tessdata = native::bundled_tessdata()?
+    if let Some(library) = bundle::bundled_tesseract_library()? {
+        let tessdata = bundle::bundled_tessdata()?
             .ok_or("The build bundles a tesseract library but no language data")?;
         return Tesseract::loaded(&library, Some(&tessdata));
     }
     let program = program_on_path().ok_or("no tesseract on the PATH")?;
-    let program_version = native::tesseract_version()?;
+    let program_version = bundle::tesseract_version()?;
     let mut failures = Vec::new();
     for library in library_candidates(&program) {
         let tesseract = match Tesseract::loaded(&library, None) {
@@ -164,7 +164,7 @@ fn set_up() -> Result<Tesseract, String> {
 }
 
 /// The `tesseract` program the `PATH` names first, with its links resolved.
-#[cfg(not(feature = "static-image"))]
+#[cfg(not(feature = "static"))]
 fn program_on_path() -> Option<std::path::PathBuf> {
     let name = if cfg!(windows) {
         "tesseract.exe"
@@ -180,7 +180,7 @@ fn program_on_path() -> Option<std::path::PathBuf> {
 /// Where the library of a tesseract program is: in the `lib` directory beside the program's
 /// `bin` directory, or beside the program on Windows, and else where the system loader finds
 /// it by name.
-#[cfg(not(feature = "static-image"))]
+#[cfg(not(feature = "static"))]
 fn library_candidates(program: &std::path::Path) -> Vec<std::path::PathBuf> {
     let (name, beside) = if cfg!(windows) {
         (

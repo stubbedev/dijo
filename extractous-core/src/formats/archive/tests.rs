@@ -1,43 +1,66 @@
 //! The archive parsers compared with Tika's path: on the archives of the repository's corpora,
 //! on synthetic ones written for what the corpora lack, and on Tika's own test documents.
 
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::compress::ar::tests::ar;
+#[cfg(feature = "tika")]
 use crate::compress::bzip2::tests::bzip2;
+#[cfg(feature = "tika")]
 use crate::compress::cpio::tests::cpio;
+#[cfg(feature = "tika")]
 use crate::compress::gzip::tests::gzip;
+#[cfg(feature = "tika")]
 use crate::compress::lz4::tests::lz4;
+#[cfg(feature = "tika")]
 use crate::compress::lzw::tests::encode as compress;
+#[cfg(feature = "tika")]
 use crate::compress::seven_z::tests::seven_z;
+#[cfg(feature = "tika")]
 use crate::compress::snappy::tests::snappy;
-use crate::compress::tar_header::tests::{pax, tar};
+#[cfg(feature = "tika")]
+use crate::compress::tar_header::tests::pax;
+use crate::compress::tar_header::tests::tar;
+#[cfg(feature = "tika")]
 use crate::compress::xz::tests::{lzma, xz};
+#[cfg(feature = "tika")]
 use crate::compress::zip::file::tests::zip;
+#[cfg(feature = "tika")]
 use crate::compress::zlib::tests::zlib;
 use crate::compress::zstd::tests::zstd;
-use crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_same_as_tika, assert_same_as_tika_rewriting, conformance_corpus, documents,
-    NativeRewrite, Scratch,
+    NativeRewrite,
 };
+use crate::formats::parity::{Scratch, ZSTD_WITHOUT_ZSTD_JNI};
+#[cfg(feature = "tika")]
 use crate::formats::Parser;
 
+#[cfg(feature = "tika")]
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
+#[cfg(feature = "tika")]
 const ZIP_PARSER: &str = "org.apache.tika.parser.pkg.ZipParser";
+#[cfg(feature = "tika")]
 const COMPRESSOR_PARSER: &str = "org.apache.tika.parser.pkg.CompressorParser";
+#[cfg(feature = "tika")]
 const PACKAGE_PARSER: &str = "org.apache.tika.parser.pkg.PackageParser";
+#[cfg(feature = "tika")]
 const SEVEN_Z_PARSER: &str = "org.apache.tika.parser.pkg.SevenZParser";
 
 /// Why the native path extracts a document of Tika's tests differently until `EventRecorder`
 /// records the namespaces of the elements of the embedded parses it hands to Tika.
+#[cfg(feature = "tika")]
 const FOREIGN_PARAGRAPHS: &str = "holds a document whose parser ends paragraphs outside the \
                                   XHTML namespace, which EventRecorder drops, so their replay \
                                   ends each with a line break";
 
 /// Asserts parity on the documents of `parser` under `roots` it neither defers nor names in
 /// `limited`, each of which it must parse, and returns the names of those it defers.
+#[cfg(feature = "tika")]
 fn assert_parity(
     parser: &dyn Parser,
     tika_name: &str,
@@ -48,6 +71,7 @@ fn assert_parity(
 }
 
 /// [`assert_parity`], with each native result rewritten by `departure`, if any.
+#[cfg(feature = "tika")]
 fn assert_parity_departing(
     parser: &dyn Parser,
     tika_name: &str,
@@ -76,6 +100,7 @@ fn assert_parity_departing(
     names(&deferred)
 }
 
+#[cfg(feature = "tika")]
 fn names(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
@@ -85,6 +110,7 @@ fn names(paths: &[PathBuf]) -> Vec<String> {
 }
 
 /// Writes `documents` and asserts that `parser` parses each exactly as Tika's path does.
+#[cfg(feature = "tika")]
 fn assert_synthetic_parity(
     test: &str,
     parser: &dyn Parser,
@@ -110,11 +136,14 @@ fn assert_synthetic_parity(
 
 /// Why the native path extracts a ZIP archive with an encrypted entry differently: Tika writes
 /// the entry's name in a paragraph besides recording its failure (#99).
+#[cfg(feature = "tika")]
 const ENCRYPTED_ENTRY_AS_TEXT: &str = "Tika writes the name of an encrypted entry as text";
 
+#[cfg(feature = "tika")]
 const PLIST_UIDS: &str = "holds keyed archives, whose UIDs the native property list parser \
                           names by value where Tika names them by their object (#104)";
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_zip_archives_as_tikas_path_does() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
@@ -178,6 +207,7 @@ fn reads_zip_entries_as_flagged_and_dated_without_a_zone() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_synthetic_zip_archives_as_tikas_path_does() {
     let long = "A line of text that the short write limit cuts.\n".repeat(4);
@@ -199,6 +229,7 @@ fn extracts_synthetic_zip_archives_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
@@ -224,6 +255,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_compressed_files_as_tikas_path_does() {
     let text = "Compressed text, caf\u{e9}.\nSecond line.\n".as_bytes();
@@ -278,6 +310,7 @@ fn decodes_zstandard_which_tikas_path_leaves_empty() {
     assert!(text.contains("Zstandard text."), "{text}");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
@@ -293,6 +326,7 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_tar_ar_and_cpio_archives_as_tikas_path_does() {
     let text = "Archived text, caf\u{e9}.\nSecond line.\n".as_bytes();
@@ -340,6 +374,7 @@ fn keeps_backslashes_in_tar_names() {
     assert!(xml.contains("id=\"back\\slash.txt\""), "{xml}");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
@@ -356,6 +391,7 @@ fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_7z_archives_as_tikas_path_does() {
     let text = "Archived text, caf\u{e9}.\nSecond line.\n".as_bytes();
@@ -385,6 +421,7 @@ fn extracts_7z_archives_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_7z_archives_as_tikas_path_does() {

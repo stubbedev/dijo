@@ -14,8 +14,9 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use crate::config::{ParserConfigs, PdfParserConfig, TesseractOcrConfig};
+use crate::errors::Unsupported;
 use crate::formats::{self, Bridged, Declined, Output, Unrouted};
-use crate::tika::Source;
+use crate::input::Source;
 
 thread_local! {
     static BRIDGES: RefCell<Vec<Bridged>> = const { RefCell::new(Vec::new()) };
@@ -46,7 +47,7 @@ fn short(reason: &str) -> String {
 /// it.
 fn bridge_reason(bridged: &Bridged) -> String {
     match bridged {
-        Bridged::Unrouted(Unrouted::Unparsed(media_type)) => {
+        Bridged::Unrouted(Unrouted::Unsupported(Unsupported::Format(media_type))) => {
             format!("no native parser for {}", base_type(media_type))
         }
         Bridged::Unrouted(unrouted) => format!("{unrouted:?}"),
@@ -251,7 +252,7 @@ fn audit(name: &str, configs: &ParserConfigs) -> Found {
         Ok(routed) => routed,
         Err(unrouted) => {
             let (media_type, reason) = match &unrouted {
-                Unrouted::Unparsed(media_type) => {
+                Unsupported::Format(media_type) => {
                     (base_type(media_type), "no native parser".to_owned())
                 }
                 other => ("(not detected in Rust)".to_owned(), format!("{other:?}")),
@@ -280,9 +281,9 @@ fn audit(name: &str, configs: &ParserConfigs) -> Found {
         );
         let bridges: Vec<String> = take_bridges().iter().map(bridge_reason).collect();
         match parsed {
-            Ok(Some(_)) if bridges.is_empty() => (Kind::Native, bridges),
-            Ok(Some(_)) => (Kind::Bridging, bridges),
-            Ok(None) => panic!("{name} was deferred on its second preparation"),
+            Ok(Ok(_)) if bridges.is_empty() => (Kind::Native, bridges),
+            Ok(Ok(_)) => (Kind::Bridging, bridges),
+            Ok(Err(_)) => panic!("{name} was deferred on its second preparation"),
             Err(error) => (Kind::Failed, vec![short(&error.to_string())]),
         }
     }));

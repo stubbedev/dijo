@@ -218,13 +218,17 @@ fn digits(text: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.SubtitleParser";
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, deferred) = documents(
@@ -241,6 +245,7 @@ mod tests {
         assert_same_as_tika(&paths, TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {

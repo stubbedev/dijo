@@ -35,7 +35,7 @@ impl Parser for OpenPgpParser {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

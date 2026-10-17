@@ -11,8 +11,9 @@ use std::thread;
 use crate::config::ParserConfigs;
 use crate::formats::parity::{as_tika, comparable, sorted, tika_names, Extracted, Outcome};
 use crate::formats::{self, Output, StreamOptions};
+use crate::input::Source;
 use crate::isolate::isolate;
-use crate::tika::{self, Source};
+use crate::tika;
 use crate::{CharSet, TesseractOcrConfig};
 
 const DOCUMENTS: &str = "../test_files/documents";
@@ -145,8 +146,8 @@ fn native_stream(source: Source<'_>, configs: &ParserConfigs) -> Option<Outcome>
         options,
     );
     let (mut stream, _) = match streamed {
-        Ok(Some(streamed)) => streamed,
-        Ok(None) => return None,
+        Ok(Ok(streamed)) => streamed,
+        Ok(Err(_)) => return None,
         Err(error) => return Some(Err(error.to_string())),
     };
     let mut text = Vec::new();

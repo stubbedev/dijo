@@ -230,13 +230,17 @@ fn decode(input: &[u8], decode_as: Charset) -> Result<String, Failure> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.html.JSoupParser";
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, deferred) = documents(
@@ -253,6 +257,7 @@ mod tests {
         assert_same_as_tika(&paths, TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
@@ -290,6 +295,7 @@ mod tests {
 
     /// The document of Tika's tests with a `meta` title after its `title` element, which Tika
     /// records as `html:dc:title` and the port as a further `dc:title` (#86).
+    #[cfg(feature = "tika")]
     const TWO_TITLES: &str = "testHTML_metadata_two_titles.html";
 
     #[test]

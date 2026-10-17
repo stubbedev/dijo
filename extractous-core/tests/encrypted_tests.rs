@@ -13,7 +13,7 @@ fn encrypted(name: &str) -> String {
 #[test_case("tika-password.doc", "tika", "This is an encrypted Word 2007 File."; "word 97")]
 #[test_case("tika-password.ppt", "tika", "This is an encrypted PowerPoint 2007 slide."; "powerpoint 97")]
 #[test_case("tika-password.xls", "tika", "This is an Encrypted Excel spreadsheet."; "excel 97")]
-#[test_case("tika-password.accdb", "tika", "red and brown"; "access")]
+#[cfg_attr(feature = "tika", test_case("tika-password.accdb", "tika", "red and brown"; "access"))]
 fn test_decrypts_with_the_right_password(name: &str, password: &str, expected: &str) {
     let (content, metadata) = Extractor::new()
         .set_passwords([Password::new("wrong"), Password::new(password)])
@@ -32,8 +32,8 @@ fn test_decrypts_with_the_right_password(name: &str, password: &str, expected: &
 #[test_case("tika-password.doc"; "word 97")]
 #[test_case("tika-password.ppt"; "powerpoint 97")]
 #[test_case("tika-password.xls"; "excel 97")]
-#[test_case("tika-password.accdb"; "access")]
-#[test_case("undecryptable.odt"; "odf, which tika cannot decrypt")]
+#[cfg_attr(feature = "tika", test_case("tika-password.accdb"; "access"))]
+#[cfg_attr(feature = "tika", test_case("undecryptable.odt"; "odf, which tika cannot decrypt"))]
 #[test_case("pgp-encrypted.gpg"; "openpgp")]
 #[test_case("pgp-encrypted.asc"; "ascii-armored openpgp")]
 fn test_reports_encrypted_without_the_password(name: &str) {

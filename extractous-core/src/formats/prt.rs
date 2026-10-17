@@ -218,7 +218,7 @@ fn paragraph(stream: &mut Stream<'_>, length: usize, xhtml: &mut Xhtml) -> Resul
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

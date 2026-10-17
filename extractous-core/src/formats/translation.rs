@@ -363,7 +363,7 @@ impl Parser for XlzParser {
         "org.apache.tika.parser.xliff.XLZParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }
@@ -422,7 +422,7 @@ impl Parser for XlzParser {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

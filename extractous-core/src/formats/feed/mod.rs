@@ -87,13 +87,16 @@ fn strip_tags(value: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.feed.FeedParser";
 
     #[test]
@@ -104,6 +107,7 @@ mod tests {
         assert_eq!(strip_tags(Some("<![CDATA[x]]>y<!--a>b-->")), "yb-->");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_feeds_as_tikas_path_does() {
         let scratch = Scratch::new("feed");
@@ -166,6 +170,7 @@ mod tests {
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_feeds_as_tikas_path_does() {

@@ -11,34 +11,40 @@ pub enum PdfOcrStrategy {
     AUTO,
 }
 
+#[cfg(feature = "tika")]
 pub(crate) enum JavaValue {
     Bool(bool),
     Int(i32),
     Str(String),
 }
 
+#[cfg(feature = "tika")]
 pub(crate) trait IntoJavaValue {
     fn into_java_value(self) -> JavaValue;
 }
 
+#[cfg(feature = "tika")]
 impl IntoJavaValue for bool {
     fn into_java_value(self) -> JavaValue {
         JavaValue::Bool(self)
     }
 }
 
+#[cfg(feature = "tika")]
 impl IntoJavaValue for i32 {
     fn into_java_value(self) -> JavaValue {
         JavaValue::Int(self)
     }
 }
 
+#[cfg(feature = "tika")]
 impl IntoJavaValue for String {
     fn into_java_value(self) -> JavaValue {
         JavaValue::Str(self)
     }
 }
 
+#[cfg(feature = "tika")]
 impl IntoJavaValue for PdfOcrStrategy {
     fn into_java_value(self) -> JavaValue {
         JavaValue::Str(self.to_string())
@@ -78,8 +84,10 @@ macro_rules! tika_config {
                 }
             )*
 
+            #[cfg(feature = "tika")]
             pub(crate) const JAVA_CLASS: &'static str = $java_class;
 
+            #[cfg(feature = "tika")]
             pub(crate) fn java_settings(&self) -> impl Iterator<Item = (&'static str, JavaValue)> {
                 [$(
                     self.$field
@@ -380,10 +388,12 @@ impl ParserConfigs {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "tika")]
     fn setters(settings: impl Iterator<Item = (&'static str, JavaValue)>) -> Vec<&'static str> {
         settings.map(|(setter, _)| setter).collect()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn unset_settings_keep_tika_defaults() {
         assert!(setters(PdfParserConfig::new().java_settings()).is_empty());
@@ -391,6 +401,7 @@ mod tests {
         assert!(setters(TesseractOcrConfig::new().java_settings()).is_empty());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn set_settings_reach_their_java_setters() {
         let settings: Vec<_> = PdfParserConfig::new()
@@ -416,6 +427,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn language_accepts_str() {
         let settings: Vec<_> = TesseractOcrConfig::new()

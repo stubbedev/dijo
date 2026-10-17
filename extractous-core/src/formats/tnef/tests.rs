@@ -1,6 +1,8 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
 };
@@ -187,6 +189,7 @@ fn throws_where_poi_does() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_tnef_messages_as_tikas_path_does() {
     let roots = [
@@ -226,6 +229,7 @@ fn extracts_tnef_messages_as_tikas_path_does() {
     assert_fails_as_tika(&[without_data.as_path(), truncated.as_path(), level.as_path()]);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_tnef_messages_as_tikas_path_does() {

@@ -122,16 +122,16 @@ fn write(events: &[Event<'_>], xhtml: &mut Xhtml) -> Result<(), Failure> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 const END_OF_DATA: &str = "java.io.EOFException: End of data reached.\n";
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 const WARNING_META: &str = r#"<meta name="tk:exception:warn" content=""#;
 
 /// A native result as Tika's path writes it, without two fixes of #118: Tika reads on from
 /// where a failed read left its stream, short of what it consumed, so it records the end
 /// of data once more first; and it reads an `ilst` box past its end, into the box after
 /// it, which ends the `udta` box before its location.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) fn as_tika_reads_it(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -172,7 +172,7 @@ pub(crate) fn as_tika_reads_it(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

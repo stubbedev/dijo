@@ -1,8 +1,11 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
+#[cfg(feature = "tika")]
 const JAVA: &str = r#"/*
  * Licensed to the Apache Software Foundation (ASF).
  */
@@ -32,6 +35,7 @@ public final class Havn<T extends Skib> {
 }
 "#;
 
+#[cfg(feature = "tika")]
 const GROOVY: &str = r#"package dk.havn
 
 /** Groovy-script
@@ -44,6 +48,7 @@ assert skibe.size() == 2
 skibe.each { println "Skib: ${it}" }
 "#;
 
+#[cfg(feature = "tika")]
 const CPP: &str = r#"namespace havn {
 /// Doxygen: a ship
 /// @param navn the name
@@ -93,6 +98,7 @@ fn scans_tokens_as_jhighlights_scanners_do() {
     assert_eq!(tabs_to_spaces("a\tbc\td"), "a   bc  d");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_source_code_as_tikas_path_does() {
     let roots = [
@@ -122,6 +128,7 @@ fn extracts_source_code_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {

@@ -103,7 +103,7 @@ fn archives(zip: &ZipFile<'_>) -> Result<Vec<Archive>, Deferral> {
     Ok(archives)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

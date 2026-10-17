@@ -86,9 +86,11 @@ fn names(input: &[u8]) -> (Vec<String>, Option<&'static str>) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
@@ -115,6 +117,7 @@ mod tests {
         assert!(names(&cut).1.is_some());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_owner_files_as_tikas_path_does() {
         let scratch = Scratch::new("ms-owner");
@@ -130,6 +133,7 @@ mod tests {
         assert_fails_as_tika(&[failing.as_path()]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_owner_file_as_tikas_path_does() {

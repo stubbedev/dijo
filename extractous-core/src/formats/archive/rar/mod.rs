@@ -142,5 +142,5 @@ fn files(input: &[u8], headers: &headers::Headers) -> Result<Vec<ArchiveFile>, D
         .collect())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests;

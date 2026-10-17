@@ -1,6 +1,7 @@
 //! Metafiles built for tests, record by record, laid out as Windows writes them.
 
 /// An EMF record of type `id` holding `data`.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_record(id: u32, data: &[u8]) -> Vec<u8> {
     let mut record = Vec::new();
     record.extend_from_slice(&id.to_le_bytes());
@@ -10,11 +11,13 @@ pub(crate) fn emf_record(id: u32, data: &[u8]) -> Vec<u8> {
 }
 
 /// A 32-bit value, little-endian.
+#[cfg(feature = "tika")]
 pub(crate) fn int(value: i32) -> [u8; 4] {
     value.to_le_bytes()
 }
 
 /// An EMF picture of `records` between its header and its end-of-file record.
+#[cfg(feature = "tika")]
 pub(crate) fn emf(records: &[Vec<u8>]) -> Vec<u8> {
     let mut header = Vec::new();
     for value in [0, 0, 100, 100, 0, 0, 2000, 2000] {
@@ -38,6 +41,7 @@ pub(crate) fn emf(records: &[Vec<u8>]) -> Vec<u8> {
 
 /// An `EMR_EXTTEXTOUTW` (or, not `wide`, `EMR_EXTTEXTOUTA`) record of `text` at `x`, `y`, laid
 /// out as Windows writes it, with the rectangle POI reads only for clipped or opaque text.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_text(text: &str, x: i32, y: i32, wide: bool) -> Vec<u8> {
     let (bytes, chars): (Vec<u8>, usize) = if wide {
         (
@@ -68,6 +72,7 @@ pub(crate) fn emf_text(text: &str, x: i32, y: i32, wide: bool) -> Vec<u8> {
 }
 
 /// An `EMR_COMMENT` of private data.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_comment(data: &[u8]) -> Vec<u8> {
     let mut comment = int(data.len() as i32).to_vec();
     comment.extend_from_slice(data);
@@ -81,6 +86,7 @@ pub(crate) fn utf16(text: &str) -> Vec<u8> {
 }
 
 /// A public `EMR_COMMENT` of `kind` holding `body`.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_public_comment(kind: u32, body: &[u8]) -> Vec<u8> {
     let mut data = b"GDIC".to_vec();
     data.extend_from_slice(&kind.to_le_bytes());
@@ -89,6 +95,7 @@ pub(crate) fn emf_public_comment(kind: u32, body: &[u8]) -> Vec<u8> {
 }
 
 /// A comment embedding a WMF picture.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_wmf_comment(wmf: &[u8]) -> Vec<u8> {
     let mut body = vec![1, 0, 0, 0];
     body.extend_from_slice(&int(0));
@@ -99,6 +106,7 @@ pub(crate) fn emf_wmf_comment(wmf: &[u8]) -> Vec<u8> {
 }
 
 /// A comment embedding each of `formats` as a format of the picture.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_formats_comment(formats: &[&[u8]]) -> Vec<u8> {
     let mut body = vec![0; 16];
     body.extend_from_slice(&int(formats.len() as i32));
@@ -117,6 +125,7 @@ pub(crate) fn emf_formats_comment(formats: &[&[u8]]) -> Vec<u8> {
 }
 
 /// A WMF record of `function` holding `data`.
+#[cfg(feature = "tika")]
 pub(crate) fn wmf_record(function: u16, data: &[u8]) -> Vec<u8> {
     let mut data = data.to_vec();
     data.resize(data.len().div_ceil(2) * 2, 0);
@@ -127,6 +136,7 @@ pub(crate) fn wmf_record(function: u16, data: &[u8]) -> Vec<u8> {
 }
 
 /// A WMF picture of `records` and its end-of-file record.
+#[cfg(feature = "tika")]
 pub(crate) fn wmf(records: &[Vec<u8>]) -> Vec<u8> {
     let mut picture = vec![1, 0, 9, 0, 0, 3];
     let size: usize = 9 + records.iter().map(Vec::len).sum::<usize>() / 2 + 3;
@@ -142,6 +152,7 @@ pub(crate) fn wmf(records: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// A `META_CREATEFONTINDIRECT` record of a font in the charset `charset`.
+#[cfg(feature = "tika")]
 pub(crate) fn wmf_font(charset: u8) -> Vec<u8> {
     let mut font = vec![0; 13];
     font.push(charset);
@@ -151,6 +162,7 @@ pub(crate) fn wmf_font(charset: u8) -> Vec<u8> {
 }
 
 /// A `META_TEXTOUT` record of `text`.
+#[cfg(feature = "tika")]
 pub(crate) fn wmf_text_out(text: &[u8]) -> Vec<u8> {
     let mut data = (text.len() as i16).to_le_bytes().to_vec();
     data.extend_from_slice(text);
@@ -160,6 +172,7 @@ pub(crate) fn wmf_text_out(text: &[u8]) -> Vec<u8> {
 }
 
 /// A `META_EXTTEXTOUT` record of `text` with a spacing for each character.
+#[cfg(feature = "tika")]
 pub(crate) fn wmf_ext_text_out(text: &[u8]) -> Vec<u8> {
     let mut data = vec![0; 4];
     data.extend_from_slice(&(text.len() as i16).to_le_bytes());

@@ -354,16 +354,20 @@ impl Parser for MobiParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_fails_as_tika, documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.MobiParser";
 
     /// Asserts parity on `documents` with the texts compared without their heads, which now
     /// show the book's metadata (#105), and the native metadata without what Tika's path does
     /// not reach before the length limit, adding the book's metadata after the document ends.
+    #[cfg(feature = "tika")]
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
         crate::formats::parity::assert_same_as_tika_normalising(
             documents,
@@ -511,6 +515,7 @@ mod tests {
         assert!(trailing_bytes(b"", 0b1).is_err());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_books_as_tikas_path_does() {
         let scratch = Scratch::new("mobi");
@@ -605,6 +610,7 @@ mod tests {
         assert!(matches!(error, Error::Encrypted(_)), "{error:?}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_the_corpus_book_as_tikas_path_does() {
         let (parsed, deferred) = documents(&MobiParser, &[Path::new("../test_files/documents")]);

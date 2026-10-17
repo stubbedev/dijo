@@ -9,7 +9,7 @@ mod flv;
 mod midi;
 mod mp3;
 mod mp4;
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) use mp4::as_tika_reads_it as mp4_as_tika_reads_it;
 mod ogg;
 

@@ -6,7 +6,7 @@
 mod access;
 mod apple_single;
 mod archive;
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 pub(crate) mod audit;
 mod auto_detect_reader;
 mod chm;
@@ -77,7 +77,7 @@ mod text;
 mod tnef;
 mod translation;
 mod tsd;
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod url_tests;
 mod visio;
 mod vsdx;
@@ -100,13 +100,16 @@ use std::time::Instant;
 
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
-use crate::errors::{Error, ExtractResult};
+use crate::errors::{Error, ExtractResult, Unsupported};
 use crate::fetch::{self, Headers, Located};
-use crate::input::{self, Input, Pages};
-use crate::isolate::{heap_cap, isolate};
+use crate::input::{self, Input, Pages, Source};
+use crate::isolate::heap_cap;
+#[cfg(feature = "tika")]
+use crate::isolate::isolate;
 use crate::memory;
 use crate::mime::{self, Detection, Intent, MediaType, Origin};
-use crate::tika::{self, Source};
+#[cfg(feature = "tika")]
+use crate::tika;
 use crate::{CharSet, Metadata};
 use embedded::ParseContext;
 use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Write, WriteLimit};
@@ -204,7 +207,7 @@ pub(crate) trait Parser: Sync {
 
     /// The parsers it records delegating to, each native name paired with the class name of
     /// Tika's.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &[]
     }
@@ -365,7 +368,7 @@ static PARSERS: &[&dyn Parser] = &[
 /// reads that type's subtypes. Where Tika's parser for a type is not native, and at a type the
 /// default types do not declare, whose parser in Tika's composite parser only a parse could
 /// tell, Tika's path reads the document.
-fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unrouted> {
+fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
     let Some(parsed) = MediaType::parse(media_type) else {
         return Ok(&empty::EmptyParser);
     };
@@ -387,7 +390,7 @@ fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unrouted> {
             return Ok(parser);
         }
         if !mime::declares(&kind) || composite::tika_reads(&kind) {
-            return Err(Unrouted::Unparsed(media_type.to_owned()));
+            return Err(Unsupported::Format(media_type.to_owned()));
         }
     }
     Ok(&empty::EmptyParser)
@@ -463,17 +466,17 @@ fn open_file(path: Cow<'_, str>) -> ExtractResult<Document<'_>> {
 }
 
 /// Opens the document `source` names for a native extraction, as [`open`] does, unless the
-/// extraction cannot be native: while the Java heap is capped, in a program that does not count
+/// extraction cannot be native: while the memory is capped, in a program that does not count
 /// its allocations, a native extraction cannot be held to the cap, and Tika's path, whose heap
 /// the cap bounds, extracts every document from its source.
 pub(crate) fn open_to_extract(
     source: Source<'_>,
     deadline: Option<Instant>,
-) -> ExtractResult<Option<Document<'_>>> {
+) -> ExtractResult<Result<Document<'_>, Unsupported>> {
     if heap_cap().is_some() && !memory::counting() {
-        return Ok(None);
+        return Ok(Err(Unsupported::UncountedMemoryCap));
     }
-    open(source, deadline).map(Some)
+    open(source, deadline).map(Ok)
 }
 
 /// A document a native parser reads, and what its detection found.
@@ -483,26 +486,21 @@ pub(crate) struct Routed<'a> {
     pub(crate) input: Input<'a>,
 }
 
-/// Why a document goes to Tika's path without a native parser preparing it.
+/// Why no native parser prepares a document embedded in one a native parser reads.
 #[derive(Debug)]
 pub(crate) enum Unrouted {
-    /// It is a file too large to read whole, of a format whose native parser's memory grows
-    /// with its input, which Tika's path streams.
-    Unbounded,
-    /// It is an embedded document without content, which Tika's zero-byte check fails.
+    /// It is without content, which Tika's zero-byte check fails.
     Empty,
-    /// Tika's detection throws on it.
-    Undetected,
-    /// Tika reads the type it is parsed as with a parser that is not native.
-    Unparsed(
+    /// No native parser reads it, which Tika's path parses in a build with Tika.
+    Unsupported(
         #[cfg_attr(
-            not(test),
+            all(feature = "tika", not(test)),
             expect(
                 dead_code,
-                reason = "only the tests ask which types have no native parser"
+                reason = "Tika's path parses it, and only the tests ask why it does"
             )
         )]
-        String,
+        Unsupported,
     ),
 }
 
@@ -515,12 +513,15 @@ pub(crate) enum Unrouted {
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
-pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unrouted> {
+pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupported> {
     let detected = Detected::detect(&document.from, &document.input, Intent::Parse)
-        .map_err(|_| Unrouted::Undetected)?;
+        .map_err(|error| Unsupported::Undetected(error.to_string()))?;
     let parser = parser_for(&detected.media_type)?;
     if document.input.is_mapped() && parser.footprint() == Footprint::Proportional {
-        return Err(Unrouted::Unbounded);
+        return Err(Unsupported::TooLarge {
+            parser: parser.name(),
+            limit: input::MAX_READ_WHOLE,
+        });
     }
     Ok(Routed {
         parser,
@@ -531,7 +532,7 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unrouted>
 
 /// Routes the file at `path` as an extraction of it does.
 #[cfg(test)]
-pub(crate) fn route_file(path: &str) -> Result<Routed<'_>, Unrouted> {
+pub(crate) fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }
 
@@ -584,12 +585,12 @@ pub(crate) fn embedded_parser(
     if data.is_empty() {
         return Err(Unrouted::Empty);
     }
-    let detected =
-        Detected::detect_embedded(data, metadata, opened).map_err(|_| Unrouted::Undetected)?;
+    let detected = Detected::detect_embedded(data, metadata, opened)
+        .map_err(|error| Unrouted::Unsupported(Unsupported::Undetected(error.to_string())))?;
     let parsed_as = metadata
         .get(PARSER_OVERRIDE)
         .unwrap_or(&detected.media_type);
-    let parser = parser_for(parsed_as)?;
+    let parser = parser_for(parsed_as).map_err(Unrouted::Unsupported)?;
     let start = detected.metadata_for(parser);
     Ok((parser, start))
 }
@@ -614,12 +615,16 @@ pub(crate) fn route_embedded<'a>(
 }
 
 /// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust, and with Tika
-/// for a document Tika's detection throws on, so the failure is Tika's own.
+/// for a document Tika's detection throws on, so the failure is Tika's own. A build without Tika
+/// fails with why Tika's detection throws.
 pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     let document = open(source, None)?;
     match Detected::detect(&document.from, &document.input, Intent::Detect) {
         Ok(detected) => Ok(detected.media_type),
+        #[cfg(feature = "tika")]
         Err(_) => tika::detect(isolate()?, source),
+        #[cfg(not(feature = "tika"))]
+        Err(error) => Err(Unsupported::Undetected(error.to_string()).into()),
     }
 }
 
@@ -768,6 +773,14 @@ fn mark_password_used(metadata: &mut TikaMetadata, configs: &ParserConfigs) {
 /// is parsed, and its `PasswordProvider` once a parser asks it for the password.
 pub(crate) const PASSWORD_USED: &str = "extractous:password-used";
 
+/// Why `parser` leaves a document to Tika: the `reason` it defers it for.
+fn deferred(parser: &dyn Parser, reason: Deferral) -> Unsupported {
+    Unsupported::Deferred {
+        parser: parser.name(),
+        reason,
+    }
+}
+
 /// Whether a prepared document still keeps to its memory budget, before anything of it is
 /// written.
 fn prepared_within_budget(parser: &dyn Parser) -> ExtractResult<()> {
@@ -904,7 +917,7 @@ impl Write for StringOut {
 }
 
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
-/// handlers of [`Chain::String`]; `None` when the parser leaves the document to Tika.
+/// handlers of [`Chain::String`]; why not when the parser leaves the document to Tika.
 pub(crate) fn parse_to_string(
     parser: &dyn Parser,
     input: &Input<'_>,
@@ -912,7 +925,7 @@ pub(crate) fn parse_to_string(
     configs: &ParserConfigs,
     max_length: usize,
     output: Output,
-) -> ExtractResult<Option<(String, Metadata)>> {
+) -> ExtractResult<Result<(String, Metadata), Unsupported>> {
     parse_to_string_through(
         parser,
         input,
@@ -929,7 +942,7 @@ pub(crate) fn parse_to_string_through(
     detected: &Detected,
     configs: &ParserConfigs,
     chain: Chain,
-) -> ExtractResult<Option<(String, Metadata)>> {
+) -> ExtractResult<Result<(String, Metadata), Unsupported>> {
     let max_length = chain
         .max_length()
         .expect("a string extraction's chain limits its text");
@@ -937,11 +950,11 @@ pub(crate) fn parse_to_string_through(
         let metadata = detected.metadata_for(parser);
         let prepared = match parser.prepare_paged(input, input.pages(), &metadata, configs) {
             Ok(prepared) => prepared,
-            Err(Declined::Deferred(_)) => return Ok(None),
+            Err(Declined::Deferred(reason)) => return Ok(Err(deferred(parser, reason))),
             Err(Declined::Fails(error)) => return Err(error),
             Err(Declined::Unwritten(metadata)) => {
                 let metadata = unwritten(parser.name(), metadata, configs);
-                return Ok(Some((String::new(), metadata.to_map())));
+                return Ok(Ok((String::new(), metadata.to_map())));
             }
         };
         prepared_within_budget(parser)?;
@@ -955,7 +968,7 @@ pub(crate) fn parse_to_string_through(
         });
         match result {
             Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
-                Ok(Some((out.0, metadata.to_map())))
+                Ok(Ok((out.0, metadata.to_map())))
             }
             Err(failure) => Err(failure_error(parser, failure)),
         }
@@ -1044,8 +1057,8 @@ pub(crate) struct StreamOptions {
 }
 
 /// Parses `input` on a thread of its own into a stream encoded with the options' charset,
-/// through the handlers `ParsingInputStream` uses; `None` when the parser leaves the document to
-/// Tika. Like `ParsingInputStream`, it returns once the parse has written its first chunk or
+/// through the handlers `ParsingInputStream` uses; why not when the parser leaves the document
+/// to Tika. Like `ParsingInputStream`, it returns once the parse has written its first chunk or
 /// ended, or with the failure of a parse that ended without writing anything. It returns the
 /// metadata known before the parse, of the input and its detection, whatever the parse has
 /// found by then: the final metadata comes with [`NativeStream::metadata`] once the stream is
@@ -1057,7 +1070,7 @@ pub(crate) fn parse_to_stream(
     detected: Detected,
     configs: ParserConfigs,
     options: StreamOptions,
-) -> ExtractResult<Option<(NativeStream, Metadata)>> {
+) -> ExtractResult<Result<(NativeStream, Metadata), Unsupported>> {
     let deadline = options.deadline;
     let start = detected.metadata_for(parser);
     let known = start.to_map();
@@ -1069,7 +1082,11 @@ pub(crate) fn parse_to_stream(
             within_budget(|| {
                 let metadata = start;
                 let prepared = parser.prepare_paged(&input, input.pages(), &metadata, &configs);
-                let _ = decided.send(!matches!(prepared, Err(Declined::Deferred(_))));
+                let taken = match &prepared {
+                    Err(Declined::Deferred(reason)) => Err(deferred(parser, reason.clone())),
+                    _ => Ok(()),
+                };
+                let _ = decided.send(taken);
                 let prepared = match prepared {
                     Ok(prepared) => prepared_within_budget(parser).map(|()| prepared),
                     Err(Declined::Deferred(_)) => return,
@@ -1146,11 +1163,11 @@ pub(crate) fn parse_to_stream(
         "The native parser's thread ended before it prepared its document",
     );
     match prepared {
-        Ok(true) => {}
-        Ok(false) => return Ok(None),
+        Ok(Ok(())) => {}
+        Ok(Err(unsupported)) => return Ok(Err(unsupported)),
         Err(Error::Timeout) => {
             stream.outcome = Some(Err(Error::Timeout));
-            return Ok(Some((stream, known)));
+            return Ok(Ok((stream, known)));
         }
         Err(error) => return Err(error),
     }
@@ -1164,7 +1181,7 @@ pub(crate) fn parse_to_stream(
         Err(Error::Timeout) => stream.outcome = Some(Err(Error::Timeout)),
         Err(error) => return Err(error),
     }
-    Ok(Some((stream, known)))
+    Ok(Ok((stream, known)))
 }
 
 /// The text of a native parse, read as it is written.
@@ -1272,17 +1289,22 @@ impl Read for NativeStream {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
+    #[cfg(feature = "tika")]
     use std::process::Command;
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::Extractor;
 
+    #[cfg(feature = "tika")]
     const CHILD: &str = "EXTRACTOUS_NATIVE_ROUTING_CHILD";
+    #[cfg(feature = "tika")]
     const TEST: &str = "formats::tests::native_documents_never_start_the_jvm";
 
     /// Extracts and detects documents native parsers read, in every way the extractor offers,
     /// in a process of its own: the test runs itself again, so no other test has created the
     /// isolate first, and checks that none of it did.
+    #[cfg(feature = "tika")]
     #[test]
     fn native_documents_never_start_the_jvm() {
         if std::env::var_os(CHILD).is_none() {
@@ -1335,6 +1357,7 @@ mod tests {
 
     /// Documents of native formats that embed documents spool them as Tika's path does, with a
     /// budget that holds them all and one that runs out partway.
+    #[cfg(feature = "tika")]
     #[test]
     fn spools_embedded_documents_as_tikas_path_does() {
         // science-exploration-1p.pptx is not compared: its slides are read otherwise than
@@ -1354,6 +1377,7 @@ mod tests {
 
     /// Every document of Tika's tests a native parser reads spools its embedded documents as
     /// Tika's path does.
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn spools_tikas_documents_as_tikas_path_does() {
@@ -1770,46 +1794,123 @@ mod tests {
         mp4
     }
 
+    /// Files too large to read whole, in a directory of their own removed when they are dropped:
+    /// a WAVE file, an MP4 file, a PDF and an RTF document of 2 GiB each.
+    struct LargeFiles {
+        dir: std::path::PathBuf,
+        wave: String,
+        mp4: String,
+        pdf: String,
+        rtf: String,
+    }
+
+    impl LargeFiles {
+        fn new(test: &str) -> Self {
+            let dir = crate::isolate::temp_dir()
+                .join(format!("extractous-large-{test}-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            let large = 2u64 << 30;
+            let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
+            let (wave, mp4, pdf, rtf) = (
+                path("long.wav"),
+                path("long.mp4"),
+                path("long.pdf"),
+                path("long.rtf"),
+            );
+            let samples = u32::try_from(large).unwrap() - 44;
+            sparse(wave.as_ref(), &wave_header(samples), large);
+            let header = mp4_header(7200, 0);
+            sparse(
+                mp4.as_ref(),
+                &mp4_header(7200, large - header.len() as u64),
+                large,
+            );
+            sparse(pdf.as_ref(), b"%PDF-1.4\n", large);
+            sparse(rtf.as_ref(), b"{\\rtf1 ", large);
+            Self {
+                dir,
+                wave,
+                mp4,
+                pdf,
+                rtf,
+            }
+        }
+    }
+
+    impl Drop for LargeFiles {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.dir).unwrap();
+        }
+    }
+
     /// A file too large to read whole is mapped, and goes to its native parser where that
-    /// parser reads only bounded parts of its input, which extracts it as Tika's path does; a
-    /// parser whose memory grows with its input leaves it to Tika, which streams it.
+    /// parser reads only bounded parts of its input; a parser whose memory grows with its input
+    /// leaves it to Tika, which streams it, or in a build without Tika fails it as too large.
     #[test]
     fn files_too_large_to_read_whole_go_to_parsers_of_bounded_memory() {
-        let dir =
-            crate::isolate::temp_dir().join(format!("extractous-large-{}", std::process::id()));
-        std::fs::create_dir(&dir).unwrap();
-        let large = 2u64 << 30;
-        let wave = dir.join("long.wav");
-        let samples = u32::try_from(large).unwrap() - 44;
-        sparse(&wave, &wave_header(samples), large);
-        let mp4 = dir.join("long.mp4");
-        let header = mp4_header(7200, 0);
-        sparse(&mp4, &mp4_header(7200, large - header.len() as u64), large);
-        let pdf = dir.join("long.pdf");
-        sparse(&pdf, b"%PDF-1.4\n", large);
-        let rtf = dir.join("long.rtf");
-        sparse(&rtf, b"{\\rtf1 ", large);
+        let files = LargeFiles::new("routing");
         for (path, parser) in [
-            (&wave, "extractous::AudioParser"),
-            (&mp4, "extractous::MP4Parser"),
+            (&files.wave, "extractous::AudioParser"),
+            (&files.mp4, "extractous::MP4Parser"),
+            (&files.pdf, pdf::PdfParser.name()),
         ] {
-            let path = path.to_str().unwrap();
             let routed = route_file(path).unwrap();
             assert_eq!(routed.parser.name(), parser);
             assert!(routed.input.is_mapped());
+        }
+        assert!(matches!(
+            route_file(&files.rtf),
+            Err(Unsupported::TooLarge {
+                parser: "extractous::RTFParser",
+                limit: input::MAX_READ_WHOLE,
+            })
+        ));
+    }
+
+    /// The parsers of bounded memory extract a file too large to read whole as Tika's path does.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_files_too_large_to_read_whole_as_tikas_path_does() {
+        let files = LargeFiles::new("parity");
+        for path in [&files.wave, &files.mp4] {
+            let routed = route_file(path).unwrap();
             crate::formats::parity::assert_same_as_tika(
                 &[std::path::Path::new(path)],
                 routed.parser.tika_name(),
             );
         }
-        let routed = route_file(pdf.to_str().unwrap()).unwrap();
-        assert_eq!(routed.parser.name(), pdf::PdfParser.name());
-        assert!(routed.input.is_mapped());
-        assert!(matches!(
-            route_file(rtf.to_str().unwrap()),
-            Err(Unrouted::Unbounded)
-        ));
-        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A build without Tika fails a document no native parser reads with why, and records one
+    /// embedded in a document a native parser reads as unread, the embedding document going on.
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn fails_documents_no_native_parser_reads_with_why() {
+        let sqlite = [b"SQLite format 3\0".as_slice(), &[0; 84]].concat();
+        let no_parser = Unsupported::Format("application/x-sqlite3".to_owned());
+        let extractor = crate::Extractor::new();
+        let failed = extractor.extract_bytes_to_string(&sqlite).unwrap_err();
+        assert!(
+            matches!(&failed, Error::Unsupported(why) if *why == no_parser),
+            "{failed:?}"
+        );
+        let streamed = extractor.extract_bytes(&sqlite).map(|_| ()).unwrap_err();
+        assert!(
+            matches!(&streamed, Error::Unsupported(why) if *why == no_parser),
+            "{streamed:?}"
+        );
+        let archive = crate::compress::zip::file::tests::zip(&[
+            ("notes.txt", b"Plain text."),
+            ("data.sqlite", &sqlite),
+        ]);
+        let (text, metadata) = extractor.extract_bytes_to_string(&archive).unwrap();
+        assert!(text.contains("Plain text."), "{text}");
+        assert_eq!(
+            metadata["tk:exception:embedded-exception"],
+            [format!(
+                "extractous could not parse the embedded document \"data.sqlite\": {no_parser}"
+            )]
+        );
     }
 
     #[test]

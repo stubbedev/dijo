@@ -464,12 +464,15 @@ impl Parser for FlacParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
     /// Vorbis comments with a vendor, after `header`.
+    #[cfg(feature = "tika")]
     fn comments(header: &[u8], entries: &[&str]) -> Vec<u8> {
         let mut data = header.to_vec();
         data.extend_from_slice(&4u32.to_le_bytes());
@@ -483,6 +486,7 @@ mod tests {
     }
 
     /// A FLAC picture block of text, which the extractor parses without OCR.
+    #[cfg(feature = "tika")]
     fn picture(kind: i32, text: &str) -> Vec<u8> {
         let mut block = kind.to_be_bytes().to_vec();
         block.extend_from_slice(&10i32.to_be_bytes());
@@ -495,6 +499,7 @@ mod tests {
         block
     }
 
+    #[cfg(feature = "tika")]
     fn flac_block(kind: u8, data: &[u8]) -> Vec<u8> {
         let mut block = vec![kind];
         block.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes()[1..]);
@@ -503,6 +508,7 @@ mod tests {
     }
 
     /// An Ogg page of one stream holding `packets`, each under 255 bytes.
+    #[cfg(feature = "tika")]
     fn page(flags: u8, granule: u64, sequence: u32, packets: &[&[u8]]) -> Vec<u8> {
         let mut page = b"OggS\x00".to_vec();
         page.push(flags);
@@ -520,6 +526,7 @@ mod tests {
         page
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_flac_and_opus_files_as_tikas_path_does() {
         let scratch = crate::formats::parity::Scratch::new("ogg");
@@ -574,6 +581,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_ogg_files_as_tikas_path_does() {

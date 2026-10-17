@@ -308,7 +308,7 @@ impl Parser for MidiParser {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

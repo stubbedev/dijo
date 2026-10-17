@@ -282,13 +282,16 @@ fn record_id(text: &str) -> Result<&str, Deferral> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.warc.WARCParser";
 
     fn record(headers: &[(&str, &str)], block: &[u8]) -> Vec<u8> {
@@ -315,6 +318,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_web_archives_as_tikas_path_does() {
         let scratch = Scratch::new("warc");
@@ -378,6 +382,7 @@ mod tests {
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_web_archives_as_tikas_path_does() {

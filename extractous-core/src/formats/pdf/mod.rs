@@ -68,7 +68,7 @@ const TIKA_PDF_PARSER: &str = "org.apache.tika.parser.pdf.PDFParser";
 const TIKA_TEXT_LAYER_CHECKING_PARSER: &str = "ai.yobix.TextLayerCheckingPdfParser";
 /// The parser our `TextLayerCheckingPdfParser` records delegating to, and the OCR parser Tika's
 /// PDF parser hands the pages it OCRs itself, under both names.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 const DELEGATES: [(&str, &str); 2] = [
     (PDF_PARSER, TIKA_PDF_PARSER),
     (
@@ -103,7 +103,7 @@ impl Parser for PdfParser {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &DELEGATES
     }
@@ -561,13 +561,19 @@ fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{PdfOcrStrategy, TesseractOcrConfig};
+    #[cfg(feature = "tika")]
+    use crate::config::PdfOcrStrategy;
+    use crate::config::TesseractOcrConfig;
+    use crate::formats::parity::documents;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
-        documents, Scratch,
+        Scratch,
     };
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    #[cfg(feature = "tika")]
+    use std::path::PathBuf;
 
     const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
@@ -594,6 +600,7 @@ mod tests {
         }
 
         /// Whether the port reads pages of a document for this reason by OCR.
+        #[cfg(feature = "tika")]
         fn reads_by_ocr(self) -> bool {
             ocr_runs() && matches!(self, Self::Ocr | Self::Unmapped | Self::Doubtful)
         }
@@ -612,10 +619,12 @@ mod tests {
         ("thai.pdf", Why::Unmapped),
     ];
 
+    #[cfg(feature = "tika")]
     fn tika_name() -> &'static str {
         PdfParser.tika_name()
     }
 
+    #[cfg(feature = "tika")]
     fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {
         paths.iter().map(PathBuf::as_path).collect()
     }
@@ -625,6 +634,7 @@ mod tests {
     }
 
     /// The documents of the corpora whose pages OCR reads, when tesseract runs.
+    #[cfg(feature = "tika")]
     fn read_by_ocr() -> Vec<PathBuf> {
         NOT_THE_TEXT_LAYER
             .iter()
@@ -679,6 +689,7 @@ mod tests {
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
     /// cross-reference stream listing them, and each object of `dangling` at offset 0.
+    #[cfg(feature = "tika")]
     fn stream_document(objects: &[&str], dangling: &[u32]) -> Vec<u8> {
         let mut out = b"%PDF-1.5\n".to_vec();
         let mut rows: Vec<(u32, u32)> = Vec::new();
@@ -732,6 +743,7 @@ mod tests {
         [&haystack[..at], replacement, &haystack[at + needle.len()..]].concat()
     }
 
+    #[cfg(feature = "tika")]
     fn deferral(path: &Path) -> Option<String> {
         let input = std::fs::read(path).unwrap();
         PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
@@ -767,6 +779,7 @@ mod tests {
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
 
     /// A document of one page scanned at 300 dpi, the image in grey and no text on it.
+    #[cfg(feature = "tika")]
     fn scanned(image: &[u8]) -> Vec<u8> {
         use std::io::Write;
         const POINTS_PER_PIXEL: f64 = 72.0 / 300.0;
@@ -807,6 +820,7 @@ mod tests {
         document(&objects.each_ref().map(String::as_str), b"", &[])
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_right_to_left_scanned_pages_by_ocr_as_tikas_path_does() {
         assert!(ocr_runs(), "tesseract is not installed");
@@ -913,6 +927,7 @@ mod tests {
 
     /// Standard 14 fonts without an `/Encoding` take their AFM file's, whose unencoded glyphs
     /// have the code -1.
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_standard_fonts_in_their_own_encoding_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-builtin-encoding");
@@ -931,6 +946,7 @@ mod tests {
         assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_documents_with_a_byte_order_mark_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-recovered");
@@ -973,6 +989,7 @@ mod tests {
 
     /// A page showing `codes` in a composite font of the CMap `encoding` whose descendant, not
     /// embedded, is of the character collection `ordering` of `kind`.
+    #[cfg(feature = "tika")]
     fn composite(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<u8> {
         let content = format!("BT /F1 12 Tf 72 720 Td <{codes}> Tj ET");
         let mut objects = page_objects(&content);
@@ -994,6 +1011,7 @@ mod tests {
         document(&objects, b"", &[])
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn maps_predefined_cmaps_to_unicode_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-predefined-cmaps");
@@ -1052,6 +1070,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_form_fields_and_signatures_as_tikas_path_does() {
         let objects = form_objects("", "");
@@ -1121,6 +1140,7 @@ mod tests {
         document(&objects, b"", &[])
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn parses_embedded_files_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-embedded");
@@ -1130,6 +1150,7 @@ mod tests {
 
     /// A document of a page drawn by `content` with a file attachment annotation embedding a
     /// text file of `text`.
+    #[cfg(feature = "tika")]
     fn attaching(content: &str, text: &str) -> Vec<u8> {
         let mut objects = page_objects(content);
         objects[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
@@ -1147,6 +1168,7 @@ mod tests {
         document(&objects, b"", &[])
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn weighs_the_files_an_annotation_embeds_with_the_page_as_tikas_path_does() {
         assert!(ocr_runs(), "tesseract is not installed");
@@ -1189,6 +1211,7 @@ mod tests {
         assert_eq!(xml.matches("Tredje fil.").count(), 2, "{xml}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn measures_type3_glyphs_from_their_procedures_as_tikas_path_does() {
         let content = format!(
@@ -1242,6 +1265,7 @@ mod tests {
         document(&objects, b"", &[])
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_xfa_forms_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-xfa");
@@ -1284,6 +1308,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_objects_as_pdfbox_reads_them_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-objects");
@@ -1329,6 +1354,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_documents_pdfbox_repairs_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-repaired");
@@ -1385,6 +1411,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     fn corpus_documents(names: &[&str]) -> Vec<PathBuf> {
         names
             .iter()
@@ -1398,6 +1425,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_under_the_settings_the_port_reads_as_tikas_path_does() {
         let scratch = Scratch::new("pdf-settings");
@@ -1457,6 +1485,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_pages_by_ocr_under_the_ocr_strategies_as_tikas_path_does() {
         assert!(ocr_runs(), "tesseract is not installed");
@@ -1509,6 +1538,7 @@ mod tests {
     /// Asserts that each encrypted document, named with the password that opens it, fails as
     /// Tika's path fails on it without a password and with a wrong one, and extracts with its
     /// password as Tika's path does.
+    #[cfg(feature = "tika")]
     fn assert_opens_as_tika(documents: &[(PathBuf, &str)]) {
         for (document, password) in documents {
             let configs = ParserConfigs::default().with_password(Some(&Password::new(*password)));
@@ -1534,12 +1564,14 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn opens_documents_with_the_password_as_tikas_path_does() {
         let document = PathBuf::from("../test_files/documents/encrypted/user-password.pdf");
         assert_opens_as_tika(&[(document, "extractous")]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn opens_the_conformance_documents_with_their_passwords_as_tikas_path_does() {
@@ -1557,6 +1589,7 @@ mod tests {
         assert_opens_as_tika(&documents);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let (parsed, _) = documents(&PdfParser, &corpora());
@@ -1568,6 +1601,7 @@ mod tests {
         assert_same_as_tika_delegating(&open, tika_name(), &DELEGATES);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_pages_by_ocr_as_tikas_path_does_as_the_command_line_sets_it() {
         assert!(ocr_runs(), "tesseract is not installed");
@@ -1622,6 +1656,7 @@ mod tests {
 
     /// Why the extraction of a PDF that embeds PDFs, while tesseract runs, is not compared with
     /// Tika's path.
+    #[cfg(feature = "tika")]
     const NESTED_PAGES: &str = "our TextLayerCheckingPdfParser takes the pages of a PDF a PDF \
                                 embeds outside its pages for pages of its own, assessing them \
                                 by the embedding document's last page and mangling them";
@@ -1629,6 +1664,7 @@ mod tests {
     /// Asserts that the PDF at `path`, a chain of PDFs each embedding the next, each of one page
     /// showing `a`, is read with every page whole, its text and OCR in it, where Tika's path
     /// mangles the embedded pages ([`NESTED_PAGES`]).
+    #[cfg(feature = "tika")]
     fn assert_reads_the_pages_of_embedded_pdfs(path: &Path) {
         let (xml, _) = native_xml(&std::fs::read(path).unwrap());
         let pages = xml.matches("<div class=\"page\">").count();
@@ -1646,6 +1682,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {

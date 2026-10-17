@@ -35,5 +35,5 @@ impl Parser for EmptyParser {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests;

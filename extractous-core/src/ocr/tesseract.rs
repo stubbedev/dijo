@@ -58,7 +58,7 @@ macro_rules! c_api {
         #[cfg(test)]
         const SYMBOLS: &[&str] = &[$(stringify!($symbol)),*];
 
-        #[cfg(feature = "static-image")]
+        #[cfg(feature = "static")]
         mod linked {
             use super::*;
 
@@ -69,13 +69,13 @@ macro_rules! c_api {
 
         impl Api {
             /// The functions linked into the static executable.
-            #[cfg(feature = "static-image")]
+            #[cfg(feature = "static")]
             fn linked() -> Self {
                 Self { $($field: linked::$symbol,)* }
             }
 
             /// The functions of a loaded library, or which one it lacks.
-            #[cfg(not(feature = "static-image"))]
+            #[cfg(not(feature = "static"))]
             fn resolved(library: &libloading::Library) -> Result<Self, String> {
                 Ok(Self {
                     $($field: *unsafe {
@@ -282,7 +282,7 @@ pub(crate) struct Tesseract {
     datapath: Option<CString>,
     idle: Mutex<BTreeMap<String, Vec<Idle>>>,
     languages: Mutex<Option<BTreeSet<String>>>,
-    #[cfg(not(feature = "static-image"))]
+    #[cfg(not(feature = "static"))]
     _library: libloading::Library,
 }
 
@@ -296,7 +296,7 @@ impl fmt::Debug for Tesseract {
 
 impl Tesseract {
     /// The tesseract linked into the static executable, with the language data under `datapath`.
-    #[cfg(feature = "static-image")]
+    #[cfg(feature = "static")]
     pub(crate) fn linked(datapath: &std::path::Path) -> Result<Self, String> {
         extern "C" {
             fn omp_set_num_threads(threads: c_int);
@@ -310,7 +310,7 @@ impl Tesseract {
 
     /// The tesseract of a library, with the language data under `datapath`, or else where it
     /// looks by itself.
-    #[cfg(not(feature = "static-image"))]
+    #[cfg(not(feature = "static"))]
     pub(crate) fn loaded(
         library: &std::path::Path,
         datapath: Option<&std::path::Path>,
@@ -334,7 +334,7 @@ impl Tesseract {
         api: Api,
         set_threads: Option<SetThreads>,
         datapath: Option<CString>,
-        #[cfg(not(feature = "static-image"))] library: libloading::Library,
+        #[cfg(not(feature = "static"))] library: libloading::Library,
     ) -> Self {
         unsafe { (api.set_message_severity)(LEPTONICA_QUIET) };
         Self {
@@ -343,7 +343,7 @@ impl Tesseract {
             datapath,
             idle: Mutex::new(BTreeMap::new()),
             languages: Mutex::new(None),
-            #[cfg(not(feature = "static-image"))]
+            #[cfg(not(feature = "static"))]
             _library: library,
         }
     }

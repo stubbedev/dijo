@@ -115,7 +115,7 @@ impl<'a> Enricher<'a> {
         let timeout = OcrSettings::of(&configs.ocr).timeout();
         let decoded = ocr::decode(input, format, timeout).map_err(|undecoded| {
             Unported::new(match undecoded {
-                #[cfg(not(feature = "static-image"))]
+                #[cfg(not(feature = "static"))]
                 Undecoded::NoDecoder => format!(
                     "an image of {base}, for which no decoder is bundled or installed: Tika's \
                      path reports it unread"

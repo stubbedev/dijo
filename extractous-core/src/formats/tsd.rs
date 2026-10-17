@@ -297,9 +297,11 @@ impl Parser for TsdParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
     /// A time-stamped data envelope of `content`, every length indefinite, with no time stamps.
@@ -323,6 +325,7 @@ mod tests {
         assert_eq!(content(b"not ASN.1"), None);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_synthetic_envelopes_as_tikas_path_does() {
         let scratch = Scratch::new("tsd");
@@ -337,6 +340,7 @@ mod tests {
         assert_same_as_tika(&paths, TsdParser.tika_name());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_envelopes_as_tikas_path_does() {

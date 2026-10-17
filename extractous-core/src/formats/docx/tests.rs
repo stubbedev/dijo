@@ -1,3 +1,4 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use zip::write::SimpleFileOptions;
@@ -5,25 +6,34 @@ use zip::ZipWriter;
 
 use super::*;
 use crate::formats::embedded::ParseContext;
+#[cfg(feature = "tika")]
+use crate::formats::metafile;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
-use crate::formats::parity::{self, assert_same_as_tika_with};
-use crate::formats::{metafile, Chain, Output, StringOut};
+#[cfg(feature = "tika")]
+use crate::formats::parity;
+#[cfg(feature = "tika")]
+use crate::formats::parity::assert_same_as_tika_with;
+use crate::formats::{Chain, Output, StringOut};
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
 /// The Word documents of the corpora in the repository that this port leaves to Tika, with why.
+#[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 1] = [(
     "truncated.docx",
     "the ZIP archive cannot be read as a whole",
 )];
 
 /// The Word documents of Tika's own tests this port leaves to Tika, with why.
+#[cfg(feature = "tika")]
 const DEFERRED_CONFORMANCE: [(&str, &str); 1] =
     [("testWORD_truncated.docx", "the ZIP archive cannot be read")];
 
 /// Documents with tracked changes, notes, comments, lists, tables, headers, text boxes and
 /// phonetic guides, compared under each setting that changes how Tika reads them.
+#[cfg(feature = "tika")]
 const VARIED: [&str; 6] = [
     "../quality/corpus/revisions.docx",
     "../quality/corpus/notes.docx",
@@ -41,6 +51,7 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
 }
 
 /// Each setting of `OfficeParserConfig` the Word extractor reads, away from its default.
+#[cfg(feature = "tika")]
 fn other_settings() -> [ParserConfigs; 6] {
     [
         office(OfficeParserConfig::new().set_include_deleted_content(true)),
@@ -52,10 +63,12 @@ fn other_settings() -> [ParserConfigs; 6] {
     ]
 }
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
+#[cfg(feature = "tika")]
 fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
     let input = std::fs::read(path).unwrap();
     DocxParser.defers(&input, &TikaMetadata::new(), configs)
@@ -63,6 +76,7 @@ fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
 
 /// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
 /// `deferred` to Tika, by file name and a part of the reason.
+#[cfg(feature = "tika")]
 fn ported(
     documents: &[PathBuf],
     deferred: &[(&str, &str)],
@@ -86,6 +100,7 @@ fn ported(
 }
 
 /// The Word documents below `roots`, by Tika's detection.
+#[cfg(feature = "tika")]
 fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
     let (mut parsed, deferred) = parity::documents(&DocxParser, roots);
     parsed.extend(deferred);
@@ -93,11 +108,13 @@ fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
     parsed
 }
 
+#[cfg(feature = "tika")]
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
     let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_with(&documents, TIKA_PARSER, configs);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts() {
     let documents = word_documents(&[
@@ -108,6 +125,7 @@ fn extracts_what_tikas_path_extracts() {
     assert_same_as_tika(&ported(&documents, &DEFERRED, &defaults), &defaults);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts_with_other_settings() {
     let documents: Vec<PathBuf> = VARIED.iter().map(PathBuf::from).collect();
@@ -116,6 +134,7 @@ fn extracts_what_tikas_path_extracts_with_other_settings() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
@@ -196,6 +215,7 @@ fn reads_a_plain_document() {
 
 /// A document embedding a text file as an OLE object shown as an icon, whose EMF picture
 /// names the file `name`.
+#[cfg(feature = "tika")]
 fn icon_document(name: &str) -> Vec<u8> {
     let icon = metafile::testing::emf(&[
         metafile::testing::emf_comment(&metafile::testing::utf16("IconOnly\0")),
@@ -225,6 +245,7 @@ fn icon_document(name: &str) -> Vec<u8> {
     )
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn names_embedded_objects_as_the_pictures_of_their_icons_do() {
     let scratch = parity::Scratch::new("docx-icons");

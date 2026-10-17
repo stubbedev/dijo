@@ -160,5 +160,5 @@ fn stream(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unporte
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests;

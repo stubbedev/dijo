@@ -514,11 +514,14 @@ fn write(read: &TagsAndAudio, xhtml: &mut Xhtml) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.mp3.Mp3Parser";
 
     #[test]
@@ -535,6 +538,7 @@ mod tests {
     }
 
     /// An ID3v2.3 frame.
+    #[cfg(feature = "tika")]
     fn frame(name: &str, data: &[u8]) -> Vec<u8> {
         let mut frame = name.as_bytes().to_vec();
         frame.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
@@ -545,6 +549,7 @@ mod tests {
 
     /// A file with an ID3v2.3 tag, three MPEG frames, the first a Xing frame, Lyrics3 v2 lyrics
     /// and an ID3v1 tag.
+    #[cfg(feature = "tika")]
     fn tagged_mp3() -> Vec<u8> {
         let frames = [
             frame("TIT2", b"\x00Sang om havet"),
@@ -583,6 +588,7 @@ mod tests {
         mp3
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_mp3s_as_tikas_path_does() {
         let scratch = Scratch::new("mp3");
@@ -600,6 +606,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_mp3s_as_tikas_path_does() {

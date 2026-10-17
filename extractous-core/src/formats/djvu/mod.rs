@@ -65,7 +65,7 @@ impl Parser for DjvuParser {
         "ai.yobix.DjvuParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &[(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")]
     }

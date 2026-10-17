@@ -202,5 +202,5 @@ fn set_found_metadata(metadata: &mut TikaMetadata, found: Found) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests;
