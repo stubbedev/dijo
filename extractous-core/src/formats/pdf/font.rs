@@ -358,6 +358,7 @@ fn first_operation(pdf: &Pdf, stream: &Stream) -> Result<Option<(String, Vec<Obj
     while let Some(token) = lexer.next_token()? {
         match token {
             Token::Operator(name) => return Ok(Some((name.into_owned(), operands))),
+            Token::InlineImage(_) => return Ok(Some(("BI".to_owned(), operands))),
             Token::Operand(object) => operands.push(object),
         }
     }

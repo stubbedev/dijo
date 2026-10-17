@@ -511,6 +511,7 @@ impl EndPage for PageHook<'_, '_, '_> {
         check: PageCheck,
         held: &mut dyn FnMut(&mut Xhtml) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
+        xhtml.flush()?;
         let reading = match self.outputs.next() {
             Some(Ok(reading)) => reading,
             Some(Err(never)) => match never {},

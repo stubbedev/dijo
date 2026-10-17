@@ -2043,8 +2043,26 @@ pub(crate) fn spools_as_tika_rewriting(
     rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
     departures: Departures,
 ) -> Result<usize, String> {
+    spools_as_tika_under(path, budget, rewrite, departures, &ParserConfigs::default())
+}
+
+/// [`spools_as_tika`] under the settings `configs`.
+pub(crate) fn spools_as_tika_with(
+    path: &Path,
+    budget: u64,
+    configs: &ParserConfigs,
+) -> Result<usize, String> {
+    spools_as_tika_under(path, budget, None, &[], configs)
+}
+
+fn spools_as_tika_under(
+    path: &Path,
+    budget: u64,
+    rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+    departures: Departures,
+    configs: &ParserConfigs,
+) -> Result<usize, String> {
     let path = path.to_str().unwrap();
-    let configs = ParserConfigs::default();
     let tika_spool = Scratch::new("spool-tika");
     let tika_options = tika::StreamOptions {
         char_set: CharSet::UTF_8,
@@ -2058,7 +2076,7 @@ pub(crate) fn spools_as_tika_rewriting(
     let tika = tika::parse_to_stream(
         isolate().unwrap(),
         Source::File(path),
-        &configs,
+        configs,
         &tika_options,
     )
     .and_then(|(mut reader, _)| {

@@ -68,6 +68,9 @@ pub(super) struct Recording {
     events: Vec<Event>,
     /// Where the events written while a page is held back start, if one is.
     held: Option<usize>,
+    /// Whether pages are held back, as our `TextLayerCheckingPdfParser` holds each page until
+    /// it ends, the documents it embeds parsed by then.
+    holds_pages: bool,
     /// What the pages read by OCR held back, each written as the reading decides.
     read_pages: Vec<Vec<Event>>,
     text: String,
@@ -81,6 +84,7 @@ impl Recording {
             metadata,
             events: Vec::new(),
             held: None,
+            holds_pages: false,
             read_pages: Vec::new(),
             text: String::new(),
             spans: Vec::new(),
@@ -237,6 +241,7 @@ impl Recording {
     /// Holds back what is written from here, the metadata excepted, until [`Recording::release`].
     pub(super) fn hold(&mut self) {
         self.held = Some(self.events.len());
+        self.holds_pages = true;
     }
 
     /// Writes what was held back after the metadata recorded since, as our
@@ -324,58 +329,96 @@ impl Recording {
         page_ends: &mut Option<&mut dyn EndPage>,
     ) -> Result<(), Failure> {
         let mut attributes: Vec<(&str, &str)> = Vec::new();
+        for (index, event) in events.iter().enumerate() {
+            let replayed = self.replay_event(event, xhtml, in_page, page_ends, &mut attributes);
+            if let Err(Failure::Stopped(Stop::LimitReached)) = replayed {
+                if self.holds_pages && *in_page {
+                    self.parse_page_embedded(&events[index + 1..], xhtml)?;
+                }
+            }
+            replayed?;
+        }
+        Ok(())
+    }
+
+    /// Parses the documents a page embeds after the write limit was reached in it, as Tika's
+    /// path parsed them while our `TextLayerCheckingPdfParser` held the page back, before it
+    /// passed the page on and reached the limit. What they write is dropped at the limit.
+    fn parse_page_embedded(&self, events: &[Event], xhtml: &mut Xhtml) -> Result<(), Failure> {
         for event in events {
             match event {
-                Event::Start {
-                    name,
-                    attributes: range,
-                } => {
-                    attributes.clear();
-                    let spans = &self.spans[range.start as usize..range.end as usize];
-                    attributes.extend(
-                        spans
-                            .as_chunks::<2>()
-                            .0
-                            .iter()
-                            .map(|[name, value]| (self.get_text(*name), self.get_text(*value))),
-                    );
-                    xhtml.start_element_with(self.get_text(*name), &attributes)?;
-                }
-                Event::End(name) => xhtml.end_element(self.get_text(*name))?,
-                Event::Characters(text) => xhtml.characters(self.get_text(*text))?,
-                Event::Newline => xhtml.newline()?,
+                Event::LeavePage => break,
                 Event::Embedded(file) => {
-                    xhtml.parse_embedded(&file.data, &file.metadata, Wrapping::Bare)?;
+                    match xhtml.parse_embedded(&file.data, &file.metadata, Wrapping::Bare) {
+                        Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {}
+                        Err(failure) => return Err(failure),
+                    }
                 }
-                Event::Delegate(parser) => xhtml.delegate_to(parser),
-                Event::Set { name, value } => xhtml
-                    .metadata_mut()
-                    .set(self.get_text(*name), self.get_text(*value)),
-                Event::Add { name, value } => xhtml
-                    .metadata_mut()
-                    .add(self.get_text(*name), self.get_text(*value)),
-                Event::ResetValues { name, values } => {
-                    let values = self.spans[values.start as usize..values.end as usize]
-                        .iter()
-                        .map(|span| self.get_text(*span).to_owned())
-                        .collect();
-                    xhtml
-                        .metadata_mut()
-                        .reset_values(self.get_text(*name), values);
-                }
-                Event::PageRead { index, check, held } => {
-                    let held = &self.read_pages[*held];
-                    let page_ends = page_ends
-                        .as_deref_mut()
-                        .expect("a recording with pages OCR reads is replayed with their ends");
-                    page_ends.end_page(xhtml, *index, *check, &mut |xhtml| {
-                        self.replay_events(held, xhtml, &mut true, &mut None)
-                    })?;
-                }
-                Event::EnterPage => *in_page = true,
-                Event::LeavePage => *in_page = false,
-                Event::EndDocument => xhtml.end_document()?,
+                _ => {}
             }
+        }
+        Ok(())
+    }
+
+    /// Replays one event.
+    fn replay_event<'e>(
+        &'e self,
+        event: &'e Event,
+        xhtml: &mut Xhtml,
+        in_page: &mut bool,
+        page_ends: &mut Option<&mut dyn EndPage>,
+        attributes: &mut Vec<(&'e str, &'e str)>,
+    ) -> Result<(), Failure> {
+        match event {
+            Event::Start {
+                name,
+                attributes: range,
+            } => {
+                attributes.clear();
+                let spans = &self.spans[range.start as usize..range.end as usize];
+                attributes.extend(
+                    spans
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|[name, value]| (self.get_text(*name), self.get_text(*value))),
+                );
+                xhtml.start_element_with(self.get_text(*name), attributes)?;
+            }
+            Event::End(name) => xhtml.end_element(self.get_text(*name))?,
+            Event::Characters(text) => xhtml.characters(self.get_text(*text))?,
+            Event::Newline => xhtml.newline()?,
+            Event::Embedded(file) => {
+                xhtml.parse_embedded(&file.data, &file.metadata, Wrapping::Bare)?;
+            }
+            Event::Delegate(parser) => xhtml.delegate_to(parser),
+            Event::Set { name, value } => xhtml
+                .metadata_mut()
+                .set(self.get_text(*name), self.get_text(*value)),
+            Event::Add { name, value } => xhtml
+                .metadata_mut()
+                .add(self.get_text(*name), self.get_text(*value)),
+            Event::ResetValues { name, values } => {
+                let values = self.spans[values.start as usize..values.end as usize]
+                    .iter()
+                    .map(|span| self.get_text(*span).to_owned())
+                    .collect();
+                xhtml
+                    .metadata_mut()
+                    .reset_values(self.get_text(*name), values);
+            }
+            Event::PageRead { index, check, held } => {
+                let held = &self.read_pages[*held];
+                let page_ends = page_ends
+                    .as_deref_mut()
+                    .expect("a recording with pages OCR reads is replayed with their ends");
+                page_ends.end_page(xhtml, *index, *check, &mut |xhtml| {
+                    self.replay_events(held, xhtml, &mut true, &mut None)
+                })?;
+            }
+            Event::EnterPage => *in_page = true,
+            Event::LeavePage => *in_page = false,
+            Event::EndDocument => xhtml.end_document()?,
         }
         Ok(())
     }

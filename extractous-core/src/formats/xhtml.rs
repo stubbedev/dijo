@@ -82,6 +82,12 @@ pub(crate) trait ContentHandler {
     fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop>;
     fn end_document(&mut self) -> Result<(), Stop>;
 
+    /// Passes on what the handler has written so far, for a reader to have it before the parser
+    /// waits; a handler that writes nowhere has nothing to pass on.
+    fn flush(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
     /// The metadata of the document an `XHTMLContentHandler` is about to start the head of,
     /// for a handler that shares it with the document it writes into.
     fn head_metadata(&mut self, _metadata: &TikaMetadata) {}
@@ -114,6 +120,10 @@ impl<H: ContentHandler + ?Sized> ContentHandler for &mut H {
 
     fn end_document(&mut self) -> Result<(), Stop> {
         (**self).end_document()
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        (**self).flush()
     }
 
     fn head_metadata(&mut self, metadata: &TikaMetadata) {
@@ -374,6 +384,12 @@ impl<'h> Xhtml<'h> {
             Some(held) => held,
             None => &mut *self.handler,
         }
+    }
+
+    /// Passes on what is written so far, unless it is held back, for whoever reads the output
+    /// to have it before the parser waits.
+    pub(crate) fn flush(&mut self) -> Result<(), Stop> {
+        self.out().flush()
     }
 
     /// Runs `write`, its events, those of the documents it parses into this one included, held
