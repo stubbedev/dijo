@@ -67,6 +67,7 @@ mod source_code;
 mod subtitle;
 mod text;
 mod tnef;
+mod visio;
 mod translation;
 mod warc;
 mod wordperfect;
@@ -285,6 +286,7 @@ static PARSERS: &[&dyn Parser] = &[
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
+    &visio::VisioParser,
     &xls::XlsParser,
     &warc::WarcParser,
     &warc::HttpParser,
