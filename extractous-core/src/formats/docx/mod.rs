@@ -3,11 +3,10 @@
 //! main document with its headers, notes, comments, diagrams, charts and footers, the glossary,
 //! links to what lies outside the package and the thumbnail.
 //!
-//! The pictures, embedded objects and attachments of a document are parsed recursively, as
-//! Tika parses them, unless the document embeds an OLE object in its text, whose name Tika's
-//! `EmbeddedPartMetadata` may take from the icon of its picture: such a document is left to
-//! Tika, as is a package POI would read in a degraded way or refuse, and one using what this port
-//! does not read: see [`DocxParser::prepare`].
+//! The pictures, embedded objects and attachments of a document are parsed recursively, each
+//! named as the document describes it: an OLE object by the file name the EMF picture of its
+//! icon shows. A package POI would read in a degraded way or refuse, and one using what this
+//! port does not read, is left to Tika: see [`DocxParser::prepare`].
 
 pub(crate) mod body;
 pub(crate) mod notes;
@@ -17,7 +16,7 @@ pub(crate) mod text;
 
 use std::collections::{HashMap, HashSet};
 
-use body::{unreferenced_comment, Body, Context};
+use body::{unreferenced_comment, Body, Context, OleReferences};
 use notes::{Collector, InlineParts};
 use numbering::{ListManager, Numbering};
 use styles::Styles;
@@ -25,10 +24,11 @@ use text::{TextHandler, TextOptions};
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ooxml::extractor::{self, Ignore};
+use crate::formats::metafile;
+use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts, Ignore};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler, StartTag};
+use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::JavaHashMap;
 
@@ -67,6 +67,8 @@ const MAIN_DOCUMENT_TYPES: [&str; 4] = [
     "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
     "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
 ];
+/// The content type of an EMF picture, whose name `resolveEmfNames` reads.
+const EMF_TYPE: &str = "image/x-emf";
 const GLOSSARY_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.glossary+xml";
 /// The kinds of relationships of a main document whose parts may embed documents.
@@ -115,9 +117,9 @@ impl Parser for DocxParser {
         ]
     }
 
-    /// Defers documents whose text embeds OLE objects, whose embedded files Tika may name from
-    /// the objects' icons, macros it extracts when asked to, parts whose XML Tika reports
-    /// failing on, and packages POI does not open as this port does.
+    /// Defers documents with macros Tika extracts when asked to, an OLE object it fails to read,
+    /// an EMF picture that embeds documents, parts whose XML Tika reports failing on, and
+    /// packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -220,22 +222,90 @@ impl<'a> Document<'a> {
     /// story's numbering, styles, notes and comments, and the first story's features and
     /// settings. The parts written as they are read are only checked here.
     fn prepare(self) -> Result<Read<'a>, Unported> {
+        for &source in &self.main_parts() {
+            for relationship in self.relationships(source) {
+                extractor::check_embedded(&self.package, self.config, source, relationship)?;
+            }
+        }
+        let icons = self.icon_names()?;
         let mut stories = Vec::new();
         for (index, &story) in self.stories.iter().chain(&self.glossaries).enumerate() {
             stories.push(self.read_story(story, index == 0 && !self.stories.is_empty())?);
-        }
-        let named = stories.iter().any(|story| story.embeds_ole_objects);
-        for &source in &self.main_parts() {
-            for relationship in self.relationships(source) {
-                extractor::check_embedded(&self.package, self.config, source, relationship, named)?;
-            }
         }
         let properties = Properties::read(&self.package)?;
         Ok(Read {
             document: self,
             properties,
             stories,
+            icons,
         })
+    }
+
+    /// The EMF pictures the parts `handleDocumentPart` writes relate to, each with the name of
+    /// the file it shows when it is the icon of an OLE object, as `resolveEmfNames` reads that
+    /// with Tika's `EMFParser` and swallows its failures: none where it names none, cannot be
+    /// read or fails. A picture whose comments embed documents, which Tika would parse there, is
+    /// left to Tika.
+    fn icon_names(&self) -> Result<IconNames, Unported> {
+        let mut names = IconNames::new();
+        let stories = self.stories.iter().chain(&self.glossaries);
+        for part in stories.flat_map(|&story| self.streamed_parts(story)) {
+            for relationship in self.relationships(part) {
+                let Some(picture) = self.emf_picture(relationship) else {
+                    continue;
+                };
+                if names.contains_key(&picture) {
+                    continue;
+                }
+                let name = match self.package.read(picture) {
+                    Ok(bytes) => metafile::emf_icon_name(&bytes).map_err(|Unported(reason)| {
+                        Unported(format!("{}: {reason}", self.package.name(picture)))
+                    })?,
+                    Err(_) => None,
+                };
+                names.insert(picture, name);
+            }
+        }
+        Ok(names)
+    }
+
+    /// The EMF picture an internal relationship leads to, as `resolveEmfNames` finds the icon
+    /// of an OLE object by its picture's relationship.
+    fn emf_picture(&self, relationship: &Relationship) -> Option<usize> {
+        relationship.part.filter(|&part| {
+            relationship.is_internal() && self.package.parts[part].content_type == EMF_TYPE
+        })
+    }
+
+    /// `resolveEmfNames` of what the `references` of `part` say of the OLE objects it embeds,
+    /// added to the `described` parts of the document, where a later part replaces what an
+    /// earlier one says of an object by the same relationship id.
+    fn describe(
+        &self,
+        part: usize,
+        references: OleReferences,
+        icons: &IconNames,
+        described: &mut DescribedParts,
+    ) {
+        for (id, reference) in references {
+            let full_name = reference
+                .icon
+                .as_deref()
+                .and_then(|icon| {
+                    self.relationships(part)
+                        .iter()
+                        .find(|relationship| relationship.id == icon)
+                })
+                .and_then(|relationship| self.emf_picture(relationship))
+                .and_then(|picture| {
+                    icons
+                        .get(&picture)
+                        .expect("icon_names reads every EMF picture of a part written")
+                        .clone()
+                });
+            let prog_id = reference.prog_id;
+            described.insert(id, DescribedPart { prog_id, full_name });
+        }
     }
 
     /// Reads what writing `story` takes and checks the parts it writes; the security features
@@ -248,14 +318,11 @@ impl<'a> Document<'a> {
         };
         let inline = self.inline_parts(story)?;
         let mut security = None;
-        let mut embeds_ole_objects = false;
         for part in self.streamed_parts(story) {
             if first && part == story {
-                let read = self.read_whole(part, OleEmbeds::new(Features::default()))?;
-                embeds_ole_objects |= read.found;
-                security = Some(read.inner);
+                security = Some(self.read_whole(part, Features::default())?);
             } else {
-                embeds_ole_objects |= self.read_whole(part, OleEmbeds::new(Ignore))?.found;
+                self.read_whole(part, Ignore)?;
             }
         }
         let numbering = match Package::first_related(relationships, kind::NUMBERING) {
@@ -275,7 +342,6 @@ impl<'a> Document<'a> {
             numbering,
             styles,
             inline,
-            embeds_ole_objects,
             security: security.map(|features| Security {
                 features,
                 settings,
@@ -305,6 +371,8 @@ impl<'a> Document<'a> {
     fn write_document_part(
         &self,
         parts: StoryParts,
+        icons: &IconNames,
+        described: &mut DescribedParts,
         xhtml: &mut Xhtml,
     ) -> Result<Option<Security>, Failure> {
         let StoryParts {
@@ -313,25 +381,30 @@ impl<'a> Document<'a> {
             styles,
             inline,
             security,
-            ..
         } = parts;
         let relationships = self.relationships(story);
         let mut lists = ListManager::new(numbering);
         let no_notes = InlineParts::default();
         let footers_too = self.config.includes_headers_and_footers();
+        let mut write_part = |part: usize, lists: &mut ListManager, inline: &InlineParts| {
+            let (emitted, references) =
+                self.write_part(part, styles.as_ref(), lists, inline, xhtml)?;
+            self.describe(part, references, icons, described);
+            Ok::<_, Failure>(emitted)
+        };
         if footers_too {
             for header in Package::related(relationships, kind::HEADER) {
-                self.write_part(header, styles.as_ref(), &mut lists, &no_notes, xhtml)?;
+                write_part(header, &mut lists, &no_notes)?;
             }
         }
-        let emitted = self.write_part(story, styles.as_ref(), &mut lists, &inline, xhtml)?;
+        let emitted = write_part(story, &mut lists, &inline)?;
         let mut trailing = Package::related(relationships, kind::DIAGRAM_DATA);
         trailing.extend(Package::related(relationships, kind::CHART));
         if footers_too {
             trailing.extend(Package::related(relationships, kind::FOOTER));
         }
         for part in trailing {
-            self.write_part(part, styles.as_ref(), &mut lists, &no_notes, xhtml)?;
+            write_part(part, &mut lists, &no_notes)?;
         }
         for (id, events) in inline.comments.iter() {
             if !emitted.contains(id) {
@@ -341,7 +414,8 @@ impl<'a> Document<'a> {
         Ok(security)
     }
 
-    /// `handlePart`: writes a part with the text handler; returns the comments it inlined.
+    /// `handlePart`: writes a part with the text handler; returns the comments it inlined and
+    /// what it says of the OLE objects it embeds.
     fn write_part(
         &self,
         part: usize,
@@ -349,7 +423,7 @@ impl<'a> Document<'a> {
         lists: &mut ListManager,
         inline: &InlineParts,
         xhtml: &mut Xhtml,
-    ) -> Result<HashSet<String>, Failure> {
+    ) -> Result<(HashSet<String>, OleReferences), Failure> {
         let relationships = self.linked_relationships(part);
         let body = Body::new(
             xhtml,
@@ -370,7 +444,7 @@ impl<'a> Document<'a> {
         let mut handler = TextHandler::new(body, &relationships, options);
         let bytes = self.read(part)?;
         xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
-        Ok(handler.into_body().into_emitted_comments())
+        Ok(handler.into_body().finish())
     }
 
     /// `loadLinkedRelationships`: the targets of a part's links by id, and the file names of
@@ -453,9 +527,6 @@ struct StoryParts {
     numbering: Option<Numbering>,
     styles: Option<Styles>,
     inline: InlineParts,
-    /// Whether a part `handlePart` reads embeds an OLE object, for which Tika's body handler
-    /// may record an `EmbeddedPartMetadata`.
-    embeds_ole_objects: bool,
     security: Option<Security>,
 }
 
@@ -466,12 +537,17 @@ struct Security {
     web: Option<WebSettings>,
 }
 
+/// The name of the file each EMF picture of a document shows as the icon of an OLE object, if
+/// it names one, by its part.
+type IconNames = HashMap<usize, Option<String>>;
+
 /// A Word document checked and read as far as Tika reads parts whole: what writing it takes.
 struct Read<'a> {
     document: Document<'a>,
     properties: Properties,
     /// The parts of each story, then of each glossary.
     stories: Vec<StoryParts>,
+    icons: IconNames,
 }
 
 impl Read<'_> {
@@ -480,19 +556,21 @@ impl Read<'_> {
             document,
             properties,
             stories,
+            icons,
         } = self;
+        let mut described = DescribedParts::new();
         document.write_package_metadata(xhtml.metadata_mut());
         properties.write(xhtml.metadata_mut());
         let mut stories = stories.into_iter();
         let mut security = None;
         for parts in stories.by_ref().take(document.stories.len()) {
-            let read = document.write_document_part(parts, xhtml)?;
+            let read = document.write_document_part(parts, &icons, &mut described, xhtml)?;
             security = security.or(read);
         }
         if !document.glossaries.is_empty() {
             xhtml.start_element_with("div", &[("class", "glossary")])?;
             for parts in stories {
-                document.write_document_part(parts, xhtml)?;
+                document.write_document_part(parts, &icons, &mut described, xhtml)?;
             }
             xhtml.end_element("div")?;
         }
@@ -502,6 +580,7 @@ impl Read<'_> {
         extractor::write_embedded_parts(
             &document.package,
             &document.main_parts(),
+            &described,
             xhtml,
             &|_, _| {},
         )?;
@@ -524,59 +603,6 @@ pub(crate) fn write_general_text_part(
     let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
     let mut handler = TextHandler::new(body, links, TextOptions::default());
     extractor::write_general_text_part(package, part, &mut handler)
-}
-
-/// A handler passing a part on to `inner`, finding whether it embeds an OLE object, an
-/// `OLEObject` of the type `Embed`, whose relationship Tika's `OOXMLTikaBodyPartHandler` records
-/// an `EmbeddedPartMetadata` for when it names a program or follows a picture.
-struct OleEmbeds<H> {
-    inner: H,
-    found: bool,
-}
-
-impl<H: SaxHandler> OleEmbeds<H> {
-    fn new(inner: H) -> Self {
-        Self {
-            inner,
-            found: false,
-        }
-    }
-
-    fn note(&mut self, local_name: &str, attributes: &[Attribute]) {
-        self.found |= local_name == "OLEObject"
-            && attributes
-                .iter()
-                .any(|attribute| attribute.local_name == "Type" && attribute.value == "Embed");
-    }
-}
-
-impl<H: SaxHandler> SaxHandler for OleEmbeds<H> {
-    fn start_element(
-        &mut self,
-        namespace: &str,
-        local_name: &str,
-        attributes: &[Attribute],
-    ) -> Result<(), Failure> {
-        self.note(local_name, attributes);
-        self.inner.start_element(namespace, local_name, attributes)
-    }
-
-    fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
-        self.inner.end_element(namespace, local_name)
-    }
-
-    fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        self.inner.characters(text)
-    }
-
-    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
-        self.note(tag.local_name, tag.attributes);
-        self.inner.start_tag(tag)
-    }
-
-    fn document_type(&mut self) -> Result<(), Failure> {
-        self.inner.document_type()
-    }
 }
 
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.

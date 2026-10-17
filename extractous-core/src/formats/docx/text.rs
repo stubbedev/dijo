@@ -251,15 +251,22 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
     fn ole_object(&mut self, attributes: &[Attribute]) -> Result<(), Stop> {
         let mut kind = None;
         let mut relationship = None;
+        let mut prog_id = None;
         for attribute in attributes {
             if attribute.local_name == "Type" {
                 kind = Some(attribute.value.as_ref());
             } else if attribute.namespace == R_NAMESPACE && attribute.local_name == "id" {
                 relationship = Some(attribute.value.as_ref());
+            } else if attribute.local_name == "ProgID" {
+                prog_id = Some(attribute.value.as_ref());
             }
         }
         match kind {
-            Some("Embed") => self.body.embedded_ole_reference(relationship),
+            Some("Embed") => self.body.embedded_ole_reference(
+                relationship,
+                prog_id,
+                self.picture.last_image_data.as_deref(),
+            ),
             Some("Link") => self.body.linked_ole_reference(relationship),
             _ => Ok(()),
         }

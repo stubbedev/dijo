@@ -19,6 +19,20 @@ pub(super) const HAS_FIELD_HYPERLINKS: &str = "msoffice:has-field-hyperlinks";
 const HAS_HOVER_HYPERLINKS: &str = "msoffice:has-hover-hyperlinks";
 const HAS_VML_HYPERLINKS: &str = "msoffice:has-vml-hyperlinks";
 
+/// What a part says of an OLE object it embeds, as `embeddedOLERef` records it in an
+/// `EmbeddedPartMetadata`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OleReference {
+    /// The program the object belongs to.
+    pub(super) prog_id: Option<String>,
+    /// The id of the relationship to the picture that shows the object, last in the part
+    /// before it.
+    pub(super) icon: Option<String>,
+}
+
+/// What a part says of the OLE objects it embeds, by the id of the relationship to each.
+pub(super) type OleReferences = HashMap<String, OleReference>;
+
 /// What kind of note a reference inlines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NoteKind {
@@ -100,6 +114,7 @@ pub(crate) struct Body<'x, 'h, 'c> {
     open: Vec<String>,
     pending_comments: Vec<String>,
     emitted_comments: HashSet<String>,
+    ole_references: OleReferences,
 }
 
 impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
@@ -116,12 +131,14 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
             open: Vec::new(),
             pending_comments: Vec::new(),
             emitted_comments: HashSet::new(),
+            ole_references: OleReferences::new(),
         }
     }
 
-    /// The comments this handler inlined, by id.
-    pub(super) fn into_emitted_comments(self) -> HashSet<String> {
-        self.emitted_comments
+    /// The comments this handler inlined, by id, and what the part said of the OLE objects it
+    /// embeds.
+    pub(super) fn finish(self) -> (HashSet<String>, OleReferences) {
+        (self.emitted_comments, self.ole_references)
     }
 
     pub(super) fn include_deleted(&self) -> bool {
@@ -306,13 +323,24 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
         }
     }
 
+    /// `embeddedOLERef`: a marker of the object, which the program and the picture showing it,
+    /// when the part gives either, describe.
     pub(super) fn embedded_ole_reference(
         &mut self,
         relationship: Option<&str>,
+        prog_id: Option<&str>,
+        icon: Option<&str>,
     ) -> Result<(), Stop> {
         let Some(relationship) = relationship else {
             return Ok(());
         };
+        let given =
+            |value: Option<&str>| value.filter(|value| !value.is_empty()).map(str::to_owned);
+        let (prog_id, icon) = (given(prog_id), given(icon));
+        if prog_id.is_some() || icon.is_some() {
+            self.ole_references
+                .insert(relationship.to_owned(), OleReference { prog_id, icon });
+        }
         self.xhtml
             .start_element_with("div", &[("class", "embedded"), ("id", relationship)])?;
         self.xhtml.end_element("div")

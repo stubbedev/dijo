@@ -22,7 +22,7 @@ mod media_type;
 mod mime_types;
 mod registry;
 mod text;
-mod uri;
+pub(crate) mod uri;
 
 #[cfg(test)]
 pub(crate) use crate::ole2::tests::compound as compound_document;
@@ -47,10 +47,11 @@ pub(crate) enum Origin<'a> {
     /// Bytes streamed without a name, whose length the metadata learns only if a detector reads
     /// them all.
     Bytes,
-    /// An embedded document, streamed as bytes are, with the resource name and `Content-Type`
-    /// its embedding parser gave it, which hint at its type. Its metadata learns its length when
-    /// a detector reads it all only if the stream was opened with that metadata.
-    Embedded {
+    /// A stream of bytes with the resource name and `Content-Type` its opener gave it, which
+    /// hint at its type: an embedded document's embedding parser, or the server a document was
+    /// fetched from. Its metadata learns its length when a detector reads it all only if the
+    /// stream was opened with that metadata and the length is not in it yet.
+    Stream {
         name: Option<&'a str>,
         content_type: Option<&'a str>,
         learns_length: bool,
@@ -140,7 +141,7 @@ impl Written {
         let learns_length = match origin {
             Origin::File { .. } => false,
             Origin::Bytes => true,
-            Origin::Embedded { learns_length, .. } => learns_length,
+            Origin::Stream { learns_length, .. } => learns_length,
         };
         if learns_length && !self.spooled {
             self.spooled = true;
@@ -192,7 +193,7 @@ pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, Detec
     let (name, content_type) = match origin {
         Origin::File { name } => (Some(name), None),
         Origin::Bytes => (None, None),
-        Origin::Embedded {
+        Origin::Stream {
             name, content_type, ..
         } => (name, content_type),
     };

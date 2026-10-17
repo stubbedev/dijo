@@ -64,15 +64,15 @@ pub(crate) const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard wit
 
 /// One extraction's result, as the two paths are compared on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Extracted {
-    text: Vec<u8>,
-    metadata: Vec<(String, Vec<String>)>,
+pub(super) struct Extracted {
+    pub(super) text: Vec<u8>,
+    pub(super) metadata: Vec<(String, Vec<String>)>,
 }
 
 /// An extraction's result, or why it failed.
-type Outcome = Result<Extracted, String>;
+pub(super) type Outcome = Result<Extracted, String>;
 
-fn sorted(metadata: Metadata) -> Vec<(String, Vec<String>)> {
+pub(super) fn sorted(metadata: Metadata) -> Vec<(String, Vec<String>)> {
     let mut sorted: Vec<_> = metadata.into_iter().collect();
     sorted.sort();
     sorted
@@ -127,8 +127,7 @@ fn tika_error(path: &Path, configs: &ParserConfigs) -> crate::Error {
 }
 
 fn routed(path: &str) -> Routed<'_> {
-    formats::route(Source::File(path))
-        .unwrap()
+    formats::route_file(path)
         .unwrap_or_else(|unrouted| panic!("{path} has no native parser: {unrouted:?}"))
 }
 
@@ -146,12 +145,12 @@ fn native_stream(
     let options = StreamOptions {
         char_set,
         output,
-        timeout: None,
+        deadline: None,
         spool: None,
     };
     let (mut stream, _) = formats::parse_to_stream(
         routed.parser,
-        routed.input.into_owned(),
+        routed.input.to_static(),
         routed.detected,
         configs.clone(),
         options,
@@ -194,7 +193,7 @@ fn native_string(path: &str, configs: &ParserConfigs, output: Output) -> Outcome
 /// The native names of the parsers of a document paired with Tika's: the parser `native_name`
 /// Tika's path names `tika_name`, its `delegates`, then every native parser and the parsers it
 /// delegates to, which its embedded documents may record.
-fn tika_names<'n>(
+pub(super) fn tika_names<'n>(
     native_name: &'n str,
     tika_name: &'n str,
     delegates: &[(&'n str, &'n str)],
@@ -211,7 +210,7 @@ fn tika_names<'n>(
 
 /// The native result as Tika's path would name its parsers: each native name of `names` as the
 /// Tika name paired with it.
-fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
+pub(super) fn as_tika(native: Extracted, names: &[(&str, &str)], char_set: CharSet) -> Extracted {
     let mut text = native.text;
     for (native_name, tika_name) in names {
         let mut native_bytes = Vec::new();
@@ -256,7 +255,7 @@ const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded
 /// the full set once, the failures of embedded documents without the frames that embedded them,
 /// and the exceptions a parser records without their frames, which a native parser does not
 /// have.
-fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
+pub(super) fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
     extracted.text = without_warning_frames(extracted.text, char_set);
     extracted.text = in_defined_order(extracted.text, char_set);
     for (name, values) in &mut extracted.metadata {
@@ -1780,7 +1779,7 @@ fn read_by_ocr(xhtml: &Comparison) -> Option<OcrTexts> {
 pub(crate) fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
     let name = path.to_str().unwrap();
     let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
-    let detected = formats::Detected::detect(Source::File(name), &input)
+    let detected = formats::Detected::detect(&formats::OpenedFrom::File(name.into()), &input)
         .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
     parser.defers(
         &input,
@@ -1820,7 +1819,7 @@ pub(crate) fn documents_with(
         if input.is_empty() {
             continue;
         }
-        let detected = formats::Detected::detect(Source::File(path), &input)
+        let detected = formats::Detected::detect(&formats::OpenedFrom::File(path.into()), &input)
             .unwrap_or_else(|e| panic!("{path} is not detected: {e:?}"));
         let routed = formats::parser_for(&detected.media_type).is_ok_and(|routed| {
             routed.name() == parser.name() && routed.media_types() == parser.media_types()
@@ -1997,7 +1996,7 @@ pub(crate) fn spools_as_tika_rewriting(
     let options = StreamOptions {
         char_set: CharSet::UTF_8,
         output: Output::Xml,
-        timeout: None,
+        deadline: None,
         spool: Some(crate::EmbeddedSpool {
             dir: native_spool.directory().to_path_buf(),
             byte_budget: budget,
@@ -2005,7 +2004,7 @@ pub(crate) fn spools_as_tika_rewriting(
     };
     let native = formats::parse_to_stream(
         routed.parser,
-        routed.input.into_owned(),
+        routed.input.to_static(),
         routed.detected,
         configs.clone(),
         options,

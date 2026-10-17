@@ -244,9 +244,7 @@ const COMPOSITES: [&str; 2] = [
 
 /// Audits the document at `name` in this process.
 fn audit(name: &str, configs: &ParserConfigs) -> Found {
-    let routed =
-        formats::route(Source::File(name)).unwrap_or_else(|e| panic!("cannot route {name}: {e}"));
-    let routed = match routed {
+    let routed = match formats::route_file(name) {
         Ok(routed) => routed,
         Err(unrouted) => {
             let (media_type, reason) = match &unrouted {

@@ -13,6 +13,7 @@ mod imageio;
 mod metadata_extractor;
 mod motion_photo;
 mod psd;
+mod raw;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +31,7 @@ use crate::java::time::TimeZone;
 use enricher::Enricher;
 use extractor::Target;
 use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
+pub(crate) use raw::RawTiffParser;
 
 /// The name the port records the OCR enricher under, as Tika records `ai.yobix.PreparingOcrParser`.
 pub(crate) const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";

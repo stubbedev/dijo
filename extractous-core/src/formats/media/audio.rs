@@ -7,7 +7,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Declined, Footprint, Parser, Prepared};
 use crate::java::JavaHashMap;
 
 /// The warning Tika records for a file no reader takes.
@@ -748,6 +748,10 @@ impl Parser for AudioParser {
             "audio/x-wav",
             "audio/x-aiff",
         ]
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(

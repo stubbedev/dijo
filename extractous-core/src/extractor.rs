@@ -11,7 +11,7 @@ use crate::{
     TesseractOcrConfig,
 };
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use strum_macros::{Display, EnumString};
 
 /// Metadata type alias
@@ -177,8 +177,9 @@ impl Extractor {
         self
     }
 
-    /// Limits how long a streamed extraction may take, from the moment it starts: a read that
-    /// would wait past it fails with [`Error::Timeout`] and the text read so far stands.
+    /// Limits how long a streamed extraction may take, from the moment it starts, fetching a
+    /// document from a URL included: a read that would wait past it fails with
+    /// [`Error::Timeout`] and the text read so far stands.
     pub fn set_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -225,8 +226,9 @@ impl Extractor {
         self.extract_to_stream(Source::Bytes(buffer), None)
     }
 
-    /// Extracts text from an url. Returns a tuple with stream of the extracted text and metadata.
-    /// the stream is decoded using the extractor's `encoding`
+    /// Extracts text from the document at a URL: fetched from an `http:` or `https:` URL, or
+    /// read from the regular file a `file:` URL names. Returns a tuple with stream of the
+    /// extracted text and metadata. the stream is decoded using the extractor's `encoding`
     pub fn extract_url(&self, url: &str) -> ExtractResult<(StreamReader, Metadata)> {
         self.extract_to_stream(Source::Url(url), None)
     }
@@ -243,8 +245,9 @@ impl Extractor {
         self.extract_to_string(Source::Bytes(buffer))
     }
 
-    /// Extracts text from a URL. Returns a tuple with string that is of maximum length
-    /// of the extractor's `extract_string_max_length` and metadata.
+    /// Extracts text from the document at a URL, as [`Extractor::extract_url`] reads it.
+    /// Returns a tuple with string that is of maximum length of the extractor's
+    /// `extract_string_max_length` and metadata.
     pub fn extract_url_to_string(&self, url: &str) -> ExtractResult<(String, Metadata)> {
         self.extract_to_string(Source::Url(url))
     }
@@ -283,9 +286,10 @@ impl Extractor {
         formats::detect(Source::Bytes(buffer)).map(MediaType)
     }
 
-    /// Detects the media type of the document at a URL.
+    /// Detects the media type of the document at a URL, as [`Extractor::extract_url`] reads
+    /// it, with the name in its path and the type its server sends as hints.
     pub fn detect_url(&self, url: &str) -> ExtractResult<MediaType> {
-        tika::detect(isolate()?, Source::Url(url)).map(MediaType)
+        formats::detect(Source::Url(url)).map(MediaType)
     }
 
     /// Runs `attempt` with the extractor's settings and, if the document fails as encrypted,
@@ -319,17 +323,22 @@ impl Extractor {
         source: Source,
         embedded: Option<&EmbeddedSpool>,
     ) -> ExtractResult<(StreamReader, Metadata)> {
+        let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
+        let document = formats::open_to_extract(source, deadline)?;
         self.with_passwords(|configs| {
-            if let Ok(routed) = formats::route(source)? {
+            if let Some(routed) = document
+                .as_ref()
+                .and_then(|document| formats::route(document).ok())
+            {
                 let options = formats::StreamOptions {
                     char_set: self.encoding,
                     output: self.output(),
-                    timeout: self.timeout,
+                    deadline,
                     spool: embedded.cloned(),
                 };
                 let parsed = formats::parse_to_stream(
                     routed.parser,
-                    routed.input.into_owned(),
+                    routed.input.to_static(),
                     routed.detected,
                     configs.clone(),
                     options,
@@ -346,7 +355,8 @@ impl Extractor {
             let options = StreamOptions {
                 char_set: self.encoding,
                 as_xml: self.xml_output,
-                timeout: self.timeout,
+                timeout: deadline
+                    .map(|deadline| deadline.saturating_duration_since(Instant::now())),
                 embedded,
             };
             tika::parse_to_stream(isolate()?, source, configs, &options)
@@ -354,8 +364,12 @@ impl Extractor {
     }
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
+        let document = formats::open_to_extract(source, None)?;
         self.with_passwords(|configs| {
-            if let Ok(routed) = formats::route(source)? {
+            if let Some(routed) = document
+                .as_ref()
+                .and_then(|document| formats::route(document).ok())
+            {
                 let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
                     Error::ParseError(format!(
                         "The maximum string length must not be negative: {}",

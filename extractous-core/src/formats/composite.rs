@@ -162,7 +162,7 @@ mod tests {
             formats::parser_for("text/x-matlab").unwrap().name(),
             formats::parser_for("text/plain").unwrap().name()
         );
-        assert!(formats::parser_for("image/vnd.dwg").is_err());
+        assert!(formats::parser_for("application/vnd.apple.pages").is_err());
         assert!(formats::parser_for("image/x-portable-pixmap").is_err());
         assert!(TIKA_PARSERS.is_sorted());
     }

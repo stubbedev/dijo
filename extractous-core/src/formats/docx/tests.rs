@@ -8,59 +8,19 @@ use crate::formats::embedded::ParseContext;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
 use crate::formats::parity::{self, assert_same_as_tika_with};
-use crate::formats::{Chain, Output, StringOut};
+use crate::formats::{metafile, Chain, Output, StringOut};
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
 /// The Word documents of the corpora in the repository that this port leaves to Tika, with why.
-const DEFERRED: [(&str, &str); 3] = [
-    ("issue6-visio.docx", "embeds /word/media/image1.emf"),
-    (
-        "zh-math-answers.docx",
-        "embeds /word/embeddings/oleObject4.bin",
-    ),
-    (
-        "truncated.docx",
-        "the ZIP archive cannot be read as a whole",
-    ),
-];
+const DEFERRED: [(&str, &str); 1] = [(
+    "truncated.docx",
+    "the ZIP archive cannot be read as a whole",
+)];
 
 /// The Word documents of Tika's own tests this port leaves to Tika, with why.
-const DEFERRED_CONFORMANCE: [(&str, &str); 12] = [
-    ("EmbeddedDocument.docx", "embeds /word/media/image1.emf"),
-    ("EmbeddedOutlook.docx", "embeds /word/media/image1.emf"),
-    ("EmbeddedPDF.docx", "embeds /word/media/image1.emf"),
-    (
-        "testPDFEmbeddingAndEmbedded.docx",
-        "embeds /word/media/image1.emf",
-    ),
-    ("testWORD_2006ml.docx", "embeds /word/media/image1.emf"),
-    (
-        "testWORD_EMFAndAttachments.docx",
-        "embeds /word/media/image1.emf",
-    ),
-    (
-        "testWORD_embedded_pdf.docx",
-        "embeds /word/media/image1.emf",
-    ),
-    (
-        "testWORD_embeded.docx",
-        "embeds /word/embeddings/Microsoft_Office_PowerPoint_Presentation2.pptx",
-    ),
-    ("testWORD_truncated.docx", "the ZIP archive cannot be read"),
-    (
-        "testWPSAttachment.docx",
-        "embeds /word/embeddings/oleObject4.bin",
-    ),
-    (
-        "test_recursive_embedded.docx",
-        "embeds /word/media/image1.emf",
-    ),
-    (
-        "test_recursive_embedded_npe.docx",
-        "embeds /word/media/image1.emf",
-    ),
-];
+const DEFERRED_CONFORMANCE: [(&str, &str); 1] =
+    [("testWORD_truncated.docx", "the ZIP archive cannot be read")];
 
 /// Documents with tracked changes, notes, comments, lists, tables, headers, text boxes and
 /// phonetic guides, compared under each setting that changes how Tika reads them.
@@ -234,29 +194,53 @@ fn reads_a_plain_document() {
     assert!(text_of(&input, &ParserConfigs::default()).contains("<p>Hej verden</p>"));
 }
 
-/// A paragraph embedding the OLE object of the relationship `rId9`, naming its program.
-const OLE_OBJECT: &str = "<w:p><w:r><w:object><o:OLEObject \
-     xmlns:o=\"urn:schemas-microsoft-com:office:office\" Type=\"Embed\" \
-     ProgID=\"Excel.Sheet.12\" r:id=\"rId9\"/></w:object></w:r></w:p>";
+/// A document embedding a text file as an OLE object shown as an icon, whose EMF picture
+/// names the file `name`.
+fn icon_document(name: &str) -> Vec<u8> {
+    let icon = metafile::testing::emf(&[
+        metafile::testing::emf_comment(&metafile::testing::utf16("IconOnly\0")),
+        metafile::testing::emf_comment(&metafile::testing::utf16(&format!("{name}\0"))),
+        metafile::testing::emf_text(name, 0, 0, true),
+    ]);
+    let body = "<w:p><w:r><w:object xmlns:v=\"urn:schemas-microsoft-com:vml\" \
+                xmlns:o=\"urn:schemas-microsoft-com:office:office\"><v:shape>\
+                <v:imagedata r:id=\"rId8\" o:title=\"\"/></v:shape>\
+                <o:OLEObject Type=\"Embed\" ProgID=\"Package\" DrawAspect=\"Icon\" r:id=\"rId9\"/>\
+                </w:object></w:r></w:p>";
+    document(
+        body,
+        &format!(
+            "{}{}",
+            relationship("rId8", kind::IMAGE, "media/image1.emf"),
+            relationship("rId9", kind::PACKAGE, "embeddings/notes.txt")
+        ),
+        &[
+            ("word/media/image1.emf", "image/x-emf", &icon),
+            (
+                "word/embeddings/notes.txt",
+                "text/plain",
+                b"The notes the icon shows.",
+            ),
+        ],
+    )
+}
 
 #[test]
-fn defers_files_an_ole_object_may_name() {
-    for (kind, target) in [
-        (kind::IMAGE, "media/image1.png"),
-        (kind::PACKAGE, "embeddings/a.xlsx"),
-        (kind::ALTERNATE_FORMAT_CHUNK, "chunk.html"),
-        (kind::AUDIO, "media/a.wav"),
-    ] {
-        let part = format!("word/{target}");
-        let parts: [(&str, &str, &[u8]); 1] = [(&part, "application/octet-stream", b"x")];
-        let plain = document("<w:p/>", &relationship("rId9", kind, target), &parts);
-        assert_eq!(defers(&plain), None, "{kind}");
-        let named = document(OLE_OBJECT, &relationship("rId9", kind, target), &parts);
-        assert!(
-            defers(&named).is_some_and(|reason| reason.contains("which Tika parses")),
-            "{kind}"
-        );
+fn names_embedded_objects_as_the_pictures_of_their_icons_do() {
+    let scratch = parity::Scratch::new("docx-icons");
+    let documents = [
+        scratch.write("icon.docx", &icon_document("Quarterly notes.txt")),
+        scratch.write("blank-icon.docx", &icon_document(" ")),
+    ];
+    for document in &documents {
+        assert_eq!(deferral(document, &ParserConfigs::default()), None);
     }
+    let text = text_of(
+        &icon_document("Quarterly notes.txt"),
+        &ParserConfigs::default(),
+    );
+    assert!(text.contains("<h1>Quarterly notes.txt</h1>"), "{text}");
+    assert_same_as_tika(&documents, &ParserConfigs::default());
 }
 
 #[test]

@@ -90,6 +90,8 @@ pub(crate) struct Part {
 /// An opened package.
 pub(crate) struct Package<'a> {
     archive: ZipArchive<Cursor<&'a [u8]>>,
+    /// The names of the archive's entries, in its order.
+    entry_names: Vec<String>,
     /// The parts in POI's order of part names, which is that of `getParts`.
     pub(crate) parts: Vec<Part>,
     /// The package's own relationships, by id.
@@ -168,6 +170,7 @@ impl<'a> Package<'a> {
         }
         let mut package = Package {
             archive,
+            entry_names: names,
             parts,
             relationships: Vec::new(),
         };
@@ -186,6 +189,16 @@ impl<'a> Package<'a> {
     pub(crate) fn read(&self, part: usize) -> Result<Vec<u8>, Failure> {
         read_entry(&mut self.archive.clone(), self.parts[part].entry)
             .map_err(|Unported(reason)| Failure::Malformed(reason))
+    }
+
+    /// The bytes of the archive's entry named `name` exactly, as `ZipPackage.getZipArchive()`
+    /// finds it among the entries, if there is one.
+    pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Vec<u8>, Failure>> {
+        let entry = self.entry_names.iter().position(|entry| entry == name)?;
+        Some(
+            read_entry(&mut self.archive.clone(), entry)
+                .map_err(|Unported(reason)| Failure::Malformed(reason)),
+        )
     }
 
     /// The uncompressed size of `part`.

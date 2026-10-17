@@ -74,6 +74,29 @@ pub fn is_whitespace(c: char) -> bool {
     }
 }
 
+/// `Character.isJavaIdentifierPart(int)` of a code point, where a surrogate, which no `char`
+/// holds, is not one: a letter, a connector, a currency sign, a digit, a letter number, a
+/// non-spacing or spacing mark, or a character `isIdentifierIgnorable` ignores.
+pub fn is_java_identifier_part(code_point: i32) -> bool {
+    let Some(c) = u32::try_from(code_point).ok().and_then(char::from_u32) else {
+        return false;
+    };
+    if matches!(c, '\u{0}'..='\u{8}' | '\u{E}'..='\u{1B}' | '\u{7F}'..='\u{9F}') {
+        return true;
+    }
+    is_letter(c)
+        || matches!(
+            get_general_category(c),
+            GeneralCategory::ConnectorPunctuation
+                | GeneralCategory::CurrencySymbol
+                | GeneralCategory::DecimalNumber
+                | GeneralCategory::LetterNumber
+                | GeneralCategory::SpacingMark
+                | GeneralCategory::NonspacingMark
+                | GeneralCategory::Format
+        )
+}
+
 /// `Character.isISOControl`: U+0000 to U+001F and U+007F to U+009F.
 pub fn is_iso_control(c: char) -> bool {
     matches!(c, '\u{0}'..='\u{1F}' | '\u{7F}'..='\u{9F}')

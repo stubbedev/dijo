@@ -72,7 +72,7 @@ impl SheetOutput {
     /// `startRow`: with missing rows asked for, an empty row for each row missing between the
     /// last row written and this one. Tika never updates its `lastSeenRow`, so each row is
     /// preceded by an empty row for every row before it (#93).
-    fn start_row(&mut self, row: i32, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    pub(crate) fn start_row(&mut self, row: i32, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let missing = row.saturating_sub(self.last_seen_row.saturating_add(1));
         self.last_seen_row = self.last_seen_row.max(row);
         if self.settings.missing_rows {
@@ -88,7 +88,7 @@ impl SheetOutput {
         Ok(())
     }
 
-    fn cell(
+    pub(crate) fn cell(
         &mut self,
         reference: Option<&str>,
         value: Option<&str>,
@@ -121,7 +121,7 @@ impl SheetOutput {
         Ok(())
     }
 
-    fn header_footer(&mut self, text: String, header: bool) {
+    pub(crate) fn header_footer(&mut self, text: String, header: bool) {
         if !self.settings.headers_and_footers {
             return;
         }
