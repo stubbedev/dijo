@@ -7,6 +7,7 @@
 //! judge the words recognized so far while recognition runs, since a result iterator orders
 //! right-to-left words by results the words not yet recognized do not have.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::fmt;
@@ -35,6 +36,12 @@ struct BaseApi {
 
 #[repr(C)]
 struct Monitor {
+    _opaque: [u8; 0],
+}
+
+/// Leptonica's image.
+#[repr(C)]
+struct Pix {
     _opaque: [u8; 0],
 }
 
@@ -91,6 +98,9 @@ c_api! {
     set_variable = TessBaseAPISetVariable(*mut BaseApi, *const c_char, *const c_char) -> c_int;
     set_page_seg_mode = TessBaseAPISetPageSegMode(*mut BaseApi, c_int);
     set_image = TessBaseAPISetImage(*mut BaseApi, *const u8, c_int, c_int, c_int, c_int);
+    set_pix = TessBaseAPISetImage2(*mut BaseApi, *mut Pix);
+    read_pix = pixReadMem(*const u8, usize) -> *mut Pix;
+    destroy_pix = pixDestroy(*mut *mut Pix);
     recognize = TessBaseAPIRecognize(*mut BaseApi, *mut Monitor) -> c_int;
     utf8_text = TessBaseAPIGetUTF8Text(*mut BaseApi) -> *mut c_char;
     delete_text = TessDeleteText(*const c_char);
@@ -132,29 +142,74 @@ impl Thresholding {
     }
 }
 
-/// Grey levels as tesseract reads them, row by row without padding, a byte each.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Pixels<'a> {
-    pub(crate) data: &'a [u8],
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+/// An image as tesseract reads it.
+#[derive(Debug, Clone)]
+pub(crate) enum Pixels<'a> {
+    /// Grey levels, row by row without padding, a byte each.
+    Gray {
+        data: &'a [u8],
+        width: u32,
+        height: u32,
+    },
+    /// Red, green and blue levels, row by row without padding, three bytes a pixel.
+    Rgb {
+        data: &'a [u8],
+        width: u32,
+        height: u32,
+    },
+    /// An image file, which tesseract decodes with Leptonica, as the `tesseract` program does a
+    /// file it is handed: with the resolution the file records, and the transparency of a PNG
+    /// laid over white.
+    Encoded(Cow<'a, [u8]>),
 }
 
 impl Pixels<'_> {
     fn describe(&self) -> String {
-        format!("a {}x{} image", self.width, self.height)
+        match self {
+            Self::Gray { width, height, .. } | Self::Rgb { width, height, .. } => {
+                format!("a {width}x{height} image")
+            }
+            Self::Encoded(data) => format!("an image file of {} bytes", data.len()),
+        }
     }
 
-    /// Hands the pixels to an engine, which copies them.
-    unsafe fn set_on(&self, api: &Api, handle: *mut BaseApi) {
-        (api.set_image)(
-            handle,
-            self.data.as_ptr(),
-            self.width as c_int,
-            self.height as c_int,
-            1,
-            self.width as c_int,
-        );
+    /// Hands the image to an engine, which copies it: false when Leptonica cannot decode it.
+    unsafe fn set_on(&self, api: &Api, handle: *mut BaseApi) -> bool {
+        match self {
+            Self::Gray {
+                data,
+                width,
+                height,
+            } => (api.set_image)(
+                handle,
+                data.as_ptr(),
+                *width as c_int,
+                *height as c_int,
+                1,
+                *width as c_int,
+            ),
+            Self::Rgb {
+                data,
+                width,
+                height,
+            } => (api.set_image)(
+                handle,
+                data.as_ptr(),
+                *width as c_int,
+                *height as c_int,
+                3,
+                (*width * 3) as c_int,
+            ),
+            Self::Encoded(data) => {
+                let mut pix = (api.read_pix)(data.as_ptr(), data.len());
+                if pix.is_null() {
+                    return false;
+                }
+                (api.set_pix)(handle, pix);
+                (api.destroy_pix)(&mut pix);
+            }
+        }
+        true
     }
 }
 
@@ -342,7 +397,9 @@ impl Tesseract {
                 thresholding.value().as_ptr(),
             );
             (api.set_page_seg_mode)(handle, c_int::from(segmentation.0));
-            image.set_on(api, handle);
+            if !image.set_on(api, handle) {
+                return Err(failed());
+            }
             if let Some(timeout) = timeout {
                 let millis = c_int::try_from(timeout.as_millis()).unwrap_or(c_int::MAX);
                 (api.set_deadline)(monitor.0, millis);
@@ -380,7 +437,13 @@ impl Tesseract {
         let mut script_confidence: c_float = 0.0;
         let found = unsafe {
             (api.set_page_seg_mode)(handle, OSD_ONLY);
-            image.set_on(api, handle);
+            if !image.set_on(api, handle) {
+                self.release(OSD_MODEL, engine);
+                return Err(OcrError::Failed {
+                    image: image.describe(),
+                    model: OSD_MODEL.to_owned(),
+                });
+            }
             let detected = (api.detect_orientation_script)(
                 handle,
                 &mut degrees,

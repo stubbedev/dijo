@@ -21,7 +21,7 @@ use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::{is_blank, strip, utf8};
-use crate::ocr::Decoded;
+use crate::ocr::{Bitmap, Decoded};
 use document::{DjvuDocument, Form};
 
 /// The most pixels a page, a layer or a shape may have, beyond which decoding fails rather than
@@ -137,7 +137,10 @@ fn read_by_ocr(
     let file_size = u64::from(image.width()) * u64::from(image.height());
     reader.read(
         xhtml,
-        Decoded::Single(image),
+        Decoded::Single {
+            bitmap: Bitmap::Gray(image),
+            file: None,
+        },
         file_size,
         None,
         Some(number as u32),

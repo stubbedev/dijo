@@ -260,15 +260,15 @@ fn paint_blits(
 
 /// A JPEG layer in grey, as Java's ImageIO decodes it to RGB.
 fn decode_jpeg(data: &[u8]) -> Result<GrayImage, DjvuError> {
-    let image = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
-        .map_err(|e| malformed(format!("A DjVu JPEG layer cannot be decoded: {e}")))?
-        .to_rgb8();
-    let (width, height) = image.dimensions();
-    let pixels = image
-        .pixels()
-        .map(|pixel| grey(pixel.0[0], pixel.0[1], pixel.0[2]))
-        .collect();
-    Ok(GrayImage::from_raw(width, height, pixels).expect("a grey pixel for each pixel"))
+    let bitmap = crate::ocr::jpeg(data)
+        .map_err(|e| malformed(format!("A DjVu JPEG layer cannot be decoded: {e}")))?;
+    Ok(match bitmap {
+        crate::ocr::Bitmap::Rgb(rgb) => GrayImage::from_fn(rgb.width(), rgb.height(), |x, y| {
+            let [red, green, blue] = rgb.get_pixel(x, y).0;
+            image::Luma([grey(red, green, blue)])
+        }),
+        levels => levels.gray().into_owned(),
+    })
 }
 
 /// The page turned as its INFO chunk's orientation says (8.3.11): 6 a quarter turn

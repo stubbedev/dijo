@@ -10,7 +10,7 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
 use image::GrayImage;
 
-use super::decode::luma;
+use super::bitmap::luma;
 use super::recognize::MAX_PIXELS;
 
 /// `RenderSettings`' default resolution.

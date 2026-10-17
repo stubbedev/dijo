@@ -3,7 +3,7 @@
 
 use image::GrayImage;
 
-use super::decode::luma;
+use super::bitmap::luma;
 
 /// Bytes read in turn, each read failing at the end.
 struct Bytes<'a> {

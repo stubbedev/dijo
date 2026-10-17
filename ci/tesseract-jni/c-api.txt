@@ -5,6 +5,9 @@ TessBaseAPIInit3
 TessBaseAPISetVariable
 TessBaseAPISetPageSegMode
 TessBaseAPISetImage
+TessBaseAPISetImage2
+pixReadMem
+pixDestroy
 TessBaseAPIRecognize
 TessBaseAPIGetUTF8Text
 TessDeleteText
