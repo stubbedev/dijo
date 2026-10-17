@@ -2131,29 +2131,48 @@ const COMPOUND_FILE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 
 /// The files the native path spooled, with each embedded OLE storage that Tika's path spooled
 /// empty taken as Tika's: Tika hands `EmbeddedSpooler` the storage as an opened container, whose
 /// stream holds no bytes, while the native path writes the storage as a compound file, or
-/// nothing but a cut where the budget is spent.
+/// nothing but a cut where the budget is spent (#116). The bytes those take of the budget move
+/// where it cuts the files after them: a file the native path cut sooner, by no more than those
+/// bytes left over, is taken as Tika's where Tika's starts with it.
 fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
+    let mut moved = 0u64;
     native
         .into_iter()
         .enumerate()
-        .map(|(index, native)| match tika.get(index) {
-            Some(tika)
-                if tika.size == 0
-                    && !tika.truncated
-                    && tika.name == native.name
-                    && tika.content_type == native.content_type
-                    && tika.file == native.file
-                    && (native.content.starts_with(&COMPOUND_FILE_MAGIC)
-                        || (native.truncated && native.content.is_empty())) =>
-            {
-                Spooled {
+        .map(|(index, native)| {
+            let Some(tika) = tika.get(index) else {
+                return native;
+            };
+            let same_file = tika.name == native.name
+                && tika.content_type == native.content_type
+                && tika.file == native.file;
+            let storage = tika.size == 0
+                && !tika.truncated
+                && (native.content.starts_with(&COMPOUND_FILE_MAGIC)
+                    || (native.truncated && native.content.is_empty()));
+            if same_file && storage {
+                moved += native.size;
+                return Spooled {
                     size: 0,
                     truncated: false,
                     content: Vec::new(),
                     ..native
-                }
+                };
             }
-            _ => native,
+            let cut_sooner = native.truncated
+                && tika.size > native.size
+                && tika.size - native.size <= moved
+                && tika.content.starts_with(&native.content);
+            if same_file && cut_sooner {
+                moved -= tika.size - native.size;
+                return Spooled {
+                    size: tika.size,
+                    truncated: tika.truncated,
+                    content: tika.content.clone(),
+                    ..native
+                };
+            }
+            native
         })
         .collect()
 }
