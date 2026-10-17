@@ -784,6 +784,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "object",
+ "png",
  "pulldown-cmark",
  "quick-xml",
  "rav1d",

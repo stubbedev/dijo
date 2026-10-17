@@ -876,6 +876,9 @@ pub(crate) enum Departure<'a> {
     /// Line breaks: the text is compared with each CRLF an LF, where Tika's path makes a line
     /// feed a CRLF.
     LineBreaks(&'a str),
+    /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
+    /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
+    PngImages(&'a str),
 }
 
 /// What a native parser does otherwise than Tika's path on purpose.
@@ -900,7 +903,7 @@ fn without_departures(
         .iter()
         .filter_map(|departure| match departure {
             Departure::Values(name, _) => Some(*name),
-            Departure::LineBreaks(_) => None,
+            Departure::LineBreaks(_) | Departure::PngImages(_) => None,
         })
         .collect();
     for (name, values) in &mut extracted.metadata {
@@ -2033,6 +2036,47 @@ fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
         .collect()
 }
 
+/// The spooled files, where a [`Departure::PngImages`] applies, with each whole PNG file the
+/// image it holds, and no size: its dimensions, colour type, bit depth and resolution, then its
+/// pixels.
+fn with_png_images(spooled: Vec<Spooled>, png_images: bool) -> Vec<Spooled> {
+    if !png_images {
+        return spooled;
+    }
+    spooled
+        .into_iter()
+        .map(|file| {
+            if file.truncated || !file.content.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return file;
+            }
+            let mut reader = png::Decoder::new(std::io::Cursor::new(&file.content))
+                .read_info()
+                .unwrap_or_else(|e| panic!("{} is no PNG file: {e}", file.name));
+            let info = reader.info();
+            let mut content = format!(
+                "{}x{} {:?} {:?} {:?}\n",
+                info.width,
+                info.height,
+                info.color_type,
+                info.bit_depth,
+                info.pixel_dims
+                    .map(|dims| (dims.xppu, dims.yppu, dims.unit == png::Unit::Meter)),
+            )
+            .into_bytes();
+            let mut pixels = vec![0; reader.output_buffer_size().expect("an image in memory")];
+            reader
+                .next_frame(&mut pixels)
+                .unwrap_or_else(|e| panic!("{} does not decode: {e}", file.name));
+            content.extend(pixels);
+            Spooled {
+                size: 0,
+                content,
+                ..file
+            }
+        })
+        .collect()
+}
+
 /// The spooled files, where a [`Departure::LineBreaks`] applies, with each CRLF of the whole
 /// ones an LF, as their text is compared: the line breaks of a part the departure decodes
 /// otherwise are in its bytes too. Where the budget cuts the spool, the departure moves the cut,
@@ -2095,13 +2139,14 @@ pub(crate) fn spools_as_tika_rewriting(
     spools_as_tika_under(path, budget, rewrite, departures, &ParserConfigs::default())
 }
 
-/// [`spools_as_tika`] under the settings `configs`.
-pub(crate) fn spools_as_tika_with(
+/// [`spools_as_tika`] under the settings `configs`, but for what `departures` name.
+pub(crate) fn spools_as_tika_departing_with(
     path: &Path,
     budget: u64,
+    departures: Departures,
     configs: &ParserConfigs,
 ) -> Result<usize, String> {
-    spools_as_tika_under(path, budget, None, &[], configs)
+    spools_as_tika_under(path, budget, None, departures, configs)
 }
 
 fn spools_as_tika_under(
@@ -2202,16 +2247,25 @@ fn spools_as_tika_under(
             let line_breaks = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::LineBreaks(_)));
+            let png_images = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::PngImages(_)));
             let tika = (
                 tika_extracted,
-                with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
+                with_png_images(
+                    with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
+                    png_images,
+                ),
             );
             let native = (
                 native_extracted,
                 as_tika_spools(
-                    with_line_feeds(
-                        spooled(native_embedded, native_spool.directory()),
-                        line_breaks,
+                    with_png_images(
+                        with_line_feeds(
+                            spooled(native_embedded, native_spool.directory()),
+                            line_breaks,
+                        ),
+                        png_images,
                     ),
                     &tika.1,
                 ),
