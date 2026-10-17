@@ -27,7 +27,7 @@ struct Archive {
 }
 
 /// Tika's `WACZParser`.
-pub(crate) struct WaczParser;
+pub struct WaczParser;
 
 impl Parser for WaczParser {
     fn name(&self) -> &'static str {

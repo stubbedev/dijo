@@ -21,8 +21,8 @@ mod wacz;
 use headers::Headers;
 use media_type::MediaType;
 use reader::{Record, Stop};
-pub(crate) use response::HttpParser;
-pub(crate) use wacz::WaczParser;
+pub use response::HttpParser;
+pub use wacz::WaczParser;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -39,7 +39,7 @@ const PAYLOAD_CONTENT_TYPE: &str = "warc:payload-content-type";
 const HTTP_STATUS: &str = "warc:http:status";
 const HTTP_STATUS_REASON: &str = "warc:http:status:reason";
 
-pub(crate) struct WarcParser;
+pub struct WarcParser;
 
 impl Parser for WarcParser {
     fn name(&self) -> &'static str {

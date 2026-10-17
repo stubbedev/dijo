@@ -113,7 +113,7 @@ const ZIP_SPECIALIZATIONS: [&str; 80] = [
 ];
 
 /// Tika's `ZipParser`.
-pub(crate) struct ZipParser;
+pub struct ZipParser;
 
 impl Parser for ZipParser {
     fn name(&self) -> &'static str {

@@ -393,7 +393,7 @@ fn with_content<'a>(
 }
 
 /// Our Java `CmsParser`.
-pub(crate) struct CmsParser;
+pub struct CmsParser;
 
 impl Parser for CmsParser {
     fn name(&self) -> &'static str {

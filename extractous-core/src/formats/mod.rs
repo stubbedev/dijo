@@ -3,16 +3,13 @@
 //! has one.
 
 mod access;
-mod archive;
 #[cfg(all(test, feature = "tika"))]
 pub(crate) mod audit;
-mod cms;
 mod composite;
 mod compound;
 mod doc;
 mod docx;
 mod escher;
-mod mail;
 mod msg;
 mod ole2;
 mod ooxml;
@@ -25,14 +22,11 @@ mod protected;
 mod pst;
 mod publisher;
 mod rtf;
-#[cfg(not(feature = "static-image"))]
-mod sqlite;
 mod tnef;
 #[cfg(all(test, feature = "tika"))]
 mod url_tests;
 mod visio;
 mod vsdx;
-mod warc;
 mod xls;
 mod xlsx;
 mod xps;
@@ -50,6 +44,12 @@ pub(crate) use extractous_html::formats::text;
 pub(crate) use extractous_image::formats::djvu;
 pub(crate) use extractous_image::formats::image;
 pub(crate) use extractous_image::formats::metafile;
+pub(crate) use extractous_mail::formats::archive;
+pub(crate) use extractous_mail::formats::cms;
+pub(crate) use extractous_mail::formats::mail;
+#[cfg(not(feature = "static-image"))]
+pub(crate) use extractous_mail::formats::sqlite;
+pub(crate) use extractous_mail::formats::warc;
 pub(crate) use extractous_media::formats::media;
 pub(crate) use extractous_odf::formats::epub;
 pub(crate) use extractous_odf::formats::odf;
@@ -1264,7 +1264,7 @@ mod tests {
                 let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
-                    | "extractous::MboxParser" => crate::formats::mail::tests::DEPARTURES.to_vec(),
+                    | "extractous::MboxParser" => crate::formats::mail::DEPARTURES.to_vec(),
                     "extractous::OfficeParser" => {
                         crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
                     }
@@ -1273,7 +1273,7 @@ mod tests {
                     }
                     _ => Vec::new(),
                 };
-                if crate::formats::mail::tests::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
+                if crate::formats::mail::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
                     departures.push(crate::formats::parity::Departure::Values(
                         "message:from-name",
                         "#77",

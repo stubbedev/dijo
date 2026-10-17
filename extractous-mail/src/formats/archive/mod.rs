@@ -11,11 +11,11 @@ mod rar;
 mod seven_z;
 mod zip;
 
-pub(crate) use compressor::CompressorParser;
-pub(crate) use package::PackageParser;
-pub(crate) use rar::RarParser;
-pub(crate) use seven_z::SevenZParser;
-pub(crate) use zip::ZipParser;
+pub use compressor::CompressorParser;
+pub use package::PackageParser;
+pub use rar::RarParser;
+pub use seven_z::SevenZParser;
+pub use zip::ZipParser;
 
 use crate::compress::ArchiveFile;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
@@ -25,7 +25,7 @@ use crate::formats::Failure;
 use crate::java::time::format_instant;
 
 /// The metadata of the ZIP integrity check.
-#[cfg(all(test, feature = "tika"))]
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 const INTEGRITY_CHECK: [&str; 4] = [
     "zip:integrity-check-result",
     "zip:duplicate-entry-names",
@@ -36,8 +36,8 @@ const INTEGRITY_CHECK: [&str; 4] = [
 /// A native ZIP result as Tika's path writes it, with the integrity check as late as Tika runs
 /// it (#99): after the document has ended, so not in its head, and not at all when the parse
 /// failed, as at the write limit.
-#[cfg(all(test, feature = "tika"))]
-pub(crate) fn as_tika_checks_zips(
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_tika_checks_zips(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
     tika: &crate::formats::parity::ComparedMetadata,

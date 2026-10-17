@@ -186,10 +186,10 @@ mail-reference:
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    mkdir -p extractous-core/tests/fixtures/mail
+    mkdir -p extractous-mail/tests/fixtures/mail
     java -cp "$jars/*:extractous-core/tika-native/src/main/resources" \
         extractous-html/tests/fixtures/formats/MailReference.java \
-        extractous-core/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
+        extractous-mail/tests/fixtures/mail/fields.tsv.gz documents=test_files/documents \
         corpus=quality/corpus truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
 

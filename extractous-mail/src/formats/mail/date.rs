@@ -19,7 +19,7 @@ const MAX_OFFSET_SECONDS: i64 = 18 * 3600;
 
 /// A date of mail: an instant, or a day without a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MailDate {
+pub enum MailDate {
     /// Milliseconds since the epoch.
     Instant(i64),
     /// Days since the epoch.
@@ -28,7 +28,7 @@ pub(crate) enum MailDate {
 
 impl MailDate {
     /// The date as metadata gives it: an instant in ISO 8601 in UTC, a day as `yyyy-MM-dd`.
-    pub(crate) fn format(self) -> String {
+    pub fn format(self) -> String {
         match self {
             MailDate::Instant(millis) => format_instant(millis),
             MailDate::Day(epoch_day) => {
@@ -40,7 +40,7 @@ impl MailDate {
 }
 
 /// The date `text` gives, `None` when it does not parse.
-pub(crate) fn parse_date(text: &str) -> Result<Option<MailDate>, Unported> {
+pub fn parse_date(text: &str) -> Result<Option<MailDate>, Unported> {
     let normalized: Vec<char> = normalize(text).chars().collect();
     for formatter in DATE_TIME_FORMATTERS.iter().chain(&DATE_FORMATTERS) {
         if let Some(date) = formatter.parse(&normalized)? {

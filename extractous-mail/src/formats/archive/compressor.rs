@@ -37,7 +37,7 @@ const MEDIA_TYPES: [&str; NATIVE.len()] = [
 ];
 
 /// Tika's `CompressorParser`.
-pub(crate) struct CompressorParser;
+pub struct CompressorParser;
 
 impl Parser for CompressorParser {
     fn name(&self) -> &'static str {

@@ -29,7 +29,7 @@ use crate::java::time::TimeZone;
 const RAR: &str = "application/x-rar-compressed";
 
 /// Tika's `RarParser`.
-pub(crate) struct RarParser;
+pub struct RarParser;
 
 impl Parser for RarParser {
     fn name(&self) -> &'static str {

@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "tika")]
-use super::tests::DEPARTURES;
-#[cfg(feature = "tika")]
 use super::EmlxParser;
 use super::Rfc822Parser;
+#[cfg(feature = "tika")]
+use super::DEPARTURES;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika_departing, documents, Scratch,

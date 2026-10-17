@@ -10,7 +10,7 @@ use crate::formats::{Declined, Deferral, Failure, Opened, Parser, Prepared};
 use crate::java;
 
 /// Tika's `HttpParser`.
-pub(crate) struct HttpParser;
+pub struct HttpParser;
 
 impl Parser for HttpParser {
     fn name(&self) -> &'static str {

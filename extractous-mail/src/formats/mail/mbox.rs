@@ -254,7 +254,7 @@ fn bracketed_address(content: &str) -> Option<&str> {
 }
 
 /// Tika's `MboxParser`.
-pub(crate) struct MboxParser;
+pub struct MboxParser;
 
 impl Parser for MboxParser {
     fn name(&self) -> &'static str {

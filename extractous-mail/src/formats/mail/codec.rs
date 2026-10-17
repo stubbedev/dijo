@@ -144,7 +144,7 @@ fn decode_escapes(line: &[u8], out: &mut Vec<u8>) {
 /// `DecoderUtil.decodeEncodedWords` with a silent monitor and no fallback charset: every
 /// `=?charset?encoding?text?=` whose charset the JDK knows decoded, adjacent words of one
 /// charset and encoding decoded together, and white space between encoded words dropped.
-pub(crate) fn decode_encoded_words(body: &str) -> Result<String, Unported> {
+pub fn decode_encoded_words(body: &str) -> Result<String, Unported> {
     let mut words = EncodedWords {
         out: Vec::new(),
         text: String::new(),

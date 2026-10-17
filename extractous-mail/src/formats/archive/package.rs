@@ -46,7 +46,7 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, St
 }
 
 /// Tika's `PackageParser`.
-pub(crate) struct PackageParser;
+pub struct PackageParser;
 
 impl Parser for PackageParser {
     fn name(&self) -> &'static str {

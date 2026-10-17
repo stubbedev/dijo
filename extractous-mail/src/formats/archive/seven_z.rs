@@ -16,7 +16,7 @@ const PASSWORD_REQUIRED: &str = "org.apache.commons.compress.PasswordRequiredExc
                                  read encrypted content from unknown archive without a password.";
 
 /// Tika's `SevenZParser`.
-pub(crate) struct SevenZParser;
+pub struct SevenZParser;
 
 impl Parser for SevenZParser {
     fn name(&self) -> &'static str {

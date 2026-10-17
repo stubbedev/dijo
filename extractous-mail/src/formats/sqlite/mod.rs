@@ -55,7 +55,7 @@ const LEGACY_VERSION: u8 = 1;
 const AS_TEXT: &str = "SELECT CAST(?1 AS TEXT)";
 
 /// Tika's `SQLite3Parser`.
-pub(crate) struct Sqlite3Parser;
+pub struct Sqlite3Parser;
 
 impl Parser for Sqlite3Parser {
     fn name(&self) -> &'static str {

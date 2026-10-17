@@ -31,10 +31,10 @@ mod structured;
 #[cfg(test)]
 mod synthetic;
 
-pub(crate) use codec::decode_encoded_words;
-pub(crate) use date::{parse_date, MailDate};
+pub use codec::decode_encoded_words;
+pub use date::{parse_date, MailDate};
 use handler::{read, Inline, Item, Problem};
-pub(crate) use mbox::MboxParser;
+pub use mbox::MboxParser;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
@@ -47,7 +47,7 @@ use crate::java::parse_long;
 
 /// What the port leaves to Tika.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Unported {
+pub enum Unported {
     /// A charset the JDK knows and the native decoders do not decode.
     Charset,
     /// A time zone named by a region or a name, which java.time resolves with its time-zone
@@ -67,11 +67,11 @@ impl Unported {
 }
 
 /// Tika's `RFC822Parser`.
-pub(crate) struct Rfc822Parser;
+pub struct Rfc822Parser;
 
 /// Our Java `EmlxParser`: Apple Mail's `.emlx`, a line with the message's length in bytes, the
 /// message, and a property list, its message read by `RFC822Parser`.
-pub(crate) struct EmlxParser;
+pub struct EmlxParser;
 
 impl Parser for Rfc822Parser {
     fn name(&self) -> &'static str {
@@ -280,6 +280,19 @@ fn prepare_message(
     }))
 }
 
+/// What the port does otherwise than Tika on purpose: Tika names a message after its
+/// subject, and makes each line feed of a quoted-printable part a CRLF.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const DEPARTURES: crate::formats::parity::Departures = &[
+    crate::formats::parity::Departure::Values("tk:resource-name", "#79"),
+    crate::formats::parity::Departure::LineBreaks("#73"),
+];
+
+/// The documents whose sender's name Tika's regular expression takes otherwise than the
+/// port takes it from the parsed mailbox (#77), by file name.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
+
 #[cfg(test)]
 pub(crate) mod tests {
     #[cfg(feature = "tika")]
@@ -288,27 +301,14 @@ pub(crate) mod tests {
     use super::*;
     #[cfg(feature = "tika")]
     use crate::formats::parity::assert_same_as_tika_departing;
-    use crate::formats::parity::{conformance_corpus, documents};
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{Departure, Departures};
+    use crate::formats::parity::Departure;
+    use crate::formats::parity::{conformance_corpus, documents};
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.mail.RFC822Parser";
     #[cfg(feature = "tika")]
     const EMLX_NAME: &str = "ai.yobix.EmlxParser";
-
-    /// What the port does otherwise than Tika on purpose: Tika names a message after its
-    /// subject, and makes each line feed of a quoted-printable part a CRLF.
-    #[cfg(feature = "tika")]
-    pub(crate) const DEPARTURES: Departures = &[
-        Departure::Values("tk:resource-name", "#79"),
-        Departure::LineBreaks("#73"),
-    ];
-
-    /// The documents whose sender's name Tika's regular expression takes otherwise than the
-    /// port takes it from the parsed mailbox (#77), by file name.
-    #[cfg(feature = "tika")]
-    pub(crate) const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
 
     /// Asserts parity on the documents of `parser` under `roots`, which it must parse all of,
     /// and that there are `count`, but for those named in `except`, which it returns.

@@ -799,6 +799,7 @@ dependencies = [
  "extractous-base",
  "extractous-html",
  "extractous-image",
+ "extractous-mail",
  "extractous-media",
  "extractous-mime",
  "extractous-native",
@@ -874,6 +875,24 @@ dependencies = [
  "sha2",
  "tiff",
  "unicode-script",
+ "zip",
+]
+
+[[package]]
+name = "extractous-mail"
+version = "0.2.1"
+dependencies = [
+ "ar",
+ "cpio",
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "extractous-mime",
+ "extractous-small",
+ "flate2",
+ "regex",
+ "rusqlite",
+ "tar",
  "zip",
 ]
 
