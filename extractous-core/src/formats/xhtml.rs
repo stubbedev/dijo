@@ -8,7 +8,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, Bridged, EmbeddedRoute, Failure, Opened, Unrouted};
+use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::isolate::isolate;
 use crate::memory;
 use crate::tika::{self, EmbeddedOutcome};
@@ -685,6 +685,12 @@ impl<'h> Xhtml<'h> {
             Err(Bridged::Unrouted(Unrouted::Empty)) => {
                 self.embedding.record_zero_bytes();
                 Ended::Recorded
+            }
+            Err(Bridged::Declined(parser, Declined::Unwritten(start))) => {
+                let parsed = formats::unwritten(parser, start, configs).to_map();
+                self.embedding.absorb_parsers(&parsed);
+                self.embedding.absorb_failures(&parsed, None);
+                Ended::Clean
             }
             #[cfg_attr(
                 not(test),

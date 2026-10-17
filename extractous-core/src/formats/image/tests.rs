@@ -828,3 +828,16 @@ fn describes_an_image_read_from_memory_by_its_size_alone() {
         "{metadata:?}"
     );
 }
+
+/// Tika's `JXLParser` writes no document of a JPEG XL image, only the XMP it finds.
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_jpeg_xl_images_as_tika_does() {
+    let roots = conformance_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let (parsed, deferred) = documents_with(&JxlParser, &roots, &skipping_ocr());
+    assert_eq!(parsed.len(), 3, "{parsed:?}");
+    assert!(deferred.is_empty(), "{deferred:?}");
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    crate::formats::parity::assert_same_as_tika(&paths, JxlParser.tika_name());
+}

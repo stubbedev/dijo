@@ -196,6 +196,35 @@ impl Parser for HeifParser {
     }
 }
 
+/// Tika's `JXLParser`, which scans a JPEG XL image for an XMP packet and writes no document.
+pub(crate) struct JxlParser;
+
+impl Parser for JxlParser {
+    fn name(&self) -> &'static str {
+        "extractous::JXLParser"
+    }
+
+    #[cfg(test)]
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.image.JXLParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &["image/jxl"]
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        _: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        let mut metadata = metadata.clone();
+        image_xmp::scan_and_extract(input, &mut metadata)?;
+        Err(Declined::Unwritten(metadata))
+    }
+}
+
 /// Tika's `ImageParser`, of the types whose ImageIO readers the port reads as they do and of
 /// those ImageIO has no reader for.
 pub(crate) struct ImageParser;

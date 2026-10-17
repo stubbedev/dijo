@@ -149,6 +149,9 @@ pub(crate) enum Declined {
     /// Tika's parser throws this on it before it starts the document: the extraction fails at
     /// once, without output, as Tika's path does.
     Fails(Error),
+    /// Tika's parser writes no document of it, not even its start and end, and leaves only
+    /// this metadata: what it started from, with what it found.
+    Unwritten(TikaMetadata),
 }
 
 impl From<Deferral> for Declined {
@@ -237,7 +240,7 @@ pub(crate) trait Parser: Sync {
     ) -> Option<Deferral> {
         match self.prepare(input, metadata, configs) {
             Err(Declined::Deferred(deferral)) => Some(deferral),
-            Ok(_) | Err(Declined::Fails(_)) => None,
+            Ok(_) | Err(Declined::Fails(_) | Declined::Unwritten(_)) => None,
         }
     }
 }
@@ -265,6 +268,7 @@ static PARSERS: &[&dyn Parser] = &[
     &image::HeifParser,
     &image::ImageParser,
     &image::JpegParser,
+    &image::JxlParser,
     &image::RawTiffParser,
     &image::RecognizedImageParser,
     &image::TiffParser,
@@ -528,7 +532,9 @@ pub(crate) struct EmbeddedRoute<'a> {
     pub(crate) prepared: Prepared<'a>,
 }
 
-/// Why a document embedded in one a native parser reads goes to Tika's path.
+/// Why no native parser prepares a document embedded in one a native parser reads: Tika's path
+/// parses it, unless it is empty or its parser writes no document of it, which the native path
+/// records as Tika does.
 #[derive(Debug)]
 pub(crate) enum Bridged {
     /// No native parser prepares it.
@@ -536,24 +542,7 @@ pub(crate) enum Bridged {
     /// Its native parser, of this name, declines it: Tika's path parses one the parser defers,
     /// and records the failure of one Tika's parser fails before it starts, which only that
     /// path can tell.
-    Declined(
-        #[cfg_attr(
-            not(test),
-            expect(
-                dead_code,
-                reason = "only the tests ask which parser declines a document"
-            )
-        )]
-        &'static str,
-        #[cfg_attr(
-            not(test),
-            expect(
-                dead_code,
-                reason = "only the tests ask why a parser declines a document"
-            )
-        )]
-        Declined,
-    ),
+    Declined(&'static str, Declined),
 }
 
 /// The native parser of a document embedded in one a native parser reads, with the metadata it
@@ -721,10 +710,29 @@ fn run<'h>(
     let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
-    if result.is_ok() && context.configs().password.is_some() {
-        metadata.set(PASSWORD_USED, "true");
+    if result.is_ok() {
+        mark_password_used(&mut metadata, context.configs());
     }
     (metadata, result)
+}
+
+/// The metadata of a document the parser named `parser` writes nothing of, as Tika leaves it
+/// once that parser has returned, from the `metadata` the parser left.
+pub(crate) fn unwritten(
+    parser: &str,
+    mut metadata: TikaMetadata,
+    configs: &ParserConfigs,
+) -> TikaMetadata {
+    embedded::EmbeddedRecord::default().finish(&mut metadata, parser);
+    mark_password_used(&mut metadata, configs);
+    metadata
+}
+
+/// Marks a document parsed under `configs` as parsed with a password, if one was given.
+fn mark_password_used(metadata: &mut TikaMetadata, configs: &ParserConfigs) {
+    if configs.password.is_some() {
+        metadata.set(PASSWORD_USED, "true");
+    }
 }
 
 /// What our Java `LegacyOfficePasswordParser` records once a document a password was given for
@@ -902,6 +910,10 @@ pub(crate) fn parse_to_string_through(
             Ok(prepared) => prepared,
             Err(Declined::Deferred(_)) => return Ok(None),
             Err(Declined::Fails(error)) => return Err(error),
+            Err(Declined::Unwritten(metadata)) => {
+                let metadata = unwritten(parser.name(), metadata, configs);
+                return Ok(Some((String::new(), metadata.to_map())));
+            }
         };
         prepared_within_budget(parser)?;
         let mut out = StringOut::default();
@@ -1032,6 +1044,15 @@ pub(crate) fn parse_to_stream(
                     Ok(prepared) => prepared_within_budget(parser).map(|()| prepared),
                     Err(Declined::Deferred(_)) => return,
                     Err(Declined::Fails(error)) => Err(error),
+                    Err(Declined::Unwritten(metadata)) => {
+                        let metadata = unwritten(parser.name(), metadata, &configs);
+                        let _ = sender.send(Message::Done {
+                            tail: Vec::new(),
+                            outcome: Ok(metadata.to_map()),
+                            spooled: Vec::new(),
+                        });
+                        return;
+                    }
                 };
                 let prepared = match prepared {
                     Ok(prepared) => prepared,
