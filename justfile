@@ -96,7 +96,7 @@ djvu-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/djvu
+    fixtures=extractous-image/tests/fixtures/djvu
     sources=target/djvu-reference/ai/yobix
     rm -rf "$sources"
     mkdir -p "$sources"
@@ -241,7 +241,7 @@ bmp-reference:
     : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/image
+    fixtures=extractous-image/tests/fixtures/image
     java -Djava.awt.headless=true -cp "$jars/mime/*:$jars/image/*" "$fixtures/BmpReference.java" "$fixtures" \
         "$CONFORMANCE_CORPUS/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testBMP.bmp"
 
@@ -331,8 +331,8 @@ ocr-image-reference:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    fixtures=extractous-core/tests/fixtures/ocr
-    java -Djava.awt.headless=true "$fixtures/JdkSrgbProfile.java" extractous-core/models/jdk-srgb.icc
+    fixtures=extractous-image/tests/fixtures/ocr
+    java -Djava.awt.headless=true "$fixtures/JdkSrgbProfile.java" extractous-image/models/jdk-srgb.icc
     java -Djava.awt.headless=true "$fixtures/ImageReference.java" "$fixtures/image-reference.tsv.gz" \
         documents=test_files/documents corpus=quality/corpus tika="$CONFORMANCE_CORPUS"
 

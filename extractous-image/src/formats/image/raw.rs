@@ -40,7 +40,7 @@ const MAX_PREVIEW_LENGTH: i64 = 100 * 1024 * 1024;
 const MAX_TOTAL_PREVIEW_BYTES: i64 = 256 * 1024 * 1024;
 
 /// Tika's `RawTiffParser`.
-pub(crate) struct RawTiffParser;
+pub struct RawTiffParser;
 
 impl Parser for RawTiffParser {
     fn name(&self) -> &'static str {

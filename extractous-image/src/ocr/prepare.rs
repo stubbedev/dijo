@@ -35,7 +35,7 @@ const WHITE: u8 = 255;
 /// An EXIF orientation, 2 to 8, which turns or mirrors the image it is recorded in; 1 needs
 /// nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Orientation(u8);
+pub struct Orientation(u8);
 
 impl Orientation {
     /// The orientation a TIFF or EXIF orientation value records, when it needs anything done.

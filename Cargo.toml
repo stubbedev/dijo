@@ -6,6 +6,7 @@ members = [
     "extractous-tika",
     "extractous-mime",
     "extractous-html",
+    "extractous-image",
     "extractous-core",
     "extractous-cli",
 ]

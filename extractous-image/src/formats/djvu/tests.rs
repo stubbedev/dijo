@@ -112,7 +112,7 @@ fn fails_on_documents_tika_fails_on() {
 /// ImageIO, which round the same image differently.
 const JPEG_ROUNDING: u8 = 2;
 
-/// `extractous-core/tests/fixtures/djvu/renders.tsv`: each page of the DjVu documents, rendered
+/// `extractous-image/tests/fixtures/djvu/renders.tsv`: each page of the DjVu documents, rendered
 /// by our Java `DjvuRenderer` (`just djvu-reference`), as its size and the CRC-32 of its pixels,
 /// or the failure it renders with. A page with a JPEG layer, which ImageIO decodes for Java and
 /// the image crate natively, matches the PGM of the Java rendering the reference names

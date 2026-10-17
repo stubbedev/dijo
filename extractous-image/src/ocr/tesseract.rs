@@ -232,7 +232,7 @@ pub(crate) struct Detection {
 
 /// Why tesseract read nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OcrError {
+pub enum OcrError {
     /// It did not finish within the time the reading was given.
     TimedOut { image: String, millis: u128 },
     /// It could not read the image.
@@ -275,7 +275,7 @@ struct Idle {
 }
 
 /// Tesseract in this process, and its engines.
-pub(crate) struct Tesseract {
+pub struct Tesseract {
     api: Api,
     set_threads: Option<SetThreads>,
     /// Where the models are, or none for where tesseract looks by itself.

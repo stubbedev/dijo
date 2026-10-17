@@ -5,8 +5,8 @@
 //! the selected font say (#127).
 
 mod emf;
-#[cfg(test)]
-pub(crate) mod testing;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 mod wmf;
 
 use std::collections::BTreeMap;
@@ -131,7 +131,7 @@ fn write(xhtml: &mut Xhtml, steps: Vec<Step<'_>>) -> Result<(), Failure> {
 }
 
 /// Tika's `EMFParser`.
-pub(crate) struct EmfParser;
+pub struct EmfParser;
 
 impl Parser for EmfParser {
     fn name(&self) -> &'static str {
@@ -313,7 +313,7 @@ fn unicode_string(bytes: &[u8]) -> Option<String> {
 /// `resolveEmfNames` parses the icon of an OLE object, which swallows the parser's failure: the
 /// name of the file the icon shows, or none where it names none or the parser fails. A picture
 /// whose comments embed documents, which Tika parses there, is left to Tika.
-pub(crate) fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
+pub fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
     let mut name = None;
     for step in emf_steps(emf::records(input)) {
         match step {
@@ -332,7 +332,7 @@ pub(crate) fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
 }
 
 /// Tika's `WMFParser`.
-pub(crate) struct WmfParser;
+pub struct WmfParser;
 
 impl Parser for WmfParser {
     fn name(&self) -> &'static str {

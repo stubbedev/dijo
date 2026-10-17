@@ -110,7 +110,7 @@ pub(crate) fn to_srgb(profile: &[u8], samples: &mut [u8]) -> Result<(), String> 
 
 /// A `ColorConvertOp` from a profile to the JDK's sRGB, as `ICCBIFilter` makes it for an image:
 /// colorimetrically from a printer's profile, perceptually from any other.
-pub(crate) struct ToSrgb {
+pub struct ToSrgb {
     transform: Transform,
     components: usize,
 }
@@ -118,7 +118,7 @@ pub(crate) struct ToSrgb {
 impl ToSrgb {
     /// The conversion from the profile `profile` of `components` components, or none when
     /// LittleCMS cannot make one.
-    pub(crate) fn new(profile: &[u8], components: usize) -> Option<Self> {
+    pub fn new(profile: &[u8], components: usize) -> Option<Self> {
         let embedded = Profile::open(profile)?;
         let srgb = Profile::open(JDK_SRGB).expect("the JDK's sRGB profile opens");
         let intent = if profile[12..16] == *CLASS_OUTPUT {
@@ -140,7 +140,7 @@ impl ToSrgb {
     }
 
     /// The sRGB samples of interleaved 8-bit samples of the profile, three a pixel.
-    pub(crate) fn convert(&self, samples: &[u8]) -> Vec<u8> {
+    pub fn convert(&self, samples: &[u8]) -> Vec<u8> {
         let pixels = samples.len() / self.components;
         let mut converted = vec![0u8; pixels * 3];
         for (from, to) in samples
@@ -167,7 +167,7 @@ const CONVERT_CHUNK: usize = 1 << 16;
 /// The count of components of a profile `ICC_Profile.getInstance` accepts, or none for one it
 /// refuses: one `ProfileDataVerifier` finds damaged, or whose header names a class, a colour
 /// space, a connection space or a rendering intent it does not know.
-pub(crate) fn accepted_components(data: &[u8]) -> Option<usize> {
+pub fn accepted_components(data: &[u8]) -> Option<usize> {
     if data.len() < TOC_OFFSET {
         return None;
     }

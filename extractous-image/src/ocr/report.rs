@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use crate::java::printf;
 
 /// The metadata key the reports are added under.
-pub(crate) const KEY: &str = "extractous:ocr";
+pub const KEY: &str = "extractous:ocr";
 
 /// A report being written.
 pub(crate) struct Report {

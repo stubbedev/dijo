@@ -7,7 +7,7 @@
 //! but reads nothing.
 
 mod bpg;
-pub(super) mod enricher;
+pub mod enricher;
 mod extractor;
 mod icns;
 mod image_xmp;
@@ -32,12 +32,12 @@ use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepa
 use crate::java::time::TimeZone;
 use enricher::Enricher;
 use extractor::Target;
-pub(crate) use icns::IcnsParser;
+pub use icns::IcnsParser;
 use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
-pub(crate) use raw::RawTiffParser;
+pub use raw::RawTiffParser;
 
 /// The name the port records the OCR enricher under, as Tika records `ai.yobix.PreparingOcrParser`.
-pub(crate) const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
+pub const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
 /// The OCR enricher's names, the port's paired with Tika's.
 const TIKA_DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
 
@@ -98,7 +98,7 @@ enum Format {
 }
 
 /// Tika's `JpegParser`.
-pub(crate) struct JpegParser;
+pub struct JpegParser;
 
 impl Parser for JpegParser {
     fn name(&self) -> &'static str {
@@ -126,7 +126,7 @@ impl Parser for JpegParser {
 }
 
 /// Tika's `TiffParser`.
-pub(crate) struct TiffParser;
+pub struct TiffParser;
 
 impl Parser for TiffParser {
     fn name(&self) -> &'static str {
@@ -154,7 +154,7 @@ impl Parser for TiffParser {
 }
 
 /// Tika's `HeifParser`.
-pub(crate) struct HeifParser;
+pub struct HeifParser;
 
 impl Parser for HeifParser {
     fn name(&self) -> &'static str {
@@ -188,7 +188,7 @@ impl Parser for HeifParser {
 }
 
 /// Tika's `JXLParser`, which scans a JPEG XL image for an XMP packet and writes no document.
-pub(crate) struct JxlParser;
+pub struct JxlParser;
 
 impl Parser for JxlParser {
     fn name(&self) -> &'static str {
@@ -215,7 +215,7 @@ impl Parser for JxlParser {
 }
 
 /// Tika's `BPGParser`.
-pub(crate) struct BpgParser;
+pub struct BpgParser;
 
 impl Parser for BpgParser {
     fn name(&self) -> &'static str {
@@ -241,7 +241,7 @@ impl Parser for BpgParser {
 
 /// Tika's `ImageParser`, of the types whose ImageIO readers the port reads as they do and of
 /// those ImageIO has no reader for.
-pub(crate) struct ImageParser;
+pub struct ImageParser;
 
 impl Parser for ImageParser {
     fn name(&self) -> &'static str {
@@ -357,7 +357,7 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
 /// a whole document of its own, `html`, `meta` and `body` elements, into the image's body
 /// (#114); the image's own head, which that document followed, shows the metadata as it stood
 /// before the enricher.
-pub(crate) struct RecognizedImageParser;
+pub struct RecognizedImageParser;
 
 /// The parser Tika has for a type `RecognizedImageParser` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

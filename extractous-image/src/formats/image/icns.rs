@@ -162,7 +162,7 @@ fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Declined> {
 }
 
 /// Tika's `ICNSParser`.
-pub(crate) struct IcnsParser;
+pub struct IcnsParser;
 
 impl Parser for IcnsParser {
     fn name(&self) -> &'static str {

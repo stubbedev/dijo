@@ -13,7 +13,7 @@ use super::tesseract::Pixels;
 
 /// An image as `PreparingOcrParser` prepares it.
 #[derive(Debug, Clone)]
-pub(crate) enum Bitmap {
+pub enum Bitmap {
     /// Grey levels, as a `TYPE_BYTE_GRAY` image holds them.
     Gray(GrayImage),
     /// Opaque colours.
@@ -23,7 +23,7 @@ pub(crate) enum Bitmap {
 }
 
 /// The grey level Java2D draws a colour as: ITU-R BT.601 luma, rounded.
-pub(crate) fn luma(red: u8, green: u8, blue: u8) -> u8 {
+pub fn luma(red: u8, green: u8, blue: u8) -> u8 {
     ((77 * u32::from(red) + 150 * u32::from(green) + 29 * u32::from(blue) + 128) >> 8) as u8
 }
 
@@ -36,7 +36,7 @@ pub(crate) fn mul8(a: u8, b: u8) -> u8 {
 }
 
 impl Bitmap {
-    pub(crate) fn dimensions(&self) -> (u32, u32) {
+    pub fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Gray(image) => image.dimensions(),
             Self::Rgb(image) => image.dimensions(),

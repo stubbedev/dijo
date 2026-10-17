@@ -547,7 +547,7 @@ fn reads_bmps_and_wbmps_as_the_jdks_readers_do() {
             continue;
         }
         let input = std::fs::read(format!(
-            "../extractous-core/tests/fixtures/image/bmp/{name}"
+            "../extractous-image/tests/fixtures/image/bmp/{name}"
         ))
         .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_read_as_the_jdk_does(&name, &input, &expected);

@@ -56,14 +56,14 @@ enum Language {
 
 /// How the images of an extraction are read: our Java `OcrConfig`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcrSettings {
+pub struct OcrSettings {
     language: Language,
     /// The time a run of tesseract may take, or none for no limit.
     timeout: Option<Duration>,
 }
 
 impl OcrSettings {
-    pub(crate) fn of(config: &TesseractOcrConfig) -> Self {
+    pub fn of(config: &TesseractOcrConfig) -> Self {
         let language = match config.language() {
             Some(TesseractOcrConfig::AUTO_LANGUAGE) => Language::Auto,
             Some(language) => Language::Configured(language.to_owned()),
@@ -85,13 +85,13 @@ impl OcrSettings {
     }
 
     /// Whether each image's script is detected, and its first script is learned.
-    pub(crate) fn auto(&self) -> bool {
+    pub fn auto(&self) -> bool {
         self.language == Language::Auto
     }
 }
 
 /// An image to read.
-pub(crate) struct Image<'a> {
+pub struct Image<'a> {
     /// Its pixels, as Java decoded them.
     pub(crate) bitmap: &'a Bitmap,
     /// Its file, when tesseract reads the file itself while the image needs no preparation, as
@@ -108,7 +108,7 @@ pub(crate) struct Image<'a> {
 impl<'a> Image<'a> {
     /// An image of a file of `file_size` bytes, prepared unless it has more than [`MAX_PIXELS`]
     /// pixels.
-    pub(crate) fn of(
+    pub fn of(
         bitmap: &'a Bitmap,
         file: Option<&'a [u8]>,
         file_size: u64,
@@ -127,14 +127,14 @@ impl<'a> Image<'a> {
 
 /// How an image was read, and the script it taught the extraction, if any.
 #[derive(Debug)]
-pub(crate) struct Recognized {
-    pub(crate) read: Attempt,
-    pub(crate) learned: Option<String>,
+pub struct Recognized {
+    pub read: Attempt,
+    pub learned: Option<String>,
 }
 
 /// A way an image was prepared and what tesseract read in it that way.
 #[derive(Debug, Clone)]
-pub(crate) struct Attempt {
+pub struct Attempt {
     prepared: Prepared,
     reading: Option<Reading>,
 }
@@ -167,7 +167,7 @@ impl Attempt {
     }
 
     /// The report of how the image was read, on a page when it is one.
-    pub(crate) fn report(&self, page: Option<u32>) -> String {
+    pub fn report(&self, page: Option<u32>) -> String {
         let prepared = &self.prepared;
         Report::of(&prepared.model)
             .page(page)
@@ -187,7 +187,7 @@ impl Attempt {
     }
 
     /// The text read, unless the image was outside the limits it is read within.
-    pub(crate) fn text(&self) -> Option<&str> {
+    pub fn text(&self) -> Option<&str> {
         self.reading.as_ref().map(|reading| reading.text.as_str())
     }
 }
@@ -301,13 +301,13 @@ impl Oriented {
 }
 
 /// Reads images with a tesseract, as the settings of an extraction say.
-pub(crate) struct Recognizer<'t> {
+pub struct Recognizer<'t> {
     tesseract: &'t Tesseract,
     settings: &'t OcrSettings,
 }
 
 impl<'t> Recognizer<'t> {
-    pub(crate) fn new(tesseract: &'t Tesseract, settings: &'t OcrSettings) -> Self {
+    pub fn new(tesseract: &'t Tesseract, settings: &'t OcrSettings) -> Self {
         Self {
             tesseract,
             settings,
@@ -326,7 +326,7 @@ impl<'t> Recognizer<'t> {
     ///
     /// `assumed` is the script to read it in first with the automatic language: the one
     /// detection last found in this extraction, or none for Latin, the most common kind.
-    pub(crate) fn recognize(
+    pub fn recognize(
         &self,
         image: &Image<'_>,
         assumed: Option<&str>,

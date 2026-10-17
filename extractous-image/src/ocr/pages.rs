@@ -9,7 +9,7 @@ use std::sync::{Condvar, Mutex};
 
 /// The script the pages of a document after its first are first read in: the one assumed
 /// before the first page, unless reading it teaches another.
-pub(crate) struct FirstPage {
+pub struct FirstPage {
     assumed: Option<String>,
     /// The script the first page learned, once it is settled: none when it learned none.
     learned: Mutex<Option<Option<String>>>,
@@ -17,7 +17,7 @@ pub(crate) struct FirstPage {
 }
 
 impl FirstPage {
-    pub(crate) fn new(assumed: Option<String>) -> Self {
+    pub fn new(assumed: Option<String>) -> Self {
         Self {
             assumed,
             learned: Mutex::new(None),
@@ -42,7 +42,7 @@ impl FirstPage {
     }
 
     /// The script the first page learned, once it is settled.
-    pub(crate) fn learned(&self) -> Option<String> {
+    pub fn learned(&self) -> Option<String> {
         self.learned
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -118,14 +118,16 @@ impl<T, E> Drop for Reading<'_, T, E> {
 }
 
 /// The outputs of pages read side by side, passed on in page order.
-pub(crate) struct Outputs<'a, T, E> {
+pub struct Outputs<'a, T, E> {
     shared: &'a Shared<T, E>,
     next: usize,
 }
 
-impl<T, E> Outputs<'_, T, E> {
+impl<T, E> Iterator for Outputs<'_, T, E> {
+    type Item = Result<T, E>;
+
     /// The output of the next page, once it is read; none after the last.
-    pub(crate) fn next(&mut self) -> Option<Result<T, E>> {
+    fn next(&mut self) -> Option<Result<T, E>> {
         let mut outputs = self
             .shared
             .outputs
@@ -158,7 +160,7 @@ impl<T, E> Outputs<'_, T, E> {
 /// and tells what it read and the script it learned. The first page is read in the script
 /// `first_page` assumes and settles the script of the rest. When `consume` returns, the pages
 /// not yet read are given up, and those being read are waited for.
-pub(crate) fn read_pages<S, T: Send, E: Send, R>(
+pub fn read_pages<S, T: Send, E: Send, R>(
     count: usize,
     first_page: &FirstPage,
     state: impl Fn() -> S + Sync,

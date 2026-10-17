@@ -3,11 +3,11 @@
 
 mod av1;
 mod avif;
-pub(crate) mod bitmap;
+pub mod bitmap;
 mod decode;
 mod flatten;
 mod heif;
-pub(crate) mod icc;
+pub mod icc;
 mod java2d;
 pub(crate) mod jbig2;
 mod jpeg;
@@ -25,14 +25,14 @@ use std::sync::OnceLock;
 
 use crate::bundle;
 use crate::errors::{Error, ExtractResult};
-pub(crate) use bitmap::Bitmap;
+pub use bitmap::Bitmap;
 pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
-pub(crate) use pages::{read_pages, FirstPage, Outputs};
+pub use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
-pub(crate) use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
-pub(crate) use render::{PdfPages, Resolution};
-pub(crate) use report::KEY as REPORT;
-pub(crate) use tesseract::{OcrError, Tesseract};
+pub use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
+pub use render::{PdfPages, Resolution};
+pub use report::KEY as REPORT;
+pub use tesseract::{OcrError, Tesseract};
 
 /// What OCR read in an image file, and the script the extraction learns from it, if any.
 #[derive(Debug)]
@@ -117,7 +117,7 @@ use bundle::tesseract_version as linked_or_bundled_version;
 /// Whether tesseract runs, found once per process as `TikaNativeMain` finds it once: the bundled
 /// one, or one on `PATH` that answers `--version`. With one, Tika reads images and PDF pages with
 /// our OCR parsers.
-pub(crate) fn tesseract_runs() -> bool {
+pub fn tesseract_runs() -> bool {
     static RUNS: OnceLock<bool> = OnceLock::new();
     *RUNS.get_or_init(|| tesseract_version().is_ok())
 }
@@ -126,7 +126,7 @@ pub(crate) fn tesseract_runs() -> bool {
 /// executable with the bundled language data, the bundled library with it, or the library of
 /// the `tesseract` on the `PATH`, which reads the language data that program reads. Why there is
 /// none otherwise, as for a bundled library built before it exported tesseract's C API.
-pub(crate) fn tesseract() -> Result<&'static Tesseract, String> {
+pub fn tesseract() -> Result<&'static Tesseract, String> {
     static TESSERACT: OnceLock<Result<Tesseract, String>> = OnceLock::new();
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)
 }

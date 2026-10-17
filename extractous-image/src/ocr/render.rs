@@ -20,7 +20,7 @@ const POINTS_PER_INCH: f64 = 72.0;
 
 /// The resolution a page is rendered at for OCR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Resolution {
+pub enum Resolution {
     /// 300 dpi, or the lower one that gives the page [`MAX_PIXELS`] pixels.
     Capped,
     /// 300 dpi.
@@ -28,24 +28,24 @@ pub(crate) enum Resolution {
 }
 
 /// A PDF's pages, as the renderer reads them.
-pub(crate) struct PdfPages {
+pub struct PdfPages {
     pdf: Pdf,
 }
 
 impl PdfPages {
     /// The pages of a PDF, opened with `password` as Tika's PDF parser opens it.
-    pub(crate) fn open(data: Arc<Vec<u8>>, password: &str) -> Result<Self, String> {
+    pub fn open(data: Arc<Vec<u8>>, password: &str) -> Result<Self, String> {
         let pdf = Pdf::new_with_password(data, password)
             .map_err(|e| format!("cannot read the PDF to render it: {e:?}"))?;
         Ok(Self { pdf })
     }
 
-    pub(crate) fn count(&self) -> usize {
+    pub fn count(&self) -> usize {
         self.pdf.pages().len()
     }
 
     /// A page rendered in grey at `resolution`.
-    pub(crate) fn render(&self, index: usize, resolution: Resolution) -> Result<GrayImage, String> {
+    pub fn render(&self, index: usize, resolution: Resolution) -> Result<GrayImage, String> {
         let page = self
             .pdf
             .pages()

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # The AVIF images the native decoder is checked against libheif with: a coloured test card
 # coded with each layout, range, depth, matrix and transformative property it reads. Run with
-# `nix shell nixpkgs#imagemagick nixpkgs#libavif --command extractous-core/tests/fixtures/avif/generate.sh`.
+# `nix shell nixpkgs#imagemagick nixpkgs#libavif --command extractous-image/tests/fixtures/avif/generate.sh`.
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)

@@ -20,7 +20,7 @@ use crate::formats::parity::{
 use crate::formats::Parser;
 
 /// The JDK's own sRGB profile, whose header names no device model.
-const JDK_SRGB: &[u8] = include_bytes!("../../../../models/jdk-srgb.icc");
+const JDK_SRGB: &[u8] = include_bytes!("../../../../../extractous-image/models/jdk-srgb.icc");
 
 /// Images extracted, pages never read by OCR, and the images read by OCR as Tika reads them.
 fn without_page_ocr(unique_only: bool) -> ParserConfigs {

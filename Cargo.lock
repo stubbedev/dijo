@@ -798,6 +798,7 @@ dependencies = [
  "criterion",
  "extractous-base",
  "extractous-html",
+ "extractous-image",
  "extractous-mime",
  "extractous-native",
  "extractous-tika",
@@ -847,6 +848,29 @@ dependencies = [
  "extractous-core",
  "extractous-mime",
  "flate2",
+]
+
+[[package]]
+name = "extractous-image"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-mime",
+ "extractous-native",
+ "flate2",
+ "hayro",
+ "hayro-jbig2",
+ "hayro-jpeg2000",
+ "image",
+ "lcms2-sys",
+ "libloading",
+ "rav1d",
+ "regex",
+ "sha2",
+ "tiff",
+ "unicode-script",
+ "zip",
 ]
 
 [[package]]

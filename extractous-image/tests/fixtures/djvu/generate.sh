@@ -4,7 +4,7 @@ set -euo pipefail
 # The DjVu pages the renderer is checked against our Java DjvuRenderer with, beyond the corpora's:
 # IW44 backgrounds in colour and in grey, coded in several chunks, a page whose JB2 mask is coloured
 # by an IW44 foreground, a JPEG background, and turned pages. Run with
-# `nix shell nixpkgs#imagemagick nixpkgs#djvulibre --command extractous-core/tests/fixtures/djvu/generate.sh`,
+# `nix shell nixpkgs#imagemagick nixpkgs#djvulibre --command extractous-image/tests/fixtures/djvu/generate.sh`,
 # then `just djvu-reference`.
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

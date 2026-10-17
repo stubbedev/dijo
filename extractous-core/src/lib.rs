@@ -15,6 +15,7 @@ pub use extractous_base::errors::{Error, ExtractResult, Unsupported};
 pub use extractous_base::extracted::{CharSet, Metadata};
 pub use extractous_base::isolate::IsolateSettings;
 pub use extractous_base::{memory, text, unicode};
+use extractous_image::ocr;
 use extractous_mime::mime;
 use extractous_native as bundle;
 use extractous_tika::isolate;
@@ -30,7 +31,6 @@ pub use extractous_tika::unpack::*;
 mod extractor;
 pub use extractor::*;
 
-mod ocr;
 pub use ocr::tesseract_version;
 
 pub use bundle::{bundled_ocr_licenses, linked_native_licenses};

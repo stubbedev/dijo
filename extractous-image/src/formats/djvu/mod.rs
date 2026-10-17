@@ -53,7 +53,7 @@ impl DjvuError {
 }
 
 /// Our Java `DjvuParser`.
-pub(crate) struct DjvuParser;
+pub struct DjvuParser;
 
 impl Parser for DjvuParser {
     fn name(&self) -> &'static str {
