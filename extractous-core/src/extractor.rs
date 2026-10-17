@@ -326,7 +326,10 @@ impl Extractor {
         let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
         let document = formats::open_to_extract(source, deadline)?;
         self.with_passwords(|configs| {
-            if let Some(routed) = document.as_ref().and_then(formats::route) {
+            if let Some(routed) = document
+                .as_ref()
+                .and_then(|document| formats::route(document).ok())
+            {
                 let options = formats::StreamOptions {
                     char_set: self.encoding,
                     output: self.output(),
@@ -363,7 +366,10 @@ impl Extractor {
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
         let document = formats::open_to_extract(source, None)?;
         self.with_passwords(|configs| {
-            if let Some(routed) = document.as_ref().and_then(formats::route) {
+            if let Some(routed) = document
+                .as_ref()
+                .and_then(|document| formats::route(document).ok())
+            {
                 let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
                     Error::ParseError(format!(
                         "The maximum string length must not be negative: {}",

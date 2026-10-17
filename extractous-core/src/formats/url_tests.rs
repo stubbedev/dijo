@@ -129,7 +129,7 @@ fn native_stream(source: Source<'_>, configs: &ParserConfigs) -> Option<Outcome>
         Ok(document) => document,
         Err(error) => return Some(Err(error.to_string())),
     };
-    let routed = formats::route(&document)?;
+    let routed = formats::route(&document).ok()?;
     let names = tika_names(routed.parser.name(), routed.parser.tika_name(), &[]);
     let options = StreamOptions {
         char_set: CharSet::UTF_8,

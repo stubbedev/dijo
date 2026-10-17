@@ -1,17 +1,13 @@
 //! POI's `CompressedRTF` and `MAPIRtfAttribute`: the RTF of a message's compressed RTF body,
 //! decompressed with the LZFu dictionary preloaded as the format defines, or stored as it is.
 
-use crate::formats::poi::{safely_clone, thrown, Read};
+use crate::formats::poi::{safely_clone, thrown, Lzw, Read};
 
 const COMPRESSED: u32 = u32::from_le_bytes(*b"LZFu");
 const UNCOMPRESSED: u32 = u32::from_le_bytes(*b"MELA");
-const DICTIONARY_SIZE: usize = 0x1000;
-const DICTIONARY_MASK: usize = 0xFFF;
 const PRELOAD: &[u8] = b"{\\rtf1\\ansi\\mac\\deff0\\deftab720{\\fonttbl;}{\\f0\\fnil \\froman \\fswiss \\fmodern \\fscript \\fdecor MS Sans SerifSymbolArialTimes New RomanCourier{\\colortbl\\red0\\green0\\blue0\n\r\\par \\pard\\plain\\f0\\fs20\\b\\i\\u\\tab\\tx";
 /// `MAPIRtfAttribute`'s largest record.
 const MAX_RECORD_LENGTH: i64 = 50_000_000;
-/// How much longer than its pointer's length a dictionary reference is.
-const CODE_LENGTH_INCREASE: usize = 2;
 
 /// `new MAPIRtfAttribute(RTF_COMPRESSED, BINARY, data).getData()`: the RTF, cut to the size
 /// its header gives where the data decompresses to more.
@@ -24,7 +20,7 @@ pub(crate) fn decompress(data: &[u8]) -> Read<Vec<u8>> {
     let body = &data[16..];
     let mut out = match word(8) {
         UNCOMPRESSED => body.to_vec(),
-        COMPRESSED => lzfu(body),
+        COMPRESSED => LZFU.decompress(body),
         signature => {
             return thrown(format!(
                 "Invalid compression signature {}",
@@ -38,39 +34,14 @@ pub(crate) fn decompress(data: &[u8]) -> Read<Vec<u8>> {
     Ok(out)
 }
 
-/// `LZWDecompresser.decompress`: flags of eight items, each a byte or a reference into the
-/// dictionary of what came before, until the data ends.
-fn lzfu(data: &[u8]) -> Vec<u8> {
-    let mut dictionary = [0u8; DICTIONARY_SIZE];
-    dictionary[..PRELOAD.len()].copy_from_slice(PRELOAD);
-    let mut position = PRELOAD.len();
-    let mut out = Vec::with_capacity(data.len() * 2);
-    let mut input = data.iter().copied();
-    while let Some(flag) = input.next() {
-        for bit in 0..8 {
-            if flag & (1 << bit) == 0 {
-                if let Some(byte) = input.next() {
-                    dictionary[position & DICTIONARY_MASK] = byte;
-                    position += 1;
-                    out.push(byte);
-                }
-                continue;
-            }
-            let (Some(high), Some(low)) = (input.next(), input.next()) else {
-                break;
-            };
-            let length = usize::from(low & 0x0F) + CODE_LENGTH_INCREASE;
-            let pointer = (usize::from(high) << 4) + (usize::from(low) >> 4);
-            for i in 0..length {
-                let byte = dictionary[(pointer + i) & DICTIONARY_MASK];
-                dictionary[(position + i) & DICTIONARY_MASK] = byte;
-                out.push(byte);
-            }
-            position += length;
-        }
-    }
-    out
-}
+/// `CompressedRTF`'s reading: a set flag bit marks a reference, whose position is absolute.
+const LZFU: Lzw = Lzw {
+    mask_means_compressed: true,
+    code_length_increase: 2,
+    position_is_big_endian: true,
+    preload: PRELOAD,
+    adjust: |pointer| pointer,
+};
 
 #[cfg(test)]
 mod tests {

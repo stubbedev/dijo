@@ -248,9 +248,83 @@ enum Head {
     Ended { frameset: bool },
 }
 
+/// What a document wrote while its handler was held back from: the events as the handler would
+/// have received them, and the text among them, as Tika's `TextLayerCheckingPdfParser` records
+/// a page.
+#[derive(Debug, Default)]
+pub(crate) struct Held {
+    events: Vec<HeldEvent>,
+    text: String,
+}
+
+#[derive(Debug)]
+enum HeldEvent {
+    StartDocument,
+    PrefixMapping(String, String),
+    Start(String, Vec<(String, String)>),
+    End(String),
+    Characters(String),
+    Whitespace(String),
+    EndDocument,
+}
+
+impl Held {
+    /// The characters and ignorable whitespace written, in order.
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+impl ContentHandler for Held {
+    fn start_document(&mut self) -> Result<(), Stop> {
+        self.events.push(HeldEvent::StartDocument);
+        Ok(())
+    }
+
+    fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
+        self.events
+            .push(HeldEvent::PrefixMapping(prefix.to_owned(), uri.to_owned()));
+        Ok(())
+    }
+
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        let attributes = attributes
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        self.events
+            .push(HeldEvent::Start(name.to_owned(), attributes));
+        Ok(())
+    }
+
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.events.push(HeldEvent::End(name.to_owned()));
+        Ok(())
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Stop> {
+        self.text.push_str(text);
+        self.events.push(HeldEvent::Characters(text.to_owned()));
+        Ok(())
+    }
+
+    fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
+        self.text.push_str(text);
+        self.events.push(HeldEvent::Whitespace(text.to_owned()));
+        Ok(())
+    }
+
+    fn end_document(&mut self) -> Result<(), Stop> {
+        self.events.push(HeldEvent::EndDocument);
+        Ok(())
+    }
+}
+
 /// A document being written as XHTML, holding its metadata until the head is written.
 pub(crate) struct Xhtml<'h> {
     handler: &'h mut dyn ContentHandler,
+    /// What is held back from the handler, the innermost last.
+    held: Vec<Held>,
     metadata: TikaMetadata,
     head: Head,
     ended: bool,
@@ -279,6 +353,7 @@ impl<'h> Xhtml<'h> {
     ) -> (TikaMetadata, EmbeddedRecord, Result<(), E>) {
         let mut xhtml = Self {
             handler,
+            held: Vec::new(),
             metadata,
             head: Head::NotStarted,
             ended: false,
@@ -293,17 +368,62 @@ impl<'h> Xhtml<'h> {
         (xhtml.metadata, xhtml.embedding.into_record(), result)
     }
 
+    /// Where the events go: what holds them back, or the handler.
+    fn out(&mut self) -> &mut dyn ContentHandler {
+        match self.held.last_mut() {
+            Some(held) => held,
+            None => &mut *self.handler,
+        }
+    }
+
+    /// Runs `write`, its events, those of the documents it parses into this one included, held
+    /// back from the handler: what it wrote, to be released or dropped. Everything else it does,
+    /// to the metadata and the embedded documents' record, happens as it would.
+    pub(crate) fn hold<E>(
+        &mut self,
+        write: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<Held, E> {
+        self.held.push(Held::default());
+        let written = write(self);
+        let held = self.held.pop().expect("what was held is still held");
+        written.map(|()| held)
+    }
+
+    /// Passes on what was held back, as the handler would have received it.
+    pub(crate) fn release(&mut self, held: Held) -> Result<(), Stop> {
+        for event in held.events {
+            within_budget()?;
+            let out = self.out();
+            match event {
+                HeldEvent::StartDocument => out.start_document()?,
+                HeldEvent::PrefixMapping(prefix, uri) => out.start_prefix_mapping(&prefix, &uri)?,
+                HeldEvent::Start(name, attributes) => {
+                    let attributes: Vec<(&str, &str)> = attributes
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_str()))
+                        .collect();
+                    out.start_element(&name, &attributes)?;
+                }
+                HeldEvent::End(name) => out.end_element(&name)?,
+                HeldEvent::Characters(text) => out.characters(&text)?,
+                HeldEvent::Whitespace(text) => out.ignorable_whitespace(&text)?,
+                HeldEvent::EndDocument => out.end_document()?,
+            }
+        }
+        Ok(())
+    }
+
     /// `XHTMLContentHandler.startDocument`: the document starts, in the XHTML namespace.
     fn start_document(&mut self) -> Result<(), Stop> {
-        self.handler.start_document()?;
-        self.handler.start_prefix_mapping("", XHTML_NAMESPACE)
+        self.out().start_document()?;
+        self.out().start_prefix_mapping("", XHTML_NAMESPACE)
     }
 
     /// Maps `prefix`, empty for the default namespace, to `uri`, as a parser does that hands
     /// Tika's handler the prefix mappings of the XML it reads: XML output declares the mapping on
     /// the next element it writes, unless the elements around that one declare it already.
     pub(crate) fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop> {
-        self.handler.start_prefix_mapping(prefix, uri)
+        self.out().start_prefix_mapping(prefix, uri)
     }
 
     /// The metadata, which the head shows as it stands when the first body content is written.
@@ -361,7 +481,7 @@ impl<'h> Xhtml<'h> {
             self.end_head(false)?;
         }
         if INDENT.contains(&name) {
-            self.handler.ignorable_whitespace("\t")?;
+            self.out().ignorable_whitespace("\t")?;
         }
         self.safe_start_element(name, attributes)
     }
@@ -377,7 +497,7 @@ impl<'h> Xhtml<'h> {
         if AUTO.contains(&name) {
             return Ok(());
         }
-        self.handler.end_element(name)?;
+        self.out().end_element(name)?;
         if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
             self.newline()?;
         }
@@ -388,7 +508,7 @@ impl<'h> Xhtml<'h> {
     /// itself: a handler below this one receives its events as they are.
     pub(crate) fn end_element_passed_on(&mut self, name: &str) -> Result<(), Stop> {
         within_budget()?;
-        self.handler.end_element(name)
+        self.out().end_element(name)
     }
 
     /// Writes `text`; empty text writes nothing, as Tika's `characters(String)`.
@@ -427,15 +547,15 @@ impl<'h> Xhtml<'h> {
                 Ok(character) if !is_invalid(character) => run.push(character),
                 _ => {
                     if !run.is_empty() {
-                        self.handler.characters(&run)?;
+                        self.out().characters(&run)?;
                         run.clear();
                     }
-                    self.handler
+                    self.out()
                         .characters(REPLACEMENT.encode_utf8(&mut [0; 4]))?;
                 }
             }
         }
-        self.handler.characters(&run)
+        self.out().characters(&run)
     }
 
     pub(crate) fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
@@ -478,25 +598,25 @@ impl<'h> Xhtml<'h> {
         attributes: &[(&str, &str)],
     ) -> Result<(), Stop> {
         within_budget()?;
-        self.handler.start_element(name, attributes)
+        self.out().start_element(name, attributes)
     }
 
     /// Ends `name` in the handler under the XHTML, without a line break.
     pub(crate) fn raw_end_element(&mut self, name: &str) -> Result<(), Stop> {
         within_budget()?;
-        self.handler.end_element(name)
+        self.out().end_element(name)
     }
 
     /// Writes `text` to the handler under the XHTML, the characters XML cannot hold as they are.
     pub(crate) fn raw_characters(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
-        self.handler.characters(text)
+        self.out().characters(text)
     }
 
     /// Writes ignorable whitespace to the handler under the XHTML.
     fn raw_ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop> {
         within_budget()?;
-        self.handler.ignorable_whitespace(text)
+        self.out().ignorable_whitespace(text)
     }
 
     fn start_in(
@@ -533,7 +653,7 @@ impl<'h> Xhtml<'h> {
     }
 
     pub(crate) fn newline(&mut self) -> Result<(), Stop> {
-        self.handler.ignorable_whitespace("\n")
+        self.out().ignorable_whitespace("\n")
     }
 
     /// Writes an element holding `value`, or nothing when `value` is empty.
@@ -556,10 +676,10 @@ impl<'h> Xhtml<'h> {
         self.ended = true;
         let frameset = self.frameset();
         self.end_head(frameset)?;
-        self.handler
+        self.out()
             .end_element(if frameset { "frameset" } else { "body" })?;
-        self.handler.end_element("html")?;
-        self.handler.end_document()
+        self.out().end_element("html")?;
+        self.out().end_document()
     }
 
     /// Counts `bytes` of text written, releasing the pages of the document's bytes each time
@@ -700,8 +820,16 @@ impl<'h> Xhtml<'h> {
     ) -> Ended {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, metadata, opened, configs) {
-            Some(route) => self.parse_natively(route, metadata, open, target),
-            None => self.parse_with_tika(data, metadata, open, target),
+            Ok(route) => self.parse_natively(route, metadata, open, target),
+            #[cfg_attr(
+                not(test),
+                expect(unused_variables, reason = "only the tests record why")
+            )]
+            Err(bridged) => {
+                #[cfg(test)]
+                formats::audit::bridged(bridged);
+                self.parse_with_tika(data, metadata, open, target)
+            }
         }
     }
 
@@ -896,14 +1024,17 @@ impl<'h> Xhtml<'h> {
             return Ok(());
         }
         self.head = Head::Started;
-        self.handler.head_metadata(&self.metadata);
+        match self.held.last_mut() {
+            Some(held) => held.head_metadata(&self.metadata),
+            None => self.handler.head_metadata(&self.metadata),
+        }
         let language = self.metadata.get("Content-Language").map(str::to_owned);
         match language {
             Some(language) => self.safe_start_element("html", &[("lang", &language)])?,
-            None => self.handler.start_element("html", &[])?,
+            None => self.out().start_element("html", &[])?,
         }
         self.newline()?;
-        self.handler.start_element("head", &[])?;
+        self.out().start_element("head", &[])?;
         self.newline()
     }
 
@@ -917,9 +1048,9 @@ impl<'h> Xhtml<'h> {
         let written = self.write_head(&metadata);
         self.metadata = metadata;
         written?;
-        self.handler.end_element("head")?;
+        self.out().end_element("head")?;
         self.newline()?;
-        self.handler
+        self.out()
             .start_element(if frameset { "frameset" } else { "body" }, &[])
     }
 
@@ -929,23 +1060,23 @@ impl<'h> Xhtml<'h> {
         for name in metadata.names().filter(|name| *name != "title") {
             for value in metadata.values(name) {
                 self.safe_start_element("meta", &[("name", name), ("content", value)])?;
-                self.handler.end_element("meta")?;
+                self.out().end_element("meta")?;
                 self.newline()?;
             }
         }
-        self.handler.start_element("title", &[])?;
+        self.out().start_element("title", &[])?;
         if let Some(title) = metadata.get("dc:title") {
             self.safe_text(title, Text::Characters)?;
         } else {
-            self.handler.characters("")?;
+            self.out().characters("")?;
         }
-        self.handler.end_element("title")?;
+        self.out().end_element("title")?;
         self.newline()
     }
 
     fn safe_start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         if !attributes.iter().any(|(_, value)| has_invalid(value)) {
-            return self.handler.start_element(name, attributes);
+            return self.out().start_element(name, attributes);
         }
         let cleaned: Vec<(&str, String)> = attributes
             .iter()
@@ -955,7 +1086,7 @@ impl<'h> Xhtml<'h> {
             .iter()
             .map(|(attribute, value)| (*attribute, value.as_str()))
             .collect();
-        self.handler.start_element(name, &borrowed)
+        self.out().start_element(name, &borrowed)
     }
 
     fn safe_text(&mut self, text: &str, kind: Text) -> Result<(), Stop> {
@@ -974,8 +1105,8 @@ impl<'h> Xhtml<'h> {
 
     fn write_text(&mut self, text: &str, kind: Text) -> Result<(), Stop> {
         match kind {
-            Text::Characters => self.handler.characters(text),
-            Text::IgnorableWhitespace => self.handler.ignorable_whitespace(text),
+            Text::Characters => self.out().characters(text),
+            Text::IgnorableWhitespace => self.out().ignorable_whitespace(text),
         }
     }
 }

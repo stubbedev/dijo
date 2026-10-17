@@ -270,14 +270,6 @@ impl Recording {
         self.read_pages.push(held);
     }
 
-    /// Whether the document embeds files, parsed where the recording is replayed.
-    pub(super) fn embeds_files(&self) -> bool {
-        self.events
-            .iter()
-            .chain(self.read_pages.iter().flatten())
-            .any(|event| matches!(event, Event::Embedded(_)))
-    }
-
     /// Whether a page is read by OCR.
     pub(super) fn reads_pages(&self) -> bool {
         !self.read_pages.is_empty()

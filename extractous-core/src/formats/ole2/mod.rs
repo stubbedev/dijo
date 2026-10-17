@@ -4,6 +4,7 @@
 
 mod codepage;
 mod embedded;
+pub(crate) mod office;
 mod property_set;
 mod reader;
 mod summary;

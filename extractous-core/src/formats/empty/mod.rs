@@ -1,10 +1,8 @@
-//! The types Tika's path parses with `EmptyParser`: those no parser of the native image's
-//! composite parser takes, by the type or any type it specializes, so the composite falls back
-//! to `EmptyParser`, which writes an empty document. The native path writes the same empty
-//! document without starting the JVM. [`types`] lists them, as `just empty-parser-types`
-//! derives them from Tika's own registry.
-
-mod types;
+//! Tika's `EmptyParser`, which `CompositeParser` falls back to for a document of a type none of
+//! its parsers takes, by the type or any type it specializes: an empty document, with no
+//! metadata of its own. It takes no type itself; [`super::parser_for`] falls back to it where the
+//! walk through a document's types finds no parser, native or Tika's, so the native path writes
+//! the same empty document without starting the JVM.
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -24,13 +22,7 @@ impl Parser for EmptyParser {
     }
 
     fn media_types(&self) -> &'static [&'static str] {
-        &types::EMPTY
-    }
-
-    /// A type with parameters may have a parser in Tika's path the type without them has not,
-    /// as `image/vnd.dgn; version=8` has, so only the types listed are taken.
-    fn takes_base_types(&self) -> bool {
-        false
+        &[]
     }
 
     fn prepare<'a>(

@@ -135,6 +135,10 @@ impl Parser for ZipParser {
         ]
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &[ZIP]
+    }
+
     fn footprint(&self) -> Footprint {
         Footprint::Bounded
     }

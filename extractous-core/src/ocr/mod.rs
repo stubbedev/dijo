@@ -30,7 +30,7 @@ pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub(crate) use pages::{read_pages, FirstPage, Outputs};
 pub(crate) use prepare::Orientation;
 pub(crate) use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
-pub(crate) use render::PdfPages;
+pub(crate) use render::{PdfPages, Resolution};
 pub(crate) use report::KEY as REPORT;
 pub(crate) use tesseract::{OcrError, Tesseract};
 

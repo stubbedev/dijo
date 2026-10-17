@@ -13,12 +13,15 @@ use std::sync::Arc;
 
 use super::quality::{self, Assessment, Unmapped};
 use super::Unported;
-use crate::config::{PdfOcrStrategy, PdfParserConfig};
+use crate::config::{ParserConfigs, Password, PdfOcrStrategy, PdfParserConfig};
+use crate::errors::Error;
+use crate::formats::image::enricher::write_text;
+use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::ocr::{
     self, Attempt, Bitmap, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
-    Recognizer, Tesseract,
+    Recognizer, Resolution, Tesseract,
 };
 
 /// Each page whose text layer was replaced by OCR text, as `page:fault`.
@@ -113,6 +116,10 @@ pub(super) enum OcrCheck {
     /// As our `TextLayerCheckingPdfParser` decides it from the page's text, holding each page
     /// back until it ends, when tesseract runs.
     Assessed(Thresholds),
+    /// `OCR_ONLY`: `OCR2XHTML` OCRs every page in place of its text, when tesseract runs.
+    Only,
+    /// `OCR_AND_TEXT_EXTRACTION`: every page's text, then its OCR text, when tesseract runs.
+    AndText,
 }
 
 /// What our `TextLayerCheckingPdfParser` does with a page.
@@ -125,6 +132,12 @@ pub(super) enum PageCheck {
     /// Its text layer is doubtful or garbage: OCR text replaces it when it reads better, or
     /// whenever the layer is garbage.
     Weigh(Assessment),
+    /// Its text, which the files it embeds add to, is assessed once they are parsed, the page of
+    /// `glyphs` glyphs, `unmapped` of them without characters, read for a doubtful layer.
+    Settle { glyphs: i32, unmapped: i32 },
+    /// Tika's PDF parser OCRs the page itself, its rendering read by the OCR parser it hands
+    /// it to.
+    Recognize,
 }
 
 impl OcrCheck {
@@ -144,11 +157,34 @@ impl OcrCheck {
             PdfOcrStrategy::NO_OCR => Ok(Self::Never),
             PdfOcrStrategy::AUTO if ocr_runs => Ok(Self::Assessed(thresholds)),
             PdfOcrStrategy::AUTO => Ok(Self::Wanted(thresholds)),
+            PdfOcrStrategy::OCR_ONLY if ocr_runs => Ok(Self::Only),
+            PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION if ocr_runs => Ok(Self::AndText),
             strategy @ (PdfOcrStrategy::OCR_ONLY | PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION) => {
                 Err(Unported(format!(
-                    "the OCR strategy {strategy}, which the port does not run"
+                    "the OCR strategy {strategy} with no OCR parser to run, where Tika's PDF \
+                     parser fails the document"
                 )))
             }
+        }
+    }
+
+    /// Whether Tika's PDF parser reads no page's text, only its OCR text.
+    pub(super) fn reads_only_ocr(self) -> bool {
+        self == Self::Only
+    }
+
+    /// Whether Tika's PDF parser dispatches every page to its OCR parser itself, as
+    /// `pdf:ocr-page-count` counts them.
+    pub(super) fn dispatches_every_page(self) -> bool {
+        matches!(self, Self::Only | Self::AndText)
+    }
+
+    /// The resolution pages are rendered at for OCR: by our `TextLayerCheckingPdfParser`, or by
+    /// Tika's renderer for the pages Tika's PDF parser OCRs itself.
+    pub(super) fn resolution(self) -> Resolution {
+        match self {
+            Self::Only | Self::AndText => Resolution::Full,
+            Self::Never | Self::Wanted(_) | Self::Assessed(_) => Resolution::Capped,
         }
     }
 
@@ -158,17 +194,18 @@ impl OcrCheck {
     }
 
     /// What is done with page `page` of `glyphs` glyphs, `unmapped` of them without
-    /// characters, whose `div` holds `text` when the pages are held, or why Tika's path takes
-    /// the document: a page Tika's PDF parser wants OCR for with no OCR parser to run.
+    /// characters, whose `div` holds `layer`, or why Tika's path takes the document: a page
+    /// Tika's PDF parser wants OCR for with no OCR parser to run.
     pub(super) fn page(
         self,
         page: usize,
         glyphs: i32,
         unmapped: i32,
-        text: Option<&str>,
+        layer: Layer<'_>,
     ) -> Result<PageCheck, Unported> {
         let thresholds = match self {
-            Self::Never => return Ok(PageCheck::Keep),
+            Self::Never | Self::Only => return Ok(PageCheck::Keep),
+            Self::AndText => return Ok(PageCheck::Recognize),
             Self::Wanted(thresholds) => {
                 return match thresholds.ocr_wanted(glyphs, unmapped) {
                     true => Err(Unported(format!(
@@ -184,7 +221,11 @@ impl OcrCheck {
         if glyphs <= thresholds.total_chars {
             return Ok(PageCheck::Add);
         }
-        let text = text.expect("a held page's text is kept for its assessment");
+        let text = match layer {
+            Layer::Text(text) => text,
+            Layer::Embedding => return Ok(PageCheck::Settle { glyphs, unmapped }),
+            Layer::Unheld => unreachable!("a page is held for its assessment"),
+        };
         let assessment = quality::assess(text, glyphs, unmapped, thresholds.unmapped);
         if assessment.badness < quality::DOUBTFUL {
             return Ok(PageCheck::Keep);
@@ -195,10 +236,21 @@ impl OcrCheck {
     /// The unmapped glyphs that make a page garbage, which OCR text is weighed against.
     fn unmapped(self) -> Unmapped {
         match self {
-            Self::Never => DEFAULT.unmapped,
+            Self::Never | Self::Only | Self::AndText => DEFAULT.unmapped,
             Self::Wanted(thresholds) | Self::Assessed(thresholds) => thresholds.unmapped,
         }
     }
+}
+
+/// What a page's `div` holds, as our `TextLayerCheckingPdfParser` sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Layer<'t> {
+    /// Nothing: pages are not held.
+    Unheld,
+    /// This text.
+    Text(&'t str),
+    /// Files it embeds too, whose text is known once they are parsed.
+    Embedding,
 }
 
 /// How the pages to read are read: with tesseract, or with OCR skipped, reading nothing.
@@ -217,26 +269,34 @@ pub(super) struct PageOcr {
     unmapped: Unmapped,
     reader: Reader,
     document: Arc<Vec<u8>>,
+    /// The password the document opens with.
+    password: String,
+    resolution: Resolution,
 }
 
 impl PageOcr {
     /// The OCR of the `pages` of a document of `page_count` pages under `check`, rendered from
-    /// `input`, or none when it reads no page. A document the renderer cannot open, or whose
-    /// pages it counts otherwise, is left to Tika's path, as is one whose pages tesseract cannot
-    /// read in this process.
+    /// `input` opened with the password of `configs`, under its OCR settings, or none when it
+    /// reads no page. A document the renderer cannot open, or whose pages it counts otherwise,
+    /// is left to Tika's path, as is one whose pages tesseract cannot read in this process.
     pub(super) fn of(
         pages: Vec<usize>,
         page_count: usize,
         check: OcrCheck,
         input: &[u8],
-        skips_ocr: bool,
-        settings: OcrSettings,
+        configs: &ParserConfigs,
     ) -> Result<Option<Self>, Unported> {
         if pages.is_empty() {
             return Ok(None);
         }
         let document = Arc::new(input.to_vec());
-        let reader = if skips_ocr {
+        let password = configs
+            .password
+            .as_ref()
+            .map_or("", Password::expose)
+            .to_owned();
+        let settings = OcrSettings::of(&configs.ocr);
+        let reader = if configs.ocr.skips_ocr() {
             Reader::Skipping
         } else {
             let tesseract = ocr::tesseract().map_err(|reason| {
@@ -244,7 +304,7 @@ impl PageOcr {
                     "OCR of PDF pages in this process, which needs tesseract's library: {reason}"
                 ))
             })?;
-            let rendered = PdfPages::open(document.clone()).map_err(Unported)?;
+            let rendered = PdfPages::open(document.clone(), &password).map_err(Unported)?;
             if rendered.count() != page_count {
                 return Err(Unported(format!(
                     "a document the renderer finds {} pages in, where the parser finds \
@@ -262,6 +322,8 @@ impl PageOcr {
             unmapped: check.unmapped(),
             reader,
             document,
+            password,
+            resolution: check.resolution(),
         }))
     }
 
@@ -278,7 +340,9 @@ impl PageOcr {
             self.pages.len(),
             &first_page,
             || match &self.reader {
-                Reader::Tesseract { .. } => Some(PdfPages::open(self.document.clone())),
+                Reader::Tesseract { .. } => {
+                    Some(PdfPages::open(self.document.clone(), &self.password))
+                }
                 Reader::Skipping => None,
             },
             |pages, at, script| {
@@ -309,7 +373,7 @@ impl PageOcr {
         let rendered = pages
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|pages| pages.render(index));
+            .and_then(|pages| pages.render(index, self.resolution));
         let gray = match rendered {
             Ok(gray) => gray,
             Err(failure) => {
@@ -369,6 +433,38 @@ impl PageReading {
             || reads_better(attempt.text().unwrap_or_default(), layer, unmapped)
     }
 
+    /// `AbstractPDF2XHTML.enrichCurrentPage` with Tika's PDF parser's own OCR parser: the
+    /// parser recorded and its text written, unless OCR is skipped. A page the OCR parser fails
+    /// on fails the document, as `OCR2XHTML` and `PDF2XHTML` throw the first such failure once
+    /// every page is written.
+    fn recognize(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        match self {
+            Self::Read { attempt, .. } => {
+                xhtml.record_parser(PREPARING_OCR_PARSER);
+                Ok(write_text(xhtml, attempt)?)
+            }
+            Self::Skipped => {
+                xhtml.record_parser(PREPARING_OCR_PARSER);
+                Ok(())
+            }
+            Self::Failed(failure) => Err(Failure::Extraction(Error::ParseError(format!(
+                "org.apache.tika.exception.TikaException: Unable to extract all PDF content \
+                 <- caused by {failure}"
+            )))),
+        }
+    }
+
+    /// Notes a page `index` that could not be read, as our `TextLayerCheckingPdfParser` notes
+    /// it once the page is passed on.
+    fn warn(&self, xhtml: &mut Xhtml, index: usize) {
+        if let Self::Failed(failure) = self {
+            xhtml.metadata_mut().add(
+                WARNING,
+                format!("OCR of page {} failed: {failure}", index + 1),
+            );
+        }
+    }
+
     /// `TextLayerCheckingPdfParser.useOcr`: the reading's text in a div of class `ocr`, as the
     /// OCR parser's own handler wrote it, then its report.
     fn write(&self, xhtml: &mut Xhtml) -> Result<(), Stop> {
@@ -420,29 +516,51 @@ impl EndPage for PageHook<'_, '_, '_> {
             Some(Err(never)) => match never {},
             None => unreachable!("a page to read has its reading"),
         };
-        if let PageReading::Failed(failure) = &reading {
-            xhtml.metadata_mut().add(
-                WARNING,
-                format!("OCR of page {} failed: {failure}", index + 1),
-            );
-        }
         match check {
             PageCheck::Keep => held(xhtml),
             PageCheck::Add => {
+                reading.warn(xhtml, index);
                 held(xhtml)?;
                 Ok(reading.write(xhtml)?)
             }
             PageCheck::Weigh(layer) => {
+                reading.warn(xhtml, index);
                 if !reading.replaces(&layer, self.ocr.unmapped) {
                     return held(xhtml);
                 }
-                xhtml.metadata_mut().add(
-                    REJECTED_TEXT_LAYER,
-                    format!("{}:{}", index + 1, layer.fault),
-                );
-                Ok(reading.write(xhtml)?)
+                self.replace(xhtml, index, &layer, &reading)
+            }
+            PageCheck::Recognize => reading.recognize(xhtml),
+            PageCheck::Settle { glyphs, unmapped } => {
+                let page = xhtml.hold(|xhtml| held(xhtml))?;
+                let layer = quality::assess(page.text(), glyphs, unmapped, self.ocr.unmapped);
+                if layer.badness < quality::DOUBTFUL {
+                    return Ok(xhtml.release(page)?);
+                }
+                reading.warn(xhtml, index);
+                if !reading.replaces(&layer, self.ocr.unmapped) {
+                    return Ok(xhtml.release(page)?);
+                }
+                self.replace(xhtml, index, &layer, &reading)
             }
         }
+    }
+}
+
+impl PageHook<'_, '_, '_> {
+    /// Writes `reading` in place of page `index`'s text layer, assessed as `layer`.
+    fn replace(
+        &self,
+        xhtml: &mut Xhtml,
+        index: usize,
+        layer: &Assessment,
+        reading: &PageReading,
+    ) -> Result<(), Failure> {
+        xhtml.metadata_mut().add(
+            REJECTED_TEXT_LAYER,
+            format!("{}:{}", index + 1, layer.fault),
+        );
+        Ok(reading.write(xhtml)?)
     }
 }
 
@@ -522,16 +640,50 @@ mod tests {
     }
 
     #[test]
+    fn ocrs_every_page_under_the_ocr_strategies_with_an_ocr_parser_to_run() {
+        for (strategy, check) in [
+            (PdfOcrStrategy::OCR_ONLY, OcrCheck::Only),
+            (PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION, OcrCheck::AndText),
+        ] {
+            let config = PdfParserConfig::new().set_ocr_strategy(strategy);
+            assert_eq!(OcrCheck::of(&config, true), Ok(check));
+            let Err(Unported(reason)) = OcrCheck::of(&config, false) else {
+                panic!("{strategy} with no OCR parser to run");
+            };
+            assert!(reason.contains("no OCR parser to run"), "{reason}");
+        }
+        assert_eq!(
+            OcrCheck::Only.page(1, 3, 0, Layer::Unheld),
+            Ok(PageCheck::Keep)
+        );
+        assert_eq!(
+            OcrCheck::AndText.page(1, 300, 0, Layer::Unheld),
+            Ok(PageCheck::Recognize)
+        );
+    }
+
+    #[test]
     fn checks_pages_as_text_layer_checking_pdf_parser_does() {
         let assessed = OcrCheck::Assessed(DEFAULT);
-        assert_eq!(assessed.page(1, 3, 0, Some("ab")), Ok(PageCheck::Add));
+        assert_eq!(
+            assessed.page(1, 3, 0, Layer::Text("ab")),
+            Ok(PageCheck::Add)
+        );
         let prose = "The keeper climbed the stairs every evening and wrote one line. ".repeat(5);
-        assert_eq!(assessed.page(1, 300, 0, Some(&prose)), Ok(PageCheck::Keep));
+        assert_eq!(
+            assessed.page(1, 300, 0, Layer::Text(&prose)),
+            Ok(PageCheck::Keep)
+        );
         assert!(matches!(
-            assessed.page(1, 300, 200, Some(&prose)),
+            assessed.page(1, 300, 200, Layer::Text(&prose)),
             Ok(PageCheck::Weigh(_))
         ));
-        assert!(OcrCheck::Wanted(DEFAULT).page(1, 3, 0, None).is_err());
-        assert_eq!(OcrCheck::Never.page(1, 3, 0, None), Ok(PageCheck::Keep));
+        assert!(OcrCheck::Wanted(DEFAULT)
+            .page(1, 3, 0, Layer::Unheld)
+            .is_err());
+        assert_eq!(
+            OcrCheck::Never.page(1, 3, 0, Layer::Unheld),
+            Ok(PageCheck::Keep)
+        );
     }
 }

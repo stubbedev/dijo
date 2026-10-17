@@ -342,6 +342,44 @@ fn compressed_dictionary(stream: &Dictionary, decoded: &[u8], number: i64) -> Op
 }
 
 impl Resolution {
+    /// The encryption dictionary the trailer names, as PDFBox reads it from `data`, and the
+    /// first string of the trailer's `ID`, empty where it has none; `None` for a document the
+    /// trailer names no encryption of.
+    pub(super) fn encryption(
+        &self,
+        data: &[u8],
+    ) -> Result<Option<(Dictionary, Vec<u8>)>, Unported> {
+        let dictionary = match self.trailer.get(b"Encrypt") {
+            Err(_) => return Ok(None),
+            Ok(Object::Dictionary(dictionary)) => dictionary.clone(),
+            Ok(Object::Reference(id)) => dereference(data, &self.table, Key::from_id(*id))
+                .ok_or_else(|| {
+                    Unported(format!(
+                        "an encryption dictionary, object {} {}, the port cannot read",
+                        id.0, id.1
+                    ))
+                })?,
+            Ok(_) => {
+                return Err(Unported(
+                    "an encryption entry that is no dictionary".to_owned(),
+                ))
+            }
+        };
+        let id = match self.trailer.get(b"ID") {
+            Ok(Object::Array(items)) => match items.first() {
+                None => Vec::new(),
+                Some(Object::String(bytes, _)) => bytes.clone(),
+                Some(_) => {
+                    return Err(Unported(
+                        "a document ID that is no string, which PDFBox fails on".to_owned(),
+                    ))
+                }
+            },
+            _ => Vec::new(),
+        };
+        Ok(Some((dictionary, id)))
+    }
+
     /// Where each object the table lists is read from, by its key as `lopdf` names it.
     pub(super) fn placements(&self) -> Result<HashMap<ObjectId, Placement>, Unported> {
         let mut placements = HashMap::with_capacity(self.table.len());

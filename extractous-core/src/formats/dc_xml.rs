@@ -39,6 +39,10 @@ impl Parser for DcXmlParser {
         &MEDIA_TYPES
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &["application/xml"]
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],

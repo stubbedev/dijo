@@ -194,7 +194,7 @@ impl<'a> Page<'a> {
                     Some(Object::Name(name)) if name == b"FlateDecode"
                 );
                 if flate_only {
-                    return inflate_leniently(&pdf.raw(stream)?);
+                    return Ok(inflate_leniently(&pdf.raw(stream)?));
                 }
                 pdf.decode(stream).map_err(|unported| {
                     Unported(format!("a page's content stream: {}", unported.0))
@@ -218,32 +218,46 @@ impl<'a> Page<'a> {
     }
 }
 
-/// `FlateFilterDecoderStream`, read to its end: the zlib data inflated up to where it ends or
-/// runs out. Damaged data, which PDFBox reads in a way of its own up to the damage, is unported.
-fn inflate_leniently(data: &[u8]) -> Result<Vec<u8>, Unported> {
-    let mut inflater = Decompress::new(true);
+/// How much of the raw stream `FlateFilterDecoderStream` hands its inflater at a time.
+const RAW_CHUNK: usize = 2048;
+/// How much `FlateFilterDecoderStream` inflates at a time.
+const DECODED_CHUNK: usize = 4096;
+
+/// `FlateFilterDecoderStream`, read to its end: the two bytes of the zlib header skipped and the
+/// raw deflate data after them inflated, its checksum never read, until it ends, runs out or is
+/// damaged. Of the chunk the damage cuts short, PDFBox keeps what the inflater wrote up to its
+/// last byte that is not zero.
+fn inflate_leniently(data: &[u8]) -> Vec<u8> {
+    let mut chunks = data.get(2..).unwrap_or_default().chunks(RAW_CHUNK);
+    let mut inflater = Decompress::new(false);
+    let mut input: &[u8] = &[];
+    let mut decoded = [0u8; DECODED_CHUNK];
     let mut output = Vec::with_capacity(data.len().saturating_mul(4));
     loop {
-        if output.len() == output.capacity() {
-            output.reserve(output.len().max(4096));
+        if input.is_empty() {
+            match chunks.next() {
+                Some(chunk) => input = chunk,
+                None => return output,
+            }
         }
-        let consumed = inflater.total_in() as usize;
-        let status = inflater
-            .decompress_vec(&data[consumed..], &mut output, FlushDecompress::None)
-            .map_err(|e| {
-                Unported(format!(
-                    "a page's compressed content stream is damaged, which PDFBox reads up to the \
-                     damage in a way of its own: {e}"
-                ))
-            })?;
-        match status {
-            Status::StreamEnd => return Ok(output),
-            Status::Ok | Status::BufError => {
-                let stalled =
-                    inflater.total_in() as usize == data.len() && output.len() < output.capacity();
-                if stalled {
-                    return Ok(output);
-                }
+        decoded.fill(0);
+        let (read, written) = (inflater.total_in(), inflater.total_out());
+        let inflated = inflater.decompress(input, &mut decoded, FlushDecompress::None);
+        input = &input[(inflater.total_in() - read) as usize..];
+        let written = (inflater.total_out() - written) as usize;
+        match inflated {
+            Ok(Status::StreamEnd) => {
+                output.extend_from_slice(&decoded[..written]);
+                return output;
+            }
+            Ok(Status::Ok | Status::BufError) => output.extend_from_slice(&decoded[..written]),
+            Err(_) => {
+                let kept = decoded
+                    .iter()
+                    .rposition(|&byte| byte != 0)
+                    .map_or(0, |at| at + 1);
+                output.extend_from_slice(&decoded[..kept]);
+                return output;
             }
         }
     }
@@ -257,17 +271,25 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn inflates_complete_and_truncated_streams() {
+    fn inflates_as_pdfbox_does_unchecked_truncated_and_damaged_streams() {
+        let text = b"BT /F1 12 Tf (Hello) Tj ET";
         let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(b"BT /F1 12 Tf (Hello) Tj ET").unwrap();
+        encoder.write_all(text).unwrap();
         let compressed = encoder.finish().unwrap();
-        assert_eq!(
-            inflate_leniently(&compressed).unwrap(),
-            b"BT /F1 12 Tf (Hello) Tj ET"
-        );
+        assert_eq!(inflate_leniently(&compressed), text);
+        let mut wrong_checksum = compressed.clone();
+        let last = wrong_checksum.len() - 1;
+        wrong_checksum[last] ^= 0xFF;
+        assert_eq!(inflate_leniently(&wrong_checksum), text);
         let truncated = &compressed[..compressed.len() - 6];
-        let partial = inflate_leniently(truncated).unwrap();
-        assert!(b"BT /F1 12 Tf (Hello) Tj ET".starts_with(&partial));
-        assert!(inflate_leniently(b"not zlib at all").is_err());
+        assert!(text.starts_with(&inflate_leniently(truncated)));
+        let mut stored = vec![0x78, 0x9C, 0x01, 5, 0, !5, 0xFF];
+        stored.extend(b"ab\0\0c");
+        stored.push(0x07);
+        assert_eq!(inflate_leniently(&stored), b"ab\0\0c");
+        let damaged = [
+            0x78, 0x9C, 0x00, 3, 0, 0xFC, 0xFF, b'a', b'b', 0, 0x00, 3, 0, 0, 0,
+        ];
+        assert_eq!(inflate_leniently(&damaged), b"ab");
     }
 }
