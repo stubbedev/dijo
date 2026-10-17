@@ -173,7 +173,7 @@ fn upper_names(directory: Option<Directory<'_, '_>>) -> HashSet<String> {
 
 /// `POIFSDocumentType.detectType(root) == OLE10_NATIVE`: whether `POIFSContainerDetector` names
 /// the document an OLE 1.0 object.
-pub(crate) fn is_ole10_native(file: &OleFile<'_>) -> bool {
+pub fn is_ole10_native(file: &OleFile<'_>) -> bool {
     directory_type(file, file.root())
         == MediaType::named("application/x-tika-msoffice-embedded")
             .with_parameter("format", "ole10_native")
@@ -181,7 +181,7 @@ pub(crate) fn is_ole10_native(file: &OleFile<'_>) -> bool {
 
 /// `POIFSDocumentType.detectType(directory)`'s detection: the type
 /// `POIFSContainerDetector.detect` names a directory of an open compound document by.
-pub(crate) fn directory_type(file: &OleFile<'_>, directory: EntryId) -> MediaType {
+pub fn directory_type(file: &OleFile<'_>, directory: EntryId) -> MediaType {
     let directory = Some(Directory {
         file,
         id: directory,

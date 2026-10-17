@@ -15,6 +15,7 @@
 //! document of the parity corpora.
 
 mod archive;
+mod detected;
 mod detectors;
 mod java_regex;
 mod magic;
@@ -22,26 +23,27 @@ mod media_type;
 mod mime_types;
 mod registry;
 mod text;
-pub(crate) mod uri;
+pub mod uri;
 
-#[cfg(test)]
-pub(crate) use crate::ole2::tests::compound as compound_document;
-pub(crate) use detectors::ole::directory_type as ole_directory_type;
-pub(crate) use detectors::ole::is_ole10_native;
-pub(crate) use detectors::zip::{Intent, IworkDocument, IWORK_CONTENT_ENTRIES};
+#[cfg(any(test, feature = "testing"))]
+pub use crate::ole2::tests::compound as compound_document;
+pub use detected::{Detected, Headers, OpenedFrom};
+pub use detectors::ole::directory_type as ole_directory_type;
+pub use detectors::ole::is_ole10_native;
+pub use detectors::zip::{Intent, IworkDocument, IWORK_CONTENT_ENTRIES};
 use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
-pub(crate) use media_type::MediaType;
+pub use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 
 /// Every type Tika's tables declare, by its printed form, in the order they declare them.
-#[cfg(all(test, feature = "tika"))]
-pub(crate) fn declared_types() -> impl Iterator<Item = &'static str> {
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn declared_types() -> impl Iterator<Item = &'static str> {
     mime_types().declared()
 }
 
 /// What Tika knows of a document before it detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Origin<'a> {
+pub enum Origin<'a> {
     /// A file, opened as `TikaInputStream.get(path, metadata)` opens it: its name is the resource
     /// name and its length is already in the metadata.
     File { name: &'a str },
@@ -61,7 +63,7 @@ pub(crate) enum Origin<'a> {
 
 /// A metadata key the detection writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Key {
+pub enum Key {
     /// `tk:content-type-magic-detected`: what `MimeTypes` answered.
     MagicDetected,
     /// `Content-Length`, written when a container detector reads a stream of bytes to its end.
@@ -75,7 +77,7 @@ pub(crate) enum Key {
 }
 
 impl Key {
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Key::MagicDetected => "tk:content-type-magic-detected",
             Key::ContentLength => "Content-Length",
@@ -95,14 +97,14 @@ pub(crate) struct Entry {
 
 /// A document's media type and the metadata the detection set, in the order it set it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Detection {
-    pub(crate) media_type: MediaType,
+pub struct Detection {
+    pub media_type: MediaType,
     pub(crate) metadata: Vec<Entry>,
 }
 
 /// Why Tika's detection throws instead of answering.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum DetectionError {
+pub enum DetectionError {
     /// The `IOException` `TikaNativeMain` reports as an input it could not open.
     #[error("Tika's {0} detector fails on the input with an IOException")]
     Unreadable(&'static str),
@@ -159,14 +161,14 @@ impl Written {
 
 /// `MimeTypes.forName(type).getExtension()` of the default types: the first extension of the
 /// type, with its dot, or nothing.
-pub(crate) fn extension(media_type: &MediaType) -> &'static str {
+pub fn extension(media_type: &MediaType) -> &'static str {
     mime_types().extension(media_type)
 }
 
 /// The types `CompositeParser.getParser` looks a parser up for, in order, given a document's
 /// type: the canonical type the default types' registry normalizes it to, then each supertype
 /// `getSupertype` gives, to `application/octet-stream`.
-pub(crate) fn lineage(media_type: &MediaType) -> impl Iterator<Item = MediaType> {
+pub fn lineage(media_type: &MediaType) -> impl Iterator<Item = MediaType> {
     let registry = mime_types().registry();
     std::iter::successors(Some(registry.normalize(media_type)), |kind| {
         registry.supertype(kind)
@@ -174,19 +176,19 @@ pub(crate) fn lineage(media_type: &MediaType) -> impl Iterator<Item = MediaType>
 }
 
 /// Whether the default types declare `kind`, or its base type, as a type or an alias.
-pub(crate) fn declares(kind: &MediaType) -> bool {
+pub fn declares(kind: &MediaType) -> bool {
     mime_types().registry().declares(kind)
 }
 
 /// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type,
 /// with its dot, or nothing.
-pub(crate) fn registered_extension(media_type: &MediaType) -> &'static str {
+pub fn registered_extension(media_type: &MediaType) -> &'static str {
     mime_types().registered_extension(media_type)
 }
 
 /// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an
 /// archive or compression format by its first bytes, or `application/octet-stream`.
-pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
+pub fn zip_container_type(data: &[u8]) -> MediaType {
     match zip::detect(data, Intent::Detect) {
         Ok(zip::Detected::Zip(found)) => found.media_type,
         Ok(zip::Detected::Other(found)) => found.unwrap_or_else(|| MediaType::named(OCTET_STREAM)),
@@ -195,7 +197,7 @@ pub(crate) fn zip_container_type(data: &[u8]) -> MediaType {
 }
 
 /// `DefaultDetector.detect` on a document, as `TikaNativeMain.detect` runs it.
-pub(crate) fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
+pub fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     detect_with(data, origin, Intent::Detect)
 }
 

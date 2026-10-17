@@ -9,7 +9,7 @@ use crate::java;
 /// A media type such as `application/pdf` or `application/x-quattro-pro; version=9`, held in
 /// the form Tika's `MediaType.toString()` prints.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct MediaType {
+pub struct MediaType {
     string: String,
     slash: usize,
     semicolon: usize,
@@ -35,7 +35,7 @@ fn is_simple_name(name: &str) -> bool {
 
 impl MediaType {
     /// `MediaType.parse`: `None` where Tika returns null.
-    pub(crate) fn parse(text: &str) -> Option<MediaType> {
+    pub fn parse(text: &str) -> Option<MediaType> {
         let slash = text.find('/')?;
         if is_simple_name(&text[..slash]) && is_simple_name(&text[slash + 1..]) {
             return Some(MediaType {
@@ -57,7 +57,7 @@ impl MediaType {
     }
 
     /// A media type Tika's own code names, which must parse.
-    pub(crate) fn named(text: &str) -> MediaType {
+    pub fn named(text: &str) -> MediaType {
         Self::parse(text).unwrap_or_else(|| panic!("{text} is not a media type"))
     }
 
@@ -168,7 +168,7 @@ impl MediaType {
     }
 
     /// This type with one more parameter, as `new MediaType(type, name, value)` makes it.
-    pub(crate) fn with_parameter(&self, name: &str, value: &str) -> MediaType {
+    pub fn with_parameter(&self, name: &str, value: &str) -> MediaType {
         let mut parameters = self.parameters.clone();
         parameters.push((name.to_owned(), value.to_owned()));
         Self::with_parameters(self.kind(), self.subtype(), parameters)
@@ -182,33 +182,33 @@ impl MediaType {
         Self::with_parameters(self.kind(), self.subtype(), parameters)
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.string
     }
 
     /// The top-level type, such as `application`.
-    pub(crate) fn kind(&self) -> &str {
+    pub fn kind(&self) -> &str {
         &self.string[..self.slash]
     }
 
-    pub(crate) fn subtype(&self) -> &str {
+    pub fn subtype(&self) -> &str {
         &self.string[self.slash + 1..self.semicolon]
     }
 
     /// The value of a parameter by its lower-case name, as `getParameters().get(name)`.
-    pub(crate) fn parameter(&self, name: &str) -> Option<&str> {
+    pub fn parameter(&self, name: &str) -> Option<&str> {
         self.parameters
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
     }
 
-    pub(crate) fn has_parameters(&self) -> bool {
+    pub fn has_parameters(&self) -> bool {
         self.semicolon < self.string.len()
     }
 
     /// The type without its parameters.
-    pub(crate) fn base_type(&self) -> MediaType {
+    pub fn base_type(&self) -> MediaType {
         if self.has_parameters() {
             MediaType::named(self.base_str())
         } else {

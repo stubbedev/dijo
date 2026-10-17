@@ -34,7 +34,7 @@ pub(crate) struct ZipDetection {
 /// `ParsingIntent.WILL_PARSE`: the ZIP detector then salvages an archive `ZipFile` cannot
 /// open, for the parser to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Intent {
+pub enum Intent {
     Detect,
     Parse,
 }
@@ -45,7 +45,7 @@ pub(crate) struct Unsalvageable(pub(crate) String);
 
 /// What `DefaultZipContainerDetector.detect` answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Detected {
+pub enum Detected {
     /// A ZIP archive, which the detector spools to read its entries.
     Zip(ZipDetection),
     /// Another format by its first bytes, or `None` for none.
@@ -150,13 +150,12 @@ fn root_element(content: &[u8]) -> Option<(String, String)> {
 }
 
 /// `IWorkPackageParser.IWORK_CONTENT_ENTRIES`, a `HashSet`.
-pub(crate) const IWORK_CONTENT_ENTRIES: [&str; 3] =
-    ["index.apxl", "index.xml", "presentation.apxl"];
+pub const IWORK_CONTENT_ENTRIES: [&str; 3] = ["index.apxl", "index.xml", "presentation.apxl"];
 
 /// An iWork 2008 document, as `IWORKDocumentType` names the ones its content entry's root
 /// element tells apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IworkDocument {
+pub enum IworkDocument {
     Keynote,
     Numbers,
     Pages,
@@ -164,7 +163,7 @@ pub(crate) enum IworkDocument {
 
 impl IworkDocument {
     /// `IWORKDocumentType.detectType`: the document a content entry's root names.
-    pub(crate) fn of(content: &[u8]) -> Option<Self> {
+    pub fn of(content: &[u8]) -> Option<Self> {
         let (namespace, local) = root_element(content)?;
         match (namespace.as_str(), local.as_str()) {
             ("http://developer.apple.com/namespaces/keynote2", "presentation") => {
@@ -176,7 +175,7 @@ impl IworkDocument {
         }
     }
 
-    pub(crate) fn media_type(self) -> &'static str {
+    pub fn media_type(self) -> &'static str {
         match self {
             Self::Keynote => "application/vnd.apple.keynote",
             Self::Numbers => "application/vnd.apple.numbers",

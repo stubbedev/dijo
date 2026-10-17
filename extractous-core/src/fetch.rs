@@ -3,6 +3,7 @@
 //! the server says of the document recorded as Tika records it. The native image Tika runs in
 //! enables no other protocol.
 
+use crate::mime::Headers;
 use std::io;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -38,20 +39,6 @@ pub(crate) enum Located {
 pub(crate) struct Fetched {
     pub(crate) headers: Headers,
     pub(crate) body: Input<'static>,
-}
-
-/// What `TikaInputStream.get(URL, metadata)` records of a fetched document, each header's value
-/// as `URLConnection` reads it: the last of its kind, its bytes as ISO-8859-1.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Headers {
-    /// The last segment of the URL's path, still percent-encoded, unless the path ends in a
-    /// slash.
-    pub(crate) name: Option<String>,
-    pub(crate) content_type: Option<String>,
-    pub(crate) content_encoding: Option<String>,
-    /// `URLConnection.getContentLength`: the `Content-Length`, where it is a whole number that
-    /// fits in a Java `int`.
-    pub(crate) content_length: Option<u32>,
 }
 
 /// Where `url` leads: the file it names, or the document fetched from it. A fetch is bounded by

@@ -271,10 +271,10 @@ junk-reference:
     java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
         extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
 
-# Regenerate the static media type tables (extractous-core/src/mime/mime_types/tables.rs) from tika-mimetypes.xml
+# Regenerate the static media type tables (extractous-mime/src/mime/mime_types/tables.rs) from tika-mimetypes.xml
 # and custom-mimetypes.xml.
 mime-tables:
-    MIME_TABLES_BLESS=1 cargo nextest run --package {{core}} --lib the_tables_are_generated_from_the_xml
+    MIME_TABLES_BLESS=1 cargo nextest run --package extractous-mime --lib the_tables_are_generated_from_the_xml
 
 # Regenerate the media types and detection metadata of Apache Tika's own default detector that the Rust port
 # is tested against, on the jars of the native image's class path in its order, which decides the order of
@@ -286,7 +286,7 @@ mime-reference:
     set -euo pipefail
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    unzip -p "$jars"/mime/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - {{core}}/models/tika-mimetypes.xml
+    unzip -p "$jars"/mime/tika-core-*.jar org/apache/tika/mime/tika-mimetypes.xml | cmp - extractous-mime/models/tika-mimetypes.xml
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     classpath={{core}}/tika-native/src/main/resources
     for jar in slf4j-nop-2.0.20 log4j-to-slf4j-2.26.1 tika-parser-microsoft-module-4.1.0 \
@@ -298,7 +298,7 @@ mime-reference:
         curvesapi-1.08; do
         classpath="$classpath:$jars/mime/$jar.jar"
     done
-    fixtures={{core}}/tests/fixtures/mime
+    fixtures=extractous-mime/tests/fixtures/mime
     java -cp "$classpath" "$fixtures/MimeReference.java" test_files/documents quality/corpus \
         "$CONFORMANCE_CORPUS" "$fixtures/mime-reference.tsv"
 

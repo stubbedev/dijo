@@ -1,0 +1,30 @@
+[package]
+name = "extractous-mime"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "extractous's media type detection, a port of Tika's DefaultDetector"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/extractous"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+default = ["tika"]
+# The tests compare the detection with Tika's.
+tika = ["extractous-base/tika", "extractous-tika/tika"]
+# What the tests of the crates built on this one share with its own.
+testing = ["extractous-base/testing"]
+
+[dependencies]
+extractous-base = { path = "../extractous-base", default-features = false }
+fancy-regex = "0.19.2"
+flate2 = "1.1.5"
+memchr = "2.8.3"
+thiserror = { version = "2.0.17" }
+unicode-general-category = "1.1.0"
+unicode-normalization = "0.1.25"
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
+extractous-tika = { path = "../extractous-tika", default-features = false }

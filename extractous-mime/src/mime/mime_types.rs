@@ -80,7 +80,7 @@ impl MimeTypes {
     }
 
     /// Every type the tables declare, by its printed form, in the order they declare them.
-    #[cfg(all(test, feature = "tika"))]
+    #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
     pub(crate) fn declared(&self) -> impl Iterator<Item = &'static str> {
         self.types.iter().map(|declared| declared.name)
     }

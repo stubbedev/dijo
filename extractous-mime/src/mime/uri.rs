@@ -45,12 +45,12 @@ pub(crate) fn name_hint(resource_name: &str) -> Option<NameHint> {
 }
 
 /// What `java.net.URI` parses a string into, as far as Tika and POI look at it.
-pub(crate) struct Parsed<'a> {
+pub struct Parsed<'a> {
     pub(crate) scheme: Option<&'a str>,
     /// The raw path of a hierarchical URI; `None` for an opaque one.
-    pub(crate) path: Option<&'a str>,
-    pub(crate) query: Option<&'a str>,
-    pub(crate) fragment: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub query: Option<&'a str>,
+    pub fragment: Option<&'a str>,
 }
 
 fn is_mark(c: char) -> bool {
@@ -118,7 +118,7 @@ fn check(text: &str, class: fn(char) -> bool) -> Option<()> {
 }
 
 /// `URI.Parser.parse`: `None` where it throws `URISyntaxException`.
-pub(crate) fn parse(input: &str) -> Option<Parsed<'_>> {
+pub fn parse(input: &str) -> Option<Parsed<'_>> {
     let first_stop = input.find(['/', '?', '#', ':']);
     let (scheme, rest) = match first_stop {
         Some(colon) if input[colon..].starts_with(':') => {
@@ -199,7 +199,7 @@ pub(crate) fn to_ascii_string(input: &str) -> String {
 }
 
 /// `URI.decode`: `%XX` escapes as UTF-8, malformed sequences replaced.
-pub(crate) fn decode(path: &str) -> String {
+pub fn decode(path: &str) -> String {
     if !path.contains('%') {
         return path.to_owned();
     }

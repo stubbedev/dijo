@@ -797,6 +797,7 @@ dependencies = [
  "cpio",
  "criterion",
  "extractous-base",
+ "extractous-mime",
  "extractous-native",
  "extractous-tika",
  "fancy-regex",
@@ -834,6 +835,21 @@ dependencies = [
  "unicode-normalization",
  "unicode-script",
  "ureq",
+ "zip",
+]
+
+[[package]]
+name = "extractous-mime"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-tika",
+ "fancy-regex",
+ "flate2",
+ "memchr",
+ "thiserror",
+ "unicode-general-category",
+ "unicode-normalization",
  "zip",
 ]
 

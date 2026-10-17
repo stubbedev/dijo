@@ -4,6 +4,7 @@ members = [
     "extractous-base",
     "extractous-native",
     "extractous-tika",
+    "extractous-mime",
     "extractous-core",
     "extractous-cli",
 ]
