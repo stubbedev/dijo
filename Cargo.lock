@@ -804,6 +804,7 @@ dependencies = [
  "extractous-mime",
  "extractous-native",
  "extractous-odf",
+ "extractous-office",
  "extractous-pdf",
  "extractous-small",
  "extractous-tika",
@@ -937,6 +938,20 @@ dependencies = [
  "extractous-core",
  "extractous-mime",
  "zip",
+]
+
+[[package]]
+name = "extractous-office"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "extractous-mail",
+ "extractous-mime",
+ "flate2",
+ "rc4",
+ "regex",
 ]
 
 [[package]]

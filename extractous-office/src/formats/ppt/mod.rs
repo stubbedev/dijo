@@ -32,7 +32,7 @@ const MEDIA_TYPE: &str = "application/vnd.ms-powerpoint";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
 const WARNING: &str = "tk:exception:warn";
 
-pub(crate) struct PptParser;
+pub struct PptParser;
 
 impl Parser for PptParser {
     fn name(&self) -> &'static str {

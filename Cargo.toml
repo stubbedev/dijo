@@ -12,6 +12,7 @@ members = [
     "extractous-odf",
     "extractous-small",
     "extractous-mail",
+    "extractous-office",
     "extractous-core",
     "extractous-cli",
 ]

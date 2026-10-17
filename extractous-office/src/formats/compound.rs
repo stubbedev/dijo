@@ -23,7 +23,7 @@ const DOCUMENT_TYPES: [&str; 3] = [
 const ENCRYPTED_PACKAGE: &str = "EncryptedPackage";
 
 /// Tika's `OfficeParser` of the compound documents it reads the summary information of only.
-pub(crate) struct CompoundDocumentParser;
+pub struct CompoundDocumentParser;
 
 impl Parser for CompoundDocumentParser {
     fn name(&self) -> &'static str {

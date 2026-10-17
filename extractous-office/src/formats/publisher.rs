@@ -30,7 +30,7 @@ const MAX_RECORD_LENGTH: i64 = 1_000_000;
 /// `QCPLCBit.MAX_NUMBER_OF_PLCS`.
 const MAX_PLCS: i64 = 1000;
 
-pub(crate) struct PublisherParser;
+pub struct PublisherParser;
 
 impl Parser for PublisherParser {
     fn name(&self) -> &'static str {

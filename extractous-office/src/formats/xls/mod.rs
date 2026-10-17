@@ -61,11 +61,11 @@ mod excel {
     pub(super) const HAS_VERY_HIDDEN_SHEETS: &str = "msoffice:excel:has-very-hidden-sheets";
 }
 
-pub(crate) struct XlsParser;
+pub struct XlsParser;
 
 /// Tika's `OldExcelParser` of the workbooks of Excel 2 to 4 stored bare, outside a compound
 /// document: the text of `OldExcelExtractor`, a paragraph per line.
-pub(crate) struct OldExcelParser;
+pub struct OldExcelParser;
 
 impl Parser for OldExcelParser {
     fn name(&self) -> &'static str {

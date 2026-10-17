@@ -10,7 +10,7 @@ use crate::ole2::{Ole2, Unreadable};
 /// The compound document `input`, opened as POI opens it, or why Tika's path should read it:
 /// macros extracted when asked to, a file POI opens otherwise from a stream, and one its
 /// container detection names other than `media_type`, the type of a `kind` of document.
-pub(crate) fn open<'a>(
+pub fn open<'a>(
     input: &'a [u8],
     configs: &ParserConfigs,
     media_type: &str,

@@ -33,7 +33,7 @@ use properties::{EMBEDDED_MESSAGE_HEADER, MESSAGE_HEADER, PROPERTIES};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-outlook";
 
-pub(crate) struct MsgParser;
+pub struct MsgParser;
 
 impl Parser for MsgParser {
     fn name(&self) -> &'static str {
@@ -165,5 +165,16 @@ fn standalone(file: &Ole2<'_>, directory: EntryId) -> Result<Vec<u8>, Unreadable
     write(&storage)
 }
 
+/// The recipients' names, which POI swaps (#112).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const RECIPIENT_NAMES: crate::formats::parity::Departures = &[
+    crate::formats::parity::Departure::Values("message:to-name", "#112"),
+    crate::formats::parity::Departure::Values("message:to-display-name", "#112"),
+    crate::formats::parity::Departure::Values("message:cc-name", "#112"),
+    crate::formats::parity::Departure::Values("message:cc-display-name", "#112"),
+    crate::formats::parity::Departure::Values("message:bcc-name", "#112"),
+    crate::formats::parity::Departure::Values("message:bcc-display-name", "#112"),
+];
+
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;

@@ -65,7 +65,7 @@ const MILLIS_PER_DAY: i64 = 86_400_000;
 const MILLIS_BETWEEN_EPOCH_AND_1900: i64 = 25_569 * MILLIS_PER_DAY;
 
 /// Tika's `JackcessParser`.
-pub(crate) struct JackcessParser;
+pub struct JackcessParser;
 
 impl Parser for JackcessParser {
     fn name(&self) -> &'static str {

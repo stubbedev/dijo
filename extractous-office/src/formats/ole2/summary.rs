@@ -53,12 +53,12 @@ mod pid {
 /// The property sets of a directory's summary information streams, read and checked to be
 /// ported, which [`Summaries::write`] writes as `SummaryExtractor.parseSummaries` does.
 #[derive(Debug, Clone)]
-pub(crate) struct Summaries(Vec<PropertySet>);
+pub struct Summaries(Vec<PropertySet>);
 
 impl Summaries {
     /// `SummaryExtractor.parseSummaries(directory)`'s reading: the property sets POI reads, or
     /// why Tika's path should read them.
-    pub(crate) fn read(file: &Ole2<'_>, directory: EntryId) -> Result<Summaries, Unported> {
+    pub fn read(file: &Ole2<'_>, directory: EntryId) -> Result<Summaries, Unported> {
         let mut sets = Vec::new();
         for name in [SUMMARY_INFORMATION, DOCUMENT_SUMMARY_INFORMATION] {
             let Some(entry) = file
@@ -83,7 +83,7 @@ impl Summaries {
     }
 
     /// Writes the properties into `metadata`, as `parseSummaries` does.
-    pub(crate) fn write(&self, metadata: &mut TikaMetadata) {
+    pub fn write(&self, metadata: &mut TikaMetadata) {
         self.write_checked(metadata)
             .expect("summaries read are ported");
     }
@@ -107,7 +107,7 @@ impl Summaries {
 
 /// `SummaryExtractor.addMulti`: the values separated by semicolons, each not blank and not
 /// present yet.
-pub(crate) fn add_multi(metadata: &mut TikaMetadata, name: &str, value: &str) {
+pub fn add_multi(metadata: &mut TikaMetadata, name: &str, value: &str) {
     if is_blank(value) {
         return;
     }

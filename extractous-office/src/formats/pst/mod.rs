@@ -103,7 +103,7 @@ mod property {
 }
 
 /// Tika's `OutlookPSTParser`.
-pub(crate) struct OutlookPstParser;
+pub struct OutlookPstParser;
 
 impl Parser for OutlookPstParser {
     fn name(&self) -> &'static str {

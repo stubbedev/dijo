@@ -253,7 +253,7 @@ ole2-reference:
     : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
     jars=target/reference-jars
     ci/fetch-reference-jars.sh "$jars"
-    fixtures=extractous-core/tests/fixtures/ole2
+    fixtures=extractous-office/tests/fixtures/ole2
     java -cp "$jars/mime/*" "$fixtures/SummaryReference.java" "$fixtures/summaries.tsv.gz" \
         documents=test_files/documents corpus="$CONFORMANCE_CORPUS"
 

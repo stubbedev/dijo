@@ -2,32 +2,18 @@
 //! of `extractous_base::formats`. [`parser_for`] routes a media type to its native parser, if it
 //! has one.
 
-mod access;
 #[cfg(all(test, feature = "tika"))]
 pub(crate) mod audit;
 mod composite;
-mod compound;
-mod doc;
 mod docx;
-mod escher;
-mod msg;
-mod ole2;
 mod ooxml;
 #[cfg(any(test, feature = "parity"))]
 pub mod parity;
-mod poi;
-mod ppt;
 mod pptx;
 mod protected;
-mod pst;
-mod publisher;
-mod rtf;
-mod tnef;
 #[cfg(all(test, feature = "tika"))]
 mod url_tests;
-mod visio;
 mod vsdx;
-mod xls;
 mod xlsx;
 mod xps;
 
@@ -53,6 +39,18 @@ pub(crate) use extractous_mail::formats::warc;
 pub(crate) use extractous_media::formats::media;
 pub(crate) use extractous_odf::formats::epub;
 pub(crate) use extractous_odf::formats::odf;
+pub(crate) use extractous_office::formats::access;
+pub(crate) use extractous_office::formats::compound;
+pub(crate) use extractous_office::formats::doc;
+pub(crate) use extractous_office::formats::msg;
+pub(crate) use extractous_office::formats::ole2;
+pub(crate) use extractous_office::formats::ppt;
+pub(crate) use extractous_office::formats::pst;
+pub(crate) use extractous_office::formats::publisher;
+pub(crate) use extractous_office::formats::rtf;
+pub(crate) use extractous_office::formats::tnef;
+pub(crate) use extractous_office::formats::visio;
+pub(crate) use extractous_office::formats::xls;
 pub(crate) use extractous_pdf::formats::font;
 pub(crate) use extractous_pdf::formats::pdf;
 pub(crate) use extractous_small::formats::apple_single;
@@ -1265,9 +1263,7 @@ mod tests {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
                     | "extractous::MboxParser" => crate::formats::mail::DEPARTURES.to_vec(),
-                    "extractous::OfficeParser" => {
-                        crate::formats::msg::tests::RECIPIENT_NAMES.to_vec()
-                    }
+                    "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
                         crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }

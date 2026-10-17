@@ -25,7 +25,7 @@ const MEDIA_TYPE: &str = "application/rtf";
 /// The control words that can defer a document, which is then read ahead to find out.
 const READ_AHEAD: [&[u8]; 3] = [b"pict", b"objdata", b"ansicpg57002"];
 
-pub(crate) struct RtfParser;
+pub struct RtfParser;
 
 impl Parser for RtfParser {
     fn name(&self) -> &'static str {

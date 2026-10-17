@@ -53,7 +53,7 @@ mod kind {
 const FIRST_NAMED_ID: u16 = 0x8000;
 
 /// Tika's `TNEFParser`.
-pub(crate) struct TnefParser;
+pub struct TnefParser;
 
 impl Parser for TnefParser {
     fn name(&self) -> &'static str {

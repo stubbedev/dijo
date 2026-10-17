@@ -47,7 +47,7 @@ const HDGF_LZW: Lzw = Lzw {
     },
 };
 
-pub(crate) struct VisioParser;
+pub struct VisioParser;
 
 impl Parser for VisioParser {
     fn name(&self) -> &'static str {

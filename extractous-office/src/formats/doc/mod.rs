@@ -42,7 +42,7 @@ use crate::formats::{Declined, Failure, Parser, Prepared};
 
 const MEDIA_TYPE: &str = "application/msword";
 
-pub(crate) struct DocParser;
+pub struct DocParser;
 
 impl Parser for DocParser {
     fn name(&self) -> &'static str {

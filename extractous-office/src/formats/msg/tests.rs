@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::formats::parity;
 #[cfg(feature = "tika")]
-use crate::formats::parity::{assert_same_as_tika_with, Departure};
+use crate::formats::parity::assert_same_as_tika_with;
 
 #[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
@@ -175,17 +175,6 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
     parity::assert_same_as_tika_departing(&documents, TIKA_PARSER, RECIPIENT_NAMES);
 }
-
-/// The recipients' names, which POI swaps (#112).
-#[cfg(feature = "tika")]
-pub(crate) const RECIPIENT_NAMES: parity::Departures = &[
-    Departure::Values("message:to-name", "#112"),
-    Departure::Values("message:to-display-name", "#112"),
-    Departure::Values("message:cc-name", "#112"),
-    Departure::Values("message:cc-display-name", "#112"),
-    Departure::Values("message:bcc-name", "#112"),
-    Departure::Values("message:bcc-display-name", "#112"),
-];
 
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
