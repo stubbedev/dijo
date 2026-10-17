@@ -3,7 +3,6 @@
 //! kept, not sorted by position, a space between words), and handed to the writer's callbacks,
 //! which Tika's `PDF2XHTML` and `PDFMarkedContent2XHTML` override.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use unicode_normalization::UnicodeNormalization;
@@ -12,6 +11,7 @@ use super::jfloat;
 use super::position::{TextPosition, FIRST_RIGHT_TO_LEFT};
 use super::Unported;
 use crate::formats::xhtml::Stop;
+use crate::hash::FastMap;
 
 const BIDI_MIRRORING: &str = include_str!("../../../models/pdf/BidiMirroring.txt");
 
@@ -400,29 +400,32 @@ fn normalize<'a>(
         match item {
             LineItem::WordSeparator => {
                 words.push(Word {
-                    text: normalize_word(&builder)?,
+                    text: normalize_word(std::mem::take(&mut builder))?,
                     positions: std::mem::take(&mut word_positions),
                 });
-                builder.clear();
             }
             LineItem::Position(index) => {
                 let position = &positions[*index];
-                builder.push_str(&position.visually_ordered_unicode());
+                position.push_visually_ordered_unicode(&mut builder);
                 word_positions.push(position);
             }
         }
     }
     if !builder.is_empty() {
         words.push(Word {
-            text: normalize_word(&builder)?,
+            text: normalize_word(builder)?,
             positions: word_positions,
         });
     }
     Ok(words)
 }
 
-/// `normalizeWord`: Unicode presentation forms decomposed, then `handleDirection`.
-fn normalize_word(word: &str) -> Result<String, Unported> {
+/// `normalizeWord`: Unicode presentation forms decomposed, then `handleDirection`, neither of
+/// which changes a word of characters before the first that can run right to left.
+fn normalize_word(word: String) -> Result<String, Unported> {
+    if word.is_ascii() || word.chars().all(|c| c < FIRST_RIGHT_TO_LEFT) {
+        return Ok(word);
+    }
     let mut out = String::with_capacity(word.len());
     let mut previous: Option<char> = None;
     for c in word.chars() {
@@ -448,8 +451,8 @@ fn normalize_word(word: &str) -> Result<String, Unported> {
 }
 
 /// PDFBox's mirrored characters (`BidiMirroring.txt`).
-static MIRRORING: LazyLock<HashMap<char, char>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
+static MIRRORING: LazyLock<FastMap<char, char>> = LazyLock::new(|| {
+    let mut map = FastMap::default();
     for line in BIDI_MIRRORING.lines() {
         let line = line.split('#').next().unwrap_or_default();
         if line.len() < 2 {
@@ -556,8 +559,8 @@ mod tests {
 
     #[test]
     fn decomposes_presentation_forms_and_orders_right_to_left_words() {
-        assert_eq!(normalize_word("\u{FB01}ne").unwrap(), "fine");
-        assert_eq!(normalize_word("plain").unwrap(), "plain");
+        assert_eq!(normalize_word("\u{FB01}ne".to_owned()).unwrap(), "fine");
+        assert_eq!(normalize_word("plain".to_owned()).unwrap(), "plain");
         assert_eq!(
             handle_direction("\u{05D0}\u{05D1}").unwrap(),
             "\u{05D1}\u{05D0}"

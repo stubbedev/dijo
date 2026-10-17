@@ -745,6 +745,7 @@ version = "0.2.1"
 dependencies = [
  "aes",
  "ar",
+ "arrayvec",
  "bytemuck",
  "bzip2",
  "cpio",
@@ -765,6 +766,7 @@ dependencies = [
  "lz4_flex",
  "lzma-rust2",
  "md-5",
+ "memchr",
  "object",
  "quick-xml",
  "rav1d",

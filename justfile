@@ -247,6 +247,11 @@ junk-reference:
     java -cp "$jars/*" "$fixtures/JunkReference.java" "$fixtures" \
         extractous-cli/tests/fixtures/language/tatoeba.tsv quality/truth "$fixtures/junk-reference.tsv"
 
+# Regenerate the static media type tables (extractous-core/src/mime/mime_types/tables.rs) from tika-mimetypes.xml
+# and custom-mimetypes.xml.
+mime-tables:
+    MIME_TABLES_BLESS=1 cargo nextest run --package {{core}} --lib the_tables_are_generated_from_the_xml
+
 # Regenerate the media types and detection metadata of Apache Tika's own default detector that the Rust port
 # is tested against, on the jars of the native image's class path in its order, which decides the order of
 # the ZIP container detectors, and with its custom-mimetypes.xml, after checking that the embedded

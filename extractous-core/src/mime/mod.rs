@@ -109,6 +109,14 @@ fn thrown(detector: &'static str) -> impl Fn(Thrown) -> DetectionError {
 
 const OCTET_STREAM: &str = "application/octet-stream";
 
+/// The value of `key` among `pairs` sorted by their unique keys.
+fn sorted_get<V: Copy>(pairs: &[(&'static str, V)], key: &str) -> Option<V> {
+    pairs
+        .binary_search_by(|(known, _)| (*known).cmp(key))
+        .ok()
+        .map(|index| pairs[index].1)
+}
+
 /// The metadata a detection writes, with the one-time `Content-Length` of a spooled stream.
 struct Written {
     entries: Vec<Entry>,

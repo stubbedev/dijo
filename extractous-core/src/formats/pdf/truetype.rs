@@ -3,9 +3,8 @@
 //! and the `cmap` subtables, each mapped character to glyph as FontBox maps it. A font FontBox
 //! fails to read is damaged to PDFBox, and fails here where it fails there.
 
-use std::collections::HashMap;
-
 use super::Unported;
+use crate::hash::FastMap;
 use crate::text::charset::Charset;
 
 /// `WGL4Names.MAC_GLYPH_NAMES`: the glyph names of the standard Macintosh ordering.
@@ -311,10 +310,10 @@ enum Source {
 pub(super) struct CmapSubtable {
     pub(super) platform_id: u16,
     pub(super) encoding_id: u16,
-    code_to_glyph: HashMap<u32, u32>,
+    code_to_glyph: FastMap<u32, u32>,
     /// `glyphIdToCharacterCode`: a glyph's code, or none, or several (`Integer.MIN_VALUE`).
     glyph_to_code: Vec<GlyphCode>,
-    glyph_to_codes: HashMap<u32, Vec<u32>>,
+    glyph_to_codes: FastMap<u32, Vec<u32>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,7 +390,7 @@ pub(crate) struct TrueType {
     pub(super) num_glyphs: u16,
     advance_widths: Vec<u16>,
     post_names: Option<Vec<String>>,
-    names_to_glyphs: HashMap<String, u32>,
+    names_to_glyphs: FastMap<String, u32>,
     cmaps: Option<Vec<CmapSubtable>>,
 }
 
@@ -506,7 +505,7 @@ impl TrueType {
         data.u32()?;
         let number_of_tables = data.u16()?;
         data.take(6)?;
-        let mut tables: HashMap<[u8; 4], Table> = HashMap::new();
+        let mut tables: FastMap<[u8; 4], Table> = FastMap::default();
         for _ in 0..number_of_tables {
             let tag: [u8; 4] = data.take(4)?.try_into().unwrap_or_default();
             data.u32()?;
@@ -558,7 +557,7 @@ impl TrueType {
             num_glyphs,
             advance_widths: Vec::new(),
             post_names: None,
-            names_to_glyphs: HashMap::new(),
+            names_to_glyphs: FastMap::default(),
             cmaps: None,
         };
         if let Some(post) = table(b"post") {
@@ -845,7 +844,7 @@ fn read_vmtx(data: &mut Data, vmtx: Table, metrics: u16, num_glyphs: u16) -> Res
 /// lookup lists, and the substitution subtables of the lookup types it reads.
 mod gsub {
     use super::{Damaged, Data};
-    use std::collections::HashSet;
+    use crate::hash::FastSet;
 
     pub(super) fn read(data: &mut Data, start: usize) -> Result<(), Damaged> {
         data.seek(start);
@@ -882,7 +881,7 @@ mod gsub {
             }
             records.push((tag, script));
         }
-        let mut seen = HashSet::new();
+        let mut seen = FastSet::default();
         for (tag, script) in records {
             if seen.insert(tag) {
                 read_script_table(data, offset + script)?;
@@ -960,7 +959,7 @@ mod gsub {
         for _ in 0..count {
             lookups.push(usize::from(data.u16()?));
         }
-        let mut read = HashSet::new();
+        let mut read = FastSet::default();
         for lookup in lookups {
             if read.insert(lookup) {
                 read_lookup_table(data, offset + lookup)?;

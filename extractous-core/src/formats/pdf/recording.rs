@@ -2,6 +2,8 @@
 //! metadata, the files it embeds and where the pages begin and end. The document is read once,
 //! into a recording, which decides whether Tika's path takes it instead; the recording is then
 //! replayed into the document's [`Xhtml`], exactly as the extraction would have written it there.
+//! A document too large to record whole is streamed: its recording is flushed into the
+//! [`Xhtml`] after each page.
 
 use std::ops::Range;
 
@@ -276,6 +278,11 @@ impl Recording {
             .any(|event| matches!(event, Event::Embedded(_)))
     }
 
+    /// Whether a page is read by OCR.
+    pub(super) fn reads_pages(&self) -> bool {
+        !self.read_pages.is_empty()
+    }
+
     /// The indices of the pages OCR reads, in order.
     pub(super) fn pages_read(&self) -> Vec<usize> {
         self.events
@@ -287,14 +294,22 @@ impl Recording {
             .collect()
     }
 
-    /// Writes the recording to `xhtml`, until the output stops taking it, each page OCR reads
-    /// ended by `page_ends`. The output stopping at the write limit on a page is recorded as
-    /// `PDF2XHTML.processPage` records it.
-    pub(super) fn replay(
-        self,
+    /// About how many bytes the recording holds.
+    pub(super) fn size(&self) -> usize {
+        let events = self.events.len() + self.read_pages.iter().map(Vec::len).sum::<usize>();
+        self.text.len() + events * size_of::<Event>() + self.spans.len() * size_of::<Span>()
+    }
+
+    /// Writes what is recorded to `xhtml`, until the output stops taking it, each page OCR
+    /// reads ended by `page_ends`, and forgets it, the metadata as it stands kept. The output
+    /// stopping at the write limit on a page is recorded as `PDF2XHTML.processPage` records it.
+    /// No page may be held back.
+    pub(super) fn flush(
+        &mut self,
         xhtml: &mut Xhtml,
         mut page_ends: Option<&mut dyn EndPage>,
     ) -> Result<(), Failure> {
+        assert!(self.held.is_none(), "a recording is flushed between pages");
         let mut in_page = false;
         let result = self.replay_events(&self.events, xhtml, &mut in_page, &mut page_ends);
         if in_page && matches!(result, Err(Failure::Stopped(Stop::LimitReached))) {
@@ -302,6 +317,10 @@ impl Recording {
                 .metadata_mut()
                 .set("tk:exception:write-limit-reached", "true");
         }
+        self.events.clear();
+        self.read_pages.clear();
+        self.text.clear();
+        self.spans.clear();
         result
     }
 

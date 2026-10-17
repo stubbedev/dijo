@@ -1,8 +1,11 @@
 //! A fast hasher for maps keyed by the program's own tables or by codes a document defines, where
 //! SipHash's resistance to chosen keys buys nothing: FxHash's rotate, xor and multiply, a word at
-//! a time.
+//! a time. The hash is rotated before use, as rustc-hash 2 rotates it: a product's low bits
+//! depend only on the key's low bits, and the table picks buckets by the low bits, so keys that
+//! differ only above them, such as codes that are multiples of a power of two, would share a
+//! bucket.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// 2^64 divided by the golden ratio.
@@ -52,9 +55,29 @@ impl Hasher for FastHasher {
     }
 
     fn finish(&self) -> u64 {
-        self.0
+        self.0.rotate_left(26)
     }
 }
 
 /// A map hashed with [`FastHasher`].
 pub(crate) type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
+
+/// A set hashed with [`FastHasher`].
+pub(crate) type FastSet<T> = HashSet<T, BuildHasherDefault<FastHasher>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spreads_keys_that_differ_only_in_high_bits_over_the_low_bits() {
+        let low_bits: FastSet<u64> = (0..1024u32)
+            .map(|key| {
+                let mut hasher = FastHasher::default();
+                hasher.write_u32(key << 20);
+                hasher.finish() & 1023
+            })
+            .collect();
+        assert!(low_bits.len() > 600, "{} buckets", low_bits.len());
+    }
+}

@@ -17,6 +17,7 @@ use super::cos::{as_dict, float_value, int_value, name_string, Identity, Pdf};
 use super::encoding::{self, Builtin, Encoding, GlyphList, Kind as EncodingKind};
 use super::jfloat;
 use super::matrix::Matrix;
+use super::position::GlyphText;
 use super::truetype::{self, TrueType};
 use super::type1::{self, BuiltIn, Type1};
 use super::Unported;
@@ -356,7 +357,7 @@ fn first_operation(pdf: &Pdf, stream: &Stream) -> Result<Option<(String, Vec<Obj
     let mut operands = Vec::new();
     while let Some(token) = lexer.next_token()? {
         match token {
-            Token::Operator(name) => return Ok(Some((name, operands))),
+            Token::Operator(name) => return Ok(Some((name.into_owned(), operands))),
             Token::Operand(object) => operands.push(object),
         }
     }
@@ -1042,7 +1043,7 @@ impl Font {
     }
 
     /// `PDFont.toUnicode(int)` as the base class maps a code with the `ToUnicode` map.
-    fn base_to_unicode(&self, code: u32) -> Result<Option<String>, Unported> {
+    fn base_to_unicode(&self, code: u32) -> Result<Option<GlyphText>, Unported> {
         let Some(cmap) = &self.to_unicode else {
             return Ok(None);
         };
@@ -1056,17 +1057,21 @@ impl Font {
         if code < 256 && self.is_simple() {
             if let Some(encoding) = &self.encoding_entry {
                 if !encoding.starts_with("Identity") {
-                    return Ok(cmap.to_unicode_length(code, 1).map(str::to_owned));
+                    return Ok(cmap.to_unicode_length(code, 1).map(GlyphText::new));
                 }
             }
         }
-        Ok(cmap.to_unicode(code).map(str::to_owned))
+        Ok(cmap.to_unicode(code).map(GlyphText::new))
     }
 
     /// `toUnicode`: the text of a code, a simple font's glyph names read with PDFBox's
     /// extended glyph list as `LegacyPDFStreamEngine` reads them when `extended`, or with the
     /// Adobe Glyph List as `toUnicode(int)` reads them.
-    pub(super) fn to_unicode(&self, code: u32, extended: bool) -> Result<Option<String>, Unported> {
+    pub(super) fn to_unicode(
+        &self,
+        code: u32,
+        extended: bool,
+    ) -> Result<Option<GlyphText>, Unported> {
         match &self.kind {
             FontKind::Simple(simple) => {
                 if let Some(unicode) = self.base_to_unicode(code)? {
@@ -1686,9 +1691,9 @@ fn sniffed_cid_subtype(
 
 /// `(char) code` as a string: the low 16 bits of the code as one UTF-16 unit, unported when
 /// that unit is half of a surrogate pair.
-fn java_char(code: u32) -> Result<String, Unported> {
+fn java_char(code: u32) -> Result<GlyphText, Unported> {
     char::from_u32(code & 0xFFFF)
-        .map(String::from)
+        .map(GlyphText::from)
         .ok_or_else(|| Unported("a glyph mapped to half of a UTF-16 surrogate pair".to_owned()))
 }
 
@@ -2161,8 +2166,8 @@ mod tests {
 
     #[test]
     fn coerces_codes_to_java_chars() {
-        assert_eq!(java_char(0x41).unwrap(), "A");
-        assert_eq!(java_char(0x10041).unwrap(), "A");
+        assert_eq!(java_char(0x41).unwrap().as_str(), "A");
+        assert_eq!(java_char(0x10041).unwrap().as_str(), "A");
         assert!(java_char(0xD800).is_err());
     }
 }
