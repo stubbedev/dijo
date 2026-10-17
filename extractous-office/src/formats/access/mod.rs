@@ -4,9 +4,10 @@
 //! query as the SQL Jackcess writes for it.
 //!
 //! The port reads the whole database while it prepares, so that whatever Jackcess would throw
-//! leaves the database to Tika before anything is written. It also leaves to Tika a database
-//! encrypted with Office encryption, which needs a password, an MSISAM database, and a Jet 3
-//! table name Jackcess may not find through the catalog's index.
+//! leaves the database to Tika before anything is written. A database under Office encryption
+//! fails as encrypted without a password and is left to Tika with one. The port also leaves to
+//! Tika an MSISAM database, and a Jet 3 table name Jackcess may not find through the catalog's
+//! index.
 
 mod buffer;
 mod column;
@@ -30,6 +31,7 @@ use properties::{PropertyMap, PropertyMaps};
 use query::Sql;
 
 use crate::config::ParserConfigs;
+use crate::formats::crypt;
 use crate::formats::embedded::{ParseContext, Wrapping};
 use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
@@ -43,6 +45,10 @@ use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::TimeZone;
 use crate::java::utf16_length;
 
+/// What Jackcess throws opening a database under Office encryption without its password.
+const INCORRECT_PASSWORD: &str =
+    "com.healthmarketscience.jackcess.crypt.InvalidCredentialsException: Incorrect password \
+     provided";
 const SUMMARY_PREFIX: &str = "mdb-summary-prop:";
 const PROPERTY_PREFIX: &str = "mdb-prop:";
 const USER_PROPERTY_PREFIX: &str = "mdb-user-prop:";
@@ -84,7 +90,7 @@ impl Parser for JackcessParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let extraction = extract(input, configs).map_err(Declined::Deferred)?;
+        let extraction = extract(input, configs)?;
         Ok(Box::new(move |xhtml| extraction.write(xhtml)))
     }
 }
@@ -260,11 +266,18 @@ impl Formats {
     }
 }
 
-/// Reads the database as `JackcessExtractor.parse` does.
-fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Deferral> {
+/// Reads the database as `JackcessExtractor.parse` does. A database under Office encryption
+/// fails as encrypted where no password is given, as Tika's path fails on it, and is left to
+/// Tika where one is.
+fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined> {
     let formats = Formats::new()?;
     let thrown = Thrown::reason;
-    let database = Database::open(input).map_err(thrown)?;
+    let database = Database::open(input).map_err(|thrown| match thrown {
+        Thrown::Encrypted if configs.password.is_none() => {
+            Declined::Fails(crypt::encrypted(Some(INCORRECT_PASSWORD)))
+        }
+        thrown => Declined::Deferred(thrown.reason()),
+    })?;
     let mut metadata = Vec::new();
     let add_all = |maps: PropertyMaps, prefix: &'static str, metadata: &mut Vec<Entry>| {
         for property in maps.default_map().iter() {
@@ -298,11 +311,11 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Deferral
             break;
         };
         if iterated.contains(&info.page) {
-            return Err(
+            return Err(Declined::Deferred(
                 "two names for one table definition, which Jackcess may hand out as one table \
                  whose rows were read"
                     .to_owned(),
-            );
+            ));
         }
         iterated.push(info.page);
         let table = database.load_table(&info).map_err(thrown)?;

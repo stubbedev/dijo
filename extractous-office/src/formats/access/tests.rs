@@ -9,8 +9,10 @@ use super::format::Detected;
 use super::pages::rc4;
 use super::*;
 #[cfg(feature = "tika")]
+use crate::config::Password;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents,
+    assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, errors,
     spools_as_tika, Departure, Departures,
 };
 use crate::formats::parity::{deferral, Scratch};
@@ -43,9 +45,11 @@ fn extracts_access_databases_as_tikas_path_does() {
         Path::new("../quality/corpus"),
     ];
     let (parsed, deferred) = documents(&JackcessParser, &roots);
-    assert_eq!(names(&deferred), ["tika-password.accdb"]);
-    let reason = deferral(&JackcessParser, &deferred[0]).unwrap();
-    assert!(reason.contains("an encrypted database"), "{reason}");
+    assert_eq!(names(&deferred), [""; 0]);
+    let (encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+        .into_iter()
+        .partition(|path| path.ends_with("tika-password.accdb"));
+    assert_fails_as_encrypted(&encrypted);
     assert_eq!(
         names(&parsed),
         [
@@ -63,6 +67,41 @@ fn extracts_access_databases_as_tikas_path_does() {
     );
     let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_departing(&parsed, JackcessParser.tika_name(), DEPARTURES);
+}
+
+/// Asserts that each of `encrypted`, one database, fails without a password as encrypted, with
+/// the error Tika's path fails with, and is left to Tika with one.
+#[cfg(feature = "tika")]
+fn assert_fails_as_encrypted(encrypted: &[PathBuf]) {
+    assert_eq!(encrypted.len(), 1);
+    let path = &encrypted[0];
+    let (native, tika) = errors(path, &ParserConfigs::default());
+    assert_eq!(native, tika);
+    assert!(native.starts_with("Encrypted("), "{native}");
+    let configs = ParserConfigs::default().with_password(Some(&Password::new("tika")));
+    let input = std::fs::read(path).unwrap();
+    assert_eq!(
+        JackcessParser
+            .defers(&input, &TikaMetadata::new(), &configs)
+            .as_deref(),
+        Some("an encrypted database, which the port does not decrypt")
+    );
+}
+
+#[test]
+fn fails_on_encrypted_databases_as_encrypted() {
+    let mut header = fixture("ace-complex.accdb");
+    let Ok(format::Detected::Format(format)) = format::detect(&header) else {
+        panic!("an ACE database");
+    };
+    let start = format.offset_encoding_key;
+    header[start] ^= 1;
+    let scratch = Scratch::new("access-encrypted");
+    let path = scratch.write("encrypted.accdb", &header);
+    let error = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap_err();
+    assert!(matches!(error, crate::Error::Encrypted(_)), "{error:?}");
 }
 
 #[cfg(feature = "tika")]
@@ -211,7 +250,11 @@ fn leaves_jet3_names_the_index_may_not_find_to_tika() {
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {
     let (parsed, deferred) = documents(&JackcessParser, &[&conformance_corpus()]);
-    assert_eq!(names(&deferred), ["testAccess2_encrypted.accdb"]);
+    assert_eq!(names(&deferred), [""; 0]);
+    let (encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+        .into_iter()
+        .partition(|path| path.ends_with("testAccess2_encrypted.accdb"));
+    assert_fails_as_encrypted(&encrypted);
     assert_eq!(
         names(&parsed),
         [

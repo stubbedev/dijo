@@ -4,13 +4,15 @@
 
 /// Why reading a database stops: an exception Jackcess throws, of which only an
 /// `IllegalStateException` while reading a column's usage maps is ever caught, so that any other
-/// ends the parse; or something the port leaves to Tika. Either way the port leaves the database
-/// to Tika.
+/// ends the parse; something the port leaves to Tika, which it then leaves the database to; or
+/// Office encryption, which needs a password.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Thrown {
     IllegalState(String),
     Other(String),
     Unported(String),
+    /// The database is encrypted with Office encryption.
+    Encrypted,
 }
 
 impl Thrown {
@@ -38,6 +40,9 @@ impl Thrown {
                 format!("an Access database Jackcess throws reading: {message}")
             }
             Thrown::Unported(what) => format!("{what}, which the port does not read"),
+            Thrown::Encrypted => {
+                "an encrypted database, which the port does not decrypt".to_owned()
+            }
         }
     }
 }

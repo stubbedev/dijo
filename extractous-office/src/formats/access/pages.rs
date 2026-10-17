@@ -20,8 +20,8 @@ pub(super) struct Pages<'a> {
 }
 
 impl<'a> Pages<'a> {
-    /// `PageChannel.initialize`'s codec: `CryptCodecProvider.createHandler`. Office encryption
-    /// needs a password, which the port does not take.
+    /// `PageChannel.initialize`'s codec: `CryptCodecProvider.createHandler`, which the port has
+    /// for the Jet codec; a database under Office encryption is refused as encrypted.
     pub(super) fn open(file: &'a [u8], format: &'static Format) -> Result<Self, Thrown> {
         let mut pages = Self {
             file,
@@ -38,11 +38,7 @@ impl<'a> Pages<'a> {
         }
         match format.codec {
             CodecType::Jet => pages.encoding_key = Some(key),
-            CodecType::Office => {
-                return Err(Thrown::unported(
-                    "an encrypted database, which needs a password",
-                ))
-            }
+            CodecType::Office => return Err(Thrown::Encrypted),
         }
         Ok(pages)
     }
