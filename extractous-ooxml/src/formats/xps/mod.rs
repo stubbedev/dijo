@@ -24,7 +24,7 @@ const XPS_DOCUMENT: &str = "http://schemas.microsoft.com/xps/2005/06/fixedrepres
 const OPEN_XPS_DOCUMENT: &str = "http://schemas.openxps.org/oxps/v1.0/fixedrepresentation";
 
 /// Tika's `OOXMLParser` of XPS documents.
-pub(crate) struct XpsParser;
+pub struct XpsParser;
 
 impl Parser for XpsParser {
     fn name(&self) -> &'static str {

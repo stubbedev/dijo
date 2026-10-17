@@ -792,9 +792,6 @@ dependencies = [
 name = "extractous-core"
 version = "0.2.1"
 dependencies = [
- "ar",
- "arrayvec",
- "cpio",
  "criterion",
  "extractous-base",
  "extractous-html",
@@ -805,45 +802,18 @@ dependencies = [
  "extractous-native",
  "extractous-odf",
  "extractous-office",
+ "extractous-ooxml",
  "extractous-pdf",
  "extractous-small",
  "extractous-tika",
- "fancy-regex",
- "flate2",
- "hayro",
- "hayro-jbig2",
- "hayro-jpeg2000",
- "image",
- "lcms2-sys",
- "libc",
- "libloading",
- "lopdf",
- "lzma-rust2",
- "lzxd",
- "md-5",
- "memchr",
  "png",
- "pulldown-cmark",
  "quick-xml",
- "rav1d",
- "rc4",
  "regex",
- "rusqlite",
  "serde",
  "serde_json",
- "sha2",
- "snap",
- "tar",
  "test-case",
  "textdistance",
- "thiserror",
- "tiff",
- "unicode-bidi",
- "unicode-general-category",
- "unicode-normalization",
- "unicode-script",
  "ureq",
- "zip",
 ]
 
 [[package]]
@@ -952,6 +922,18 @@ dependencies = [
  "flate2",
  "rc4",
  "regex",
+]
+
+[[package]]
+name = "extractous-ooxml"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-image",
+ "extractous-mime",
+ "extractous-office",
+ "zip",
 ]
 
 [[package]]

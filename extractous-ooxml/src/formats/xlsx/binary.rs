@@ -79,7 +79,7 @@ mod record {
 }
 
 /// Tika's `OOXMLParser` of binary workbooks.
-pub(crate) struct XlsbParser;
+pub struct XlsbParser;
 
 impl Parser for XlsbParser {
     fn name(&self) -> &'static str {

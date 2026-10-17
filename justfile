@@ -421,7 +421,7 @@ parity *args:
             cp -a "$libs/." "$seed/"
         fi
     done
-    cargo nextest run --package extractous-core --lib --cargo-profile parity --run-ignored only \
+    cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
         -E 'not test(/^formats::audit::/)' "$@"
 
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on

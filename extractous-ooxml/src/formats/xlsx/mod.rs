@@ -23,7 +23,7 @@ mod sheet;
 
 use std::collections::{BTreeSet, HashMap};
 
-pub(crate) use binary::XlsbParser;
+pub use binary::XlsbParser;
 use handlers::{
     Connections, DrawingShapes, ExternalLinks, Persons, PivotCache, Protection, SheetRefs,
     ThreadedComments, WorkbookMetadata,
@@ -107,7 +107,7 @@ mod excel {
     pub(super) const HAS_POWER_QUERY: &str = "msoffice:excel:has-power-query";
 }
 
-pub(crate) struct XlsxParser;
+pub struct XlsxParser;
 
 impl Parser for XlsxParser {
     fn name(&self) -> &'static str {

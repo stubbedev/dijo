@@ -25,7 +25,7 @@ const MEDIA_TYPE: &str = "application/x-tika-ooxml-protected";
 /// The native parsers of the formats `OOXMLParser` reads.
 const PACKAGE_PARSERS: [&dyn Parser; 3] = [&DocxParser, &XlsxParser, &PptxParser];
 
-pub(crate) struct ProtectedParser;
+pub struct ProtectedParser;
 
 impl Parser for ProtectedParser {
     fn name(&self) -> &'static str {

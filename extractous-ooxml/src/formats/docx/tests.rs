@@ -10,7 +10,6 @@ use crate::formats::embedded::ParseContext;
 use crate::formats::metafile;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
-#[cfg(feature = "tika")]
 use crate::formats::parity;
 #[cfg(feature = "tika")]
 use crate::formats::parity::assert_same_as_tika_with;
@@ -185,6 +184,7 @@ fn defers(input: &[u8]) -> Option<String> {
 }
 
 fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
+    parity::install_routes();
     let mut out = StringOut::default();
     // Tika's string chain, which leaves the blocks the parser writes where it writes them (#63).
     let chain = Chain::TikaString {

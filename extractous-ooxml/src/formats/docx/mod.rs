@@ -98,7 +98,7 @@ mod name {
 const WORD_EXTRACTOR: &str =
     "org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFEventBasedWordExtractor";
 
-pub(crate) struct DocxParser;
+pub struct DocxParser;
 
 impl Parser for DocxParser {
     fn name(&self) -> &'static str {

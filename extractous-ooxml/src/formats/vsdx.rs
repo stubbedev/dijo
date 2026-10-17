@@ -23,7 +23,7 @@ const PAGE_RELATIONSHIP: &str = "http://schemas.microsoft.com/visio/2010/relatio
 const VISIO_NAMESPACE: &str = "http://schemas.microsoft.com/office/visio/2012/main";
 
 /// Tika's `OOXMLParser` of Visio packages.
-pub(crate) struct VsdxParser;
+pub struct VsdxParser;
 
 impl Parser for VsdxParser {
     fn name(&self) -> &'static str {

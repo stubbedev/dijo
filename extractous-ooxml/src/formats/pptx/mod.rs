@@ -103,7 +103,7 @@ mod name {
 const POWERPOINT_EXTRACTOR: &str =
     "org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor";
 
-pub(crate) struct PptxParser;
+pub struct PptxParser;
 
 impl Parser for PptxParser {
     fn name(&self) -> &'static str {

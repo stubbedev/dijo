@@ -51,6 +51,12 @@ use crate::formats::Output;
 #[cfg(feature = "tika")]
 use crate::formats::StreamOptions;
 use crate::formats::{self, Parser};
+/// Installs the routes of the documents embedded in those native parsers read, which routing a
+/// document installs, for the tests that write a document with its parser directly.
+pub fn install_routes() {
+    formats::install_routes(&formats::Registry);
+}
+
 /// The native path's routing and string extraction, for the tests that drive a parser through them.
 pub use crate::formats::{parse_to_string, route_file, Routed};
 #[cfg(feature = "tika")]

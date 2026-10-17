@@ -5,17 +5,10 @@
 #[cfg(all(test, feature = "tika"))]
 pub(crate) mod audit;
 mod composite;
-mod docx;
-mod ooxml;
 #[cfg(any(test, feature = "parity"))]
 pub mod parity;
-mod pptx;
-mod protected;
 #[cfg(all(test, feature = "tika"))]
 mod url_tests;
-mod vsdx;
-mod xlsx;
-mod xps;
 
 use std::borrow::Cow;
 use std::io::{self, Read};
@@ -43,7 +36,6 @@ pub(crate) use extractous_office::formats::access;
 pub(crate) use extractous_office::formats::compound;
 pub(crate) use extractous_office::formats::doc;
 pub(crate) use extractous_office::formats::msg;
-pub(crate) use extractous_office::formats::ole2;
 pub(crate) use extractous_office::formats::ppt;
 pub(crate) use extractous_office::formats::pst;
 pub(crate) use extractous_office::formats::publisher;
@@ -51,6 +43,12 @@ pub(crate) use extractous_office::formats::rtf;
 pub(crate) use extractous_office::formats::tnef;
 pub(crate) use extractous_office::formats::visio;
 pub(crate) use extractous_office::formats::xls;
+pub(crate) use extractous_ooxml::formats::docx;
+pub(crate) use extractous_ooxml::formats::pptx;
+pub(crate) use extractous_ooxml::formats::protected;
+pub(crate) use extractous_ooxml::formats::vsdx;
+pub(crate) use extractous_ooxml::formats::xlsx;
+pub(crate) use extractous_ooxml::formats::xps;
 pub(crate) use extractous_pdf::formats::font;
 pub(crate) use extractous_pdf::formats::pdf;
 pub(crate) use extractous_small::formats::apple_single;
@@ -244,7 +242,7 @@ fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
 }
 
 /// The native parsers gathered, which route the documents embedded in those they read.
-struct Registry;
+pub(crate) struct Registry;
 
 impl Routes for Registry {
     fn embedded_parser(
