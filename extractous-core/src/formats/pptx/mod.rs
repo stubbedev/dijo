@@ -28,7 +28,8 @@ use crate::formats::ooxml::{
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java::is_blank;
 use crate::java::JavaHashMap;
 
@@ -115,6 +116,10 @@ impl Parser for PptxParser {
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser"
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -134,10 +139,20 @@ impl Parser for PptxParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Presentation::open(input, &configs.office)
+        let read = Presentation::open(input, pages, &configs.office)
             .and_then(Presentation::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -153,8 +168,12 @@ struct Presentation<'a> {
 }
 
 impl<'a> Presentation<'a> {
-    fn open(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Self, Unported> {
-        let mut package = Package::open(input)?;
+    fn open(
+        input: &'a [u8],
+        pages: Pages<'a>,
+        config: &'a OfficeParserConfig,
+    ) -> Result<Self, Unported> {
+        let mut package = Package::open(input, pages)?;
         package.order_relationships_numerically();
         let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()
@@ -384,7 +403,7 @@ impl<'a> Presentation<'a> {
 
     fn read<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
         let bytes = self.package.read(part)?;
-        xml::parse_sax(&bytes, self.package.name(part), &mut handler)?;
+        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
         Ok(handler)
     }
 

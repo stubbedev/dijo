@@ -404,7 +404,7 @@ fn relationship_part_name(part: &PartName) -> Option<PartName> {
     part_name(&to_uri_text(&format!("{directory}_rels/{file}.rels")))
 }
 
-fn read_entry(zip: &ZipFile<'_>, entry: &ZipEntry) -> Option<Content> {
+fn read_entry<'a>(zip: &ZipFile<'a>, entry: &ZipEntry) -> Option<Content<'a>> {
     zip.read(entry)
 }
 

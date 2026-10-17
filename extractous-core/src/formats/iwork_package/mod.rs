@@ -97,7 +97,7 @@ fn read(input: &[u8]) -> Result<Package, Unported> {
                      may report whitespace as ignorable",
                 ));
             }
-            entries.push(Entry::Document(kind, content));
+            entries.push(Entry::Document(kind, content.into_owned()));
         }
     }
     Ok(Package {

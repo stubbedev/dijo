@@ -205,6 +205,44 @@ impl Charset {
         self.decode(bytes)
     }
 
+    /// The text of `bytes` as [`Charset::decode`] gives it, in pieces decoded one at a time
+    /// from at least `size` bytes each, the last from what is left, so that decoding a large
+    /// input holds no more than a piece of it. `None` for a charset this port does not decode.
+    pub(crate) fn pieces(self, bytes: &[u8], size: usize) -> Option<Pieces<'_>> {
+        let decoding = self.decoding();
+        let (rest, big_endian) = match decoding {
+            Decoding::None => return None,
+            Decoding::Utf16 {
+                big_endian,
+                sniff_bom,
+            } => match bytes {
+                [0xFE, 0xFF, rest @ ..] if *sniff_bom => (rest, true),
+                [0xFF, 0xFE, rest @ ..] if *sniff_bom => (rest, false),
+                _ => (bytes, *big_endian),
+            },
+            Decoding::Utf32 {
+                big_endian,
+                sniff_bom,
+            } => match bytes {
+                [0x00, 0x00, 0xFE, 0xFF, rest @ ..] if *sniff_bom => (rest, true),
+                [0xFF, 0xFE, 0x00, 0x00, rest @ ..] if *sniff_bom => (rest, false),
+                _ => (bytes, *big_endian),
+            },
+            _ => (bytes, true),
+        };
+        let whatwg = match decoding {
+            Decoding::Whatwg(encoding) => Some(encoding.new_decoder_without_bom_handling()),
+            _ => None,
+        };
+        Some(Pieces {
+            decoding,
+            rest,
+            size: size.max(1),
+            big_endian,
+            whatwg,
+        })
+    }
+
     /// Whether the JDK's strict decoder, given `window` as the whole input and room for one
     /// UTF-16 unit, reports an error, and otherwise how many bytes it consumed: none for a
     /// character that needs two units. `None` for a charset other than the East Asian multi-byte
@@ -214,6 +252,101 @@ impl Charset {
             Decoding::MultiByte(decoder) => Some(decoder.decode_first(window)),
             _ => None,
         }
+    }
+}
+
+/// The pieces of [`Charset::pieces`]. Each piece ends where decoding it apart from what
+/// follows gives what decoding the whole gives: anywhere for a single-byte charset, before an
+/// ASCII byte for UTF-8, which no sequence continues with, after a whole unit that is no high
+/// surrogate for UTF-16 and after a whole unit for UTF-32, once a byte order mark has set the
+/// byte order. The East Asian multi-byte charsets decode the characters that end past the
+/// piece's size, looking ahead into what follows as the whole's decoding does; ISO-2022-JP,
+/// whose escapes switch the decoder's state for what follows, decodes with `encoding_rs`'s
+/// streaming decoder.
+pub(crate) struct Pieces<'a> {
+    decoding: &'static Decoding,
+    rest: &'a [u8],
+    size: usize,
+    big_endian: bool,
+    whatwg: Option<encoding_rs::Decoder>,
+}
+
+impl Pieces<'_> {
+    /// Where the next piece ends.
+    fn cut(&self) -> usize {
+        let rest = self.rest;
+        let size = self.size;
+        if rest.len() <= size {
+            return rest.len();
+        }
+        let at_or_end = |found: Option<usize>| found.map_or(rest.len(), |at| size + at);
+        match self.decoding {
+            Decoding::SingleByte(_)
+            | Decoding::MultiByte(_)
+            | Decoding::Whatwg(_)
+            | Decoding::None => size,
+            Decoding::Utf8 => at_or_end(rest[size..].iter().position(u8::is_ascii)),
+            Decoding::Utf16 { .. } => {
+                let mut cut = size.next_multiple_of(2);
+                while cut <= rest.len() {
+                    let unit = [rest[cut - 2], rest[cut - 1]];
+                    let unit = if self.big_endian {
+                        u16::from_be_bytes(unit)
+                    } else {
+                        u16::from_le_bytes(unit)
+                    };
+                    if !(0xD800..=0xDBFF).contains(&unit) {
+                        return cut;
+                    }
+                    cut += 2;
+                }
+                rest.len()
+            }
+            Decoding::Utf32 { .. } => size.next_multiple_of(4).min(rest.len()),
+        }
+    }
+}
+
+impl Iterator for Pieces<'_> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        if self.rest.is_empty() {
+            return None;
+        }
+        if let Decoding::MultiByte(decoder) = self.decoding {
+            let (text, read) = decoder.decode_prefix(self.rest, self.size);
+            self.rest = &self.rest[read..];
+            return Some(text);
+        }
+        let (piece, rest) = self.rest.split_at(self.cut());
+        self.rest = rest;
+        Some(match self.decoding {
+            Decoding::SingleByte(table) => piece.iter().map(|&b| table[usize::from(b)]).collect(),
+            Decoding::MultiByte(_) => unreachable!("a multi-byte charset decodes its own pieces"),
+            Decoding::Utf8 => decode_utf8(piece),
+            Decoding::Utf16 { .. } => decode_utf16(piece, self.big_endian, false),
+            Decoding::Utf32 { .. } => decode_utf32(piece, self.big_endian, false),
+            Decoding::Whatwg(_) => {
+                let decoder = self
+                    .whatwg
+                    .as_mut()
+                    .expect("an encoding_rs charset's pieces hold its decoder");
+                let last = self.rest.is_empty();
+                let mut text = String::with_capacity(
+                    decoder
+                        .max_utf8_buffer_length(piece.len())
+                        .expect("a piece's text fits in memory"),
+                );
+                let (result, read, _) = decoder.decode_to_string(piece, &mut text, last);
+                assert!(
+                    result == encoding_rs::CoderResult::InputEmpty && read == piece.len(),
+                    "a buffer of the decoder's maximum length holds the piece's text"
+                );
+                text
+            }
+            Decoding::None => unreachable!("a charset without a decoder has no pieces"),
+        })
     }
 }
 
@@ -465,6 +598,48 @@ mod tests {
             }
         }
         hash
+    }
+
+    #[test]
+    fn decodes_in_pieces_as_whole() {
+        let mut random = SplitMix64(0x9133);
+        let inputs: Vec<Vec<u8>> = (0..300)
+            .map(|_| {
+                let length = (random.next() % 64) as usize;
+                (0..length)
+                    .map(|_| {
+                        let r = random.next();
+                        match r % 8 {
+                            0 => b'\n',
+                            1 => 0x1B,
+                            2..=4 => (r >> 8) as u8 & 0x7F,
+                            _ => (r >> 8) as u8,
+                        }
+                    })
+                    .collect()
+            })
+            .chain([
+                b"\xFE\xFF\x00a\xD8\x3D\xDE\x00\x00b".to_vec(),
+                b"\xFF\xFE\x00\x00a\x00\x00\x00".to_vec(),
+                b"\x1b$B$3$s$K$A$O\x1b(B world, \x1b$B@$3&\x1b(B".to_vec(),
+            ])
+            .collect();
+        for entry in &REGISTRY.entries {
+            let charset = Charset::named(&entry.name);
+            for input in &inputs {
+                let Some(whole) = charset.decode(input) else {
+                    continue;
+                };
+                for size in [1, 2, 3, 5, 8] {
+                    let pieces: String = charset.pieces(input, size).unwrap().collect();
+                    assert_eq!(
+                        pieces, whole,
+                        "{} in pieces of {size}: {input:?}",
+                        entry.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]

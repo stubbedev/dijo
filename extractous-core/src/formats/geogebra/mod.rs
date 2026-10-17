@@ -130,7 +130,7 @@ fn data(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Data, Unread> {
         return Ok(Data::Unsupported);
     }
     match zip.read(entry) {
-        Some(Content::Complete(data)) => Ok(Data::Read(data)),
+        Some(Content::Complete(data)) => Ok(Data::Read(data.into_owned())),
         _ => Err(Unread("an entry the port does not decompress whole")),
     }
 }

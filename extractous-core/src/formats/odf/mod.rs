@@ -20,7 +20,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages};
 use crate::mime::{self, Origin};
 
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -197,12 +198,12 @@ struct Archive<'a> {
     zip: ZipFile<'a>,
     entries: Vec<Entry>,
     /// The entries read ahead to check them, by name, each to be read once more.
-    read_ahead: HashMap<String, Vec<u8>>,
+    read_ahead: HashMap<String, Input<'a>>,
 }
 
 impl<'a> Archive<'a> {
-    fn open(input: &'a [u8]) -> Result<Self, Failure> {
-        let zip = ZipFile::open(input, "OpenDocument")?;
+    fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Failure> {
+        let zip = ZipFile::open(input, pages, "OpenDocument")?;
         let entries = zip
             .entries()
             .iter()
@@ -222,7 +223,7 @@ impl<'a> Archive<'a> {
         self.entries.iter().filter(move |entry| entry.kind == kind)
     }
 
-    fn read(&mut self, entry: &Entry) -> Result<Vec<u8>, Failure> {
+    fn read(&mut self, entry: &Entry) -> Result<Input<'a>, Failure> {
         match self.read_ahead.remove(entry.name()) {
             Some(bytes) => Ok(bytes),
             None => self.zip.read(&entry.entry),
@@ -313,8 +314,8 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
 
 /// The archive of the document in `input`, its metadata, type and bodies read ahead, or why
 /// Tika's path should read it rather than this parser.
-fn read_ahead(input: &[u8]) -> Result<Archive<'_>, &'static str> {
-    let Ok(mut archive) = Archive::open(input) else {
+fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, &'static str> {
+    let Ok(mut archive) = Archive::open(input, pages) else {
         return Err(UNREADABLE_ARCHIVE);
     };
     if !archive.has_every_record(input) {
@@ -360,6 +361,10 @@ impl Parser for OpenDocumentParser {
         "org.apache.tika.parser.odf.OpenDocumentParser"
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn media_types(&self) -> &'static [&'static str] {
         &MEDIA_TYPES
     }
@@ -367,10 +372,20 @@ impl Parser for OpenDocumentParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let archive = read_ahead(input).map_err(str::to_owned)?;
+        let archive = read_ahead(input, pages).map_err(str::to_owned)?;
         Ok(Box::new(move |xhtml| write(archive, configs, xhtml)))
     }
 }
@@ -394,7 +409,7 @@ fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Re
             EntryKind::Body => {
                 let bytes = archive.read(entry)?;
                 let mut body = body::Body::new(xhtml, configs.office.includes_deleted_content());
-                xml::parse_sax(&bytes, entry.name(), &mut body)?;
+                xml::parse_part(&bytes, entry.name(), &mut body)?;
             }
             EntryKind::Embedded => {
                 let bytes = archive.read(entry)?;

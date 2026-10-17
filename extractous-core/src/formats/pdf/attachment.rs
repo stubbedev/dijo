@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 
-use lopdf::xref::XrefEntry;
 use lopdf::{Dictionary, Object, ObjectId, StringFormat};
 
 use super::cos::{as_dict, text_string, Pdf};
@@ -273,7 +272,7 @@ fn find<'p>(
 /// The file specifications `extractEmbeddedDocuments` processes, each with the name it is
 /// processed under: those among the document's objects, then those its tree of embedded
 /// files names that are not among them.
-pub(super) fn document_specs(pdf: &Pdf) -> Result<Vec<(String, &Dictionary)>, Unported> {
+pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> Result<Vec<(String, &'p Dictionary)>, Unported> {
     let mut specs: Vec<(String, &Dictionary)> = file_spec_objects(pdf)?
         .into_iter()
         .map(|dict| (String::new(), dict))
@@ -301,50 +300,24 @@ pub(super) fn document_specs(pdf: &Pdf) -> Result<Vec<(String, &Dictionary)>, Un
 /// PDFBox's `HashMap` of their keys holds them, which follows hash buckets, not the document
 /// (#109).
 ///
-/// The objects `lopdf` could not read are left out where none of them can be a file
-/// specification, the document's bytes not spelling `Filespec` and none of them held in an
-/// object stream; otherwise the first is needed, and what PDFBox recovers of the table, and
-/// of them, is not known.
-fn file_spec_objects(pdf: &Pdf) -> Result<Vec<&Dictionary>, Unported> {
-    let mut keys: Vec<ObjectId> = Vec::with_capacity(pdf.doc.reference_table.entries.len());
-    let mut compressed_lost = false;
-    for (&number, entry) in &pdf.doc.reference_table.entries {
-        match *entry {
-            XrefEntry::Normal { generation, .. } if generation > 0 => {
-                return Err(Unported(format!(
-                    "object {number} of generation {generation}, whose earlier generations \
-                     PDFBox may still list among the document's objects"
-                )));
-            }
-            XrefEntry::Normal { generation, .. } => keys.push((number, generation)),
-            XrefEntry::Compressed { .. } => {
-                compressed_lost |= pdf.is_lost(number);
-                keys.push((number, 0));
-            }
-            XrefEntry::Free | XrefEntry::UnusableFree => {}
-        }
+/// PDFBox reads every object for it. A document whose bytes do not spell `Filespec` and whose
+/// table puts no object in an object stream holds none, and its objects are left unread.
+fn file_spec_objects<'p>(pdf: &'p Pdf) -> Result<Vec<&'p Dictionary>, Unported> {
+    let listed = pdf.listed();
+    if !pdf.spells_filespec && !listed.iter().any(|&id| pdf.is_compressed(id)) {
+        return Ok(Vec::new());
     }
-    keys.sort_unstable();
-    let mut found: Vec<&Dictionary> = Vec::new();
-    let mut lost: Vec<ObjectId> = Vec::new();
-    for key in keys {
-        if pdf.is_lost(key.0) {
-            lost.push(key);
-            continue;
-        }
-        let Some(dict) = pdf.indirect(key).and_then(as_dict) else {
-            continue;
-        };
-        if pdf.name(dict, b"Type") == Some(FILESPEC) {
-            found.push(dict);
-        }
+    if let Some(&(number, generation)) = listed.iter().find(|(_, generation)| *generation > 0) {
+        return Err(Unported(format!(
+            "object {number} of generation {generation}, whose earlier generations PDFBox may \
+             still list among the document's objects"
+        )));
     }
-    if !found.is_empty() || pdf.spells_filespec || compressed_lost {
-        if let Some(&key) = lost.first() {
-            pdf.indirect(key);
-        }
-    }
-    Ok(found)
+    Ok(listed
+        .into_iter()
+        .filter_map(|id| pdf.indirect(id).and_then(as_dict))
+        .filter(|dict| pdf.name(dict, b"Type") == Some(FILESPEC))
+        .collect())
 }
 
 /// `extractFilesfromEFTree`: the names and specifications of a node of the tree of embedded

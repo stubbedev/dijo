@@ -35,7 +35,7 @@
 //! The parser writes through an `XHTMLContentHandler`, which writes the `html`, `head` (with a
 //! `meta` for each metadata value set so far) and `body` elements when the first body element
 //! starts, so the head carries every value above except `csv:num-columns` and `csv:num-rows`.
-//! Between `startDocument` and `endDocument` it emits, for a [`Body::Paragraph`]:
+//! Between `startDocument` and `endDocument` it emits, for plain text:
 //!
 //! ```text
 //! startElement("p")
@@ -43,7 +43,7 @@
 //! endElement("p")
 //! ```
 //!
-//! and for a [`Body::Table`]:
+//! and for a table:
 //!
 //! ```text
 //! startElement("table")
@@ -65,15 +65,16 @@ mod csv;
 mod reference;
 mod sniffer;
 
+use csv::Records;
 use sniffer::Delimiter;
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::formats::{Declined, Deferral, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::mime::MediaType;
-use crate::text::charset::Detection;
 
 /// The UTF-16 units of each read of `handleText`'s buffer, each written as one `characters`
 /// event.
@@ -100,37 +101,55 @@ impl Parser for TextAndCsvParser {
         &["text/plain"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        prepare(input, metadata).map_err(Declined::Deferred)
+        prepare(input, pages, metadata).map_err(Declined::Deferred)
     }
 }
 
-/// What [`TextAndCsvParser`] prepares of `input`: the document read whole, which holds nothing
-/// of it.
-pub(crate) fn prepare(
-    input: &[u8],
+/// What [`TextAndCsvParser`] prepares of `input`, whose `pages` are released as the text is
+/// read: the text, decoded, sniffed and written a piece at a time.
+pub(crate) fn prepare<'a>(
+    input: &'a [u8],
+    pages: Pages<'a>,
     metadata: &TikaMetadata,
-) -> Result<Prepared<'static>, Deferral> {
+) -> Result<Prepared<'a>, Deferral> {
     if let Some(reason) = AutoDetectReader::defers(input) {
         return Err(reason.to_owned());
     }
-    let document = read(input, metadata.get("Content-Type"), Sniff::Table);
-    Ok(Box::new(move |xhtml| document?.write(xhtml)))
+    let content_type = metadata.get("Content-Type").map(str::to_owned);
+    Ok(Box::new(move |xhtml| {
+        write(input, pages, content_type.as_deref(), Sniff::Table, xhtml)
+    }))
 }
 
 /// What [`prepare`] prepares of a `text/plain` part of an email: plain text, never a table.
 /// Tika sniffs such a part for a table, and makes it `text/csv` when it looks like one (#82).
-pub(crate) fn prepare_plain(input: &[u8]) -> Result<Prepared<'static>, Deferral> {
-    if let Some(reason) = AutoDetectReader::defers(input) {
+pub(crate) fn prepare_plain(input: Vec<u8>) -> Result<Prepared<'static>, Deferral> {
+    if let Some(reason) = AutoDetectReader::defers(&input) {
         return Err(reason.to_owned());
     }
-    let document = read(input, None, Sniff::Never);
-    Ok(Box::new(move |xhtml| document?.write(xhtml)))
+    Ok(Box::new(move |xhtml| {
+        write(&input, Pages::IN_MEMORY, None, Sniff::Never, xhtml)
+    }))
 }
 
 /// Whether text without a content type, or of a type a table may be, is sniffed for a table.
@@ -140,82 +159,22 @@ enum Sniff {
     Never,
 }
 
-/// What TextAndCSVParser makes of an input.
-#[derive(Debug, Clone, PartialEq)]
-struct Document {
-    /// The final `Content-Type`.
-    content_type: MediaType,
-    /// The charset detection, which the `Content-Encoding` and `tk:` metadata report.
-    detection: Detection,
-    body: Body,
-}
-
-/// The content TextAndCSVParser writes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Body {
-    /// One paragraph of the whole decoded text, as `handleText` writes it: one `characters` event
-    /// for each read of up to 4096 UTF-16 units, the last read shorter, no read splitting a
-    /// character.
-    Paragraph(Vec<String>),
-    /// A table of records of values, one `characters` event for each value.
-    Table {
-        delimiter: Delimiter,
-        records: Vec<Vec<String>>,
-    },
-}
-
-impl Document {
-    /// Sets the metadata and writes the body as TextAndCSVParser does. Of the values Tika sets
-    /// more than once, only the last counts: each name keeps the place it was first set at.
-    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        let metadata = xhtml.metadata_mut();
-        auto_detect_reader::set_metadata(&self.detection, metadata);
-        metadata.set("Content-Encoding", self.detection.decode_as.name());
-        metadata.set("Content-Type", self.content_type.to_string());
-        match &self.body {
-            Body::Paragraph(chunks) => {
-                xhtml.start_element("p")?;
-                for chunk in chunks {
-                    xhtml.characters(chunk)?;
-                }
-                xhtml.end_element("p")?;
-            }
-            Body::Table { delimiter, records } => {
-                metadata.set("csv:delimiter", delimiter.name());
-                xhtml.start_element("table")?;
-                for (index, record) in records.iter().enumerate() {
-                    xhtml.start_element("tr")?;
-                    for value in record {
-                        xhtml.start_element("td")?;
-                        xhtml.characters(value)?;
-                        xhtml.end_element("td")?;
-                    }
-                    xhtml.end_element("tr")?;
-                    if index == 0 {
-                        xhtml
-                            .metadata_mut()
-                            .set("csv:num-columns", record.len().to_string());
-                    }
-                }
-                xhtml
-                    .metadata_mut()
-                    .set("csv:num-rows", records.len().to_string());
-                xhtml.end_element("table")?;
-            }
-        }
-        Ok(())
-    }
-}
-
 /// A `text/` media type without parameters.
 fn text_type(subtype: &str) -> MediaType {
     MediaType::named(&format!("text/{subtype}"))
 }
 
-/// What TextAndCSVParser makes of `input` when the metadata's `Content-Type` is `content_type`:
-/// without one, or with a type a table may be, it sniffs the text for a table, unless `sniff`
-/// says never.
-fn read(input: &[u8], content_type: Option<&str>, sniff: Sniff) -> Result<Document, Failure> {
+/// Writes what TextAndCSVParser makes of `input` when the metadata's `Content-Type` is
+/// `content_type`: without one, or with a type a table may be, it sniffs the text for a table,
+/// unless `sniff` says never. Of the values Tika sets more than once, only the last counts:
+/// each name keeps the place it was first set at.
+fn write(
+    input: &[u8],
+    pages: Pages<'_>,
+    content_type: Option<&str>,
+    sniff: Sniff,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     let given = content_type
         .map(|content_type| {
             MediaType::parse(content_type).ok_or_else(|| {
@@ -225,62 +184,108 @@ fn read(input: &[u8], content_type: Option<&str>, sniff: Sniff) -> Result<Docume
             })
         })
         .transpose()?;
-    let AutoDetectReader { detection, text } = AutoDetectReader::read(input, content_type)?;
-    let text = text.as_str();
-    let charset = detection.decode_as;
+    let (detection, mut text) = AutoDetectReader::stream(input, content_type, pages)?;
     let sniffable = |given: &MediaType| {
         [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base_type())
     };
-    let (content_type, body) = match given {
-        Some(given) if !sniffable(&given) => (given, Body::Paragraph(chunks(text))),
-        _ if sniff == Sniff::Never => (text_type("plain"), Body::Paragraph(chunks(text))),
-        _ => match sniffer::sniff(text) {
-            None => (text_type("plain"), Body::Paragraph(chunks(text))),
-            Some(delimiter) => {
-                let table = text_type(if delimiter == Delimiter::Tab {
-                    "tsv"
-                } else {
-                    "csv"
-                });
-                let body = Body::Table {
-                    delimiter,
-                    records: csv::records(text, delimiter.char()),
+    let mut head = Vec::new();
+    let (content_type, delimiter) = match given {
+        Some(given) if !sniffable(&given) => (given, None),
+        _ if sniff == Sniff::Never => (text_type("plain"), None),
+        _ => {
+            let mut units = 0;
+            while units < sniffer::MARK_LIMIT {
+                let Some(piece) = text.next() else {
+                    break;
                 };
-                (table.with_parameter("delimiter", delimiter.name()), body)
+                units += piece.encode_utf16().count();
+                head.push(piece);
             }
-        },
+            match sniffer::sniff(&head.concat()) {
+                None => (text_type("plain"), None),
+                Some(delimiter) => {
+                    let table = text_type(if delimiter == Delimiter::Tab {
+                        "tsv"
+                    } else {
+                        "csv"
+                    });
+                    (
+                        table.with_parameter("delimiter", delimiter.name()),
+                        Some(delimiter),
+                    )
+                }
+            }
+        }
     };
-    Ok(Document {
-        content_type: content_type.with_parameter("charset", charset.name()),
-        detection,
-        body,
-    })
+    let metadata = xhtml.metadata_mut();
+    auto_detect_reader::set_metadata(&detection, metadata);
+    metadata.set("Content-Encoding", detection.decode_as.name());
+    metadata.set(
+        "Content-Type",
+        content_type
+            .with_parameter("charset", detection.decode_as.name())
+            .to_string(),
+    );
+    let chars = head
+        .into_iter()
+        .chain(text)
+        .flat_map(|piece| piece.chars().collect::<Vec<char>>());
+    match delimiter {
+        None => {
+            xhtml.start_element("p")?;
+            for chunk in chunks(chars) {
+                xhtml.characters(&chunk)?;
+            }
+            xhtml.end_element("p")?;
+        }
+        Some(delimiter) => {
+            xhtml.metadata_mut().set("csv:delimiter", delimiter.name());
+            xhtml.start_element("table")?;
+            let mut rows = 0usize;
+            for record in Records::new(chars, delimiter.char()) {
+                xhtml.start_element("tr")?;
+                for value in &record {
+                    xhtml.start_element("td")?;
+                    xhtml.characters(value)?;
+                    xhtml.end_element("td")?;
+                }
+                xhtml.end_element("tr")?;
+                if rows == 0 {
+                    xhtml
+                        .metadata_mut()
+                        .set("csv:num-columns", record.len().to_string());
+                }
+                rows += 1;
+            }
+            xhtml.metadata_mut().set("csv:num-rows", rows.to_string());
+            xhtml.end_element("table")?;
+        }
+    }
+    Ok(())
 }
 
 /// The text as reads of [`CHUNK`] UTF-16 units, a read that would end between the two halves of
 /// a surrogate pair ending before it. Tika's `handleText` splits the pair, and each half becomes
 /// U+FFFD (#66).
-fn chunks(text: &str) -> Vec<String> {
-    let mut chunks = Vec::with_capacity(text.len() / CHUNK + 1);
-    let mut chunk = String::new();
-    let mut units = 0;
-    for c in text.chars() {
-        let width = c.len_utf16();
-        if units + width > CHUNK {
-            chunks.push(std::mem::take(&mut chunk));
-            units = 0;
+fn chunks(mut text: impl Iterator<Item = char>) -> impl Iterator<Item = String> {
+    let mut carried: Option<char> = None;
+    std::iter::from_fn(move || {
+        let mut chunk = String::new();
+        let mut units = 0;
+        while let Some(c) = carried.take().or_else(|| text.next()) {
+            let width = c.len_utf16();
+            if units + width > CHUNK {
+                carried = Some(c);
+                return Some(chunk);
+            }
+            chunk.push(c);
+            units += width;
+            if units == CHUNK {
+                return Some(chunk);
+            }
         }
-        chunk.push(c);
-        units += width;
-        if units == CHUNK {
-            chunks.push(std::mem::take(&mut chunk));
-            units = 0;
-        }
-    }
-    if !chunk.is_empty() {
-        chunks.push(chunk);
-    }
-    chunks
+        (!chunk.is_empty()).then_some(chunk)
+    })
 }
 
 #[cfg(test)]
@@ -335,6 +340,7 @@ mod tests {
 
     #[test]
     fn splits_reads_between_characters() {
+        let chunks = |text: &str| chunks(text.chars()).collect::<Vec<String>>();
         assert_eq!(chunks(""), Vec::<String>::new());
         let full = "a".repeat(CHUNK);
         assert_eq!(chunks(&full), std::slice::from_ref(&full));

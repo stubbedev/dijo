@@ -107,7 +107,7 @@ impl Budget {
 /// `zip.getInputStream(entry)` read to its end, an entry past the budget failing as it does.
 fn content(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusal> {
     match jdk_zip::read(zip, entry)? {
-        Content::Complete(bytes) => Ok(bytes),
+        Content::Complete(bytes) => Ok(bytes.into_owned()),
         _ => Err(failed(format!(
             "The iWork archives decompress to more than {MAX_DECOMPRESSED_BYTES} bytes"
         ))),

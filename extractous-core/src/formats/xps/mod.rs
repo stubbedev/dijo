@@ -14,6 +14,7 @@ use crate::formats::ooxml::{Package, Properties, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Declined, Failure, Opened, Parser, Prepared};
+use crate::input::{Input, Pages};
 
 use page::{Block, Images, PageHandler};
 
@@ -46,7 +47,7 @@ impl Parser for XpsParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let package = Package::open(input).map_err(|Unported(reason)| reason)?;
+        let package = Package::open(input, Pages::IN_MEMORY).map_err(|Unported(reason)| reason)?;
         let properties = Properties::read(&package).map_err(|Unported(reason)| reason)?;
         let document = read_document(&package);
         Ok(Box::new(move |xhtml| {
@@ -98,7 +99,7 @@ fn read_sequences(package: &Package, document: &mut Document) -> Result<(), Fail
         })?;
         let bytes = package.read(part)?;
         let mut references = SourcesOf::new("DocumentReference", false);
-        xml::parse_sax(&bytes, package.name(part), &mut references)?;
+        xml::parse_part(&bytes, package.name(part), &mut references)?;
         for reference in references.sources {
             read_fixed_document(package, &reference, document)?;
         }
@@ -120,7 +121,7 @@ fn read_fixed_document(
     let bytes = zip_entry(package, path)
         .map_err(|_| Failure::Malformed(format!("IOException trying to read: {reference}")))?;
     let mut pages = SourcesOf::new("PageContent", true);
-    xml::parse_sax(&bytes, path, &mut pages)?;
+    xml::parse_part(&bytes, path, &mut pages)?;
     for source in pages.sources {
         let joined = if source.starts_with('/') {
             source
@@ -130,7 +131,7 @@ fn read_fixed_document(
         let page_path = joined.strip_prefix('/').unwrap_or(&joined);
         let bytes = zip_entry(package, page_path)?;
         let mut handler = PageHandler::default();
-        xml::parse_sax(&bytes, page_path, &mut handler)?;
+        xml::parse_part(&bytes, page_path, &mut handler)?;
         let (blocks, images) = handler.finish()?;
         document.pages.push(blocks);
         page::merge_images(&mut document.images, images);
@@ -139,7 +140,7 @@ fn read_fixed_document(
 }
 
 /// `getZipStream`: the archive's entry at `path`, a leading slash dropped from a longer path.
-fn zip_entry(package: &Package, path: &str) -> Result<Vec<u8>, Failure> {
+fn zip_entry<'a>(package: &Package<'a>, path: &str) -> Result<Input<'a>, Failure> {
     let target = if path.len() > 1 {
         path.strip_prefix('/').unwrap_or(path)
     } else {

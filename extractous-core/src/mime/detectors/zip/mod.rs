@@ -603,7 +603,7 @@ impl Streaming {
 
 /// What copying an entry through a `BoundedInputStream` of `limit` bytes gives, or what it
 /// throws.
-fn bounded(data: &Result<Content, Failure>, limit: usize) -> Result<&[u8], Failure> {
+fn bounded<'d>(data: &'d Result<Content<'_>, Failure>, limit: usize) -> Result<&'d [u8], Failure> {
     match data {
         Ok(Content::Complete(bytes) | Content::Oversized(bytes)) => {
             Ok(&bytes[..bytes.len().min(limit)])

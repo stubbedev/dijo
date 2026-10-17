@@ -24,7 +24,8 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::{Wrapping, EXCEPTION_WARNING};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java::to_lower_case;
 use crate::text::charset::Charset;
 
@@ -34,12 +35,30 @@ const CHARSET: &str = "windows-1252";
 const MESSAGE: &str = "message/rfc822";
 const HEADER_PREFIX: &str = "mbox:";
 
-/// A message of the mailbox: its bytes and the metadata the extractor is handed with them,
-/// and whether it was cut at the size limit.
-struct Message {
-    bytes: Vec<u8>,
+/// A message of the mailbox: its lines, which the extractor is handed each ending in a line
+/// feed, the metadata it is handed with them, and whether it was cut at the size limit.
+struct Message<'a> {
+    lines: Vec<&'a [u8]>,
     metadata: TikaMetadata,
     cut: bool,
+}
+
+impl Message<'_> {
+    /// The bytes the extractor is handed.
+    fn bytes(&self) -> Vec<u8> {
+        let length = self.lines.iter().map(|line| line.len() + 1).sum();
+        let mut bytes = Vec::with_capacity(length);
+        for line in &self.lines {
+            bytes.extend_from_slice(line);
+            bytes.push(b'\n');
+        }
+        bytes
+    }
+
+    /// How many bytes of the mailbox the message takes, near enough.
+    fn size(&self) -> usize {
+        self.lines.iter().map(|line| line.len() + 1).sum()
+    }
 }
 
 /// The text of a line of a mailbox: in `charset` where it is given and decodes, else UTF-8
@@ -79,84 +98,100 @@ fn declared_charset(headers: &[Vec<u8>]) -> Option<Charset> {
     })
 }
 
-/// What `MboxParser.parse` hands the extractor, or `None` for an empty input, on whose missing
-/// first line it fails.
-fn messages(input: &[u8]) -> Result<Option<Vec<Message>>, Unported> {
+/// What `MboxParser.parse` hands the extractor, a message at a time, or `None` for an empty
+/// input, on whose missing first line it fails.
+fn messages(input: &[u8]) -> Option<Messages<'_, impl Iterator<Item = &[u8]>>> {
     let mut lines = line_ranges(input).map(|range| &input[range]);
-    let Some(mut current) = lines.next() else {
-        return Ok(None);
-    };
-    let mut messages = Vec::new();
-    loop {
-        if !current.starts_with(RECORD_DIVIDER) {
-            match lines.next() {
-                Some(next) => current = next,
-                None => break,
+    let current = lines.next()?;
+    Some(Messages {
+        lines,
+        current: Some(current),
+    })
+}
+
+/// The messages of a mailbox, read from its lines as they are asked for.
+struct Messages<'a, I: Iterator<Item = &'a [u8]>> {
+    lines: I,
+    /// The line reading goes on from.
+    current: Option<&'a [u8]>,
+}
+
+impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
+    type Item = Result<Message<'a>, Unported>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let current = self.current?;
+            if !current.starts_with(RECORD_DIVIDER) {
+                self.current = self.lines.next();
+                continue;
             }
-            continue;
-        }
-        let mut metadata = TikaMetadata::new();
-        metadata.add_prefixed(
-            HEADER_PREFIX,
-            "from",
-            decode_line(&current[RECORD_DIVIDER.len()..], None),
-        );
-        metadata.set("Content-Type", MESSAGE);
-        metadata.set("tk:content-type-parser-override", MESSAGE);
-        let Some(mut line) = lines.next() else {
-            break;
-        };
-        // A `From ` line right after another starts the next message: Tika takes it for the
-        // first line of this one.
-        if line.starts_with(RECORD_DIVIDER) {
-            current = line;
-            continue;
-        }
-        let mut in_header = true;
-        let mut headers: Vec<Vec<u8>> = Vec::new();
-        let mut bytes = Vec::new();
-        let (next, cut) = loop {
-            if in_header && line.iter().all(|&byte| byte <= b' ') {
-                in_header = false;
+            let mut metadata = TikaMetadata::new();
+            metadata.add_prefixed(
+                HEADER_PREFIX,
+                "from",
+                decode_line(&current[RECORD_DIVIDER.len()..], None),
+            );
+            metadata.set("Content-Type", MESSAGE);
+            metadata.set("tk:content-type-parser-override", MESSAGE);
+            let Some(mut line) = self.lines.next() else {
+                self.current = None;
+                return None;
+            };
+            // A `From ` line right after another starts the next message: Tika takes it for
+            // the first line of this one.
+            if line.starts_with(RECORD_DIVIDER) {
+                self.current = Some(line);
+                continue;
             }
-            if in_header {
-                match headers.last_mut() {
-                    Some(last) if matches!(line.first(), Some(b' ' | b'\t')) => {
-                        last.push(b' ');
-                        last.extend_from_slice(trim_bytes(line));
+            let mut in_header = true;
+            let mut headers: Vec<Vec<u8>> = Vec::new();
+            let mut lines = Vec::new();
+            let mut size = 0;
+            let (next, cut) = loop {
+                if in_header && line.iter().all(|&byte| byte <= b' ') {
+                    in_header = false;
+                }
+                if in_header {
+                    match headers.last_mut() {
+                        Some(last) if matches!(line.first(), Some(b' ' | b'\t')) => {
+                            last.push(b' ');
+                            last.extend_from_slice(trim_bytes(line));
+                        }
+                        // A continuation of no header continues nothing.
+                        None if matches!(line.first(), Some(b' ' | b'\t')) => {}
+                        _ => headers.push(line.to_vec()),
                     }
-                    // A continuation of no header continues nothing.
-                    None if matches!(line.first(), Some(b' ' | b'\t')) => {}
-                    _ => headers.push(line.to_vec()),
+                }
+                lines.push(line);
+                size += line.len() + 1;
+                match self.lines.next() {
+                    Some(next) if !next.starts_with(RECORD_DIVIDER) => {
+                        if size >= MAIL_MAX_SIZE {
+                            break (
+                                self.lines.find(|line| line.starts_with(RECORD_DIVIDER)),
+                                true,
+                            );
+                        }
+                        line = next;
+                    }
+                    next => break (next, false),
+                }
+            };
+            self.current = next;
+            let charset = declared_charset(&headers);
+            for header in &headers {
+                if let Err(unported) = save(&mut metadata, &decode_line(header, charset)) {
+                    return Some(Err(unported));
                 }
             }
-            bytes.extend_from_slice(line);
-            bytes.push(b'\n');
-            match lines.next() {
-                Some(next) if !next.starts_with(RECORD_DIVIDER) => {
-                    if bytes.len() >= MAIL_MAX_SIZE {
-                        break (lines.find(|line| line.starts_with(RECORD_DIVIDER)), true);
-                    }
-                    line = next;
-                }
-                next => break (next, false),
-            }
-        };
-        let charset = declared_charset(&headers);
-        for header in &headers {
-            save(&mut metadata, &decode_line(header, charset))?;
-        }
-        messages.push(Message {
-            bytes,
-            metadata,
-            cut,
-        });
-        match next {
-            Some(next) => current = next,
-            None => break,
+            return Some(Ok(Message {
+                lines,
+                metadata,
+                cut,
+            }));
         }
     }
-    Ok(Some(messages))
 }
 
 /// `saveHeaderInMetadata`, the sender's name and email address taken from its first mailbox.
@@ -235,22 +270,51 @@ impl Parser for MboxParser {
         &["application/mbox"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Declined> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the mailbox's messages once to decide whether it extracts them, and again, a
+    /// message at a time, as it writes them.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let messages =
-            messages(input).map_err(|unported| Declined::Deferred(unported.reason().to_owned()))?;
+        let paging = Paging::new(pages);
+        for message in messages(input).into_iter().flatten() {
+            let message =
+                message.map_err(|unported| Declined::Deferred(unported.reason().to_owned()))?;
+            paging.read(message.size());
+        }
+        paging.release();
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "application/mbox");
             metadata.set("Content-Encoding", CHARSET);
-            let messages = messages.ok_or_else(|| {
+            let messages = messages(input).ok_or_else(|| {
                 Failure::Malformed("The mailbox has no first line to read".to_owned())
             })?;
-            for (index, message) in messages.into_iter().enumerate() {
+            for (index, message) in messages.enumerate() {
+                let message = message.map_err(|unported| {
+                    Failure::Malformed(format!(
+                        "Message {} of the mailbox reads differently the second time: {}",
+                        index + 1,
+                        unported.reason()
+                    ))
+                })?;
+                paging.read(message.size());
                 if message.cut {
                     xhtml.metadata_mut().add(
                         EXCEPTION_WARNING,
@@ -260,7 +324,11 @@ impl Parser for MboxParser {
                         ),
                     );
                 }
-                xhtml.parse_embedded(&message.bytes, &message.metadata, Wrapping::PackageEntry)?;
+                xhtml.parse_embedded(
+                    &message.bytes(),
+                    &message.metadata,
+                    Wrapping::PackageEntry,
+                )?;
             }
             Ok(())
         }))
@@ -311,7 +379,10 @@ From carol@example.org Wed Jan  3 00:00:00 2024\n\
 Subject: Caf\xc3\xa9\n\
 \n\
 Third.\n";
-        let messages = messages(mailbox).unwrap().unwrap();
+        let messages: Vec<Message> = messages(mailbox)
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(messages.len(), 3);
         let get = |index: usize, name: &str| {
             messages[index]
@@ -327,8 +398,8 @@ Third.\n";
             get(0, "mbox:from"),
             "ada@example.org Mon Jan  1 00:00:00 2024"
         );
-        assert!(messages[0].bytes.ends_with(b"\nBody \x81.\n"));
-        assert!(!messages[0].bytes.starts_with(RECORD_DIVIDER));
+        assert!(messages[0].bytes().ends_with(b"\nBody \x81.\n"));
+        assert!(!messages[0].bytes().starts_with(RECORD_DIVIDER));
         assert_eq!(get(1, "dc:subject"), "Caf\u{e9}");
         assert_eq!(get(1, "message:from-name"), "Bob @ home");
         assert_eq!(get(1, "message:from-email"), "bob@example.org");

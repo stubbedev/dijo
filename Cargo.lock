@@ -734,6 +734,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "extractous-core",
+ "flate2",
  "http-body-util",
  "hyper",
  "hyper-util",

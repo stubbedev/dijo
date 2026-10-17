@@ -71,12 +71,12 @@ fn copy(data: &[u8], allow_stored_data_descriptor: bool) -> Result<Pass, Unsalva
         match zip.content() {
             Ok(Content::Complete(data)) => copied.push(Copied {
                 name: entry.name,
-                data,
+                data: data.into_owned(),
             }),
             Ok(Content::Truncated(data)) => {
                 copied.push(Copied {
                     name: entry.name,
-                    data,
+                    data: data.into_owned(),
                 });
                 break;
             }
@@ -172,7 +172,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["a.txt", "b.txt"]);
         let read = |index: usize| zip.read(&zip.entries()[index]).unwrap();
-        assert_eq!(read(0), Content::Complete(b"hej".to_vec()));
-        assert_eq!(read(1), Content::Complete(b"med dig".to_vec()));
+        assert_eq!(read(0), Content::Complete(b"hej"[..].into()));
+        assert_eq!(read(1), Content::Complete(b"med dig"[..].into()));
     }
 }

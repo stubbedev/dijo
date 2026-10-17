@@ -83,7 +83,7 @@ fn archives(zip: &ZipFile<'_>) -> Result<Vec<Archive>, Deferral> {
             continue;
         };
         let data = match zip.read(entry) {
-            Some(Content::Complete(data)) => data,
+            Some(Content::Complete(data)) => data.into_owned(),
             _ => return Err("an archive entry the port does not read whole".to_owned()),
         };
         let data = if data.starts_with(&GZIP_MAGIC) {

@@ -1,5 +1,6 @@
 //! Tika's `AutoDetectReader`, as the parsers of text formats read through it: the charset
-//! detection of [`charset::detect`], told the document's content type; the whole input decoded
+//! detection of [`charset::detect`], told the document's content type; the whole input decoded,
+//! a piece at a time,
 //! with the detected charset's vendor superset by the JDK's decoders; and one U+FEFF dropped from
 //! the start of the text. That drops the byte order mark of UTF-8, UTF-16LE/BE and UTF-32LE/BE,
 //! which Java's decoders for those charsets keep as a character; Java's `UTF-16` decoder, named
@@ -9,7 +10,12 @@ use std::ops::Range;
 
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Failure;
-use crate::text::charset::{self, Detection};
+use crate::input::{Pages, Paging};
+use crate::text::charset::{self, Detection, Pieces};
+
+/// The input decoded at a time into a piece of text, so that a large input is never held as text
+/// whole.
+const PIECE: usize = 1 << 20;
 
 /// A document's text as an `AutoDetectReader` reads it.
 pub(crate) struct AutoDetectReader {
@@ -20,17 +26,35 @@ pub(crate) struct AutoDetectReader {
 impl AutoDetectReader {
     /// Reads `input` as Tika does when the metadata's `Content-Type` is `content_type`.
     pub(crate) fn read(input: &[u8], content_type: Option<&str>) -> Result<Self, Failure> {
+        let (detection, text) = Self::stream(input, content_type, Pages::IN_MEMORY)?;
+        Ok(Self {
+            detection,
+            text: text.collect(),
+        })
+    }
+
+    /// The detection of [`AutoDetectReader::read`], and the text, read a piece at a time, the
+    /// pages of `input` released as the pieces are read.
+    pub(crate) fn stream<'a>(
+        input: &'a [u8],
+        content_type: Option<&str>,
+        pages: Pages<'a>,
+    ) -> Result<(Detection, Text<'a>), Failure> {
         let detection = charset::detect(input, content_type);
-        let mut text = detection.decode_as.decode(input).ok_or_else(|| {
+        let pieces = detection.decode_as.pieces(input, PIECE).ok_or_else(|| {
             Failure::Malformed(format!(
                 "the text is detected as {}, which the native decoders do not decode",
                 detection.decode_as.name()
             ))
         })?;
-        if text.starts_with('\u{FEFF}') {
-            text.replace_range(..'\u{FEFF}'.len_utf8(), "");
-        }
-        Ok(Self { detection, text })
+        Ok((
+            detection,
+            Text {
+                pieces,
+                paging: Paging::new(pages),
+                started: false,
+            },
+        ))
     }
 
     /// Why a parser reading through an `AutoDetectReader` should leave `input` to Tika: a
@@ -38,6 +62,29 @@ impl AutoDetectReader {
     pub(crate) fn defers(input: &[u8]) -> Option<&'static str> {
         charset::undecodable(input)
             .map(|_| "a detector may report a charset the native decoders do not decode")
+    }
+}
+
+/// The text of an `AutoDetectReader`, a piece at a time, without the one U+FEFF it drops.
+pub(crate) struct Text<'a> {
+    pieces: Pieces<'a>,
+    paging: Paging<'a>,
+    started: bool,
+}
+
+impl Iterator for Text<'_> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        let mut piece = self.pieces.next()?;
+        self.paging.read(PIECE);
+        if !self.started && !piece.is_empty() {
+            self.started = true;
+            if piece.starts_with('\u{FEFF}') {
+                piece.replace_range(..'\u{FEFF}'.len_utf8(), "");
+            }
+        }
+        Some(piece)
     }
 }
 
