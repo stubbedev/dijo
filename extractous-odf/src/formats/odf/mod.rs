@@ -8,7 +8,7 @@
 mod body;
 mod flat;
 
-pub(crate) use flat::FlatOpenDocumentParser;
+pub use flat::FlatOpenDocumentParser;
 mod meta;
 
 use std::borrow::Cow;
@@ -349,7 +349,7 @@ fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, &'st
     Ok(archive)
 }
 
-pub(crate) struct OpenDocumentParser;
+pub struct OpenDocumentParser;
 
 impl Parser for OpenDocumentParser {
     fn name(&self) -> &'static str {

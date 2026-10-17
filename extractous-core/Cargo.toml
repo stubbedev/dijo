@@ -31,7 +31,7 @@ default = ["tika"]
 # Apache Tika compiled to native code with GraalVM and run through JNI, which extracts what no
 # native parser reads yet. Without it, those documents fail with `Error::Unsupported`, and the
 # build needs no GraalVM.
-tika = ["extractous-base/tika", "extractous-tika/tika", "extractous-mime/tika", "extractous-html/tika", "extractous-image/tika", "extractous-pdf/tika", "extractous-media/tika"]
+tika = ["extractous-base/tika", "extractous-tika/tika", "extractous-mime/tika", "extractous-html/tika", "extractous-image/tika", "extractous-pdf/tika", "extractous-media/tika", "extractous-odf/tika"]
 # Link tesseract, Leptonica and libheif statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
 # of loading them: for the statically linked Linux executable without Tika that ci/static.sh builds.
 static = ["extractous-native/static", "extractous-tika/static", "extractous-image/static"]
@@ -41,12 +41,13 @@ static = ["extractous-native/static", "extractous-tika/static", "extractous-imag
 static-image = ["static", "tika", "extractous-tika/static-image"]
 # The parity harness, which compares the native parsers with Tika's path, for the tests of the crates
 # of the formats.
-parity = ["extractous-base/testing", "extractous-mime/testing", "extractous-html/testing", "extractous-image/testing", "extractous-pdf/testing", "extractous-media/testing"]
+parity = ["extractous-base/testing", "extractous-mime/testing", "extractous-html/testing", "extractous-image/testing", "extractous-pdf/testing", "extractous-media/testing", "extractous-odf/testing"]
 
 [dependencies]
 extractous-base = { path = "../extractous-base", default-features = false }
 extractous-native = { path = "../extractous-native" }
 extractous-tika = { path = "../extractous-tika", default-features = false }
+extractous-odf = { path = "../extractous-odf", default-features = false }
 extractous-media = { path = "../extractous-media", default-features = false }
 extractous-pdf = { path = "../extractous-pdf", default-features = false }
 extractous-image = { path = "../extractous-image", default-features = false }
@@ -92,6 +93,7 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }
 
 [dev-dependencies]
+extractous-odf = { path = "../extractous-odf", default-features = false, features = ["testing"] }
 extractous-media = { path = "../extractous-media", default-features = false, features = ["testing"] }
 extractous-pdf = { path = "../extractous-pdf", default-features = false, features = ["testing"] }
 extractous-image = { path = "../extractous-image", default-features = false, features = ["testing"] }

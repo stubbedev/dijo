@@ -394,7 +394,7 @@ fn prepare<'a>(
     Ok((book, reading))
 }
 
-pub(crate) struct EpubParser;
+pub struct EpubParser;
 
 impl Parser for EpubParser {
     fn name(&self) -> &'static str {
@@ -464,8 +464,8 @@ fn write(
 /// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
 /// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
 /// as Tika's last `dc:date` wins.
-#[cfg(all(test, feature = "tika"))]
-pub(crate) fn as_tika_writes_it(
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_tika_writes_it(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
     _tika: &crate::formats::parity::ComparedMetadata,
@@ -502,7 +502,7 @@ pub(crate) fn as_tika_writes_it(
 }
 
 /// The start tag `tag` with `xml:lang` named `lang`, and only the first `lang` kept.
-#[cfg(all(test, feature = "tika"))]
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 fn with_one_lang(tag: &str) -> String {
     let mut kept = String::with_capacity(tag.len());
     let mut seen = false;

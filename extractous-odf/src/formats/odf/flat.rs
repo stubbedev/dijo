@@ -231,7 +231,7 @@ impl SaxHandler for Flat<'_, '_> {
     }
 }
 
-pub(crate) struct FlatOpenDocumentParser;
+pub struct FlatOpenDocumentParser;
 
 impl Parser for FlatOpenDocumentParser {
     fn name(&self) -> &'static str {
