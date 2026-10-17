@@ -448,7 +448,6 @@ fn text_extracted_before_a_parse_fails_is_kept() {
     assert_eq!(objects[0]["errors"][0]["category"], "corrupt");
 }
 
-#[cfg(feature = "tika")]
 #[test]
 fn a_sqlite_database_is_read_for_its_tables() {
     let objects = json_objects(&[&document("notes.sqlite")]);
