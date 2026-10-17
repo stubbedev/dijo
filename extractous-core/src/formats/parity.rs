@@ -48,17 +48,21 @@ use crate::config::Password;
 use crate::formats::embedded::{EXCEPTION_WARNING, ZERO_BYTES};
 #[cfg(any(test, feature = "tika"))]
 use crate::formats::Output;
+#[cfg(any(feature = "parity", feature = "tika"))]
+pub use crate::formats::Routed;
 #[cfg(feature = "tika")]
 use crate::formats::StreamOptions;
 use crate::formats::{self, Parser};
+/// The native path's routing and string extraction, for the tests that drive a parser through them.
+#[cfg(feature = "parity")]
+pub use crate::formats::{parse_to_string, route_file};
+
 /// Installs the routes of the documents embedded in those native parsers read, which routing a
 /// document installs, for the tests that write a document with its parser directly.
+#[cfg(feature = "parity")]
 pub fn install_routes() {
     formats::install_routes(&formats::Registry);
 }
-
-/// The native path's routing and string extraction, for the tests that drive a parser through them.
-pub use crate::formats::{parse_to_string, route_file, Routed};
 #[cfg(feature = "tika")]
 use crate::input::Source;
 #[cfg(feature = "tika")]
