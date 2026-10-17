@@ -3,6 +3,7 @@
 //! form, and the metadata the writer collects on the way, recorded as they are written.
 
 use std::collections::{BTreeSet, HashSet};
+use std::ops::ControlFlow;
 
 use lopdf::{Dictionary, Object};
 
@@ -230,13 +231,22 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// `PDFTextStripper.writeText` as `AbstractPDF2XHTML` runs it: every page, then the end
     /// of the document.
-    pub(super) fn write(&mut self) -> Result<(), WriteFailure> {
+    /// Writes the pages and the end of the document, handing the recording to `after_page`
+    /// after each page, which may stop the writing there.
+    pub(super) fn write(
+        &mut self,
+        after_page: &mut dyn FnMut(&mut Recording) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, WriteFailure> {
         for page in self.pdf.pages()? {
             self.page.out.enter_page();
             self.process_page(page)?;
             self.page.out.leave_page();
+            if after_page(self.page.out).is_break() {
+                return Ok(ControlFlow::Break(()));
+            }
         }
-        self.end_document()
+        self.end_document()?;
+        Ok(ControlFlow::Continue(()))
     }
 
     /// `PDFTextStripper.processPage`, as `PDF2XHTML` and Tika's tagged writer run it.

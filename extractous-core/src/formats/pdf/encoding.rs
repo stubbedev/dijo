@@ -187,24 +187,31 @@ impl Encoding {
     }
 
     /// The code `PDType1Font.getInvertedEncoding` gives a name: the first that has it in the
-    /// iteration order of the codes, which is ascending for the codes of a byte.
+    /// iteration order of the codes in `Encoding`'s `HashMap<Integer, String>(250)`, of 256
+    /// buckets or more: the codes of a byte each in the bucket of its value, and -1, which an
+    /// AFM file gives the glyphs it does not encode, in the first bucket with 0.
     pub(super) fn first_code(&self, name: &str) -> Result<Option<i32>, Unported> {
         if self
             .code_to_name
             .keys()
-            .any(|code| !(0..=255).contains(code))
+            .any(|code| !(-1..=255).contains(code))
         {
             return Err(Unported(
                 "an encoding with codes past a byte, whose inverse PDFBox takes in hash order"
                     .to_owned(),
             ));
         }
-        Ok(self
-            .code_to_name
-            .iter()
-            .filter(|(_, candidate)| *candidate == name)
-            .map(|(&code, _)| code)
-            .min())
+        let named = |code: i32| self.code_to_name.get(&code).is_some_and(|it| it == name);
+        match (named(0), named(-1)) {
+            (true, true) => Err(Unported(
+                "codes 0 and -1 of an encoding naming the same glyph, whose inverse PDFBox takes \
+                 in the order they were added"
+                    .to_owned(),
+            )),
+            (true, false) => Ok(Some(0)),
+            (false, true) => Ok(Some(-1)),
+            (false, false) => Ok((1..=255).find(|&code| named(code))),
+        }
     }
 
     /// The codes and names of the encoding, by code.
