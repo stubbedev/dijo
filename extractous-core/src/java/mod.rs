@@ -5,12 +5,15 @@
 //! `System.lineSeparator`; with `Double.toString` and `Float.toString` ([`dtoa`]) and the
 //! `BigInteger` arithmetic it needs ([`bigint`]), `BigDecimal` ([`decimal`]),
 //! `java.text.DecimalFormat` ([`decimal_format`]), `String.format` ([`printf`]),
-//! `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and `TimeZone` ([`time`]).
+//! `SimpleDateFormat` ([`simple_date_format`]), `java.time` and `TimeZone` ([`time`]) and
+//! `java.util.zip.Deflater` ([`deflater`]), with the JDK's PNG writer ([`png_writer`]).
 
 pub(crate) mod bigint;
 pub(crate) mod decimal;
 pub(crate) mod decimal_format;
+pub(crate) mod deflater;
 pub(crate) mod dtoa;
+pub(crate) mod png_writer;
 pub(crate) mod printf;
 pub(crate) mod simple_date_format;
 pub(crate) mod time;

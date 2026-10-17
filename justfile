@@ -123,6 +123,17 @@ text-reference:
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
+# Regenerate what the JDK's writers make of generated data, which the Rust ports of java.util.zip.Deflater and
+# the PNG writer PDFBox's ImageIOUtil drives are tested against.
+[unix]
+image-writer-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    java -Djava.awt.headless=true -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/ImageWriterReference.java \
+        extractous-core/tests/fixtures/pdf/image-writers.tsv
+
 # Regenerate the PDFBox resources the Rust PDF parser reads, from the PDFBox jars Tika's native image holds: the
 # glyph lists, the Unicode mirroring pairs, the fallback font it measures fonts it finds no program for with, the
 # standard 14 fonts' metrics without their kerning pairs, the built-in simple font encodings, and FontBox's
