@@ -1,6 +1,7 @@
-//! Web archive collections, WACZ, as Tika's `WACZParser` reads them: each entry under
+//! Web archive collections, WACZ, as Tika's `WACZParser` reads them: each file under
 //! `archive/`, in the order of the central directory, handed to the embedded document extractor,
 //! gunzipped where it starts as gzip does; the data package and everything else left unread.
+//! Tika's also hands on each folder under `archive/` as an empty document (#118).
 
 use crate::compress::gzip;
 use crate::compress::zip::file::ZipFile;
@@ -78,7 +79,7 @@ impl Parser for WaczParser {
 /// while the archive's parser reads.
 fn archives(zip: &ZipFile<'_>) -> Result<Vec<Archive>, Deferral> {
     let mut archives = Vec::new();
-    for entry in zip.entries() {
+    for entry in zip.entries().iter().filter(|entry| !entry.is_directory()) {
         let Some(name) = entry.name.strip_prefix(ARCHIVE) else {
             continue;
         };
@@ -144,6 +145,21 @@ Content-Length: 64\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nGod
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 2, "{parsed:?}");
         assert_same_as_tika(&[read.as_path(), short.as_path()], WaczParser.tika_name());
+    }
+
+    #[test]
+    fn hands_on_no_folders() {
+        let collection = zip(&[
+            ("archive/", b""),
+            ("archive/data.warc", WARC),
+            ("archive/2024/", b""),
+        ]);
+        let archives = archives(&ZipFile::open(&collection).unwrap()).unwrap();
+        let paths: Vec<&str> = archives
+            .iter()
+            .map(|archive| archive.path.as_str())
+            .collect();
+        assert_eq!(paths, ["archive/data.warc"]);
     }
 
     #[test]

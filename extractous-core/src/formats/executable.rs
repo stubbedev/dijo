@@ -103,11 +103,8 @@ impl<'a> Input<'a> {
         })
     }
 
-    /// `TikaInputStream.skip`: as much as is left, nothing for a count that is not positive.
-    fn skip(&mut self, count: i64) {
-        let Ok(count) = usize::try_from(count) else {
-            return;
-        };
+    /// `TikaInputStream.skip`: as much as is left.
+    fn skip(&mut self, count: usize) {
         self.at = self.at.saturating_add(count).min(self.bytes.len());
     }
 
@@ -197,16 +194,21 @@ fn header(input: &[u8]) -> Header {
     header
 }
 
-/// `parsePE`: the COFF header the MS-DOS header points to, if it is there.
+/// `parsePE`: the COFF header the MS-DOS header points to, if it is there. An offset into the
+/// MS-DOS header itself, which Tika's reads past it, points to none (#118).
 fn pe(stream: &mut Input<'_>, header: &mut Header) -> Result<(), String> {
     header.set("Content-Type", "application/x-msdownload");
     header.set(PLATFORM, "Windows");
     stream.read_fully(0x3c - 4)?;
     let offset = stream.i32(true)?;
-    if !(0x3f..=4096).contains(&offset) {
+    let Some(gap) = usize::try_from(offset)
+        .ok()
+        .filter(|&offset| offset <= 4096)
+        .and_then(|offset| offset.checked_sub(0x40))
+    else {
         return Ok(());
-    }
-    stream.skip(i64::from(offset) - 0x40);
+    };
+    stream.skip(gap);
     let coff = stream.read_fully(24)?;
     if &coff[..4] != b"PE\0\0" {
         return Ok(());
@@ -471,7 +473,8 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Departure, Scratch,
     };
 
     fn mach_o(cpu_type: i32, file_type: i32) -> Vec<u8> {
@@ -537,7 +540,6 @@ mod tests {
         let read = [
             scratch.write("pe-amd64.exe", &pe(0x8664, 0x80)),
             scratch.write("pe-sh4.exe", &pe(0x1a6, 0x40)),
-            scratch.write("pe-overlapping.exe", &pe(0x14c, 0x3f)),
             scratch.write("pe-efi.exe", &pe(0xebc, 0x100)),
             scratch.write("elf-arm.so", &elf(1, 1, 97, 3, 40)),
             scratch.write("elf-sparc.o", &elf(2, 2, 0, 1, 43)),
@@ -549,6 +551,7 @@ mod tests {
                 &universal(&[mach_o(0x0100_0007, 2), mach_o(0x0100_000C, 2)], true),
             ),
         ];
+        let overlapping = scratch.write("pe-overlapping.exe", &pe(0x14c, 0x3f));
         let failing = [
             scratch.write("pe-cut.exe", &pe(0x8664, 0x80)[..0x90]),
             scratch.write("elf-cut", &elf(2, 1, 3, 2, 62)[..17]),
@@ -561,8 +564,18 @@ mod tests {
         assert!(deferred.is_empty() && universal_deferred.is_empty());
         assert_eq!(
             parsed.len() + universal_parsed.len(),
-            read.len() + failing.len(),
+            read.len() + failing.len() + 1,
             "{parsed:?} {universal_parsed:?}"
+        );
+        assert_same_as_tika_departing(
+            &[overlapping.as_path()],
+            "org.apache.tika.parser.executable.ExecutableParser",
+            &[
+                Departure::Unset("dcterms:created", "#118"),
+                Departure::Unset(MACHINE_TYPE, "#118"),
+                Departure::Unset(ENDIAN, "#118"),
+                Departure::Unset(ARCHITECTURE_BITS, "#118"),
+            ],
         );
         assert_same_as_tika(
             &read[..read.len() - 1]
@@ -576,6 +589,19 @@ mod tests {
             "org.apache.tika.parser.executable.UniversalExecutableParser",
         );
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn reads_no_coff_header_inside_the_ms_dos_header() {
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&pe(0x14c, 0x3f))
+            .unwrap();
+        assert_eq!(metadata[PLATFORM], ["Windows"]);
+        assert!(!metadata.contains_key(MACHINE_TYPE), "{metadata:?}");
+        let (_, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&pe(0x14c, 0x40))
+            .unwrap();
+        assert_eq!(metadata[MACHINE_TYPE], ["x86-32"]);
     }
 
     #[test]
