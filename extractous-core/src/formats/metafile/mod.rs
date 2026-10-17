@@ -18,7 +18,7 @@ use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
 use crate::text::charset::Charset;
 use crate::unicode::is_java_identifier_part;
 
@@ -268,6 +268,31 @@ fn unicode_string(bytes: &[u8]) -> Option<String> {
         .count();
     let text = decode(&bytes[start * 2..(start + units) * 2], "UTF-16LE");
     Some(format!("{prefix}{text}"))
+}
+
+/// What Tika's `EMFParser` records in `emf:icon-string` of the EMF picture `input`, parsed as
+/// `resolveEmfNames` parses the icon of an OLE object, which swallows the parser's failure: the
+/// name of the file the icon shows, or none where it names none or the parser fails. A picture
+/// whose comments embed documents, which Tika parses there, is left to Tika.
+pub(crate) fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
+    let Ok(records) = emf::records(input) else {
+        return Ok(None);
+    };
+    let mut name = None;
+    for step in emf_steps(records) {
+        match step {
+            Step::IconString(found) => name = Some(found),
+            Step::Fails(_) => return Ok(None),
+            Step::Embedded { .. } => {
+                return Err(Unported::new(
+                    "the EMF picture embeds documents, which Tika parses when it reads the \
+                     picture as the icon of an OLE object",
+                ))
+            }
+            Step::Paragraph(_) => {}
+        }
+    }
+    Ok(name)
 }
 
 /// Tika's `WMFParser`.

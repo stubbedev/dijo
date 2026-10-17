@@ -16,6 +16,7 @@ use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::java::is_blank;
 use crate::mime::is_ole10_native;
 use crate::ole2::{Ole2, Unreadable};
 
@@ -62,6 +63,8 @@ pub(crate) mod name {
     pub(crate) const HAS_UNREFERENCED_PARTS: &str = "msoffice:has-unreferenced-parts";
     pub(crate) const UNREFERENCED_PART_NAMES: &str = "msoffice:unreferenced-part-names";
     pub(crate) const HAS_EXTERNAL_OLE_OBJECTS: &str = "msoffice:has-external-ole-objects";
+    /// `Office.PROG_ID`.
+    pub(crate) const PROG_ID: &str = "msoffice:prog-id";
     pub(crate) use crate::formats::metadata::office::{
         COMMENT_PERSONS, HAS_COMMENTS, ORIGINAL_RESOURCE_NAME,
     };
@@ -309,14 +312,11 @@ fn embedding(package: &Package, relationship: &Relationship) -> Option<(usize, E
 /// What of `handleEmbeddedPart`'s work on one relationship of a main part this port does not
 /// do: following an internal relationship POI names no part for, which Tika records failing on;
 /// reading an OLE object Tika records failing to read; and extracting macros when asked to.
-/// With `files`, for an extractor whose `EmbeddedPartMetadata` is not ported, also parsing an
-/// embedded file or OLE object.
 pub(crate) fn check_embedded(
     package: &Package,
     config: &OfficeParserConfig,
     source: usize,
     relationship: &Relationship,
-    files: bool,
 ) -> Result<(), Unported> {
     if relationship.is_internal() && !relationship.names_a_part() {
         return Err(Unported(format!(
@@ -329,9 +329,7 @@ pub(crate) fn check_embedded(
     let Some((target, embedding)) = embedding(package, relationship) else {
         return Ok(());
     };
-    let unported = (embedding == Embedding::Macros && config.extracts_macros())
-        || (files && matches!(embedding, Embedding::File(_) | Embedding::OleObject));
-    if unported {
+    if embedding == Embedding::Macros && config.extracts_macros() {
         return Err(Unported(format!(
             "{} embeds {} ({}), which Tika parses",
             package.name(source),
@@ -345,18 +343,51 @@ pub(crate) fn check_embedded(
     Ok(())
 }
 
+/// `EmbeddedPartMetadata`: what a main part says of an OLE object it embeds, which names the
+/// object's part when it is parsed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DescribedPart {
+    /// The program the object belongs to.
+    pub(crate) prog_id: Option<String>,
+    /// The name of the file the object holds, as the icon showing it names it.
+    pub(crate) full_name: Option<String>,
+}
+
+/// The `EmbeddedPartMetadata` of an extractor, by the id of the relationship to the part.
+pub(crate) type DescribedParts = HashMap<String, DescribedPart>;
+
+/// `updateMetadata`: an OLE 2.0 object's program and its name, even an absent one.
+fn describe_object(described: Option<&DescribedPart>, metadata: &mut TikaMetadata) {
+    let Some(described) = described else {
+        return;
+    };
+    set_prog_id(described, metadata);
+    match &described.full_name {
+        Some(name) => metadata.set(embedded::RESOURCE_NAME, name.as_str()),
+        None => metadata.remove(embedded::RESOURCE_NAME),
+    }
+}
+
+/// The program of a described part, unless it is blank.
+fn set_prog_id(described: &DescribedPart, metadata: &mut TikaMetadata) {
+    if let Some(prog_id) = described.prog_id.as_deref().filter(|id| !is_blank(id)) {
+        metadata.set(name::PROG_ID, prog_id);
+    }
+}
+
 /// `handleEmbeddedParts` for the relationships of the `main_parts`, once [`check_embedded`]
 /// passed them all: each embedded file and the document each OLE object holds parsed, with the
-/// metadata `anchor` adds to a file's, and a link for each relationship that leads out of the
-/// package, each target once. A file is named by its part's name, as Tika names it when its
-/// extractor knows no `EmbeddedPartMetadata` for it.
+/// metadata `anchor` adds to a file's and the names the main parts give the parts they
+/// `described`, and a link for each relationship that leads out of the package, each target
+/// once.
 pub(crate) fn write_embedded_parts(
     package: &Package,
     main_parts: &[usize],
+    described: &DescribedParts,
     xhtml: &mut Xhtml,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
 ) -> Result<(), Failure> {
-    write_embedded_parts_but(package, main_parts, &|_, _| false, xhtml, anchor)
+    write_embedded_parts_but(package, main_parts, &|_, _| false, described, xhtml, anchor)
 }
 
 /// [`write_embedded_parts`] but for the relationships `written` says the document has
@@ -365,6 +396,7 @@ pub(crate) fn write_embedded_parts_but(
     package: &Package,
     main_parts: &[usize],
     written: &dyn Fn(usize, &Relationship) -> bool,
+    described: &DescribedParts,
     xhtml: &mut Xhtml,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
 ) -> Result<(), Failure> {
@@ -396,11 +428,20 @@ pub(crate) fn write_embedded_parts_but(
                 source_description(package.name(source)),
                 relationship.id
             );
+            let described = described.get(&relationship.id);
             match embedding {
                 Embedding::File(resource_type) => {
-                    write_embedded_file(package, target, &id, resource_type, anchor, xhtml)?;
+                    let file = EmbeddedFile {
+                        part: target,
+                        id: &id,
+                        resource_type,
+                        described,
+                    };
+                    write_embedded_file(package, file, anchor, xhtml)?;
                 }
-                Embedding::OleObject => write_ole_object(package, target, &id, anchor, xhtml)?,
+                Embedding::OleObject => {
+                    write_ole_object(package, target, &id, described, anchor, xhtml)?;
+                }
                 Embedding::SmallOleObject | Embedding::Macros => {}
             }
             handled.insert(relationship.target_uri());
@@ -409,24 +450,41 @@ pub(crate) fn write_embedded_parts_but(
     Ok(())
 }
 
-/// `handleEmbeddedFile`: a part parsed as an embedded document, with the metadata Tika gives it.
+/// A part `handleEmbeddedFile` parses as an embedded document.
+struct EmbeddedFile<'e> {
+    part: usize,
+    /// The relationship id Tika records of it.
+    id: &'e str,
+    resource_type: ResourceType,
+    /// What the main part says of it.
+    described: Option<&'e DescribedPart>,
+}
+
+/// `handleEmbeddedFile`: a part parsed as an embedded document, with the metadata Tika gives it:
+/// named as the main part describes it, else by its part's name.
 fn write_embedded_file(
     package: &Package,
-    part: usize,
-    id: &str,
-    resource_type: ResourceType,
+    file: EmbeddedFile,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
-    let name = package.name(part);
-    let mut metadata = part_metadata(id, resource_type, name);
+    let name = package.name(file.part);
+    let mut metadata = part_metadata(file.id, file.resource_type, name);
+    if let Some(described) = file.described {
+        set_prog_id(described, &mut metadata);
+    }
+    let full_name = file
+        .described
+        .and_then(|described| described.full_name.as_deref())
+        .filter(|name| !is_blank(name));
+    let resource_name = full_name.unwrap_or(&name[name.rfind('/').map_or(0, |at| at + 1)..]);
+    metadata.set(embedded::RESOURCE_NAME, resource_name);
     metadata.set(
-        embedded::RESOURCE_NAME,
-        &name[name.rfind('/').map_or(0, |at| at + 1)..],
+        "Content-Type",
+        package.parts[file.part].content_type.clone(),
     );
-    metadata.set("Content-Type", package.parts[part].content_type.clone());
-    anchor(part, &mut metadata);
-    xhtml.parse_embedded(&package.read(part)?, &metadata, Wrapping::PackageEntry)
+    anchor(file.part, &mut metadata);
+    xhtml.parse_embedded(&package.read(file.part)?, &metadata, Wrapping::PackageEntry)
 }
 
 /// What Tika's metadata names of every part it parses as an embedded document.
@@ -518,6 +576,7 @@ fn write_ole_object(
     package: &Package,
     part: usize,
     id: &str,
+    described: Option<&DescribedPart>,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
@@ -527,9 +586,18 @@ fn write_ole_object(
     let data = match object {
         OleObject::Skipped => return Ok(()),
         OleObject::Whole => {
-            return write_embedded_file(package, part, id, ResourceType::Attachment, anchor, xhtml);
+            let file = EmbeddedFile {
+                part,
+                id,
+                resource_type: ResourceType::Attachment,
+                described,
+            };
+            return write_embedded_file(package, file, anchor, xhtml);
         }
-        OleObject::Entry(data) => data,
+        OleObject::Entry(data) => {
+            describe_object(described, &mut metadata);
+            data
+        }
         OleObject::Native(native) => {
             if let Some(label) = &native.label {
                 metadata.set(embedded::RESOURCE_NAME, label);

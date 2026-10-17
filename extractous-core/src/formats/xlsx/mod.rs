@@ -319,7 +319,7 @@ impl<'a> Workbook<'a> {
     fn prepare(self) -> Result<Read<'a>, Unported> {
         for source in self.main_parts() {
             for relationship in self.relationships(source) {
-                extractor::check_embedded(&self.package, self.config, source, relationship, false)?;
+                extractor::check_embedded(&self.package, self.config, source, relationship)?;
             }
         }
         for sheet in &self.sheets {
@@ -430,6 +430,7 @@ impl<'a> Workbook<'a> {
             &self.package,
             &self.main_parts(),
             &written,
+            &extractor::DescribedParts::new(),
             xhtml,
             &|part, metadata| {
                 if let Some(sheets) = sheets_of_pictures.get(&part) {
