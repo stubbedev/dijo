@@ -851,9 +851,7 @@ mod tests {
         let mut streamed = 0;
         for path in &paths {
             let path = path.to_str().unwrap();
-            let routed = crate::formats::route(crate::tika::Source::File(path))
-                .unwrap()
-                .unwrap();
+            let routed = crate::formats::route_file(path).unwrap();
             let input = &routed.input;
             let recorded = record(input, &TikaMetadata::new(), &configs, 0);
             streamed += usize::from(matches!(recorded, Ok(Recorded::Large(..))));

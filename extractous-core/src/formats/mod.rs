@@ -70,6 +70,8 @@ mod subtitle;
 mod text;
 mod tnef;
 mod translation;
+#[cfg(test)]
+mod url_tests;
 mod vsdx;
 mod warc;
 mod wordperfect;
@@ -83,15 +85,16 @@ mod xps;
 mod zip_file;
 
 use std::borrow::Cow;
-use std::fs;
 use std::io::{self, Read};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult};
+use crate::fetch::{self, Headers, Located};
+use crate::input::{self, Input};
 use crate::isolate::{heap_cap, isolate};
 use crate::memory;
 use crate::mime::{self, Detection, Origin};
@@ -163,6 +166,17 @@ impl From<Unported> for Declined {
     }
 }
 
+/// How the memory a native parser takes grows with its input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Footprint {
+    /// With the input: it reads all of it into structures of its own. A file larger than
+    /// [`input::MAX_READ_WHOLE`] is left to Tika, which streams it.
+    Proportional,
+    /// Bounded whatever the input's size: it reads only bounded parts of its input, such as
+    /// headers and indexes, in place, and skips the rest. It reads a file of any size, mapped.
+    Bounded,
+}
+
 /// A document its parser has read as far as deciding it extracts it: what writes the document's
 /// content as XHTML and adds the metadata it finds, holding what the parser read on the way, so
 /// that nothing is read twice. The document is started before and ended after it.
@@ -192,6 +206,12 @@ pub(crate) trait Parser: Sync {
     /// without its parameters when no parser takes the type with them.
     fn takes_base_types(&self) -> bool {
         true
+    }
+
+    /// How the memory it takes grows with its input, which decides whether it reads a file too
+    /// large to read whole.
+    fn footprint(&self) -> Footprint {
+        Footprint::Proportional
     }
 
     /// Reads `input`, from the `metadata` Tika's parser starts from and under the parser
@@ -325,11 +345,6 @@ pub(crate) fn parser_for(media_type: &str) -> Option<&'static dyn Parser> {
     serving(full, false).or_else(|| serving(base, true))
 }
 
-/// Whether any format has a native parser yet, which decides whether routing needs a detection.
-fn any_parsers() -> bool {
-    !PARSERS.is_empty()
-}
-
 /// What a document is and what Tika knows about it before its parser runs: the metadata of the
 /// input (its resource name and length) and of its detection.
 #[derive(Debug, Clone)]
@@ -345,46 +360,107 @@ pub(crate) struct Detected {
 pub(crate) enum InputFile {
     /// The file the document was read from, at this path.
     Original(String),
-    /// None yet: a document read from memory, which Tika spools to a temporary file of its own
-    /// the first time a parser asks for a path.
+    /// None yet: a document read from memory or fetched, which Tika spools to a temporary file of
+    /// its own the first time a parser asks for a path.
     Spooled,
+}
+
+/// How Tika's `TikaInputStream` opens a document, which sets the metadata it starts with.
+#[derive(Debug, Clone)]
+pub(crate) enum OpenedFrom<'a> {
+    /// The file at this path, as `TikaInputStream.get(Path, metadata)` opens it, or as
+    /// `TikaInputStream.get(URL, metadata)` opens a `file:` URL of a regular file.
+    File(Cow<'a, str>),
+    /// Bytes without a name.
+    Bytes,
+    /// A document fetched from a URL, as `TikaInputStream.get(URL, metadata)` opens it, with
+    /// what the server said of it. Its `Content-Length` is the server's, or where the server
+    /// sends none, the length of what it sent: Tika's path records that only once a detector or
+    /// parser happens to spool the stream to a file.
+    Url(Headers),
+}
+
+/// A document opened from its source, for its detection and native parse.
+#[derive(Debug)]
+pub(crate) struct Document<'a> {
+    pub(crate) from: OpenedFrom<'a>,
+    pub(crate) input: Input<'a>,
+}
+
+/// Opens the document `source` names: reads the file, takes the bytes, or fetches the document
+/// at the URL within `deadline`, the extraction's time limit, if it has one.
+pub(crate) fn open(source: Source<'_>, deadline: Option<Instant>) -> ExtractResult<Document<'_>> {
+    match source {
+        Source::File(path) => open_file(Cow::Borrowed(path)),
+        Source::Bytes(bytes) => Ok(Document {
+            from: OpenedFrom::Bytes,
+            input: Input::Borrowed(bytes),
+        }),
+        Source::Url(url) => match fetch::locate(url, deadline)? {
+            Located::File(path) => open_file(Cow::Owned(path)),
+            Located::Fetched(fetched) => Ok(Document {
+                from: OpenedFrom::Url(fetched.headers),
+                input: fetched.body,
+            }),
+        },
+    }
+}
+
+fn open_file(path: Cow<'_, str>) -> ExtractResult<Document<'_>> {
+    let input = input::read_file(&path)?;
+    Ok(Document {
+        from: OpenedFrom::File(path),
+        input,
+    })
+}
+
+/// Opens the document `source` names for a native extraction, as [`open`] does, unless the
+/// extraction cannot be native: while the Java heap is capped, in a program that does not count
+/// its allocations, a native extraction cannot be held to the cap, and Tika's path, whose heap
+/// the cap bounds, extracts every document from its source.
+pub(crate) fn open_to_extract(
+    source: Source<'_>,
+    deadline: Option<Instant>,
+) -> ExtractResult<Option<Document<'_>>> {
+    if heap_cap().is_some() && !memory::counting() {
+        return Ok(None);
+    }
+    open(source, deadline).map(Some)
 }
 
 /// A document a native parser reads, and what its detection found.
 pub(crate) struct Routed<'a> {
     pub(crate) parser: &'static dyn Parser,
     pub(crate) detected: Detected,
-    pub(crate) input: Cow<'a, [u8]>,
+    pub(crate) input: Input<'a>,
 }
 
 /// Routes a document to its native parser, if its format has one. The document is detected in
-/// Rust, without the JVM, so a document a native parser reads never starts it. Documents read
-/// from a URL, files too large to read whole for their detection, and, while the Java heap is
-/// capped, every document in a program that does not count its allocations, where a native
-/// extraction cannot be held to the cap, stay with Tika. The parser itself may still leave the document to
-/// Tika, when [`parse_to_string`] or [`parse_to_stream`] has it prepare the document.
+/// Rust, without the JVM, so a document a native parser reads never starts it. A file too large
+/// to read whole goes to its native parser only if that parser's memory stays bounded whatever
+/// its input's size; otherwise to Tika, which streams it. The parser itself may still leave the
+/// document to Tika, when [`parse_to_string`] or [`parse_to_stream`] has it prepare the
+/// document.
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
 /// Tika's path, whose own detection then fails it exactly as Tika does.
-pub(crate) fn route(source: Source<'_>) -> ExtractResult<Option<Routed<'_>>> {
-    let unbudgeted = heap_cap().is_some() && !memory::counting();
-    if matches!(source, Source::Url(_)) || !any_parsers() || unbudgeted {
-        return Ok(None);
+pub(crate) fn route<'a>(document: &Document<'a>) -> Option<Routed<'a>> {
+    let detected = Detected::detect(&document.from, &document.input).ok()?;
+    let parser = parser_for(&detected.media_type)?;
+    if document.input.is_mapped() && parser.footprint() == Footprint::Proportional {
+        return None;
     }
-    let Some(input) = detection_input(source)? else {
-        return Ok(None);
-    };
-    let Ok(detected) = Detected::detect(source, &input) else {
-        return Ok(None);
-    };
-    let Some(parser) = parser_for(&detected.media_type) else {
-        return Ok(None);
-    };
-    Ok(Some(Routed {
+    Some(Routed {
         parser,
         detected,
-        input,
-    }))
+        input: document.input.clone(),
+    })
+}
+
+/// Routes the file at `path` as an extraction of it does.
+#[cfg(test)]
+pub(crate) fn route_file(path: &str) -> Option<Routed<'_>> {
+    route(&open(Source::File(path), None).expect("the file opens"))
 }
 
 /// The metadata key naming the type whose parser parses a document, whatever it is detected as.
@@ -452,40 +528,14 @@ pub(crate) fn route_embedded<'a>(
     })
 }
 
-/// The largest file read whole to be detected in Rust: a larger one is left to Tika, which reads
-/// only the parts of it its detectors look at.
-const MAX_DETECTED_FILE: u64 = 64 * 1024 * 1024;
-
-/// The bytes of a document read from a file or memory, which detection reads whole, or `None`
-/// for a file larger than [`MAX_DETECTED_FILE`] or a document read from a URL.
-fn detection_input(source: Source<'_>) -> ExtractResult<Option<Cow<'_, [u8]>>> {
-    let unreadable =
-        |path: &str, e: io::Error| Error::IoError(format!("Could not read {path}: {e}"));
-    match source {
-        Source::File(path) => {
-            let length = fs::metadata(path).map_err(|e| unreadable(path, e))?.len();
-            if length > MAX_DETECTED_FILE {
-                return Ok(None);
-            }
-            fs::read(path)
-                .map(|bytes| Some(Cow::Owned(bytes)))
-                .map_err(|e| unreadable(path, e))
-        }
-        Source::Bytes(bytes) => Ok(Some(Cow::Borrowed(bytes))),
-        Source::Url(_) => Ok(None),
-    }
-}
-
-/// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust for a file or
-/// bytes, with Tika for a URL, which it fetches, for a file too large to read whole, and for a
-/// document Tika's detection throws on, so the failure is Tika's own.
+/// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust, and with Tika
+/// for a document Tika's detection throws on, so the failure is Tika's own.
 pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
-    if let Some(input) = detection_input(source)? {
-        if let Ok(detected) = Detected::detect(source, &input) {
-            return Ok(detected.media_type);
-        }
+    let document = open(source, None)?;
+    match Detected::detect(&document.from, &document.input) {
+        Ok(detected) => Ok(detected.media_type),
+        Err(_) => tika::detect(isolate()?, source),
     }
-    tika::detect(isolate()?, source)
 }
 
 /// `Path.getFileName().toString()` of a path as Java's `Paths.get` reads it on this platform:
@@ -497,19 +547,45 @@ pub(crate) fn java_file_name(path: &str) -> &str {
 }
 
 impl Detected {
-    /// Detects `input`, read from `source`, with the metadata `TikaNativeMain.detect` holds after
-    /// Tika's detection: for a file, the resource name and length `TikaInputStream.get(Path,
-    /// metadata)` writes, then what the detectors write, in the order they write it.
-    pub(crate) fn detect(source: Source<'_>, input: &[u8]) -> Result<Self, mime::DetectionError> {
+    /// Detects `input`, opened as `from` says, with the metadata `TikaNativeMain.detect` holds
+    /// after Tika's detection: what `TikaInputStream` writes as it opens the input (for a file
+    /// its name and length, for a fetched document what the server said of it), then what the
+    /// detectors write, in the order they write it.
+    pub(crate) fn detect(
+        from: &OpenedFrom<'_>,
+        input: &[u8],
+    ) -> Result<Self, mime::DetectionError> {
         let mut metadata = TikaMetadata::new();
-        let (origin, file) = match source {
-            Source::File(path) => {
+        let (origin, file) = match from {
+            OpenedFrom::File(path) => {
                 let name = java_file_name(path);
                 metadata.set("tk:resource-name", name);
                 metadata.set("Content-Length", input.len().to_string());
-                (Origin::File { name }, InputFile::Original(path.to_owned()))
+                (Origin::File { name }, InputFile::Original(path.to_string()))
             }
-            Source::Bytes(_) | Source::Url(_) => (Origin::Bytes, InputFile::Spooled),
+            OpenedFrom::Bytes => (Origin::Bytes, InputFile::Spooled),
+            OpenedFrom::Url(headers) => {
+                let hints = [
+                    ("tk:resource-name", &headers.name),
+                    ("Content-Type", &headers.content_type),
+                    ("Content-Encoding", &headers.content_encoding),
+                ];
+                for (name, value) in hints {
+                    if let Some(value) = value {
+                        metadata.set(name, value.as_str());
+                    }
+                }
+                let length = headers
+                    .content_length
+                    .map_or_else(|| input.len().to_string(), |length| length.to_string());
+                metadata.set("Content-Length", length);
+                let origin = Origin::Stream {
+                    name: headers.name.as_deref(),
+                    content_type: headers.content_type.as_deref(),
+                    learns_length: false,
+                };
+                (origin, InputFile::Spooled)
+            }
         };
         let Detection {
             media_type,
@@ -533,7 +609,7 @@ impl Detected {
         metadata: &TikaMetadata,
         opened: Opened,
     ) -> Result<Self, mime::DetectionError> {
-        let origin = Origin::Embedded {
+        let origin = Origin::Stream {
             name: metadata.get(embedded::RESOURCE_NAME),
             content_type: metadata.get("Content-Type"),
             learns_length: opened == Opened::WithMetadata,
@@ -847,7 +923,8 @@ fn char_set_name(char_set: CharSet) -> &'static str {
 pub(crate) struct StreamOptions {
     pub(crate) char_set: CharSet,
     pub(crate) output: Output,
-    pub(crate) timeout: Option<Duration>,
+    /// When reading the stream fails with [`Error::Timeout`], if it is limited.
+    pub(crate) deadline: Option<Instant>,
     /// Where embedded documents are copied instead of parsed, if anywhere.
     pub(crate) spool: Option<EmbeddedSpool>,
 }
@@ -862,12 +939,12 @@ pub(crate) struct StreamOptions {
 /// final metadata for a document whose output fits in one chunk (#67).
 pub(crate) fn parse_to_stream(
     parser: &'static dyn Parser,
-    input: Vec<u8>,
+    input: Input<'static>,
     detected: Detected,
     configs: ParserConfigs,
     options: StreamOptions,
 ) -> ExtractResult<Option<(NativeStream, Metadata)>> {
-    let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
+    let deadline = options.deadline;
     let start = detected.metadata_for(parser);
     let known = start.to_map();
     let (sender, receiver) = mpsc::sync_channel(CHUNKS_AHEAD);
@@ -1406,7 +1483,7 @@ mod tests {
     #[test]
     fn marks_what_is_parsed_with_a_password() {
         let path = "../test_files/documents/simple.odt";
-        let routed = route(Source::File(path)).unwrap().unwrap();
+        let routed = route_file(path).unwrap();
         let password = crate::config::Password::new("secret");
         let used = |configs: &ParserConfigs| {
             let (_, metadata) = parse_to_string(
@@ -1431,7 +1508,7 @@ mod tests {
     #[test]
     fn a_native_extraction_over_its_memory_budget_fails_and_the_next_runs() {
         let path = "../test_files/documents/simple.odt";
-        let routed = route(Source::File(path)).unwrap().unwrap();
+        let routed = route_file(path).unwrap();
         let configs = ParserConfigs::default();
         let extract = || {
             parse_to_string(
@@ -1457,17 +1534,17 @@ mod tests {
     #[test]
     fn a_stream_comes_with_the_metadata_known_before_the_parse() {
         let path = "../test_files/documents/simple.odt";
-        let routed = route(Source::File(path)).unwrap().unwrap();
+        let routed = route_file(path).unwrap();
         let known = routed.detected.metadata_for(routed.parser).to_map();
         let options = StreamOptions {
             char_set: CharSet::UTF_8,
             output: Output::Text,
-            timeout: None,
+            deadline: None,
             spool: None,
         };
         let (mut stream, metadata) = parse_to_stream(
             routed.parser,
-            routed.input.into_owned(),
+            routed.input.to_static(),
             routed.detected,
             ParserConfigs::default(),
             options,
@@ -1483,6 +1560,97 @@ mod tests {
         assert!(parsed.contains_key("tk:parsed-by-full-set"), "{parsed:?}");
     }
 
+    /// A file at `path` of `length` bytes that starts with `head`, the rest a hole the file
+    /// system keeps no data for, which reads as zeros.
+    fn sparse(path: &std::path::Path, head: &[u8], length: u64) {
+        std::fs::write(path, head).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(length)
+            .unwrap();
+    }
+
+    /// The header of a 16-bit stereo PCM WAVE file of `data` bytes of samples.
+    fn wave_header(data: u32) -> Vec<u8> {
+        let mut wave = b"RIFF".to_vec();
+        wave.extend((36 + data).to_le_bytes());
+        wave.extend(b"WAVEfmt ");
+        wave.extend(16u32.to_le_bytes());
+        wave.extend(1u16.to_le_bytes());
+        wave.extend(2u16.to_le_bytes());
+        wave.extend(44_100u32.to_le_bytes());
+        wave.extend((44_100u32 * 4).to_le_bytes());
+        wave.extend(4u16.to_le_bytes());
+        wave.extend(16u16.to_le_bytes());
+        wave.extend(b"data");
+        wave.extend(data.to_le_bytes());
+        wave
+    }
+
+    /// The boxes of an MP4 file before its media data: its type, a movie of `seconds` at a
+    /// time scale of 1000, and the header of a media data box of `data` bytes.
+    fn mp4_header(seconds: u32, data: u64) -> Vec<u8> {
+        let mut mp4 = 20u32.to_be_bytes().to_vec();
+        mp4.extend(b"ftypisom");
+        mp4.extend(0x200u32.to_be_bytes());
+        mp4.extend(b"isom");
+        mp4.extend(116u32.to_be_bytes());
+        mp4.extend(b"moov");
+        mp4.extend(108u32.to_be_bytes());
+        mp4.extend(b"mvhd");
+        mp4.extend([0; 12]);
+        mp4.extend(1000u32.to_be_bytes());
+        mp4.extend((seconds * 1000).to_be_bytes());
+        mp4.extend(0x0001_0000u32.to_be_bytes());
+        mp4.extend(0x0100u16.to_be_bytes());
+        mp4.extend([0; 10]);
+        for entry in [0x0001_0000u32, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000] {
+            mp4.extend(entry.to_be_bytes());
+        }
+        mp4.extend([0; 24]);
+        mp4.extend(2u32.to_be_bytes());
+        mp4.extend(1u32.to_be_bytes());
+        mp4.extend(b"mdat");
+        mp4.extend((16 + data).to_be_bytes());
+        mp4
+    }
+
+    /// A file too large to read whole is mapped, and goes to its native parser where that
+    /// parser reads only bounded parts of its input, which extracts it as Tika's path does; a
+    /// parser whose memory grows with its input leaves it to Tika, which streams it.
+    #[test]
+    fn files_too_large_to_read_whole_go_to_parsers_of_bounded_memory() {
+        let dir =
+            crate::isolate::temp_dir().join(format!("extractous-large-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let large = 2u64 << 30;
+        let wave = dir.join("long.wav");
+        let samples = u32::try_from(large).unwrap() - 44;
+        sparse(&wave, &wave_header(samples), large);
+        let mp4 = dir.join("long.mp4");
+        let header = mp4_header(7200, 0);
+        sparse(&mp4, &mp4_header(7200, large - header.len() as u64), large);
+        let pdf = dir.join("long.pdf");
+        sparse(&pdf, b"%PDF-1.4\n", large);
+        for (path, parser) in [
+            (&wave, "extractous::AudioParser"),
+            (&mp4, "extractous::MP4Parser"),
+        ] {
+            let path = path.to_str().unwrap();
+            let routed = route_file(path).unwrap();
+            assert_eq!(routed.parser.name(), parser);
+            assert!(routed.input.is_mapped());
+            crate::formats::parity::assert_same_as_tika(
+                &[std::path::Path::new(path)],
+                routed.parser.tika_name(),
+            );
+        }
+        assert!(route_file(pdf.to_str().unwrap()).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn names_files_as_java_does() {
         assert_eq!(java_file_name("a/b/report.pdf"), "report.pdf");
@@ -1495,7 +1663,7 @@ mod tests {
     fn detects_files_with_the_metadata_tika_opens_them_with() {
         let path = "../test_files/documents/simple.odt";
         let input = std::fs::read(path).unwrap();
-        let detected = Detected::detect(Source::File(path), &input).unwrap();
+        let detected = Detected::detect(&OpenedFrom::File(path.into()), &input).unwrap();
         assert_eq!(
             detected.media_type,
             "application/vnd.oasis.opendocument.text"
@@ -1513,7 +1681,7 @@ mod tests {
             detected.metadata.get("tk:resource-name"),
             Some("simple.odt")
         );
-        let bytes = Detected::detect(Source::Bytes(&input), &input).unwrap();
+        let bytes = Detected::detect(&OpenedFrom::Bytes, &input).unwrap();
         assert_eq!(bytes.metadata.get("tk:resource-name"), None);
         assert_eq!(
             bytes.metadata.get("Content-Length"),
