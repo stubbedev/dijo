@@ -1,28 +1,24 @@
-//! Windows metafiles, as Tika's `EMFParser` and `WMFParser` read them through POI's HEMF and
-//! HWMF: every record read first, failing as POI fails; then the text of the text records as
-//! paragraphs, and from an EMF picture the documents its comments embed and the name of an
-//! icon-only OLE object it shows.
+//! Windows metafiles, as Tika's `EMFParser` and `WMFParser` read them: the text of the text
+//! records as paragraphs, and from an EMF picture the documents its comments embed and the name
+//! of an icon-only OLE object it shows. The records are read as the specifications lay them out,
+//! where Tika reads them through POI's HEMF and HWMF, and the text is decoded as its records and
+//! the selected font say (#127).
 
-mod dib;
 mod emf;
-mod emf_plus;
-mod stream;
 #[cfg(test)]
 pub(crate) mod testing;
 mod wmf;
 
-use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::poi::Thrown;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
 use crate::text::charset::Charset;
-use crate::unicode::is_java_identifier_part;
 
-use emf::{Comment, Rect, TextOut};
+use emf::{Comment, TextOut};
 
 /// `EMFParser.EMF_ICON_ONLY`.
 const ICON_ONLY: &str = "emf:icon-only";
@@ -37,31 +33,82 @@ const LINE_GAP: f64 = 0.0001;
 /// The size below which `getCurrentRectangle` takes a coordinate of the bounds for zero.
 const SMIDGE: f64 = 0.000_000_001;
 
-/// What a metafile parser writes, in order, once POI has read every record.
+/// A rectangle of a record, as `Rectangle2D.Double` holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct Rect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// The records of a picture that matter to Tika, and why reading them stopped short of the
+/// picture's end, if it did.
+#[derive(Debug)]
+struct Picture<R> {
+    records: Vec<R>,
+    broken: Option<String>,
+}
+
+impl<R> Default for Picture<R> {
+    fn default() -> Self {
+        Self {
+            records: Vec::new(),
+            broken: None,
+        }
+    }
+}
+
+/// The `length` bytes of `data` at `at`, those of `what`.
+fn slice<'a>(data: &'a [u8], at: usize, length: usize, what: &str) -> Result<&'a [u8], String> {
+    at.checked_add(length)
+        .and_then(|end| data.get(at..end))
+        .ok_or_else(|| {
+            format!(
+                "{what} of {length} bytes at {at:#x} runs past the {} bytes it is in",
+                data.len()
+            )
+        })
+}
+
+/// The little-endian 16-bit value of `what` at `at` of `data`.
+fn u16_at(data: &[u8], at: usize, what: &str) -> Result<u16, String> {
+    Ok(u16::from_le_bytes(
+        slice(data, at, 2, what)?.try_into().expect("two bytes"),
+    ))
+}
+
+/// The little-endian 32-bit value of `what` at `at` of `data`.
+fn u32_at(data: &[u8], at: usize, what: &str) -> Result<u32, String> {
+    Ok(u32::from_le_bytes(
+        slice(data, at, 4, what)?.try_into().expect("four bytes"),
+    ))
+}
+
+/// What a metafile parser writes, in order.
 #[derive(Debug)]
 enum Step<'a> {
-    /// A paragraph of Java characters.
-    Paragraph(Vec<u16>),
+    /// A paragraph.
+    Paragraph(String),
     /// A document a comment embeds, with the content type Tika gives it.
     Embedded {
-        data: Cow<'a, [u8]>,
+        data: &'a [u8],
         content_type: Option<&'static str>,
     },
     /// The name of the file an icon-only OLE object shows, set as the metadata Tika sets.
     IconString(String),
-    /// What Tika's parser throws there, after the steps before it.
+    /// Why the picture could not be read on, after the steps before it.
     Fails(String),
 }
 
-/// Writes the `steps`, or fails where POI failed to read the picture.
-fn write(xhtml: &mut Xhtml, steps: Result<Vec<Step<'_>>, Thrown>) -> Result<(), Failure> {
-    let steps = steps.map_err(|Thrown(reason)| Failure::Malformed(reason))?;
+/// Writes the `steps`, and fails where one says the picture could not be read on.
+fn write(xhtml: &mut Xhtml, steps: Vec<Step<'_>>) -> Result<(), Failure> {
     for step in steps {
         match step {
             Step::Paragraph(text) => {
                 xhtml.start_element("p")?;
                 if !text.is_empty() {
-                    xhtml.characters_utf16(&text)?;
+                    xhtml.characters(&text)?;
                 }
                 xhtml.end_element("p")?;
             }
@@ -70,7 +117,7 @@ fn write(xhtml: &mut Xhtml, steps: Result<Vec<Step<'_>>, Thrown>) -> Result<(), 
                 if let Some(content_type) = content_type {
                     metadata.set("Content-Type", content_type);
                 }
-                xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)?;
+                xhtml.parse_embedded(data, &metadata, Wrapping::PackageEntry)?;
             }
             Step::IconString(name) => {
                 let metadata = xhtml.metadata_mut();
@@ -106,23 +153,26 @@ impl Parser for EmfParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let steps = emf::records(input).map(emf_steps);
+        let steps = emf_steps(emf::records(input));
         Ok(Box::new(move |xhtml| write(xhtml, steps)))
     }
 }
 
-/// `ParseState`, and the text gathered into the paragraph being written.
+/// `ParseState`, the text gathered into the paragraph being written, and the charset of the
+/// font selected and of each font of the object table.
 #[derive(Debug)]
 struct EmfState {
     last: Rect,
     hit_icon_only: bool,
     last_was_icon_only: bool,
     icon_string: Option<String>,
-    buffer: Vec<u16>,
+    buffer: String,
+    fonts: BTreeMap<u32, u8>,
+    charset: Option<u8>,
 }
 
-/// What Tika's `EMFParser` writes of the `records` of a picture.
-fn emf_steps<'a>(records: Vec<emf::Record<'a>>) -> Vec<Step<'a>> {
+/// What Tika's `EMFParser` writes of a `picture`.
+fn emf_steps(picture: Picture<emf::Record<'_>>) -> Vec<Step<'_>> {
     let mut steps = Vec::new();
     let mut state = EmfState {
         last: Rect {
@@ -134,25 +184,18 @@ fn emf_steps<'a>(records: Vec<emf::Record<'a>>) -> Vec<Step<'a>> {
         hit_icon_only: false,
         last_was_icon_only: false,
         icon_string: None,
-        buffer: Vec::new(),
+        buffer: String::new(),
+        fonts: BTreeMap::new(),
+        charset: None,
     };
-    for record in records {
+    for record in picture.records {
         let mut is_icon_only = false;
         match record {
             emf::Record::Comment(Comment::Formats(formats)) => {
-                for data in formats {
-                    let Some(data) = data else {
-                        steps.push(Step::Fails(
-                            "NullPointerException: a format of the comment POI read no data of"
-                                .to_owned(),
-                        ));
-                        return steps;
-                    };
-                    steps.push(Step::Embedded {
-                        data,
-                        content_type: None,
-                    });
-                }
+                steps.extend(formats.into_iter().map(|data| Step::Embedded {
+                    data,
+                    content_type: None,
+                }));
             }
             emf::Record::Comment(Comment::Wmf(data)) => steps.push(Step::Embedded {
                 data,
@@ -167,12 +210,20 @@ fn emf_steps<'a>(records: Vec<emf::Record<'a>>) -> Vec<Step<'a>> {
                     state.icon_string = value;
                 }
             }
-            emf::Record::Comment(Comment::Other) | emf::Record::Other => {}
-            emf::Record::Text(text) => {
-                if let Err(reason) = ext_text_out(&text, &mut state, &mut steps) {
-                    steps.push(Step::Fails(reason));
-                    return steps;
+            emf::Record::Comment(Comment::Other) => {}
+            emf::Record::Text(text) => ext_text_out(&text, &mut state, &mut steps),
+            emf::Record::Font { index, charset } => {
+                state.fonts.insert(index, charset);
+            }
+            emf::Record::Select(index) => {
+                if let Some(&charset) = state.fonts.get(&index) {
+                    state.charset = Some(charset);
+                } else if index & STOCK_OBJECT != 0 {
+                    state.charset = None;
                 }
+            }
+            emf::Record::Delete(index) => {
+                state.fonts.remove(&index);
             }
         }
         state.last_was_icon_only = is_icon_only;
@@ -183,28 +234,43 @@ fn emf_steps<'a>(records: Vec<emf::Record<'a>>) -> Vec<Step<'a>> {
     if !state.buffer.is_empty() {
         steps.push(Step::Paragraph(state.buffer));
     }
+    if let Some(reason) = picture.broken {
+        steps.push(Step::Fails(reason));
+    }
     steps
 }
 
+/// The bit of an EMF object index that names a stock object, a stock font among them, in the
+/// charset of the system.
+const STOCK_OBJECT: u32 = 0x8000_0000;
+
+/// The charset of the text of a font of the charset `id`, the system's where it names none.
+fn text_charset(id: Option<u8>) -> &'static str {
+    id.and_then(font_charset).unwrap_or(DEFAULT_CHARSET)
+}
+
+/// The charset of text whose font names none: the ANSI code page of Western Windows systems.
+const DEFAULT_CHARSET: &str = "Cp1252";
+
 /// `handleExtTextOut`: the record's text added to the paragraph, after a space where it starts
-/// well right of the last text, or in a new paragraph where it starts at another height.
-fn ext_text_out(text: &TextOut, state: &mut EmfState, steps: &mut Vec<Step>) -> Result<(), String> {
+/// well right of the last text, or in a new paragraph where it starts at another height. Its
+/// ANSI text is in the selected font's charset, where Tika decodes it as UTF-8.
+fn ext_text_out(text: &TextOut, state: &mut EmfState, steps: &mut Vec<Step>) {
     let current = current_rectangle(text);
     if state.last.y > -1.0 && (state.last.y - current.y).abs() > LINE_GAP {
         steps.push(Step::Paragraph(std::mem::take(&mut state.buffer)));
     } else if state.last.x > -1.0
         && (current.x - (state.last.x + state.last.width)).abs() > SPACE_GAP
     {
-        state.buffer.push(u16::from(b' '));
+        state.buffer.push(' ');
     }
-    let charset = if text.unicode { "UTF-16LE" } else { "UTF-8" };
-    let units = match text.raw {
-        Some(raw) => java_prefix(&decode(raw, charset), text.string_length)?,
-        None => Vec::new(),
+    let charset = if text.unicode {
+        "UTF-16LE"
+    } else {
+        text_charset(state.charset)
     };
-    state.buffer.extend(units);
+    state.buffer.push_str(&decode(text.raw, charset));
     state.last = current;
-    Ok(())
 }
 
 /// `getCurrentRectangle`: the record's bounds, or the bounds it says to ignore where its own
@@ -221,53 +287,28 @@ fn current_rectangle(text: &TextOut) -> Rect {
     }
 }
 
-/// `new String(bytes, charset)` of a charset the JDK and this port both decode.
+/// `bytes` decoded in a charset the port decodes.
 fn decode(bytes: &[u8], charset: &str) -> String {
     Charset::named(charset)
         .decode(bytes)
         .unwrap_or_else(|| panic!("the port decodes {charset}"))
 }
 
-/// `text.substring(0, Math.min(text.length(), length))`, in UTF-16 units, which fails for a
-/// negative `length`.
-fn java_prefix(text: &str, length: i32) -> Result<Vec<u16>, String> {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let end = i64::from(length).min(units.len() as i64);
-    if end < 0 {
-        return Err(format!(
-            "StringIndexOutOfBoundsException: begin 0, end {end}, length {}",
-            units.len()
-        ));
-    }
-    Ok(units[..end as usize].to_vec())
-}
-
-/// `tryToReadAsString`: private data read as a UTF-16LE string ended by a zero unit, as
-/// `StringUtil.getFromUnicodeLE0Terminated` reads it, or `None` for data of fewer than two
-/// bytes or where that throws.
+/// `tryToReadAsString`: private data read as a UTF-16LE string up to its first zero unit, or
+/// `None` for data of fewer than two bytes. Tika reads it as POI's
+/// `StringUtil.getFromUnicodeLE0Terminated`, which leaves out the last unit and puts a `?` for
+/// a leading zero unit (#127).
 fn unicode_string(bytes: &[u8]) -> Option<String> {
     if bytes.len() < 2 {
         return None;
     }
-    let length = (bytes.len() - 2) / 2;
-    let unit = |index: usize| u16::from_le_bytes([bytes[index * 2], bytes[index * 2 + 1]]);
-    let (start, limit, prefix) = if length > 0 && unit(0) == 0 {
-        let next = if length > 1 { unit(1) as i16 } else { 0 };
-        let limit = if is_java_identifier_part(i32::from(next)) {
-            length - 1
-        } else {
-            0
-        };
-        (1, limit, "?")
-    } else {
-        (0, length, "")
-    };
-    let units = (0..limit)
-        .map(|index| unit(start + index))
-        .take_while(|&unit| unit != 0)
+    let units = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take_while(|unit| **unit != [0, 0])
         .count();
-    let text = decode(&bytes[start * 2..(start + units) * 2], "UTF-16LE");
-    Some(format!("{prefix}{text}"))
+    Some(decode(&bytes[..units * 2], "UTF-16LE"))
 }
 
 /// What Tika's `EMFParser` records in `emf:icon-string` of the EMF picture `input`, parsed as
@@ -275,11 +316,8 @@ fn unicode_string(bytes: &[u8]) -> Option<String> {
 /// name of the file the icon shows, or none where it names none or the parser fails. A picture
 /// whose comments embed documents, which Tika parses there, is left to Tika.
 pub(crate) fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
-    let Ok(records) = emf::records(input) else {
-        return Ok(None);
-    };
     let mut name = None;
-    for step in emf_steps(records) {
+    for step in emf_steps(emf::records(input)) {
         match step {
             Step::IconString(found) => name = Some(found),
             Step::Fails(_) => return Ok(None),
@@ -318,7 +356,7 @@ impl Parser for WmfParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let steps = wmf::records(input).map(wmf_steps);
+        let steps = wmf_steps(wmf::records(input));
         Ok(Box::new(move |xhtml| write(xhtml, steps)))
     }
 }
@@ -347,41 +385,51 @@ fn font_charset(id: u8) -> Option<&'static str> {
     })
 }
 
-/// What Tika's `WMFParser` writes of the `records` of a picture: a paragraph of each text
-/// record, decoded in the charset of the last font created before it.
-fn wmf_steps(records: Vec<wmf::Record<'_>>) -> Vec<Step<'static>> {
-    let mut charset = "Cp1252";
-    let mut steps = Vec::new();
-    for record in records {
-        match record {
-            wmf::Record::Font { charset: id } => charset = font_charset(id).unwrap_or("Cp1252"),
-            wmf::Record::Text(text) => match wmf_text(&text, charset) {
-                Ok(units) => steps.push(Step::Paragraph(units)),
-                Err(reason) => {
-                    steps.push(Step::Fails(reason));
-                    return steps;
-                }
-            },
-            wmf::Record::Other => {}
-        }
-    }
-    steps
+/// An object of a WMF picture's object table.
+#[derive(Debug, Clone, Copy)]
+enum WmfObject {
+    /// A font in a `Font` charset.
+    Font(u8),
+    Other,
 }
 
-/// `getText(charset)` of a WMF text record: its text, or the failure of a negative length.
-fn wmf_text(text: &wmf::Text, charset: &str) -> Result<Vec<u16>, String> {
-    let length = i32::from(text.string_length);
-    if text.extended {
-        return java_prefix(&decode(text.raw, charset), length);
+/// What Tika's `WMFParser` writes of a `picture`: a paragraph of each text record, its bytes
+/// decoded in the charset of the font selected. Tika decodes them in that of the last font
+/// made, and cuts the text of a `META_EXTTEXTOUT` to its length after decoding it (#127).
+fn wmf_steps(picture: Picture<wmf::Record<'_>>) -> Vec<Step<'static>> {
+    let mut objects: Vec<Option<WmfObject>> = Vec::new();
+    let mut charset = None;
+    let mut steps = Vec::new();
+    for record in picture.records {
+        let made = match record {
+            wmf::Record::Font { charset } => WmfObject::Font(charset),
+            wmf::Record::Object => WmfObject::Other,
+            wmf::Record::Select(index) => {
+                if let Some(Some(WmfObject::Font(selected))) = objects.get(usize::from(index)) {
+                    charset = Some(*selected);
+                }
+                continue;
+            }
+            wmf::Record::Delete(index) => {
+                if let Some(object) = objects.get_mut(usize::from(index)) {
+                    *object = None;
+                }
+                continue;
+            }
+            wmf::Record::Text(raw) => {
+                steps.push(Step::Paragraph(decode(raw, text_charset(charset))));
+                continue;
+            }
+        };
+        match objects.iter_mut().find(|object| object.is_none()) {
+            Some(free) => *free = Some(made),
+            None => objects.push(Some(made)),
+        }
     }
-    if length < 0 {
-        return Err(format!(
-            "RecordFormatException: Invalid offset/length specified: offset: 0, lenght: {length}, \
-             maxLength: 1000000"
-        ));
+    if let Some(reason) = picture.broken {
+        steps.push(Step::Fails(reason));
     }
-    let bytes = &text.raw[..text.raw.len().min(length as usize)];
-    Ok(decode(bytes, charset).encode_utf16().collect())
+    steps
 }
 
 #[cfg(test)]

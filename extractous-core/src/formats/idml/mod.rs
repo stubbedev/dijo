@@ -207,5 +207,5 @@ impl SaxHandler for ContentAndMetadata<'_, '_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests;

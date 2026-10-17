@@ -20,7 +20,9 @@ const MODEL: std::ops::Range<usize> = 52..59;
 /// `ICC_Profile.icHdrDeviceClass`.
 const DEVICE_CLASS: std::ops::Range<usize> = 12..16;
 /// `ICC_Profile.icHdrRenderingIntent`.
-const RENDERING_INTENT: usize = 64;
+const RENDERING_INTENT: std::ops::Range<usize> = 64..68;
+/// `ICC_Profile.icPerceptual`, as the header holds it.
+const PERCEPTUAL: [u8; 4] = [0; 4];
 const DISPLAY_CLASS: &[u8; 4] = b"mntr";
 
 /// A colour space PDFBox reads an image's samples in.
@@ -356,9 +358,11 @@ fn icc_based(pdf: &Pdf, array: &[Object], depth: usize) -> Result<ColorSpace, Un
 }
 
 /// `PDICCBased.ensureDisplayProfile`: a profile of another class than a display's whose
-/// rendering intent's first byte is perceptual's taken as a display's.
+/// rendering intent is perceptual taken as a display's. PDFBox reads only the first byte of the
+/// four-byte intent, which is zero for every intent, so it takes nearly every profile as a
+/// display's (#131).
 fn display_profile(mut profile: Vec<u8>) -> Vec<u8> {
-    if &profile[DEVICE_CLASS] != DISPLAY_CLASS && profile[RENDERING_INTENT] == 0 {
+    if &profile[DEVICE_CLASS] != DISPLAY_CLASS && profile[RENDERING_INTENT] == PERCEPTUAL[..] {
         profile[DEVICE_CLASS].copy_from_slice(DISPLAY_CLASS);
     }
     profile
@@ -469,4 +473,28 @@ fn unported_kind(kind: &str) -> Unwritten {
     Unwritten::Unported(Unported(format!(
         "an image in the colour space {kind}, whose conversion the port does not do"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A profile header of the device class `class` and the rendering intent `intent`.
+    fn header(class: &[u8; 4], intent: u32) -> Vec<u8> {
+        let mut profile = vec![0; 128];
+        profile[DEVICE_CLASS].copy_from_slice(class);
+        profile[RENDERING_INTENT].copy_from_slice(&intent.to_be_bytes());
+        profile
+    }
+
+    #[test]
+    fn takes_only_a_perceptual_profile_for_a_displays() {
+        let class = |profile: Vec<u8>| display_profile(profile)[DEVICE_CLASS].to_vec();
+        assert_eq!(class(header(b"prtr", 0)), DISPLAY_CLASS);
+        assert_eq!(class(header(b"scnr", 0)), DISPLAY_CLASS);
+        for intent in 1..=3 {
+            assert_eq!(class(header(b"prtr", intent)), b"prtr", "intent {intent}");
+        }
+        assert_eq!(class(header(b"mntr", 2)), DISPLAY_CLASS);
+    }
 }

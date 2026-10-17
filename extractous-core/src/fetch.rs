@@ -207,6 +207,10 @@ fn java_int_length(value: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     #[test]
     fn reads_schemes_as_java_uris_do() {
@@ -267,6 +271,62 @@ mod tests {
             locate("file://host/tmp/x.txt", None),
             Err(Error::IoError(_))
         ));
+    }
+
+    /// Answers the first request to a local port with `answer`, or, where it is empty, holds
+    /// the connection open without answering.
+    fn serve_once(answer: Vec<u8>) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut request = BufReader::new(&connection);
+            let mut line = String::new();
+            while request.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            connection.write_all(&answer).unwrap();
+            if answer.is_empty() {
+                thread::sleep(Duration::from_secs(10));
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn follows_redirects_from_http_to_https() {
+        let tls = TcpListener::bind("127.0.0.1:0").unwrap();
+        let tls_address = tls.local_addr().unwrap();
+        let (hello, greeted) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut connection, _) = tls.accept().unwrap();
+            let mut record = [0; 1];
+            connection.read_exact(&mut record).unwrap();
+            hello.send(record[0]).unwrap();
+        });
+        let redirect = format!(
+            "HTTP/1.1 302 Found\r\nLocation: https://{tls_address}/document.txt\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let address = serve_once(redirect.into_bytes());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let fetched = locate(&format!("http://{address}/document.txt"), Some(deadline));
+        let handshake = 0x16;
+        assert_eq!(
+            greeted.recv_timeout(Duration::from_secs(10)),
+            Ok(handshake),
+            "the redirect to https is followed with a TLS handshake; the fetch gave {fetched:?}"
+        );
+    }
+
+    #[test]
+    fn times_out_a_server_that_never_answers_within_the_extractions_limit() {
+        let address = serve_once(Vec::new());
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(300);
+        let fetched = locate(&format!("http://{address}/document.txt"), Some(deadline));
+        assert!(matches!(fetched, Err(Error::Timeout)), "{fetched:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

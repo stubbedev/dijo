@@ -434,7 +434,8 @@ impl PageReading {
     }
 
     /// `AbstractPDF2XHTML.enrichCurrentPage` with Tika's PDF parser's own OCR parser: the
-    /// parser recorded and its text written, unless OCR is skipped. A page the OCR parser fails
+    /// parser recorded and its text written, unless OCR is skipped, where Tika's path records it
+    /// though it reads nothing (#114). A page the OCR parser fails
     /// on fails the document, as `OCR2XHTML` and `PDF2XHTML` throw the first such failure once
     /// every page is written.
     fn recognize(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
@@ -443,10 +444,7 @@ impl PageReading {
                 xhtml.record_parser(PREPARING_OCR_PARSER);
                 Ok(write_text(xhtml, attempt)?)
             }
-            Self::Skipped => {
-                xhtml.record_parser(PREPARING_OCR_PARSER);
-                Ok(())
-            }
+            Self::Skipped => Ok(()),
             Self::Failed(failure) => Err(Failure::Extraction(Error::ParseError(format!(
                 "org.apache.tika.exception.TikaException: Unable to extract all PDF content \
                  <- caused by {failure}"

@@ -16,15 +16,33 @@ name = "extractor"
 harness = false
 required-features = []
 
+# Unpacking embedded documents whole is Tika's path's alone.
+[[test]]
+name = "extract_embedded_tests"
+required-features = ["tika"]
+
+# The cause chains of the exceptions Tika's path throws.
+[[test]]
+name = "error_tests"
+required-features = ["tika"]
+
 [features]
-# Build for the statically linked Linux executable, where this crate is linked into the GraalVM
-# native image of Tika and uses the Java VM that image runs, instead of loading the image as a
-# shared library: ci/static-image.sh builds it.
-static-image = []
+default = ["tika"]
+# Apache Tika compiled to native code with GraalVM and run through JNI, which extracts what no
+# native parser reads yet. Without it, those documents fail with `Error::Unsupported`, and the
+# build needs no GraalVM.
+tika = ["dep:jni"]
+# Link tesseract, Leptonica and libheif statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
+# of loading them: for the statically linked Linux executable without Tika that ci/static.sh builds.
+static = []
+# Build for the statically linked Linux executable with Tika, where this crate is linked into the
+# GraalVM native image of Tika and uses the Java VM that image runs, instead of loading the image as
+# a shared library: ci/static-image.sh builds it.
+static-image = ["static", "tika"]
 
 [dependencies]
 libc = { version = "0.2.178" }
-jni = { version = "0.22.4" }
+jni = { version = "0.22.4", optional = true }
 libloading = "0.9.0"
 flate2 = "1.1.5"
 bzip2 = "0.6.1"
@@ -58,6 +76,7 @@ memchr = "2.8.3"
 arrayvec = "0.7.8"
 image = { version = "0.25.10", default-features = false, features = ["png", "tiff", "webp", "bmp", "gif", "pnm", "tga"] }
 tiff = "0.11.3"
+png = "0.18.1"
 hayro = "0.8.0"
 lcms2-sys = { version = "4.0.7", default-features = false, features = ["static"] }
 aes = "0.9.3"
@@ -70,6 +89,9 @@ hayro-jbig2 = "0.3.1"
 rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 memmap2 = "0.9.11"
+# SQLite compiled in. The static image with Tika leaves SQLite to Tika's path, as it links
+# sqlite-jdbc's own SQLite.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }
 
 [target.'cfg(windows)'.dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }

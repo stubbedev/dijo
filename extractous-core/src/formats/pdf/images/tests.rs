@@ -1,13 +1,21 @@
 use std::io::Write as _;
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
-use super::super::tests::{as_paths, document, page_objects, tika_name, CORPORA};
-use super::super::{PdfParser, DELEGATES};
-use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
+#[cfg(feature = "tika")]
+use super::super::tests::{as_paths, tika_name, CORPORA};
+use super::super::tests::{document, page_objects};
+use super::super::PdfParser;
+#[cfg(feature = "tika")]
+use super::super::DELEGATES;
+#[cfg(feature = "tika")]
+use crate::config::TesseractOcrConfig;
+use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig};
 use crate::formats::metadata::TikaMetadata;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
-    documents_with, spools_as_tika_with, Scratch,
+    documents_with, spools_as_tika_departing_with, Departure, Departures, Scratch,
 };
 use crate::formats::Parser;
 
@@ -27,6 +35,7 @@ fn without_page_ocr(unique_only: bool) -> ParserConfigs {
 
 /// Images extracted, the pages weighed by our `TextLayerCheckingPdfParser` and nothing read by
 /// OCR.
+#[cfg(feature = "tika")]
 fn skipping_ocr() -> ParserConfigs {
     ParserConfigs {
         pdf: PdfParserConfig::new().set_extract_inline_images(true),
@@ -39,12 +48,18 @@ fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<String> {
     PdfParser.defers(input, &TikaMetadata::new(), configs)
 }
 
+/// The images the native parser writes as PNG otherwise than the JDK's writer, which leaves
+/// every row unfiltered (#131): their spooled files are compared by the images they hold.
+#[cfg(feature = "tika")]
+const PNG_WRITER: Departures = &[Departure::PngImages("#131")];
+
 /// Compares the native parser with Tika's path on `paths`, and their spools of what the
-/// documents embed.
+/// documents embed, but for [`PNG_WRITER`].
+#[cfg(feature = "tika")]
 fn assert_same(paths: &[PathBuf], configs: &ParserConfigs) {
     assert_same_as_tika_delegating_with(&as_paths(paths), tika_name(), &DELEGATES, configs);
     for path in paths {
-        let spooled = spools_as_tika_with(path, u64::MAX, configs);
+        let spooled = spools_as_tika_departing_with(path, u64::MAX, PNG_WRITER, configs);
         assert!(spooled.is_ok(), "{}", spooled.unwrap_err());
     }
 }
@@ -244,6 +259,7 @@ fn sampled_images() -> Vec<u8> {
     drawing(&content, &xobjects(16), &images)
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_images_of_every_colour_space_and_mask_as_tikas_path_does() {
     let scratch = Scratch::new("pdf-images");
@@ -259,28 +275,40 @@ fn extracts_images_of_every_colour_space_and_mask_as_tikas_path_does() {
     }
 }
 
-#[test]
-fn numbers_an_image_drawn_again_zero_unless_only_unique_ones_are_extracted() {
-    // Tika gives an image XObject drawn again the number 0 rather than its own (tika-quirk).
-    let input = sampled_images();
-    let (xml, _) = extracting(&input, &without_page_ocr(false));
-    let names: Vec<&str> = xml
-        .split("<img src=\"embedded:")
+/// The names of the images the XHTML `xml` shows, in order.
+fn image_names(xml: &str) -> Vec<&str> {
+    xml.split("<img src=\"embedded:")
         .skip(1)
         .map(|rest| &rest[..rest.find('"').unwrap()])
+        .collect()
+}
+
+/// An image XObject drawn again keeps its own number, where Tika numbers it 0 (#131), unless
+/// only unique images are extracted.
+#[test]
+fn numbers_an_image_drawn_again_by_its_own_number_unless_only_unique_ones_are_extracted() {
+    let images: Vec<String> = (0..3)
+        .map(|seed| {
+            image(
+                "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                "",
+                &samples(4, seed),
+            )
+        })
         .collect();
-    assert_eq!(names[16], "image-0.png", "{names:?}");
+    let content = "q 20 0 0 20 0 600 cm /Im0 Do Q q 20 0 0 20 30 600 cm /Im1 Do Q \
+                   q 20 0 0 20 60 600 cm /Im2 Do Q q 20 0 0 20 0 500 cm /Im1 Do Q";
+    let input = drawing(content, &xobjects(3), &images);
+    let (xml, _) = extracting(&input, &without_page_ocr(false));
     assert_eq!(
-        names[17..],
-        [
-            "image-16.png",
-            "image-17.png",
-            "image-18.png",
-            "image-19.png"
-        ]
+        image_names(&xml),
+        ["image-0.png", "image-1.png", "image-2.png", "image-1.png"]
     );
     let (xml, _) = extracting(&input, &without_page_ocr(true));
-    assert_eq!(xml.matches("<img ").count(), 20, "{xml}");
+    assert_eq!(
+        image_names(&xml),
+        ["image-0.png", "image-1.png", "image-2.png"]
+    );
 }
 
 fn extracting(input: &[u8], configs: &ParserConfigs) -> (String, crate::Metadata) {
@@ -294,6 +322,7 @@ fn extracting(input: &[u8], configs: &ParserConfigs) -> (String, crate::Metadata
 }
 
 /// Images whose data is copied as it is, and those Java cannot read.
+#[cfg(feature = "tika")]
 fn copied_images() -> Vec<u8> {
     let jpeg = jpeg();
     let images = vec![
@@ -327,6 +356,7 @@ fn copied_images() -> Vec<u8> {
     drawing(&draw_each(5), &xobjects(5), &images)
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn copies_jpeg_jpeg_2000_and_jbig2_data_as_tikas_path_does() {
     let scratch = Scratch::new("pdf-image-copies");
@@ -337,6 +367,7 @@ fn copies_jpeg_jpeg_2000_and_jbig2_data_as_tikas_path_does() {
 }
 
 /// Images in forms, transparency groups, patterns and soft masks.
+#[cfg(feature = "tika")]
 fn painted_images() -> Vec<u8> {
     let gray = |seed| {
         image(
@@ -389,6 +420,7 @@ fn painted_images() -> Vec<u8> {
     drawing(content, resources, &objects)
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn finds_images_in_forms_patterns_and_soft_masks_as_tikas_path_does() {
     let scratch = Scratch::new("pdf-image-painted");
@@ -399,6 +431,7 @@ fn finds_images_in_forms_patterns_and_soft_masks_as_tikas_path_does() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_images_under_the_ocr_strategies_as_tikas_path_does() {
     if !crate::ocr::tesseract_runs() {
@@ -421,6 +454,7 @@ fn extracts_images_under_the_ocr_strategies_as_tikas_path_does() {
     }
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn records_failures_to_read_images_as_tikas_path_does() {
     let images = vec![
@@ -554,6 +588,7 @@ fn defers_images_whose_ocr_text_our_page_check_weighs() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_the_images_of_the_corpora_as_tikas_path_does() {
     let configs = without_page_ocr(false);
@@ -572,6 +607,7 @@ fn extracts_the_images_of_the_corpora_as_tikas_path_does() {
 
 /// The documents of Tika's tests Tika's path does not extract as Java would with images
 /// extracted, and why.
+#[cfg(feature = "tika")]
 const TIKA_PATH_FAILS: [(&str, &str); 1] = [(
     "testPDF_acroform3.pdf",
     "the JDK rejects an ICC profile of a content stream's colour space, and the class \
@@ -580,6 +616,7 @@ const TIKA_PATH_FAILS: [(&str, &str); 1] = [(
 
 /// The documents of Tika's tests that the port leaves to Tika with images extracted, by the
 /// start of the reason, the OCR of pages skipped.
+#[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 4] = [
     ("testPDFVarious.pdf", "a mask of other dimensions"),
     ("testPDF_childAttachments.pdf", "a CCITT image"),
@@ -593,6 +630,7 @@ const DEFERRED: [(&str, &str); 4] = [
     ),
 ];
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {

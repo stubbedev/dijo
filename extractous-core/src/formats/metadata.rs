@@ -180,6 +180,7 @@ impl TikaMetadata {
     }
 
     /// Every name with each of its values, in the order the names were first set.
+    #[cfg(any(test, feature = "tika"))]
     pub(crate) fn pairs(&self) -> Vec<(&str, &str)> {
         self.entries
             .iter()

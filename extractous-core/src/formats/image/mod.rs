@@ -39,7 +39,7 @@ pub(crate) use raw::RawTiffParser;
 /// The name the port records the OCR enricher under, as Tika records `ai.yobix.PreparingOcrParser`.
 pub(crate) const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
 /// The OCR enricher's names, the port's paired with Tika's.
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 const TIKA_DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
 
 /// The types `PreparingOcrParser` reads, for which Tika's image parsers run it as their enricher:
@@ -111,7 +111,7 @@ impl Parser for JpegParser {
         "org.apache.tika.parser.image.JpegParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -143,7 +143,7 @@ impl Parser for TiffParser {
         "org.apache.tika.parser.image.TiffParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -175,7 +175,7 @@ impl Parser for HeifParser {
         "org.apache.tika.parser.image.HeifParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -270,7 +270,7 @@ impl Parser for ImageParser {
         "org.apache.tika.parser.image.ImageParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }
@@ -322,13 +322,16 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
                 "a JBIG2 image jbig2-imageio reads otherwise than the port: {reason}"
             ))
         })?,
-        "image/bmp" | "image/vnd.wap.wbmp" => {
-            return Err(Unported::new(format!(
-                "an image of {content_type}, which Tika's ImageIO reads with the JDK's reader or \
-                 jai-imageio's, picked at random in each process, so its metadata has no one form"
-            ))
-            .into())
-        }
+        "image/bmp" => imageio::bmp::read(input).map_err(|error| match error {
+            imageio::bmp::BmpError::Fails(cause) => fails(cause),
+            imageio::bmp::BmpError::Unported(unported) => unported.into(),
+        })?,
+        "image/vnd.wap.wbmp" => imageio::wbmp::read(input).map_err(|error| match error {
+            imageio::wbmp::WbmpError::Image(cause) => parse_error(cause),
+            imageio::wbmp::WbmpError::Eof => {
+                fails("EOFException reading the WBMP header".to_owned())
+            }
+        })?,
         _ => {
             return Ok(Read {
                 metadata,
@@ -406,7 +409,7 @@ impl Parser for RecognizedImageParser {
         "ai.yobix.RecognizedImageParser"
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tika"))]
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &TIKA_DELEGATES
     }

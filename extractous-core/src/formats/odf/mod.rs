@@ -429,16 +429,21 @@ fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::config::OfficeParserConfig;
+    use crate::formats::parity::conformance_corpus;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, Adjustments,
-        Scratch,
+        assert_fails_as_tika, assert_same_as_tika_adjusting, Adjustments, Scratch,
     };
     use std::io::Cursor;
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
     use zip::CompressionMethod;
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
+    #[cfg(feature = "tika")]
     const DOCUMENTS: [&str; 4] = [
         "../test_files/documents/simple.odt",
         "../quality/corpus/notes.odt",
@@ -446,6 +451,7 @@ mod tests {
         "../quality/corpus/revisions.odt",
     ];
 
+    #[cfg(feature = "tika")]
     fn paths<'a>(documents: &[&'a str]) -> Vec<&'a Path> {
         documents
             .iter()
@@ -487,6 +493,7 @@ mod tests {
     }
 
     /// How the native parser departs from Tika's path: it ends headings and notes as blocks.
+    #[cfg(feature = "tika")]
     pub(crate) const DEPARTURES: Adjustments = Adjustments {
         line_breaks: Some(heading_and_note_ends),
         metadata: &[],
@@ -495,6 +502,7 @@ mod tests {
         final_in_head: &[],
     };
 
+    #[cfg(feature = "tika")]
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
         assert_same_as_tika_adjusting(documents, tika_name, &ParserConfigs::default(), DEPARTURES);
     }
@@ -510,6 +518,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         assert_same_as_tika(&paths(&DOCUMENTS), TIKA_NAME);
@@ -517,11 +526,13 @@ mod tests {
 
     const MISC_OFFICE: &str = "tika-parsers-standard/tika-parsers-standard-modules/\
                                tika-parser-miscoffice-module/src/test/resources/test-documents";
+    #[cfg(feature = "tika")]
     const INTEGRATION: &str = "tika-parsers-standard/tika-parsers-standard-integration-tests/\
                                src/test/resources/test-documents";
 
     /// Tika's own test documents of this format, as `(directory, name)` in the directory
     /// `CONFORMANCE_CORPUS` names, which `just conformance` prepares.
+    #[cfg(feature = "tika")]
     const CONFORMANCE: [(&str, &str); 21] = [
         (INTEGRATION, "testPhoneNumberExtractor.odt"),
         (MISC_OFFICE, "testFooter.ods"),
@@ -549,6 +560,7 @@ mod tests {
     /// Tika's own test documents the native parser reads differently from Tika's path on
     /// purpose (#90), as `(directory, name, XHTML it writes)`: spaces as `text:c` counts them,
     /// keywords each a value of their own, and the attributes of OpenOffice.org 1 documents.
+    #[cfg(feature = "tika")]
     const CONFORMANCE_DEPARTING: [(&str, &str, &[&str]); 6] = [
         (
             INTEGRATION,
@@ -588,6 +600,7 @@ mod tests {
     const CONFORMANCE_DEFERRED: [(&str, &str, &str); 1] =
         [(MISC_OFFICE, "testODTEncrypted.odt", ENCRYPTED)];
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore]
     fn extracts_what_tikas_path_extracts_from_tikas_documents() {
@@ -649,6 +662,7 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts_from_every_kind_of_element() {
         let text = content(
@@ -729,6 +743,7 @@ mod tests {
         assert_same_as_tika(&paths, TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn fails_where_tikas_path_fails() {
         let scratch = Scratch::new("odf-failures");
@@ -941,6 +956,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_deleted_content_as_tikas_path_does_when_asked() {
         let configs = ParserConfigs {

@@ -1,21 +1,28 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{self, assert_same_as_tika_adjusting, Adjustments};
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 
 /// The workbooks of the corpora in the repository that this port leaves to Tika, with why.
+#[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 0] = [];
 
 /// The workbooks of Tika's own tests this port leaves to Tika, with why.
+#[cfg(feature = "tika")]
 const DEFERRED_CONFORMANCE: [(&str, &str); 1] =
     [("testEXCEL.strict.xlsx", "no transitional main document")];
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
+#[cfg(feature = "tika")]
 fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
     let input = std::fs::read(path).unwrap();
     XlsxParser.defers(&input, &TikaMetadata::new(), configs)
@@ -23,6 +30,7 @@ fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
 
 /// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
 /// `deferred` to Tika, by file name and a part of the reason.
+#[cfg(feature = "tika")]
 fn ported(
     documents: &[PathBuf],
     deferred: &[(&str, &str)],
@@ -46,6 +54,7 @@ fn ported(
 }
 
 /// The workbooks below `roots`, by Tika's detection.
+#[cfg(feature = "tika")]
 fn workbooks(roots: &[&Path]) -> Vec<PathBuf> {
     let (mut parsed, deferred) = parity::documents(&XlsxParser, roots);
     parsed.extend(deferred);
@@ -57,6 +66,7 @@ fn workbooks(roots: &[&Path]) -> Vec<PathBuf> {
 /// where Tika writes it again as an outside resource; and its XHTML head says whether a sheet is
 /// protected, where Tika's says `false` before it reads the sheets (#95). The div of each chart
 /// and diagram is the parity's [`parity::UNWRITTEN_DIVS`].
+#[cfg(feature = "tika")]
 const DEPARTURES: Adjustments = Adjustments {
     line_breaks: None,
     metadata: &[],
@@ -65,11 +75,13 @@ const DEPARTURES: Adjustments = Adjustments {
     final_in_head: &["msoffice:excel:protected-worksheet"],
 };
 
+#[cfg(feature = "tika")]
 pub(super) fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
     let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika_adjusting(&documents, TIKA_PARSER, configs, DEPARTURES);
 }
 
+#[cfg(feature = "tika")]
 /// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
 /// compared.
 pub(super) fn assert_same_as_tika_rewriting(
@@ -89,8 +101,10 @@ pub(super) fn assert_same_as_tika_rewriting(
 
 /// The workbook of two million shared strings, which a debug build takes minutes over in the
 /// eight extractions each side of a comparison makes, compared on its own.
+#[cfg(feature = "tika")]
 const LARGE: &str = "many-shared-strings.xlsx";
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts() {
     let documents: Vec<PathBuf> = workbooks(&[
@@ -104,12 +118,14 @@ fn extracts_what_tikas_path_extracts() {
     assert_same_as_tika(&ported(&documents, &DEFERRED, &defaults), &defaults);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts_from_many_shared_strings() {
     let document = Path::new("../test_files/documents").join(LARGE);
     assert_same_as_tika(&[document], &ParserConfigs::default());
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
@@ -318,6 +334,7 @@ fn zip(parts: &[Part]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
+#[cfg(feature = "tika")]
 fn assert_snippets_same_as_tika(snippets: &[(&str, Vec<u8>)], configs: &ParserConfigs) {
     let scratch = parity::Scratch::new("xlsx-snippets");
     let mut paths = Vec::new();
@@ -646,11 +663,13 @@ fn drawing_snippets() -> Vec<(&'static str, Vec<u8>)> {
     )]
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts_from_snippets() {
     assert_snippets_same_as_tika(&snippets(), &ParserConfigs::default());
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts_from_drawings() {
     assert_snippets_same_as_tika(&drawing_snippets(), &ParserConfigs::default());
@@ -676,6 +695,7 @@ fn defers_links_inside_the_package() {
     assert!(reason.contains("links to #Sheet2!A1"), "{reason}");
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tikas_path_extracts_from_snippets_with_other_settings() {
     use crate::config::OfficeParserConfig;

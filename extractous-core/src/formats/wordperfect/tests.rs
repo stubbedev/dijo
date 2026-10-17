@@ -1,9 +1,12 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
 };
+#[cfg(feature = "tika")]
 use crate::ole2::tests::compound;
 
 /// A WordPerfect prefix area of `major` and `minor` version, its document area right after it.
@@ -26,6 +29,7 @@ fn prefix(major: u8, minor: u8, encrypted: bool) -> Vec<u8> {
     bytes
 }
 
+#[cfg(feature = "tika")]
 fn wp5() -> Vec<u8> {
     let mut bytes = prefix(WP5_MAJOR_VERSION, 1, false);
     bytes.extend(b"Hej fra K");
@@ -67,6 +71,7 @@ fn wp6() -> Vec<u8> {
 
 /// A Quattro Pro 9 workbook's records: its beginning, its user, a sheet, a string table, labels
 /// and a comment.
+#[cfg(feature = "tika")]
 fn quattro_records() -> Vec<u8> {
     fn record(kind: u16, body: &[u8]) -> Vec<u8> {
         let mut bytes = kind.to_le_bytes().to_vec();
@@ -125,6 +130,7 @@ fn reads_prefix_areas_as_tika_does() {
     assert_eq!(PrefixArea::read(b"\xFFWPC\x10\x00"), Err(EndOfFile));
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_wordperfect_and_quattro_pro_as_tikas_path_does() {
     let roots = [
@@ -176,6 +182,7 @@ fn extracts_wordperfect_and_quattro_pro_as_tikas_path_does() {
     ]);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_wordperfect_and_quattro_pro_as_tikas_path_does() {

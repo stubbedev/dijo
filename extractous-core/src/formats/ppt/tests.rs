@@ -1,26 +1,36 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
+#[cfg(feature = "tika")]
+use crate::formats::parity;
+#[cfg(feature = "tika")]
+use crate::formats::parity::assert_same_as_tika_with_passwords;
 
+#[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
+#[cfg(feature = "tika")]
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 
 /// The presentations this port leaves to Tika, by file name, with a part of the reason.
+#[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 1] = [("testPPT_skipBadCompressedObject.ppt", "does not inflate")];
 
 /// The encrypted presentations, by file name, with the password that opens them.
+#[cfg(feature = "tika")]
 const ENCRYPTED: [(&str, &str); 2] = [
     ("testPPT_protected_passtika.ppt", "tika"),
     ("tika-password.ppt", "tika"),
 ];
 
+#[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
 /// Of `documents`, those this port reads, after checking that it leaves exactly those
 /// [`DEFERRED`] names to Tika.
+#[cfg(feature = "tika")]
 fn ported(documents: &[PathBuf]) -> Vec<PathBuf> {
     let mut ported = Vec::new();
     let mut unexpected = Vec::new();
@@ -39,6 +49,7 @@ fn ported(documents: &[PathBuf]) -> Vec<PathBuf> {
     ported
 }
 
+#[cfg(feature = "tika")]
 fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     let (mut documents, deferred) = parity::documents(&PptParser, roots);
     documents.extend(deferred);
@@ -66,6 +77,7 @@ fn defers_what_is_no_presentation() {
     ));
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn opens_the_repositorys_encrypted_presentation_as_tikas_path_does() {
     let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
@@ -74,6 +86,7 @@ fn opens_the_repositorys_encrypted_presentation_as_tikas_path_does() {
     assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {

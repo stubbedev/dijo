@@ -427,11 +427,15 @@ impl Parser for CmsParser {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::Scratch;
+    #[cfg(feature = "tika")]
+    use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents};
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
 
     /// The `meta` element of the `Content-Length` the head of signed or compressed content
@@ -458,6 +462,7 @@ mod tests {
 
     /// A native result as Tika's path writes it: ZIP content's integrity check out of its head
     /// (#99), and the content's `Content-Length` too (#113).
+    #[cfg(feature = "tika")]
     fn as_tika_writes_content(
         text: &mut String,
         metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -468,6 +473,7 @@ mod tests {
     }
 
     /// [`as_tika_writes_content`] for content that is generic XML (#105).
+    #[cfg(feature = "tika")]
     fn as_tika_writes_xml(
         text: &mut String,
         metadata: &mut crate::formats::parity::ComparedMetadata,
@@ -502,6 +508,7 @@ mod tests {
     }
     /// The detached signatures and certificate lists of Tika's tests, which Tika's path writes
     /// as empty documents.
+    #[cfg(feature = "tika")]
     const DETACHED: [&str; 5] = [
         "testDetached.p7s",
         "testPKCS7_certs_only_def.p7c",
@@ -510,6 +517,7 @@ mod tests {
         "testPKCS7_signature_ind.p7s",
     ];
     /// Enveloped data, which both paths report as encrypted.
+    #[cfg(feature = "tika")]
     const ENVELOPED: [&str; 2] = ["testPKCS7_enveloped_def.p7m", "testPKCS7_enveloped_ind.p7m"];
 
     #[test]
@@ -535,12 +543,14 @@ mod tests {
     }
 
     /// A BER element of `tag` holding `elements`, of indefinite length.
+    #[cfg(feature = "tika")]
     fn ber(tag: u8, elements: &[Vec<u8>]) -> Vec<u8> {
         [vec![tag, 0x80], elements.concat(), vec![0, 0]].concat()
     }
 
     const DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x01];
     const SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+    #[cfg(feature = "tika")]
     const ZLIB: &[u8] = &[
         0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x03, 0x08,
     ];
@@ -583,6 +593,7 @@ mod tests {
     }
 
     /// Compressed data of `content`.
+    #[cfg(feature = "tika")]
     fn compressed(content: &[u8]) -> Vec<u8> {
         let compressed_data = der(
             SEQUENCE,
@@ -603,8 +614,10 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tika")]
     const XML: &[u8] = br#"<?xml version="1.0"?><r xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Signed</dc:title>Some signed text.</r>"#;
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_content_as_tikas_path_does() {
         let scratch = Scratch::new("cms");
@@ -645,6 +658,7 @@ mod tests {
 
     /// Asserts parity on `documents`, those whose content is generic XML with that parser's
     /// departures from Tika's (#105) normalised.
+    #[cfg(feature = "tika")]
     fn assert_same_as_tika_reading(documents: &[&Path]) {
         let read_as_xml = |path: &&Path| {
             let (_, metadata) = crate::Extractor::new()
@@ -676,6 +690,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn reads_the_signed_local_document_as_tikas_path_does() {
         let (parsed, deferred) = documents(&CmsParser, &[Path::new("../test_files/documents")]);
@@ -687,8 +702,10 @@ mod tests {
     /// Tika's CMS test documents the native path leaves to Tika's: digested data typed as a
     /// signature, which Bouncy Castle fails to read as signed data, and signed data in PEM,
     /// which it cannot read at all.
+    #[cfg(feature = "tika")]
     const LEFT_TO_TIKA: [&str; 2] = ["testPKCS7_digested.p7", "testPKCS7_signed_data_def.pem"];
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn reads_tikas_test_documents_as_tikas_path_does() {

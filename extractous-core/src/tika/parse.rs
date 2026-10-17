@@ -1,12 +1,14 @@
 use std::time::Duration;
 
 use crate::config::ParserConfigs;
-use crate::embedded::{EmbeddedExtractResult, EmbeddedSpool};
+use crate::embedded::EmbeddedSpool;
 use crate::errors::{Error, ExtractResult};
 use crate::extractor::Stream;
+use crate::input::Source;
 use crate::isolate::Isolate;
 use crate::tika::jni_utils::*;
 use crate::tika::wrappers::*;
+use crate::unpack::EmbeddedExtractResult;
 use crate::{CharSet, Metadata, StreamReader};
 use jni::objects::{JObject, JValue};
 use jni::Env;
@@ -17,15 +19,14 @@ const CONFIGS_SIGNATURE: &str = "Lorg/apache/tika/parser/pdf/PDFParserConfig;\
                                  Lorg/apache/tika/parser/ocr/TesseractOCRConfig;\
                                  Ljava/lang/String;";
 
-/// Where a document is read from.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Source<'a> {
-    File(&'a str),
-    Bytes(&'a [u8]),
-    Url(&'a str),
+/// How a document's source goes to `TikaNativeMain`, whose methods take each kind of source.
+trait JavaSource {
+    fn method_suffix(&self) -> &'static str;
+    fn java_type(&self) -> &'static str;
+    fn into_java<'local>(self, env: &mut Env<'local>) -> ExtractResult<JObject<'local>>;
 }
 
-impl Source<'_> {
+impl JavaSource for Source<'_> {
     fn method_suffix(&self) -> &'static str {
         match self {
             Source::File(_) => "File",

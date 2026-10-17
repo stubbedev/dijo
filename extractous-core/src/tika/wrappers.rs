@@ -1,11 +1,12 @@
 use crate::config::{JavaValue, ParserConfigs};
-use crate::embedded::{EmbeddedDocument, EmbeddedExtractResult, SpooledEmbedded};
+use crate::embedded::SpooledEmbedded;
 use crate::errors::{Error, ExtractResult};
 use crate::tika::jni_utils::{
     jni_call_byte_array_method, jni_call_method, jni_call_object_array_method,
     jni_call_string_method, jni_new_direct_buffer, jni_new_string,
     jni_tika_metadata_to_rust_metadata,
 };
+use crate::unpack::{EmbeddedDocument, EmbeddedExtractResult};
 use crate::{Metadata, OfficeParserConfig, PdfParserConfig, TesseractOcrConfig};
 use jni::objects::{Global, JObject, JValue};
 use jni::strings::JNIString;

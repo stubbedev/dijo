@@ -448,7 +448,7 @@ fn message_date(message: &Message) -> Read<Option<i64>> {
 /// `getNormalizedMessageClass`: the name Tika's table gives a message class, the last column of
 /// its line. The read receipts' lines have three columns, and Tika takes the second, so that
 /// they come out as `IPNRN` and `IPNNRN` (#112).
-fn normalized_class(class: Option<&str>) -> &'static str {
+pub(in crate::formats) fn normalized_class(class: Option<&str>) -> &'static str {
     let Some(class) = class.filter(|class| !is_blank(class)) else {
         return "UNSPECIFIED";
     };

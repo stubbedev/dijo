@@ -1,13 +1,19 @@
+#[cfg(feature = "tika")]
 use std::io::Write;
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "tika")]
 use zip::write::SimpleFileOptions;
+#[cfg(feature = "tika")]
 use zip::{CompressionMethod, ZipWriter};
 
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
 /// A 1×1 PNG.
+#[cfg(feature = "tika")]
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
@@ -16,6 +22,7 @@ const PNG: &[u8] = &[
     0x42, 0x60, 0x82,
 ];
 
+#[cfg(feature = "tika")]
 const WORKSHEET: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <geogebra format="5.0" version="5.2.900.0" app="classic" id="a1b2c3" xml:lang="da">
 <construction title=" Pythagoras på dansk " author="Ane Bøgh" date="1. marts 2026">
@@ -30,6 +37,7 @@ const WORKSHEET: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </geogebra>
 "#;
 
+#[cfg(feature = "tika")]
 const MACROS: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <geogebra format="5.0">
 <macro cmdName="Midtpunkt" toolName="" toolHelp="Vælg to punkter" iconFile="ikon.png">
@@ -38,6 +46,7 @@ const MACROS: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </geogebra>
 "#;
 
+#[cfg(feature = "tika")]
 fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -48,6 +57,7 @@ fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
+#[cfg(feature = "tika")]
 fn slide(text: &str) -> String {
     format!(
         r#"<?xml version="1.0"?><geogebra format="5.0" app="notes"><construction title="{text}"><element type="text"><caption val="{text}"/></element></construction></geogebra>"#
@@ -69,6 +79,7 @@ fn orders_slides_as_tika_does() {
     assert_eq!(texts, ["3", "2"]);
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_geogebra_files_as_tikas_path_does() {
     let roots = [
@@ -143,6 +154,7 @@ fn extracts_geogebra_files_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {

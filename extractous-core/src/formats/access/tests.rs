@@ -1,14 +1,19 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "tika")]
+use std::path::PathBuf;
 
+#[cfg(feature = "tika")]
 use super::format::{self, Detected};
+#[cfg(feature = "tika")]
 use super::pages::rc4;
 use super::*;
-use crate::formats::parity::{
-    assert_same_as_tika, conformance_corpus, deferral, documents, spools_as_tika, Scratch,
-};
+#[cfg(feature = "tika")]
+use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, spools_as_tika};
+use crate::formats::parity::{deferral, Scratch};
 
 const FIXTURES: &str = "../test_files/documents/access";
 
+#[cfg(feature = "tika")]
 fn names(paths: &[PathBuf]) -> Vec<String> {
     let mut names: Vec<String> = paths
         .iter()
@@ -22,6 +27,7 @@ fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(Path::new(FIXTURES).join(name)).unwrap()
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_access_databases_as_tikas_path_does() {
     let roots = [
@@ -51,6 +57,7 @@ fn extracts_access_databases_as_tikas_path_does() {
     assert_same_as_tika(&parsed, JackcessParser.tika_name());
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn spools_embedded_objects_as_tikas_path_does() {
     for name in ["ace-ole.accdb", "jet3-ole.mdb"] {
@@ -64,6 +71,7 @@ fn spools_embedded_objects_as_tikas_path_does() {
 
 /// A Jet database encoded as Access encodes it once it is given an encoding key: each page
 /// after the first RC4 under the key XORed with the page's number.
+#[cfg(feature = "tika")]
 fn encoded(mut file: Vec<u8>, key: [u8; 4]) -> Vec<u8> {
     let Ok(Detected::Format(format)) = format::detect(&file) else {
         panic!("a Jet database");
@@ -83,6 +91,7 @@ fn encoded(mut file: Vec<u8>, key: [u8; 4]) -> Vec<u8> {
     file
 }
 
+#[cfg(feature = "tika")]
 #[test]
 fn reads_encoded_jet_databases_as_tikas_path_does() {
     let scratch = Scratch::new("access-encoded");
@@ -143,6 +152,7 @@ fn leaves_jet3_names_the_index_may_not_find_to_tika() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {

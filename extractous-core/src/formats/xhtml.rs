@@ -4,15 +4,22 @@
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
 use crate::formats::embedded::{
-    self, EmbeddedRecord, Embedding, Event, ParseContext, Wrapping, PACKAGE_ENTRY,
+    self, EmbeddedRecord, Embedding, ParseContext, Wrapping, PACKAGE_ENTRY,
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
+#[cfg(feature = "tika")]
 use crate::isolate::isolate;
 use crate::memory;
-use crate::tika::{self, EmbeddedOutcome};
+#[cfg(feature = "tika")]
+use crate::tika::{self, EmbeddedOutcome, Event};
 use crate::Metadata;
+
+/// What an embedded document no native parser reads is recorded as unread by, in a build
+/// without Tika.
+#[cfg(not(feature = "tika"))]
+const UNSUPPORTED: &str = "extractous";
 
 /// Whether the extraction holds no more memory than its budget, which it checks as it writes.
 pub(crate) fn within_budget() -> Result<(), Stop> {
@@ -738,7 +745,10 @@ impl<'h> Xhtml<'h> {
     /// Parses a storage of a compound document embedded in this one with a native parser, as
     /// [`Xhtml::parse_embedded`] parses a document: `write`, which `parser` runs, writes the
     /// document from `metadata`, and its body goes into this one; an extraction that spools its
-    /// embedded documents copies `spooled`, the storage as a document of its own.
+    /// embedded documents copies `spooled`, the storage as a document of its own. Where `write`
+    /// finds the document malformed, as Tika's parser would throw, the failure is recorded in
+    /// this document's metadata, which goes on, as for a document [`Xhtml::parse_embedded`]
+    /// parses.
     pub(crate) fn parse_container_natively(
         &mut self,
         spooled: &[u8],
@@ -761,6 +771,11 @@ impl<'h> Xhtml<'h> {
             }
             Err(Failure::Stopped(stop)) => Ended::Stopped(stop),
             Err(Failure::Extraction(error)) => Ended::Failed(Failure::Embedded(error)),
+            Err(Failure::Malformed(reason)) => {
+                let failure = embedded::describe_failure(parser, metadata, &reason);
+                self.embedding.absorb_failures(&parsed, Some(failure));
+                Ended::Recorded
+            }
             Err(failure) => Ended::Failed(failure),
         };
         self.leave_embedded(ended, open, wrapping)
@@ -831,6 +846,7 @@ impl<'h> Xhtml<'h> {
                 self.embedding.absorb_failures(&parsed, None);
                 Ended::Clean
             }
+            #[cfg(feature = "tika")]
             #[cfg_attr(
                 not(test),
                 expect(unused_variables, reason = "only the tests record why")
@@ -840,7 +856,31 @@ impl<'h> Xhtml<'h> {
                 formats::audit::bridged(bridged);
                 self.parse_with_tika(data, metadata, open, target)
             }
+            #[cfg(not(feature = "tika"))]
+            Err(Bridged::Declined(parser, Declined::Fails(error))) => {
+                self.record_unread(parser, metadata, &error.to_string())
+            }
+            #[cfg(not(feature = "tika"))]
+            Err(Bridged::Declined(parser, Declined::Deferred(reason))) => {
+                let unsupported = crate::Unsupported::Deferred { parser, reason };
+                self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
+            }
+            #[cfg(not(feature = "tika"))]
+            Err(Bridged::Unrouted(Unrouted::Unsupported(unsupported))) => {
+                self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
+            }
         }
+    }
+
+    /// Records that an embedded document stays unread, in a build without Tika, where its parse
+    /// on Tika's path would be: what did not read it, which document and why. The document
+    /// embedding it goes on, as it does past an embedded document whose parser fails.
+    #[cfg(not(feature = "tika"))]
+    fn record_unread(&mut self, reader: &str, metadata: &TikaMetadata, reason: &str) -> Ended {
+        let failure = embedded::describe_failure(reader, metadata, reason);
+        self.embedding
+            .absorb_failures(&Metadata::new(), Some(failure));
+        Ended::Recorded
     }
 
     /// Ends an embedded document as its parse `ended`: the elements it left open closed where
@@ -868,6 +908,7 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Parses an embedded document with Tika's path and replays its events.
+    #[cfg(feature = "tika")]
     fn parse_with_tika(
         &mut self,
         data: &[u8],
@@ -882,7 +923,7 @@ impl<'h> Xhtml<'h> {
         if let EmbeddedOutcome::Parsed { metadata, .. } = &parsed.outcome {
             self.embedding.absorb_parsers(metadata);
         }
-        let events = match embedded::decode(&parsed.events) {
+        let events = match tika::decode_events(&parsed.events) {
             Ok(events) => events,
             Err(failure) => return Ended::Failed(failure),
         };
@@ -909,6 +950,7 @@ impl<'h> Xhtml<'h> {
 
     /// Tika's path's parse of an embedded document, its events and how it ended, which this
     /// document has not taken in yet.
+    #[cfg(feature = "tika")]
     fn parse_with_tika_quietly(
         &self,
         data: &[u8],
@@ -989,6 +1031,7 @@ impl<'h> Xhtml<'h> {
 
     /// Writes the events of an embedded document, keeping the names of the elements left open
     /// in `open`, until the output stops taking them.
+    #[cfg(feature = "tika")]
     fn replay(
         &mut self,
         events: Vec<Event>,

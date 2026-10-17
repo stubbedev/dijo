@@ -1,6 +1,7 @@
-//! AppleSingle files, as Tika's `AppleSingleFileParser` reads them: the entries read in the
-//! order of their offsets, the real name kept as the original resource name, and the data fork
-//! handed to the embedded document extractor.
+//! AppleSingle files, as Tika's `AppleSingleFileParser` reads them: the real name kept as the
+//! original resource name, and the data fork handed to the embedded document extractor. Each
+//! entry is read at its offset, where Tika's reads them in turn and fails on entries that
+//! overlap (#118).
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -9,8 +10,6 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Opened, Parser, Prepared};
 use crate::java;
 
-/// `MAX_FIELD_LENGTH`: the longest real name Tika reads.
-const MAX_FIELD_LENGTH: u64 = 1_073_741_824;
 const DATA_FORK: u64 = 1;
 const REAL_NAME: u64 = 3;
 /// The version of AppleSingle Tika reads.
@@ -93,8 +92,9 @@ impl<'a> Stream<'a> {
     }
 }
 
-/// `parse` up to the start of the document: the entries, sorted by offset, read and skipped
-/// in turn; the exception Tika throws before it writes anything where they do not read.
+/// `parse` up to the start of the document: the header and its entries, the real name of the last
+/// real-name entry by offset, which must lie in the file, and the data fork, as much of it as
+/// there is; the exception Tika throws before it writes anything where they do not read.
 fn read(input: &[u8]) -> Result<Content<'_>, String> {
     let mut stream = Stream {
         bytes: input,
@@ -125,31 +125,24 @@ fn read(input: &[u8]) -> Result<Content<'_>, String> {
         return Err("AppleSingleFile missing field info".to_owned());
     }
     entries.sort_by_key(|entry| entry.offset);
-    let mut read = 26 + 12 * u64::from(count);
-    let mut original_name = None;
-    for entry in &entries {
-        let Some(gap) = entry.offset.checked_sub(read) else {
-            return Err(format!(
-                "IllegalArgumentException: Skip count must be non-negative, actual: -{}",
-                read - entry.offset
-            ));
-        };
-        stream.take(gap)?;
-        read = entry.offset;
-        if entry.id == REAL_NAME {
-            if entry.length > MAX_FIELD_LENGTH {
-                return Err(format!(
-                    "TikaMemoryLimitException: {} bytes exceed {MAX_FIELD_LENGTH}",
-                    entry.length
-                ));
-            }
-            original_name = Some(java::ascii(stream.take(entry.length)?));
-            read += entry.length;
-        } else if entry.id != DATA_FORK {
-            stream.take(entry.length)?;
-            read += entry.length;
-        }
-    }
+    let original_name = entries
+        .iter()
+        .rfind(|entry| entry.id == REAL_NAME)
+        .map(|entry| {
+            usize::try_from(entry.offset)
+                .ok()
+                .zip(usize::try_from(entry.length).ok())
+                .and_then(|(offset, length)| input.get(offset..offset.checked_add(length)?))
+                .map(java::ascii)
+                .ok_or_else(|| {
+                    format!(
+                        "EOFException: the real name at {} of {} bytes runs past the end of the \
+                         AppleSingle file",
+                        entry.offset, entry.length
+                    )
+                })
+        })
+        .transpose()?;
     let data_fork = entries
         .iter()
         .find(|entry| entry.id == DATA_FORK)
@@ -170,7 +163,7 @@ fn read(input: &[u8]) -> Result<Content<'_>, String> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 
@@ -226,6 +219,26 @@ mod tests {
             AppleSingleFileParser.tika_name(),
         );
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn reads_entries_that_overlap() {
+        let data = b"named.txt and its text";
+        let mut file = vec![0x00, 0x05, 0x16, 0x00, 0x00, 0x02, 0x00, 0x00];
+        file.extend_from_slice(&[0; 16]);
+        file.extend_from_slice(&2u16.to_be_bytes());
+        let start = 26 + 2 * 12;
+        for (id, length) in [(DATA_FORK, data.len()), (REAL_NAME, 9)] {
+            for field in [id, start, u64::try_from(length).unwrap()] {
+                file.extend_from_slice(&u32::try_from(field).unwrap().to_be_bytes());
+            }
+        }
+        file.extend_from_slice(data);
+        let content = read(&file).unwrap();
+        assert_eq!(content.original_name.as_deref(), Some("named.txt"));
+        assert_eq!(content.data_fork, Some(&data[..]));
+        file.truncate(file.len() - data.len() + 4);
+        assert!(read(&file).unwrap_err().contains("runs past the end"));
     }
 
     #[test]

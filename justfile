@@ -123,17 +123,6 @@ text-reference:
         "$fixtures/text-reference.tsv.gz" documents=test_files/documents corpus=quality/corpus \
         truth=quality/truth tika="$CONFORMANCE_CORPUS"
 
-# Regenerate what the JDK's writers make of generated data, which the Rust ports of java.util.zip.Deflater and
-# the PNG writer PDFBox's ImageIOUtil drives are tested against.
-[unix]
-image-writer-reference:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    jars=target/reference-jars
-    ci/fetch-reference-jars.sh "$jars"
-    java -Djava.awt.headless=true -cp "$jars/pdf/*" extractous-core/tests/fixtures/pdf/ImageWriterReference.java \
-        extractous-core/tests/fixtures/pdf/image-writers.tsv
-
 # Regenerate the PDFBox resources the Rust PDF parser reads, from the PDFBox jars Tika's native image holds: the
 # glyph lists, the Unicode mirroring pairs, the fallback font it measures fonts it finds no program for with, the
 # standard 14 fonts' metrics without their kerning pairs, the built-in simple font encodings, and FontBox's
@@ -243,6 +232,18 @@ xlsx-reference:
     fixtures=extractous-core/tests/fixtures/xlsx
     java -Duser.language=en -Duser.country=US -Duser.timezone=Europe/Copenhagen \
         -cp "$jars/mime/*" "$fixtures/FormatReference.java" "$fixtures"
+
+# Regenerate the BMP and WBMP images and what Tika's ImageParser reads of them through the JDK's own
+# readers alone, which the native readers are tested against.
+bmp-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${CONFORMANCE_CORPUS:?must name the documents conformance/prepare.sh checks out}"
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-core/tests/fixtures/image
+    java -Djava.awt.headless=true -cp "$jars/mime/*:$jars/image/*" "$fixtures/BmpReference.java" "$fixtures" \
+        "$CONFORMANCE_CORPUS/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testBMP.bmp"
 
 # Regenerate what Tika's SummaryExtractor reads from the OLE2 documents among the test files and
 # Tika's own test documents, which the Rust port of HPSF is tested against.
@@ -372,6 +373,12 @@ language-accuracy file:
 [linux]
 static:
     ci/static-image.sh target/static-image/extractous
+
+# Build the statically linked Linux executable without Tika, target/static/extractous: the program alone, with
+# musl, tesseract and libheif linked in, needing nothing at run time and no GraalVM to build.
+[linux]
+static-native:
+    ci/static.sh target/static/extractous
 
 # Run the server under load for SOAK_SECONDS (120 by default) per test with a release build:
 # answers stay alike and memory level over a long run, and damaged documents are answered while

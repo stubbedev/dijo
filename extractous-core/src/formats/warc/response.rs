@@ -95,7 +95,7 @@ fn payload(input: &[u8]) -> Result<Payload<'_>, Deferral> {
         .ok_or_else(|| "a payload cut short of its Content-Length".to_owned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 

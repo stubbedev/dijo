@@ -67,7 +67,25 @@ pub(crate) fn emf_text(text: &str, x: i32, y: i32, wide: bool) -> Vec<u8> {
     emf_record(if wide { 0x54 } else { 0x53 }, &data)
 }
 
+/// An `EMR_EXTCREATEFONTINDIRECTW` record of a font at `index` of the object table, in the
+/// charset `charset`.
+pub(crate) fn emf_font(index: u32, charset: u8) -> Vec<u8> {
+    let mut font = index.to_le_bytes().to_vec();
+    font.extend_from_slice(&[0; 23]);
+    font.push(charset);
+    font.extend_from_slice(&[0; 4]);
+    font.extend(utf16("Arial"));
+    font.resize(4 + 92, 0);
+    emf_record(0x52, &font)
+}
+
+/// An `EMR_SELECTOBJECT` record of the object at `index` of the object table.
+pub(crate) fn emf_select(index: u32) -> Vec<u8> {
+    emf_record(0x25, &index.to_le_bytes())
+}
+
 /// An `EMR_COMMENT` of private data.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_comment(data: &[u8]) -> Vec<u8> {
     let mut comment = int(data.len() as i32).to_vec();
     comment.extend_from_slice(data);
@@ -81,6 +99,7 @@ pub(crate) fn utf16(text: &str) -> Vec<u8> {
 }
 
 /// A public `EMR_COMMENT` of `kind` holding `body`.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_public_comment(kind: u32, body: &[u8]) -> Vec<u8> {
     let mut data = b"GDIC".to_vec();
     data.extend_from_slice(&kind.to_le_bytes());
@@ -89,6 +108,7 @@ pub(crate) fn emf_public_comment(kind: u32, body: &[u8]) -> Vec<u8> {
 }
 
 /// A comment embedding a WMF picture.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_wmf_comment(wmf: &[u8]) -> Vec<u8> {
     let mut body = vec![1, 0, 0, 0];
     body.extend_from_slice(&int(0));
@@ -99,6 +119,7 @@ pub(crate) fn emf_wmf_comment(wmf: &[u8]) -> Vec<u8> {
 }
 
 /// A comment embedding each of `formats` as a format of the picture.
+#[cfg(feature = "tika")]
 pub(crate) fn emf_formats_comment(formats: &[&[u8]]) -> Vec<u8> {
     let mut body = vec![0; 16];
     body.extend_from_slice(&int(formats.len() as i32));
@@ -148,6 +169,11 @@ pub(crate) fn wmf_font(charset: u8) -> Vec<u8> {
     font.extend_from_slice(&[0; 4]);
     font.extend_from_slice(b"Arial\0");
     wmf_record(0x02FB, &font)
+}
+
+/// A `META_SELECTOBJECT` record of the object at `index` of the object table.
+pub(crate) fn wmf_select(index: u16) -> Vec<u8> {
+    wmf_record(0x012D, &index.to_le_bytes())
 }
 
 /// A `META_TEXTOUT` record of `text`.

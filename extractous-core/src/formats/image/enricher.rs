@@ -1,8 +1,8 @@
 //! The OCR enricher `TikaNativeMain` hands Tika's image parsers when tesseract runs: our Java
 //! `PreparingOcrParser`, under Tika's `GuardedEnricher`. It reads the image with tesseract and
 //! writes the text in a div of class `ocr`, the pages of a TIFF each in a div of class `page`,
-//! and adds a report of how each image was read to the metadata. With OCR skipped it records
-//! itself and reads nothing.
+//! and adds a report of how each image was read to the metadata. With OCR skipped it is not
+//! run, where Tika's path records it though it reads nothing (#114).
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -23,10 +23,8 @@ const WARNING: &str = "tk:exception:warn";
 
 /// What the enricher does with an image, decided before its document is written.
 pub(super) enum Enricher<'a> {
-    /// Tika hands the image no enricher.
+    /// Tika hands the image no enricher, or OCR is skipped.
     Absent,
-    /// The enricher runs with OCR skipped, and reads nothing.
-    Skipping,
     /// The enricher reads the image, decoded.
     Reading {
         reader: OcrReader,
@@ -91,8 +89,8 @@ impl OcrReader {
 }
 
 impl<'a> Enricher<'a> {
-    /// The enricher of an image of `content_type` Tika hands one, `enriched`: unless OCR is
-    /// skipped, the image decoded. An image the port cannot decode or read with tesseract is left
+    /// The enricher of an image of `content_type` Tika hands one, `enriched`, unless OCR is
+    /// skipped: the image decoded. An image the port cannot decode or read with tesseract is left
     /// to Tika's path.
     pub(super) fn of(
         enriched: bool,
@@ -100,11 +98,8 @@ impl<'a> Enricher<'a> {
         input: &'a [u8],
         configs: &ParserConfigs,
     ) -> Result<Self, Unported> {
-        if !enriched {
+        if !enriched || configs.ocr.skips_ocr() {
             return Ok(Self::Absent);
-        }
-        if configs.ocr.skips_ocr() {
-            return Ok(Self::Skipping);
         }
         let base = content_type.split(';').next().unwrap_or_default().trim();
         let format = Format::of(base).ok_or_else(|| {
@@ -115,7 +110,7 @@ impl<'a> Enricher<'a> {
         let timeout = OcrSettings::of(&configs.ocr).timeout();
         let decoded = ocr::decode(input, format, timeout).map_err(|undecoded| {
             Unported::new(match undecoded {
-                #[cfg(not(feature = "static-image"))]
+                #[cfg(not(feature = "static"))]
                 Undecoded::NoDecoder => format!(
                     "an image of {base}, for which no decoder is bundled or installed: Tika's \
                      path reports it unread"
@@ -134,13 +129,13 @@ impl<'a> Enricher<'a> {
     /// `GuardedEnricher.parse`: unless the image is too small for it, the enricher is recorded
     /// and reads the image of `file_size` bytes, as the image parser's metadata leaves it.
     pub(super) fn enrich(self, xhtml: &mut Xhtml, file_size: usize) -> Result<(), Failure> {
-        if matches!(self, Self::Absent) || too_small(xhtml) {
-            return Ok(());
-        }
-        xhtml.delegate_to(PREPARING_OCR_PARSER);
         let Self::Reading { reader, decoded } = self else {
             return Ok(());
         };
+        if too_small(xhtml) {
+            return Ok(());
+        }
+        xhtml.delegate_to(PREPARING_OCR_PARSER);
         let metadata = xhtml.metadata_mut();
         let orientation = metadata.get(ORIENTATION).and_then(Orientation::parse);
         let page = metadata

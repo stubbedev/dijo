@@ -193,9 +193,12 @@ fn read_book(input: &[u8], metadata: &mut TikaMetadata) -> Result<Vec<Block>, Fa
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::assert_same_as_tika;
+    #[cfg(feature = "tika")]
     use std::path::Path;
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_what_tikas_path_extracts() {
         let documents = [

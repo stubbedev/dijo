@@ -809,17 +809,22 @@ fn rk_number(data: &[u8], offset: usize) -> Result<f64, Failure> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    #[cfg(feature = "tika")]
     use super::super::tests::assert_same_as_tika_rewriting;
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::ooxml::testing::{package, relationship, relationships};
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, conformance_corpus, documents, ComparedMetadata, Scratch,
     };
 
     /// Each boolean and error as the native parser writes it, as Excel shows it, with what
     /// Tika's path writes for it instead: `true`, `false` and `ERROR` (#127).
+    #[cfg(feature = "tika")]
     fn as_tika_writes() -> Vec<(&'static str, &'static str)> {
         let errors = (0..=u8::MAX).filter_map(error_text);
         [("TRUE", "true"), ("FALSE", "false")]
@@ -830,6 +835,7 @@ mod tests {
 
     /// A native result with each cell's boolean or error written as Tika's path writes it: the
     /// cells of the XHTML, and the tab-separated fields of the text.
+    #[cfg(feature = "tika")]
     fn as_tika_writes_cells(text: &mut String, _: &mut ComparedMetadata, _: &ComparedMetadata) {
         let values = as_tika_writes();
         for (native, tika) in &values {
@@ -851,17 +857,21 @@ mod tests {
         *text = rewritten;
     }
 
+    #[cfg(feature = "tika")]
     fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
         assert_same_as_tika_rewriting(documents, configs, as_tika_writes_cells);
     }
 
+    #[cfg(feature = "tika")]
     const RELATIONSHIPS: &str = "application/vnd.openxmlformats-package.relationships+xml";
 
+    #[cfg(feature = "tika")]
     fn paths(files: &[PathBuf]) -> Vec<&Path> {
         files.iter().map(PathBuf::as_path).collect()
     }
 
     /// A record of type `id` holding `data`, its id and length as XLSB writes them.
+    #[cfg(feature = "tika")]
     fn record(id: u32, data: &[u8]) -> Vec<u8> {
         let mut bytes = if id < 0x80 {
             vec![id as u8]
@@ -882,6 +892,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "tika")]
     fn wide(text: &str) -> Vec<u8> {
         let units: Vec<u16> = text.encode_utf16().collect();
         let mut bytes = (units.len() as u32).to_le_bytes().to_vec();
@@ -889,6 +900,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "tika")]
     fn cell(id: u32, column: u32, style: u32, value: &[u8]) -> Vec<u8> {
         let mut data = column.to_le_bytes().to_vec();
         data.extend_from_slice(&style.to_le_bytes()[..3]);
@@ -897,6 +909,7 @@ mod tests {
         record(id, &data)
     }
 
+    #[cfg(feature = "tika")]
     fn row(number: u32) -> Vec<u8> {
         let mut data = number.to_le_bytes().to_vec();
         data.extend_from_slice(&[0; 13]);
@@ -905,6 +918,7 @@ mod tests {
 
     /// A binary workbook of one sheet named `name` holding `cells`, with the shared strings
     /// `strings`, two cell styles (General and a format of id 164) and the sheet's `comments`.
+    #[cfg(feature = "tika")]
     fn workbook(name: &str, cells: &[Vec<u8>], strings: &[&str], comments: &[u8]) -> Vec<u8> {
         let mut header_footer = vec![0, 0];
         header_footer.extend(wide("&LLeft&CTitle"));
@@ -912,6 +926,7 @@ mod tests {
         workbook_with(name, cells, strings, comments, 164, &header_footer)
     }
 
+    #[cfg(feature = "tika")]
     /// [`workbook`], its second cell style of the format `format`, and the sheet's headers and
     /// footers the record `header_footer`.
     fn workbook_with(
@@ -990,6 +1005,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tika")]
     fn comment(author: u32, row: u32, column: u32, text: &str) -> Vec<u8> {
         let mut begin = author.to_le_bytes().to_vec();
         for value in [row, row, column, column] {
@@ -1005,6 +1021,7 @@ mod tests {
         .concat()
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_binary_workbooks_as_tikas_path_does() {
         let scratch = Scratch::new("xlsb");
@@ -1054,6 +1071,7 @@ mod tests {
         assert_fails_as_tika(&paths(&failing));
     }
 
+    #[cfg(feature = "tika")]
     /// What POI slips on, read as the format specifies (#127): a format id past one byte, a
     /// null header before a footer, a cell of rich text, and booleans and errors as Excel shows
     /// them.
@@ -1088,6 +1106,7 @@ mod tests {
         assert!(header.is_some() && header < footer, "{text}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_binary_workbooks_as_tikas_path_does() {

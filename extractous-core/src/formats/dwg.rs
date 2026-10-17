@@ -1,7 +1,9 @@
 //! AutoCAD drawings, as Tika's `DWGParser` reads them without a `dwgread` program: the
 //! drawing's summary properties as metadata and paragraphs, found in the property section the
 //! header points to (2004 and later) or after the `DWGPROPS COOKIE` marker (2000), and its
-//! custom properties.
+//! custom properties. Where Tika's parser slips (#127), this one reads on: the marker is found
+//! wherever it starts, an empty string is empty, a 2000 property of an index without a name is
+//! written as text alone, and a second last author replaces the first.
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -219,34 +221,30 @@ fn skip_to_property_section(stream: &mut Stream, header: &[u8]) -> Result<bool, 
     Ok(true)
 }
 
-/// `skipTo2000PropertyInfoSection`: whether the marker follows, read past. A byte that breaks
-/// off a match is not tried as the start of another.
+/// `skipTo2000PropertyInfoSection`: whether the marker follows, read past, or the stream read
+/// to its end. Tika does not try the byte that breaks off a match as the start of another.
 fn skip_to_2000_properties(stream: &mut Stream) -> bool {
-    while let Some(byte) = stream.read() {
-        if byte != MARKER_2000[0] {
-            continue;
+    let rest = &stream.data[stream.at..];
+    match memchr::memmem::find(rest, MARKER_2000) {
+        Some(found) => {
+            stream.at += found + MARKER_2000.len();
+            true
         }
-        let matched = MARKER_2000[1..]
-            .iter()
-            .all(|&expected| stream.read() == Some(expected));
-        if matched {
-            return true;
+        None => {
+            stream.at = stream.data.len();
+            false
         }
     }
-    false
 }
 
-/// `Metadata.add(Property, value)`, which fails for a second value of a property that takes
-/// one.
-fn add(metadata: &mut TikaMetadata, field: Field, value: &str) -> Result<(), Failure> {
-    if !field.bag && metadata.get(field.name).is_some() {
-        return Err(Failure::Malformed(format!(
-            "PropertyTypeException: {} : SIMPLE",
-            field.name
-        )));
+/// A value of the property `field`: added to those of a property that takes several, in place
+/// of the value of one that takes one, where Tika fails on a second.
+fn add(metadata: &mut TikaMetadata, field: Field, value: &str) {
+    if field.bag {
+        metadata.add(field.name, value);
+    } else {
+        metadata.set(field.name, value);
     }
-    metadata.add(field.name, value);
-    Ok(())
 }
 
 /// `get2000Props`.
@@ -266,10 +264,9 @@ fn properties_2000(stream: &mut Stream, xhtml: &mut Xhtml) -> Result<(), Failure
         }
         let value = java::latin1(value);
         if let Some(entry) = HEADER_2000_PROPERTIES.get(usize::from(index)) {
-            let field = entry.ok_or_else(|| {
-                Failure::Malformed("NullPointerException: property must not be null".into())
-            })?;
-            add(xhtml.metadata_mut(), field, &value)?;
+            if let Some(field) = entry {
+                add(xhtml.metadata_mut(), *field, &value);
+            }
             xhtml.element("p", &value)?;
         } else if index == 0x012c {
             if let Some((name, value)) = value.split_once('=') {
@@ -307,36 +304,19 @@ fn properties(stream: &mut Stream, strings: Strings, xhtml: &mut Xhtml) -> Resul
 }
 
 /// `read2004String` and `read2007and2010String`: a string after its 16-bit length, its last
-/// character dropped when it is zero, which fails for an empty one.
+/// character dropped when it is zero. Tika fails on an empty one, reading its last character.
 fn string(stream: &mut Stream, strings: Strings) -> Result<String, Failure> {
     let length = usize::from(stream.u16()?);
-    let empty = || {
-        Failure::Malformed(
-            "IndexOutOfBoundsException: an empty string, whose last character is read".into(),
-        )
+    let mut value = match strings {
+        Strings::Bytes => java::latin1(stream.read_fully(length)?),
+        Strings::Wide => Charset::named("UTF-16LE")
+            .decode(stream.read_fully(length * 2)?)
+            .expect("the JDK decoders decode UTF-16LE"),
     };
-    match strings {
-        Strings::Bytes => {
-            let data = stream.read_fully(length)?;
-            let last = *data.last().ok_or_else(empty)?;
-            let kept = if last == 0 { length - 1 } else { length };
-            Ok(java::latin1(&data[..kept]))
-        }
-        Strings::Wide => {
-            let data = stream.read_fully(length * 2)?;
-            let mut value = Charset::named("UTF-16LE")
-                .decode(data)
-                .expect("the JDK decoders decode UTF-16LE");
-            match value.chars().last() {
-                Some('\0') => {
-                    value.pop();
-                }
-                Some(_) => {}
-                None => return Err(empty()),
-            }
-            Ok(value)
-        }
+    if value.ends_with('\0') {
+        value.pop();
     }
+    Ok(value)
 }
 
 /// `skipToCustomProperties`: the number of custom properties, after the padding that says
@@ -351,7 +331,7 @@ fn custom_properties(stream: &mut Stream) -> Result<u16, Failure> {
     Ok(if count > 0 && count < 0x7f { count } else { 0 })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 
@@ -427,16 +407,14 @@ mod tests {
         };
         let wide_summary = summary(&|value| wide(value));
         let narrow_summary = summary(&|value| narrow(value.as_bytes()));
-        let mut cookie = b"junk DDWGPROPS COOKIE junk DWGPROPS COOKIE".to_vec();
+        let mut cookie = b"junk DWGPROPS COOKIE".to_vec();
         cookie.extend(property_2000(2, 0x1e, b"Plan \xe6"));
         cookie.extend(property_2000(4, 0x1e, b"Ana"));
         cookie.extend(property_2000(9, 0x1e, b"ignored"));
         cookie.extend(property_2000(0x012c, 0x1e, b"Client=Kommune"));
         cookie.extend(property_2000(3, 0x01, b"not text"));
         cookie.extend(property_2000(90, 0, b""));
-        let mut cookie_drawing = b"AC1015".to_vec();
-        cookie_drawing.resize(HEADER_LENGTH, 0);
-        cookie_drawing.extend(cookie);
+        let cookie_drawing = drawing_2000(&cookie);
         let read = [
             scratch.write("2010.dwg", &drawing(b"AC1024", &wide_summary)),
             scratch.write("2004.dwg", &drawing(b"AC1018", &narrow_summary)),
@@ -450,23 +428,71 @@ mod tests {
         let failing = [
             scratch.write("short.dwg", &drawing(b"AC1024", &wide_summary)[..100]),
             scratch.write("version.dwg", &drawing(b"AC1009", &wide_summary)),
-            scratch.write("empty-string.dwg", &drawing(b"AC1024", &[0, 0])),
-            scratch.write(
-                "twice.dwg",
-                &[
-                    &cookie_drawing[..HEADER_LENGTH],
-                    b"DWGPROPS COOKIE",
-                    &property_2000(8, 0x1e, b"A"),
-                    &property_2000(8, 0x1e, b"B"),
-                ]
-                .concat(),
-            ),
         ];
         let (parsed, deferred) = documents(&DwgParser, &[scratch.directory()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
         assert_same_as_tika(&paths(&read), DwgParser.tika_name());
         assert_fails_as_tika(&paths(&failing));
+    }
+
+    /// A 2000 drawing whose header `rest` follows.
+    fn drawing_2000(rest: &[u8]) -> Vec<u8> {
+        let mut file = b"AC1015".to_vec();
+        file.resize(HEADER_LENGTH, 0);
+        file.extend_from_slice(rest);
+        file
+    }
+
+    /// The XHTML body and metadata of a drawing.
+    fn extracted(file: &[u8]) -> (String, crate::Metadata) {
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(file)
+            .unwrap();
+        let body = xml[xml.find("<body>").unwrap()..].to_owned();
+        (body, metadata)
+    }
+
+    /// Where Tika's parser fails or reads past properties, the port reads them (#127).
+    #[test]
+    fn reads_what_tikas_parser_slips_on() {
+        let marker_after_its_first_letter = drawing_2000(
+            &[
+                &b"junk DDWGPROPS COOKIE"[..],
+                &property_2000(2, 0x1e, b"Plan"),
+                &property_2000(90, 0, b""),
+            ]
+            .concat(),
+        );
+        let (body, metadata) = extracted(&marker_after_its_first_letter);
+        assert_eq!(body, "<body><p>Plan</p>\n</body></html>");
+        assert_eq!(metadata["dc:title"], ["Plan"]);
+        let twice = drawing_2000(
+            &[
+                &b"DWGPROPS COOKIE"[..],
+                &property_2000(8, 0x1e, b"A"),
+                &property_2000(8, 0x1e, b"B"),
+                &property_2000(5, 0x1e, b"unnamed"),
+                &property_2000(90, 0, b""),
+            ]
+            .concat(),
+        );
+        let (body, metadata) = extracted(&twice);
+        assert_eq!(
+            body,
+            "<body><p>A</p>\n<p>B</p>\n<p>unnamed</p>\n</body></html>"
+        );
+        assert_eq!(metadata["meta:last-author"], ["B"]);
+        let mut empty = wide("Plan");
+        empty.extend_from_slice(&[0, 0]);
+        empty.extend(wide("Ana"));
+        empty.extend_from_slice(&[0; 10]);
+        empty.extend(custom(0));
+        let (body, metadata) = extracted(&drawing(b"AC1024", &empty));
+        assert_eq!(body, "<body><p>Plan</p>\n<p>Ana</p>\n</body></html>");
+        assert_eq!(metadata["dc:creator"], ["Ana"]);
+        assert!(!metadata.contains_key("dc:description"));
     }
 
     #[test]
