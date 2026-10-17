@@ -25,6 +25,8 @@ pub mod zstd;
 use std::fmt;
 use std::io::Read;
 
+use crate::java::time::civil;
+
 /// `CompressorParser`'s `memoryLimitInKb`, which the decoders that size their memory by the
 /// stream keep within.
 pub(crate) const MEMORY_LIMIT_KIB: u32 = 100_000;
@@ -105,6 +107,29 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     crc.sum()
 }
 
+/// The DOS date and time `dos` as a wall-clock time in UTC, in milliseconds since the epoch, if
+/// its fields are in range. The formats that record DOS times name no zone, and Java's readers
+/// take them in the JVM's default zone with a lenient `Calendar`, so the instant depends on the
+/// machine and out-of-range fields roll over (#99, #122).
+pub fn dos_millis(dos: i64) -> Option<i64> {
+    let year = (dos >> 25 & 0x7F) + 1980;
+    let month = dos >> 21 & 0x0F;
+    let day = dos >> 16 & 0x1F;
+    let (hour, minute, second) = (dos >> 11 & 0x1F, dos >> 5 & 0x3F, dos << 1 & 0x3E);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if civil::is_leap_year(year) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = civil::days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
+}
+
 /// Fails once `decoded` holds more than [`MAX_DECODED`] bytes.
 fn within_limit(decoded: &[u8]) -> Result<(), Undecoded> {
     if decoded.len() > MAX_DECODED {
@@ -129,6 +154,23 @@ fn read_whole(reader: impl Read) -> Result<Vec<u8>, Undecoded> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn reads_dos_times_as_utc_wall_clock_times() {
+        let dos = |year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64| {
+            (year - 1980) << 25 | month << 21 | day << 16 | hour << 11 | minute << 5 | second >> 1
+        };
+        assert_eq!(
+            dos_millis(dos(2024, 2, 29, 23, 59, 58)),
+            Some(1_709_251_198_000)
+        );
+        assert_eq!(dos_millis(0), None);
+        assert_eq!(dos_millis(dos(2023, 2, 29, 0, 0, 0)), None);
+        assert_eq!(dos_millis(dos(2023, 13, 1, 0, 0, 0)), None);
+        assert_eq!(dos_millis(dos(2023, 1, 1, 24, 0, 0)), None);
+        assert_eq!(dos_millis(dos(2023, 1, 1, 0, 60, 0)), None);
+        assert_eq!(dos_millis(dos(2023, 1, 1, 0, 0, 60)), None);
+    }
 
     /// Bits written least significant first, as deflate packs them.
     #[derive(Default)]

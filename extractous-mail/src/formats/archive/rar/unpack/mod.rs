@@ -1,11 +1,11 @@
 //! junrar 8.1.1's unpackers of RAR 1.5 to 4 data (`Unpack15`, `Unpack20` and `Unpack`): one
 //! state carried from entry to entry of an archive, as junrar's one `Unpack` carries it, so a
-//! solid archive continues its window, tables and model, and a stored entry runs the unpacker
-//! of its version over the stale buffer after it, as junrar's `doUnpack` runs it.
+//! solid archive continues its window, tables and model. A stored entry is copied out and
+//! leaves that state alone, as unrar copies it, where junrar runs the unpacker of its version
+//! over the stale buffer after it (#122).
 //!
 //! Where Java would throw (an index out of an array's bounds, a null array, a division by
-//! zero) the port returns [`Thrown`], and the entry's stream ends there, as junrar's
-//! extraction thread ends it.
+//! zero) the port returns [`Thrown`], and the entry's data ends there.
 
 mod bits;
 mod filters;
@@ -16,8 +16,6 @@ mod v15;
 mod v20;
 mod v29;
 mod vm;
-
-pub(super) use io::Sink;
 
 use bits::BitInput;
 use huffman::Decode;
@@ -104,6 +102,30 @@ fn least_dif<T: Copy + Default + PartialOrd>(dif: &mut [T]) -> usize {
     }
     dif[0] = T::default();
     least
+}
+
+/// The unpacker of the RAR version an entry is compressed for, as unrar's `DoUnpack` picks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Method {
+    /// RAR 1.3 to 1.5.
+    V15,
+    /// RAR 2, and 2.6 for files larger than 2 GB.
+    V20,
+    /// RAR 2.9 to 4.
+    V29,
+}
+
+impl Method {
+    /// The unpacker of the version `version`, none for one unrar does not unpack: junrar writes
+    /// nothing for one it does not know, and throws for version 36.
+    pub(super) fn of(version: i32) -> Option<Self> {
+        match version {
+            13..=15 => Some(Method::V15),
+            20 | 26 => Some(Method::V20),
+            29 => Some(Method::V29),
+            _ => None,
+        }
+    }
 }
 
 /// `BlockTypes`: how the current block of RAR 3 data is coded.
@@ -234,10 +256,9 @@ impl<'a> Unpack<'a> {
         self.dest_unp_size = size;
     }
 
-    /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on, unpacked
-    /// into `sink`.
-    pub(super) fn start_entry(&mut self, sink: Sink, start: u64, packed: i64) {
-        self.input.io.start(sink, start, packed);
+    /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on.
+    pub(super) fn start_entry(&mut self, start: u64, packed: i64) {
+        self.input.io.start(start, packed);
     }
 
     /// The CRC-32 of what the entry wrote.
@@ -245,29 +266,24 @@ impl<'a> Unpack<'a> {
         self.input.io.crc()
     }
 
-    /// What the entry kept, once it is unpacked.
-    pub(super) fn take_sink(&mut self) -> Sink {
-        self.input.io.take_sink()
+    /// What the entry unpacked into.
+    pub(super) fn take_data(&mut self) -> Vec<u8> {
+        self.input.io.take_data()
     }
 
-    /// `doUnpack`: a stored entry copied out, then the unpacker of `version` run, as junrar
-    /// runs it after a stored entry too.
-    pub(super) fn do_unpack(
-        &mut self,
-        method: u8,
-        version: i32,
-        solid: bool,
-    ) -> Result<(), Thrown> {
-        if method == 0x30 {
-            self.unstore_file()?;
+    /// `doUnpack` of the data of an entry compressed by `method`.
+    pub(super) fn do_unpack(&mut self, method: Method, solid: bool) -> Result<(), Thrown> {
+        match method {
+            Method::V15 => self.unpack15(solid),
+            Method::V20 => self.unpack20(solid),
+            Method::V29 => self.unpack29(solid),
         }
-        match version {
-            15 => self.unpack15(solid),
-            20 | 26 => self.unpack20(solid),
-            29 => self.unpack29(solid),
-            36 => Err(Thrown("an UnsupportedRarMethodException, method 36")),
-            _ => Ok(()),
-        }
+    }
+
+    /// `UnstoreFile`: the `size` bytes of a stored entry copied out.
+    pub(super) fn unstore(&mut self, size: i64) -> Result<(), Thrown> {
+        self.dest_unp_size = size;
+        self.unstore_file()
     }
 
     fn unstore_file(&mut self) -> Result<(), Thrown> {

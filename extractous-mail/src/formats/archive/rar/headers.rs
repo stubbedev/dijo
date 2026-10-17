@@ -5,8 +5,6 @@
 
 use std::collections::HashSet;
 
-use crate::java::time::{CalendarFields, TimeZone};
-
 /// `MAX_HEADER_SIZE`: the most bytes a header body may declare.
 const MAX_HEADER_SIZE: i64 = 20 * 1024 * 1024;
 /// `MAXSFXSIZE`: how far past its start a self-extracting archive's marker may be.
@@ -21,7 +19,6 @@ const NEWLHD_SIZE: i64 = 32;
 const MAX_SURE_NAME: usize = 1024;
 const MAX_SURE_COMPONENT: usize = 255;
 
-const MHD_SOLID: u16 = 0x0008;
 const MHD_PASSWORD: u16 = 0x0080;
 const MHD_ENCRYPTVER: u16 = 0x0200;
 const LHD_SPLIT_BEFORE: u16 = 0x0001;
@@ -69,8 +66,9 @@ pub(super) struct FileHeader {
     pub(super) unp_version: i32,
     pub(super) unp_method: u8,
     pub(super) name: Name,
-    /// `getMTime()` and `getCTime()` in milliseconds since the epoch.
-    pub(super) modified_millis: i64,
+    /// `getMTime()` and `getCTime()` in milliseconds since the epoch, their DOS times read as
+    /// wall-clock times in UTC, none where a DOS time is out of range.
+    pub(super) modified_millis: Option<i64>,
     pub(super) created_millis: Option<i64>,
     /// Whether the header announced fields it does not hold, or its CRC does not match,
     /// which junrar refuses to extract.
@@ -104,14 +102,12 @@ impl FileHeader {
 /// The headers of an archive Tika's parser goes on with: not encrypted, with a main header.
 #[derive(Debug)]
 pub(super) struct Headers {
-    /// `MainHeader.isSolid()`.
-    pub(super) solid: bool,
     /// `getFileHeaders()`: the file entries, in archive order.
     pub(super) files: Vec<FileHeader>,
 }
 
 /// `Archive`'s constructor and `isEncrypted`, as `RarParser` calls them.
-pub(super) fn read(data: &[u8], zone: &TimeZone) -> Result<Headers, Unopened> {
+pub(super) fn read(data: &[u8]) -> Result<Headers, Unopened> {
     match signature_type(data) {
         Signature::Rar15 => {}
         Signature::Rar50 => {
@@ -135,7 +131,7 @@ pub(super) fn read(data: &[u8], zone: &TimeZone) -> Result<Headers, Unopened> {
             return Err(fails("BadRarArchiveException: no RAR marker"));
         }
     }
-    let walk = Walk::run(data, zone);
+    let walk = Walk::run(data);
     let main = walk
         .main
         .ok_or_else(|| fails("MainHeaderNullException: no main header"))?;
@@ -145,10 +141,7 @@ pub(super) fn read(data: &[u8], zone: &TimeZone) -> Result<Headers, Unopened> {
             reason: "EncryptedDocumentException: the archive's headers are encrypted".to_owned(),
         });
     }
-    Ok(Headers {
-        solid: main & MHD_SOLID != 0,
-        files: walk.files,
-    })
+    Ok(Headers { files: walk.files })
 }
 
 fn fails(reason: &str) -> Unopened {
@@ -253,9 +246,8 @@ enum Step {
 }
 
 /// `readHeaders3`'s walk.
-struct Walk<'a, 'z> {
+struct Walk<'a> {
     data: &'a [u8],
-    zone: &'z TimeZone,
     position: i64,
     processed: HashSet<i64>,
     /// The flags of the last main header read.
@@ -263,11 +255,10 @@ struct Walk<'a, 'z> {
     files: Vec<FileHeader>,
 }
 
-impl<'a, 'z> Walk<'a, 'z> {
-    fn run(data: &'a [u8], zone: &'z TimeZone) -> Self {
+impl<'a> Walk<'a> {
+    fn run(data: &'a [u8]) -> Self {
         let mut walk = Walk {
             data,
-            zone,
             position: 0,
             processed: HashSet::new(),
             main: None,
@@ -432,8 +423,7 @@ impl<'a, 'z> Walk<'a, 'z> {
             return Step::Stop;
         };
         let file = header_type == HeaderType::File;
-        let Ok((mut header, parsed_length)) =
-            parse_file_header(block, file, pack_size, body, self.zone)
+        let Ok((mut header, parsed_length)) = parse_file_header(block, file, pack_size, body)
         else {
             return self.advance_to(
                 position + i64::from(block.header_size) + pack_size,
@@ -475,7 +465,6 @@ fn parse_file_header(
     file: bool,
     pack_size: i64,
     body: &[u8],
-    zone: &TimeZone,
 ) -> Result<(FileHeader, usize), ()> {
     let flags = block.flags;
     if (body.len() as i64) < NEWLHD_SIZE - BASE_BLOCK_SIZE - BLOCK_HEADER_SIZE {
@@ -553,7 +542,7 @@ fn parse_file_header(
         }
         position += 8;
     }
-    let mut modified_millis = dos_millis(file_time, zone);
+    let mut modified_millis = dos_millis(file_time);
     let mut created_millis = None;
     if flags & LHD_EXTTIME != 0 {
         let ext_flags = if position + 1 < body.len() {
@@ -567,15 +556,12 @@ fn parse_file_header(
             body,
             position,
             flags: ext_flags,
-            zone,
             broken: false,
         };
-        modified_millis = times
-            .next(12, Some(modified_millis))
-            .unwrap_or(modified_millis);
-        created_millis = times.next(8, None);
-        times.next(4, None);
-        times.next(0, None);
+        modified_millis = times.next(12, Base::Header(modified_millis));
+        created_millis = times.next(8, Base::Own);
+        times.next(4, Base::Own);
+        times.next(0, Base::Own);
         broken |= times.broken;
     }
     let header = FileHeader {
@@ -614,25 +600,36 @@ fn checked_name(name: &[u16]) -> Result<Name, ()> {
 }
 
 /// `parseExtTime` of the extended times after a file header's name, in order.
-struct ExtTimes<'a, 'z> {
+struct ExtTimes<'a> {
     body: &'a [u8],
     position: usize,
     flags: u16,
-    zone: &'z TimeZone,
     broken: bool,
 }
 
-impl ExtTimes<'_, '_> {
-    /// The time of the four bits at `shift`, from `base` or from a DOS time of its own, in
-    /// milliseconds since the epoch; `base` where the time is not there.
-    fn next(&mut self, shift: u32, base: Option<i64>) -> Option<i64> {
+/// The whole seconds an extended time refines: the header's own DOS time, or a DOS time of its
+/// own that precedes it.
+#[derive(Debug, Clone, Copy)]
+enum Base {
+    Header(Option<i64>),
+    Own,
+}
+
+impl ExtTimes<'_> {
+    /// The time of the four bits at `shift` in milliseconds since the epoch: the header's time
+    /// where an extended modification time is not there, none where another is not there or
+    /// its DOS time is out of range.
+    fn next(&mut self, shift: u32, base: Base) -> Option<i64> {
         let flag = self.flags >> shift;
         if flag & 0x8 == 0 {
-            return base;
+            return match base {
+                Base::Header(millis) => millis,
+                Base::Own => None,
+            };
         }
-        let seconds = match base {
-            Some(millis) => millis / 1000,
-            None => {
+        let base_millis = match base {
+            Base::Header(millis) => millis,
+            Base::Own => {
                 if self.body.len() - self.position < 4 {
                     self.broken = true;
                     return None;
@@ -645,7 +642,7 @@ impl ExtTimes<'_, '_> {
                     self.body[at + 3],
                 ]);
                 self.position += 4;
-                dos_millis(time, self.zone) / 1000
+                dos_millis(time)
             }
         };
         let count = usize::from(flag & 0x3);
@@ -660,6 +657,7 @@ impl ExtTimes<'_, '_> {
                 self.position += 1;
             }
         }
+        let seconds = base_millis? / 1000;
         let mut nanos = remainder * 100;
         if flag & 0x4 != 0 {
             nanos += 1_000_000_000;
@@ -670,19 +668,10 @@ impl ExtTimes<'_, '_> {
     }
 }
 
-/// `getDateDos`: a DOS date and time in the JVM's time zone, as a lenient `Calendar` takes it.
-fn dos_millis(time: i32, zone: &TimeZone) -> i64 {
-    let time = time as u32;
-    CalendarFields {
-        year: (time >> 25) as i32 + 1980,
-        month: ((time >> 21) & 0x0f) as i32 - 1,
-        day: ((time >> 16) & 0x1f) as i32,
-        hour: ((time >> 11) & 0x1f) as i32,
-        minute: ((time >> 5) & 0x3f) as i32,
-        second: (time & 0x1f) as i32 * 2,
-        millisecond: 0,
-    }
-    .epoch_millis(zone)
+/// `getDateDos`: a DOS date and time, read as a wall-clock time in UTC rather than in the JVM's
+/// default zone by a lenient `Calendar`, as junrar reads it (#122).
+fn dos_millis(time: i32) -> Option<i64> {
+    crate::compress::dos_millis(i64::from(time as u32))
 }
 
 /// `getFileName()` of a file header, as UTF-16: the Unicode name after the first NUL of a

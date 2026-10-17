@@ -58,9 +58,13 @@ impl Scan {
 
     /// Why the native path's output for the document of `length` bytes, whose archive holds
     /// `files`, cannot match Tika's, if it cannot.
-    pub(super) fn files(mut self, length: usize, files: &[ArchiveFile]) -> Option<String> {
+    pub(super) fn files<'f>(
+        mut self,
+        length: usize,
+        files: impl IntoIterator<Item = &'f ArchiveFile>,
+    ) -> Option<String> {
         files
-            .iter()
+            .into_iter()
             .filter(|file| !file.directory)
             .find_map(|file| self.entry(&file.content))
             .or_else(|| self.document(length))
