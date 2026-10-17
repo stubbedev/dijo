@@ -124,8 +124,8 @@ impl<'a> Bytes<'a> {
     }
 }
 
-/// `StreamReader` over the whole file: the position it reports, which a read that fails part
-/// way leaves behind what it consumed, and the bytes it consumed.
+/// `StreamReader` over the whole file: the position it reports, and the bytes it consumed,
+/// which the position counts, those of a read that fails part way too.
 pub(super) struct Stream<'a> {
     input: &'a [u8],
     consumed: usize,
@@ -176,6 +176,9 @@ impl<'a> Stream<'a> {
             .ok()
             .and_then(|count| rest.get(..count))
         else {
+            // What a failed read consumes counts towards the position, which in
+            // metadata-extractor lags behind it (#118).
+            self.position += (self.input.len() - self.consumed) as u64;
             self.consumed = self.input.len();
             return Err(Thrown::EndOfData);
         };
@@ -222,7 +225,7 @@ mod tests {
         assert_eq!(stream.u32(), Ok(16));
         assert_eq!(stream.take(4), Ok(&b"ftyp"[..]));
         assert_eq!(stream.take(4), Err(Thrown::EndOfData));
-        assert_eq!(stream.position(), 8);
+        assert_eq!(stream.position(), 10);
         assert_eq!(stream.u32(), Err(Thrown::EndOfData));
         let mut stream = Stream::new(b"abc");
         assert_eq!(

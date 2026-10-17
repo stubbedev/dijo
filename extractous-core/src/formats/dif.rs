@@ -1,6 +1,11 @@
 //! Directory Interchange Format records, as Tika's `DIFParser` reads them: every leaf element's
-//! last piece of text as `dif:` metadata named by its path, and the title and the bounding box of
-//! the spatial coverage written to the content handler Tika was given, around its own XHTML.
+//! text as `dif:` metadata named by its path, and the title and the bounding box of the spatial
+//! coverage written to the content handler Tika was given, around its own XHTML.
+//!
+//! Each element keeps its own text. Tika's `DIFContentHandler` keeps one stack of every piece
+//! of text, popping one per end tag, so a leaf may take the text of another element, an
+//! element whose text comes in pieces (around an entity, say) yields its last piece and a
+//! title one heading per piece, and an empty leaf may fail on the empty stack (#118).
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -52,8 +57,7 @@ impl Parser for DifParser {
             xhtml.start_element("p")?;
             let mut handler = Dif {
                 xhtml: &mut *xhtml,
-                path: Vec::new(),
-                texts: Vec::new(),
+                open: Vec::new(),
                 leaf: false,
             };
             let parsed = xml::parse_sax(input, "the DIF record", &mut handler);
@@ -69,18 +73,12 @@ impl Parser for DifParser {
     }
 }
 
-/// `DIFContentHandler`: the open elements, every piece of text pushed and one popped per end
-/// tag, as its two stacks keep them.
+/// `DIFContentHandler`: the open elements, each with its text so far, and whether the last
+/// one opened has no element in it yet.
 struct Dif<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
-    path: Vec<String>,
-    texts: Vec<String>,
+    open: Vec<(String, String)>,
     leaf: bool,
-}
-
-/// `Stack.peek` or `Stack.pop` of an empty stack.
-fn empty_stack() -> Failure {
-    Failure::Malformed("EmptyStackException".to_owned())
 }
 
 impl Dif<'_, '_> {
@@ -126,7 +124,7 @@ impl SaxHandler for Dif<'_, '_> {
             self.xhtml.raw_characters("\t")?;
             self.xhtml.raw_start_element("table")?;
         }
-        self.path.push(local_name.to_owned());
+        self.open.push((local_name.to_owned(), String::new()));
         Ok(())
     }
 
@@ -137,27 +135,51 @@ impl SaxHandler for Dif<'_, '_> {
             self.xhtml.raw_end_element("table")?;
         }
         if self.leaf {
-            let value = self.texts.last().ok_or_else(empty_stack)?;
-            self.xhtml
-                .metadata_mut()
-                .add_prefixed(PREFIX, &self.path.join("-"), value.as_str());
             self.leaf = false;
+            let (element, text) = self.open.last().expect("the element ending is open");
+            let (element, text) = (element.clone(), text.clone());
+            if element == "Entry_Title" {
+                self.heading(&format!("Title: {text}"))?;
+            }
+            if BOUNDS.contains(&element.as_str()) {
+                self.bound(&element, &text)?;
+            }
+            if !text.is_empty() {
+                let path: Vec<&str> = self.open.iter().map(|(name, _)| name.as_str()).collect();
+                self.xhtml
+                    .metadata_mut()
+                    .add_prefixed(PREFIX, &path.join("-"), text.as_str());
+            }
         }
-        self.path.pop().ok_or_else(empty_stack)?;
-        self.texts.pop().ok_or_else(empty_stack)?;
+        self.open.pop();
         Ok(())
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        self.texts.push(text.to_owned());
-        let element = self.path.last().ok_or_else(empty_stack)?.clone();
-        if element == "Entry_Title" {
-            self.heading(&format!("Title: {text}"))?;
-        }
-        if BOUNDS.contains(&element.as_str()) {
-            self.bound(&element, text)?;
+        if let Some((_, own)) = self.open.last_mut() {
+            own.push_str(text);
         }
         Ok(())
+    }
+}
+
+/// A native result with each leaf's text cut to the last piece Tika's parser read of it,
+/// where Tika's value ends the native one: the reader splits text around an entity (#118).
+#[cfg(test)]
+pub(crate) fn as_tika_keeps_last_pieces(
+    _text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    tika: &crate::formats::parity::ComparedMetadata,
+) {
+    for (name, values) in metadata.iter_mut() {
+        let Some((_, tika_values)) = tika.iter().find(|(tika_name, _)| tika_name == name) else {
+            continue;
+        };
+        for (value, tika_value) in values.iter_mut().zip(tika_values) {
+            if value.ends_with(tika_value.as_str()) {
+                value.clone_from(tika_value);
+            }
+        }
     }
 }
 
@@ -167,7 +189,7 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_same_as_tika, assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
     };
 
     const RECORD: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -188,17 +210,8 @@ mod tests {
     #[test]
     fn extracts_dif_records_as_tikas_path_does() {
         let scratch = Scratch::new("dif");
-        let record = scratch.write("havis.dif", RECORD.as_bytes());
-        let empty = scratch.write(
-            "empty.dif",
-            RECORD
-                .replace("<Version>2</Version>", "<Version/>")
-                .as_bytes(),
-        );
-        let leading = scratch.write(
-            "leading.dif",
-            br#"<?xml version="1.0"?><DIF xmlns="http://gcmd.gsfc.nasa.gov/Aboutus/xml/dif/"><Entry_ID/></DIF>"#,
-        );
+        // Without the entity, whose split text Tika reads as several pieces (#118).
+        let record = scratch.write("havis.dif", RECORD.replace("&amp; ", "").as_bytes());
         let typed = scratch.write(
             "typed.dif",
             RECORD
@@ -207,12 +220,44 @@ mod tests {
         );
         let (parsed, deferred) = documents(&DifParser, &[scratch.directory()]);
         assert_eq!(deferred, [typed]);
-        assert_eq!(parsed.len(), 3, "{parsed:?}");
-        assert_same_as_tika(
-            &[record.as_path(), empty.as_path()],
-            "org.apache.tika.parser.dif.DIFParser",
+        assert_eq!(parsed.len(), 1, "{parsed:?}");
+        assert_same_as_tika(&[record.as_path()], "org.apache.tika.parser.dif.DIFParser");
+    }
+
+    /// The XHTML and metadata the native path extracts from the DIF record `record`.
+    fn extract(record: &str) -> (String, crate::Metadata) {
+        crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(record.as_bytes())
+            .unwrap()
+    }
+
+    #[test]
+    fn keeps_each_elements_own_text() {
+        // Tika's one stack of text pieces gives a leaf the last piece pushed, which may be
+        // another element's, makes a heading of each piece of a title, and fails on an empty
+        // first leaf (#118).
+        let (xml, metadata) = extract(&RECORD.replace("<Version>2</Version>", "<Version/>"));
+        assert_eq!(xml.matches("<h3>Title: ").count(), 1, "{xml}");
+        assert!(
+            xml.contains("<h3>Title: Havis i \u{d8}resund &amp; Kattegat</h3>"),
+            "{xml}"
         );
-        assert_fails_as_tika(&[leading.as_path()]);
+        assert_eq!(
+            metadata["dif:DIF-Entry_Title"],
+            ["Havis i \u{d8}resund & Kattegat"]
+        );
+        assert!(!metadata.contains_key("dif:DIF-Data_Set_Citation-Version"));
+        assert_eq!(
+            metadata["dif:DIF-Data_Set_Citation-Dataset_Creator"],
+            ["DMI"]
+        );
+        assert_eq!(metadata["dif:DIF-Keyword"], ["is", "hav"]);
+        let (_, metadata) = extract(
+            r#"<?xml version="1.0"?><DIF xmlns="http://gcmd.gsfc.nasa.gov/Aboutus/xml/dif/"><Entry_ID/><Entry_Title>T</Entry_Title></DIF>"#,
+        );
+        assert!(!metadata.contains_key("dif:DIF-Entry_ID"));
+        assert_eq!(metadata["dif:DIF-Entry_Title"], ["T"]);
     }
 
     #[test]
@@ -222,6 +267,6 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 3, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, DifParser.tika_name());
+        assert_same_as_tika_rewriting(&paths, DifParser.tika_name(), as_tika_keeps_last_pieces);
     }
 }

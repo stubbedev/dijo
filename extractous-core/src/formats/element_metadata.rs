@@ -176,6 +176,14 @@ impl ElementHandlers {
         Self::new(DUBLIN_CORE_NS, &DC_XML_ELEMENTS)
     }
 
+    /// The Dublin Core handlers without the one for `dc:date`, for a reader that names dates
+    /// itself.
+    pub(crate) fn dublin_core_without_date() -> Self {
+        let mut dublin_core = Self::dublin_core();
+        dublin_core.0.retain(|element| element.local_name != "date");
+        dublin_core
+    }
+
     pub(crate) fn start(&mut self, namespace: &str, local_name: &str) {
         for element in &mut self.0 {
             element.start(namespace, local_name);

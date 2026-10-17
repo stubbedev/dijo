@@ -1,6 +1,8 @@
 //! Unix `ar` archives, which the ar crate reads, given as commons-compress's
 //! `ArArchiveInputStream` gives Tika's `PackageParser` their files: GNU and BSD long names
-//! resolved, names decoded as US-ASCII with U+FFFD for each byte beyond it.
+//! resolved, names decoded as UTF-8 where valid, else as US-ASCII with U+FFFD for each byte
+//! beyond it, and modification times in milliseconds that do not wrap around. commons-compress
+//! decodes every name as US-ASCII and multiplies the time as an `int`, which wraps (#101).
 //!
 //! The ar crate keeps the GNU and BSD symbol tables to itself, while commons-compress gives them
 //! to Tika as files, the GNU one without a name.
@@ -16,7 +18,8 @@ pub(crate) fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
     while let Some(entry) = archive.next_entry() {
         let mut entry = entry.map_err(|e| throws(e.to_string()))?;
         let header = entry.header();
-        let name = ascii(header.identifier());
+        let name = std::str::from_utf8(header.identifier())
+            .map_or_else(|_| ascii(header.identifier()), str::to_owned);
         let size = header.size();
         let modified = i64::try_from(header.mtime()).unwrap_or(i64::MAX);
         let mut content = Vec::new();
@@ -30,7 +33,7 @@ pub(crate) fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
         files.push(ArchiveFile {
             name,
             size,
-            modified_millis: Some(modified.wrapping_mul(1000)),
+            modified_millis: modified.checked_mul(1000),
             created_millis: None,
             directory: false,
             content,
@@ -61,7 +64,11 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_short_and_long_names() {
-        let data = ar(&[("a.txt", b"odd"), ("a-rather-long-file-name.txt", b"long")]);
+        let data = ar(&[
+            ("a.txt", b"odd"),
+            ("a-rather-long-file-name.txt", b"long"),
+            ("caf\u{e9}.txt", b"utf-8"),
+        ]);
         let found: Vec<(String, Vec<u8>)> = files(&data)
             .unwrap()
             .into_iter()
@@ -72,6 +79,7 @@ pub(crate) mod tests {
             [
                 ("a.txt".to_owned(), b"odd".to_vec()),
                 ("a-rather-long-file-name.txt".to_owned(), b"long".to_vec()),
+                ("caf\u{e9}.txt".to_owned(), b"utf-8".to_vec()),
             ]
         );
         assert!(files(b"<arch>\n").is_err());

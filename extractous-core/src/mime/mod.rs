@@ -32,9 +32,9 @@ use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub(crate) use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 
-/// Every type Tika's tables declare, in the order they declare them.
+/// Every type Tika's tables declare, by its printed form, in the order they declare them.
 #[cfg(test)]
-pub(crate) fn declared_types() -> impl Iterator<Item = &'static MediaType> {
+pub(crate) fn declared_types() -> impl Iterator<Item = &'static str> {
     mime_types().declared()
 }
 
@@ -115,6 +115,14 @@ fn thrown(detector: &'static str) -> impl Fn(Thrown) -> DetectionError {
 
 const OCTET_STREAM: &str = "application/octet-stream";
 
+/// The value of `key` among `pairs` sorted by their unique keys.
+fn sorted_get<V: Copy>(pairs: &[(&'static str, V)], key: &str) -> Option<V> {
+    pairs
+        .binary_search_by(|(known, _)| (*known).cmp(key))
+        .ok()
+        .map(|index| pairs[index].1)
+}
+
 /// The metadata a detection writes, with the one-time `Content-Length` of a spooled stream.
 struct Written {
     entries: Vec<Entry>,
@@ -145,6 +153,12 @@ impl Written {
 /// type, with its dot, or nothing.
 pub(crate) fn extension(media_type: &MediaType) -> &'static str {
     mime_types().extension(media_type)
+}
+
+/// `EmbeddedDocumentUtil.getExtensionForMediaType`: the first extension of the registered type,
+/// with its dot, or nothing.
+pub(crate) fn registered_extension(media_type: &MediaType) -> &'static str {
+    mime_types().registered_extension(media_type)
 }
 
 /// `new DefaultZipContainerDetector().detect`: the type of a ZIP archive by its entries, of an

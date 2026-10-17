@@ -2,12 +2,16 @@
 //! a `java.util.HashMap` and `HashSet` with string keys, string comparison, hashing, lengths,
 //! trimming and case mapping, `Character.isWhitespace` and the regex classes `\s` and `.`,
 //! `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble`, `Math.round` and
-//! `System.lineSeparator`; with `Double.toString` ([`dtoa`]) and the `BigInteger` arithmetic it
-//! needs ([`bigint`]), `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and
-//! `TimeZone` ([`time`]).
+//! `System.lineSeparator`; with `Double.toString` and `Float.toString` ([`dtoa`]) and the
+//! `BigInteger` arithmetic it needs ([`bigint`]), `BigDecimal` ([`decimal`]),
+//! `java.text.DecimalFormat` ([`decimal_format`]), `String.format` ([`printf`]),
+//! `SimpleDateFormat` ([`simple_date_format`]) and `java.time` and `TimeZone` ([`time`]).
 
 pub(crate) mod bigint;
+pub(crate) mod decimal;
+pub(crate) mod decimal_format;
 pub(crate) mod dtoa;
+pub(crate) mod printf;
 pub(crate) mod simple_date_format;
 pub(crate) mod time;
 
@@ -17,7 +21,7 @@ use std::collections::HashMap;
 use crate::text::charset::Charset;
 use crate::unicode::{decimal_digit, is_whitespace};
 
-/// `System.lineSeparator()`, which ends each line of a stack trace Java prints.
+/// `System.lineSeparator()`.
 pub(crate) const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 const INITIAL_CAPACITY: usize = 16;
@@ -62,16 +66,6 @@ impl<V> JavaHashMap<V> {
             map.initial_capacity = (size * 4).div_ceil(3).next_power_of_two();
         }
         map
-    }
-
-    /// An empty map whose table `new HashSet<>(collection)` sizes for a collection of `size`
-    /// elements: `new HashMap<>(max((int) (size / .75f) + 1, 16))`.
-    pub(crate) fn for_hash_set(size: usize) -> Self {
-        let requested = ((size as f32 / 0.75) as usize + 1).max(INITIAL_CAPACITY);
-        Self {
-            initial_capacity: requested.next_power_of_two(),
-            ..Self::default()
-        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -119,25 +113,8 @@ impl<V> JavaHashMap<V> {
         }
     }
 
-    /// `remove`: the key's entry goes; the table keeps its size, as Java's does.
-    pub(crate) fn remove(&mut self, key: &str) {
-        if let Some(index) = self.index.remove(key) {
-            self.entries.remove(index);
-            for position in self.index.values_mut() {
-                if *position > index {
-                    *position -= 1;
-                }
-            }
-        }
-    }
-
-    /// `clear`: every entry goes; the table keeps its size, as Java's does.
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-        self.index.clear();
-    }
-
     /// The entries in insertion order.
+    #[cfg(test)]
     pub(crate) fn iter_inserted(&self) -> impl Iterator<Item = (&str, &V)> {
         self.entries
             .iter()
@@ -154,18 +131,6 @@ impl<V> JavaHashMap<V> {
         order
             .into_iter()
             .map(|(_, entry)| (entry.key.as_str(), &entry.value))
-    }
-
-    /// Whether two of `keys` share a bucket of the table, where Java iterates them in the order
-    /// they were inserted.
-    pub(crate) fn share_a_bucket(&self, keys: &[&str]) -> bool {
-        let mask = self.capacity.saturating_sub(1);
-        let mut buckets: Vec<usize> = keys
-            .iter()
-            .map(|key| spread(string_hash(key)) as usize & mask)
-            .collect();
-        buckets.sort_unstable();
-        buckets.windows(2).any(|pair| pair[0] == pair[1])
     }
 
     fn insert_new(&mut self, key: &str, value: V) {
@@ -234,50 +199,6 @@ fn hex_digit(character: char) -> Option<u32> {
 /// `Integer.parseInt(text)`: an optional sign and decimal digits of any script, in range.
 pub(crate) fn parse_int(text: &str) -> Option<i32> {
     parse_long(text).and_then(|value| i32::try_from(value).ok())
-}
-
-/// `URLDecoder.decode(text, UTF-8)`: `+` is a space, and each run of `%` and two hexadecimal
-/// digits, as `Integer.parseInt` reads them, sign included, is UTF-8, with malformed sequences
-/// replaced. None where Java throws: on an escape that is cut short, negative or no number.
-pub(crate) fn url_decode(text: &str) -> Option<String> {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let mut decoded = String::with_capacity(text.len());
-    let mut position = 0;
-    while position < units.len() {
-        match units[position] {
-            0x2b => {
-                decoded.push(' ');
-                position += 1;
-            }
-            0x25 => {
-                let mut bytes = Vec::new();
-                while position + 2 < units.len() && units[position] == 0x25 {
-                    let escape = String::from_utf16(&units[position + 1..position + 3]).ok()?;
-                    let value = parse_hex(&escape)?;
-                    bytes.push(u8::try_from(value).ok()?);
-                    position += 3;
-                }
-                if units.get(position) == Some(&0x25) {
-                    return None;
-                }
-                decoded.push_str(&String::from_utf8_lossy(&bytes));
-            }
-            _ => {
-                let end = units[position..]
-                    .iter()
-                    .position(|&unit| unit == 0x2b || unit == 0x25)
-                    .map_or(units.len(), |offset| position + offset);
-                decoded.push_str(&String::from_utf16_lossy(&units[position..end]));
-                position = end;
-            }
-        }
-    }
-    Some(decoded)
-}
-
-/// `Integer.parseInt(text, 16)` for the two characters of an escape, which must not be negative.
-fn parse_hex(text: &str) -> Option<i32> {
-    parse_hex_int(text).filter(|&value| value >= 0)
 }
 
 /// `Integer.parseInt(text, 16)`: an optional sign and hexadecimal digits as `Character.digit`
@@ -407,8 +328,12 @@ pub(crate) fn commons_base64_decode(text: &str) -> Vec<u8> {
     decoded
 }
 
-/// `new String(bytes, ISO_8859_1)`.
-pub(crate) fn latin1(bytes: &[u8]) -> String {
+/// `new String(bytes, ISO_8859_1)`, without a copy for ASCII bytes it owns.
+pub(crate) fn latin1(bytes: impl Into<Vec<u8>>) -> String {
+    let bytes = bytes.into();
+    if bytes.is_ascii() {
+        return String::from_utf8(bytes).expect("ASCII is UTF-8");
+    }
     bytes.iter().map(|&byte| char::from(byte)).collect()
 }
 
@@ -824,18 +749,6 @@ mod tests {
         assert_eq!(parse_long("9223372036854775807"), Some(i64::MAX));
         assert_eq!(parse_long("-9223372036854775808"), Some(i64::MIN));
         assert_eq!(parse_long("9223372036854775808"), None);
-    }
-
-    #[test]
-    fn decodes_urls_as_java_does() {
-        assert_eq!(url_decode("a%20b+c").as_deref(), Some("a b c"));
-        assert_eq!(url_decode("%C3%A6%C3").as_deref(), Some("æ\u{fffd}"));
-        assert_eq!(url_decode("%+1").as_deref(), Some("\u{1}"));
-        assert_eq!(url_decode("plain😀").as_deref(), Some("plain😀"));
-        assert_eq!(url_decode("%4"), None);
-        assert_eq!(url_decode("%-1"), None);
-        assert_eq!(url_decode("%zz"), None);
-        assert_eq!(url_decode("%41%"), None);
     }
 
     #[test]

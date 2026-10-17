@@ -151,7 +151,7 @@ fn reads_names_times_and_directories_as_junrar_does() {
         read(&latin1),
         [
             (
-                "mappe\\rødgrød.txt".to_owned(),
+                "mappe/rødgrød.txt".to_owned(),
                 "Rødgrød med fløde.\n".as_bytes().to_vec()
             ),
             ("Ærø.txt".to_owned(), "Ærøskøbing\n".as_bytes().to_vec()),

@@ -5,9 +5,13 @@
 //! HTML, or its text, parsed with the native HTML and RTF parsers, and its attachments as
 //! embedded documents.
 //!
+//! A message stored in another document, which Tika's `OfficeParser` reads from its storage
+//! with POI reading its properties as those of an embedded message, is read alike: see
+//! [`EmbeddedMessage`].
+//!
 //! A message POI or Tika throws on is left to Tika, as is one whose 7-bit strings read
 //! otherwise in a charset Tika may guess for them, one whose body the native parsers leave to
-//! Tika, one with an embedded message, and macros extracted when asked to.
+//! Tika, and macros extracted when asked to.
 
 mod chunks;
 mod extractor;
@@ -22,9 +26,10 @@ use extractor::{extract, Extracted};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::Summaries;
-use crate::formats::{Declined, Parser, Prepared, Unported};
+use crate::formats::xhtml::Xhtml;
+use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
-use crate::ole2::{Ole2, Unreadable};
+use crate::ole2::{EntryId, Ole2, Unreadable};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-outlook";
 
@@ -44,25 +49,16 @@ impl Parser for MsgParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers messages POI or Tika throws on, those it leaves to Tika's parsers, and those whose
-    /// head Tika writes in an order of identity hash codes.
+    /// Defers messages POI or Tika throws on and those it leaves to Tika's parsers. Tika writes
+    /// the named properties and times of a message in the order of hash maps keyed by identity,
+    /// which its head shows; the native head lists them sorted by name (#64).
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        metadata: &TikaMetadata,
+        _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let (summaries, extracted) = read(input, configs).map_err(|Unported(reason)| reason)?;
-        let mut head = metadata.clone();
-        summaries.write(&mut head);
-        head.set("Content-Type", MEDIA_TYPE);
-        if extracted.has_identity_ordered_head(head) {
-            return Err(Declined::Deferred(
-                "named properties or times whose order in the head Tika takes from identity \
-                 hash codes"
-                    .to_owned(),
-            ));
-        }
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
@@ -100,5 +96,51 @@ fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted),
     Ok((summaries, extracted))
 }
 
+/// The most messages this port reads stored one in another, where Java's stack would end first.
+const MAX_STORED_MESSAGES: usize = 16;
+
+/// A message stored in another document as Tika's `OfficeParser` reads it from the storage
+/// handed on as an open container: the storage's summary information, then the message, its
+/// properties read as those of an embedded message.
+pub(crate) struct EmbeddedMessage {
+    summaries: Summaries,
+    extracted: Extracted,
+}
+
+impl EmbeddedMessage {
+    /// Reads the message in `directory`, a storage of `file` below its root.
+    pub(crate) fn read(
+        file: &Ole2<'_>,
+        directory: EntryId,
+        configs: &ParserConfigs,
+    ) -> Result<EmbeddedMessage, Unported> {
+        if file.depth(directory) > MAX_STORED_MESSAGES {
+            return Err(Unported(
+                "messages stored in messages deeper than this port reads them".to_owned(),
+            ));
+        }
+        let summaries = Summaries::read(file, directory)?;
+        let message = Message::read(file, directory, true).map_err(|thrown| {
+            Unported(format!(
+                "POI throws reading a stored message, whose failure Tika records: {}",
+                thrown.0
+            ))
+        })?;
+        let extracted = extract(file, message, configs)?;
+        Ok(EmbeddedMessage {
+            summaries,
+            extracted,
+        })
+    }
+
+    /// Writes the message as `OfficeParser` does: its summary information and type as metadata,
+    /// then what its `OutlookExtractor` writes.
+    pub(crate) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        self.summaries.write(xhtml.metadata_mut());
+        xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+        self.extracted.write(xhtml)
+    }
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

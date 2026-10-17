@@ -1,6 +1,6 @@
 //! POI's `FieldsTables` and `FieldsImpl`: the field marks of each part of the document, paired
-//! into fields of a begin, an optional separator and an end mark as POI pairs them, by the
-//! offset of their begin mark.
+//! into fields of a begin, an optional separator and an end mark, by the offset of their begin
+//! mark.
 
 use std::collections::HashMap;
 
@@ -54,7 +54,6 @@ impl Part {
 #[derive(Debug, Clone, Copy)]
 struct Mark {
     position: i32,
-    end: i32,
     /// `getBoundaryType`.
     boundary: u8,
     /// `getFlt`.
@@ -84,7 +83,7 @@ impl Fields {
             let size = fib.size(part.fib_field())?;
             let mut marks = Vec::new();
             if offset > 0 && size > 0 {
-                for (start, end, descriptor) in Plex::read(table, offset, size, FLD_SIZE)?.entries {
+                for (start, _, descriptor) in Plex::read(table, offset, size, FLD_SIZE)?.entries {
                     let [holder, kind, ..] = descriptor[..] else {
                         return Err(Thrown(format!(
                             "Index {} out of bounds for length {}",
@@ -94,7 +93,6 @@ impl Fields {
                     };
                     marks.push(Mark {
                         position: start,
-                        end,
                         boundary: holder & 0x1F,
                         kind: kind as i8,
                     });
@@ -115,105 +113,48 @@ impl Fields {
     }
 }
 
-/// `parseFieldStructure`: the marks sorted by position, paired into fields.
+/// `parseFieldStructure`: the marks sorted by position, paired into fields, each end mark with
+/// the latest begin mark still open and the first separator after it, so that a field whose
+/// code holds another field is paired too. POI pairs a begin mark only with the mark right after
+/// it, and never pairs a field whose code holds another (#111).
 fn structure(mut marks: Vec<Mark>) -> HashMap<i32, Field> {
     marks.sort_by_key(|mark| mark.position);
-    let mut fields = Vec::new();
-    structure_between(&marks, 0, marks.len(), &mut fields);
-    let mut by_offset = HashMap::with_capacity(fields.len());
-    for (offset, field) in fields {
-        by_offset.insert(offset, field);
-    }
-    by_offset
-}
-
-/// `parseFieldStructureImpl`: the fields of the marks from `start` to before `end`, nested
-/// fields after the field they are in.
-fn structure_between(marks: &[Mark], start: usize, end: usize, fields: &mut Vec<(i32, Field)>) {
-    let mut next = start;
-    while next < end {
-        let begin = marks[next];
-        if begin.boundary != BEGIN_MARK {
-            next += 1;
-            continue;
-        }
-        let Some(following) = search(marks, next + 1, end, begin.end) else {
-            next += 1;
-            continue;
-        };
-        let after = marks[following];
-        match after.boundary {
+    let mut open: Vec<(Mark, Option<i32>)> = Vec::new();
+    let mut by_offset = HashMap::new();
+    for mark in marks {
+        match mark.boundary {
+            BEGIN_MARK => open.push((mark, None)),
             SEPARATOR_MARK => {
-                let Some(closing) = search(marks, following, end, after.end) else {
-                    next += 1;
-                    continue;
-                };
-                let finish = marks[closing];
-                if finish.boundary != END_MARK {
-                    next += 1;
-                    continue;
+                if let Some((_, separator @ None)) = open.last_mut() {
+                    *separator = Some(mark.position);
                 }
-                fields.push((
-                    begin.position,
-                    Field {
-                        kind: begin.kind,
-                        separator: Some(after.position),
-                    },
-                ));
-                if begin.position + 1 < after.position - 1 {
-                    structure_between(marks, next + 1, following, fields);
-                }
-                if after.position + 1 < finish.position - 1 {
-                    structure_between(marks, following + 1, closing, fields);
-                }
-                next = closing + 1;
             }
             END_MARK => {
-                fields.push((
-                    begin.position,
-                    Field {
-                        kind: begin.kind,
-                        separator: None,
-                    },
-                ));
-                if begin.position + 1 < after.position - 1 {
-                    structure_between(marks, next + 1, following, fields);
+                if let Some((begin, separator)) = open.pop() {
+                    by_offset.insert(
+                        begin.position,
+                        Field {
+                            kind: begin.kind,
+                            separator,
+                        },
+                    );
                 }
-                next = following + 1;
             }
-            _ => next += 1,
+            _ => {}
         }
     }
-}
-
-/// `FieldsImpl.binarySearch` for a mark at `position` among those from `start` to before
-/// `end`: its index, or `None` where POI gives a negative insertion point.
-fn search(marks: &[Mark], start: usize, end: usize, position: i32) -> Option<usize> {
-    let (mut low, mut high) = (start as i64, end as i64 - 1);
-    while low <= high {
-        let mid = ((low + high) as u64 >> 1) as usize;
-        let at = marks[mid].position;
-        match at.cmp(&position) {
-            std::cmp::Ordering::Equal => return Some(mid),
-            std::cmp::Ordering::Less => low = mid as i64 + 1,
-            std::cmp::Ordering::Greater => high = mid as i64 - 1,
-        }
-    }
-    None
+    by_offset
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The marks of a plex: each runs to the position of the next, the last one on.
     fn marks(entries: &[(i32, u8, i8)]) -> Vec<Mark> {
         entries
             .iter()
-            .enumerate()
-            .map(|(i, &(position, boundary, kind))| Mark {
+            .map(|&(position, boundary, kind)| Mark {
                 position,
-                end: entries.get(i + 1).map_or(position + 1, |next| next.0),
                 boundary,
                 kind,
             })
@@ -246,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn pairs_no_field_whose_begin_mark_is_followed_by_a_nested_one() {
+    fn pairs_a_field_whose_code_holds_another() {
         let fields = structure(marks(&[
             (10, BEGIN_MARK, 88),
             (12, BEGIN_MARK, 58),
@@ -255,7 +196,13 @@ mod tests {
             (15, SEPARATOR_MARK, 0),
             (20, END_MARK, 0),
         ]));
-        assert_eq!(fields.get(&10), None);
+        assert_eq!(
+            fields.get(&10),
+            Some(&Field {
+                kind: 88,
+                separator: Some(15)
+            })
+        );
         assert_eq!(
             fields.get(&12),
             Some(&Field {

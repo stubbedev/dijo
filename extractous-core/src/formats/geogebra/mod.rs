@@ -14,10 +14,8 @@ use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::compress::zip::Content;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::embedded::{
-    self, apply_page_numbers, ResourceType, Wrapping, INTERNAL_PATH, RESOURCE_NAME,
-};
-use crate::formats::metadata::TikaMetadata;
+use crate::formats::embedded::{self, ResourceType, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
+use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Declined, Detected, Failure, Opened, Parser, Prepared};

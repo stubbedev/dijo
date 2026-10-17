@@ -3,6 +3,7 @@
 //! form, and the metadata the writer collects on the way, recorded as they are written.
 
 use std::collections::{BTreeSet, HashSet};
+use std::ops::ControlFlow;
 
 use lopdf::{Dictionary, Object};
 
@@ -11,6 +12,7 @@ use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
 use super::engine::{Engine, PageContent};
 use super::form;
+use super::ocr::PageCheck;
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
@@ -229,13 +231,22 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// `PDFTextStripper.writeText` as `AbstractPDF2XHTML` runs it: every page, then the end
     /// of the document.
-    pub(super) fn write(&mut self) -> Result<(), WriteFailure> {
+    /// Writes the pages and the end of the document, handing the recording to `after_page`
+    /// after each page, which may stop the writing there.
+    pub(super) fn write(
+        &mut self,
+        after_page: &mut dyn FnMut(&mut Recording) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, WriteFailure> {
         for page in self.pdf.pages()? {
             self.page.out.enter_page();
             self.process_page(page)?;
             self.page.out.leave_page();
+            if after_page(self.page.out).is_break() {
+                return Ok(ControlFlow::Break(()));
+            }
         }
-        self.end_document()
+        self.end_document()?;
+        Ok(ControlFlow::Continue(()))
     }
 
     /// `PDFTextStripper.processPage`, as `PDF2XHTML` and Tika's tagged writer run it.
@@ -272,7 +283,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         Ok(())
     }
 
-    /// `PDF2XHTML.endPage` and `AbstractPDF2XHTML.endPage`, unless Tika's path OCRs the page.
+    /// `PDF2XHTML.endPage` and `AbstractPDF2XHTML.endPage`, the page kept for OCR when our
+    /// `TextLayerCheckingPdfParser` reads it, unless Tika's path OCRs the page itself.
     fn end_page(&mut self, page: Page<'p>, content: &PageContent) -> Result<(), WriteFailure> {
         self.page.write_paragraph_end()?;
         let out = &mut *self.page.out;
@@ -285,13 +297,15 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         self.total_unmapped += i64::from(content.unmapped);
         self.annotations(page)?;
         let layer_text = self.page.layer_text.take();
-        self.settings.ocr.deferral(
+        match self.settings.ocr.page(
             self.page_number,
             content.glyphs,
             content.unmapped,
             layer_text.as_deref(),
-        )?;
-        self.page.out.release();
+        )? {
+            PageCheck::Keep => self.page.out.release(),
+            check => self.page.out.release_read(self.page_number - 1, check),
+        }
         self.page.out.end_element("div")?;
         Ok(())
     }

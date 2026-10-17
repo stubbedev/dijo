@@ -6,7 +6,7 @@ use super::buffer::{Buffer, Thrown};
 use super::format::{Charset, Format};
 use super::pages::Pages;
 use super::table::{row_end, row_start};
-use crate::formats::data_format::decimal::BigDecimal;
+use crate::java::decimal::BigDecimal;
 
 const FIXED_LEN_FLAG_MASK: u8 = 0x01;
 const AUTO_NUMBER_FLAG_MASK: u8 = 0x04;

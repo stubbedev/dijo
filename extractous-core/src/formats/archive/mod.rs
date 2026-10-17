@@ -24,6 +24,39 @@ use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::java::time::format_instant;
 
+/// The metadata of the ZIP integrity check.
+#[cfg(test)]
+const INTEGRITY_CHECK: [&str; 4] = [
+    "zip:integrity-check-result",
+    "zip:duplicate-entry-names",
+    "zip:local-header-only-entries",
+    "zip:central-directory-only-entries",
+];
+
+/// A native ZIP result as Tika's path writes it, with the integrity check as late as Tika runs
+/// it (#99): after the document has ended, so not in its head, and not at all when the parse
+/// failed, as at the write limit.
+#[cfg(test)]
+pub(crate) fn as_tika_checks_zips(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    tika: &crate::formats::parity::ComparedMetadata,
+) {
+    for name in INTEGRITY_CHECK {
+        let meta = format!(r#"<meta name="{name}" content=""#);
+        while let Some(start) = text.find(&meta) {
+            let end = start
+                + text[start..]
+                    .find('\n')
+                    .map_or(text.len() - start, |end| end + 1);
+            text.replace_range(start..end, "");
+        }
+    }
+    if !tika.iter().any(|(name, _)| name == INTEGRITY_CHECK[0]) {
+        metadata.retain(|(name, _)| !INTEGRITY_CHECK.contains(&name.as_str()));
+    }
+}
+
 /// `ZipParser.writeEntryXhtml` and the div of `handleEntryMetadata`: an empty `div` of class
 /// `embedded` identified by the entry's name, if it has one.
 fn write_entry_div(xhtml: &mut Xhtml, name: &str) -> Result<(), Stop> {
@@ -46,10 +79,9 @@ fn entry_metadata(file: &ArchiveFile, xhtml: &mut Xhtml) -> Result<TikaMetadata,
     }
     metadata.set("Content-Length", file.size.to_string());
     if !file.name.is_empty() {
-        let name = file.name.replace('\\', "/");
-        metadata.set(RESOURCE_NAME, name.clone());
-        metadata.set(INTERNAL_PATH, name.clone());
-        write_entry_div(xhtml, &name)?;
+        metadata.set(RESOURCE_NAME, file.name.clone());
+        metadata.set(INTERNAL_PATH, file.name.clone());
+        write_entry_div(xhtml, &file.name)?;
     }
     Ok(metadata)
 }

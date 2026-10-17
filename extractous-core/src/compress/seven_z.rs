@@ -59,6 +59,22 @@ fn over_memory_limit(reader: &ArchiveReader<Cursor<&[u8]>>) -> Result<bool, Unde
     Ok(false)
 }
 
+/// `FILE_ATTRIBUTE_UNIX_EXTENSION`: the attributes of an entry made on Unix, its mode in their
+/// high 16 bits.
+const UNIX_EXTENSION: u32 = 0x8000;
+
+/// An entry's name: as stored when the entry was made on Unix, where `\` is a character of the
+/// name, else with its backslashes turned into slashes, as Windows separates paths with them.
+/// Tika turns every backslash of every name (#101).
+fn entry_name(file: &ArchiveEntry) -> String {
+    let unix = file.has_windows_attributes && file.windows_attributes & UNIX_EXTENSION != 0;
+    if unix {
+        file.name.clone()
+    } else {
+        file.name.replace('\\', "/")
+    }
+}
+
 /// The files of the 7z archive `data`, or why they are not read natively.
 pub(crate) fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
     let mut reader = ArchiveReader::new(Cursor::new(data), Password::empty()).map_err(fail)?;
@@ -85,7 +101,7 @@ pub(crate) fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
         .files
         .iter()
         .map(|file| ArchiveFile {
-            name: file.name.clone(),
+            name: entry_name(file),
             size: file.size,
             modified_millis: file
                 .has_last_modified_date

@@ -92,25 +92,43 @@ impl PropertyRun {
     }
 }
 
+/// How a bin table names its formatted disk pages: by an int, or by an unsigned short in the
+/// documents before Word 97.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PageNumber {
+    Int,
+    Short,
+}
+
 /// The page numbers of a bin table's formatted disk pages.
-fn pages(table: &[u8], offset: i32, size: i32) -> Read<Vec<i32>> {
-    Plex::read(table, offset, size, 4)?
+pub(super) fn bin_pages(
+    stream: &[u8],
+    offset: i32,
+    size: i32,
+    number: PageNumber,
+) -> Read<Vec<i32>> {
+    let struct_size = match number {
+        PageNumber::Int => 4,
+        PageNumber::Short => 2,
+    };
+    Plex::read(stream, offset, size, struct_size)?
         .entries
         .iter()
-        .map(|(_, _, page)| i32_at(page, 0))
+        .map(|(_, _, page)| match number {
+            PageNumber::Int => i32_at(page, 0),
+            PageNumber::Short => i16_at(page, 0).map(|page| i32::from(page as u16)),
+        })
         .collect()
 }
 
 /// `new CHPBinTable(...)`: the character runs of every page, mapped to characters.
 pub(super) fn character_runs(
     main: &[u8],
-    table: &[u8],
-    offset: i32,
-    size: i32,
+    pages: &[i32],
     clx: &ComplexFileTable,
 ) -> Read<Vec<PropertyRun>> {
     let mut runs = Vec::new();
-    for page in pages(table, offset, size)? {
+    for &page in pages {
         let at = PAGE_SIZE.wrapping_mul(page);
         let count = i32::from(u8_at(main, index(at.wrapping_add(511))?)?);
         for x in 0..count {
@@ -142,15 +160,13 @@ pub(super) fn character_runs(
 /// huge grpprls the data stream holds.
 pub(super) fn paragraph_runs(
     main: &[u8],
-    table: &[u8],
     data: &[u8],
-    offset: i32,
-    size: i32,
+    pages: &[i32],
     clx: &ComplexFileTable,
 ) -> Read<Vec<PropertyRun>> {
     const BX_SIZE: i32 = 13;
     let mut runs = Vec::new();
-    for page in pages(table, offset, size)? {
+    for &page in pages {
         let at = PAGE_SIZE.wrapping_mul(page);
         let count = i32::from(u8_at(main, index(at.wrapping_add(511))?)?);
         for x in 0..count {
@@ -252,7 +268,9 @@ pub(super) fn rebuild_character_runs(
         let start_inclusive = last_start;
         last_start = boundary;
         let found = binary_search_start(&runs, &by_start, boundary);
-        let mut position = found.unsigned_abs() as usize;
+        // The insertion point of a start not found; POI takes `Math.abs` of the result, one
+        // past it, which the steps back below make up for (#111).
+        let mut position = if found < 0 { -(found + 1) } else { found } as usize;
         while position >= by_start.len() {
             position -= 1;
         }

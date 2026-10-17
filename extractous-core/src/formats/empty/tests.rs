@@ -23,7 +23,6 @@ fn tikas_empty_types() -> Vec<String> {
                 b"x",
                 &[(PARSER_OVERRIDE, declared.as_str())],
                 &configs,
-                None,
             )
             .unwrap_or_else(|error| panic!("Tika's path fails to parse as {declared}: {error}"));
             let EmbeddedOutcome::Parsed { metadata, .. } = parsed.outcome else {

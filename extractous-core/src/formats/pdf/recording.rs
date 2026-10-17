@@ -2,13 +2,17 @@
 //! metadata, the files it embeds and where the pages begin and end. The document is read once,
 //! into a recording, which decides whether Tika's path takes it instead; the recording is then
 //! replayed into the document's [`Xhtml`], exactly as the extraction would have written it there.
+//! A document too large to record whole is streamed: its recording is flushed into the
+//! [`Xhtml`] after each page.
 
 use std::ops::Range;
 
 use super::attachment::EmbeddedFile;
+use super::ocr::{EndPage, PageCheck};
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{within_budget, Stop, Xhtml};
+use crate::formats::xmp;
 use crate::formats::Failure;
 
 /// A string the recording holds, as where it lies in the recording's text.
@@ -43,6 +47,13 @@ enum Event {
         name: Span,
         values: Range<u32>,
     },
+    /// A page our `TextLayerCheckingPdfParser` reads by OCR ends: its page's index, what is
+    /// done with it, and the content it held back, among the recording's held pages.
+    PageRead {
+        index: usize,
+        check: PageCheck,
+        held: usize,
+    },
     /// `PDF2XHTML.processPage` starts, and with it its catch of the write limit.
     EnterPage,
     LeavePage,
@@ -57,26 +68,10 @@ pub(super) struct Recording {
     events: Vec<Event>,
     /// Where the events written while a page is held back start, if one is.
     held: Option<usize>,
+    /// What the pages read by OCR held back, each written as the reading decides.
+    read_pages: Vec<Vec<Event>>,
     text: String,
     spans: Vec<Span>,
-}
-
-impl crate::formats::xmp::MetadataSink for Recording {
-    fn get(&self, name: &str) -> Option<&str> {
-        Recording::get(self, name)
-    }
-
-    fn values(&self, name: &str) -> &[String] {
-        Recording::values(self, name)
-    }
-
-    fn set(&mut self, name: &str, value: impl Into<String>) {
-        Recording::set(self, name, value);
-    }
-
-    fn add(&mut self, name: &str, value: impl Into<String>) {
-        Recording::add(self, name, value);
-    }
 }
 
 impl Recording {
@@ -86,6 +81,7 @@ impl Recording {
             metadata,
             events: Vec::new(),
             held: None,
+            read_pages: Vec::new(),
             text: String::new(),
             spans: Vec::new(),
         }
@@ -257,22 +253,86 @@ impl Recording {
         self.events.extend(held);
     }
 
-    /// Writes the recording to `xhtml`, until the output stops taking it. The output stopping
-    /// at the write limit on a page is recorded as `PDF2XHTML.processPage` records it.
-    pub(super) fn replay(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    /// Keeps what was held back after the metadata recorded since for page `index`, which OCR
+    /// reads, to be written as its reading decides when the recording is replayed.
+    pub(super) fn release_read(&mut self, index: usize, check: PageCheck) {
+        let start = self.held.take().unwrap_or(self.events.len());
+        let (held, metadata): (Vec<Event>, Vec<Event>) = self
+            .events
+            .drain(start..)
+            .partition(|event| !is_metadata(event));
+        self.events.extend(metadata);
+        self.events.push(Event::PageRead {
+            index,
+            check,
+            held: self.read_pages.len(),
+        });
+        self.read_pages.push(held);
+    }
+
+    /// Whether the document embeds files, parsed where the recording is replayed.
+    pub(super) fn embeds_files(&self) -> bool {
+        self.events
+            .iter()
+            .chain(self.read_pages.iter().flatten())
+            .any(|event| matches!(event, Event::Embedded(_)))
+    }
+
+    /// Whether a page is read by OCR.
+    pub(super) fn reads_pages(&self) -> bool {
+        !self.read_pages.is_empty()
+    }
+
+    /// The indices of the pages OCR reads, in order.
+    pub(super) fn pages_read(&self) -> Vec<usize> {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                Event::PageRead { index, .. } => Some(*index),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// About how many bytes the recording holds.
+    pub(super) fn size(&self) -> usize {
+        let events = self.events.len() + self.read_pages.iter().map(Vec::len).sum::<usize>();
+        self.text.len() + events * size_of::<Event>() + self.spans.len() * size_of::<Span>()
+    }
+
+    /// Writes what is recorded to `xhtml`, until the output stops taking it, each page OCR
+    /// reads ended by `page_ends`, and forgets it, the metadata as it stands kept. The output
+    /// stopping at the write limit on a page is recorded as `PDF2XHTML.processPage` records it.
+    /// No page may be held back.
+    pub(super) fn flush(
+        &mut self,
+        xhtml: &mut Xhtml,
+        mut page_ends: Option<&mut dyn EndPage>,
+    ) -> Result<(), Failure> {
+        assert!(self.held.is_none(), "a recording is flushed between pages");
         let mut in_page = false;
-        let result = self.replay_events(xhtml, &mut in_page);
+        let result = self.replay_events(&self.events, xhtml, &mut in_page, &mut page_ends);
         if in_page && matches!(result, Err(Failure::Stopped(Stop::LimitReached))) {
             xhtml
                 .metadata_mut()
                 .set("tk:exception:write-limit-reached", "true");
         }
+        self.events.clear();
+        self.read_pages.clear();
+        self.text.clear();
+        self.spans.clear();
         result
     }
 
-    fn replay_events(&self, xhtml: &mut Xhtml, in_page: &mut bool) -> Result<(), Failure> {
+    fn replay_events(
+        &self,
+        events: &[Event],
+        xhtml: &mut Xhtml,
+        in_page: &mut bool,
+        page_ends: &mut Option<&mut dyn EndPage>,
+    ) -> Result<(), Failure> {
         let mut attributes: Vec<(&str, &str)> = Vec::new();
-        for event in &self.events {
+        for event in events {
             match event {
                 Event::Start {
                     name,
@@ -311,12 +371,39 @@ impl Recording {
                         .metadata_mut()
                         .reset_values(self.get_text(*name), values);
                 }
+                Event::PageRead { index, check, held } => {
+                    let held = &self.read_pages[*held];
+                    let page_ends = page_ends
+                        .as_deref_mut()
+                        .expect("a recording with pages OCR reads is replayed with their ends");
+                    page_ends.end_page(xhtml, *index, *check, &mut |xhtml| {
+                        self.replay_events(held, xhtml, &mut true, &mut None)
+                    })?;
+                }
                 Event::EnterPage => *in_page = true,
                 Event::LeavePage => *in_page = false,
                 Event::EndDocument => xhtml.end_document()?,
             }
         }
         Ok(())
+    }
+}
+
+impl xmp::Sink for Recording {
+    fn get(&self, name: &str) -> Option<&str> {
+        Recording::get(self, name)
+    }
+
+    fn values(&self, name: &str) -> &[String] {
+        Recording::values(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: String) {
+        Recording::set(self, name, value);
+    }
+
+    fn add(&mut self, name: &str, value: String) {
+        Recording::add(self, name, value);
     }
 }
 

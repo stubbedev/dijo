@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{ParserConfigs, Password};
+use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedExtractResult, EmbeddedSpool};
 use crate::errors::{Error, ExtractResult};
 use crate::extractor::Stream;
@@ -64,12 +64,11 @@ fn call_tika<'local>(
     source: Source,
     method: TikaMethod,
     configs: &ParserConfigs,
-    password: Option<&Password>,
     tail_args: &[JValue],
 ) -> ExtractResult<JObject<'local>> {
     let source_obj = source.into_java(env)?;
     let [pdf, office, ocr] = java_parser_configs(env, configs)?;
-    let password_obj: JObject = match password {
+    let password_obj: JObject = match &configs.password {
         Some(password) => jni_new_string(env, password.expose())?.into(),
         None => JObject::null(),
     };
@@ -117,7 +116,6 @@ pub(crate) fn parse_to_stream(
     isolate: &'static Isolate,
     source: Source,
     configs: &ParserConfigs,
-    password: Option<&Password>,
     options: &StreamOptions,
 ) -> ExtractResult<(StreamReader, Metadata)> {
     let (stream, metadata) = isolate.with_env(|env| {
@@ -146,7 +144,6 @@ pub(crate) fn parse_to_stream(
                 returns: "Lai/yobix/ReaderResult;",
             },
             configs,
-            password,
             &[
                 JValue::Object(&char_set_obj),
                 JValue::Bool(options.as_xml),
@@ -173,7 +170,6 @@ pub(crate) fn parse_to_string(
     source: Source,
     max_length: i32,
     configs: &ParserConfigs,
-    password: Option<&Password>,
     as_xml: bool,
 ) -> ExtractResult<(String, Metadata)> {
     isolate.with_env(|env| {
@@ -186,7 +182,6 @@ pub(crate) fn parse_to_string(
                 returns: "Lai/yobix/StringResult;",
             },
             configs,
-            password,
             &[JValue::Int(max_length), JValue::Bool(as_xml)],
         )?;
         string_result(env, &result)
@@ -198,7 +193,6 @@ pub(crate) fn extract_embedded(
     isolate: &Isolate,
     source: Source,
     configs: &ParserConfigs,
-    password: Option<&Password>,
 ) -> ExtractResult<EmbeddedExtractResult> {
     isolate.with_env(|env| {
         let result = call_tika(
@@ -210,7 +204,6 @@ pub(crate) fn extract_embedded(
                 returns: "Lai/yobix/EmbeddedExtractResult;",
             },
             configs,
-            password,
             &[],
         )?;
         embedded_result(env, &result)
@@ -251,7 +244,6 @@ pub(crate) fn parse_embedded(
     data: &[u8],
     metadata: &[(&str, &str)],
     configs: &ParserConfigs,
-    password: Option<&Password>,
 ) -> ExtractResult<EmbeddedEvents> {
     let mut pairs = Vec::new();
     for (name, value) in metadata {
@@ -277,7 +269,6 @@ pub(crate) fn parse_embedded(
                 returns: "Lai/yobix/EmbeddedEvents;",
             },
             configs,
-            password,
             &[JValue::Object(&pairs)],
         )?;
         embedded_events(env, &result)

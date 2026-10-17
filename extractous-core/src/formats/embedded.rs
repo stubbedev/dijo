@@ -15,8 +15,7 @@ use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::Failure;
-use crate::java::LINE_SEPARATOR;
+use crate::formats::{Failure, InputFile};
 
 /// The class of the div an embedded document is written in.
 pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
@@ -31,11 +30,15 @@ const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception"
 pub(crate) const EXCEPTION_WARNING: &str = "tk:exception:warn";
 
 /// What the parses of one extraction share, as Tika's `ParseContext` does: the parser settings,
-/// and whether its embedded documents are parsed or spooled.
+/// whether its embedded documents are parsed or spooled, and the script OCR last found in its
+/// images, as our Java `OcrConfig` keeps it.
 #[derive(Debug)]
 pub(crate) struct ParseContext<'c> {
     configs: &'c ParserConfigs,
     spooler: Option<RefCell<Spooler>>,
+    file: InputFile,
+    ocr_script: RefCell<Option<String>>,
+    write_limit: Option<usize>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -44,6 +47,9 @@ impl<'c> ParseContext<'c> {
         Self {
             configs,
             spooler: None,
+            file: InputFile::Spooled,
+            ocr_script: RefCell::new(None),
+            write_limit: None,
         }
     }
 
@@ -56,11 +62,49 @@ impl<'c> ParseContext<'c> {
                 budget: spool.byte_budget,
                 spooled: Vec::new(),
             })),
+            file: InputFile::Spooled,
+            ocr_script: RefCell::new(None),
+            write_limit: None,
+        }
+    }
+
+    /// The extraction with its text limited to `limit` UTF-16 code units, as the write limit of
+    /// Tika's `WriteOutContentHandler`.
+    pub(crate) fn with_write_limit(self, limit: usize) -> Self {
+        Self {
+            write_limit: Some(limit),
+            ..self
         }
     }
 
     pub(crate) fn configs(&self) -> &'c ParserConfigs {
         self.configs
+    }
+
+    /// The extraction of a document Tika holds in `file`.
+    pub(crate) fn reading(self, file: InputFile) -> Self {
+        Self { file, ..self }
+    }
+
+    /// The file Tika holds the document in.
+    pub(crate) fn input_file(&self) -> &InputFile {
+        &self.file
+    }
+
+    /// The script the next image of this extraction is first read in with the automatic OCR
+    /// language: the one detection last found in an earlier image, or none before any.
+    pub(crate) fn assumed_ocr_script(&self) -> Option<String> {
+        self.ocr_script.borrow().clone()
+    }
+
+    /// Remembers the script OCR detection found, for the next images of this extraction.
+    pub(crate) fn learn_ocr_script(&self, script: String) {
+        *self.ocr_script.borrow_mut() = Some(script);
+    }
+
+    /// The limit of the extraction's text, if it has one.
+    pub(crate) fn write_limit(&self) -> Option<usize> {
+        self.write_limit
     }
 
     /// The embedded documents copied to the spool, in order.
@@ -262,31 +306,6 @@ pub(crate) fn is_parsed(metadata: &TikaMetadata) -> bool {
     !ResourceType::Thumbnail.is_of(metadata)
 }
 
-/// `TikaPagedText.PAGE_NUMBER`: the page an embedded resource is on, when it is on one.
-pub(crate) const PAGE_NUMBER: &str = "tk:page:number";
-/// `TikaPagedText.PAGE_NUMBERS`: the pages an embedded resource is on.
-pub(crate) const PAGE_NUMBERS: &str = "tk:page:numbers";
-
-/// `PageAnchoring.applyPageMetadata`: the pages an embedded resource is on in order, -1 for
-/// none, and the page when there is one.
-pub(crate) fn apply_page_numbers(metadata: &mut TikaMetadata, pages: &[i32]) {
-    let mut sorted = pages.to_vec();
-    sorted.sort_unstable();
-    if sorted.is_empty() {
-        sorted.push(-1);
-    }
-    metadata.remove(PAGE_NUMBERS);
-    metadata.remove(PAGE_NUMBER);
-    for page in &sorted {
-        metadata.add(PAGE_NUMBERS, page.to_string());
-    }
-    if let [page] = sorted[..] {
-        if page != -1 {
-            metadata.set(PAGE_NUMBER, page.to_string());
-        }
-    }
-}
-
 /// `EmbeddedDocumentUtil.recordEmbeddedStreamException` of an exception a parser makes itself,
 /// `class: message`: the first line of the stack trace Tika records, without the frames of the
 /// Java parser, which the native one replaces.
@@ -301,9 +320,26 @@ pub(crate) fn record_exception(metadata: &mut TikaMetadata, exception: &str) {
     metadata.add(EXCEPTION_WARNING, first_line(exception));
 }
 
-/// The first line of the stack trace `printStackTrace` writes of `exception`.
+/// The first line of the stack trace `printStackTrace` writes of `exception`, ended by `\n` on
+/// every platform: Java ends it with the platform's line separator (#108).
 fn first_line(exception: &str) -> String {
-    format!("{exception}{LINE_SEPARATOR}")
+    format!("{exception}\n")
+}
+
+/// How the failure of the parser named `parser` on a document embedded with `metadata` is
+/// recorded in `tk:exception:embedded-exception` of the document embedding it: the parser, the
+/// embedded document by its resource name or internal path, and the `reason`, on one line.
+/// Tika records the stack trace of the exception its parser throws there (#68).
+pub(crate) fn describe_failure(parser: &str, metadata: &TikaMetadata, reason: &str) -> String {
+    let document = [RESOURCE_NAME, INTERNAL_PATH]
+        .iter()
+        .find_map(|name| metadata.get(name).filter(|value| !value.is_empty()))
+        .map_or_else(
+            || "an embedded document without a name".to_owned(),
+            |name| format!("the embedded document \"{name}\""),
+        );
+    let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{parser} could not parse {document}: {reason}")
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.
@@ -420,6 +456,25 @@ mod tests {
         );
         assert!(decode(&bytes[..bytes.len() - 1]).is_err());
         assert!(decode(b"X").is_err());
+    }
+
+    #[test]
+    fn describes_failures_on_one_line() {
+        let mut metadata = TikaMetadata::new();
+        assert_eq!(
+            describe_failure("p", &metadata, "no\n\tgood"),
+            "p could not parse an embedded document without a name: no good"
+        );
+        metadata.set(INTERNAL_PATH, "/a/b.xml");
+        assert_eq!(
+            describe_failure("p", &metadata, "why"),
+            "p could not parse the embedded document \"/a/b.xml\": why"
+        );
+        metadata.set(RESOURCE_NAME, "b.xml");
+        assert_eq!(
+            describe_failure("p", &metadata, "why"),
+            "p could not parse the embedded document \"b.xml\": why"
+        );
     }
 
     #[test]

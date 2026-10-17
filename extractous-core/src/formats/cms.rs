@@ -361,12 +361,18 @@ fn empty<'a>(content_type: Option<&'static str>) -> Prepared<'a> {
 /// why Tika's path is left to read it, when that parser is not native or declines it. The parser
 /// prepares the content here, to tell whether it takes it, and again as the document is written,
 /// as what it prepares borrows the content, which the document owns.
+///
+/// The content's metadata, which the head shows, starts with its `Content-Length`. Tika's
+/// `Pkcs7Parser` parses it from fresh metadata, as a stream opened alone, which never learns
+/// its length (#113).
 fn with_content<'a>(
     content_type: &'static str,
     content: Vec<u8>,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Deferral> {
-    let (parser, start) = formats::embedded_parser(&content, &TikaMetadata::new(), Opened::Alone)
+    let mut given = TikaMetadata::new();
+    given.set("Content-Length", content.len().to_string());
+    let (parser, start) = formats::embedded_parser(&content, &given, Opened::Alone)
         .ok_or_else(|| "content Tika's path parses".to_owned())?;
     if parser.prepare(&content, &start, configs).is_err() {
         return Err(format!("content {} declines", parser.name()));
@@ -424,11 +430,76 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
+    use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents, Scratch};
 
     const TIKA_NAME: &str = "ai.yobix.CmsParser";
+
+    /// The `meta` element of the `Content-Length` the head of signed or compressed content
+    /// shows, which Tika's path does not give the content (#113).
+    const CONTENT_LENGTH: &str = "<meta name=\"Content-Length\" content=\"";
+
+    /// A native text without the `Content-Length` of the content of signed or compressed data
+    /// in its head, which Tika's path does not give it (#113): the head of such content shows
+    /// the content's metadata, which has no resource name, where a document's own has one.
+    fn without_content_length(native: &str) -> String {
+        let Some(head_end) = native.find("</head>") else {
+            return native.to_owned();
+        };
+        let head = &native[..head_end];
+        if head.contains("name=\"tk:resource-name\"") {
+            return native.to_owned();
+        }
+        let Some(start) = head.find(CONTENT_LENGTH) else {
+            return native.to_owned();
+        };
+        let end = start + native[start..].find("/>\n").expect("the meta element ends") + 3;
+        format!("{}{}", &native[..start], &native[end..])
+    }
+
+    /// A native result as Tika's path writes it: ZIP content's integrity check out of its head
+    /// (#99), and the content's `Content-Length` too (#113).
+    fn as_tika_writes_content(
+        text: &mut String,
+        metadata: &mut crate::formats::parity::ComparedMetadata,
+        tika: &crate::formats::parity::ComparedMetadata,
+    ) {
+        crate::formats::archive::as_tika_checks_zips(text, metadata, tika);
+        *text = without_content_length(text);
+    }
+
+    /// [`as_tika_writes_content`] for content that is generic XML (#105).
+    fn as_tika_writes_xml(
+        text: &mut String,
+        metadata: &mut crate::formats::parity::ComparedMetadata,
+        tika: &crate::formats::parity::ComparedMetadata,
+    ) {
+        crate::formats::dc_xml::without_unread_dublin_core(text, metadata, tika);
+        *text = without_content_length(text);
+    }
+
+    #[test]
+    fn gives_the_content_its_length() {
+        let scratch = Scratch::new("cms-length");
+        let content = b"Plain signed text.";
+        let path = scratch.write("signed-text.p7s", &signed(encapsulated(content)));
+        let (xhtml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(path.to_str().unwrap())
+            .unwrap();
+        let length = format!("{CONTENT_LENGTH}{}\" />", content.len());
+        assert!(xhtml.contains(&length), "{xhtml}");
+        assert!(!xhtml.contains("tk:resource-name"), "{xhtml}");
+        assert_eq!(
+            metadata.get("tk:resource-name"),
+            Some(&vec!["signed-text.p7s".to_owned()])
+        );
+        assert_eq!(
+            without_content_length(&xhtml)
+                .matches(CONTENT_LENGTH)
+                .count(),
+            0
+        );
+    }
     /// The detached signatures and certificate lists of Tika's tests, which Tika's path writes
     /// as empty documents.
     const DETACHED: [&str; 5] = [
@@ -569,10 +640,40 @@ mod tests {
         let (parsed, deferred) = documents(&CmsParser, &[scratch.directory()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), read.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
+        assert_same_as_tika_reading(&read.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    /// Asserts parity on `documents`, those whose content is generic XML with that parser's
+    /// departures from Tika's (#105) normalised.
+    fn assert_same_as_tika_reading(documents: &[&Path]) {
+        let read_as_xml = |path: &&Path| {
+            let (_, metadata) = crate::Extractor::new()
+                .extract_file_to_string(path.to_str().unwrap())
+                .unwrap();
+            ["tk:parsed-by", "tk:parsed-by-full-set"]
+                .iter()
+                .filter_map(|name| metadata.get(*name))
+                .flatten()
+                .any(|parser| parser.contains("DcXMLParser"))
+        };
+        let (xml, rest): (Vec<&Path>, Vec<&Path>) = documents
+            .iter()
+            .copied()
+            .partition(|path| read_as_xml(path));
+        // Content that is a ZIP archive now has its integrity check in its head (#99).
+        crate::formats::parity::assert_same_as_tika_rewriting(
+            &rest,
             TIKA_NAME,
+            as_tika_writes_content,
         );
+        if !xml.is_empty() {
+            crate::formats::parity::assert_same_as_tika_normalising(
+                &xml,
+                TIKA_NAME,
+                as_tika_writes_xml,
+                crate::formats::dc_xml::without_head,
+            );
+        }
     }
 
     #[test]
@@ -580,19 +681,13 @@ mod tests {
         let (parsed, deferred) = documents(&CmsParser, &[Path::new("../test_files/documents")]);
         assert!(deferred.is_empty(), "{deferred:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
+        assert_same_as_tika_reading(&paths);
     }
 
-    /// Tika's CMS test documents the native path leaves to Tika's: compressed PDF content, which
-    /// no native parser takes (the document is in two of the corpus's modules), digested data
-    /// typed as a signature, which Bouncy Castle fails to read as signed data, and signed data
-    /// in PEM, which it cannot read at all.
-    const LEFT_TO_TIKA: [&str; 4] = [
-        "testPKCS7_compressed_def_long.p7z",
-        "testPKCS7_compressed_def_long.p7z",
-        "testPKCS7_digested.p7",
-        "testPKCS7_signed_data_def.pem",
-    ];
+    /// Tika's CMS test documents the native path leaves to Tika's: digested data typed as a
+    /// signature, which Bouncy Castle fails to read as signed data, and signed data in PEM,
+    /// which it cannot read at all.
+    const LEFT_TO_TIKA: [&str; 2] = ["testPKCS7_digested.p7", "testPKCS7_signed_data_def.pem"];
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
@@ -613,7 +708,7 @@ mod tests {
         assert!(DETACHED
             .iter()
             .all(|name| rest.iter().any(|path| path.ends_with(name))));
-        assert_same_as_tika(&rest, TIKA_NAME);
+        assert_same_as_tika_reading(&rest);
         assert_fails_as_tika(&enveloped);
         let error = crate::Extractor::new()
             .extract_file_to_string(enveloped[0].to_str().unwrap())

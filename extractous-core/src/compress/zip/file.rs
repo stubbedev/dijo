@@ -9,7 +9,7 @@ use super::{
     STORED,
 };
 use crate::compress::crc32;
-use crate::java::time::{CalendarFields, TimeZone};
+use crate::java::time::civil;
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const ZIP64_EOCD_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";
@@ -26,6 +26,9 @@ const ZSTD: [u16; 2] = [93, 20];
 const XZ: u16 = 95;
 const PLATFORM_FAT: u16 = 0;
 const PLATFORM_UNIX: u16 = 3;
+/// The hosts of "version made by" whose file systems separate paths with `\`: MS-DOS and OS/2
+/// FAT, Windows NTFS and VFAT.
+const WINDOWS_PLATFORMS: [u16; 3] = [PLATFORM_FAT, 10, 14];
 
 type Result<T> = std::result::Result<T, Corrupt>;
 
@@ -92,28 +95,40 @@ impl ZipEntry {
         }
     }
 
-    /// `getLastModifiedTime`: from the extra fields, or else the DOS time in the JVM's time zone,
-    /// as a lenient `Calendar` sets its fields.
-    pub(crate) fn modified(&self, zone: &TimeZone) -> Instant {
-        self.times.modified.unwrap_or_else(|| {
-            let dos = self.dos_time;
-            let fields = CalendarFields {
-                year: (dos >> 25 & 0x7F) as i32 + 1980,
-                month: (dos >> 21 & 0x0F) as i32 - 1,
-                day: (dos >> 16 & 0x1F) as i32,
-                hour: (dos >> 11 & 0x1F) as i32,
-                minute: (dos >> 5 & 0x3F) as i32,
-                second: (dos << 1 & 0x3E) as i32,
-                millisecond: 0,
-            };
-            Instant::from_millis(fields.epoch_millis(zone))
-        })
+    /// `getLastModifiedTime`: from the extra fields, or else the DOS time read as a wall-clock
+    /// time in UTC, none when a field of it is out of range. commons-compress reads the DOS time
+    /// with a lenient `Calendar` in the JVM's default time zone, so the instant depends on the
+    /// machine's zone and out-of-range fields roll over (#99).
+    pub(crate) fn modified(&self) -> Option<Instant> {
+        self.times.modified.or_else(|| dos_instant(self.dos_time))
     }
 
     /// `getCreationTime`.
     pub(crate) fn created(&self) -> Option<Instant> {
         self.times.created
     }
+}
+
+/// The DOS date and time `dos` as a UTC instant, if its fields are in range.
+fn dos_instant(dos: i64) -> Option<Instant> {
+    let year = (dos >> 25 & 0x7F) + 1980;
+    let month = dos >> 21 & 0x0F;
+    let day = dos >> 16 & 0x1F;
+    let (hour, minute, second) = (dos >> 11 & 0x1F, dos >> 5 & 0x3F, dos << 1 & 0x3E);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if civil::is_leap_year(year) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = civil::days_from_civil(year, month, day);
+    Some(Instant::from_millis(
+        (days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000,
+    ))
 }
 
 /// An archive `ZipFile` opened.
@@ -381,10 +396,12 @@ impl<'a> ZipFile<'a> {
     }
 }
 
-/// `ZipArchiveEntry.setName`: a name without a slash, of an entry made on FAT, with its
-/// backslashes turned into slashes.
-pub(super) fn entry_name(name: String, version_made_by: u16) -> String {
-    if version_made_by >> 8 & 0x0F == PLATFORM_FAT && !name.contains('/') {
+/// The name of an entry made on a Windows file system, where `\` separates paths and no name
+/// holds one, with its backslashes turned into slashes; any other name as stored, where `\` is
+/// a character of the name. commons-compress turns them only for FAT names without a slash,
+/// and Tika then turns every backslash of every name (#101).
+pub(crate) fn entry_name(name: String, version_made_by: u16) -> String {
+    if WINDOWS_PLATFORMS.contains(&(version_made_by >> 8)) {
         name.replace('\\', "/")
     } else {
         name
@@ -402,6 +419,16 @@ pub(super) fn unicode_text(fields: &ExtraFields, id: u16, original: &[u8]) -> Op
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn turns_backslashes_only_in_names_made_on_windows() {
+        let made_on = |host: u16| host << 8 | 20;
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(0)), "a/b.txt");
+        assert_eq!(entry_name("d/a\\b.txt".into(), made_on(10)), "d/a/b.txt");
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(14)), "a/b.txt");
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(3)), "a\\b.txt");
+        assert_eq!(entry_name("a\\b.txt".into(), made_on(19)), "a\\b.txt");
+    }
+
     use std::io::Write;
 
     use super::*;
@@ -415,6 +442,23 @@ pub(crate) mod tests {
             writer.write_all(content).unwrap();
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn reads_dos_times_as_utc_wall_clock_times() {
+        let dos = |year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64| {
+            (year - 1980) << 25 | month << 21 | day << 16 | hour << 11 | minute << 5 | second >> 1
+        };
+        assert_eq!(
+            dos_instant(dos(2024, 2, 29, 23, 59, 58)),
+            Some(Instant::from_millis(1_709_251_198_000))
+        );
+        assert_eq!(dos_instant(0), None);
+        assert_eq!(dos_instant(dos(2023, 2, 29, 0, 0, 0)), None);
+        assert_eq!(dos_instant(dos(2023, 13, 1, 0, 0, 0)), None);
+        assert_eq!(dos_instant(dos(2023, 1, 1, 24, 0, 0)), None);
+        assert_eq!(dos_instant(dos(2023, 1, 1, 0, 60, 0)), None);
+        assert_eq!(dos_instant(dos(2023, 1, 1, 0, 0, 60)), None);
     }
 
     #[test]

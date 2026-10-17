@@ -6,13 +6,17 @@ use zip::{CompressionMethod, ZipWriter};
 
 use super::*;
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika_ignoring_metadata, conformance_corpus, documents,
+    assert_fails_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Departure,
     Scratch,
 };
 
-/// The page counts `IDMLParser` keeps adding to across the documents Tika's path parses, which
-/// the comparison leaves out.
-const ACCUMULATED: [&str; 3] = [SPREAD_PAGE_COUNT, MASTER_SPREAD_PAGE_COUNT, PAGE_COUNT];
+/// The page counts `IDMLParser` keeps adding to across the documents Tika's path parses, where
+/// the native parser counts each document's own.
+const ACCUMULATED: [Departure; 3] = [
+    Departure::Values(SPREAD_PAGE_COUNT, "#124"),
+    Departure::Values(MASTER_SPREAD_PAGE_COUNT, "#124"),
+    Departure::Values(PAGE_COUNT, "#124"),
+];
 
 const XMP: &str = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -109,7 +113,7 @@ fn extracts_idml_as_tikas_path_does() {
     let (parsed, deferred) = documents(&IdmlParser, &[scratch.directory()]);
     assert_eq!(deferred, [typed]);
     assert_eq!(parsed.len(), 3, "{parsed:?}");
-    assert_same_as_tika_ignoring_metadata(
+    assert_same_as_tika_departing(
         &[full.as_path(), plain.as_path()],
         IdmlParser.tika_name(),
         &ACCUMULATED,
@@ -124,5 +128,5 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 1, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_ignoring_metadata(&paths, IdmlParser.tika_name(), &ACCUMULATED);
+    assert_same_as_tika_departing(&paths, IdmlParser.tika_name(), &ACCUMULATED);
 }

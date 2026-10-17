@@ -3,6 +3,7 @@
 
 use std::rc::Rc;
 
+use arrayvec::ArrayString;
 use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::UnicodeNormalization;
 
@@ -27,10 +28,62 @@ pub(super) struct TextPosition {
     font_size: f32,
     font_size_pt: i32,
     widths: Widths,
-    pub(super) unicode: String,
+    pub(super) unicode: GlyphText,
     direction: f32,
     /// What the glyph was drawn under, in a tagged document.
     pub(super) label: Label,
+}
+
+/// The text of a glyph, held inline when it is as short as almost every glyph's, so that placing
+/// a glyph allocates nothing for it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct GlyphText(Inline);
+
+/// How many UTF-8 bytes a glyph's text holds inline.
+const INLINE: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Inline {
+    Short(ArrayString<INLINE>),
+    Long(Box<str>),
+}
+
+impl Default for Inline {
+    fn default() -> Self {
+        Inline::Short(ArrayString::new())
+    }
+}
+
+impl GlyphText {
+    pub(super) fn new(text: &str) -> Self {
+        GlyphText(match ArrayString::from(text) {
+            Ok(short) => Inline::Short(short),
+            Err(_) => Inline::Long(text.into()),
+        })
+    }
+
+    pub(super) fn as_str(&self) -> &str {
+        match &self.0 {
+            Inline::Short(short) => short,
+            Inline::Long(long) => long,
+        }
+    }
+}
+
+impl From<char> for GlyphText {
+    fn from(c: char) -> Self {
+        let mut short = ArrayString::new();
+        short.push(c);
+        GlyphText(Inline::Short(short))
+    }
+}
+
+impl std::ops::Deref for GlyphText {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
 }
 
 /// `TextPosition.widths`: the width of each character, one until diacritics merge in.
@@ -62,7 +115,7 @@ impl TextPosition {
         max_height: f32,
         individual_width: f32,
         space_width: f32,
-        unicode: String,
+        unicode: GlyphText,
         font: Rc<Font>,
         font_size: f32,
         font_size_pt: i32,
@@ -226,10 +279,10 @@ impl TextPosition {
         self.unicode.encode_utf16().count()
     }
 
-    /// `getVisuallyOrderedUnicode`: the text reversed when it holds right-to-left characters
-    /// and is longer than one code point.
-    pub(super) fn visually_ordered_unicode(&self) -> String {
-        let text = &self.unicode;
+    /// Appends `getVisuallyOrderedUnicode` to `out`: the text reversed when it holds
+    /// right-to-left characters and is longer than one code point.
+    pub(super) fn push_visually_ordered_unicode(&self, out: &mut String) {
+        let text = self.unicode.as_str();
         let mut chars = text.chars();
         let first = chars.next();
         let longer = chars.next().is_some();
@@ -238,9 +291,10 @@ impl TextPosition {
             .enumerate()
             .any(|(index, c)| is_right_to_left(c) && (index != 0 || longer));
         if right_to_left && first.is_some() {
-            return text.chars().rev().collect();
+            out.extend(text.chars().rev());
+        } else {
+            out.push_str(text);
         }
-        text.clone()
     }
 
     /// `isDiacritic`: a single non-spacing mark, modifier symbol or modifier letter, but not
@@ -250,7 +304,7 @@ impl TextPosition {
         let (Some(unit), None) = (units.next(), units.next()) else {
             return false;
         };
-        if self.unicode == "ー" {
+        if self.unicode.as_str() == "ー" {
             return false;
         }
         let Some(c) = char::from_u32(u32::from(unit)) else {
@@ -347,12 +401,12 @@ impl TextPosition {
         let mut text: Vec<u16> = units[..end].to_vec();
         text.extend(combine_diacritic(&diacritic.unicode).encode_utf16());
         text.extend_from_slice(&units[end..]);
-        self.unicode = String::from_utf16_lossy(&text);
+        self.unicode = GlyphText::new(&String::from_utf16_lossy(&text));
         self.widths = Widths::Many(widths);
     }
 
     /// The position with its text replaced, as `setUnicode` does.
-    pub(super) fn set_unicode(&mut self, unicode: String) {
+    pub(super) fn set_unicode(&mut self, unicode: GlyphText) {
         self.unicode = unicode;
     }
 }

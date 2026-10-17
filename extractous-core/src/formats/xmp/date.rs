@@ -3,7 +3,7 @@
 //! PDFBox reads them. A date PDFBox would go on to try its `SimpleDateFormat` patterns or a time
 //! zone name on is unported.
 
-use super::Unported;
+use crate::formats::Unported;
 use crate::java::time::{CalendarFields, TimeZone};
 
 const MILLIS_PER_MINUTE: i64 = 60_000;
@@ -85,19 +85,19 @@ fn days_in_month(year: i64, month: i64) -> i64 {
 
 /// A date PDFBox reads: its instant, and the offset of the zone its calendar is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Zoned {
-    pub(super) millis: i64,
-    pub(super) offset: i64,
+pub(crate) struct Zoned {
+    pub(crate) millis: i64,
+    pub(crate) offset: i64,
 }
 
 /// `DateConverter.toCalendar(String)`: the date's instant in milliseconds, or `None` where
 /// PDFBox reads no date.
-pub(in crate::formats) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
+pub(crate) fn to_calendar(text: &str) -> Result<Option<i64>, Unported> {
     Ok(to_zoned(text)?.map(|date| date.millis))
 }
 
 /// [`to_calendar`], with the offset of the zone the date gives, UTC where it gives none.
-pub(super) fn to_zoned(text: &str) -> Result<Option<Zoned>, Unported> {
+pub(crate) fn to_zoned(text: &str) -> Result<Option<Zoned>, Unported> {
     if crate::java::trim(text).is_empty() {
         return Ok(None);
     }

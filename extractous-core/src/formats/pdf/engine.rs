@@ -14,7 +14,7 @@ use super::document::Page;
 use super::font::{rectangle, Font};
 use super::jfloat;
 use super::matrix::Matrix;
-use super::position::TextPosition;
+use super::position::{GlyphText, TextPosition};
 use super::structure::Label;
 use super::Unported;
 
@@ -808,7 +808,7 @@ impl<'p> Run<'p, '_> {
         let unicode = match font.to_unicode(code, true)? {
             Some(unicode) => unicode,
             None if font.is_simple() => match char::from_u32(code & 0xFFFF) {
-                Some(c) => c.to_string(),
+                Some(c) => GlyphText::from(c),
                 None => {
                     return Err(Unported(
                         "a glyph coerced to half of a UTF-16 surrogate pair".to_owned(),
@@ -856,10 +856,10 @@ impl<'p> Run<'p, '_> {
     fn process_text_position(&mut self, mut text: TextPosition) {
         if let Some(actual) = &self.actual_text {
             if self.first_actual_text {
-                text.set_unicode(actual.clone());
+                text.set_unicode(GlyphText::new(actual));
                 self.first_actual_text = false;
             } else {
-                text.set_unicode(String::new());
+                text.set_unicode(GlyphText::default());
             }
         }
         let x = text.x();

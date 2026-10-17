@@ -99,7 +99,7 @@ fn entries(input: &[u8]) -> Result<Vec<Entry>, Refusal> {
             Entry::MediaType(java::utf8(&read()?))
         } else if name == METADATA {
             let xml = read()?;
-            xmp::extract(&xml, &mut TikaMetadata::new(), str::to_owned)
+            xmp::extract(&xml, &mut TikaMetadata::new(), xmp::as_is)
                 .map_err(|_| Refusal::Unread("XMP Tika fails to map, whose failure it records"))?;
             Entry::Metadata(xml)
         } else if name.contains("MasterSpreads") {
@@ -126,7 +126,7 @@ fn write(entries: &[Entry], xhtml: &mut Xhtml) -> Result<(), Failure> {
                     .set("Content-Type", media_type.as_str());
             }
             Entry::Metadata(xml) => {
-                xmp::extract(xml, xhtml.metadata_mut(), str::to_owned)
+                xmp::extract(xml, xhtml.metadata_mut(), xmp::as_is)
                     .map_err(|unported| Failure::Malformed(unported.0))?;
             }
             Entry::Part { kind, xml } => {

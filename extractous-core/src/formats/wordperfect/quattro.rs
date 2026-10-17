@@ -12,8 +12,6 @@ use crate::ole2::{Ole2, Unreadable};
 
 /// `OLE_DOCUMENT_NAME`, the stream of the workbook's records.
 const DOCUMENT: &str = "NativeContent_MAIN";
-/// `System.lineSeparator()`, which ends each name and label of a list.
-const LINE_SEPARATOR: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 /// Tika's `QuattroProParser`, which takes Quattro Pro 9 workbooks.
 pub(crate) struct QuattroProParser;
@@ -182,6 +180,6 @@ impl Records<'_, '_, '_> {
     /// A label written as text, then a line separator.
     fn line(&mut self) -> Result<(), Failure> {
         self.text()?;
-        Ok(self.xhtml.characters(LINE_SEPARATOR)?)
+        Ok(self.xhtml.characters(crate::java::LINE_SEPARATOR)?)
     }
 }

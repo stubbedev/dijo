@@ -98,8 +98,18 @@ struct ListData {
 #[derive(Debug, Clone)]
 struct Lfo {
     lsid: i32,
-    /// The level each level override defines, if it defines one.
-    levels: Vec<Option<ListLevel>>,
+    levels: Vec<LevelOverride>,
+}
+
+/// A level override, `LFOLVL`.
+#[derive(Debug, Clone)]
+struct LevelOverride {
+    /// The level it overrides, `iLvl`.
+    level: usize,
+    /// The number it starts at, where `fStartAt` sets one.
+    start_at: Option<i32>,
+    /// The level it defines in full, where `fFormatting` is set.
+    formatting: Option<ListLevel>,
 }
 
 /// The list tables.
@@ -193,16 +203,21 @@ fn read_lfos(table: &[u8], offset: i32) -> Read<Vec<Lfo>> {
         let mut levels = Vec::with_capacity(level_count as usize);
         for _ in 0..level_count {
             let at = index(position)?;
-            i32_at(table, at)?;
+            let start_at = i32_at(table, at)?;
             let flags = i32_at(table, at + 4)?;
             position = position.wrapping_add(LFOLVL_BASE_SIZE);
-            if flags & 0x20 != 0 {
+            let formatting = if flags & 0x20 != 0 {
                 let (level, length) = ListLevel::read(table, position)?;
                 position = position.wrapping_add(length);
-                levels.push(Some(level));
+                Some(level)
             } else {
-                levels.push(None);
-            }
+                None
+            };
+            levels.push(LevelOverride {
+                level: (flags & 0x0F) as usize,
+                start_at: (flags & 0x10 != 0).then_some(start_at),
+                formatting,
+            });
         }
         lfos.push(Lfo { lsid, levels });
     }
@@ -251,7 +266,10 @@ impl ListManager {
         };
         let overrides = match self.override_tuples.get(&ilfo) {
             Some(Some(tuples)) => Some(tuples.clone()),
-            _ => override_tuples(lfo, counter.level_count()),
+            _ => tables
+                .lists
+                .get(&lsid)
+                .and_then(|list| override_tuples(lfo, &list.levels)),
         };
         let level =
             usize::try_from(ilvl).map_err(|_| Thrown(format!("Index {ilvl} out of bounds")))?;
@@ -261,11 +279,26 @@ impl ListManager {
     }
 }
 
-/// `buildOverrideTuples`: every level numbered as the first level override says, if it has a
-/// level.
-fn override_tuples(lfo: &Lfo, length: usize) -> Option<Vec<LevelTuple>> {
-    let level = lfo.levels.first()?.as_ref()?;
-    Some(vec![tuple(level); length])
+/// `buildOverrideTuples`: the list's levels with those the override overrides replaced, a level
+/// defined in full by its definition and one restarted by its new start, if the override
+/// overrides any. Tika numbers every level as the first level override defines it, and only
+/// where that one defines its level in full (#111).
+fn override_tuples(lfo: &Lfo, levels: &[ListLevel]) -> Option<Vec<LevelTuple>> {
+    if lfo.levels.is_empty() {
+        return None;
+    }
+    let mut tuples: Vec<LevelTuple> = levels.iter().map(tuple).collect();
+    for level_override in &lfo.levels {
+        let Some(slot) = tuples.get_mut(level_override.level) else {
+            continue;
+        };
+        if let Some(level) = &level_override.formatting {
+            *slot = tuple(level);
+        } else if let Some(start_at) = level_override.start_at {
+            slot.start = start_at;
+        }
+    }
+    Some(tuples)
 }
 
 /// `buildTuple`.
@@ -313,5 +346,51 @@ fn number_format(code: i8) -> &'static str {
         22 => "decimalZero",
         23 => "bullet",
         _ => "decimal",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level(start_at: i32) -> ListLevel {
+        ListLevel {
+            start_at,
+            number_format: 0,
+            legal: false,
+            no_restart: false,
+            restart_limit: 0,
+            placeholder_offsets: [1, 0, 0, 0, 0, 0, 0, 0, 0],
+            grpprl_papx: Vec::new(),
+            number_text: vec![0],
+        }
+    }
+
+    #[test]
+    fn overrides_each_level_by_its_own_override() {
+        let levels = [level(1), level(1), level(1)];
+        let lfo = Lfo {
+            lsid: 1,
+            levels: vec![
+                LevelOverride {
+                    level: 2,
+                    start_at: Some(5),
+                    formatting: None,
+                },
+                LevelOverride {
+                    level: 1,
+                    start_at: None,
+                    formatting: Some(level(9)),
+                },
+            ],
+        };
+        let tuples = override_tuples(&lfo, &levels).unwrap();
+        let starts: Vec<i32> = tuples.iter().map(|tuple| tuple.start).collect();
+        assert_eq!(starts, [1, 9, 5]);
+        let none = Lfo {
+            lsid: 1,
+            levels: Vec::new(),
+        };
+        assert!(override_tuples(&none, &levels).is_none());
     }
 }

@@ -289,7 +289,7 @@ impl JunkDetector {
         let mut script_buckets = HashMap::with_capacity(bucket_count);
         for bucket in 0..bucket_count {
             let name = reader.name()?;
-            if let Some(script) = script_named(&name) {
+            if let Some(script) = unicode::java_script(&name) {
                 script_buckets.insert(script, bucket);
             }
         }
@@ -314,7 +314,7 @@ impl JunkDetector {
             let class = if name == COMMON {
                 Some(Class::Common)
             } else {
-                script_named(&name).map(Class::Script)
+                unicode::java_script(&name).map(Class::Script)
             };
             if let Some(class) = class {
                 scripts.insert(class, tables);
@@ -336,22 +336,6 @@ impl JunkDetector {
             weights,
         })
     }
-}
-
-/// The script whose `Character.UnicodeScript` constant has a name, or `None` for a name that is
-/// no script, such as the model's catch-all bucket.
-fn script_named(name: &str) -> Option<Script> {
-    static SCRIPTS: LazyLock<HashMap<String, Script>> = LazyLock::new(|| {
-        let mut scripts = HashMap::new();
-        for c in (0..=0x10_FFFFu32).filter_map(char::from_u32) {
-            let script = unicode::script(c);
-            scripts
-                .entry(unicode::java_script_name(script))
-                .or_insert(script);
-        }
-        scripts
-    });
-    SCRIPTS.get(name).copied()
 }
 
 /// Hands each scored bigram of a text to `sink` with the class whose model scores it, as Tika's

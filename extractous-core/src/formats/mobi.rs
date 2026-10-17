@@ -1,8 +1,12 @@
 //! Mobipocket and Kindle books (MOBI, AZW, AZW3) without DRM, as our Java `MobiParser` reads
-//! them: the text records of the Palm database, decompressed and handed with their charset to
-//! the HTML parser, which writes the document; then the title, authors and language of the
-//! book's MOBI and EXTH headers as metadata. The book is read as Java's `ByteBuffer` reads it,
-//! big-endian at `int` indexes, an index outside it failing the parse.
+//! them: the title, authors and language of the book's MOBI and EXTH headers as metadata, then
+//! the text records of the Palm database, decompressed and handed with their charset to the
+//! HTML parser, which writes the document under the book's metadata. The book is read as
+//! Java's `ByteBuffer` reads it, big-endian at `int` indexes, an index outside it failing the
+//! parse.
+//!
+//! Our Java parser has the HTML parser write the head from the HTML's own metadata, and adds the
+//! book's after the document has ended, where the head never shows it (#105).
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -336,11 +340,14 @@ impl Parser for MobiParser {
         let html = html::prepare(&markup.html, &markup.metadata())
             .map_err(|reason| Declined::Deferred(format!("the book's HTML defers: {reason}")))?;
         Ok(Box::new(move |xhtml| {
-            xhtml.with_metadata(markup.metadata(), |xhtml| {
+            book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)?;
+            // The HTML parser writes into a copy, so what it reads from the HTML stays out of
+            // the book's metadata, as in Tika's path.
+            let book = xhtml.metadata_mut().clone();
+            xhtml.with_metadata(book, |xhtml| {
                 html(xhtml)?;
                 xhtml.end_document().map_err(Failure::from)
-            })?;
-            book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)
+            })
         }))
     }
 }
@@ -350,9 +357,45 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, documents, Scratch};
+    use crate::formats::parity::{assert_fails_as_tika, documents, Scratch};
 
     const TIKA_NAME: &str = "ai.yobix.MobiParser";
+
+    /// Asserts parity on `documents` with the texts compared without their heads, which now
+    /// show the book's metadata (#105), and the native metadata without what Tika's path does
+    /// not reach before the length limit, adding the book's metadata after the document ends.
+    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
+        crate::formats::parity::assert_same_as_tika_normalising(
+            documents,
+            tika_name,
+            crate::formats::dc_xml::without_unread_dublin_core,
+            crate::formats::dc_xml::without_head,
+        );
+    }
+
+    #[test]
+    fn shows_the_books_metadata_in_the_head() {
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&book(&Spec {
+                exth: vec![(100, b"Ada Lovelace"), (524, b"en")],
+                name: b"Full Name",
+                ..Spec::default()
+            }))
+            .unwrap();
+        let head = &xml[..xml.find("</head>").unwrap()];
+        for (name, values) in &metadata {
+            if name.starts_with("dc:") {
+                for value in values {
+                    assert!(
+                        head.contains(&format!(r#"<meta name="{name}" content="{value}" />"#)),
+                        "{xml}"
+                    );
+                }
+            }
+        }
+        assert!(metadata.contains_key("dc:title"), "{metadata:?}");
+    }
 
     /// A book to write: its PalmDOC header's fields, a MOBI header when `encoding` is given,
     /// and its text records as they are stored.

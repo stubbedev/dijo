@@ -182,10 +182,11 @@ pub(crate) fn may_name(input: &[u8], name: &str) -> bool {
             .any(|window| window == name.as_bytes())
 }
 
-/// Whether the JDK's scanner reads on over `character` in a run of character data: anything but
-/// a line break, `]` and a character outside the Basic Multilingual Plane.
-fn is_content(character: char) -> bool {
-    !matches!(character, '\n' | ']') && character < '\u{10000}'
+/// Whether the JDK's scanner reads on over the character `byte` is part of in a run of character
+/// data: anything but a line break, `]` and a character outside the Basic Multilingual Plane, the
+/// characters whose UTF-8 starts with a byte of 0xF0 or more.
+fn is_content_byte(byte: u8) -> bool {
+    !matches!(byte, b'\n' | b']') && byte < 0xF0
 }
 
 /// The end of the run the JDK's scanner reads from `start`: line breaks, then content.
@@ -193,9 +194,9 @@ fn scanned_run(text: &str, start: usize) -> usize {
     let rest = &text[start..];
     let content = rest.trim_start_matches('\n');
     let end = content
-        .char_indices()
-        .find(|(_, character)| !is_content(*character))
-        .map_or(content.len(), |(index, _)| index);
+        .bytes()
+        .position(|byte| !is_content_byte(byte))
+        .unwrap_or(content.len());
     start + (rest.len() - content.len()) + end
 }
 

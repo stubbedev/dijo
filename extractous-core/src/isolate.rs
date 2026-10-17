@@ -70,6 +70,15 @@ impl IsolateSettings {
 static ISOLATE: OnceLock<Result<Isolate, String>> = OnceLock::new();
 static SETTINGS: OnceLock<IsolateSettings> = OnceLock::new();
 
+/// Where temporary files go: the directory the settings name, or the system's.
+#[cfg(not(feature = "static-image"))]
+pub(crate) fn temp_dir() -> PathBuf {
+    SETTINGS
+        .get()
+        .and_then(|settings| settings.temp_dir.clone())
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 /// The process-wide isolate, created on first use.
 pub(crate) fn isolate() -> ExtractResult<&'static Isolate> {
     ISOLATE
@@ -87,6 +96,16 @@ pub(crate) fn heap_cap() -> Option<u64> {
         .get()
         .and_then(|settings| settings.max_heap_bytes)
         .map(NonZeroU64::get)
+}
+
+/// The processors this process may use: its share of the machine, or all of the machine's, or
+/// one when the machine does not tell how many it has.
+pub(crate) fn processors() -> usize {
+    SETTINGS
+        .get()
+        .and_then(|settings| settings.processors)
+        .or_else(|| std::thread::available_parallelism().ok())
+        .map_or(1, NonZeroUsize::get)
 }
 
 /// Whether the process has created its isolate, which nothing but Tika's path needs.

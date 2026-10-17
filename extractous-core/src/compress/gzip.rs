@@ -2,7 +2,6 @@
 //! `decompressConcatenated`: the first member only; and `GzipUtils`'s names of what they hold.
 
 use super::{read_whole, Undecoded};
-use crate::java::utf16_length;
 
 /// `GzipUtils`'s suffixes of gzip file names, with what replaces each in the uncompressed name.
 const UNCOMPRESSED_SUFFIXES: [(&str, &str); 11] = [
@@ -20,39 +19,32 @@ const UNCOMPRESSED_SUFFIXES: [(&str, &str); 11] = [
 ];
 
 /// `GzipUtils.getUncompressedFileName`: `name` with the shortest of its suffixes, in any case,
-/// that names a gzip file replaced, unless the suffix is all of it; `None` when lower-casing
-/// `name` changes its length, which commons-compress mixes up.
-pub(crate) fn uncompressed_file_name(name: &str) -> Option<String> {
-    let lower = name.to_lowercase();
-    let length = utf16_length(&lower);
-    if length != utf16_length(name) {
-        return None;
-    }
-    let mut lengths: Vec<usize> = UNCOMPRESSED_SUFFIXES
+/// that names a gzip file replaced, unless the suffix is all of it. The suffixes are compared
+/// without lower-casing the whole name, which commons-compress does, mixing up a name whose
+/// length that changes (#100).
+pub(crate) fn uncompressed_file_name(name: &str) -> String {
+    let mut suffixes = UNCOMPRESSED_SUFFIXES;
+    suffixes.sort_by_key(|(suffix, _)| suffix.len());
+    suffixes
         .iter()
-        .map(|(suffix, _)| suffix.len())
-        .collect();
-    lengths.sort_unstable();
-    lengths.dedup();
-    for suffix_length in lengths.into_iter().take_while(|&l| l < length) {
-        let found = UNCOMPRESSED_SUFFIXES
-            .iter()
-            .find(|(suffix, _)| suffix.len() == suffix_length && lower.ends_with(suffix));
-        if let Some((suffix, replacement)) = found {
-            let stem = name.len().checked_sub(suffix.len())?;
-            if !name.is_char_boundary(stem) || !name[stem..].eq_ignore_ascii_case(suffix) {
-                return None;
-            }
-            return Some(format!("{}{replacement}", &name[..stem]));
-        }
-    }
-    Some(name.to_owned())
+        .find(|(suffix, _)| suffix.len() < name.len() && ends_with_ignoring_case(name, suffix))
+        .map_or_else(
+            || name.to_owned(),
+            |(suffix, replacement)| format!("{}{replacement}", &name[..name.len() - suffix.len()]),
+        )
+}
+
+/// Whether `name` ends with the ASCII `suffix`, in any case.
+pub(crate) fn ends_with_ignoring_case(name: &str, suffix: &str) -> bool {
+    name.len() >= suffix.len()
+        && name.as_bytes()[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
 }
 
 /// The first member of a gzip file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Member {
-    /// The original file name of the header, decoded as ISO-8859-1 as commons-compress decodes it.
+    /// The original file name of the header: UTF-8 when it is valid UTF-8, else ISO-8859-1,
+    /// which RFC 1952 names and commons-compress always decodes it as (#100).
     pub(crate) file_name: Option<String>,
     pub(crate) content: Vec<u8>,
 }
@@ -65,7 +57,10 @@ pub(crate) fn decode(data: &[u8]) -> Result<Member, Undecoded> {
     let file_name = decoder
         .header()
         .and_then(flate2::GzHeader::filename)
-        .map(|name| name.iter().map(|&byte| char::from(byte)).collect());
+        .map(|name| match std::str::from_utf8(name) {
+            Ok(name) => name.to_owned(),
+            Err(_) => name.iter().map(|&byte| char::from(byte)).collect(),
+        });
     Ok(Member { file_name, content })
 }
 
@@ -88,18 +83,23 @@ pub(crate) mod tests {
 
     #[test]
     fn names_the_uncompressed_file_as_gzip_utils_does() {
-        assert_eq!(uncompressed_file_name("a.tgz").as_deref(), Some("a.tar"));
-        assert_eq!(uncompressed_file_name("x.SVGZ").as_deref(), Some("x.svg"));
-        assert_eq!(uncompressed_file_name("x.Z").as_deref(), Some("x"));
-        assert_eq!(uncompressed_file_name("x_z").as_deref(), Some("x"));
-        assert_eq!(uncompressed_file_name(".gz").as_deref(), Some(".gz"));
-        assert_eq!(uncompressed_file_name("file").as_deref(), Some("file"));
-        assert_eq!(uncompressed_file_name("\u{130}.gz"), None);
+        assert_eq!(uncompressed_file_name("a.tgz"), "a.tar");
+        assert_eq!(uncompressed_file_name("x.SVGZ"), "x.svg");
+        assert_eq!(uncompressed_file_name("x.Z"), "x");
+        assert_eq!(uncompressed_file_name("x_z"), "x");
+        assert_eq!(uncompressed_file_name(".gz"), ".gz");
+        assert_eq!(uncompressed_file_name("file"), "file");
+        assert_eq!(uncompressed_file_name("\u{130}.gz"), "\u{130}");
     }
 
     #[test]
     fn decodes_the_first_member() {
-        let mut data = gzip(b"first", Some("caf\u{e9}.txt"));
+        let utf8 = gzip(b"first", Some("caf\u{e9}.txt"));
+        assert_eq!(
+            decode(&utf8).unwrap().file_name.as_deref(),
+            Some("caf\u{e9}.txt")
+        );
+        let mut data = utf8;
         let latin1 = data.iter().position(|&b| b == 0xC3).unwrap();
         data.splice(latin1..latin1 + 2, [0xE9]);
         data.extend_from_slice(&gzip(b"second", None));

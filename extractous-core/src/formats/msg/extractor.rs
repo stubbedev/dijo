@@ -14,9 +14,9 @@ use super::types::{property, Type};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
 use crate::formats::handlers::parse_inline;
-use crate::formats::mail::decode_encoded_words;
+use crate::formats::mail::{decode_encoded_words, parse_date, MailDate};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{codepage_encoding, office_document, Embedded};
+use crate::formats::ole2::{codepage_encoding, office_document, Embedded, Handed};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, rtf, Failure, Prepared, Unported};
@@ -138,7 +138,7 @@ enum Body {
 pub(super) struct Extracted {
     message: Message,
     body: Body,
-    attachments: Vec<Embedded>,
+    attachments: Vec<Handed>,
 }
 
 /// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses.
@@ -153,7 +153,7 @@ pub(super) fn extract(
     let mut scratch = TikaMetadata::new();
     write_metadata(&message, &mut scratch).map_err(unported)?;
     let (body, content_ids) = body(&message, configs)?;
-    let attachments = attachments(file, &message, &content_ids)?;
+    let attachments = attachments(file, &message, &content_ids, configs)?;
     Ok(Extracted {
         message,
         body,
@@ -166,24 +166,6 @@ fn unported(Thrown(reason): Thrown) -> Unported {
 }
 
 impl Extracted {
-    /// Whether Tika's head would list the metadata the message sets in an order this port
-    /// cannot know: Tika sets the named properties and the times in the order of hash maps
-    /// keyed by identity, which the head shows where two of them share a bucket of its map.
-    /// `head` is the metadata the document starts from.
-    pub(super) fn has_identity_ordered_head(&self, mut head: TikaMetadata) -> bool {
-        write_metadata(&self.message, &mut head).expect("the metadata was checked");
-        let named: Vec<&str> = head
-            .names()
-            .filter(|name| name.starts_with(named::PROPERTY_PREFIX))
-            .collect();
-        let times: Vec<&str> = TIMES
-            .iter()
-            .map(|&(_, key)| key)
-            .filter(|key| head.get(key).is_some())
-            .collect();
-        head.share_a_bucket(&named) || head.share_a_bucket(&times)
-    }
-
     /// Writes the message as `OutlookExtractor.parse` does.
     pub(super) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         write_metadata(&self.message, xhtml.metadata_mut())
@@ -211,12 +193,8 @@ impl Extracted {
             }
             Body::None => {}
         }
-        for attachment in &self.attachments {
-            xhtml.parse_embedded(
-                &attachment.data,
-                &attachment.metadata,
-                Wrapping::PackageEntry,
-            )?;
+        for attachment in self.attachments {
+            attachment.write(xhtml, Wrapping::PackageEntry)?;
         }
         Ok(())
     }
@@ -253,12 +231,31 @@ fn write_metadata(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
             metadata.add_prefixed(name::RAW_HEADER, key, value.clone());
         }
     }
-    if let Some(date) = message_date(message)? {
-        let date = format_instant(date);
+    let date = match message_date(message)? {
+        Some(date) => Some(format_instant(date)),
+        None => header_date(&headers)?,
+    };
+    if let Some(date) = date {
         metadata.set(name::CREATED, date.clone());
         metadata.set(name::MODIFIED, date);
     }
     Ok(())
+}
+
+/// The date of the first `Date` transport header, for a message without a date of its own.
+/// Tika looks for a header named `date:`, which no header's name is, so that it never falls back
+/// to it (#112).
+fn header_date(headers: &[(String, Vec<String>)]) -> Read<Option<String>> {
+    let Some(value) = headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("date"))
+        .and_then(|(_, values)| values.first())
+    else {
+        return Ok(None);
+    };
+    let date = parse_date(value)
+        .map_err(|_| Thrown::new("a Date header naming a time zone Tika looks up"))?;
+    Ok(date.map(MailDate::format))
 }
 
 /// `handleFromTo`.
@@ -306,13 +303,15 @@ fn from_to(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
                 .map(chunk_string)
                 .unwrap_or_default()
         };
+        // POI swaps these, taking the name from `PidTagRecipientDisplayName` and the display
+        // name from `PidTagDisplayName` (#112).
         metadata.add(
             &format!("message:{kind}-name"),
-            text(property::RECIPIENT_DISPLAY_NAME),
+            text(property::DISPLAY_NAME),
         );
         metadata.add(
             &format!("message:{kind}-display-name"),
-            text(property::DISPLAY_NAME),
+            text(property::RECIPIENT_DISPLAY_NAME),
         );
         metadata.add(
             &format!("message:{kind}-email"),
@@ -447,7 +446,9 @@ fn message_date(message: &Message) -> Read<Option<i64>> {
     Ok(None)
 }
 
-/// `getNormalizedMessageClass`.
+/// `getNormalizedMessageClass`: the name Tika's table gives a message class, the last column of
+/// its line. The read receipts' lines have three columns, and Tika takes the second, so that
+/// they come out as `IPNRN` and `IPNNRN` (#112).
 fn normalized_class(class: Option<&str>) -> &'static str {
     let Some(class) = class.filter(|class| !is_blank(class)) else {
         return "UNSPECIFIED";
@@ -459,7 +460,7 @@ fn normalized_class(class: Option<&str>) -> &'static str {
         .find_map(|line| {
             let mut columns = line.split_whitespace();
             let key = columns.next()?;
-            let value = columns.next()?;
+            let value = columns.last()?;
             (crate::java::to_lower_case(key) == lower).then_some(value)
         })
         .unwrap_or("UNKNOWN")
@@ -711,7 +712,8 @@ fn attachments(
     file: &Ole2<'_>,
     message: &Message,
     content_ids: &HashSet<String>,
-) -> Result<Vec<Embedded>, Unported> {
+    configs: &ParserConfigs,
+) -> Result<Vec<Handed>, Unported> {
     let mut embedded = Vec::new();
     for attachment in &message.attachments {
         let mut metadata = attachment_metadata(file, attachment, content_ids);
@@ -736,10 +738,10 @@ fn attachments(
             if let Some(mime) = &mime {
                 metadata.set("Content-Type", mime.clone());
             }
-            embedded.push(Embedded {
+            embedded.push(Handed::Document(Embedded {
                 data: data.to_vec(),
                 metadata: metadata.clone(),
-            });
+            }));
         }
         let directory = group
             .all(property::ATTACH_DATA)
@@ -749,7 +751,8 @@ fn attachments(
             })
             .last();
         if let Some(directory) = directory {
-            if let Some(document) = office_document(file, directory, metadata, filename.as_deref())?
+            if let Some(document) =
+                office_document(file, directory, metadata, filename.as_deref(), configs)?
             {
                 embedded.push(document);
             }
@@ -898,7 +901,14 @@ mod tests {
     #[test]
     fn normalizes_message_classes_as_tika_does() {
         assert_eq!(normalized_class(Some("ipm.note")), "NOTE");
-        assert_eq!(normalized_class(Some("REPORT.IPM.Note.IPNRN")), "IPNRN");
+        assert_eq!(
+            normalized_class(Some("REPORT.IPM.Note.IPNRN")),
+            "READ_RECEIPT"
+        );
+        assert_eq!(
+            normalized_class(Some("REPORT.IPM.Note.IPNNRN")),
+            "NOT_READ_RECEIPT"
+        );
         assert_eq!(normalized_class(Some("IPM.Other")), "UNKNOWN");
         assert_eq!(normalized_class(None), "UNSPECIFIED");
     }
@@ -968,7 +978,8 @@ mod tests {
         assert_eq!(metadata.get(name::TO), Some("Bob"));
         assert_eq!(metadata.get(name::MESSAGE_CLASS), Some("NOTE"));
         assert_eq!(metadata.get("message:to-email"), Some("bob@example.com"));
-        assert_eq!(metadata.get("message:to-display-name"), Some("Bob"));
+        assert_eq!(metadata.get("message:to-name"), Some("Bob"));
+        assert_eq!(metadata.get("message:to-display-name"), Some(""));
         assert_eq!(metadata.get(name::CREATED), Some("2020-01-01T00:00:00Z"));
         assert_eq!(
             metadata.get("mapi:msg-client-submit-time"),
@@ -977,6 +988,32 @@ mod tests {
         let configs = ParserConfigs::default();
         let (body, _) = body(&read, &configs).unwrap();
         assert!(matches!(body, Body::Text(text) if text == "Hi Bob"));
+    }
+
+    #[test]
+    fn falls_back_to_the_date_header() {
+        use crate::ole2::{write, Node, Storage};
+        let document = |name: &str, data: Vec<u8>| (units(name), Node::Document(data));
+        let data = write(&Storage {
+            class_id: [0; 16],
+            entries: vec![
+                document("__substg1.0_0037001F", unicode("Hello")),
+                document(
+                    "__substg1.0_007D001F",
+                    unicode("Subject: Hello\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\n"),
+                ),
+                document("__substg1.0_001A001F", unicode("REPORT.IPM.Note.IPNRN")),
+                document("__properties_version1.0", vec![0; 32]),
+            ],
+        })
+        .unwrap();
+        let file = Ole2::open(&data).unwrap();
+        let read = Message::read(&file, file.root(), false).unwrap();
+        let mut metadata = TikaMetadata::new();
+        write_metadata(&read, &mut metadata).unwrap();
+        assert_eq!(metadata.get(name::CREATED), Some("2024-03-05T13:30:00Z"));
+        assert_eq!(metadata.get(name::MODIFIED), Some("2024-03-05T13:30:00Z"));
+        assert_eq!(metadata.get(name::MESSAGE_CLASS), Some("READ_RECEIPT"));
     }
 
     #[test]

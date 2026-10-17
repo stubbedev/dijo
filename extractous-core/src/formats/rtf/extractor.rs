@@ -13,7 +13,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::java;
-use crate::java::time::{self, CalendarFields, TimeZone};
+use crate::java::time::{civil, format_instant};
 use crate::text::charset::Charset;
 
 /// The UTF-16 units `TextExtractor` decodes into at a time, each batch written as one
@@ -276,14 +276,44 @@ struct Lists {
     level: i32,
 }
 
-/// The parts of `\creatim` and the other date groups, which hold their values until the next.
+/// The parts of the `\creatim` group, each unset until the group names it.
 #[derive(Debug, Default)]
 struct DateParts {
-    year: i32,
-    month: i32,
-    day: i32,
-    hour: i32,
-    minute: i32,
+    year: Option<i32>,
+    month: Option<i32>,
+    day: Option<i32>,
+    hour: Option<i32>,
+    minute: Option<i32>,
+}
+
+impl DateParts {
+    /// The date as an instant, its fields read as a wall-clock time in UTC; none when the year,
+    /// month or day is missing or any field is out of range.
+    ///
+    /// Tika reads the fields with a lenient `Calendar` in the JVM's default time zone, so the
+    /// same document gives different instants on machines in different zones, an empty group
+    /// gives year 0 (-0001-11-27 in Copenhagen) and out-of-range fields roll over (#65).
+    fn instant(&self) -> Option<String> {
+        let (year, month, day) = (self.year?, self.month?, self.day?);
+        let (hour, minute) = (self.hour.unwrap_or(0), self.minute.unwrap_or(0));
+        let days_in_month = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if civil::is_leap_year(i64::from(year)) => 29,
+            2 => 28,
+            _ => return None,
+        };
+        if !(1..=9999).contains(&year)
+            || !(1..=days_in_month).contains(&day)
+            || !(0..24).contains(&hour)
+            || !(0..60).contains(&minute)
+        {
+            return None;
+        }
+        let days = civil::days_from_civil(i64::from(year), i64::from(month), i64::from(day));
+        let seconds = days * 86_400 + i64::from(hour) * 3_600 + i64::from(minute) * 60;
+        Some(format_instant(seconds * 1_000))
+    }
 }
 
 struct Extractor<'a, 'x, 'h> {
@@ -714,15 +744,15 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         } else if self.word(b"nofchars") {
             self.add_count("meta:character-count", param)?;
         } else if self.word(b"yr") {
-            self.date.year = param;
+            self.date.year = Some(param);
         } else if self.word(b"mo") {
-            self.date.month = param;
+            self.date.month = Some(param);
         } else if self.word(b"dy") {
-            self.date.day = param;
+            self.date.day = Some(param);
         } else if self.word(b"hr") {
-            self.date.hour = param;
+            self.date.hour = Some(param);
         } else if self.word(b"min") {
-            self.date.minute = param;
+            self.date.minute = Some(param);
         } else if self.word(b"fromhtml") && param == 1 {
             self.metadata()
                 .set("rtf:contains-encapsulated-html", "true");
@@ -929,6 +959,9 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         }
         if self.upr == Upr::Outside {
             if let Some(property) = InfoProperty::for_word(&self.control) {
+                if property == InfoProperty::Created {
+                    self.date = DateParts::default();
+                }
                 self.info = Some(property);
             }
         }
@@ -1118,18 +1151,9 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
     /// Ends an `\info` property's group: its text, or for `\creatim` its date, is the value.
     fn write_info(&mut self, property: InfoProperty) -> Step {
         if !property.is_text() {
-            let zone = TimeZone::java_default().map_err(|_| Deferral::TimeZone)?;
-            let fields = CalendarFields {
-                year: self.date.year,
-                month: self.date.month.wrapping_sub(1),
-                day: self.date.day,
-                hour: self.date.hour,
-                minute: self.date.minute,
-                second: 0,
-                millisecond: 0,
-            };
-            let created = time::format_instant(fields.epoch_millis(zone));
-            self.metadata().set("dcterms:created", created);
+            if let Some(created) = self.date.instant() {
+                self.metadata().set("dcterms:created", created);
+            }
             return Ok(());
         }
         let value = String::from_utf16_lossy(&self.pending_buffer);

@@ -46,7 +46,9 @@ pub(super) enum Unopened {
     Unported(String),
 }
 
-/// A file entry's name as junrar decodes it.
+/// A file entry's name as junrar decodes it, its separators, which the format writes as
+/// backslashes whatever the host, turned into slashes, as Tika's `handleEntryMetadata` and
+/// unrar turn them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Name {
     Decoded(String),
@@ -521,7 +523,10 @@ fn parse_file_header(
     let name_bytes = &body[position..position + name_size];
     position += name_size;
     let name = if file {
-        checked_name(&file_name(flags, name_bytes)?)?
+        match checked_name(&file_name(flags, name_bytes)?)? {
+            Name::Decoded(name) => Name::Decoded(name.replace('\\', "/")),
+            unported => unported,
+        }
     } else {
         Name::Decoded(String::new())
     };

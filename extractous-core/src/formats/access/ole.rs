@@ -3,9 +3,10 @@
 //! document or other data.
 
 use super::buffer::{Buffer, Thrown};
+use crate::config::ParserConfigs;
 use crate::formats::embedded::RESOURCE_NAME;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office_document, Embedded};
+use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::java::{ascii, equals_ignore_case, utf16le};
 use crate::ole2::Ole2;
 
@@ -25,8 +26,8 @@ pub(super) enum Ole {
     Link(String),
     /// A document handed on bare, its stream opened alone.
     Resource(Embedded),
-    /// A compound document's storage handed on in a package entry.
-    Storage(Embedded),
+    /// What `handleEmbeddedOfficeDoc` hands on of a compound document, in a package entry.
+    Storage(Handed),
 }
 
 fn string_index(message: String) -> Thrown {
@@ -91,7 +92,7 @@ fn stream(bytes: &[u8], position: i32, length: i32) -> Result<Vec<u8>, Thrown> {
 }
 
 /// `parseContent` and `handleOLE`: what Tika writes of an OLE value.
-pub(super) fn read(value: &[u8]) -> Result<Ole, Thrown> {
+pub(super) fn read(value: &[u8], configs: &ParserConfigs) -> Result<Ole, Thrown> {
     let mut buffer = Buffer::new(value);
     if buffer.remaining() < 2 || buffer.i16()? != PACKAGE_SIGNATURE {
         return Ok(Ole::Nothing);
@@ -133,7 +134,7 @@ pub(super) fn read(value: &[u8]) -> Result<Ole, Thrown> {
     if buffer.remaining() >= COMPOUND_STORAGE_SIGNATURE.len()
         && value[buffer.position()..].starts_with(&COMPOUND_STORAGE_SIGNATURE)
     {
-        return compound(&stream(value, data_position, data_length)?);
+        return compound(&stream(value, data_position, data_length)?, configs);
     }
     other(value, type_name, data_position, data_length)
 }
@@ -204,7 +205,7 @@ fn simple_package(
 
 /// `handleCompoundContent`: the compound document's root storage, as
 /// `handleEmbeddedOfficeDoc` hands it on.
-fn compound(data: &[u8]) -> Result<Ole, Thrown> {
+fn compound(data: &[u8], configs: &ParserConfigs) -> Result<Ole, Thrown> {
     let file = Ole2::open_stream(data).map_err(|unreadable| {
         Thrown::unported(format!(
             "an OLE object's compound document POI cannot open ({}), whose exception Tika \
@@ -212,8 +213,8 @@ fn compound(data: &[u8]) -> Result<Ole, Thrown> {
             unreadable.0
         ))
     })?;
-    match office_document(&file, file.root(), TikaMetadata::new(), None) {
-        Ok(Some(embedded)) => Ok(Ole::Storage(embedded)),
+    match office_document(&file, file.root(), TikaMetadata::new(), None, configs) {
+        Ok(Some(handed)) => Ok(Ole::Storage(handed)),
         Ok(None) => Ok(Ole::Nothing),
         Err(unported) => Err(Thrown::unported(unported.0)),
     }

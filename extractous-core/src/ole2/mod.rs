@@ -55,6 +55,8 @@ struct Property {
     /// The entries POI's property tree gives a directory, in its order.
     children: Vec<EntryId>,
     child_names: HashSet<Vec<u16>>,
+    /// How many directories lie between the root and the entry.
+    depth: usize,
 }
 
 /// An entry of the directory tree, by its index in the property table.
@@ -311,6 +313,7 @@ impl<'a> Ole2<'a> {
                     class_id: raw[0x50..0x60].try_into().expect("16 bytes"),
                     children: Vec::new(),
                     child_names: HashSet::new(),
+                    depth: 0,
                 }));
             }
         }
@@ -356,6 +359,7 @@ impl<'a> Ole2<'a> {
                 return Err(Unreadable("a directory has two entries of one name"));
             }
             parent.children.push(EntryId(index));
+            self.properties[index].as_mut().expect("a property").depth = depth;
             if kind != EntryKind::Document {
                 self.populate(index, depth + 1)?;
             }
@@ -424,6 +428,11 @@ impl<'a> Ole2<'a> {
     /// An entry's name, as a Java string decoded, unpaired surrogates replaced.
     pub(crate) fn name(&self, id: EntryId) -> String {
         String::from_utf16_lossy(&self.entry(id).name)
+    }
+
+    /// How many directories lie between the root and an entry: none for the root's entries.
+    pub(crate) fn depth(&self, id: EntryId) -> usize {
+        self.entry(id).depth
     }
 
     pub(crate) fn kind(&self, id: EntryId) -> EntryKind {

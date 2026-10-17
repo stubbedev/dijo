@@ -2,13 +2,13 @@
 //! reads, and the metadata `MP4Parser` writes of them once the boxes are read.
 
 use super::Event;
-use crate::formats::data_format::decimal::Rounding;
-use crate::formats::data_format::decimal_format::DecimalFormat;
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::pdf::jfloat::float_to_string;
+use crate::java;
+use crate::java::decimal::Rounding;
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::time::format_instant;
-use crate::java::{self, hash_set_order};
 
 /// `MAX_ERROR_MESSAGES`: how many distinct directory errors Tika reports.
 const MAX_ERROR_MESSAGES: usize = 100;
@@ -104,90 +104,19 @@ pub(super) struct Rational {
 }
 
 impl Rational {
-    fn double_value(self) -> f64 {
-        if self.numerator == 0 {
-            0.0
-        } else {
-            self.numerator as f64 / self.denominator as f64
-        }
-    }
-
-    fn is_integer(self) -> bool {
-        self.denominator == 1
-            || (self.denominator != 0 && self.numerator.wrapping_rem(self.denominator) == 0)
-            || (self.denominator == 0 && self.numerator == 0)
-    }
-
-    fn fraction(self) -> String {
-        if self.denominator < 0 {
-            format!(
-                "{}/{}",
-                self.numerator.wrapping_neg(),
-                self.denominator.wrapping_neg()
-            )
-        } else {
-            format!("{}/{}", self.numerator, self.denominator)
-        }
-    }
-
-    /// `getSimplifiedInstance`, `None` where its `GCD` never returns: where one of the two is
-    /// `Long.MIN_VALUE`, which stays negative, and the other neither 0 nor it.
-    fn simplified(self) -> Option<Self> {
-        let (mut numerator, mut denominator) = (self.numerator, self.denominator);
-        if denominator < 0 {
-            numerator = numerator.wrapping_neg();
-            denominator = denominator.wrapping_neg();
-        }
-        let (mut a, mut b) = (numerator.wrapping_abs(), denominator.wrapping_abs());
-        while a != 0 && b != 0 {
-            let (before_a, before_b) = (a, b);
-            if a > b {
-                a = a.wrapping_rem(b);
-            } else {
-                b = b.wrapping_rem(a);
-            }
-            if (a, b) == (before_a, before_b) {
-                return None;
-            }
-        }
-        let gcd = if a == 0 { b } else { a };
-        Some(Self {
-            numerator: numerator.wrapping_div(gcd),
-            denominator: denominator.wrapping_div(gcd),
-        })
-    }
-
-    /// `toSimpleString(true)`, as `Directory.getString` writes a rational; `None` where it
-    /// never returns.
-    pub(super) fn simple_string(self) -> Option<String> {
-        if self.denominator == 0 && self.numerator != 0 {
-            return Some(self.fraction());
-        }
-        if self.is_integer() {
-            return Some((self.double_value() as i32).to_string());
-        }
-        let simplified = self.simplified()?;
-        let decimal = java_double_to_string(simplified.double_value());
-        Some(if decimal.len() < 5 {
-            decimal
-        } else {
-            simplified.fraction()
-        })
+    /// The seconds the rational counts, none without a time scale.
+    fn seconds(self) -> Option<f64> {
+        (self.denominator != 0).then(|| self.numerator as f64 / self.denominator as f64)
     }
 }
 
-/// `handleDurationInSeconds`: the duration a rational's string gives, as `0.0#`.
-fn duration(seconds: &str) -> Option<String> {
-    let format = DecimalFormat::new("0.0#", Rounding::HalfEven).expect("the pattern compiles");
-    let value = match seconds.split_once('/') {
-        None => java::parse_double(seconds)?,
-        Some((numerator, denominator)) => {
-            let numerator = java::parse_long(numerator)?;
-            let denominator = java::parse_long(denominator).filter(|&value| value != 0)?;
-            numerator as f64 / denominator as f64
-        }
-    };
-    Some(format.format_f64(value))
+/// `handleDurationInSeconds`: the duration in seconds, as `0.0#`. Tika formats the rational's
+/// `toSimpleString`, which truncates a whole number of seconds to an `int` and may never end
+/// for a duration of `Long.MIN_VALUE` (#118).
+fn duration(seconds: f64) -> String {
+    DecimalFormat::new("0.0#", Rounding::HalfEven)
+        .expect("the pattern compiles")
+        .format_f64(seconds)
 }
 
 /// `MP4Parser`'s writing of the directories, in the order they were added: the movie's, then
@@ -227,7 +156,8 @@ pub(super) fn metadata(
     if has_sound && !has_video {
         events.push(Event::Set("Content-Type", "audio/mp4".to_owned()));
     }
-    for error in hash_set_order(errors) {
+    // In the order they were first met: Tika reports them in `HashSet` order (#118).
+    for error in errors {
         events.push(Event::Add(EXCEPTION_WARNING, error.to_owned()));
     }
 }
@@ -241,16 +171,8 @@ fn movie_metadata(movie: &Movie, events: &mut Vec<Event<'_>>) {
         events.push(Event::Set("dcterms:modified", format_instant(modified)));
     }
     brands(movie, events);
-    if let Some(duration) = movie
-        .duration_seconds
-        .map(|seconds| {
-            seconds
-                .simple_string()
-                .expect("a duration whose GCD never returns is deferred")
-        })
-        .and_then(|seconds| duration(&seconds))
-    {
-        events.push(Event::Set("xmpDM:duration", duration));
+    if let Some(seconds) = movie.duration_seconds.and_then(Rational::seconds) {
+        events.push(Event::Set("xmpDM:duration", duration(seconds)));
     }
     if let Some(latitude) = movie.latitude {
         events.push(Event::Set("geo:lat", java_double_to_string(latitude)));
@@ -266,34 +188,24 @@ fn movie_metadata(movie: &Movie, events: &mut Vec<Event<'_>>) {
     }
 }
 
-/// `handleBrands`: the type the first entry of `typesMap`, in its iteration order, whose
-/// brands hold the major brand names, else whose brands occur in the compatible brands, and
-/// the major brand as the compressor of audio.
+/// `handleBrands`: the type of `typesMap`, in its order, whose brands hold the major brand,
+/// else one of the compatible brands, and the major brand as the compressor of audio. Tika
+/// takes the types in `HashMap` order and finds a brand anywhere in the compatible brands joined
+/// by spaces, so `mp4` would match `mp41 ` and `M4A` across two brands (#118).
 fn brands(movie: &Movie, events: &mut Vec<Event<'_>>) {
     let major = movie.major_brand.as_deref();
-    let order = hash_set_order(TYPES.iter().map(|&(name, _)| name));
-    let brands_of = |name: &str| {
-        TYPES
-            .iter()
-            .find(|&&(type_name, _)| type_name == name)
-            .map_or(&[][..], |&(_, brands)| brands)
-    };
-    let joined = movie
-        .compatible_brands
-        .as_ref()
-        .map(|brands| brands.join(" "));
-    let found = order
+    let compatible = movie.compatible_brands.as_deref().unwrap_or_default();
+    let found = TYPES
         .iter()
-        .copied()
-        .find(|&name| major.is_some_and(|major| brands_of(name).contains(&major)))
+        .find(|(_, brands)| major.is_some_and(|major| brands.contains(&major)))
         .or_else(|| {
-            let joined = joined.as_deref()?;
-            order
-                .iter()
-                .copied()
-                .find(|&name| brands_of(name).iter().any(|brand| joined.contains(brand)))
+            TYPES.iter().find(|(_, brands)| {
+                compatible
+                    .iter()
+                    .any(|brand| brands.contains(&brand.as_str()))
+            })
         })
-        .unwrap_or(APPLICATION_MP4);
+        .map_or(APPLICATION_MP4, |&(name, _)| name);
     if found != APPLICATION_MP4 {
         events.push(Event::Set("Content-Type", found.to_owned()));
     }
@@ -353,31 +265,51 @@ fn video_metadata(video: &Video, events: &mut Vec<Event<'_>>) {
 mod tests {
     use super::*;
 
-    fn simple(numerator: i64, denominator: i64) -> Option<String> {
-        Rational {
-            numerator,
-            denominator,
-        }
-        .simple_string()
+    #[test]
+    fn types_files_by_whole_brands_in_declared_order() {
+        // Tika finds a brand anywhere in the compatible brands joined by spaces, taking the
+        // types in `HashMap` order (#118).
+        let content_type = |major: &str, compatible: &[&str]| {
+            let movie = Movie {
+                major_brand: Some(major.to_owned()),
+                compatible_brands: Some(compatible.iter().map(|&b| b.to_owned()).collect()),
+                ..Movie::default()
+            };
+            let mut events = Vec::new();
+            brands(&movie, &mut events);
+            events.into_iter().find_map(|event| match event {
+                Event::Set("Content-Type", value) => Some(value),
+                _ => None,
+            })
+        };
+        assert_eq!(content_type("isom", &["zM4A", " zzz"]), None);
+        assert_eq!(
+            content_type("isom", &["isom", "mp42", "M4A "]).as_deref(),
+            Some("audio/mp4")
+        );
+        assert_eq!(
+            content_type("mp42", &["M4V "]).as_deref(),
+            Some("video/mp4")
+        );
     }
 
     #[test]
-    fn writes_rationals_as_metadata_extractor_does() {
-        assert_eq!(simple(1070, 1000).as_deref(), Some("1.07"));
-        assert_eq!(simple(1000, 1000).as_deref(), Some("1"));
-        assert_eq!(simple(0, 0).as_deref(), Some("0"));
-        assert_eq!(simple(5, 0).as_deref(), Some("5/0"));
-        assert_eq!(simple(2730, 600).as_deref(), Some("4.55"));
-        assert_eq!(simple(1001, 30000).as_deref(), Some("1001/30000"));
-        assert_eq!(simple(i64::MIN, 1000), None);
-        assert_eq!(simple(i64::MIN, 1024).as_deref(), Some("-2147483648"));
-    }
-
-    #[test]
-    fn writes_durations_as_mp4_parser_does() {
-        assert_eq!(duration("4.55").as_deref(), Some("4.55"));
-        assert_eq!(duration("1001/30000").as_deref(), Some("0.03"));
-        assert_eq!(duration("1").as_deref(), Some("1.0"));
-        assert_eq!(duration("5/0"), None);
+    fn writes_durations_from_the_rational() {
+        let seconds = |numerator, denominator| {
+            Rational {
+                numerator,
+                denominator,
+            }
+            .seconds()
+        };
+        assert_eq!(seconds(2730, 600).map(duration).as_deref(), Some("4.55"));
+        assert_eq!(seconds(1001, 30000).map(duration).as_deref(), Some("0.03"));
+        assert_eq!(seconds(1000, 1000).map(duration).as_deref(), Some("1.0"));
+        assert_eq!(seconds(5, 0), None);
+        // Tika truncates whole seconds to an `int`, or never ends (#118).
+        assert_eq!(
+            seconds(i64::MIN, 1024).map(duration).as_deref(),
+            Some("-9007199254740992.0")
+        );
     }
 }

@@ -218,7 +218,8 @@ fn defers(input: &[u8]) -> Option<String> {
 
 fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
     let mut out = StringOut::default();
-    let chain = Chain::String {
+    // Tika's string chain, which leaves the blocks the parser writes where it writes them (#63).
+    let chain = Chain::TikaString {
         output: Output::Xml,
         max_length: 100_000,
     };

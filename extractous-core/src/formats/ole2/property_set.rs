@@ -2,6 +2,10 @@
 //! `Section` with its dictionary and properties, and each `Property` with the value
 //! `VariantSupport` makes of it, down to the bytes POI keeps of a type it does not convert and
 //! the exceptions it throws on bytes it cannot read.
+//!
+//! Unlike POI (#106), `VT_INT` and `VT_UINT` are converted to numbers as `VT_I4` and `VT_UI4`
+//! are, and a property of a type POI does not know is passed over within its own extent, where
+//! POI reads its length from past its type, into the property after it.
 
 use std::collections::BTreeMap;
 
@@ -35,7 +39,7 @@ const MAX_ARRAY_SCALARS: i32 = 100_000;
 const MAX_DICTIONARY_ENTRY: i32 = 0xFF_FFFF;
 
 /// Milliseconds from 1601-01-01, where file times count from, to 1970-01-01.
-const FILETIME_EPOCH_MILLIS: i64 = 11_644_473_600_000;
+pub(super) const FILETIME_EPOCH_MILLIS: i64 = 11_644_473_600_000;
 
 /// Why POI reads no further: the Java exception, by the class its callers catch, or what this
 /// port does not reproduce.
@@ -223,7 +227,7 @@ fn read_section(src: &[u8], offset: usize) -> Read<Section> {
     }
     let section_offset = off_fix;
     let mut reader = Reader::new(src, section_offset as usize);
-    let size = i64::from(reader.read_u32()?).min(src.len() as i64 - section_offset);
+    reader.read_u32()?;
     let property_count = reader.read_u32()? as i32;
     let mut offsets = OffsetIds::default();
     for _ in 0..property_count.max(0) {
@@ -249,19 +253,15 @@ fn read_section(src: &[u8], offset: usize) -> Read<Section> {
     }
     let last_id = offsets.by_id.keys().next_back().copied();
     let pairs: Vec<(u32, u32)> = offsets.by_offset.iter().map(|(&o, &i)| (o, i)).collect();
-    for (index, &(property_offset, id)) in pairs.iter().enumerate() {
+    for &(property_offset, id) in &pairs {
         if id == PID_CODEPAGE {
             continue;
         }
-        let end = pairs
-            .get(index + 1)
-            .map_or(size, |&(next, _)| i64::from(next));
-        let length = to_int(end - i64::from(property_offset))?;
         reader.set_position(i64::from(to_int(
             section_offset + i64::from(property_offset),
         )?))?;
         if id != PID_DICTIONARY {
-            let value = read_property(&mut reader, length, codepage)?;
+            let value = read_property(&mut reader, codepage)?;
             section.set(id, value);
             continue;
         }
@@ -271,7 +271,7 @@ fn read_section(src: &[u8], offset: usize) -> Read<Section> {
         }
         reader.set_position(mark)?;
         let id = PID_MAX.max(last_id.unwrap_or(0)).wrapping_add(1);
-        match read_property(&mut reader, length, codepage) {
+        match read_property(&mut reader, codepage) {
             Ok(value) => section.set(id, value),
             Err(Fault::Runtime) => {}
             Err(fault) => return Err(fault),
@@ -367,17 +367,16 @@ fn dictionary_entry(reader: &mut Reader<'_>, bytes: i32, codepage: i32) -> Read<
     Ok(name)
 }
 
-/// `new Property(id, stream, length, codepage)`: the value `VariantSupport.read` gives.
-fn read_property(reader: &mut Reader<'_>, length: i32, codepage: i32) -> Read<Option<Value>> {
+/// `new Property(id, stream, length, codepage)`: the value `VariantSupport.read` gives, or none
+/// for a type it does not know.
+fn read_property(reader: &mut Reader<'_>, codepage: i32) -> Read<Option<Value>> {
     let variant = reader.read_u32()? as i32;
     let start = reader.position();
     let typed = match read_value(reader, variant) {
         Ok(typed) => typed,
-        Err(Fault::UnsupportedOperation) => {
-            return Ok(Some(Value::Bytes(
-                reader.read_bounded(length, MAX_STRING_LENGTH)?,
-            )))
-        }
+        // POI keeps the property's length in bytes from past its type, 4 bytes into whatever
+        // follows the property (#106).
+        Err(Fault::UnsupportedOperation) => return Ok(None),
         Err(fault) => return Err(fault),
     };
     Ok(match typed {
@@ -491,12 +490,10 @@ fn read_value(reader: &mut Reader<'_>, variant: i32) -> Read<Typed> {
         vt::I2 => value(Value::Integer(i32::from(reader.read_i16()?))),
         vt::UI2 => value(Value::Integer(i32::from(reader.read_u16()?))),
         vt::I4 => value(Value::Integer(reader.read_i32()?)),
-        vt::INT => {
-            reader.read_i32()?;
-            Ok(Typed::Unconverted)
-        }
-        vt::UI4 => value(Value::Long(i64::from(reader.read_u32()?))),
-        vt::UINT | vt::ERROR => {
+        // POI keeps the bytes of `VT_INT` and `VT_UINT` (#106).
+        vt::INT => value(Value::Integer(reader.read_i32()?)),
+        vt::UI4 | vt::UINT => value(Value::Long(i64::from(reader.read_u32()?))),
+        vt::ERROR => {
             reader.read_u32()?;
             Ok(Typed::Unconverted)
         }
@@ -667,13 +664,6 @@ pub(super) fn filetime_to_millis(filetime: i64) -> i64 {
     ((filetime as u64) / 10_000) as i64 - FILETIME_EPOCH_MILLIS
 }
 
-/// `Filetime.dateToFileTime`, wrapping as `BigInteger.longValue` does.
-pub(super) fn millis_to_filetime(millis: i64) -> i64 {
-    millis
-        .wrapping_add(FILETIME_EPOCH_MILLIS)
-        .wrapping_mul(10_000)
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -801,19 +791,26 @@ pub(super) mod tests {
         assert_eq!(section.get(5), Some(&Value::Long(i64::from(u32::MAX))));
         assert_eq!(section.get(6), Some(&Value::Date(0)));
         assert_eq!(section.get(7), Some(&Value::Boolean(true)));
-        assert_eq!(section.get(8), Some(&Value::Bytes(vec![7, 0, 0, 0])));
-        assert_eq!(
-            section.get(9),
-            Some(&Value::Bytes(vec![1, 2, 0, 0, 3, 0, 0, 0])),
-            "an unknown type keeps the property's length from after its type"
-        );
+        assert_eq!(section.get(8), Some(&Value::Integer(7)));
+        assert_eq!(section.get(9), None, "an unknown type is passed over");
         assert_eq!(section.get(10), Some(&Value::Integer(5)));
     }
 
     #[test]
-    fn fails_where_an_unknown_type_reads_past_the_end() {
-        let stream = property_set(SUMMARY_INFORMATION, &[(9, typed(0x7777, &[1, 2]))]);
-        assert_eq!(read(&stream), Ok(None));
+    fn passes_over_an_unknown_type() {
+        let stream = property_set(
+            SUMMARY_INFORMATION,
+            &[
+                (2, lpstr("kept")),
+                (9, typed(0x7777, &[1, 2])),
+                (11, typed(vt::UINT, &u32::MAX.to_le_bytes())),
+            ],
+        );
+        let set = read(&stream).unwrap().unwrap();
+        let section = set.first_section();
+        assert_eq!(section.get(2), Some(&Value::String("kept".into())));
+        assert_eq!(section.get(9), None);
+        assert_eq!(section.get(11), Some(&Value::Long(i64::from(u32::MAX))));
     }
 
     #[test]
@@ -859,10 +856,6 @@ pub(super) mod tests {
         assert_eq!(
             filetime_to_millis(-1),
             (u64::MAX / 10_000) as i64 - FILETIME_EPOCH_MILLIS
-        );
-        assert_eq!(
-            millis_to_filetime(filetime_to_millis(123_456_789)),
-            123_450_000
         );
     }
 }

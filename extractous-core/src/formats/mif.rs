@@ -1,7 +1,11 @@
 //! FrameMaker Interchange Format files, as Tika's `MIFParser` reads them: the lines read as
 //! `MIFExtractor` matches them into elements, the text of each `String` statement in a `Para`
-//! written as a paragraph, escaped once more as `StringEscapeUtils.escapeXml` escapes it, and the
-//! pages counted by type.
+//! written as a paragraph, and the pages counted by type.
+//!
+//! The text is written as it is. Tika escapes it with `StringEscapeUtils.escapeXml` before the
+//! XHTML serializer escapes it again, so `&` reads `&amp;` in plain text; and it types every
+//! file by the first of its types in `HashSet` order, where the native parser keeps the type
+//! detected (#118).
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
@@ -53,8 +57,11 @@ fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
     let metadata = xhtml.metadata_mut();
     auto_detect_reader::set_metadata(&reader.detection, metadata);
     metadata.set("Content-Encoding", reader.detection.decode_as.name());
-    let first = java::hash_set_order(MEDIA_TYPES)[0];
-    metadata.set("Content-Type", first);
+    let detected = content_type.filter(|detected| MEDIA_TYPES.contains(&detected.as_str()));
+    metadata.set(
+        "Content-Type",
+        detected.unwrap_or_else(|| MEDIA_TYPES[0].to_owned()),
+    );
     let mut handler = Mif {
         xhtml: &mut *xhtml,
         in_content: false,
@@ -103,22 +110,6 @@ fn self_tag(line: &str) -> Option<(&str, &str)> {
     Some((name, &after[..close]))
 }
 
-/// `StringEscapeUtils.escapeXml` of commons-lang3: the five XML entities.
-fn escape_xml(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '"' => escaped.push_str("&quot;"),
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '\'' => escaped.push_str("&apos;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
 /// `MIFExtractor.parse`: each line an open tag, a close tag or a statement on one line.
 fn extract(text: &str, handler: &mut Mif<'_, '_>) -> Result<(), Failure> {
     let mut open: Vec<String> = Vec::new();
@@ -142,7 +133,7 @@ fn extract(text: &str, handler: &mut Mif<'_, '_>) -> Result<(), Failure> {
             handler.start_element(name)?;
             let value = value.strip_prefix('`').unwrap_or(value);
             let value = value.strip_suffix('\'').unwrap_or(value);
-            handler.characters(&escape_xml(value))?;
+            handler.characters(value)?;
             handler.end_element(name)?;
         }
     }
@@ -210,12 +201,64 @@ impl Mif<'_, '_> {
     }
 }
 
+/// A native result as Tika's path writes it (#118): typed `application/x-mif`, the first of
+/// the parser's types in `HashSet` order, and the text of each paragraph escaped once more.
+#[cfg(test)]
+pub(crate) fn as_tika_writes_it(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    _: &crate::formats::parity::ComparedMetadata,
+) {
+    for (name, values) in metadata.iter_mut() {
+        if name == "Content-Type" {
+            *values = vec!["application/x-mif".to_owned()];
+        }
+    }
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('"', "&amp;quot;")
+            .replace('\'', "&amp;apos;")
+    };
+    let xml = text.starts_with("<?xml") || text.starts_with("<html");
+    let Some(body) = text.find("<body").filter(|_| xml) else {
+        // Plain text: escaped once.
+        *text = text
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;");
+        return;
+    };
+    let content_type = r#"<meta name="Content-Type" content=""#;
+    if let Some(start) = text.find(content_type) {
+        let start = start + content_type.len();
+        let end = start + text[start..].find('"').expect("the attribute's end");
+        text.replace_range(start..end, "application/x-mif");
+    }
+    let mut rewritten = text[..body].to_owned();
+    let mut rest = &text[body..];
+    while let Some(start) = rest.find('<') {
+        rewritten.push_str(&escape(&rest[..start]));
+        let end = start
+            + rest[start..]
+                .find('>')
+                .map_or(rest.len() - start, |end| end + 1);
+        rewritten.push_str(&rest[start..end]);
+        rest = &rest[end..];
+    }
+    rewritten.push_str(&escape(rest));
+    *text = rewritten;
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
+    };
 
     #[test]
     fn matches_lines_as_mif_extractor_does() {
@@ -229,7 +272,6 @@ mod tests {
         assert_eq!(self_tag("<String `a>b'>"), Some(("String", "`a>b'")));
         assert_eq!(self_tag("<String>"), None);
         assert_eq!(self_tag("<A \u{2028}>"), None);
-        assert_eq!(escape_xml("a<'b'>&\""), "a&lt;&apos;b&apos;&gt;&amp;&quot;");
     }
 
     const MIF: &str = "<MIFFile 2015> # Generated by FrameMaker\n\
@@ -242,6 +284,16 @@ mod tests {
 > # end of TextFlow\n> # end of nothing\n# End of MIFFile\n";
 
     #[test]
+    fn writes_text_as_it_is() {
+        // Tika escapes it once before the serializer escapes it again (#118).
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(MIF.as_bytes())
+            .unwrap();
+        assert!(text.contains("Fisk & \u{f8}l <i dag>"), "{text}");
+        assert!(MEDIA_TYPES.contains(&metadata["Content-Type"][0].as_str()));
+    }
+
+    #[test]
     fn extracts_mif_files_as_tikas_path_does() {
         let scratch = Scratch::new("mif");
         let utf8 = scratch.write("frokost.mif", MIF.as_bytes());
@@ -250,9 +302,10 @@ mod tests {
         let (parsed, deferred) = documents(&MifParser, &[scratch.directory()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 2, "{parsed:?}");
-        assert_same_as_tika(
+        assert_same_as_tika_rewriting(
             &[utf8.as_path(), latin1.as_path()],
             "org.apache.tika.parser.mif.MIFParser",
+            as_tika_writes_it,
         );
     }
 
@@ -263,6 +316,6 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 2, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, MifParser.tika_name());
+        assert_same_as_tika_rewriting(&paths, MifParser.tika_name(), as_tika_writes_it);
     }
 }

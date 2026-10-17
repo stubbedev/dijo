@@ -78,6 +78,8 @@ jobs:
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
           "$binary" quality/corpus/arabic-scan-300dpi.png | grep -q "المنارة"
+          "$binary" --metadata quality/corpus/prose-scan-150dpi.png 2>&1 >/dev/null \
+            | grep -qx "tk:parsed-by: extractous::PreparingOcrParser"
           "$binary" test_files/documents/photo.heic | grep -q "Lighthouse"
           grep -q "## tesseract" "$RUNNER_TEMP/licenses.txt"
       - name: Check that the Windows executable carries the Visual C++ runtime it needs

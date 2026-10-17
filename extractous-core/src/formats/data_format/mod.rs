@@ -1,25 +1,27 @@
 //! Cell values as Tika's `TikaExcelDataFormatter` writes them: POI's `DataFormatter` in the
-//! `en_US` locale the native image formats in, with Tika's `General` format of 15 significant
-//! digits, dates in Java's default time zone and the 1900 date system, as the three-argument
-//! `formatRawCellContents` Tika's sheet handler calls always uses.
+//! `en_US` locale the native image formats in, with a general format of 15 significant digits
+//! for `General` in any case, dates as their cells hold them, in the document's date system.
 //!
-//! The formats a format string makes are cached by it, as `DataFormatter` caches them, so a
-//! format made for one value is the one later values of that string get, and a date format
-//! keeps the last cell value it was given.
+//! Each value is formatted by a format made for a value of its kind, a date or a number, and
+//! a date format is given each value it formats.
+//!
+//! Tika departs from this (#92): it gives its general format to `General` and `general` alone,
+//! with ten digits after the point, writes dates in Java's default time zone and in the 1900
+//! date system whatever the document's, and caches one format per format string, made for the
+//! first value it formats, its date formats keeping the last value they were given.
 
 mod cell_format;
 mod date_format;
-pub(crate) mod decimal;
-pub(crate) mod decimal_format;
 mod fraction;
 mod number_text;
-mod printf;
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
+use crate::java::decimal::{BigDecimal, Rounding};
+use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::simple_date_format::Unported;
 use crate::java::time::TimeZone;
@@ -28,8 +30,6 @@ use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 pub(crate) use date_format::is_a_date_format;
 use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter};
-use decimal::{BigDecimal, Rounding};
-use decimal_format::DecimalFormat;
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.
@@ -132,8 +132,7 @@ const PHONE_FORMATS: [&str; 4] = [
     "###-####;(###) ###-####",
 ];
 const SSN_FORMATS: [&str; 2] = ["000\\-00\\-0000", "000-00-0000"];
-/// The format strings `TikaExcelDataFormatter` gives Tika's general format.
-const TIKA_GENERAL_FORMATS: [&str; 2] = ["General", "general"];
+
 /// What `DataFormatter` makes of a fraction format it finds no fraction in.
 const DEFAULT_FRACTION_WHOLE_PART: &str = "#";
 const DEFAULT_FRACTION_PART: &str = "#/##";
@@ -295,83 +294,50 @@ impl ScaledDecimalFormat {
     }
 }
 
-/// A general number format: Tika's or POI's.
+/// The general number format, `TikaExcelGeneralFormat`: 15 significant digits, the most a
+/// double holds. Tika's has only ten digits after the point, and is given to `General` and
+/// `general` alone, where other spellings get POI's `ExcelGeneralNumberFormat` of ten
+/// significant digits (#92).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum General {
-    /// `TikaExcelGeneralFormat`: 15 significant digits.
-    Tika,
-    /// `ExcelGeneralNumberFormat`, `DataFormatter`'s general number format: 10.
-    Excel,
-}
+struct General;
 
 impl General {
-    fn formats(self) -> &'static GeneralFormats {
-        match self {
-            General::Tika => &TIKA_GENERAL,
-            General::Excel => &EXCEL_GENERAL,
-        }
+    fn is_scientific(absolute: f64) -> bool {
+        (absolute > 0.0 && absolute <= 1e-15) || absolute > 1e15
     }
 
-    fn is_scientific(self, absolute: f64) -> bool {
-        let tiny = absolute > 0.0
-            && match self {
-                General::Tika => absolute <= 1e-15,
-                General::Excel => absolute <= 1e-10,
-            };
-        tiny || match self {
-            General::Tika => absolute > 1e15,
-            General::Excel => absolute >= 1e11,
-        }
-    }
-
-    fn is_whole(self, value: f64, absolute: f64) -> bool {
-        value.floor() == value
-            || match self {
-                General::Tika => absolute > 1e15,
-                General::Excel => absolute >= 1e10,
-            }
-    }
-
-    /// The value at the format's significant digits.
-    fn round(self, value: f64) -> Result<f64, FormatError> {
-        let non_finite = || FormatError::Thrown("A BigDecimal of a non-finite double".to_owned());
-        Ok(match self {
-            General::Tika => BigDecimal::from_f64(value)
-                .ok_or_else(non_finite)?
-                .round_to_precision(15, Rounding::HalfUp),
-            General::Excel => BigDecimal::value_of(value)
-                .ok_or_else(non_finite)?
-                .round_to_precision(10, Rounding::HalfUp),
-        }
-        .to_f64())
+    fn is_whole(value: f64, absolute: f64) -> bool {
+        value.floor() == value || absolute > 1e15
     }
 
     /// `format(Object)`: scientific for the very large and very small, whole numbers whole, and
-    /// others at their significant digits.
-    fn format(self, input: Input) -> Result<String, FormatError> {
-        let formats = self.formats();
+    /// others at their 15 significant digits.
+    fn format(input: Input) -> Result<String, FormatError> {
         if let Input::Date(_) = input {
-            return input.format_with(&formats.integer);
+            return input.format_with(&GENERAL_INTEGER);
         }
         let value = input.double_value()?;
         if value.is_infinite() || value.is_nan() {
-            return input.format_with(&formats.integer);
+            return input.format_with(&GENERAL_INTEGER);
         }
         let absolute = value.abs();
-        if self.is_scientific(absolute) {
-            return input.format_with(&formats.scientific);
+        if Self::is_scientific(absolute) {
+            return input.format_with(&GENERAL_SCIENTIFIC);
         }
-        if self.is_whole(value, absolute) {
-            return input.format_with(&formats.integer);
+        if Self::is_whole(value, absolute) {
+            return input.format_with(&GENERAL_INTEGER);
         }
-        Ok(formats.decimal.format_f64(self.round(value)?))
+        let rounded = BigDecimal::from_f64(value)
+            .ok_or_else(|| FormatError::Thrown("A BigDecimal of a non-finite double".to_owned()))?
+            .round_to_precision(15, Rounding::HalfUp);
+        Ok(GENERAL_DECIMAL.format_decimal(&rounded))
     }
 }
 
 /// A format `DataFormatter` makes for a format string.
 #[derive(Debug, Clone, PartialEq)]
 enum Format {
-    General(General),
+    General,
     ZipPlusFour,
     Phone,
     SocialSecurityNumber,
@@ -434,37 +400,28 @@ impl Input<'_> {
     }
 }
 
-/// The formats of Tika's and POI's general formats.
-struct GeneralFormats {
-    scientific: DecimalFormat,
-    integer: DecimalFormat,
-    decimal: DecimalFormat,
+fn half_up(pattern: &str) -> DecimalFormat {
+    DecimalFormat::new(pattern, Rounding::HalfUp).expect("a valid pattern")
 }
 
-static TIKA_GENERAL: LazyLock<GeneralFormats> =
-    LazyLock::new(|| general_formats("0.##############E0"));
-static EXCEL_GENERAL: LazyLock<GeneralFormats> = LazyLock::new(|| general_formats("0.#####E0"));
+/// The general format's patterns: for the very large and very small, for whole numbers, and
+/// for the rest, with as many digits after the point as 15 significant digits above 1e-15 take.
+static GENERAL_SCIENTIFIC: LazyLock<DecimalFormat> =
+    LazyLock::new(|| half_up("0.##############E0"));
+static GENERAL_INTEGER: LazyLock<DecimalFormat> = LazyLock::new(|| half_up("#"));
+static GENERAL_DECIMAL: LazyLock<DecimalFormat> =
+    LazyLock::new(|| half_up("#.##############################"));
 static NINE_DIGITS: LazyLock<DecimalFormat> =
     LazyLock::new(|| DecimalFormat::new("000000000", Rounding::HalfEven).expect("a valid pattern"));
 static TEN_DIGITS: LazyLock<DecimalFormat> = LazyLock::new(|| {
     DecimalFormat::new("##########", Rounding::HalfEven).expect("a valid pattern")
 });
 
-fn general_formats(scientific: &str) -> GeneralFormats {
-    let format =
-        |pattern: &str| DecimalFormat::new(pattern, Rounding::HalfUp).expect("a valid pattern");
-    GeneralFormats {
-        scientific: format(scientific),
-        integer: format("#"),
-        decimal: format("#.##########"),
-    }
-}
-
 impl Format {
-    /// `format(Object)`.
-    fn format(&self, input: Input, zone: &TimeZone) -> Result<String, FormatError> {
+    /// `format(Object)` of `input`, made of the cell value `value`.
+    fn format(&self, input: Input, value: f64, zone: &TimeZone) -> Result<String, FormatError> {
         match self {
-            Format::General(general) => general.format(input),
+            Format::General => General::format(input),
             Format::ZipPlusFour => {
                 let digits = input.format_with(&NINE_DIGITS)?;
                 Ok(format!(
@@ -483,7 +440,7 @@ impl Format {
                 ))
             }
             Format::Phone => phone(&input.format_with(&TEN_DIGITS)?),
-            Format::Date(formatter) => formatter.format(input.long_value(), zone),
+            Format::Date(formatter) => formatter.format(value, input.long_value(), zone),
             Format::Fraction(fraction) => fraction.format(input.double_value()?),
             Format::Decimal(scaled) => match (input, scaled.divider) {
                 (Input::Date(_), Some(_)) => Err(FormatError::Thrown(
@@ -535,9 +492,9 @@ fn phone(digits: &str) -> Result<String, FormatError> {
 
 /// What `getFormat` chose for a value.
 enum Chosen {
-    /// A cached format, by its format string.
+    /// A cached format, by its key.
     Cached(String),
-    /// The general number format, `DataFormatter`'s own, uncached.
+    /// The general number format.
     General,
     /// The text `CellFormat` gave, which `CellFormatResultWrapper` writes trimmed.
     Text(String),
@@ -545,28 +502,35 @@ enum Chosen {
     None,
 }
 
-/// `TikaExcelDataFormatter`, or POI's own `DataFormatter`, for one document, with the formats it
-/// has made.
+/// What a format string is cached under: a format made for dates under a key of its own. POI
+/// caches one format per string, made for the first value it formats, so a later value gets
+/// the format made for another: a date one for a number, or a number one for a date (#92).
+fn cache_key(format: &str, date: bool) -> String {
+    if date {
+        format!("{format}\u{0}date")
+    } else {
+        format.to_owned()
+    }
+}
+
+/// Cell values as text, for one document, with the formats it has made: POI's `DataFormatter`
+/// as Tika's `TikaExcelDataFormatter` extends it.
 pub(crate) struct DataFormatter {
-    zone: &'static TimeZone,
+    /// The time zone dates are written in: UTC, so a date is written as its cell holds it.
+    /// Tika writes them in Java's default time zone, where a time a clock skips becomes
+    /// another (#92).
+    zone: TimeZone,
+    /// Whether the document counts its dates from 1904, as Mac Excel's did. Tika counts them
+    /// from 1900 whatever the document says (#92).
+    date_1904: bool,
     formats: HashMap<String, Format>,
     cell_formats: HashMap<String, Result<CellFormat, String>>,
 }
 
 impl DataFormatter {
-    /// `TikaExcelDataFormatter`, writing dates in `zone`, Java's default time zone.
-    pub(crate) fn new(zone: &'static TimeZone) -> Self {
-        let mut formatter = Self::poi(zone);
-        for format in TIKA_GENERAL_FORMATS {
-            formatter
-                .formats
-                .insert(format.to_owned(), Format::General(General::Tika));
-        }
-        formatter
-    }
-
-    /// POI's `DataFormatter`, as `HSSFDataFormatter` makes it, writing dates in `zone`.
-    pub(crate) fn poi(zone: &'static TimeZone) -> Self {
+    /// A formatter for a document that counts its dates from 1904 when `date_1904`, and from
+    /// 1900 otherwise.
+    pub(crate) fn new(date_1904: bool) -> Self {
         let mut formats = HashMap::new();
         for format in ZIP_FORMATS {
             formats.insert(format.to_owned(), Format::ZipPlusFour);
@@ -578,14 +542,20 @@ impl DataFormatter {
             formats.insert(format.to_owned(), Format::SocialSecurityNumber);
         }
         Self {
-            zone,
+            zone: TimeZone::fixed(0),
+            date_1904,
             formats,
             cell_formats: HashMap::new(),
         }
     }
 
-    /// `formatRawCellContents(value, formatIndex, formatString)`: the text of a number cell; an
-    /// error where Java throws, for which Tika writes the cell's raw value.
+    /// Counts the document's dates from 1904 when `date_1904`, and from 1900 otherwise.
+    pub(crate) fn set_date_1904(&mut self, date_1904: bool) {
+        self.date_1904 = date_1904;
+    }
+
+    /// `formatRawCellContents(value, formatIndex, formatString, use1904Windowing)`: the text of
+    /// a number cell; an error where Java throws, for which Tika writes the cell's raw value.
     pub(crate) fn format_raw(
         &mut self,
         value: f64,
@@ -594,7 +564,7 @@ impl DataFormatter {
     ) -> Result<String, FormatError> {
         if is_a_date_format(index, format) && is_valid_excel_date(value) {
             let chosen = self.get_format(value, index, format)?;
-            let instant = java_date(value, self.zone).ok_or_else(|| {
+            let instant = java_date(value, &self.zone, self.date_1904).ok_or_else(|| {
                 FormatError::Thrown("A valid Excel date has no Java date".to_owned())
             })?;
             return match chosen {
@@ -602,14 +572,10 @@ impl DataFormatter {
                 Chosen::None => Err(FormatError::Unported(
                     "a date in the default format, which writes its time zone's name",
                 )),
-                Chosen::General => General::Excel.format(Input::Date(instant)),
+                Chosen::General => General::format(Input::Date(instant)),
                 Chosen::Cached(key) => {
-                    let zone = self.zone;
                     let format = self.cached(&key)?;
-                    if let Format::Date(formatter) = format {
-                        formatter.date_to_be_formatted = value;
-                    }
-                    format.format(Input::Date(instant), zone)
+                    format.format(Input::Date(instant), value, &self.zone)
                 }
             };
         }
@@ -624,12 +590,11 @@ impl DataFormatter {
             })?;
             Input::Decimal(&decimal)
         };
-        let zone = self.zone;
         let result = match chosen {
             Chosen::None => return Ok(java_double_to_string(value)),
             Chosen::Text(text) => text,
-            Chosen::General => General::Excel.format(input)?,
-            Chosen::Cached(key) => self.cached(&key)?.format(input, zone)?,
+            Chosen::General => General::format(input)?,
+            Chosen::Cached(key) => self.cached(&key)?.format(input, value, &self.zone)?,
         };
         let lower = format.to_lowercase();
         if (lower.contains("general") || lower.contains("e+0"))
@@ -641,13 +606,13 @@ impl DataFormatter {
         Ok(result)
     }
 
-    fn cached(&mut self, key: &str) -> Result<&mut Format, FormatError> {
+    fn cached(&self, key: &str) -> Result<&Format, FormatError> {
         self.formats
-            .get_mut(key)
+            .get(key)
             .ok_or_else(|| FormatError::Thrown(format!("The format {key:?} was not cached")))
     }
 
-    /// `getFormat(cellValue, formatIndex, formatStr, false)`.
+    /// `getFormat(cellValue, formatIndex, formatStr, use1904Windowing)`.
     fn get_format(&mut self, value: f64, index: i32, format: &str) -> Result<Chosen, FormatError> {
         let format = format.replace("\\%", "'%'");
         let semicolons = format.find(';').zip(format.rfind(';'));
@@ -660,19 +625,23 @@ impl DataFormatter {
                 }
             }
         }
-        if self.formats.contains_key(&format) {
-            return Ok(Chosen::Cached(format));
+        let key = cache_key(
+            &format,
+            is_a_date_format(index, &format) && is_valid_excel_date(value),
+        );
+        if self.formats.contains_key(&key) {
+            return Ok(Chosen::Cached(key));
         }
         if format.eq_ignore_ascii_case("General") || format == "@" {
             return Ok(Chosen::General);
         }
         let created = match self.create_format(value, index, &format)? {
-            Created::General => Format::General(General::Excel),
+            Created::General => Format::General,
             Created::Format(created) => created,
             Created::None => return Ok(Chosen::None),
         };
-        self.formats.insert(format.clone(), created);
-        Ok(Chosen::Cached(format))
+        self.formats.insert(key.clone(), created);
+        Ok(Chosen::Cached(key))
     }
 
     fn apply_cell_format(
@@ -688,11 +657,11 @@ impl DataFormatter {
             .as_ref()
             .map_err(|reason| FormatError::Thrown(reason.clone()))?;
         let input = if value != 0.0 && is_a_date_format(index, format) {
-            java_date(value, self.zone).map(CellValue::Date)
+            java_date(value, &self.zone, self.date_1904).map(CellValue::Date)
         } else {
             Some(CellValue::Number(value))
         };
-        cell_format.apply(input, self.zone)
+        cell_format.apply(input, &self.zone)
     }
 
     /// `createFormat(cellValue, formatIndex, sFormat)`.
@@ -950,18 +919,42 @@ mod tests {
         text
     }
 
+    /// Whether the text of `value` departs from Java's `expected` as the port means it to
+    /// (#92): a negative number in a date format, which Java formats with the date format it
+    /// cached for a value before, and which is no date, so the port formats it as a number; or
+    /// a number in the general format, which the port writes to 15 significant digits where
+    /// Java writes it to fewer, ten after the point or, in spellings of `General` other than
+    /// `General` and `general`, in `@` and in formats that do not compile, POI's of ten
+    /// significant digits, six in scientific notation.
+    fn departs(value: f64, index: i32, format: &str, actual: &str, expected: &str) -> bool {
+        if value < 0.0 && is_a_date_format(index, format) {
+            return true;
+        }
+        let general = DataFormatter::new(false)
+            .format_raw(value, 0, "General")
+            .unwrap()
+            .replacen("E+", "E", 1);
+        let number = |text: &str| text.replacen("E+", "E", 1).parse::<f64>().ok();
+        match (number(actual), number(expected)) {
+            (Some(ours), Some(java)) => {
+                actual.replacen("E+", "E", 1) == general
+                    && (ours - java).abs() <= 5e-6 * ours.abs() + 5e-11
+            }
+            _ => false,
+        }
+    }
+
     #[test]
     fn formats_as_tika_excel_data_formatter_does() {
         use std::io::Read;
-        static COPENHAGEN: LazyLock<TimeZone> =
-            LazyLock::new(|| crate::java::time::tests::zone("Europe/Copenhagen"));
         let mut text = String::new();
         flate2::read::GzDecoder::new(FORMATS)
             .read_to_string(&mut text)
             .unwrap();
         let mut differences = Vec::new();
+        let mut departed = 0;
         let mut group = None;
-        let mut formatter = DataFormatter::new(&COPENHAGEN);
+        let mut formatter = DataFormatter::new(false);
         let mut count = 0;
         for line in text.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
@@ -970,7 +963,7 @@ mod tests {
             };
             if group != Some(*number) {
                 group = Some(*number);
-                formatter = DataFormatter::new(&COPENHAGEN);
+                formatter = DataFormatter::new(false);
             }
             let format = unescape(format);
             let value = f64::from_bits(u64::from_str_radix(bits, 16).unwrap());
@@ -981,18 +974,60 @@ mod tests {
                 Err(FormatError::Unported(what)) => format!("!unported {what}"),
             };
             count += 1;
-            if actual != expected {
-                differences.push(format!(
-                    "{format:?} {value:e}: {actual:?}, Java {expected:?}"
-                ));
+            if actual == expected {
+                continue;
             }
+            let index: i32 = index.parse().unwrap();
+            if departs(value, index, &format, &actual, &expected) {
+                departed += 1;
+                continue;
+            }
+            differences.push(format!(
+                "{format:?} {value:e}: {actual:?}, Java {expected:?}"
+            ));
         }
         assert!(count > 9000, "formats.tsv has only {count} cases");
+        assert!(departed < 500, "{departed} cases depart from Java's");
         assert!(
             differences.is_empty(),
             "{} of {count} differ:\n{}",
             differences.len(),
             differences.join("\n")
+        );
+    }
+
+    /// Each value is formatted from its own value, `General` in any case to 15 significant
+    /// digits, and dates in the document's date system (#92).
+    #[test]
+    fn formats_each_value_as_it_is() {
+        let mut formatter = DataFormatter::new(false);
+        let third = 1.0 / 3.0;
+        for general in ["General", "GENERAL", "@"] {
+            assert_eq!(
+                formatter.format_raw(third, 164, general).unwrap(),
+                "0.333333333333333"
+            );
+        }
+        assert_eq!(
+            formatter
+                .format_raw(0.000123456789012345, 0, "General")
+                .unwrap(),
+            "0.000123456789012345"
+        );
+        assert_eq!(
+            formatter.format_raw(45000.0, 164, "yyyy-mm-dd").unwrap(),
+            "2023-03-15"
+        );
+        assert_eq!(
+            formatter.format_raw(-1.0, 164, "yyyy-mm-dd").unwrap(),
+            "-1.0"
+        );
+        assert_eq!(formatter.format_raw(1.5, 164, "[h]:mm").unwrap(), "36:00");
+        assert_eq!(formatter.format_raw(0.5, 164, "[h]:mm").unwrap(), "12:00");
+        let mut formatter = DataFormatter::new(true);
+        assert_eq!(
+            formatter.format_raw(45000.0, 164, "yyyy-mm-dd").unwrap(),
+            "2027-03-16"
         );
     }
 

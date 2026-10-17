@@ -30,14 +30,14 @@ use properties::{PropertyMap, PropertyMaps};
 use query::Sql;
 
 use crate::config::ParserConfigs;
-use crate::formats::data_format::decimal::{BigDecimal, Rounding};
-use crate::formats::data_format::decimal_format::{DecimalFormat, ROOT_CURRENCY};
 use crate::formats::embedded::{ParseContext, Wrapping};
 use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::Embedded;
+use crate::formats::ole2::{Embedded, Handed};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, Declined, Deferral, Failure, Opened, Parser, Prepared, StringOut};
+use crate::java::decimal::{BigDecimal, Rounding};
+use crate::java::decimal_format::{DecimalFormat, ROOT_CURRENCY};
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::TimeZone;
@@ -117,12 +117,13 @@ enum Cell {
     Text(String),
     /// A binary column's bytes, or the document an OLE object holds, handed on bare.
     Resource(Embedded),
-    /// The storage of a compound document an OLE object holds, handed on in a package entry.
-    Storage(Embedded),
+    /// What `handleEmbeddedOfficeDoc` hands on of the compound document an OLE object holds,
+    /// in a package entry.
+    Storage(Handed),
 }
 
 impl Extraction {
-    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let metadata = xhtml.metadata_mut();
         for entry in &self.metadata {
             match entry {
@@ -135,7 +136,7 @@ impl Extraction {
                 }
             }
         }
-        for table in &self.tables {
+        for table in self.tables {
             xhtml.start_element_with("table", &[("name", &table.name)])?;
             xhtml.start_element("thead")?;
             xhtml.start_element("tr")?;
@@ -147,23 +148,19 @@ impl Extraction {
             xhtml.end_element("tr")?;
             xhtml.end_element("thead")?;
             xhtml.start_element("tbody")?;
-            for row in &table.rows {
+            for row in table.rows {
                 xhtml.start_element("tr")?;
                 for cell in row {
                     xhtml.start_element("td")?;
                     match cell {
-                        Cell::Text(text) => xhtml.characters(text)?,
+                        Cell::Text(text) => xhtml.characters(&text)?,
                         Cell::Resource(document) => xhtml.parse_embedded_opened(
                             &document.data,
                             &document.metadata,
                             Wrapping::Bare,
                             Opened::Alone,
                         )?,
-                        Cell::Storage(document) => xhtml.parse_embedded(
-                            &document.data,
-                            &document.metadata,
-                            Wrapping::PackageEntry,
-                        )?,
+                        Cell::Storage(handed) => handed.write(xhtml, Wrapping::PackageEntry)?,
                     }
                     xhtml.end_element("td")?;
                 }
@@ -172,9 +169,9 @@ impl Extraction {
             xhtml.end_element("tbody")?;
             xhtml.end_element("table")?;
         }
-        for sql in &self.queries {
+        for sql in self.queries {
             xhtml.start_element_with("div", &[("type", "sqlQuery")])?;
-            xhtml.characters(sql)?;
+            xhtml.characters(&sql)?;
             xhtml.end_element("div")?;
         }
         Ok(())
@@ -407,7 +404,7 @@ fn table_content(
             cells.push(match column.data_type {
                 DataType::Ole => match value {
                     None => Cell::Text(String::new()),
-                    Some(Value::Binary(bytes)) => match ole::read(bytes) {
+                    Some(Value::Binary(bytes)) => match ole::read(bytes, configs) {
                         Ok(Ole::Nothing) => Cell::Text(String::new()),
                         Ok(Ole::Link(path)) => Cell::Text(path),
                         Ok(Ole::Resource(document)) => Cell::Resource(document),

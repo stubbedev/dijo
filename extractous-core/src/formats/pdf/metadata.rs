@@ -9,9 +9,9 @@ use super::content::parse_literal;
 use super::cos::{name_string, text_string, Pdf};
 use super::jfloat;
 use super::recording::Recording;
-use super::{date, Unported};
+use super::Unported;
 use crate::formats::xmp::{
-    self, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
+    self, date, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
 };
 use crate::java::is_blank;
 use crate::java::time::format_instant;
@@ -275,7 +275,7 @@ pub(super) fn document(
                     unported.0
                 ))
             })?;
-            xmp::extract(&packet, metadata, xmp_decode).map_err(|unported| Unported(unported.0))?;
+            xmp::extract(&packet, metadata, xmp_decode)?;
             if let Some(conformance) = metadata.get("pdfaid:conformance").map(str::to_owned) {
                 let part = metadata
                     .get("pdfaid:part")
