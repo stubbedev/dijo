@@ -15,6 +15,11 @@ pub enum Departure<'a> {
     /// Line breaks: the text is compared with each CRLF an LF, where Tika's path makes a line
     /// feed a CRLF.
     LineBreaks(&'a str),
+    /// Blank lines: the text is compared with each run of white space that holds a line break
+    /// (LF or CR) one LF, where the native HTML parser puts the white space around a document's
+    /// head and body, and its line breaks, as the WHATWG algorithm says rather than as Tika's
+    /// jsoup does.
+    BlankLines(&'a str),
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
     PngImages(&'a str),

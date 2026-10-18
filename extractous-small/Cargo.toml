@@ -14,16 +14,16 @@ default = ["tika"]
 # documents no native parser reads.
 tika = ["extractous-base/tika", "extractous-core/tika", "extractous-html/tika", "extractous-mime/tika"]
 # What the tests of the crates built on this one share with its own.
-testing = ["extractous-base/testing"]
+testing = ["extractous-base/testing", "dep:md-5"]
 
 [dependencies]
 extractous-base = { path = "../extractous-base", default-features = false }
 extractous-html = { path = "../extractous-html", default-features = false }
 extractous-mime = { path = "../extractous-mime", default-features = false }
 lzxd = "0.2.7"
+md-5 = { version = "0.11.0", optional = true }
 memchr = "2.8.3"
 snap = "1.1.2"
-md-5 = "0.11.0"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 regex = "1.13.1"
 serde = "1.0.228"
@@ -33,3 +33,4 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2
 [dev-dependencies]
 extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
 extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }
+md-5 = "0.11.0"

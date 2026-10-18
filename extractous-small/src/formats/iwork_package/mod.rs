@@ -2,7 +2,8 @@
 //! reads them: the package read front to back by its local headers, as commons-compress's
 //! `ZipArchiveInputStream` reads it, and each content entry whose root element names the
 //! document read as XML by the content handler of its kind ([`keynote`], [`numbers`],
-//! [`pages`]). The document starts with the first such entry: a package without one writes no
+//! [`pages`]). The document starts with the first such entry, which gives it its type, where
+//! Tika's parser gives it the type of the last (#132): a package without one writes no
 //! document. The package's preview, a thumbnail, is never parsed.
 
 mod keynote;
@@ -213,24 +214,24 @@ impl Parser for IworkPackageParser {
                 None => Declined::Unwritten(metadata.clone()),
             });
         }
+        let media_type = match &entries[0] {
+            Entry::Encrypted => PROTECTED,
+            Entry::Document(kind, _) => kind.media_type(),
+        };
         Ok(Box::new(move |xhtml| {
+            xhtml.metadata_mut().set("Content-Type", media_type);
             for entry in entries {
                 match entry {
-                    Entry::Encrypted => xhtml.metadata_mut().set("Content-Type", PROTECTED),
-                    Entry::Document(kind, content) => {
-                        xhtml.metadata_mut().set("Content-Type", kind.media_type());
-                        match kind {
-                            IworkDocument::Keynote => {
-                                parse(xhtml, &content, keynote::Keynote::default())?
-                            }
-                            IworkDocument::Numbers => {
-                                parse(xhtml, &content, numbers::Numbers::default())?
-                            }
-                            IworkDocument::Pages => {
-                                parse(xhtml, &content, pages::Pages::default())?
-                            }
+                    Entry::Encrypted => {}
+                    Entry::Document(kind, content) => match kind {
+                        IworkDocument::Keynote => {
+                            parse(xhtml, &content, keynote::Keynote::default())?
                         }
-                    }
+                        IworkDocument::Numbers => {
+                            parse(xhtml, &content, numbers::Numbers::default())?
+                        }
+                        IworkDocument::Pages => parse(xhtml, &content, pages::Pages::default())?,
+                    },
                 }
             }
             match failure {

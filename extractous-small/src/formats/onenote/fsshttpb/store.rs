@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use super::stream::{DataElement, ElementData, ObjectData, ObjectGroup, RevisionManifest};
 use super::{
-    int16, int32, out_of_bounds, thrown, uint32, Bits, CellId, CellKey, ExGuid, Failure, GuidKey,
+    int32, out_of_bounds, thrown, uint16, uint32, Bits, CellId, CellKey, ExGuid, Failure, GuidKey,
     Uuid, IO_EXCEPTION,
 };
 
@@ -16,9 +16,8 @@ use super::{
 const MAX_PARSE_WARNINGS: usize = 100;
 /// `PropertySet.MAX_PROPERTY_NESTING`.
 const MAX_PROPERTY_NESTING: usize = 100;
-/// `MSOneStoreParser.ENCRYPTION_KEY_ROOT_EXGUID`, whose GUID is read as it is written, where
-/// those of the document are read as the MD5 hash of their bytes.
-const ENCRYPTION_KEY_ROOT: GuidKey = (
+/// `MSOneStoreParser.ENCRYPTION_KEY_ROOT_EXGUID`, {4A3717F8-1C14-49E7-9526-81D942DE1741}.
+pub(super) const ENCRYPTION_KEY_ROOT: GuidKey = (
     3,
     Uuid([
         0x4A, 0x37, 0x17, 0xF8, 0x1C, 0x14, 0x49, 0xE7, 0x95, 0x26, 0x81, 0xD9, 0x42, 0xDE, 0x17,
@@ -198,15 +197,9 @@ fn property_set(data: &[u8], index: usize, depth: usize) -> Result<(PropertySet,
         )
         .into());
     }
-    let count = int16(data, index)?;
-    if count < 0 {
-        return Err(Failure::Unported(format!(
-            "a property set of {count} properties, on which the suite throws a \
-             NegativeArraySizeException"
-        )));
-    }
+    let count = uint16(data, index)?;
     let mut at = index + 2;
-    let mut ids = Vec::with_capacity(count as usize);
+    let mut ids = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         ids.push(property_id(data, at)?);
         at += 4;
@@ -260,21 +253,27 @@ fn property(
         | kind::ARRAY_OF_OBJECT_SPACE_IDS
         | kind::ARRAY_OF_CONTEXT_IDS => (Property::ArrayNumber(int32(data, index)?), 4),
         kind::ONE_BYTE => {
-            let byte = *data.get(index).ok_or_else(out_of_bounds)?;
+            let byte = *data
+                .get(index)
+                .ok_or_else(|| out_of_bounds(index, data.len()))?;
             (Property::Fixed(vec![byte]), 1)
         }
         kind::TWO_BYTES => {
-            let first = *data.get(index).ok_or_else(out_of_bounds)?;
-            let second = *data.get(index + 1).ok_or_else(out_of_bounds)?;
+            let first = *data
+                .get(index)
+                .ok_or_else(|| out_of_bounds(index, data.len()))?;
+            let second = *data
+                .get(index + 1)
+                .ok_or_else(|| out_of_bounds(index + 1, data.len()))?;
             (Property::Fixed(vec![first, second]), 2)
         }
         kind::FOUR_BYTES => fixed(4)?,
         kind::EIGHT_BYTES => fixed(8)?,
         kind::DATA => {
-            let length = uint32(data, index)? as i32;
+            let length = uint32(data, index)?;
             let start = index + 4;
             let remaining = data.len() as i64 - start as i64;
-            if length < 0 || i64::from(length) > remaining {
+            if i64::from(length) > remaining {
                 return Err(thrown(
                     IO_EXCEPTION,
                     format_args!(

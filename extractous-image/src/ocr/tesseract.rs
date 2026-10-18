@@ -6,13 +6,16 @@
 //! A reading runs to its end, as the `tesseract` program's does: the C API offers no safe way to
 //! judge the words recognized so far while recognition runs, since a result iterator orders
 //! right-to-left words by results the words not yet recognized do not have.
+//!
+//! The tesseract the static executable links, and the bundles' library, are built without
+//! OpenMP, as tesseract's own CMake build is by default: readings run side by side on threads of
+//! their own, a page each, rather than each dividing its work among a team of tesseract's.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::fmt;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -20,8 +23,6 @@ use std::time::{Duration, Instant};
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The model orientation and script detection runs with.
 const OSD_MODEL: &str = "osd";
-/// The most threads tesseract's recognizer divides one reading's work among.
-const MAX_READING_THREADS: usize = 4;
 /// The extension of a model's file.
 const MODEL_EXTENSION: &str = ".traineddata";
 /// `PSM_OSD_ONLY`.
@@ -116,9 +117,6 @@ c_api! {
     set_deadline = TessMonitorSetDeadlineMSecs(*mut Monitor, c_int);
     set_message_severity = setMsgSeverity(c_int) -> c_int;
 }
-
-/// `omp_set_num_threads`, of a tesseract built with OpenMP.
-type SetThreads = unsafe extern "C" fn(c_int);
 
 /// How tesseract segments a page into text, as `--psm` numbers the modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,7 +275,6 @@ struct Idle {
 /// Tesseract in this process, and its engines.
 pub struct Tesseract {
     api: Api,
-    set_threads: Option<SetThreads>,
     /// Where the models are, or none for where tesseract looks by itself.
     datapath: Option<CString>,
     idle: Mutex<BTreeMap<String, Vec<Idle>>>,
@@ -298,14 +295,7 @@ impl Tesseract {
     /// The tesseract linked into the static executable, with the language data under `datapath`.
     #[cfg(feature = "static")]
     pub(crate) fn linked(datapath: &std::path::Path) -> Result<Self, String> {
-        extern "C" {
-            fn omp_set_num_threads(threads: c_int);
-        }
-        Ok(Self::new(
-            Api::linked(),
-            Some(omp_set_num_threads),
-            Some(c_path(datapath)?),
-        ))
+        Ok(Self::new(Api::linked(), Some(c_path(datapath)?)))
     }
 
     /// The tesseract of a library, with the language data under `datapath`, or else where it
@@ -324,22 +314,17 @@ impl Tesseract {
         })?;
         let api = Api::resolved(&loaded)
             .map_err(|e| format!("tesseract's library {} is unusable: {e}", library.display()))?;
-        let set_threads = unsafe { loaded.get::<SetThreads>(b"omp_set_num_threads\0") }
-            .ok()
-            .map(|symbol| *symbol);
-        Ok(Self::new(api, set_threads, datapath, loaded))
+        Ok(Self::new(api, datapath, loaded))
     }
 
     fn new(
         api: Api,
-        set_threads: Option<SetThreads>,
         datapath: Option<CString>,
         #[cfg(not(feature = "static"))] library: libloading::Library,
     ) -> Self {
         unsafe { (api.set_message_severity)(LEPTONICA_QUIET) };
         Self {
             api,
-            set_threads,
             datapath,
             idle: Mutex::new(BTreeMap::new()),
             languages: Mutex::new(None),
@@ -367,9 +352,7 @@ impl Tesseract {
         timeout: Option<Duration>,
     ) -> Result<Reading, OcrError> {
         let engine = self.take(model)?;
-        let threads = self.take_threads();
         let result = self.recognize(&engine, image, model, segmentation, thresholding, timeout);
-        drop(threads);
         self.release(model, engine);
         result
     }
@@ -586,18 +569,6 @@ impl Tesseract {
                 since: Instant::now(),
             });
     }
-
-    /// Counts a reading as running until the guard is dropped, and has tesseract's recognizer
-    /// divide its work among the threads it is given: the processors shared among the readings
-    /// running at once, at most [`MAX_READING_THREADS`] and at least one.
-    fn take_threads(&self) -> ReadingThreads {
-        let running = RUNNING_READINGS.fetch_add(1, Ordering::SeqCst) + 1;
-        let threads = (crate::isolate::processors() / running).clamp(1, MAX_READING_THREADS);
-        if let Some(set_threads) = self.set_threads {
-            unsafe { set_threads(threads as c_int) };
-        }
-        ReadingThreads
-    }
 }
 
 impl Drop for Tesseract {
@@ -671,17 +642,6 @@ fn clockwise_quarter_turns(degrees: c_int) -> u8 {
     }
 }
 
-static RUNNING_READINGS: AtomicUsize = AtomicUsize::new(0);
-
-/// A reading counted as running.
-struct ReadingThreads;
-
-impl Drop for ReadingThreads {
-    fn drop(&mut self) {
-        RUNNING_READINGS.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
 /// A progress monitor, freed when dropped.
 struct MonitorGuard<'a>(*mut Monitor, &'a Api);
 
@@ -738,6 +698,44 @@ mod tests {
             tesseract.languages().unwrap(),
             tesseract.listed_languages().unwrap()
         );
+    }
+
+    /// Readings and detections on many threads at once, each with an engine of its own taken
+    /// from and given back to the shared pool, read what one reading alone reads (#62).
+    #[test]
+    fn reads_alike_on_many_threads_at_once() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let image =
+            std::fs::read("../test_files/documents/table-multi-row-column-cells.png").unwrap();
+        let read = || {
+            tesseract
+                .read(
+                    Pixels::Encoded(Cow::Borrowed(&image)),
+                    "eng",
+                    PageSegMode(3),
+                    Thresholding::Otsu,
+                    None,
+                )
+                .unwrap()
+        };
+        let detect = || {
+            tesseract
+                .detect(Pixels::Encoded(Cow::Borrowed(&image)))
+                .unwrap()
+        };
+        let (alone, detected) = (read(), detect());
+        assert!(alone.text.contains("Participants"), "{}", alone.text);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| (0..3).map(|_| (read(), detect())).collect::<Vec<_>>()))
+                .collect();
+            for thread in threads {
+                for (reading, detection) in thread.join().unwrap() {
+                    assert_eq!(reading, alone);
+                    assert_eq!(detection, detected);
+                }
+            }
+        });
     }
 
     #[test]

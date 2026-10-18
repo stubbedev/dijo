@@ -4,7 +4,9 @@
 //! the JDK's to the bit, in the colour space the JDK's reader settles on. Sequential and
 //! progressive Huffman-coded JPEG of 8-bit samples is read, damaged data as libjpeg reads it;
 //! what libjpeg 6b does not read (arithmetic coding, lossless and 12-bit JPEG) is an error, as
-//! it is there, and so are the CMYK and YCCK images whose conversion is not ported.
+//! it is there. CMYK and YCCK images, and images of three components that the JDK's reader
+//! refuses for their Adobe transform, are decoded as libjpeg decodes them for tesseract, which
+//! reads the file where Java cannot: YCCK converted to CMYK, and the transform taken for YCbCr.
 
 /// A decoded JPEG: its size, its samples and the ICC profile it embeds, if any.
 #[derive(Debug)]
@@ -22,6 +24,10 @@ pub(crate) enum Samples {
     Gray(Vec<u8>),
     /// A red, a green and a blue sample a pixel.
     Rgb(Vec<u8>),
+    /// A cyan, a magenta, a yellow and a black sample a pixel, each the amount of ink from 0,
+    /// none, to 255: as libjpeg decodes them, inverted for an Adobe file, which codes 255 for
+    /// no ink as Photoshop writes them.
+    Cmyk(Vec<u8>),
 }
 
 /// Decodes a JPEG, or tells why ImageIO's libjpeg cannot.
@@ -249,18 +255,18 @@ impl<'a> Decoder<'a> {
         let first = self.read_headers()?;
         self.in_headers = false;
         let icc_profile = self.icc_profile()?;
-        let space = self.color_space();
         let frame = self.frame.as_ref().expect("a scan follows a frame");
-        let multiple_scans = frame.progressive || first.components.len() < frame.components.len();
-        match space {
-            ColorSpace::Grayscale | ColorSpace::Rgb | ColorSpace::YCbCr => {}
-            ColorSpace::Cmyk | ColorSpace::Ycck => {
-                return Err("the conversion of CMYK and YCCK images is not ported".to_owned())
-            }
+        let space = match self.color_space() {
+            ColorSpace::Unknown if frame.components.len() == 3 => ColorSpace::YCbCr,
             ColorSpace::Unknown => {
-                return Err("ImageIO reads no image of this colour space".to_owned())
+                return Err(format!(
+                    "a JPEG of {} components, which neither the JDK's reader nor tesseract reads",
+                    frame.components.len()
+                ))
             }
-        }
+            known => known,
+        };
+        let multiple_scans = frame.progressive || first.components.len() < frame.components.len();
         if frame.components.iter().any(|component| {
             !frame.max_h.is_multiple_of(component.h) || !frame.max_v.is_multiple_of(component.v)
         }) {
@@ -274,7 +280,7 @@ impl<'a> Decoder<'a> {
         }
         let frame = self.frame.take().expect("a decoded image has a frame");
         let planes = frame.planes();
-        let samples = frame.converted(&planes, space);
+        let samples = frame.converted(&planes, space, self.adobe_transform.is_some());
         Ok(Jpeg {
             width: frame.width,
             height: frame.height,
@@ -1275,27 +1281,49 @@ impl Frame {
     }
 
     /// The image's samples in the colour space the JDK reads them in.
-    fn converted(&self, planes: &[Plane], space: ColorSpace) -> Samples {
+    /// The samples of the colour space libjpeg converts the image to, CMYK as the amounts of
+    /// ink, inverted when an `adobe` marker says Photoshop wrote them.
+    fn converted(&self, planes: &[Plane], space: ColorSpace, adobe: bool) -> Samples {
         let upsampled: Vec<Vec<u8>> = self
             .components
             .iter()
             .zip(planes)
             .map(|(component, plane)| self.upsampled(component, plane))
             .collect();
+        let pixels = 0..self.width * self.height;
+        let ink = |sample: u8| if adobe { 255 - sample } else { sample };
         match space {
             ColorSpace::Grayscale => {
                 Samples::Gray(upsampled.into_iter().next().unwrap_or_default())
             }
             ColorSpace::Rgb => Samples::Rgb(
-                (0..self.width * self.height)
+                pixels
                     .flat_map(|i| [upsampled[0][i], upsampled[1][i], upsampled[2][i]])
                     .collect(),
             ),
-            _ => {
+            ColorSpace::YCbCr | ColorSpace::Unknown => {
                 let table = YccTable::new();
                 Samples::Rgb(
-                    (0..self.width * self.height)
+                    pixels
                         .flat_map(|i| table.rgb(upsampled[0][i], upsampled[1][i], upsampled[2][i]))
+                        .collect(),
+                )
+            }
+            ColorSpace::Cmyk => Samples::Cmyk(
+                pixels
+                    .flat_map(|i| [0, 1, 2, 3].map(|component| ink(upsampled[component][i])))
+                    .collect(),
+            ),
+            ColorSpace::Ycck => {
+                let table = YccTable::new();
+                Samples::Cmyk(
+                    pixels
+                        .flat_map(|i| {
+                            let [c, m, y] = table
+                                .rgb(upsampled[0][i], upsampled[1][i], upsampled[2][i])
+                                .map(|level| ink(255 - level));
+                            [c, m, y, ink(upsampled[3][i])]
+                        })
                         .collect(),
                 )
             }
@@ -1615,5 +1643,36 @@ mod tests {
         let table = YccTable::new();
         assert_eq!(table.rgb(128, 128, 128), [128, 128, 128]);
         assert_eq!(table.rgb(0, 0, 255), [178, 0, 0]);
+    }
+
+    /// Photoshop-style CMYK and YCCK JPEGs, inverted, decode to the ink libjpeg-turbo decodes
+    /// for ImageMagick, written by `tests/fixtures/jpeg/generate.sh`.
+    #[test]
+    fn decodes_cmyk_and_ycck_to_their_ink() {
+        for name in ["cmyk", "ycck"] {
+            let input = std::fs::read(format!("tests/fixtures/jpeg/{name}.jpg")).unwrap();
+            let expected = std::fs::read(format!("tests/fixtures/jpeg/{name}.ink")).unwrap();
+            let decoded = decode(&input).unwrap();
+            assert_eq!((decoded.width, decoded.height), (96, 80), "{name}");
+            let Samples::Cmyk(ink) = decoded.samples else {
+                panic!("{name} decodes to CMYK");
+            };
+            assert_eq!(ink, expected, "{name}");
+        }
+    }
+
+    /// Three components the JDK's reader refuses for an Adobe transform other than 0 and 1
+    /// decode as YCbCr, as libjpeg decodes them.
+    #[test]
+    fn decodes_three_components_of_another_transform_as_ycbcr() {
+        let ycbcr = std::fs::read("tests/fixtures/jpeg/ycbcr.jpg").unwrap();
+        let mut transformed = ycbcr[..2].to_vec();
+        transformed.extend_from_slice(b"\xFF\xEE\x00\x0EAdobe\x00\x64\x00\x00\x00\x00\x02");
+        transformed.extend_from_slice(&ycbcr[2..]);
+        let samples = |input: &[u8]| match decode(input).unwrap().samples {
+            Samples::Rgb(samples) => samples,
+            other => panic!("decoded to {other:?}"),
+        };
+        assert_eq!(samples(&transformed), samples(&ycbcr));
     }
 }

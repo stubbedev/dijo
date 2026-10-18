@@ -4,8 +4,13 @@
 //! converted from the ICC profile it embeds as the JDK's reader converts them ([`super::icc`]).
 //! JPEG 2000 images, which tesseract reads where Java has no decoder, are decoded by
 //! hayro-jpeg2000, JBIG2 images, which jbig2-imageio decodes for Java, by hayro-jbig2, AVIF
-//! images by rav1d, and HEIC and HEIF images by libheif, which decodes all three for Java; these,
-//! and Photoshop and PCX images, are decoded in grey.
+//! images by rav1d, and HEIC and HEIF images, and AVIF images of other codecs, by libheif, which
+//! decodes all three for Java. Each keeps its colours, as Java keeps them; JBIG2, of black and
+//! white alone, is grey.
+//!
+//! An image too large to prepare ([`MAX_PIXELS`]) is still decoded, up to the largest tesseract
+//! can hold ([`MAX_DECODED_PIXELS`]), and read as it is, as Java has tesseract read it; only a
+//! page of a TIFF of several is not, as Java decodes none.
 
 use std::io::Cursor;
 
@@ -14,8 +19,7 @@ use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use tiff::ColorType;
 
-pub(crate) use super::bitmap::luma;
-use super::bitmap::Bitmap;
+use super::bitmap::{cmyk_rgb, Bitmap};
 use super::recognize::MAX_PIXELS;
 use super::{avif, heif, jbig2, raster};
 
@@ -78,6 +82,10 @@ impl Format {
     }
 }
 
+/// The most pixels an image is decoded with: those of the largest colour image Leptonica, and
+/// so tesseract, holds, four bytes a pixel in under 2 GiB (`pixCreateHeader`).
+pub(crate) const MAX_DECODED_PIXELS: u64 = ((1 << 31) - 1) / 4;
+
 /// A decoded image or page, or why it could not be decoded.
 pub(crate) type Page = Result<Bitmap, String>;
 
@@ -98,7 +106,7 @@ impl TiffPages<'_> {
         decoder
             .seek_to_image(index)
             .map_err(|e| format!("cannot find page {}: {e}", index + 1))?;
-        tiff_page(&mut decoder)
+        tiff_page(&mut decoder, MAX_PIXELS)
     }
 }
 
@@ -168,51 +176,57 @@ pub(crate) fn decode(
             if count > 1 {
                 return Ok(Decoded::Pages(TiffPages { input, count }));
             }
-            Ok(single(tiff_page(&mut decoder)?))
+            Ok(single(tiff_page(&mut decoder, MAX_DECODED_PIXELS)?))
         }
-        Format::Photoshop => Ok(single(Bitmap::Gray(raster::photoshop(input)?))),
-        Format::Pcx => Ok(single(Bitmap::Gray(raster::pcx(input)?))),
-        Format::Jpeg2000 => Ok(single(Bitmap::Gray(jpeg2000(input)?))),
+        Format::Photoshop => Ok(single(raster::photoshop(input)?)),
+        Format::Pcx => Ok(single(raster::pcx(input)?)),
+        Format::Jpeg2000 => Ok(single(jpeg2000(input)?)),
         Format::Jbig2 => Ok(single(Bitmap::Gray(jbig2::decode(input)?))),
-        Format::Avif => Ok(single(Bitmap::Gray(avif::decode(input)?))),
-        Format::Heif => heif::decode(input, timeout).map(|gray| single(Bitmap::Gray(gray))),
+        Format::Avif => match avif::decode(input)? {
+            avif::Avif::Decoded(bitmap) => Ok(single(bitmap)),
+            avif::Avif::OfOtherCodecs => heif::decode(input, timeout).map(single),
+        },
+        Format::Heif => heif::decode(input, timeout).map(single),
     }
 }
 
-/// Fails for an image of more than [`MAX_PIXELS`] pixels, which is not decoded.
-pub(crate) fn within_limits(width: u32, height: u32) -> Result<(), String> {
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(format!("the image has {width}x{height} pixels"));
+/// Fails for an image of more than `most` pixels, which is not decoded.
+fn within(width: u32, height: u32, most: u64) -> Result<(), String> {
+    if u64::from(width) * u64::from(height) > most {
+        return Err(format!(
+            "the image has {width}x{height} pixels, more than the {most} it may have"
+        ));
     }
     Ok(())
 }
 
+/// Fails for an image of more than [`MAX_DECODED_PIXELS`] pixels, which is not decoded.
+pub(crate) fn decodable(width: u32, height: u32) -> Result<(), String> {
+    within(width, height, MAX_DECODED_PIXELS)
+}
+
 /// A JPEG 2000 image or codestream, its colours converted as its colour space says.
-fn jpeg2000(input: &[u8]) -> Result<GrayImage, String> {
+fn jpeg2000(input: &[u8]) -> Page {
     let image = hayro_jpeg2000::Image::new(input, &hayro_jpeg2000::DecodeSettings::default())
         .map_err(|e| format!("cannot read the JPEG 2000 image: {e}"))?;
-    within_limits(image.width(), image.height())?;
+    decodable(image.width(), image.height())?;
     let image = DynamicImage::from_decoder(image)
         .map_err(|e| format!("cannot decode the JPEG 2000 image: {e}"))?;
-    Ok(gray(image))
+    Ok(bitmap(image))
 }
 
-/// An image in grey, its transparency ignored.
-pub(crate) fn gray(image: DynamicImage) -> GrayImage {
-    match bitmap(image) {
-        Bitmap::Gray(gray) => gray,
-        Bitmap::Rgb(rgb) => Bitmap::Rgb(rgb).gray().into_owned(),
-        Bitmap::Rgba(rgba) => Bitmap::Rgb(DynamicImage::ImageRgba8(rgba).to_rgb8())
-            .gray()
-            .into_owned(),
-    }
-}
-
-/// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds.
+/// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds. CMYK,
+/// which the JDK's reader refuses, is printed with the CMYK profile it embeds as LittleCMS
+/// prints it, or else without a profile.
 pub(crate) fn jpeg(input: &[u8]) -> Page {
     let decoded = super::jpeg::decode(input)?;
     let (width, height) = (decoded.width as u32, decoded.height as u32);
     let short = || "the JPEG holds fewer samples than its size needs".to_owned();
+    let rgb = |samples| {
+        RgbImage::from_raw(width, height, samples)
+            .map(Bitmap::Rgb)
+            .ok_or_else(short)
+    };
     match decoded.samples {
         super::jpeg::Samples::Gray(samples) => GrayImage::from_raw(width, height, samples)
             .map(Bitmap::Gray)
@@ -222,16 +236,30 @@ pub(crate) fn jpeg(input: &[u8]) -> Page {
                 super::icc::to_srgb(profile, &mut samples)
                     .map_err(|e| format!("cannot convert the JPEG's colours: {e}"))?;
             }
-            RgbImage::from_raw(width, height, samples)
-                .map(Bitmap::Rgb)
-                .ok_or_else(short)
+            rgb(samples)
+        }
+        super::jpeg::Samples::Cmyk(inks) => {
+            let profile = decoded
+                .icc_profile
+                .as_deref()
+                .filter(|profile| super::icc::accepted_components(profile) == Some(4))
+                .and_then(|profile| super::icc::ToSrgb::new(profile, 4));
+            rgb(match profile {
+                Some(profile) => profile.convert(&inks),
+                None => inks
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|&pixel| cmyk_rgb(pixel))
+                    .collect(),
+            })
         }
     }
 }
 
 /// An image the `image` crate decoded, in the kind of bitmap ImageIO decodes it in: grey, colour
 /// or colour with alpha, of 8 bits a sample.
-fn bitmap(image: DynamicImage) -> Bitmap {
+pub(crate) fn bitmap(image: DynamicImage) -> Bitmap {
     match image {
         DynamicImage::ImageLuma8(gray) => Bitmap::Gray(gray),
         DynamicImage::ImageLuma16(gray) => {
@@ -245,12 +273,12 @@ fn bitmap(image: DynamicImage) -> Bitmap {
     }
 }
 
-/// The page a TIFF decoder is at.
-fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>) -> Page {
+/// The page a TIFF decoder is at, unless it has more than `most` pixels.
+fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>, most: u64) -> Page {
     let (width, height) = decoder
         .dimensions()
         .map_err(|e| format!("cannot read the page's size: {e}"))?;
-    within_limits(width, height)?;
+    within(width, height, most)?;
     let color = decoder
         .colortype()
         .map_err(|e| format!("cannot read the page's colours: {e}"))?;
@@ -307,12 +335,7 @@ fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>) -> Page {
             .as_chunks::<4>()
             .0
             .iter()
-            .flat_map(|pixel| {
-                let ink = |colour: u8| {
-                    ((255 - u32::from(colour)) * (255 - u32::from(pixel[3])) / 255) as u8
-                };
-                [ink(pixel[0]), ink(pixel[1]), ink(pixel[2])]
-            })
+            .flat_map(|&pixel| cmyk_rgb(pixel))
             .collect()),
         ColorType::Palette(bits @ (1 | 2 | 4 | 8)) => {
             let palette = palette.expect("a palette page has its colour map");
@@ -499,6 +522,46 @@ mod tests {
                 "{file}: {differing} pixels differ"
             );
         }
+    }
+
+    fn single(input: &[u8], format: Format) -> Bitmap {
+        match decode(input, format, None) {
+            Ok(Decoded::Single { bitmap, .. }) => bitmap,
+            Ok(Decoded::Pages(_)) => panic!("{format:?} decodes as pages"),
+            Err(e) => panic!("{format:?}: {e:?}"),
+        }
+    }
+
+    /// An image of more pixels than OCR prepares is decoded, to be read as it is.
+    #[test]
+    fn decodes_images_too_large_to_prepare() {
+        let large = std::fs::read("tests/fixtures/jbig2/large.jb2").unwrap();
+        let bitmap = single(&large, Format::Jbig2);
+        assert_eq!(bitmap.dimensions(), (8000, 7600));
+        assert!(!super::super::Image::of(&bitmap, None, large.len() as u64, None).preparable);
+        assert!(decodable(8000, 7600).is_ok());
+        assert!(decodable(1 << 15, 1 << 15).is_err());
+    }
+
+    /// A CMYK JPEG, which the JDK's reader refuses, decodes in colour.
+    #[test]
+    fn decodes_cmyk_jpegs_in_colour() {
+        let cmyk = std::fs::read("tests/fixtures/jpeg/ycck.jpg").unwrap();
+        let Bitmap::Rgb(rgb) = single(&cmyk, Format::Jpeg) else {
+            panic!("a CMYK JPEG decodes in colour");
+        };
+        let [red, green, blue] = rgb.get_pixel(0, 0).0;
+        assert!(red > 200 && green < 40 && blue < 40, "{red} {green} {blue}");
+    }
+
+    /// An AVIF file whose primary image is no AV1 image decodes as libheif decodes it.
+    #[test]
+    fn decodes_avif_files_of_other_codecs_with_libheif() {
+        let heic = std::fs::read("../quality/corpus/prose-scan.heic").unwrap();
+        assert_eq!(
+            single(&heic, Format::Avif).gray(),
+            single(&heic, Format::Heif).gray()
+        );
     }
 
     #[test]

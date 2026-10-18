@@ -1,9 +1,10 @@
-//! The merged image of a Photoshop file and the image of a PCX file, in grey: the two formats
-//! tesseract cannot read, which our Java `RecognizedImageParser` has Java decode for it.
+//! The merged image of a Photoshop file and the image of a PCX file: the two formats tesseract
+//! cannot read, which our Java `RecognizedImageParser` has Java decode for it, TwelveMonkeys'
+//! readers in grey for grey images and else in colour.
 
-use image::GrayImage;
+use image::{GrayImage, RgbImage};
 
-use super::bitmap::luma;
+use super::bitmap::{cmyk_rgb, Bitmap};
 
 /// Bytes read in turn, each read failing at the end.
 struct Bytes<'a> {
@@ -68,8 +69,9 @@ enum ColorMode {
 }
 
 /// The merged image of a Photoshop file (`.psd`, or `.psb`), of 1, 8 or 16 bits a channel in
-/// bitmap, grey, RGB or CMYK, raw or compressed with PackBits.
-pub(crate) fn photoshop(input: &[u8]) -> Result<GrayImage, String> {
+/// bitmap, grey, RGB or CMYK, raw or compressed with PackBits: bitmap and grey images in grey,
+/// the others in colour, CMYK printed without a profile.
+pub(crate) fn photoshop(input: &[u8]) -> Result<Bitmap, String> {
     let mut bytes = Bytes::new(input);
     if bytes.take(4)? != b"8BPS" {
         return Err("it is no Photoshop file".to_owned());
@@ -155,34 +157,59 @@ pub(crate) fn photoshop(input: &[u8]) -> Result<GrayImage, String> {
             _ => plane[index],
         }
     };
-    let mut gray = Vec::with_capacity(width * height);
-    for y in 0..height {
-        for x in 0..width {
-            let index = y * width + x;
-            gray.push(match mode {
-                ColorMode::Bitmap => {
+    let pixels = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+    match mode {
+        ColorMode::Bitmap => gray(
+            width,
+            height,
+            pixels
+                .map(|(x, y)| {
                     let byte = planes[0][y * row_bytes + x / 8];
                     if byte & (0x80 >> (x % 8)) != 0 {
                         0
                     } else {
                         255
                     }
-                }
-                ColorMode::Grayscale => sample(&planes[0], index),
-                ColorMode::Rgb => luma(
-                    sample(&planes[0], index),
-                    sample(&planes[1], index),
-                    sample(&planes[2], index),
-                ),
-                ColorMode::Cmyk => {
-                    let black = u32::from(sample(&planes[3], index));
-                    let ink = |plane: &[u8]| (u32::from(sample(plane, index)) * black / 255) as u8;
-                    luma(ink(&planes[0]), ink(&planes[1]), ink(&planes[2]))
-                }
-            });
-        }
+                })
+                .collect(),
+        ),
+        ColorMode::Grayscale => gray(
+            width,
+            height,
+            pixels
+                .map(|(x, y)| sample(&planes[0], y * width + x))
+                .collect(),
+        ),
+        ColorMode::Rgb => rgb(
+            width,
+            height,
+            pixels
+                .flat_map(|(x, y)| [0, 1, 2].map(|plane| sample(&planes[plane], y * width + x)))
+                .collect(),
+        ),
+        ColorMode::Cmyk => rgb(
+            width,
+            height,
+            pixels
+                .flat_map(|(x, y)| {
+                    cmyk_rgb([0, 1, 2, 3].map(|plane| 255 - sample(&planes[plane], y * width + x)))
+                })
+                .collect(),
+        ),
     }
-    GrayImage::from_raw(width as u32, height as u32, gray)
+}
+
+/// A grey image of the levels of `width` × `height` pixels.
+fn gray(width: usize, height: usize, levels: Vec<u8>) -> Result<Bitmap, String> {
+    GrayImage::from_raw(width as u32, height as u32, levels)
+        .map(Bitmap::Gray)
+        .ok_or_else(|| "the image holds fewer pixels than its size".to_owned())
+}
+
+/// A colour image of the red, green and blue of `width` × `height` pixels.
+fn rgb(width: usize, height: usize, samples: Vec<u8>) -> Result<Bitmap, String> {
+    RgbImage::from_raw(width as u32, height as u32, samples)
+        .map(Bitmap::Rgb)
         .ok_or_else(|| "the image holds fewer pixels than its size".to_owned())
 }
 
@@ -209,8 +236,9 @@ fn unpack_bits(packed: &[u8], length: usize, out: &mut Vec<u8>) -> Result<(), St
 }
 
 /// A PCX image: of 8 bits a pixel with a palette of 256 colours, of three or four planes of 8
-/// bits, or of up to four planes of 1, 2 or 4 bits with the header's palette of 16 colours.
-pub(crate) fn pcx(input: &[u8]) -> Result<GrayImage, String> {
+/// bits, or of up to four planes of 1, 2 or 4 bits with the header's palette of 16 colours, in
+/// colour.
+pub(crate) fn pcx(input: &[u8]) -> Result<Bitmap, String> {
     let mut bytes = Bytes::new(input);
     if bytes.u8()? != 0x0A {
         return Err("it is no PCX image".to_owned());
@@ -251,7 +279,7 @@ pub(crate) fn pcx(input: &[u8]) -> Result<GrayImage, String> {
         }
     }
     lines.truncate(total);
-    let gray: Vec<u8> = match (bits, planes) {
+    let colours: Vec<u8> = match (bits, planes) {
         (8, 1) => {
             let tail = input
                 .len()
@@ -259,41 +287,29 @@ pub(crate) fn pcx(input: &[u8]) -> Result<GrayImage, String> {
                 .and_then(|at| input.get(at..))
                 .filter(|tail| tail[0] == 0x0C)
                 .ok_or("an image of 256 colours without its palette")?;
-            let levels: Vec<u8> = tail[1..]
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .map(|entry| luma(entry[0], entry[1], entry[2]))
-                .collect();
+            let palette = tail[1..].as_chunks::<3>().0;
             lines
                 .chunks_exact(scanline)
                 .flat_map(|line| {
                     line[..width]
                         .iter()
-                        .map(|&index| levels[usize::from(index)])
+                        .flat_map(|&index| palette[usize::from(index)])
                 })
                 .collect()
         }
         (8, 3 | 4) => lines
             .chunks_exact(scanline)
             .flat_map(|line| {
-                (0..width)
-                    .map(move |x| luma(line[x], line[line_bytes + x], line[2 * line_bytes + x]))
+                (0..width).flat_map(move |x| [0, 1, 2].map(|plane| line[plane * line_bytes + x]))
             })
             .collect(),
         (1 | 2 | 4, 1..=4) if usize::from(bits) * planes <= 4 => {
-            let levels: Vec<u8> = header_palette
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .map(|entry| luma(entry[0], entry[1], entry[2]))
-                .collect();
+            let palette = header_palette.as_chunks::<3>().0;
             let bits = usize::from(bits);
             lines
                 .chunks_exact(scanline)
                 .flat_map(|line| {
-                    let levels = &levels;
-                    (0..width).map(move |x| {
+                    (0..width).flat_map(move |x| {
                         let mut index = 0;
                         for plane in 0..planes {
                             let bit = x * bits;
@@ -301,15 +317,14 @@ pub(crate) fn pcx(input: &[u8]) -> Result<GrayImage, String> {
                             let sample = (byte >> (8 - bits - bit % 8)) & ((1 << bits) - 1);
                             index |= usize::from(sample) << (plane * bits);
                         }
-                        levels[index]
+                        palette[index]
                     })
                 })
                 .collect()
         }
         _ => return Err(format!("{planes} planes of {bits} bits")),
     };
-    GrayImage::from_raw(width as u32, height as u32, gray)
-        .ok_or_else(|| "the image holds fewer pixels than its size".to_owned())
+    rgb(width, height, colours)
 }
 
 #[cfg(test)]

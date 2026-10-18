@@ -2,7 +2,7 @@
 //! written by `just text-reference`.
 
 use super::TextAndCsvParser;
-use crate::formats::reference::{cases, difference};
+use crate::formats::reference::{cases, difference, Compared};
 
 const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/text/text-reference.tsv.gz");
 
@@ -29,7 +29,7 @@ fn parses_as_tika_does() {
     let mismatches: Vec<String> = cases
         .iter()
         .filter(|case| !DEPARTURES.contains(&case.label.as_str()))
-        .filter_map(|case| difference(&TextAndCsvParser, case))
+        .filter_map(|case| difference(&TextAndCsvParser, case, Compared::Everything))
         .collect();
     assert!(
         cases.len() > 200,

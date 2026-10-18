@@ -1,11 +1,14 @@
 //! JSoupParser against Tika's own answers: `tests/fixtures/html/html-reference.tsv.gz`, written by
-//! `just html-reference`, whose added column is the digest of the tree jsoup builds.
+//! `just html-reference`, whose added column is the digest of the tree jsoup builds. Where the
+//! parser builds the same tree, it writes what Tika writes; where jsoup departs from the WHATWG
+//! algorithm (#84), the trees differ, the metadata alone is compared, and [`super::trees`] checks
+//! the parser's trees against html5lib's.
 
 use super::trees::tree;
 use super::{read, JSoupParser};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::reference::{cases, difference, digest};
+use crate::formats::reference::{cases, difference, digest, Compared};
 use crate::formats::Parser;
 
 const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/html/html-reference.tsv.gz");
@@ -22,12 +25,19 @@ const DEPARTURES: [&str; 2] = [
     "tika/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents/testHTML_metadata_two_titles.html",
 ];
 
+/// How many inputs the parser builds another tree from than jsoup, by the WHATWG algorithm (#84):
+/// 195 of html5lib's documents, and nearly every other input, whose white space after `</body>`
+/// is the body's. Their metadata, read from the head, is still Tika's; the corpus tests compare
+/// the text of the documents among them with what the algorithm changes in it left out.
+const WHATWG_TREES: usize = 233;
+
 #[test]
 fn parses_as_tika_does() {
     let cases = cases(REFERENCE);
     let mut mismatches = Vec::new();
     let mut deferred = Vec::new();
     let mut departed = Vec::new();
+    let mut whatwg = 0;
     for case in &cases {
         let mut metadata = TikaMetadata::new();
         metadata.set("Content-Type", case.content_type.clone());
@@ -40,15 +50,13 @@ fn parses_as_tika_does() {
         }
         let document = read(&case.input, Some(&case.content_type))
             .unwrap_or_else(|e| panic!("{}: {e:?}", case.label));
-        let tree = digest(&tree(&document.dom));
-        if tree != case.extra[0] {
-            mismatches.push(format!(
-                "{}: tree {}, port {tree}",
-                case.label, case.extra[0]
-            ));
-            continue;
-        }
-        let difference = difference(&JSoupParser, case);
+        let compared = if digest(&tree(&document.dom)) == case.extra[0] {
+            Compared::Everything
+        } else {
+            whatwg += 1;
+            Compared::Metadata
+        };
+        let difference = difference(&JSoupParser, case, compared);
         if DEPARTURES.contains(&case.label.as_str()) {
             departed.push(case.label.as_str());
             if difference.is_none() {
@@ -58,6 +66,10 @@ fn parses_as_tika_does() {
             mismatches.push(difference);
         }
     }
+    assert_eq!(
+        whatwg, WHATWG_TREES,
+        "inputs whose tree departs from jsoup's"
+    );
     departed.sort_unstable();
     assert_eq!(departed, DEPARTURES, "departures not in the reference");
     let tika_deferred: Vec<&str> = deferred

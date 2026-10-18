@@ -28,18 +28,63 @@ const KEYNOTE: &[u8] = br#"<?xml version="1.0"?>
 </key:slide></key:slide-list>
 </key:presentation>"#;
 
-/// A Pages '09 document of two pages with headers, a footnote and a table.
+/// A Pages '09 document of two pages with headers, a footnote and a table of one row of text,
+/// with no text between its headers or footers and what follows them: one Tika's handler reads
+/// as it is written.
 const PAGES: &[u8] = br#"<?xml version="1.0"?>
 <sl:document xmlns:sl="http://developer.apple.com/namespaces/sl" xmlns:sf="http://developer.apple.com/namespaces/sf" xmlns:sfa="http://developer.apple.com/namespaces/sfa">
 <sl:publication-info><sl:SLCreationDateProperty><sl:date sf:val="2009-01-02"/></sl:SLCreationDateProperty><sl:kind><sl:string sfa:string="wp"/></sl:kind></sl:publication-info>
 <sf:metadata><sf:title><sf:string sfa:string="Doc"/></sf:title><sf:authors><sf:string sfa:string="Ann"/></sf:authors></sf:metadata>
-<sf:headers><sf:header sf:name="SFWPDefaultOddHeaderIdentifier"><sf:p>Odd head<sf:page-number sf:format="upper-roman"/></sf:p></sf:header><sf:header sf:name="SFWPDefaultFirstHeaderIdentifier"><sf:p>First head</sf:p></sf:header></sf:headers>
-<sf:footers><sf:footer sf:name="SFWPDefaultEvenFooterIdentifier"><sf:p>Even foot<sf:page-number sf:format="lower-alpha"/></sf:p></sf:footer></sf:footers>
-<sf:footnotes><sf:footnote-mark sf:mark="1"/><sf:p>Note one</sf:p></sf:footnotes>
-<sf:attachments><sf:attachment sf:kind="tabular-attachment" sfa:ID="tab"><sf:grid sf:numcols="3"/><sf:ct sfa:s="x"/><sf:ct sfa:s="y"/><sf:ct sfa:s="z"/><sf:ct sfa:s="w"/></sf:attachment></sf:attachments>
+<sf:headers><sf:header sf:name="SFWPDefaultOddHeaderIdentifier"><sf:p>Odd head<sf:page-number sf:format="upper-roman"/></sf:p></sf:header><sf:header sf:name="SFWPDefaultFirstHeaderIdentifier"><sf:p>First head</sf:p></sf:header></sf:headers><sf:footers><sf:footer sf:name="SFWPDefaultEvenFooterIdentifier"><sf:p>Even foot<sf:page-number sf:format="lower-alpha"/></sf:p></sf:footer></sf:footers><sf:footnotes><sf:footnote-mark sf:mark="1"/><sf:p>Note one</sf:p></sf:footnotes>
+<sf:attachments><sf:attachment sf:kind="tabular-attachment" sfa:ID="tab"><sf:grid sf:numcols="3"/><sf:datasource><sf:t><sf:ct sfa:s="x"/></sf:t><sf:t><sf:ct sfa:s="y"/></sf:t><sf:t><sf:ct sfa:s="z"/></sf:t></sf:datasource></sf:attachment></sf:attachments>
 <sf:text-storage><sf:page-start/><sf:p>Hello<sf:footnote sf:autonumber="1"/> world<sf:ghost-text>ghost</sf:ghost-text></sf:p>
 <sf:p>Table:<sf:attachment-ref sfa:IDREF="tab"/></sf:p><sf:page-start/><sf:p>Second</sf:p></sf:text-storage>
 </sl:document>"#;
+
+/// A Pages '09 document Tika's handler misreads (#132): a header written in pieces and followed
+/// by text, a page group before the first page, a table of numbers, dates and empty cells in two
+/// columns, a table without an ID, and an annotation without a target.
+const MISREAD_PAGES: &[u8] = br#"<?xml version="1.0"?>
+<sl:document xmlns:sl="http://developer.apple.com/namespaces/sl" xmlns:sf="http://developer.apple.com/namespaces/sf" xmlns:sfa="http://developer.apple.com/namespaces/sfa">
+<sf:headers><sf:header sf:name="SFWPDefaultOddHeaderIdentifier"><sf:p>Havn &amp; b&#248;lge<sf:page-number sf:format="upper-roman"/></sf:p></sf:header>
+</sf:headers>
+<sf:annotations><sf:annotation><sf:p>Loose</sf:p></sf:annotation></sf:annotations>
+<sf:attachments><sf:attachment sf:kind="tabular-attachment" sfa:ID="tab"><sf:grid sf:numcols="2"/><sf:datasource><sf:t><sf:ct sfa:s="a"/></sf:t><sf:n sf:v="1"/><sf:e/><sf:d sf:cell-date="2009-01-02"/><sf:t><sf:ct sfa:s="b"/></sf:t></sf:datasource></sf:attachment>
+<sf:attachment sf:kind="tabular-attachment"><sf:grid sf:numcols="1"/><sf:datasource><sf:t><sf:ct sfa:s="lost"/></sf:t></sf:datasource></sf:attachment></sf:attachments>
+<sl:drawables><sl:page-group sl:page="1"/></sl:drawables>
+<sf:text-storage><sf:page-start/><sf:p>Table:<sf:attachment-ref sfa:IDREF="tab"/><sf:attachment-ref/></sf:p><sf:p><sf:annotation-field>Marked</sf:annotation-field></sf:p></sf:text-storage>
+</sl:document>"#;
+
+#[test]
+fn types_the_document_by_its_first_content_entry() {
+    let (text, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&zip(&[
+            HISTORY,
+            ("index.apxl", KEYNOTE),
+            ("index.xml", PAGES),
+        ]))
+        .unwrap();
+    assert!(text.contains("Body") && text.contains("Second"), "{text}");
+    assert_eq!(metadata["Content-Type"], ["application/vnd.apple.keynote"]);
+}
+
+#[test]
+fn reads_pages_documents_as_they_are_written() {
+    let (xml, metadata) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(&zip(&[HISTORY, ("index.xml", MISREAD_PAGES)]))
+        .unwrap();
+    let body = &xml[xml.find("<body>").unwrap()..];
+    assert_eq!(
+        body,
+        "<body>0<div><div class=\"header\">Havn &amp; bølge\tI</div>\n</div>\n\
+         <div><div class=\"header\">Havn &amp; bølge\tI</div>\n\
+         <p>Table:</p><table><tr>\t<td>a</td>\t<td>1</td></tr>\n\
+         <tr>\t<td />\t<td>2009-01-02</td></tr>\n<tr>\t<td>b</td></tr>\n</table>\n\n\
+         <p><div style=\"annotated\">Marked</div>\n</p>\n</div>\n</body></html>"
+    );
+    assert_eq!(metadata["meta:page-count"], ["1"]);
+}
 
 /// A Numbers '09 document of one sheet with a table and a pop-up menu cell.
 #[cfg(feature = "tika")]

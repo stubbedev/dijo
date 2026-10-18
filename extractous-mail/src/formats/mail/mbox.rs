@@ -340,7 +340,9 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
+    };
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.mbox.MboxParser";
@@ -492,9 +494,10 @@ Body.";
         let scratch = Scratch::new("mbox-limit");
         let (plain, html) = past_the_limit(&scratch);
         assert_same_as_tika(&[&plain], TIKA_NAME);
-        assert_same_as_tika(
+        assert_same_as_tika_departing(
             &html.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
+            crate::formats::html::DEPARTURES,
         );
         let (xhtml, _) = crate::Extractor::new()
             .set_xml_output(true)

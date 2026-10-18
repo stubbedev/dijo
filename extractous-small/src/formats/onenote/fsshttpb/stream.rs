@@ -104,7 +104,9 @@ struct Header {
 /// `StreamObjectHeaderStart.tryParse`: the header at `index`, or none where its first byte names
 /// no header or reading it throws. Reading the first byte past the end throws.
 fn try_header(data: &[u8], index: usize) -> Result<Option<Header>, Failure> {
-    let first = *data.get(index).ok_or_else(out_of_bounds)?;
+    let first = *data
+        .get(index)
+        .ok_or_else(|| out_of_bounds(index, data.len()))?;
     let parsed = match first & 0x03 {
         0x0 => header_16(data, index),
         0x2 => header_32(data, index),
@@ -768,7 +770,7 @@ pub(super) fn package(data: &[u8]) -> Result<Vec<DataElement>, Failure> {
             }
             *index += 1;
             if *index > data.len() {
-                return Err(out_of_bounds().into());
+                return Err(out_of_bounds(*index - 1, data.len()).into());
             }
             let mut elements = Vec::new();
             while let Some(element) =

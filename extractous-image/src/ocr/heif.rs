@@ -5,12 +5,11 @@
 
 use std::time::Duration;
 
-use image::GrayImage;
-
+use super::bitmap::Bitmap;
 use super::decode::Undecoded;
 
-/// The primary image of a HEIC or HEIF file in grey, decoded within `timeout` when it has one.
-pub(crate) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<GrayImage, Undecoded> {
+/// The primary image of a HEIC or HEIF file, decoded within `timeout` when it has one.
+pub(crate) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
     imp::decode(input, timeout)
 }
 
@@ -20,9 +19,10 @@ mod imp {
     use std::sync::Once;
     use std::time::Duration;
 
-    use image::GrayImage;
+    use image::RgbImage;
 
-    use crate::ocr::decode::{luma, within_limits, Undecoded};
+    use crate::ocr::bitmap::Bitmap;
+    use crate::ocr::decode::{decodable, Undecoded};
 
     #[repr(C)]
     struct Context {
@@ -122,8 +122,8 @@ mod imp {
     }
 
     /// The primary image decoded to RGB with its transformations applied, as `heif.cc` decodes
-    /// it for Java, in grey. The linked libheif runs no external program, so takes no timeout.
-    pub(super) fn decode(input: &[u8], _: Option<Duration>) -> Result<GrayImage, Undecoded> {
+    /// it for Java. The linked libheif runs no external program, so takes no timeout.
+    pub(super) fn decode(input: &[u8], _: Option<Duration>) -> Result<Bitmap, Undecoded> {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
             unsafe { heif_init(std::ptr::null()) };
@@ -179,21 +179,19 @@ mod imp {
                 "The decoded HEIF image has no pixels".to_owned(),
             ));
         }
-        within_limits(width, height).map_err(Undecoded::Failed)?;
+        decodable(width, height).map_err(Undecoded::Failed)?;
         let rows = unsafe { std::slice::from_raw_parts(plane, stride * height as usize) };
-        let mut gray = Vec::with_capacity(width as usize * height as usize);
+        let mut samples = Vec::with_capacity(width as usize * height as usize * 3);
         for row in rows.chunks_exact(stride) {
-            gray.extend(
-                row[..width as usize * 3]
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|&[red, green, blue]| luma(red, green, blue)),
-            );
+            samples.extend_from_slice(&row[..width as usize * 3]);
         }
-        GrayImage::from_raw(width, height, gray).ok_or_else(|| {
-            Undecoded::Failed("The decoded HEIF image holds fewer pixels than its size".to_owned())
-        })
+        RgbImage::from_raw(width, height, samples)
+            .map(Bitmap::Rgb)
+            .ok_or_else(|| {
+                Undecoded::Failed(
+                    "The decoded HEIF image holds fewer pixels than its size".to_owned(),
+                )
+            })
     }
 }
 
@@ -205,9 +203,8 @@ mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
-    use image::GrayImage;
-
-    use crate::ocr::decode::{gray, within_limits, Undecoded};
+    use crate::ocr::bitmap::Bitmap;
+    use crate::ocr::decode::{bitmap, decodable, Undecoded};
 
     /// libheif's decoder.
     const PROGRAM: &str = "heif-dec";
@@ -315,8 +312,8 @@ mod imp {
         })
     }
 
-    /// The PNG a program decoded the image to, in grey.
-    fn decoded(outcome: Outcome, png: &Path) -> Result<GrayImage, Undecoded> {
+    /// The PNG a program decoded the image to, in the colours ImageIO reads it in.
+    fn decoded(outcome: Outcome, png: &Path) -> Result<Bitmap, Undecoded> {
         match outcome {
             Outcome::NotStarted => Err(Undecoded::NoDecoder),
             Outcome::Finished {
@@ -326,16 +323,19 @@ mod imp {
                 "Decoding the image for OCR failed: {failure}"
             ))),
             Outcome::Finished { success: true, .. } => {
-                let image = image::open(png).map_err(|e| {
+                let unreadable = |e: &dyn std::fmt::Display| {
                     Undecoded::Failed(format!("Cannot read the decoded {}: {e}", png.display()))
-                })?;
-                within_limits(image.width(), image.height()).map_err(Undecoded::Failed)?;
-                Ok(gray(image))
+                };
+                let (width, height) = image::image_dimensions(png).map_err(|e| unreadable(&e))?;
+                decodable(width, height).map_err(Undecoded::Failed)?;
+                let mut reader = image::ImageReader::open(png).map_err(|e| unreadable(&e))?;
+                reader.no_limits();
+                Ok(bitmap(reader.decode().map_err(|e| unreadable(&e))?))
             }
         }
     }
 
-    pub(super) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<GrayImage, Undecoded> {
+    pub(super) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
         let scratch = Scratch::new()?;
         let image = scratch.0.join("image.heif");
         let png = scratch.0.join("image.png");
