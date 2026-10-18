@@ -11,7 +11,7 @@ use super::types::{property, Type, MULTIVALUED_FLAG};
 use crate::formats::poi::{Read, Reading, Thrown, ILLEGAL_ARGUMENT};
 use crate::formats::Unported;
 use crate::java::parse_hex_int;
-use crate::ole2::{Content, EntryId, EntryKind, Node, Ole2};
+use crate::ole2::{Content, EntryId, EntryKind, Node, Ole2, Unreadable};
 use crate::text::charset::Charset;
 
 const ATTACHMENT_PREFIX: &str = "__attach_version1.0_#";
@@ -158,6 +158,10 @@ impl<'a> Chunk<'a> {
 pub(super) struct Group<'a> {
     /// The chunks in the order they were recorded.
     pub(super) chunks: Vec<Chunk<'a>>,
+    /// What of the storage the port leaves out where POI reads it otherwise, each with why: a
+    /// stream that cannot be read, which POI may read, or log and leave out; and a directory
+    /// named as a value of a multi-valued property, which POI records as a value it never reads.
+    pub(super) left_out: Vec<String>,
 }
 
 impl<'a> Group<'a> {
@@ -180,6 +184,7 @@ impl<'a> Group<'a> {
     fn into_owned(self) -> Group<'static> {
         Group {
             chunks: self.chunks.into_iter().map(Chunk::into_owned).collect(),
+            left_out: self.left_out,
         }
     }
 
@@ -202,6 +207,21 @@ impl<'a> Group<'a> {
             }
         }
         Ok(())
+    }
+
+    /// The stream `entry` of the group's storage, in place, or none where it cannot be read,
+    /// which is left out, as POI leaves out a stream it logs a failure to read.
+    fn read(&mut self, file: &Ole2<'a>, entry: EntryId) -> Option<Content<'a>> {
+        match file.content(entry) {
+            Ok(content) => Some(content),
+            Err(Unreadable(reason)) => {
+                self.left_out.push(format!(
+                    "the stream {}, which cannot be read: {reason}",
+                    file.name(entry)
+                ));
+                None
+            }
+        }
     }
 
     /// The property set of the group, the last recorded.
@@ -378,6 +398,20 @@ impl<'a> Message<'a> {
         }
     }
 
+    /// What of the message's storages the port leaves out where POI reads them otherwise, if
+    /// anything: see [`Group::left_out`].
+    pub(super) fn left_out(&self) -> Option<String> {
+        let groups = std::iter::once(&self.main)
+            .chain(&self.name_ids)
+            .chain(self.recipients.iter().map(|recipient| &recipient.group))
+            .chain(self.attachments.iter().map(|attachment| &attachment.group));
+        let left_out: Vec<&str> = groups
+            .flat_map(|group| &group.left_out)
+            .map(String::as_str)
+            .collect();
+        (!left_out.is_empty()).then(|| left_out.join("; "))
+    }
+
     /// `has7BitEncodingStrings`.
     pub(super) fn has_7_bit_strings(&self) -> bool {
         let groups = std::iter::once(&self.main)
@@ -457,7 +491,10 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
             continue;
         }
         if name == PROPERTIES {
-            let data = read(file, entry)?.bytes();
+            let Some(data) = group.read(file, entry) else {
+                continue;
+            };
+            let data = data.bytes();
             let properties = match kind {
                 GroupKind::Message { embedded } => read_properties(&data, Some(embedded)),
                 GroupKind::Storage => read_properties(&data, None),
@@ -479,7 +516,10 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
         } = primitive;
         if id == property::MESSAGE_SUBMISSION_ID {
             let value = Value::Submission(if is_document {
-                submission(&read(file, entry)?.bytes())
+                let Some(data) = group.read(file, entry) else {
+                    continue;
+                };
+                submission(&data.bytes())
             } else {
                 Submission {
                     id: None,
@@ -493,7 +533,10 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
         }
         if kind == Type::BINARY && id == property::ATTACH_DATA {
             if multi_index.is_none() {
-                let value = Value::Bytes(Node::Document(read(file, entry)?));
+                let Some(data) = group.read(file, entry) else {
+                    continue;
+                };
+                let value = Value::Bytes(Node::Document(data));
                 group.chunks.push(Chunk { id, kind, value });
             }
             continue;
@@ -506,14 +549,15 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
                     continue;
                 }
                 if !is_document {
-                    return Err(Unported(
-                        "a directory named as a value of a multi-valued property, which POI \
-                         leaves unread"
-                            .to_owned(),
-                    )
-                    .into());
+                    group.left_out.push(format!(
+                        "the directory {name}, named as a value of a multi-valued property, \
+                         which POI records as a value it never reads"
+                    ));
+                    continue;
                 }
-                let data = read(file, entry)?;
+                let Some(data) = group.read(file, entry) else {
+                    continue;
+                };
                 let value = if is_text {
                     Value::Text(Text::read(&data, kind)?)
                 } else {
@@ -527,10 +571,15 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
             None => {
                 let value = if kind == Type::DIRECTORY && !is_document {
                     Value::Directory(entry)
-                } else if kind == Type::BINARY && is_document {
-                    Value::Bytes(Node::Document(read(file, entry)?))
-                } else if is_text && is_document {
-                    Value::Text(Text::read(&read(file, entry)?, kind)?)
+                } else if (kind == Type::BINARY || is_text) && is_document {
+                    let Some(data) = group.read(file, entry) else {
+                        continue;
+                    };
+                    if is_text {
+                        Value::Text(Text::read(&data, kind)?)
+                    } else {
+                        Value::Bytes(Node::Document(data))
+                    }
                 } else {
                     continue;
                 };
@@ -542,12 +591,6 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
         group.chunks.extend(values.into_values());
     }
     Ok(group)
-}
-
-/// A stream, in place; POI swallows a failure to read one, which this port leaves to Tika.
-fn read<'a>(file: &Ole2<'a>, entry: EntryId) -> Result<Content<'a>, Unported> {
-    file.content(entry)
-        .map_err(|_| Unported("a message stream POI cannot read".to_owned()))
 }
 
 /// Where a multi-valued chunk goes.

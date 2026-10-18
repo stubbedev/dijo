@@ -13,7 +13,9 @@
 //! is written with its summary information and its failure recorded, as Tika's embedded
 //! document extractor records it. What the port does not read is left to Tika: strings and
 //! headers in charsets the native decoders do not decode, a body the native parsers leave to
-//! Tika, and macros extracted when asked to.
+//! Tika, and macros extracted when asked to. A stream that cannot be read, and a directory named
+//! as a value of a multi-valued property, are left out with a warning; POI reads them otherwise,
+//! so a build with Tika hands such a message to Tika's path.
 
 mod chunks;
 pub(super) mod extractor;
