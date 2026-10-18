@@ -14,6 +14,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute_named, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
 use crate::java::{parse_double, parse_int, trim};
+use crate::Error;
 
 /// What a cell holds, by its `t` attribute and whether it has a formula.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub(crate) struct SheetOutput {
     pub(crate) footers: Vec<String>,
     last_seen_row: i32,
     last_seen_column: i32,
+    row_open: bool,
 }
 
 impl SheetOutput {
@@ -66,6 +68,7 @@ impl SheetOutput {
             footers: Vec::new(),
             last_seen_row: -1,
             last_seen_column: -1,
+            row_open: false,
         }
     }
 
@@ -84,7 +87,24 @@ impl SheetOutput {
             }
         }
         xhtml.start_element("tr")?;
+        self.row_open = true;
         self.last_seen_column = -1;
+        Ok(())
+    }
+
+    /// `endRow`.
+    pub(crate) fn end_row(&mut self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        xhtml.end_element("tr")?;
+        self.row_open = false;
+        Ok(())
+    }
+
+    /// `closeAnyPending`: ends the row a sheet whose XML failed left open. A cell is written
+    /// whole, so none is left open.
+    pub(crate) fn close_any_pending(&mut self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        if self.row_open {
+            self.end_row(xhtml)?;
+        }
         Ok(())
     }
 
@@ -159,8 +179,9 @@ pub(crate) struct SheetReader<'r, 'x, 'h> {
 const HEADERS: [&str; 3] = ["oddHeader", "evenHeader", "firstHeader"];
 const FOOTERS: [&str; 3] = ["oddFooter", "evenFooter", "firstFooter"];
 
+/// A `RuntimeException` of the sheet's handler, which fails Tika's parse of the workbook.
 fn runtime(reason: String) -> Failure {
-    Failure::Malformed(reason)
+    Failure::Extraction(Error::ParseError(reason))
 }
 
 impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
@@ -275,7 +296,7 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
             self.value.clear();
         } else if local_name == "row" {
             self.check_empty_cell_comments(CommentCheck::EndOfRow)?;
-            self.xhtml.end_element("tr")?;
+            self.output.end_row(self.xhtml)?;
             self.next_row = self.row.wrapping_add(1);
         } else if local_name == "sheetData" {
             self.check_empty_cell_comments(CommentCheck::EndOfSheetData)?;
@@ -306,7 +327,7 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
         {
             Ok(text) => Ok(text),
             Err(FormatError::Thrown(_)) => Ok(value),
-            Err(FormatError::Unported(what)) => Err(Failure::Malformed(format!(
+            Err(FormatError::Unported(what)) => Err(runtime(format!(
                 "the cell {} holds {what}, which this port does not write",
                 self.reference.as_deref().unwrap_or("without a reference")
             ))),

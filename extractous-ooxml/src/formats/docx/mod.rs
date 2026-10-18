@@ -491,21 +491,13 @@ impl<'a> Document<'a> {
             None => xml::parse_part(bytes, name, &mut handler),
         };
         let mut body = handler.into_body();
-        let unparsed = match parsed {
-            Ok(()) => None,
-            Err(Failure::Malformed(reason)) => Some(reason),
-            Err(Failure::Extraction(error)) => Some(error.to_string()),
-            Err(failure @ (Failure::Stopped(_) | Failure::Embedded(_))) => return Err(failure),
-        };
-        if unparsed.is_some() {
+        let thrown = ooxml::sax_exception(parsed)?;
+        if thrown.is_some() {
             body.close_any_pending()?;
         }
         let (emitted, references) = body.finish();
-        if let Some(reason) = unparsed {
-            embedded::record_exception(
-                xhtml.metadata_mut(),
-                &format!("org.xml.sax.SAXParseException: {reason}"),
-            );
+        if let Some(thrown) = thrown {
+            embedded::record_exception(xhtml.metadata_mut(), &thrown);
             features = None;
         }
         Ok(WrittenPart {

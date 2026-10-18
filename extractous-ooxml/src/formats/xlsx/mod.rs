@@ -34,6 +34,7 @@ use sheet::{SheetOutput, SheetReader, SheetSettings};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::data_format::{header_footer, DataFormatter};
 use crate::formats::docx;
+use crate::formats::embedded;
 use crate::formats::metadata::{write_sheet_numbers, TikaMetadata};
 use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ignore};
 use crate::formats::ooxml::{
@@ -391,7 +392,7 @@ impl<'a> Workbook<'a> {
         let mut protected = false;
         for part in self.streamed_parts() {
             if sheet_parts.contains(&part) {
-                protected |= read_checked(&self.package, part, Protection::default())?.protected;
+                protected |= self.is_protected(part)?;
             } else {
                 read_checked(&self.package, part, Ignore)?;
             }
@@ -454,6 +455,27 @@ impl<'a> Workbook<'a> {
         Ok(())
     }
 
+    /// Whether the sheet `part` is protected, as Tika notes once it has read the sheet: it has a
+    /// `sheetProtection` and its XML does not fail. The sheet is parsed here only where its
+    /// bytes may hold one; it is parsed once more as it is written, where a failure of its XML
+    /// is recorded. One declaring a document type, whose declarations Java reads and this port
+    /// skips, is [`Unported`].
+    fn is_protected(&self, part: usize) -> Result<bool, Unported> {
+        let name = self.package.name(part);
+        let bytes = self
+            .package
+            .read(part)
+            .map_err(|_| Unported(format!("the part {name} cannot be read")))?;
+        if xml::has_document_type(&bytes) {
+            return Err(Unported(format!("{name} declares a document type")));
+        }
+        if xml::lacks_name(&bytes, Protection::ELEMENT) {
+            return Ok(false);
+        }
+        let mut protection = Protection::default();
+        Ok(xml::parse_part(&bytes, name, &mut protection).is_ok() && protection.protected)
+    }
+
     /// Reads a part checked well-formed into `handler`.
     fn read<H: SaxHandler>(&self, part: usize, mut handler: H) -> Result<H, Failure> {
         let bytes = self.package.read(part)?;
@@ -486,14 +508,22 @@ impl<'a> Workbook<'a> {
                 xhtml,
             );
             let bytes = self.package.read(sheet.part)?;
-            xml::parse_part(&bytes, self.package.name(sheet.part), &mut reader)?;
+            let parsed = xml::parse_part(&bytes, self.package.name(sheet.part), &mut reader);
             let captured = reader.captured;
-            let metadata = xhtml.metadata_mut();
-            if captured.hidden_column {
-                metadata.set(excel::HAS_HIDDEN_COLUMNS, "true");
-            }
-            if captured.hidden_row {
-                metadata.set(excel::HAS_HIDDEN_ROWS, "true");
+            match ooxml::sax_exception(parsed)? {
+                None => {
+                    let metadata = xhtml.metadata_mut();
+                    if captured.hidden_column {
+                        metadata.set(excel::HAS_HIDDEN_COLUMNS, "true");
+                    }
+                    if captured.hidden_row {
+                        metadata.set(excel::HAS_HIDDEN_ROWS, "true");
+                    }
+                }
+                Some(thrown) => {
+                    embedded::record_exception(xhtml.metadata_mut(), &thrown);
+                    output.close_any_pending(xhtml)?;
+                }
             }
             for part in
                 Package::related(self.relationships(sheet.part), sheet_kind::THREADED_COMMENT)
