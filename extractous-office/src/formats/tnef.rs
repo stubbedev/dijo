@@ -12,7 +12,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::types::{property, Type, MULTIVALUED_FLAG};
 use crate::formats::poi::{thrown, Read, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{rtf, Decline, Failure, Opened, Parser, Prepared};
+use crate::formats::{rtf, Decline, Failure, Footprint, Opened, Parser, Prepared};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -69,6 +69,13 @@ impl Parser for TnefParser {
             "application/ms-tnef",
             "application/x-tnef",
         ]
+    }
+
+    /// It reads the message's attributes in place and hands each attachment on from where it
+    /// lies. What it holds is what POI holds: the MAPI properties' values, each at most a
+    /// megabyte, the text attributes, each at most 20 MB, and the decompressed RTF body.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(
