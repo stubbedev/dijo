@@ -12,6 +12,7 @@ use super::metadata_extractor::reader::Sequential;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp;
 use crate::formats::Unported;
+use crate::input::Paging;
 
 const XMP_PREAMBLE: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 const EXTENSION_PREAMBLE: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
@@ -129,51 +130,42 @@ fn extended_chunk(segment: &[u8], guid: &str, buffer: Option<Vec<u8>>) -> Option
     Some(buffer)
 }
 
-/// `ImageXmp.scanAndExtract`: the first `<?xpacket` packet anywhere in the file.
-pub(crate) fn scan_and_extract(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Unported> {
-    if let Some(packet) = scan(input)? {
-        xmp::extract(&packet, metadata, xmp::as_is)?;
+/// `ImageXmp.scanAndExtract`: the first `<?xpacket` packet anywhere in the file, searched with
+/// the file's `paging`, so that a mapped file's pages are released as the search goes on.
+pub(crate) fn scan_and_extract(
+    input: &[u8],
+    paging: &Paging<'_>,
+    metadata: &mut TikaMetadata,
+) -> Result<(), Unported> {
+    if let Some(packet) = scan(input, paging)? {
+        xmp::extract(packet, metadata, xmp::as_is)?;
     }
     Ok(())
 }
 
-/// `XMPPacketScanner.parse`: the bytes between the packet header and trailer. Its `skipAfter`
-/// does not look again at the byte that broke a partial match, so that it misses a match
-/// that byte starts (#114).
-fn scan(input: &[u8]) -> Result<Option<Vec<u8>>, Unported> {
-    let mut position = 0;
-    if !skip_after(input, &mut position, b"<?xpacket begin=", None)? {
+/// `XMPPacketScanner.parse`: the bytes between the packet header and trailer, in place. Its
+/// `skipAfter` does not look again at the byte that broke a partial match, so that it misses a
+/// match that byte starts (#114).
+fn scan<'a>(input: &'a [u8], paging: &Paging<'_>) -> Result<Option<&'a [u8]>, Unported> {
+    let after = |from: usize, pattern: &[u8]| {
+        paging
+            .find(&input[from..], pattern)
+            .map(|at| from + at + pattern.len())
+    };
+    let Some(header) = after(0, b"<?xpacket begin=") else {
         return Ok(None);
-    }
-    if !skip_after(input, &mut position, b"?>", None)? {
+    };
+    let Some(start) = after(header, b"?>") else {
         return Err(recorded("in an XMP packet header without its end"));
+    };
+    let trailer = b"<?xpacket";
+    let rest = &input[start..];
+    let searched = &rest[..rest.len().min(MAX_PACKET + trailer.len())];
+    match paging.find(searched, trailer) {
+        Some(length) if length <= MAX_PACKET => Ok(Some(&rest[..length])),
+        _ if rest.len() > MAX_PACKET => Err(recorded("in an XMP packet larger than Tika reads")),
+        _ => Err(recorded("in an XMP packet without its trailer")),
     }
-    let mut packet = Vec::new();
-    if !skip_after(input, &mut position, b"<?xpacket", Some(&mut packet))? {
-        return Err(recorded("in an XMP packet without its trailer"));
-    }
-    Ok(Some(packet))
-}
-
-fn skip_after(
-    input: &[u8],
-    position: &mut usize,
-    pattern: &[u8],
-    out: Option<&mut Vec<u8>>,
-) -> Result<bool, Unported> {
-    let rest = input.get(*position..).unwrap_or_default();
-    let found = rest
-        .windows(pattern.len())
-        .position(|window| window == pattern);
-    if let Some(out) = out {
-        let before = &rest[..found.unwrap_or(rest.len())];
-        if out.len() + before.len() > MAX_PACKET {
-            return Err(recorded("in an XMP packet larger than Tika reads"));
-        }
-        out.extend_from_slice(before);
-    }
-    *position += found.map_or(rest.len(), |at| at + pattern.len());
-    Ok(found.is_some())
 }
 
 /// `ImageXmp.extractWebp`: the packet of the first top-level `XMP ` chunk.
@@ -326,13 +318,35 @@ fn looks_like_xmp(data: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::Pages;
 
     #[test]
     fn scans_for_packets_past_partial_matches() {
+        let paging = Paging::new(Pages::IN_MEMORY);
         assert_eq!(
-            scan(b"x<<?xpacket begin=\"\"??>XMP<<?xpacket end=\"w\"?>").unwrap(),
-            Some(b"XMP<".to_vec())
+            scan(
+                b"x<<?xpacket begin=\"\"??>XMP<<?xpacket end=\"w\"?>",
+                &paging
+            )
+            .unwrap(),
+            Some(&b"XMP<"[..])
         );
-        assert_eq!(scan(b"no packet").unwrap(), None);
+        assert_eq!(scan(b"no packet", &paging).unwrap(), None);
+    }
+
+    #[test]
+    fn records_packets_without_their_trailer_or_larger_than_tika_reads() {
+        let paging = Paging::new(Pages::IN_MEMORY);
+        assert!(scan(b"<?xpacket begin=\"\"?>XMP", &paging).is_err());
+        let mut large = b"<?xpacket begin=\"\"?>".to_vec();
+        let start = large.len();
+        large.resize(start + MAX_PACKET + 1, b' ');
+        large.extend(b"<?xpacket end=\"w\"?>");
+        assert!(scan(&large, &paging).is_err());
+        large.remove(start);
+        assert_eq!(
+            scan(&large, &paging).unwrap().map(<[u8]>::len),
+            Some(MAX_PACKET)
+        );
     }
 }

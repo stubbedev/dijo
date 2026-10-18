@@ -7,6 +7,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
+use crate::memory;
+
 /// The script the pages of a document after its first are first read in: the one assumed
 /// before the first page, unless reading it teaches another.
 pub struct FirstPage {
@@ -160,6 +162,11 @@ impl<T, E> Iterator for Outputs<'_, T, E> {
 /// and tells what it read and the script it learned. The first page is read in the script
 /// `first_page` assumes and settles the script of the rest. When `consume` returns, the pages
 /// not yet read are given up, and those being read are waited for.
+///
+/// Under a memory budget the pages are read one at a time, on a thread whose allocations are
+/// charged to the budget of the thread that called: a page takes the memory of its raster, the
+/// images prepared from it and tesseract's reading of them, which pages read side by side would
+/// multiply, by whichever happen to be read at once.
 pub fn read_pages<S, T: Send, E: Send, R>(
     count: usize,
     first_page: &FirstPage,
@@ -177,36 +184,19 @@ pub fn read_pages<S, T: Send, E: Send, R>(
         panicked: AtomicBool::new(false),
     };
     let next = AtomicUsize::new(0);
-    let threads = crate::isolate::processors().min(count).max(1);
+    let budget = memory::share();
+    let threads = match budget {
+        Some(_) => 1,
+        None => crate::isolate::processors().min(count).max(1),
+    };
     std::thread::scope(|scope| {
         for _ in 0..threads {
-            let (shared, next, state, read) = (&shared, &next, &state, &read);
-            scope.spawn(move || {
-                let _reading = Reading(shared);
-                let mut own = None;
-                loop {
-                    if shared.abandoned.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    let index = next.fetch_add(1, Ordering::SeqCst);
-                    if index >= count {
-                        return;
-                    }
-                    let own = own.get_or_insert_with(state);
-                    let output = if index == 0 {
-                        let _settle = SettleOnExit(first_page);
-                        read(own, index, first_page.assumed()).map(|(output, learned)| {
-                            first_page.settle(learned);
-                            output
-                        })
-                    } else {
-                        first_page
-                            .later(|script| read(own, index, script).map(|(output, _)| output))
-                    };
-                    let mut outputs = shared.outputs.lock().unwrap_or_else(|e| e.into_inner());
-                    outputs[index] = Some(output);
-                    shared.ready.notify_all();
+            let (shared, next, state, read, budget) = (&shared, &next, &state, &read, &budget);
+            scope.spawn(move || match budget {
+                Some(budget) => {
+                    budget.within(|| read_in_turn(shared, next, count, first_page, state, read))
                 }
+                None => read_in_turn(shared, next, count, first_page, state, read),
             });
         }
         let mut outputs = Outputs {
@@ -217,6 +207,41 @@ pub fn read_pages<S, T: Send, E: Send, R>(
         shared.abandoned.store(true, Ordering::SeqCst);
         consumed
     })
+}
+
+/// Reads the next page not yet taken, on this thread, until none is left or they are given up.
+fn read_in_turn<S, T, E>(
+    shared: &Shared<T, E>,
+    next: &AtomicUsize,
+    count: usize,
+    first_page: &FirstPage,
+    state: &impl Fn() -> S,
+    read: &impl Fn(&mut S, usize, Option<&str>) -> Result<(T, Option<String>), E>,
+) {
+    let _reading = Reading(shared);
+    let mut own = None;
+    loop {
+        if shared.abandoned.load(Ordering::SeqCst) {
+            return;
+        }
+        let index = next.fetch_add(1, Ordering::SeqCst);
+        if index >= count {
+            return;
+        }
+        let own = own.get_or_insert_with(state);
+        let output = if index == 0 {
+            let _settle = SettleOnExit(first_page);
+            read(own, index, first_page.assumed()).map(|(output, learned)| {
+                first_page.settle(learned);
+                output
+            })
+        } else {
+            first_page.later(|script| read(own, index, script).map(|(output, _)| output))
+        };
+        let mut outputs = shared.outputs.lock().unwrap_or_else(|e| e.into_inner());
+        outputs[index] = Some(output);
+        shared.ready.notify_all();
+    }
 }
 
 #[cfg(test)]

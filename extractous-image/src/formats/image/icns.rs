@@ -6,7 +6,7 @@
 use super::fails;
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
 
 const SIGNATURE: [u8; 4] = *b"icns";
 /// `MAX_IMAGE_LENGTH_BYTES`.
@@ -174,6 +174,10 @@ impl Parser for IcnsParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &[CONTENT_TYPE]
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(

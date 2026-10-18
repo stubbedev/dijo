@@ -13,6 +13,8 @@ mod icns;
 mod image_xmp;
 mod imageio;
 mod jxl;
+#[cfg(test)]
+mod large;
 mod metadata_extractor;
 mod motion_photo;
 mod psd;
@@ -41,7 +43,10 @@ use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{java_file_name, Decline, Failure, InputFile, Parser, Prepared, Unported};
+use crate::formats::{
+    java_file_name, Decline, Failure, Footprint, InputFile, Parser, Prepared, Unported,
+};
+use crate::input::{Pages, Paging};
 use crate::java::time::TimeZone;
 use enricher::Enricher;
 use extractor::Target;
@@ -132,13 +137,24 @@ impl Parser for JpegParser {
         &["image/jpeg"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Jpeg, self.tika_name(), input, metadata, configs)
+        prepare(
+            Format::Jpeg,
+            self.tika_name(),
+            input,
+            Pages::IN_MEMORY,
+            metadata,
+            configs,
+        )
     }
 }
 
@@ -160,13 +176,34 @@ impl Parser for TiffParser {
         &["image/tiff"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Tiff, self.tika_name(), input, metadata, configs)
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        prepare(
+            Format::Tiff,
+            self.tika_name(),
+            input,
+            pages,
+            metadata,
+            configs,
+        )
     }
 }
 
@@ -194,13 +231,24 @@ impl Parser for HeifParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Heif, self.tika_name(), input, metadata, configs)
+        prepare(
+            Format::Heif,
+            self.tika_name(),
+            input,
+            Pages::IN_MEMORY,
+            metadata,
+            configs,
+        )
     }
 }
 
@@ -230,7 +278,14 @@ impl Parser for JxlParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Jxl, self.tika_name(), input, metadata, configs)
+        prepare(
+            Format::Jxl,
+            self.tika_name(),
+            input,
+            Pages::IN_MEMORY,
+            metadata,
+            configs,
+        )
     }
 }
 
@@ -249,13 +304,24 @@ impl Parser for BpgParser {
         &["image/x-bpg", "image/bpg"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Bpg, self.tika_name(), input, metadata, configs)
+        prepare(
+            Format::Bpg,
+            self.tika_name(),
+            input,
+            Pages::IN_MEMORY,
+            metadata,
+            configs,
+        )
     }
 }
 
@@ -288,13 +354,24 @@ impl Parser for ImageParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::ImageIo, self.tika_name(), input, metadata, configs)
+        prepare(
+            Format::ImageIo,
+            self.tika_name(),
+            input,
+            Pages::IN_MEMORY,
+            metadata,
+            configs,
+        )
     }
 }
 
@@ -437,6 +514,10 @@ impl Parser for RecognizedImageParser {
         &[PORTABLE_ANYMAP]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -464,6 +545,7 @@ impl Parser for RecognizedImageParser {
             enriched(content_type),
             content_type,
             input,
+            Pages::IN_MEMORY,
             configs,
             self.tika_name(),
         )?;
@@ -537,20 +619,21 @@ struct Read {
 
 /// `AbstractImageParser.parse` of a JPEG or TIFF by the image parser `tika_name`: its metadata
 /// read now, the file's own when the document is written, then the enricher and the motion
-/// photo's video.
+/// photo's video. The pages of memory a TIFF is mapped to, `pages`, are released as it is read.
 fn prepare<'a>(
     format: Format,
     tika_name: &str,
     input: &'a [u8],
+    pages: Pages<'a>,
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Decline<'static>> {
     let content_type = metadata.get("Content-Type").unwrap_or_default();
     let enriched = enriched(content_type);
     let zone = dates_zone();
-    let read = extract_metadata(format, input, metadata.clone(), zone)?;
+    let read = extract_metadata(format, input, &Paging::new(pages), metadata.clone(), zone)?;
     let trailer = motion_photo::trailer(&read.metadata, input)?;
-    let enricher = Enricher::of(enriched, content_type, input, configs, tika_name)?;
+    let enricher = Enricher::of(enriched, content_type, input, pages, configs, tika_name)?;
     Ok(Box::new(move |xhtml| {
         *xhtml.metadata_mut() = read.metadata;
         if read.reads_file {
@@ -569,10 +652,12 @@ fn prepare<'a>(
 }
 
 /// `extractMetadata` of a JPEG, TIFF or HEIF image: its XMP, then metadata-extractor's
-/// directories copied, which for the first two end with the directory of the file it reads.
+/// directories copied, which for the first two end with the directory of the file it reads. A
+/// TIFF's XMP is searched for in all of it, its `paging` releasing what was searched.
 fn extract_metadata(
     format: Format,
     input: &[u8],
+    paging: &Paging<'_>,
     mut metadata: TikaMetadata,
     zone: &'static TimeZone,
 ) -> Result<Read, Decline<'static>> {
@@ -599,7 +684,7 @@ fn extract_metadata(
             heif::read(input, &mut directories)?;
         }
         Format::Tiff => {
-            image_xmp::scan_and_extract(input, &mut metadata)?;
+            image_xmp::scan_and_extract(input, paging, &mut metadata)?;
             match exif::read_tiff(input, 0, &mut directories) {
                 Ok(()) => {}
                 Err(exif::TiffError::Processing(message)) => {
