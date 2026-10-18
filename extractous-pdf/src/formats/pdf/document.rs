@@ -31,7 +31,7 @@ pub(super) enum PageRef {
     /// where `identity` says.
     Direct {
         identity: Identity,
-        dict: Dictionary,
+        dict: Box<Dictionary>,
     },
     /// The empty page `PDPageTree.getKids` puts in place of a kid that reads as `null`, held
     /// where `identity` says.
@@ -45,7 +45,7 @@ impl PageRef {
             Identity::Indirect(id) => Self::Indirect(id),
             identity => Self::Direct {
                 identity,
-                dict: dict.clone(),
+                dict: Box::new(dict.clone()),
             },
         }
     }
