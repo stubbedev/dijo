@@ -86,7 +86,7 @@ pub(super) struct Document {
     pub(super) revision_authors: Option<Vec<Option<String>>>,
     pub(super) fields: Fields,
     /// The stored pictures of the drawing group, `getBStoreContainer`.
-    pub(super) picture_store: Option<Escher>,
+    pub(super) picture_store: Option<Escher<'static>>,
     table: Vec<u8>,
 }
 
@@ -405,7 +405,7 @@ fn check_document_properties(table: &[u8], offset: i32, size: i32) -> Read<()> {
 
 /// `new OfficeArtContent(tableStream, fcDggInfo, lcbDggInfo)`: the drawing group's store of
 /// pictures, after its drawings are read as POI reads them.
-fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher>> {
+fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher<'static>>> {
     if size == 0 {
         return Ok(None);
     }
@@ -437,7 +437,10 @@ fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher>>
              {offset}, size: {size}"
         )));
     }
-    Ok(group.child(BSTORE_CONTAINER).cloned())
+    Ok(group
+        .child(BSTORE_CONTAINER)
+        .cloned()
+        .map(Escher::into_owned))
 }
 
 /// A position moved on by the length a record says it read.

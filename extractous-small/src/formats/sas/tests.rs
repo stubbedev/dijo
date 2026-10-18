@@ -1,7 +1,8 @@
 #[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "tika")]
+use extractous_core::large::LargeFile;
+
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
@@ -65,6 +66,76 @@ fn reads_the_rows_after_a_deleted_one() {
         "{xml}"
     );
     assert_eq!(metadata["database:row-count"], ["11"]);
+}
+
+const PAGE_LENGTH: usize = 16384;
+const ROW_LENGTH: usize = 208;
+const ROWS_PER_PAGE: usize = (PAGE_LENGTH - 24) / ROW_LENGTH;
+/// Enough pages of data to make a file too large to read whole.
+const DATA_PAGES: u64 = 4100;
+/// Where the fixture's row size subheader starts.
+const ROW_SIZE_SUBHEADER: usize = 7984;
+
+fn large_row_count() -> i32 {
+    i32::try_from(11 + DATA_PAGES * ROWS_PER_PAGE as u64).unwrap()
+}
+
+/// The label of row `index` of a data set of `count` rows.
+fn label(index: i32, count: i32) -> String {
+    format!("This is row {index:>12} of {count:>12}")
+}
+
+/// The data page at `index` after the fixture's page: its header, then its rows of a number
+/// and a label, numbered on from the fixture's.
+fn data_page(index: u64) -> Vec<u8> {
+    let mut page = vec![0; PAGE_LENGTH];
+    page[16..18].copy_from_slice(&256i16.to_le_bytes());
+    page[18..20].copy_from_slice(&i16::try_from(ROWS_PER_PAGE).unwrap().to_le_bytes());
+    let first = 11 + index * ROWS_PER_PAGE as u64;
+    for (at, row) in page[24..]
+        .as_chunks_mut::<ROW_LENGTH>()
+        .0
+        .iter_mut()
+        .take(ROWS_PER_PAGE)
+        .enumerate()
+    {
+        let number = i32::try_from(first + at as u64).unwrap();
+        row[..8].copy_from_slice(&f64::from(number).to_le_bytes());
+        let text = format!("{:<200}", label(number, large_row_count()));
+        row[8..].copy_from_slice(text.as_bytes());
+    }
+    page
+}
+
+/// The fixture, its page of metadata holding only its eleven rows, then [`DATA_PAGES`] pages
+/// of data, the row count raised to match.
+fn long_data_set() -> LargeFile {
+    let mut head = FIXTURE.to_vec();
+    let row_count = ROW_SIZE_SUBHEADER + 24;
+    head[row_count..row_count + 4].copy_from_slice(&large_row_count().to_le_bytes());
+    let mix_page_rows = ROW_SIZE_SUBHEADER + 60;
+    head[mix_page_rows..mix_page_rows + 4].copy_from_slice(&11i32.to_le_bytes());
+    LargeFile::new("long.sas7bdat", &head, DATA_PAGES, data_page, b"")
+}
+
+/// A data set too large to read whole is read a page at a time, each row written as it is
+/// read.
+#[test]
+fn reads_data_sets_too_large_to_read_whole_a_page_at_a_time() {
+    let file = long_data_set();
+    let count = large_row_count();
+    let mut rows = 0;
+    let mut check = |line: &str| {
+        if !line.contains("This is row") {
+            return;
+        }
+        let of = if rows <= 10 { 10 } else { count };
+        assert_eq!(line, format!("{rows}\t{}", label(rows, of)));
+        rows += 1;
+    };
+    let metadata = file.extract_lines(Sas7bdatParser.name(), &mut check);
+    assert_eq!(rows, count);
+    assert_eq!(metadata["database:row-count"], [count.to_string()]);
 }
 
 /// The fixture cut at several lengths, with a page length beyond parso's limit and a negative

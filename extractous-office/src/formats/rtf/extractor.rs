@@ -13,6 +13,7 @@ use crate::formats::embedded::{record_exception, record_stream_exception, Wrappi
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
+use crate::input::Pages;
 use crate::java;
 use crate::java::time::{civil, format_instant};
 use crate::text::charset::Charset;
@@ -63,8 +64,8 @@ type Step = Result<(), Interrupt>;
 
 /// Extracts `input` into `xhtml`. On a failure, the elements still open are ended, as
 /// `RTFParser`'s `XHTMLBalancingHandler` drains them, unless that fails in turn.
-pub(super) fn extract(input: &[u8], xhtml: &mut Xhtml) -> Step {
-    let mut extractor = Extractor::new(input, xhtml, None);
+pub(super) fn extract<'a>(input: &'a [u8], pages: Pages<'a>, xhtml: &mut Xhtml) -> Step {
+    let mut extractor = Extractor::new(Input::new(input, pages), xhtml, None);
     let result = extractor.extract();
     if let Err(Interrupt::Failed(_)) = result {
         extractor.drain()?;
@@ -75,7 +76,7 @@ pub(super) fn extract(input: &[u8], xhtml: &mut Xhtml) -> Step {
 /// `RTFParser.parseInline`: extracts `input` into the elements of another document's `xhtml`,
 /// the metadata of its header into `metadata`, ending no element on a failure.
 pub(super) fn extract_inline(input: &[u8], xhtml: &mut Xhtml, metadata: TikaMetadata) -> Step {
-    Extractor::new(input, xhtml, Some(metadata)).extract()
+    Extractor::new(Input::new(input, Pages::IN_MEMORY), xhtml, Some(metadata)).extract()
 }
 
 /// The state of one group, `{...}`, which its nested groups start from.
@@ -358,9 +359,13 @@ struct Extractor<'a, 'x, 'h> {
 }
 
 impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
-    fn new(input: &'a [u8], out: &'x mut Xhtml<'h>, inline_metadata: Option<TikaMetadata>) -> Self {
+    fn new(
+        input: Input<'a>,
+        out: &'x mut Xhtml<'h>,
+        inline_metadata: Option<TikaMetadata>,
+    ) -> Self {
         Self {
-            input: Input::new(input),
+            input,
             out,
             embedded: Embedded::new(),
             font_to_charset: HashMap::new(),
@@ -436,7 +441,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
                     }
                 }
                 _ if self.group.objdata || self.group.pict_depth == 1 => {
-                    self.embedded.write_hex_char(byte);
+                    self.embedded.write_hex_char(byte)?;
                 }
                 b'\r' | b'\n' => {}
                 _ if !self.group.ignore
@@ -732,7 +737,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         } else if self.word(b"bin") {
             if let Ok(length) = u32::try_from(param) {
                 if self.group.pict_depth == 1 {
-                    if let Err(thrown) = self.embedded.write_bytes(&mut self.input, length) {
+                    if let Err(thrown) = self.embedded.write_bytes(&mut self.input, length)? {
                         record_stream_exception(self.metadata(), thrown.line());
                         self.embedded.reset();
                     }
@@ -1101,7 +1106,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         }
         self.ansi_skip = 0;
         if self.group.objdata {
-            match self.embedded.complete() {
+            match self.embedded.complete()? {
                 Ok(handed) => self.hand_on(handed)?,
                 Err(thrown) => record_exception(self.metadata(), thrown.line()),
             }
@@ -1113,7 +1118,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             } else if self.group.sp {
                 self.embedded.end_property();
             } else if self.group.pict_depth == 1 {
-                let handed = self.embedded.complete().map_err(|thrown| {
+                let handed = self.embedded.complete()?.map_err(|thrown| {
                     let failure = Failure::Malformed(thrown.line().to_owned());
                     match thrown {
                         Thrown::Runtime(_) => Interrupt::Unchecked(failure),

@@ -9,6 +9,7 @@
 use super::decompress::{copy_of_range, Compression};
 use super::values::{self, Temporal, Value};
 use crate::formats::thrown::{Exception, Thrown};
+use crate::input::{Pages, Paging};
 use crate::text::charset::Charset;
 
 const ALIGN_1_OFFSET: i64 = 32;
@@ -330,10 +331,11 @@ fn subheader(signature: i64) -> Option<Subheader> {
     })
 }
 
-/// The `DataInputStream` parso reads the file through.
+/// The `DataInputStream` parso reads the file through, whose pages it releases as it reads on.
 struct Stream<'a> {
     input: &'a [u8],
     at: usize,
+    paging: Paging<'a>,
 }
 
 impl Stream<'_> {
@@ -343,6 +345,7 @@ impl Stream<'_> {
         let available = (self.input.len() - self.at).min(buffer.len());
         buffer[..available].copy_from_slice(&self.input[self.at..self.at + available]);
         self.at += available;
+        self.paging.read(available);
         if available < buffer.len() {
             return Err(EndOfFile);
         }
@@ -354,7 +357,9 @@ impl Stream<'_> {
     fn skip(&mut self, count: i64) -> Result<(), Thrown> {
         let available = i64::try_from(self.input.len() - self.at).expect("a length fits");
         let skipped = count.clamp(0, available);
-        self.at += usize::try_from(skipped).expect("not negative");
+        let skipped_bytes = usize::try_from(skipped).expect("not negative");
+        self.at += skipped_bytes;
+        self.paging.read(skipped_bytes);
         if skipped != count {
             return Err(io(format!(
                 "Expected to skip {count} to the end of the header, but skipped {skipped} instead."
@@ -400,10 +405,19 @@ pub(super) struct Reader<'a> {
 impl<'a> Reader<'a> {
     /// `new SasFileParser`: the metadata read up to the first page with data, an `IOException`
     /// ending it there, or what else parso throws on it. `file_decoder` decodes the charset the
-    /// file's encoding byte names, where it names one.
-    pub(super) fn open(input: &'a [u8], file_decoder: Option<Decoder>) -> Result<Self, Thrown> {
+    /// file's encoding byte names, where it names one. The `pages` of `input` are released as
+    /// the reader reads on.
+    pub(super) fn open(
+        input: &'a [u8],
+        pages: Pages<'a>,
+        file_decoder: Option<Decoder>,
+    ) -> Result<Self, Thrown> {
         let mut reader = Self {
-            stream: Stream { input, at: 0 },
+            stream: Stream {
+                input,
+                at: 0,
+                paging: Paging::new(pages),
+            },
             file_decoder,
             decoder: Decoder::named("US-ASCII").expect("the port decodes US-ASCII"),
             properties: Properties::default(),

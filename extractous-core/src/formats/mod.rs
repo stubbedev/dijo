@@ -535,6 +535,21 @@ pub(crate) fn parse_to_string_through(
     configs: &ParserConfigs,
     chain: Chain,
 ) -> ExtractResult<Result<(String, Metadata), Unsupported>> {
+    let mut out = StringOut::default();
+    let parsed = parse_through(parser, input, detected, configs, chain, &mut out)?;
+    Ok(parsed.map(|metadata| (out.0, metadata)))
+}
+
+/// Parses `input` on this thread through the handlers of `chain`, a string extraction's, into
+/// `out`: the final metadata, or why not when the parser leaves the document to Tika.
+pub(crate) fn parse_through<W: Write>(
+    parser: &dyn Parser,
+    input: &Input<'_>,
+    detected: &Detected,
+    configs: &ParserConfigs,
+    chain: Chain,
+    out: &mut W,
+) -> ExtractResult<Result<Metadata, Unsupported>> {
     let max_length = chain
         .max_length()
         .expect("a string extraction's chain limits its text");
@@ -547,22 +562,19 @@ pub(crate) fn parse_to_string_through(
             Ok(Err(Refused::Fails(error))) => return Err(error),
             Ok(Err(Refused::Unwritten(metadata))) => {
                 let metadata = unwritten(parser.name(), metadata, configs);
-                return Ok(Ok((String::new(), metadata.to_map())));
+                return Ok(Ok(metadata.to_map()));
             }
         };
         prepared_within_budget(parser)?;
-        let mut out = StringOut::default();
         let context = ParseContext::new(configs)
             .reading(detected.file.clone())
             .paging(input.pages())
             .with_write_limit(max_length);
-        let (metadata, result) = chain.write_to(&mut out, |handler| {
+        let (metadata, result) = chain.write_to(out, |handler| {
             run(parser, taken, metadata, input.len(), &context, handler)
         });
         match result {
-            Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
-                Ok(Ok((out.0, metadata.to_map())))
-            }
+            Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => Ok(Ok(metadata.to_map())),
             Err(failure) => Err(failure_error(parser, failure)),
         }
     })
@@ -1643,13 +1655,13 @@ mod tests {
     }
 
     /// Files too large to read whole, in a directory of their own removed when they are dropped:
-    /// a WAVE file, an MP4 file, a PDF and an RTF document of 2 GiB each.
+    /// a WAVE file, an MP4 file, a PDF and a Word document of 2 GiB each.
     struct LargeFiles {
         dir: std::path::PathBuf,
         wave: String,
         mp4: String,
         pdf: String,
-        rtf: String,
+        doc: String,
     }
 
     impl LargeFiles {
@@ -1659,11 +1671,11 @@ mod tests {
             std::fs::create_dir(&dir).unwrap();
             let large = 2u64 << 30;
             let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
-            let (wave, mp4, pdf, rtf) = (
+            let (wave, mp4, pdf, doc) = (
                 path("long.wav"),
                 path("long.mp4"),
                 path("long.pdf"),
-                path("long.rtf"),
+                path("long.doc"),
             );
             let samples = u32::try_from(large).unwrap() - 44;
             sparse(wave.as_ref(), &wave_header(samples), large);
@@ -1674,13 +1686,17 @@ mod tests {
                 large,
             );
             sparse(pdf.as_ref(), b"%PDF-1.4\n", large);
-            sparse(rtf.as_ref(), b"{\\rtf1 ", large);
+            sparse(
+                doc.as_ref(),
+                &crate::ole2::tests::compound(&["WordDocument"], b""),
+                large,
+            );
             Self {
                 dir,
                 wave,
                 mp4,
                 pdf,
-                rtf,
+                doc,
             }
         }
     }
@@ -1708,16 +1724,16 @@ mod tests {
         }
         #[cfg(feature = "tika")]
         assert!(matches!(
-            route_file(&files.rtf),
+            route_file(&files.doc),
             Err(Unsupported::TooLarge {
-                parser: "extractous::RTFParser",
+                parser: "extractous::OfficeParser",
                 limit: input::MAX_READ_WHOLE,
             })
         ));
         #[cfg(not(feature = "tika"))]
         {
-            let routed = route_file(&files.rtf).unwrap();
-            assert_eq!(routed.parser.name(), "extractous::RTFParser");
+            let routed = route_file(&files.doc).unwrap();
+            assert_eq!(routed.parser.name(), "extractous::OfficeParser");
             assert!(routed.input.is_mapped());
         }
     }

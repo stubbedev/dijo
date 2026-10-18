@@ -1,10 +1,13 @@
 //! POI's `RecordInputStream` over a workbook stream: BIFF records of a type and a length, read
 //! by records that run on into the `CONTINUE` records after them where POI's reads do, and the
-//! exceptions POI throws on records that end early or late.
+//! exceptions POI throws on records that end early or late. The stream is read in place, a
+//! record at a time, and an encrypted workbook's records are decrypted as they are read.
 
 use std::borrow::Cow;
 
+use super::factory::Decrypting;
 use crate::formats::poi::{thrown, Read, Thrown};
+use crate::ole2::Content;
 
 /// The type of a `CONTINUE` record.
 pub(super) const CONTINUE: u16 = 0x003C;
@@ -15,26 +18,46 @@ pub(super) const MAX_RECORD_LENGTH: i64 = 100_000;
 /// `StringUtil`'s largest record.
 pub(super) const MAX_STRING_LENGTH: i64 = 10_000_000;
 
+/// Where a record stream is: in a record, by the start of its header and how far into its data
+/// it has read, or between records, by the start of the next one's header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mark {
+    In { header: u32, offset: u16 },
+    Between { header: u32 },
+}
+
 /// The records of a workbook stream, as `RecordInputStream` reads them.
+#[derive(Clone)]
 pub(super) struct RecordStream<'a> {
-    data: Cow<'a, [u8]>,
+    content: Content<'a>,
+    /// What decrypts the records from where the encryption starts, in an encrypted workbook.
+    decrypting: Option<Decrypting>,
+    /// Where the next byte is read: in a record, the start of its data plus the offset.
     position: usize,
     sid: u16,
     /// The length of the current record, `None` before it is read.
     length: Option<i64>,
     offset: i64,
+    /// The current record's data, as far as the stream holds it, decrypted.
+    data: Cow<'a, [u8]>,
     /// The type of the next record, `None` at the end of the stream.
     next_sid: Option<u16>,
 }
 
 impl<'a> RecordStream<'a> {
     pub(super) fn new(data: &'a [u8]) -> Self {
+        Self::of(Content::from(data))
+    }
+
+    pub(super) fn of(content: Content<'a>) -> Self {
         let mut stream = RecordStream {
-            data: Cow::Borrowed(data),
+            content,
+            decrypting: None,
             position: 0,
             sid: 0,
             length: None,
             offset: 0,
+            data: Cow::Borrowed(&[]),
             next_sid: None,
         };
         stream.next_sid = stream.read_next_sid();
@@ -51,9 +74,46 @@ impl<'a> RecordStream<'a> {
         self.position
     }
 
-    /// The stream's bytes, to decrypt in place: a copy of those it was made with.
-    pub(super) fn data_mut(&mut self) -> &mut [u8] {
-        self.data.to_mut()
+    /// Decrypts the records read from now on as `decrypting` says.
+    pub(super) fn decrypt_with(&mut self, decrypting: Decrypting) {
+        self.decrypting = Some(decrypting);
+    }
+
+    /// Where the stream is.
+    pub(super) fn mark(&self) -> Mark {
+        let header =
+            |at: usize| u32::try_from(at).expect("a stream of a compound document is under 4 GiB");
+        match self.length {
+            Some(_) => Mark::In {
+                header: header(self.position - self.offset as usize - 4),
+                offset: u16::try_from(self.offset).expect("a record holds at most 8224 bytes"),
+            },
+            None => Mark::Between {
+                header: header(self.position - 2),
+            },
+        }
+    }
+
+    /// Where the current record starts.
+    pub(super) fn record_start(&self) -> Mark {
+        Mark::In {
+            header: u32::try_from(self.position - self.offset as usize - 4)
+                .expect("a stream of a compound document is under 4 GiB"),
+            offset: 0,
+        }
+    }
+
+    /// Goes back or on to where the stream was at `mark`.
+    pub(super) fn seek(&mut self, mark: Mark) -> Read<()> {
+        let (Mark::In { header, .. } | Mark::Between { header }) = mark;
+        self.position = header as usize;
+        self.next_sid = self.read_next_sid();
+        if let Mark::In { offset, .. } = mark {
+            self.next_record()?;
+            self.offset = i64::from(offset);
+            self.position += usize::from(offset);
+        }
+        Ok(())
     }
 
     /// `getNextSid`.
@@ -61,11 +121,16 @@ impl<'a> RecordStream<'a> {
         self.next_sid
     }
 
+    fn u16_at(&self, at: usize) -> Option<u16> {
+        let bytes = self.content.range(at, 2)?;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
     fn read_next_sid(&mut self) -> Option<u16> {
-        if self.data.len() - self.position < 4 {
+        if self.content.len() - self.position < 4 {
             return None;
         }
-        let sid = u16::from_le_bytes([self.data[self.position], self.data[self.position + 1]]);
+        let sid = self.u16_at(self.position)?;
         self.position += 2;
         self.length = None;
         Some(sid)
@@ -96,24 +161,27 @@ impl<'a> RecordStream<'a> {
         }
         self.sid = sid;
         self.offset = 0;
-        let length = i64::from(u16::from_le_bytes(self.raw::<2>()?));
+        let length = i64::from(
+            self.u16_at(self.position)
+                .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))?,
+        );
+        self.position += 2;
         self.length = Some(length);
         if length > MAX_RECORD_DATA_SIZE {
             return thrown(format!(
                 "The content of an excel record cannot exceed 8224 bytes, but had: {length}"
             ));
         }
+        let held = (self.content.len() - self.position).min(length as usize);
+        let mut data = self
+            .content
+            .range(self.position, held)
+            .expect("the data of the record the stream holds");
+        if let Some(decrypting) = &mut self.decrypting {
+            decrypting.decrypt(sid, self.position - 4, length as usize, &mut data);
+        }
+        self.data = data;
         Ok(())
-    }
-
-    /// The bytes after the position, read past record boundaries as the underlying stream is.
-    fn raw<const N: usize>(&mut self) -> Read<[u8; N]> {
-        let bytes = self
-            .data
-            .get(self.position..self.position + N)
-            .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))?;
-        self.position += N;
-        Ok(bytes.try_into().expect("N bytes"))
     }
 
     /// `read(bytes, 0, length)`: as many of `length` bytes as the record holds, never into the
@@ -134,7 +202,7 @@ impl<'a> RecordStream<'a> {
             return thrown("a byte past the end of its record, read on into the next");
         }
         self.data
-            .get(self.position)
+            .get(self.offset as usize)
             .copied()
             .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))
     }
@@ -164,10 +232,20 @@ impl<'a> RecordStream<'a> {
         ))
     }
 
+    /// `length` bytes of the record's data from where the stream is, failing past the end of
+    /// the stream.
+    fn take(&mut self, length: usize) -> Read<&[u8]> {
+        let at = self.offset as usize;
+        self.offset += length as i64;
+        self.position += length;
+        self.data
+            .get(at..at + length)
+            .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))
+    }
+
     fn read<const N: usize>(&mut self) -> Read<[u8; N]> {
         self.check_record_position(N as i64)?;
-        self.offset += N as i64;
-        self.raw::<N>()
+        Ok(self.take(N)?.try_into().expect("N bytes"))
     }
 
     pub(super) fn read_u8(&mut self) -> Read<u8> {
@@ -214,13 +292,7 @@ impl<'a> RecordStream<'a> {
                 }
             }
             self.check_record_position(chunk)?;
-            let piece = self
-                .data
-                .get(self.position..self.position + chunk as usize)
-                .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))?;
-            bytes.extend_from_slice(piece);
-            self.position += chunk as usize;
-            self.offset += chunk;
+            bytes.extend_from_slice(self.take(chunk as usize)?);
             left -= chunk;
         }
         Ok(bytes)

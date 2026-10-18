@@ -182,7 +182,7 @@ pub(crate) fn office_document(
     let size: usize = file
         .children(directory)
         .filter(|&child| file.kind(child) == EntryKind::Document)
-        .map(|child| file.read(child).map(|data| data.len()))
+        .map(|child| file.content(child).map(|content| content.len()))
         .sum::<Result<usize, Unreadable>>()
         .map_err(unreadable)?;
     metadata.set(CONTENT_LENGTH, size.to_string());

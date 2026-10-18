@@ -15,7 +15,8 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java::time::format_instant;
 use reader::{Column, Decoder, Next, Reader};
 use values::{Value, Writer};
@@ -37,11 +38,26 @@ impl Parser for Sas7bdatParser {
         &[MEDIA_TYPE]
     }
 
-    /// Reads the file's metadata as parso does, failing where parso throws, and leaves a file
-    /// whose text is in a charset this port does not decode to Tika.
+    /// A page and the columns' metadata: the rows are read one at a time.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the file's metadata as parso does, failing where parso throws, and leaves a file
+    /// whose text is in a charset this port does not decode to Tika.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -57,7 +73,7 @@ impl Parser for Sas7bdatParser {
             None => None,
         };
         let tika_name = self.tika_name();
-        let mut reader = Reader::open(input, decoder)
+        let mut reader = Reader::open(input, pages, decoder)
             .map_err(|thrown| Decline::Fails(thrown.into_error(tika_name)))?;
         Ok(Box::new(move |xhtml| {
             write_metadata(&reader, xhtml.metadata_mut());

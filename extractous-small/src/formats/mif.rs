@@ -8,10 +8,11 @@
 //! detected (#118).
 
 use crate::config::ParserConfigs;
-use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
+use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 
 /// `MIFParser.SUPPORTED_TYPES`.
@@ -36,25 +37,41 @@ impl Parser for MifParser {
         &MEDIA_TYPES
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         unless_different(
-            Box::new(move |xhtml| write(input, xhtml)),
+            Box::new(move |xhtml| write(input, pages, xhtml)),
             AutoDetectReader::difference(input, metadata.get("Content-Type")),
         )
     }
 }
 
-fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// Writes the elements of `input`, its lines read as they are decoded, its `pages` released as
+/// they are read.
+fn write<'a>(input: &'a [u8], pages: Pages<'a>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let content_type = xhtml.metadata_mut().get("Content-Type").map(str::to_owned);
-    let reader = AutoDetectReader::read(input, content_type.as_deref());
+    let (detection, text) = AutoDetectReader::stream(input, content_type.as_deref(), pages);
     let metadata = xhtml.metadata_mut();
-    auto_detect_reader::set_metadata(&reader.detection, metadata);
-    metadata.set("Content-Encoding", reader.detection.decode_as.name());
+    auto_detect_reader::set_metadata(&detection, metadata);
+    metadata.set("Content-Encoding", detection.decode_as.name());
     let detected = content_type.filter(|detected| MEDIA_TYPES.contains(&detected.as_str()));
     metadata.set(
         "Content-Type",
@@ -68,7 +85,7 @@ fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
         master_pages: 0,
         reference_pages: 0,
     };
-    extract(&reader.text, &mut handler)?;
+    extract(text.lines(), &mut handler)?;
     Ok(())
 }
 
@@ -109,9 +126,10 @@ fn self_tag(line: &str) -> Option<(&str, &str)> {
 }
 
 /// `MIFExtractor.parse`: each line an open tag, a close tag or a statement on one line.
-fn extract(text: &str, handler: &mut Mif<'_, '_>) -> Result<(), Failure> {
+fn extract(lines: impl Iterator<Item = String>, handler: &mut Mif<'_, '_>) -> Result<(), Failure> {
     let mut open: Vec<String> = Vec::new();
-    for line in lines(text) {
+    for line in lines {
+        let line = line.as_str();
         let trimmed = java::trim(line);
         if line.contains('<') && !line.contains('>') {
             if let Some(name) = open_tag(trimmed) {
@@ -282,6 +300,31 @@ mod tests {
    <Char Tab>\n   <String `Sm\u{f8}rrebr\u{f8}d'>\n  > # end of ParaLine\n > # end of Para\n\
  <Para \n  <ParaLine \n   <String `'>\n  > # end of ParaLine\n > # end of Para\n\
 > # end of TextFlow\n> # end of nothing\n# End of MIFFile\n";
+
+    /// A MIF file too large to read whole is read a line at a time, each paragraph written as
+    /// it ends.
+    #[test]
+    fn reads_mif_files_too_large_to_read_whole() {
+        let para = |index: u64| {
+            format!(" <Para \n  <ParaLine \n   <String `Linje {index}'>\n  >\n >\n").into_bytes()
+        };
+        let count = extractous_core::large::bodies_past_limit(para(1_000_000).len());
+        let file = extractous_core::large::LargeFile::new(
+            "long.mif",
+            b"<MIFFile 2015>\n<TextFlow \n",
+            count,
+            para,
+            b"> # end of TextFlow\n",
+        );
+        let mut paragraphs = 0;
+        file.extract_lines(MifParser.name(), |line| {
+            if !line.is_empty() {
+                assert_eq!(line, format!("Linje {paragraphs}"));
+                paragraphs += 1;
+            }
+        });
+        assert_eq!(paragraphs, count);
+    }
 
     #[test]
     fn writes_text_as_it_is() {
