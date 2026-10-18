@@ -131,7 +131,7 @@ impl Picture {
             .any(|signature| matches_signature(raw, signature, 32))
         {
             return inflate(&raw[33..], None)
-                .ok_or_else(|| Thrown::new("a compressed picture does not inflate"));
+                .map_err(|_| Thrown::new("a compressed picture does not inflate"));
         }
         Ok(escher::picture_data(raw).to_vec())
     }

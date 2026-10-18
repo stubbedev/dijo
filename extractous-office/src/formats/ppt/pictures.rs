@@ -3,7 +3,7 @@
 //! gives (`getData`); and the data of its embedded OLE objects (`ExOleObjStg.getData`).
 
 use crate::formats::escher::{kind as escher_kind, Content, Escher};
-use crate::formats::poi::{i32_at, inflate};
+use crate::formats::poi::{i32_at, inflate, Thrown};
 use crate::formats::{wmf_placeable, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
@@ -39,6 +39,9 @@ pub(super) enum Unread {
     /// POI throws for this reason, which Tika records before it goes on past the picture or
     /// object.
     Recorded(&'static str),
+    /// Java's stream of the data throws this exception, its first line as Java prints it, where
+    /// Tika reads it, which Tika records as a warning before it goes on past the object.
+    Thrown(String),
     /// What this port does not read as POI does.
     Unported(Unported),
 }
@@ -53,6 +56,7 @@ impl From<Unread> for Unported {
     fn from(unread: Unread) -> Self {
         match unread {
             Unread::Recorded(reason) => recorded(reason),
+            Unread::Thrown(exception) => recorded(&exception),
             Unread::Unported(unported) => unported,
         }
     }
@@ -429,7 +433,7 @@ impl Picture {
                 let header = MetafileHeader::read(raw, CHECKSUM)?;
                 let _ = header;
                 inflate(raw.get(CHECKSUM + 34..).unwrap_or_default(), None)
-                    .ok_or(Unread::Recorded("an EMF picture that does not inflate"))
+                    .map_err(|_| Unread::Recorded("an EMF picture that does not inflate"))
             }
             PictureType::Wmf => {
                 let at = CHECKSUM * self.checksums;
@@ -437,7 +441,7 @@ impl Picture {
                 let mut data = header.placeable()?;
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
-                        .ok_or(Unread::Recorded("a WMF picture that does not inflate"))?,
+                        .map_err(|_| Unread::Recorded("a WMF picture that does not inflate"))?,
                 );
                 Ok(data)
             }
@@ -447,7 +451,7 @@ impl Picture {
                 let mut data = vec![0; 512];
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
-                        .ok_or(Unread::Recorded("a PICT picture that does not inflate"))?,
+                        .map_err(|_| Unread::Recorded("a PICT picture that does not inflate"))?,
                 );
                 Ok(data)
             }
@@ -549,9 +553,7 @@ impl Object<'_> {
             .map_err(|_| Unread::Recorded("a compressed object without its length"))?;
         let size = usize::try_from(size)
             .map_err(|_| Unread::Recorded("a compressed object of a negative length"))?;
-        inflate(&data[4..], Some(size)).ok_or(Unread::Recorded(
-            "an embedded object whose compressed data does not inflate",
-        ))
+        inflate(&data[4..], Some(size)).map_err(|Thrown(exception)| Unread::Thrown(exception))
     }
 }
 

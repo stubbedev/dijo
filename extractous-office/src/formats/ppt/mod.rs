@@ -22,7 +22,7 @@ mod text;
 use extractor::{extract, Out};
 
 use crate::config::ParserConfigs;
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{record_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -120,6 +120,7 @@ fn write(out: Vec<Out>, xhtml: &mut Xhtml) -> Result<(), Failure> {
             },
             Out::Add(name, value) => xhtml.metadata_mut().add(name, value),
             Out::Set(name, value) => xhtml.metadata_mut().set(name, value),
+            Out::Warning(exception) => record_exception(xhtml.metadata_mut(), &exception),
         }
     }
     Ok(())

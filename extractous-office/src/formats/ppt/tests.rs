@@ -14,7 +14,7 @@ const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
 
 /// The presentations this port leaves to Tika, by file name, with a part of the reason.
 #[cfg(feature = "tika")]
-const DEFERRED: [(&str, &str); 1] = [("testPPT_skipBadCompressedObject.ppt", "does not inflate")];
+const DEFERRED: [(&str, &str); 0] = [];
 
 /// The encrypted presentations, by file name, with the password that opens them.
 #[cfg(feature = "tika")]
@@ -90,28 +90,30 @@ fn opens_the_repositorys_encrypted_presentation_as_tikas_path_does() {
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let ported = ported(&corpus(&[&parity::conformance_corpus()]));
+    let (visio_nuls, ported): (Vec<PathBuf>, Vec<PathBuf>) =
+        ported(&corpus(&[&parity::conformance_corpus()]))
+            .into_iter()
+            .partition(|path| file_name(path) == VISIO_NULS);
     assert_eq!(ported.len(), 21);
     assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+    assert_eq!(visio_nuls.len(), 1);
+    parity::assert_same_xhtml_as_tika_with(
+        &[visio_nuls[0].as_path()],
+        TIKA_PARSER,
+        &ParserConfigs::default(),
+        without_visio_nuls,
+    );
 }
 
-/// A presentation with an embedded object whose data does not inflate, which Tika records before
-/// it goes on, is read natively without the object, as a build without Tika takes it (#144).
+/// The presentation of Tika's tests with an object whose data does not inflate, which both paths
+/// record as a warning, and an embedded Visio 5 drawing whose texts end in a NUL. The native
+/// parser ends each text at its NUL where HDGF keeps it, which Tika's path writes as a U+FFFD
+/// (#129).
 #[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn reads_natively_a_presentation_with_an_object_poi_fails_on() {
-    let path = corpus(&[&parity::conformance_corpus()])
-        .into_iter()
-        .find(|path| path.ends_with("testPPT_skipBadCompressedObject.ppt"))
-        .expect("Tika's test presentation");
-    let (crate::formats::Difference(reason), text) = parity::differing_reading(&PptParser, &path);
-    assert!(
-        reason.ends_with("an embedded object whose compressed data does not inflate"),
-        "{reason}"
-    );
-    assert!(
-        text.contains("An Evaluation of CDTI Dynamic Predictor Display Technology"),
-        "{text}"
-    );
+const VISIO_NULS: &str = "testPPT_skipBadCompressedObject.ppt";
+
+/// Tika's XHTML without the U+FFFD HDGF leaves at the end of a Visio 5 text (#129).
+#[cfg(feature = "tika")]
+fn without_visio_nuls(xhtml: &str) -> String {
+    xhtml.replace("\u{FFFD}</p>", "</p>")
 }
