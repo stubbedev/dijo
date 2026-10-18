@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::input::{Pages, Paging, WINDOW};
+use crate::input::{Pages, Paging};
 use crate::text::charset::{Charset, Pieces};
 
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
@@ -256,12 +256,14 @@ const FIRST_READS: usize = 4 + 28;
 const CHUNK: usize = 64 << 10;
 
 /// The document's characters, decoded as Xerces decodes them, line ends normalized, up to the
-/// first character its reader cannot deliver. A UTF-8 document without carriage returns is read
-/// where it lies; any other is decoded a chunk at a time into a window, as UTF-8, which drops
-/// the characters the parser no longer needs as it moves on. The byte offsets the switch to a
-/// declared encoding needs are decoded again for the few characters of the declaration.
+/// first character its reader cannot deliver, read a chunk at a time into a window that drops
+/// the characters the parser no longer needs as it moves on. The window of a UTF-8 document lies
+/// in its bytes for as long as no carriage return needs normalizing; any other holds the
+/// characters decoded, as UTF-8. The byte offsets the switch to a declared encoding needs are
+/// decoded again for the few characters of the declaration.
 struct Text<'a> {
-    /// The characters from `base` on that are decoded and not yet dropped.
+    /// The characters from `base` on that are read and not yet dropped: borrowed from the
+    /// bytes while they are read where they lie.
     window: Cow<'a, str>,
     /// Where the window starts among all the characters, in bytes of their UTF-8.
     base: usize,
@@ -294,6 +296,20 @@ impl<'a> Source<'a> {
             line_ends: LineEnds::default(),
         }
     }
+
+    /// Decodes onto `window` until it grows or the reader has delivered all it can: whether it
+    /// has.
+    fn decode_onto(&mut self, window: &mut String) -> bool {
+        let length = window.len();
+        loop {
+            if !self.decoder.decode_into(&mut self.line_ends, window) {
+                return true;
+            }
+            if window.len() > length {
+                return false;
+            }
+        }
+    }
 }
 
 impl<'a> Text<'a> {
@@ -304,27 +320,15 @@ impl<'a> Text<'a> {
         start: usize,
         paging: &'a Paging<'a>,
     ) -> Text<'a> {
-        let in_place = match reader {
-            Reader::Utf8 => {
-                let body = &bytes[start.min(bytes.len())..];
-                let checked = Utf8Check::of(body, paging);
-                (!checked.carriage_return).then(|| (checked.valid(body), checked.malformed))
-            }
-            _ => None,
-        };
-        let (window, source, malformed) = match in_place {
-            Some((valid, malformed)) => (Cow::Borrowed(valid), None, malformed),
-            None => (
-                Cow::Owned(String::new()),
-                Some(Source::new(reader, bytes, start)),
-                false,
-            ),
+        let window = match reader {
+            Reader::Utf8 => Cow::Borrowed(""),
+            _ => Cow::Owned(String::new()),
         };
         Text {
             window,
             base: 0,
-            source,
-            malformed,
+            source: Some(Source::new(reader, bytes, start)),
+            malformed: false,
             paging,
             bytes,
             start,
@@ -354,28 +358,52 @@ impl<'a> Text<'a> {
         &self.window[range.start - self.base..range.end - self.base]
     }
 
-    /// Decodes more characters into the window, first dropping those before `keep` once they
-    /// are the larger part of it: whether it decoded any, or found that the reader delivers no
-    /// more, which a complete text never does again.
-    fn fill(&mut self, keep: usize) -> bool {
-        let Some(source) = &mut self.source else {
-            return false;
-        };
-        let window = self.window.to_mut();
+    /// Drops the characters before `keep` once they are the larger part of the window.
+    fn drop_before(&mut self, keep: usize) {
         let dropped = keep - self.base;
-        if dropped > window.len() / 2 {
-            window.drain(..dropped);
-            self.base = keep;
+        if dropped <= self.window.len() / 2 {
+            return;
         }
-        let length = window.len();
+        match &mut self.window {
+            Cow::Borrowed(window) => *window = &window[dropped..],
+            Cow::Owned(window) => {
+                window.drain(..dropped);
+            }
+        }
+        self.base = keep;
+    }
+
+    /// Reads more characters into the window, first dropping those before `keep` once they are
+    /// the larger part of it: whether it read any, or found that the reader delivers no more,
+    /// which a complete text never does again. A window that lies in the bytes grows over the
+    /// next chunk of them, until a carriage return in it makes the window a decoded one.
+    fn fill(&mut self, keep: usize) -> bool {
+        if self.complete() {
+            return false;
+        }
+        self.drop_before(keep);
+        let at = self.start.min(self.bytes.len()) + self.base;
+        let Some(source) = &mut self.source else {
+            unreachable!("an incomplete text has a source")
+        };
         let read = source.decoder.read();
-        let finished = loop {
-            if !source.decoder.decode_into(&mut source.line_ends, window) {
-                break true;
-            }
-            if window.len() > length {
-                break false;
-            }
+        let finished = match &mut self.window {
+            Cow::Borrowed(window) => match source.decoder.utf8_run() {
+                None => true,
+                Some(run) if memchr::memchr(b'\r', run.as_bytes()).is_none() => {
+                    let end = at + window.len() + run.len();
+                    *window = unsafe { std::str::from_utf8_unchecked(&self.bytes[at..end]) };
+                    source.decoder.utf8_advance(run.len());
+                    false
+                }
+                Some(_) => {
+                    let mut decoded = window.to_owned();
+                    let finished = source.decode_onto(&mut decoded);
+                    self.window = Cow::Owned(decoded);
+                    finished
+                }
+            },
+            Cow::Owned(window) => source.decode_onto(window),
         };
         self.paging.read(source.decoder.read() - read);
         if finished {
@@ -488,66 +516,6 @@ impl LineEnds {
             rest = rest.strip_prefix('\n').unwrap_or(rest);
         }
         text.push_str(rest);
-    }
-}
-
-/// What a check of UTF-8 bytes found, a window at a time.
-struct Utf8Check {
-    /// How many bytes from the start are valid UTF-8 and checked.
-    valid_up_to: usize,
-    /// Whether a malformed sequence ends them, rather than the end.
-    malformed: bool,
-    /// Whether a carriage return ends them, where the check stopped, as such characters need
-    /// their line ends normalized.
-    carriage_return: bool,
-}
-
-impl Utf8Check {
-    /// Checks `bytes` a window at a time up to the first carriage return, each window counted
-    /// read by `paging`, a character cut by a window's end checked with the next.
-    fn of(bytes: &[u8], paging: &Paging) -> Self {
-        let mut at = 0;
-        while at < bytes.len() {
-            let end = bytes.len().min(at + WINDOW);
-            let window = &bytes[at..end];
-            let (good, malformed) = match std::str::from_utf8(window) {
-                Ok(_) => (window.len(), false),
-                Err(error) if error.error_len().is_none() && end < bytes.len() => {
-                    (error.valid_up_to(), false)
-                }
-                Err(error) => (error.valid_up_to(), true),
-            };
-            if let Some(carriage_return) = memchr::memchr(b'\r', &window[..good]) {
-                paging.read(carriage_return);
-                return Self {
-                    valid_up_to: at + carriage_return,
-                    malformed: false,
-                    carriage_return: true,
-                };
-            }
-            paging.read(good);
-            at += good;
-            if malformed {
-                return Self {
-                    valid_up_to: at,
-                    malformed,
-                    carriage_return: false,
-                };
-            }
-        }
-        Self {
-            valid_up_to: at,
-            malformed: false,
-            carriage_return: false,
-        }
-    }
-
-    /// The valid characters of `bytes`, which this check checked: valid UTF-8, window by
-    /// window, each window ending at a character's end. They are not checked again, which would
-    /// read all their pages at once a second time.
-    fn valid<'b>(&self, bytes: &'b [u8]) -> &'b str {
-        let valid = &bytes[..self.valid_up_to];
-        unsafe { std::str::from_utf8_unchecked(valid) }
     }
 }
 
@@ -2291,37 +2259,6 @@ fn is_encoding_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn checks_utf8_across_windows_as_whole() {
-        let paging = Paging::new(Pages::IN_MEMORY);
-        let mut bytes = vec![b'a'; WINDOW + 16];
-        bytes[WINDOW - 1..WINDOW + 1].copy_from_slice("\u{e6}".as_bytes());
-        let check = Utf8Check::of(&bytes, &paging);
-        assert_eq!(
-            (check.valid_up_to, check.malformed, check.carriage_return),
-            (bytes.len(), false, false)
-        );
-        bytes[WINDOW + 8] = 0xFF;
-        let check = Utf8Check::of(&bytes, &paging);
-        assert_eq!(
-            (check.valid_up_to, check.malformed, check.carriage_return),
-            (WINDOW + 8, true, false)
-        );
-        assert_eq!(
-            check.valid(&bytes),
-            std::str::from_utf8(&bytes[..WINDOW + 8]).unwrap()
-        );
-        bytes[WINDOW + 4] = b'\r';
-        let check = Utf8Check::of(&bytes, &paging);
-        assert_eq!(
-            (check.valid_up_to, check.malformed, check.carriage_return),
-            (WINDOW + 4, false, true)
-        );
-        let cut = &"a\u{e6}".as_bytes()[..2];
-        let check = Utf8Check::of(cut, &paging);
-        assert_eq!((check.valid_up_to, check.malformed), (1, true));
-    }
-
     fn root(bytes: &[u8]) -> std::result::Result<Option<(String, String)>, XmlError> {
         let mut found = None;
         parse(bytes, &mut |event| {
@@ -2646,6 +2583,17 @@ mod tests {
             (4 * CHUNK - 5, "\u{20ac}".as_bytes()),
             (5 * CHUNK - 6, "\u{1F600}]\r".as_bytes()),
         ];
+        let in_place = cut_document(
+            head,
+            &[
+                (CHUNK - 4, "\u{e6}".as_bytes()),
+                (2 * CHUNK - 5, "\u{1F600}\n".as_bytes()),
+                (3 * CHUNK - 6, "\u{20ac}]\n]".as_bytes()),
+                (5 * CHUNK, b"\r\nz\r"),
+            ],
+        );
+        assert_eq!(run_text(&in_place), expected_text(&in_place, head, "UTF-8"));
+
         let utf8 = cut_document(head, &parts);
         let expected = expected_text(&utf8, head, "UTF-8");
         assert_eq!(run_text(&utf8), expected);
