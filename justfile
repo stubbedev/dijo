@@ -107,6 +107,17 @@ djvu-reference:
     mapfile -t documents < <(find test_files/documents quality/corpus "$fixtures" -name '*.djvu' | sort)
     java -cp "$jars/*" "$sources/DjvuReference.java" "$fixtures/renders.tsv" "${documents[@]}"
 
+# Regenerate how PDFBox's DateConverter reads dates that end in a time zone name, which the Rust port of XMP
+# dates is tested against.
+[unix]
+xmp-date-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    fixtures=extractous-base/tests/fixtures/xmp
+    java -cp "$jars/pdf/*" "$fixtures/NamedZoneDates.java" "$fixtures/named-zone-dates.tsv.gz"
+
 # Regenerate what Apache Tika's TextAndCSVParser makes of the plain text, CSV and TSV inputs of the corpora,
 # which the Rust port of its decisions is tested against.
 [unix]

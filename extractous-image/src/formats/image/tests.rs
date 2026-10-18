@@ -1119,21 +1119,28 @@ fn reads_tikas_test_bpg_images_as_tika_does_but_for_the_header_it_misreads() {
         [
             "testBPG.bpg",
             "testBPG_GEO.bpg",
+            "testBPG_commented.bpg",
             "testBPG_commented_xnviewmp026.bpg",
         ]
     );
-    assert_eq!(
-        names(&deferred),
-        ["testBPG_commented.bpg"],
-        "left to Tika for its XMP date in CEST"
-    );
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    assert!(deferred.is_empty(), "{deferred:?}");
+    let paths: Vec<&Path> = parsed
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| !path.ends_with(BPG_FILLING_THE_SMALL_LIMIT))
+        .collect();
     crate::formats::parity::assert_same_as_tika_rewriting(
         &paths,
         BpgParser.tika_name(),
         bpg::as_tika_misreads_the_header,
     );
 }
+
+/// The BPG image whose extensions, which Tika never reads (#132), write so much metadata that
+/// the small length limit stops the port's head where Tika's ends: no rewrite of the port's
+/// result gives back the head the limit cut, so the extensions test checks it instead.
+#[cfg(feature = "tika")]
+const BPG_FILLING_THE_SMALL_LIMIT: &str = "testBPG_commented.bpg";
 
 /// The port reads the bit depth of a BPG image and the Exif and XMP of its extensions, and
 /// keeps the header's size over the one the Exif records (#132).
@@ -1175,4 +1182,13 @@ fn reads_the_header_and_extensions_of_bpg_images() {
     );
     assert_eq!(value(&commented, "geo:alt"), "37");
     assert_eq!(value(&commented, "tiff:ImageWidth"), "102");
+    let named_zone = read(BPG_FILLING_THE_SMALL_LIMIT);
+    for (name, expected) in [
+        ("tiff:BitsPerSample", "8"),
+        ("dc:title", "Tosteberga Ängar"),
+        ("xmp:exif:DateTimeOriginal", "2010-07-28T11:02:12Z"),
+        ("xmp:CreateDate", "2010-07-28T09:02:12Z"),
+    ] {
+        assert_eq!(value(&named_zone, name), expected, "{name}");
+    }
 }

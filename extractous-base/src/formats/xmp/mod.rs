@@ -549,13 +549,18 @@ impl SaxHandler for Flattener {
     }
 }
 
-/// `XmpDates.normalize`: a date's instant as Tika writes dates, if PDFBox reads it.
+/// `XmpDates.normalize`: a date's instant as Tika writes dates, if PDFBox reads it, or else
+/// Tika's `DateUtils`.
 fn normalize_date(raw: &str) -> Result<Option<String>, Unported> {
     let trimmed = crate::java::trim(raw);
     if trimmed.is_empty() {
         return Ok(None);
     }
-    Ok(date::to_calendar(trimmed)?.map(format_instant))
+    let millis = match date::to_calendar(trimmed)? {
+        Some(millis) => Some(millis),
+        None => date::try_to_parse(trimmed)?,
+    };
+    Ok(millis.map(format_instant))
 }
 
 /// `valueFor`: a date property's value normalized when it reads as a date.

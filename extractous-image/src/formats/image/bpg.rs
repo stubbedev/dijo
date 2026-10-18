@@ -153,7 +153,7 @@ pub(super) fn extract_metadata(input: &[u8], mut metadata: TikaMetadata) -> Resu
 }
 
 /// Tika's result of a BPG image, from the native one: without the metadata of the extensions,
-/// which Tika never reads, and with the bit depth Tika reads from the wrong end of the header's
+/// which Tika never reads, nor the title their XMP gives, and with the bit depth Tika reads from the wrong end of the header's
 /// first byte (#132).
 #[cfg(test)]
 #[cfg(feature = "tika")]
@@ -171,6 +171,12 @@ pub(super) fn as_tika_misreads_the_header(
         .collect();
     for name in &extensions {
         without_metadata(text, metadata, name);
+    }
+    if extensions.iter().any(|name| name == "dc:title") {
+        if let Some(start) = text.find("<title>").map(|at| at + "<title>".len()) {
+            let end = start + text[start..].find("</title>").expect("a title ends");
+            text.replace_range(start..end, "");
+        }
     }
     with_tikas_values(text, metadata, tika, extractor::BITS_PER_SAMPLE.name);
 }

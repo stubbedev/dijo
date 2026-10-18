@@ -25,6 +25,7 @@ bzip2 = "0.6.1"
 cpio = "0.4.1"
 encoding_rs = "0.8.42"
 flate2 = "1.1.5"
+jiff-tzdb = "0.1.9"
 libc = { version = "0.2.178" }
 lz4_flex = "0.14.0"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz"] }
@@ -49,7 +50,6 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2
 
 [target.'cfg(windows)'.dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
-jiff-tzdb = "0.1.9"
 
 [dev-dependencies]
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
