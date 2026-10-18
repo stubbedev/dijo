@@ -4,7 +4,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "tika")]
-use super::super::tests::{as_paths, tika_name, CORPORA};
+use super::super::tests::{as_paths, tika_name, CORPORA, XFA_FAILURE};
 use super::super::tests::{document, page_objects};
 use super::super::PdfParser;
 #[cfg(feature = "tika")]
@@ -15,7 +15,7 @@ use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig};
 use crate::formats::metadata::TikaMetadata;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
+    assert_fails_as_tika_with, assert_same_as_tika_delegating_departing_with, conformance_corpus,
     documents_with, spools_as_tika_departing_with, Departure, Departures, Scratch,
 };
 use crate::formats::Parser;
@@ -59,9 +59,22 @@ const PNG_WRITER: Departures = &[Departure::PngImages("#131")];
 /// documents embed, but for [`PNG_WRITER`].
 #[cfg(feature = "tika")]
 fn assert_same(paths: &[PathBuf], configs: &ParserConfigs) {
-    assert_same_as_tika_delegating_with(&as_paths(paths), tika_name(), &DELEGATES, configs);
+    assert_same_departing(paths, configs, &[]);
+}
+
+/// [`assert_same`], but for `departures` too.
+#[cfg(feature = "tika")]
+fn assert_same_departing(paths: &[PathBuf], configs: &ParserConfigs, departures: Departures) {
+    let departures: Vec<Departure> = PNG_WRITER.iter().chain(departures).copied().collect();
+    assert_same_as_tika_delegating_departing_with(
+        &as_paths(paths),
+        tika_name(),
+        &DELEGATES,
+        &departures,
+        configs,
+    );
     for path in paths {
-        let spooled = spools_as_tika_departing_with(path, u64::MAX, PNG_WRITER, configs);
+        let spooled = spools_as_tika_departing_with(path, u64::MAX, &departures, configs);
         assert!(spooled.is_ok(), "{}", spooled.unwrap_err());
     }
 }
@@ -631,16 +644,12 @@ const TIKA_PATH_FAILS: [(&str, &str); 1] = [(
 /// The documents of Tika's tests that the port leaves to Tika with images extracted, by the
 /// start of the reason, the OCR of pages skipped.
 #[cfg(feature = "tika")]
-const DEFERRED: [(&str, &str); 4] = [
+const DEFERRED: [(&str, &str); 3] = [
     ("testPDFVarious.pdf", "a mask of other dimensions"),
     ("testPDF_childAttachments.pdf", "a CCITT image"),
     (
         "testPDF_incrementalUpdates.pdf",
         "a JPEG image in the colour space ICCBased",
-    ),
-    (
-        "testPDF_malformedXFA.pdf",
-        "an XFA form whose XML does not parse",
     ),
 ];
 
@@ -681,6 +690,11 @@ fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {
             .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
         assert_eq!(locked.len(), 2, "{locked:?}");
         assert_fails_as_tika_with(&as_paths(&locked), &configs);
+        let (malformed, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+            .into_iter()
+            .partition(|path| path.ends_with("testPDF_malformedXFA.pdf"));
+        assert_eq!(malformed.len(), 1, "{malformed:?}");
+        assert_same_departing(&malformed, &configs, XFA_FAILURE);
         // Tika extracts the Mac, DOS and Unix copies of one file as files of their own (#109).
         let compared: Vec<PathBuf> = parsed
             .into_iter()

@@ -19,7 +19,9 @@ use super::reading_order;
 use super::recording::Recording;
 use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
-use super::{jfloat, xfa, ImageExtraction, Settings, Unported};
+use super::xfa::{self, Extracted};
+use super::{jfloat, ImageExtraction, Settings, Unported};
+use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::java::is_blank;
 
@@ -589,7 +591,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         out.end_element("ul")?;
         if truncated {
             out.add(
-                "tk:exception:warn",
+                EXCEPTION_WARNING,
                 format!("bookmark outline truncated at {MAX_BOOKMARK_ITEMS} items"),
             );
         }
@@ -658,7 +660,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     }
 
     /// `extractAcroForm`: an XFA form as `XFAExtractor` reads it, otherwise the form's fields,
-    /// as nested ordered lists.
+    /// as nested ordered lists; both when the XFA form's XML fails, its failure recorded.
     fn acro_form(&mut self) -> Result<(), WriteFailure> {
         let pdf = self.pdf;
         let xfa = pdf
@@ -666,7 +668,20 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
             .and_then(|form| pdf.get(form, b"XFA"));
         if let Some(xfa) = xfa {
-            return self.xfa(&xfa::extract(&xfa::bytes(pdf, xfa)?)?);
+            match xfa::extract(&xfa::bytes(pdf, xfa)?)? {
+                Extracted::Read(form) => return self.xfa(&form),
+                Extracted::Failed {
+                    paragraphs,
+                    failure,
+                } => {
+                    let form = xfa::Form {
+                        paragraphs,
+                        fields: Vec::new(),
+                    };
+                    self.xfa(&form)?;
+                    self.page.out.add(EXCEPTION_WARNING, failure);
+                }
+            }
         }
         let out = &mut *self.page.out;
         let Some(lines) = form::lines(pdf, out)? else {

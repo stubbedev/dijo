@@ -577,11 +577,12 @@ mod tests {
     #[cfg(feature = "tika")]
     use crate::config::PdfOcrStrategy;
     use crate::config::{PdfParserConfig, TesseractOcrConfig};
+    use crate::formats::embedded::EXCEPTION_WARNING;
     use crate::formats::parity::documents;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
-        Scratch,
+        assert_same_as_tika_delegating, assert_same_as_tika_delegating_departing_with,
+        assert_same_as_tika_delegating_with, conformance_corpus, Departure, Departures, Scratch,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -1260,8 +1261,9 @@ mod tests {
         assert_same_as_tika_delegating(&[&type3], tika_name(), &DELEGATES);
     }
 
-    /// A document of an XFA form whose data `data` holds.
-    fn xfa_form(data: &str) -> Vec<u8> {
+    /// A document of an XFA form whose data `data` holds, and of the AcroForm fields `fields`,
+    /// numbered from 11 on.
+    fn xfa_form(data: &str, fields: &[&str]) -> Vec<u8> {
         let template = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.0/\">\n\
              <subform><draw><value><text>Ans&#248;gning om tilskud</text></value></draw>\n\
              <field name=\"navn\"><assist><toolTip>Dit <p>fulde</p> navn</toolTip></assist>\
@@ -1274,15 +1276,20 @@ mod tests {
             |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
         let mut objects = page_objects(TEXT);
         objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
+        let references: String = (0..fields.len())
+            .map(|index| format!("{} 0 R ", index + 11))
+            .collect();
         objects.extend([
-            "<< /Fields [] /XFA [(preamble) 7 0 R (template) 8 0 R (datasets) 9 0 R \
-             (postamble) 10 0 R] >>"
-                .to_owned(),
+            format!(
+                "<< /Fields [{references}] /XFA [(preamble) 7 0 R (template) 8 0 R \
+                 (datasets) 9 0 R (postamble) 10 0 R] >>"
+            ),
             stream("<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"),
             stream(template),
             stream(&data),
             stream("</xdp:xdp>"),
         ]);
+        objects.extend(fields.iter().map(|field| (*field).to_owned()));
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         document(&objects, b"", &[])
     }
@@ -1293,9 +1300,57 @@ mod tests {
         let scratch = Scratch::new("pdf-xfa");
         let xfa = scratch.write(
             "xfa.pdf",
-            &xfa_form("<form1><navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>"),
+            &xfa_form(
+                "<form1><navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>",
+                &[],
+            ),
         );
         assert_same_as_tika_delegating(&[&xfa], tika_name(), &DELEGATES);
+    }
+
+    /// The fields of an AcroForm, which a document of an XFA form shows once the form fails.
+    const ACRO_FIELDS: [&str; 2] = [
+        "<< /FT /Tx /T (navn) /TU (Fulde navn) /V (Kari Nordmann) >>",
+        "<< /FT /Tx /T (by) /V (Bergen) >>",
+    ];
+
+    /// The XFA data of a document whose form's XML fails at its mismatched end tag.
+    const MALFORMED_XFA_DATA: &str = "<form1><navn>Kari</nav></form1>";
+
+    /// The failure of an XFA form's XML, which Tika records as the stack trace of Woodstox's
+    /// exception and the native parser as the failure its own XML parser reports (#125).
+    #[cfg(feature = "tika")]
+    pub(super) const XFA_FAILURE: Departures = &[Departure::Values(EXCEPTION_WARNING, "#125")];
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_the_acroform_of_a_failing_xfa_form_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-xfa-malformed");
+        let malformed = scratch.write("malformed.pdf", &xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
+        assert_same_as_tika_delegating_departing_with(
+            &[&malformed],
+            tika_name(),
+            &DELEGATES,
+            XFA_FAILURE,
+            &ParserConfigs::default(),
+        );
+    }
+
+    #[test]
+    fn records_why_an_xfa_form_fails_and_reads_its_acroform() {
+        let (xml, metadata) = native_xml(&xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
+        let content = "<div class=\"xfa_content\"><p>Ans\u{f8}gning om tilskud</p>\n</div>";
+        assert!(xml.contains(content), "{xml}");
+        assert!(
+            xml.contains("<li altName=\"Fulde navn\">navn: Kari Nordmann</li>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<li>by: Bergen</li>"), "{xml}");
+        let warnings = metadata.get(EXCEPTION_WARNING).unwrap();
+        assert!(
+            warnings.len() == 1 && warnings[0].starts_with("javax.xml.stream.XMLStreamException: "),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -1304,6 +1359,7 @@ mod tests {
         // ended as a value of `form1` (#109).
         let (xml, _) = native_xml(&xfa_form(
             "\n<form1>\n<navn>Kari</navn>\n<by>Oslo</by>\n</form1>\n",
+            &[],
         ));
         assert!(
             xml.contains("<li fieldName=\"navn\">Dit fulde\n navn: Kari</li>"),
@@ -1759,10 +1815,8 @@ mod tests {
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
         let (parsed, deferred) = documents(&PdfParser, &[&conformance_corpus()]);
-        for path in &deferred {
-            println!("deferred {}: {}", path.display(), deferral_of(path));
-        }
-        println!("{} parsed, {} deferred", parsed.len(), deferred.len());
+        let reasons: Vec<String> = deferred.iter().map(|path| deferral_of(path)).collect();
+        assert!(deferred.is_empty(), "{deferred:?}: {reasons:?}");
         // Tika extracts its Mac, DOS and Unix copies of one file as files of their own (#109).
         let (copies, paths): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
             .into_iter()
@@ -1779,6 +1833,17 @@ mod tests {
         for path in nested {
             assert_reads_the_pages_of_embedded_pdfs(path);
         }
+        let (malformed, paths): (Vec<&Path>, Vec<&Path>) = paths
+            .into_iter()
+            .partition(|path| path.ends_with("testPDF_malformedXFA.pdf"));
+        assert_eq!(malformed.len(), 1, "{malformed:?}");
+        assert_same_as_tika_delegating_departing_with(
+            &malformed,
+            tika_name(),
+            &DELEGATES,
+            XFA_FAILURE,
+            &ParserConfigs::default(),
+        );
         assert_same_as_tika_delegating(&paths, tika_name(), &DELEGATES);
         let [copies] = copies[..] else {
             panic!("{copies:?}");
