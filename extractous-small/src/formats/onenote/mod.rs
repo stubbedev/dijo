@@ -24,6 +24,8 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded;
 use crate::formats::metadata::TikaMetadata;
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+use crate::formats::parity::{Departure, Departures};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 
@@ -219,6 +221,121 @@ pub fn as_tika_names_packaged_objects(
         .iter_mut()
         .flat_map(|(_, values)| values.iter_mut())
         .for_each(rewrite);
+}
+
+/// The paragraphs of the current revision, which the walk writes once each in the order of the
+/// document, where Tika's path writes those of every revision in the order of its walk, and
+/// misses others (#122).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+const CURRENT: Departure = Departure::Paragraphs("#122", &[]);
+
+/// The sections the walk reads, by file name, as they depart from Tika's path (#122): their
+/// paragraphs, Tika's but those it writes that only earlier revisions hold, and the metadata
+/// the current revision gives otherwise. The authors are those of what it holds, and Tika's
+/// path finds some of them in other roles or not at all; the earliest creation time is that of
+/// what it holds; and the parsers of the embedded documents come in the order the document
+/// holds those.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+const WALKED: &[(&str, Departures)] = &[
+    ("embedded-word.one", &[CURRENT]),
+    ("section.one", &[CURRENT]),
+    (
+        "test-tika-3970-dupetext.one",
+        &[
+            Departure::Paragraphs("#122", &["This little piggy went to market"]),
+            Departure::Values("tk:parsed-by-full-set", "#122"),
+        ],
+    ),
+    (
+        "test-tika-4303-Chinese-notes.one",
+        &[Departure::Paragraphs("#122", &["zhongwen"])],
+    ),
+    (
+        "testOneNote.one",
+        &[Departure::Paragraphs(
+            "#122",
+            &["Note-ccn-tes", "Note-ccn-test-mmmm"],
+        )],
+    ),
+    (
+        "testOneNote1.one",
+        &[
+            CURRENT,
+            Departure::Values("onenote:originalAuthors", "#122"),
+        ],
+    ),
+    (
+        "testOneNote2.one",
+        &[
+            Departure::Paragraphs(
+                "#122",
+                &[
+                    "(Pages are over there)",
+                    "1. Take notes anywhere on the page",
+                    "2. Get organized",
+                    "Add pages inside of each section:",
+                    "Add sections for activities like:",
+                    "Create your first page",
+                    "For more tips, check out 30 second videos",
+                    "OneNote: one place for all of your notes",
+                    "Section1She",
+                    "Section1Sheet",
+                    "Section2TextArea1",
+                    "Write your name here",
+                    "You start with \"My Notebook\" - everything lives in here",
+                    "You're in the Quick Notes section - use it for random notes",
+                    "neat info about totally killin it bro",
+                ],
+            ),
+            Departure::Values("dc:creator", "#122"),
+            Departure::Values("onenote:creationTimestamp", "#122"),
+        ],
+    ),
+    ("testOneNote2016.one", &[CURRENT]),
+    (
+        "testOneNote3.one",
+        &[Departure::Paragraphs(
+            "#122",
+            &[
+                "Quit doing horribl",
+                "Quit doing horrible things to me. Dang you. ",
+                "Section2H. ",
+                "Section3TextArea1",
+                "awesome information about sports or some crap like that.",
+                "neat info about totally killin i",
+            ],
+        )],
+    ),
+    (
+        "testOneNote4.one",
+        &[Departure::Paragraphs(
+            "#122",
+            &[
+                "Section",
+                "Section 3",
+                "Section3",
+                "Section3 title",
+                "Section3Title",
+                "This is impo",
+                "Title text is here ",
+                "Title text is here.",
+                "Why would you do that ",
+                "awesome information about sports or some",
+                "way too much inf",
+            ],
+        )],
+    ),
+    ("testOneNoteEmbeddedWordDoc.one", &[CURRENT]),
+];
+
+/// For the parity tests: the departures from Tika's path of the section of file name `name`,
+/// if the walk reads it, which compare it without [`as_tika_names_packaged_objects`].
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn walked(name: &str) -> Option<Departures<'static>> {
+    WALKED
+        .iter()
+        .find(|(file, _)| *file == name)
+        .map(|(_, departures)| *departures)
 }
 
 #[cfg(all(test, feature = "tika"))]
