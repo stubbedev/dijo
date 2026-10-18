@@ -9,8 +9,8 @@
 //! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
 //! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
 //! Tika's path fails it where that password does not open it. Documents with a page Tika would
-//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms and
-//! fonts it cannot measure, among others), are left to Tika.
+//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms with a
+//! document type declaration and fonts it cannot measure, among others), are left to Tika.
 
 mod afm;
 mod attachment;

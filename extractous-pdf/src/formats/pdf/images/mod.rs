@@ -3,10 +3,12 @@
 //! ([`engine`]), numbered across the document, an image XObject drawn again under its own
 //! number, where `ImageGraphicsEngine` numbers it 0, or, under
 //! `setExtractUniqueInlineImagesOnly`, skipped; each written as an `img` element and its file,
-//! as `writeToBuffer` writes it, parsed as an embedded document. JPEG, JPEG 2000 and JBIG2 data
-//! is copied as it is; other images, and those with masks, are read as PDFBox reads them
-//! ([`sampled`]) and written as PNG, with the Content-Type of PNG where Tika keeps that of the
-//! data it does not copy (#131).
+//! as `writeToBuffer` writes it, parsed as an embedded document. JPEG data in grey or RGB,
+//! JPEG 2000 data in grey or RGB without masks, and JBIG2 data is copied as it is; other images,
+//! and those with masks, are read as PDFBox reads them ([`sampled`], [`filters`]) and written
+//! as PNG, with the Content-Type of PNG where Tika keeps that of the data it does not copy
+//! (#131), a JPEG of another colour space as a JPEG and a CCITT image as a TIFF, with the
+//! `image` crate's encoders where Tika uses Java's ([`written`], #125).
 
 mod colorspace;
 mod engine;
