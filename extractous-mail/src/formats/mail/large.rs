@@ -1,15 +1,13 @@
 //! Messages and mailboxes too large to read whole, extracted under a memory budget far below
 //! their size: a part's body is decoded a chunk at a time to a spool.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
-use extractous_core::large::LargeFile;
+use extractous_core::large::{write_base64, LargeFile};
 use extractous_core::Extractor;
 
 use crate::formats::archive::large::{Binary, END, SPOOLING_BUDGET};
 use crate::input::MAX_READ_WHOLE;
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Writes to `out` a message whose first part is a binary attachment of `large` bytes in
 /// base64, in lines of 76 characters, and whose second is the text [`END`].
@@ -20,39 +18,7 @@ fn message_of_large_attachment(out: &mut dyn Write, large: u64) -> io::Result<()
           Content-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\
           Content-Disposition: attachment; filename=large.bin\r\n\r\n",
     )?;
-    let mut data = Binary::new(large);
-    let mut line = [0u8; 57];
-    loop {
-        let mut read = 0;
-        while read < line.len() {
-            let count = data.read(&mut line[read..])?;
-            if count == 0 {
-                break;
-            }
-            read += count;
-        }
-        if read == 0 {
-            break;
-        }
-        let mut encoded = Vec::with_capacity(78);
-        for group in line[..read].chunks(3) {
-            let bytes = [
-                group[0],
-                *group.get(1).unwrap_or(&0),
-                *group.get(2).unwrap_or(&0),
-            ];
-            let bits = u32::from(bytes[0]) << 16 | u32::from(bytes[1]) << 8 | u32::from(bytes[2]);
-            for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
-                encoded.push(if index <= group.len() {
-                    ALPHABET[(bits >> shift & 63) as usize]
-                } else {
-                    b'='
-                });
-            }
-        }
-        encoded.extend_from_slice(b"\r\n");
-        out.write_all(&encoded)?;
-    }
+    write_base64(out, Binary::new(large), b"\r\n")?;
     write!(
         out,
         "--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; \
