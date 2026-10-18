@@ -5,7 +5,7 @@
 use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
 use ruzstd::decoding::StreamingDecoder;
 
-use std::io::Write;
+use super::Held;
 
 use super::{throws, Decoding, Limited, Undecoded};
 use crate::input::Input;
@@ -20,7 +20,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> 
 /// Decodes the Zstandard file `data` into `decoding`, up to its limit.
 pub(crate) fn decode_into(
     data: &[u8],
-    decoding: &mut Decoding<impl Write>,
+    decoding: &mut Decoding<impl Held>,
 ) -> Result<(), Undecoded> {
     let mut input = data;
     while !input.is_empty() {

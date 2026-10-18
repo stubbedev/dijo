@@ -90,3 +90,47 @@ fn decodes_a_gzipped_entry_past_the_memory_limit_to_a_spool() {
         .iter()
         .any(|parser| parser == "extractous::PackageParser"));
 }
+
+/// Writes to `out` a ZIP archive of a binary entry of `large` bytes, then a text entry of
+/// [`END`], both compressed with `method`.
+fn zip_of_large_entry(
+    out: &mut dyn Write,
+    large: u64,
+    method: zip::CompressionMethod,
+) -> io::Result<()> {
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(method)
+        .compression_level(Some(1))
+        .large_file(true);
+    let mut zip = zip::ZipWriter::new_stream(out);
+    zip.start_file("large.bin", options)
+        .map_err(io::Error::other)?;
+    io::copy(&mut Binary::new(large), &mut zip)?;
+    zip.start_file("end.txt", options)
+        .map_err(io::Error::other)?;
+    zip.write_all(END.as_bytes())?;
+    zip.finish().map_err(io::Error::other)?.flush()
+}
+
+#[test]
+fn reads_a_zip_archive_too_large_to_read_whole_storing_its_entry_in_place() {
+    let file = LargeFile::written("large.zip", |out| {
+        zip_of_large_entry(
+            out,
+            MAX_READ_WHOLE + (16 << 20),
+            zip::CompressionMethod::Stored,
+        )
+    });
+    let (text, _) = file.extract("extractous::ZipParser");
+    assert!(text.contains(END), "{text}");
+}
+
+#[test]
+fn spools_a_deflated_zip_entry_past_the_memory_limit() {
+    let file = LargeFile::written("deflated.zip", |out| {
+        zip_of_large_entry(out, LARGE, zip::CompressionMethod::Deflated)
+    });
+    let extractor = extractous_core::Extractor::new();
+    let (text, _) = file.extract_with(&extractor, SPOOLING_BUDGET, "extractous::ZipParser");
+    assert!(text.contains(END), "{text}");
+}

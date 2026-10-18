@@ -26,11 +26,12 @@ pub mod zip;
 pub mod zlib;
 pub mod zstd;
 
+use std::borrow::Cow;
 use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::formats::secure::MAXIMUM_RATIO;
-use crate::input::{Input, Spool};
+use crate::input::{Input, Pages, Spool};
 use crate::java::time::civil;
 
 /// `CompressorParser`'s `memoryLimitInKb`, which the decoders that size their memory by the
@@ -211,61 +212,102 @@ impl<'a> Limited<ArchiveFile<'a>> {
 /// The bytes a decoder hands on at a time.
 const CHUNK: usize = 64 * 1024;
 
+/// Where a stream is decoded to, and what it then holds.
+pub trait Held: Write + Sized {
+    /// What it holds once the stream is decoded, or the bytes of data stored whole in place.
+    type Bytes<'a>;
+
+    /// Data stored whole, `bytes`, whose pages are `pages`, as what it holds.
+    fn stored<'a>(bytes: &'a [u8], pages: Pages<'a>) -> Self::Bytes<'a>;
+
+    /// What it holds once the stream is decoded.
+    fn held<'a>(self) -> Result<Self::Bytes<'a>, Undecoded>;
+}
+
+/// Memory, for a reader that needs a stream whole there.
+impl Held for Vec<u8> {
+    type Bytes<'a> = Cow<'a, [u8]>;
+
+    fn stored<'a>(bytes: &'a [u8], _: Pages<'a>) -> Cow<'a, [u8]> {
+        Cow::Borrowed(bytes)
+    }
+
+    fn held<'a>(self) -> Result<Cow<'a, [u8]>, Undecoded> {
+        Ok(Cow::Owned(self))
+    }
+}
+
+/// A spool, for a stream handed on as a document.
+impl Held for Spool {
+    type Bytes<'a> = Input<'a>;
+
+    fn stored<'a>(bytes: &'a [u8], pages: Pages<'a>) -> Input<'a> {
+        Input::Within(bytes, pages)
+    }
+
+    fn held<'a>(self) -> Result<Input<'a>, Undecoded> {
+        self.finish().map_err(unspooled)
+    }
+}
+
+/// Nothing, for a stream decoded only to tell whether it decodes.
+impl Held for io::Sink {
+    type Bytes<'a> = ();
+
+    fn stored<'a>(_: &'a [u8], _: Pages<'a>) -> Self::Bytes<'a> {}
+
+    fn held<'a>(self) -> Result<Self::Bytes<'a>, Undecoded> {
+        Ok(())
+    }
+}
+
 /// What a stream decodes into, as it is decoded, up to a limit: into `W`, a [`Spool`], or, for a
 /// reader that needs it whole in memory, a `Vec`.
-pub(crate) struct Decoding<W> {
+pub struct Decoding<W> {
     out: W,
-    room: u64,
+    limit: u64,
+    written: u64,
     cut: bool,
 }
 
 impl Decoding<Spool> {
     /// The decoding of a stream of `compressed` bytes to a spool, up to [`decode_limit`] bytes.
-    pub(crate) fn spooled(compressed: usize) -> Self {
-        Self {
-            out: Spool::new(None),
-            room: decode_limit(compressed),
-            cut: false,
-        }
+    pub fn spooled(compressed: usize) -> Self {
+        Self::new(Spool::new(None), decode_limit(compressed))
     }
+}
 
-    /// What the stream decoded into: all of it, or cut at the limit.
-    pub(crate) fn finish(self) -> Result<Limited<Input<'static>>, Undecoded> {
-        let content = self.out.finish().map_err(unspooled)?;
-        Ok(if self.cut {
-            Limited::Cut(content)
-        } else {
-            Limited::Whole(content)
-        })
+impl Decoding<io::Sink> {
+    /// The decoding of a stream of `compressed` bytes that keeps nothing, up to the limit of
+    /// [`Decoding::spooled`].
+    pub fn discarded(compressed: usize) -> Self {
+        Self::new(io::sink(), decode_limit(compressed))
     }
 }
 
 impl Decoding<Vec<u8>> {
     /// The decoding of a stream into memory, up to [`MAX_DECODED`] bytes.
-    pub(crate) fn in_memory() -> Self {
+    pub fn in_memory() -> Self {
+        Self::new(Vec::new(), MAX_DECODED as u64)
+    }
+}
+
+impl<W: Held> Decoding<W> {
+    fn new(out: W, limit: u64) -> Self {
         Self {
-            out: Vec::new(),
-            room: MAX_DECODED as u64,
+            out,
+            limit,
+            written: 0,
             cut: false,
         }
     }
 
-    /// What the stream decoded into: all of it, or cut at the limit.
-    pub(crate) fn into_limited(self) -> Limited<Vec<u8>> {
-        if self.cut {
-            Limited::Cut(self.out)
-        } else {
-            Limited::Whole(self.out)
-        }
-    }
-}
-
-impl<W: Write> Decoding<W> {
     /// Adds `decoded`, up to the limit, past which the stream is cut.
     pub(crate) fn write(&mut self, decoded: &[u8]) -> Result<(), Undecoded> {
-        let kept = usize::try_from(self.room).map_or(decoded.len(), |room| room.min(decoded.len()));
+        let room = self.limit - self.written;
+        let kept = usize::try_from(room).map_or(decoded.len(), |room| room.min(decoded.len()));
         self.out.write_all(&decoded[..kept]).map_err(unspooled)?;
-        self.room -= kept as u64;
+        self.written += kept as u64;
         self.cut |= kept < decoded.len();
         Ok(())
     }
@@ -273,6 +315,22 @@ impl<W: Write> Decoding<W> {
     /// Whether the stream decoded past the limit, which ends its decoding.
     pub(crate) fn is_cut(&self) -> bool {
         self.cut
+    }
+
+    /// How many bytes it holds.
+    pub(crate) fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// What the stream decoded into: all of it, or cut at the limit.
+    pub(crate) fn finish<'a>(self) -> Result<Limited<W::Bytes<'a>>, Undecoded> {
+        let cut = self.cut;
+        let held = self.out.held()?;
+        Ok(if cut {
+            Limited::Cut(held)
+        } else {
+            Limited::Whole(held)
+        })
     }
 
     /// Adds what `reader`, a crate's decoder, gives up to its end or the limit, failing where it
@@ -319,7 +377,6 @@ fn decoder_failure(error: std::io::Error) -> Undecoded {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::input::Pages;
 
     #[test]
     fn reads_dos_times_as_utc_wall_clock_times() {
@@ -409,8 +466,8 @@ pub(crate) mod tests {
         assert_eq!(cut.len(), MAX_DECODED);
         assert!(cut.iter().all(|&byte| byte == 0));
         assert_eq!(
-            zip::inflate(&bomb),
-            zip::Content::Oversized(vec![0; MAX_DECODED].into())
+            zip::inflate_into(&bomb, Decoding::in_memory()),
+            Ok(zip::Content::Oversized(vec![0; MAX_DECODED].into()))
         );
     }
 

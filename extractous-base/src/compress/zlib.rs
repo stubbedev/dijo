@@ -16,7 +16,7 @@ pub fn decode_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), Undecoded> {
     let mut decoder = flate2::bufread::ZlibDecoder::new(data);
     let mut decoding = Decoding::in_memory();
     decoding.read_from(&mut decoder)?;
-    let content = decoding.into_limited().whole()?;
+    let content = decoding.finish()?.whole()?.into_owned();
     let taken = usize::try_from(decoder.total_in()).expect("a stream takes at most its input");
     Ok((content, taken))
 }
