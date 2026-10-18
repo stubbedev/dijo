@@ -35,8 +35,6 @@ mod reference;
 #[cfg(test)]
 mod trees;
 
-use std::borrow::Cow;
-
 pub use dom::Attribute;
 use dom::Dom;
 use handler::{Base, HtmlHandler, Scan};
@@ -48,7 +46,7 @@ use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared};
-use crate::input::{Pages, Paging};
+use crate::input::{Input, Pages, Paging};
 use crate::text::charset::{self, Charset, Detection};
 
 /// The largest document built whole before it is written.
@@ -183,6 +181,18 @@ pub fn prepare(
     prepared(document, input, previous, Base::of(metadata))
 }
 
+/// What [`JSoupParser`] prepares of `input`, which it holds as it is, spooled or mapped, so
+/// that a large page is built a piece at a time from it: a document it reads differently from
+/// Tika's parser is [`Decline::Differs`].
+pub fn prepare_input(
+    input: Input<'static>,
+    metadata: &TikaMetadata,
+) -> Result<Prepared<'static>, Decline<'static>> {
+    let previous = metadata.get("Content-Type").map(str::to_owned);
+    let document = read_from(Bytes::Held(input.clone(), 0), previous.as_deref(), SIZES);
+    prepared(document, &input, previous, Base::of(metadata))
+}
+
 /// What the parser prepares of `document`, read from `input` when the metadata's
 /// `Content-Type` was `previous`, with links resolved against `base`.
 fn prepared<'a>(
@@ -287,9 +297,8 @@ impl Document<'_> {
                 Reading::Surveyed { holds, text } => Reading::Surveyed {
                     holds,
                     text: Text {
-                        bytes: Cow::Owned(text.bytes.into_owned()),
+                        bytes: Bytes::Held(text.bytes.bytes().to_vec().into(), 0),
                         charset: text.charset,
-                        pages: Pages::IN_MEMORY,
                         piece: text.piece,
                     },
                 },
@@ -298,32 +307,63 @@ impl Document<'_> {
     }
 }
 
+/// The bytes of a document from where jsoup decodes them on.
+enum Bytes<'a> {
+    /// Bytes read in place, whose pages are given.
+    Borrowed(&'a [u8], Pages<'a>),
+    /// Bytes held, from the offset given on.
+    Held(Input<'static>, usize),
+}
+
+impl Bytes<'_> {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes, _) => bytes,
+            Self::Held(input, start) => &input[*start..],
+        }
+    }
+
+    fn pages(&self) -> Pages<'_> {
+        match self {
+            Self::Borrowed(_, pages) => *pages,
+            Self::Held(input, _) => input.pages(),
+        }
+    }
+
+    /// The bytes from `skipped` on.
+    fn skip(self, skipped: usize) -> Self {
+        match self {
+            Self::Borrowed(bytes, pages) => Self::Borrowed(&bytes[skipped..], pages),
+            Self::Held(input, start) => Self::Held(input, start + skipped),
+        }
+    }
+}
+
 /// The bytes of a document jsoup decodes, the charset it decodes them with, and how many it
 /// decodes at a time.
 struct Text<'a> {
-    bytes: Cow<'a, [u8]>,
+    bytes: Bytes<'a>,
     charset: Charset,
-    pages: Pages<'a>,
     piece: usize,
 }
 
 impl Text<'_> {
     /// Builds the document a piece at a time to survey it.
     fn survey(&self) -> tree_builder::Survey {
-        let paging = Paging::new(self.pages);
+        let paging = Paging::new(self.bytes.pages());
         tree_builder::survey(self.pieces(&paging))
     }
 
     /// Builds the document a piece at a time again, walking it with `visitor` as it is built.
     fn walk<V: Visitor>(&self, holds: &Holds, visitor: &mut V) -> Result<(), V::Stop> {
-        let paging = Paging::new(self.pages);
+        let paging = Paging::new(self.bytes.pages());
         tree_builder::stream(self.pieces(&paging), holds, visitor)
     }
 
     /// The text, decoded a piece at a time, the pages read released as it goes.
     fn pieces<'p>(&'p self, paging: &'p Paging<'_>) -> impl Iterator<Item = String> + 'p {
         self.charset
-            .pieces(&self.bytes, self.piece)
+            .pieces(self.bytes.bytes(), self.piece)
             .expect("the port decodes every charset its detection settles on")
             .inspect(move |_| paging.read(self.piece))
     }
@@ -342,6 +382,12 @@ fn read_by<'a>(
     content_type: Option<&str>,
     sizes: Sizes,
 ) -> Document<'a> {
+    read_from(Bytes::Borrowed(input, pages), content_type, sizes)
+}
+
+/// [`read_by`] of the bytes `source`.
+fn read_from<'a>(source: Bytes<'a>, content_type: Option<&str>, sizes: Sizes) -> Document<'a> {
+    let input = source.bytes();
     let detection = charset::detect_decodable(input, content_type);
     let (charset, bytes) = jsoup_charset(input, detection.decode_as);
     if input.len() <= sizes.whole {
@@ -355,10 +401,10 @@ fn read_by<'a>(
             difference,
         };
     }
+    let skipped = input.len() - bytes.len();
     let text = Text {
-        bytes: Cow::Borrowed(bytes),
+        bytes: source.skip(skipped),
         charset,
-        pages,
         piece: sizes.piece,
     };
     let survey = text.survey();

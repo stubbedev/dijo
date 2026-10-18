@@ -8,12 +8,19 @@
 //!
 //! Our Java parser has the HTML parser write the head from the HTML's own metadata, and adds the
 //! book's after the document has ended, where the head never shows it (#105).
+//!
+//! The text is decompressed a record at a time into a spool, which a large book's goes to a
+//! file of, and the HTML parser builds a large page from it a piece at a time, so that the
+//! memory a book takes is bounded whatever its size.
+
+use std::io::Write;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::html;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{noted, unless_different, Decline, Failure, Parser, Prepared};
+use crate::formats::{noted, unless_different, Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Paging, Spool};
 use crate::java::strip;
 use crate::text::charset::Charset;
 
@@ -38,7 +45,7 @@ const EXTH_TITLE: i64 = 503;
 const EXTH_LANGUAGE: i64 = 524;
 const MAX_TEXT_BYTES: usize = 256 << 20;
 /// The most a PalmDOC byte decompresses to: a two-byte back copy of ten.
-const MAX_EXPANSION: usize = 5;
+const MAX_EXPANSION: u64 = 5;
 
 fn broken(reason: impl Into<String>) -> Error {
     Error::ParseError(reason.into())
@@ -82,18 +89,17 @@ impl<'a> Book<'a> {
     }
 }
 
-/// The book's HTML, with what the book's headers say about it.
-struct Markup<'a> {
+/// What the book's headers say about its HTML.
+struct Headers<'a> {
     book: Book<'a>,
     /// The offset of record 0, which holds the PalmDOC and MOBI headers.
     header: i64,
     /// The length of the MOBI header, when the book has one.
     mobi_length: Option<i64>,
     charset: Charset,
-    html: Vec<u8>,
 }
 
-impl Markup<'_> {
+impl Headers<'_> {
     /// The metadata `MobiParser` hands the HTML parser.
     fn metadata(&self) -> TikaMetadata {
         let mut metadata = TikaMetadata::new();
@@ -105,8 +111,9 @@ impl Markup<'_> {
     }
 }
 
-/// `MobiParser.parse` up to the HTML: the failures it throws before any output, else the HTML.
-fn read(input: &[u8]) -> Result<Markup<'_>, Error> {
+/// `MobiParser.parse` up to the HTML of `input`, whose pages are `pages`: the failures it
+/// throws before any output, else the headers and the HTML, spooled.
+fn read<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<(Headers<'a>, Input<'static>), Error> {
     let book = Book::new(input)?;
     if book.limit < PALM_DATABASE_HEADER {
         return Err(broken("The book is shorter than a Palm database header"));
@@ -161,28 +168,39 @@ fn read(input: &[u8]) -> Result<Markup<'_>, Error> {
     } else {
         Charset::named("windows-1252")
     };
-    let mut html = Vec::with_capacity((text_length as usize).min(input.len() * MAX_EXPANSION));
+    let spooled =
+        |error: std::io::Error| Error::IoError(format!("Could not spool the book's text: {error}"));
+    let declared = u64::from(text_length).min(input.len() as u64 * MAX_EXPANSION);
+    let mut html = Spool::new(Some(declared));
+    let paging = Paging::new(pages);
+    let mut decompressed = Vec::new();
+    let mut length = 0;
     for index in 1..=text_records as usize {
         let record = book.bytes(offsets[index], offsets[index + 1] - offsets[index])?;
+        paging.read(record.len());
         let content = &record[..record.len() - trailing_bytes(record, extra_flags)?];
-        if compression == PALMDOC_COMPRESSION {
-            decompress(content, &mut html)?;
+        let text = if compression == PALMDOC_COMPRESSION {
+            decompressed.clear();
+            decompress(content, &mut decompressed)?;
+            &decompressed
         } else {
-            html.extend_from_slice(content);
-        }
-        if html.len() > MAX_TEXT_BYTES {
+            content
+        };
+        length += text.len();
+        if length > MAX_TEXT_BYTES {
             return Err(broken(format!(
                 "The book's text decompresses past {MAX_TEXT_BYTES} bytes"
             )));
         }
+        html.write_all(text).map_err(spooled)?;
     }
-    Ok(Markup {
+    let headers = Headers {
         book,
         header,
         mobi_length,
         charset,
-        html,
-    })
+    };
+    Ok((headers, html.finish().map_err(spooled)?))
 }
 
 /// `trailingBytes`: the size of the entries the book's extra data flags say end a text record,
@@ -265,16 +283,16 @@ fn decompress(record: &[u8], text: &mut Vec<u8>) -> Result<(), Error> {
 }
 
 /// `bookMetadata`: the title, authors and language of the book's MOBI and EXTH headers.
-fn book_metadata(markup: &Markup, metadata: &mut TikaMetadata) -> Result<(), Error> {
-    let Some(mobi_length) = markup.mobi_length else {
+fn book_metadata(headers: &Headers, metadata: &mut TikaMetadata) -> Result<(), Error> {
+    let Some(mobi_length) = headers.mobi_length else {
         return Ok(());
     };
-    let (book, header) = (markup.book, markup.header);
+    let (book, header) = (headers.book, headers.header);
     let decode = |bytes: &[u8]| {
-        markup.charset.decode(bytes).ok_or_else(|| {
+        headers.charset.decode(bytes).ok_or_else(|| {
             broken(format!(
                 "The native decoders do not decode {}",
-                markup.charset.name()
+                headers.charset.name()
             ))
         })
     };
@@ -332,18 +350,32 @@ impl Parser for MobiParser {
         &["application/x-mobipocket-ebook"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let markup = read(input).map_err(Decline::Fails)?;
-        let (html, difference) = noted(html::prepare(&markup.html, &markup.metadata()))
+        let (headers, text) = read(input, pages).map_err(Decline::Fails)?;
+        let (html, difference) = noted(html::prepare_input(text, &headers.metadata()))
             .map_err(|reason| Decline::Deferred(format!("the book's HTML defers: {reason}")))?;
         unless_different(
             Box::new(move |xhtml| {
-                book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)?;
+                book_metadata(&headers, xhtml.metadata_mut()).map_err(Failure::Extraction)?;
                 // The HTML parser writes into a copy, so what it reads from the HTML stays out of
                 // the book's metadata, as in Tika's path.
                 let book = xhtml.metadata_mut().clone();
@@ -434,6 +466,7 @@ mod tests {
     /// and its text records as they are stored.
     struct Spec {
         compression: u16,
+        text_length: u32,
         encryption: u16,
         encoding: Option<u32>,
         mobi_length: u32,
@@ -448,6 +481,7 @@ mod tests {
         fn default() -> Self {
             Self {
                 compression: 1,
+                text_length: 4096,
                 encryption: 0,
                 encoding: Some(65001),
                 mobi_length: 0xE8,
@@ -467,11 +501,13 @@ mod tests {
         bytes[at..at + value.len()].copy_from_slice(value);
     }
 
-    fn book(spec: &Spec) -> Vec<u8> {
+    /// The Palm database header and record 0 of a book of `spec` whose text records are
+    /// `lengths` long: all of the book before its text.
+    fn head(spec: &Spec, lengths: &[usize]) -> Vec<u8> {
         let mut header = vec![0; 16];
         put(&mut header, 0, &spec.compression.to_be_bytes());
-        put(&mut header, 4, &4096u32.to_be_bytes());
-        put(&mut header, 8, &(spec.records.len() as u16).to_be_bytes());
+        put(&mut header, 4, &spec.text_length.to_be_bytes());
+        put(&mut header, 8, &(lengths.len() as u16).to_be_bytes());
         put(&mut header, 12, &spec.encryption.to_be_bytes());
         if let Some(encoding) = spec.encoding {
             let mobi_end = 16 + spec.mobi_length as usize;
@@ -508,23 +544,60 @@ mod tests {
         if let Some(length) = spec.header_bytes {
             header.truncate(length);
         }
-        let records: Vec<&[u8]> = std::iter::once(header.as_slice())
-            .chain(spec.records.iter().map(Vec::as_slice))
-            .collect();
         let mut palm = vec![0; 78];
         put(&mut palm, 0, b"synthetic");
         put(&mut palm, 60, b"BOOKMOBI");
-        put(&mut palm, 76, &(records.len() as u16).to_be_bytes());
-        let mut offset = 78 + 8 * records.len();
-        for record in &records {
+        put(&mut palm, 76, &(lengths.len() as u16 + 1).to_be_bytes());
+        let mut offset = 78 + 8 * (lengths.len() + 1);
+        for length in std::iter::once(header.len()).chain(lengths.iter().copied()) {
             palm.extend((offset as u32).to_be_bytes());
             palm.extend([0; 4]);
-            offset += record.len();
+            offset += length;
         }
-        for record in records {
+        palm.extend(header);
+        palm
+    }
+
+    fn book(spec: &Spec) -> Vec<u8> {
+        let lengths: Vec<usize> = spec.records.iter().map(Vec::len).collect();
+        let mut palm = head(spec, &lengths);
+        for record in &spec.records {
             palm.extend(record);
         }
         palm
+    }
+
+    /// A book too large to read whole, of uncompressed records of paragraphs, each numbered:
+    /// its text is spooled to a file and its HTML built a piece at a time, under a budget far
+    /// below the book.
+    #[test]
+    fn reads_books_too_large_to_read_whole_a_piece_at_a_time() {
+        use extractous_core::large::{bodies_past_limit, LargeFile};
+
+        const PARAGRAPHS: u64 = 320;
+        let paragraph = |index: u64| format!("<p>Afsnit {index:010}</p>\n");
+        let record = |record: u64| {
+            (record * PARAGRAPHS..(record + 1) * PARAGRAPHS)
+                .map(paragraph)
+                .collect::<String>()
+                .into_bytes()
+        };
+        let length = record(0).len();
+        let records = bodies_past_limit(length);
+        let lengths = vec![length; usize::try_from(records).unwrap()];
+        let spec = Spec {
+            text_length: u32::try_from(records * length as u64).unwrap(),
+            ..Spec::default()
+        };
+        let file = LargeFile::new("large.mobi", &head(&spec, &lengths), records, record, b"");
+        let mut paragraphs = 0u64;
+        file.extract_lines(MobiParser.name(), |line| {
+            if let Some(number) = line.trim().strip_prefix("Afsnit ") {
+                assert_eq!(number, format!("{paragraphs:010}"));
+                paragraphs += 1;
+            }
+        });
+        assert_eq!(paragraphs, records * PARAGRAPHS);
     }
 
     /// `<p>Hello hello café</p>`, PalmDOC-compressed: literals, a space pair, a back copy and a
