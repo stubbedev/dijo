@@ -10,7 +10,7 @@ use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::is_blank;
 use crate::Error;
 
@@ -69,13 +69,13 @@ impl Parser for CompressorParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let content_type = metadata.get("Content-Type").unwrap_or_default();
         let (compressor, detected) = match Compressor::named(content_type) {
             Some(compressor) => (compressor, None),
             None => {
                 let compressor = Compressor::detect(input).ok_or_else(|| {
-                    Declined::Fails(Error::ParseError(format!(
+                    Decline::Fails(Error::ParseError(format!(
                         "Unable to uncompress document stream: the {content_type} document \
                          starts with no compressor's signature"
                     )))
@@ -88,11 +88,11 @@ impl Parser for CompressorParser {
             .map_err(|reason| undecoded(&format!("the {compressor:?} stream"), reason))?;
         let mut scan = Scan::new();
         if let Some(reason) = scan.entry(&decoded.content) {
-            return Err(Declined::Deferred(reason));
+            return Err(Decline::Deferred(reason));
         }
         let entry = entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME));
         if let Some(reason) = scan.document(input.len()) {
-            return Err(Declined::Deferred(reason));
+            return Err(Decline::Deferred(reason));
         }
         let content = decoded.content;
         // The document ends whatever the entry's parse does, short of the output stopping:
@@ -221,7 +221,7 @@ mod tests {
         metadata.set("Content-Type", "image/x-emf-compressed");
         let configs = ParserConfigs::default();
         let declined = CompressorParser.prepare(b"no signature", &metadata, &configs);
-        let Err(Declined::Fails(Error::ParseError(reason))) = declined else {
+        let Err(Decline::Fails(Error::ParseError(reason))) = declined else {
             panic!("a document without a compressor's signature is not failed");
         };
         assert!(reason.contains("Unable to uncompress"), "{reason}");

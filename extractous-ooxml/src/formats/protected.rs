@@ -19,8 +19,8 @@ use crate::formats::ole2::Summaries;
 use crate::formats::pptx::PptxParser;
 use crate::formats::xlsx::XlsxParser;
 use crate::formats::{
-    self, decision, unless_different, Decline, Declined, Difference, Failure, Parser, Prepared,
-    Unported, PASSWORD_USED,
+    self, decision, unless_different, Decline, Difference, Failure, Parser, Prepared, Unported,
+    PASSWORD_USED,
 };
 use crate::mime::{self, Origin};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
@@ -118,7 +118,7 @@ struct Package {
 }
 
 impl Package {
-    fn read(input: &[u8], configs: &ParserConfigs) -> Result<Package, Declined> {
+    fn read(input: &[u8], configs: &ParserConfigs) -> Result<Package, Decline<'static>> {
         let Opened { file, difference } =
             office::open(input, configs, MEDIA_TYPE, "protected package")?;
         let root = file.root();

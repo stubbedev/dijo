@@ -39,7 +39,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office::{self, Opened};
 use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Declined, Difference, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
 
 const MEDIA_TYPE: &str = "application/msword";
 
@@ -82,7 +82,7 @@ impl Parser for DocParser {
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Extracted, Option<Difference>), Declined> {
+) -> Result<(Summaries, Extracted, Option<Difference>), Decline<'static>> {
     let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "Word document")?;
     let root = file.root();
     let extracted = match Document::read(&file, root, configs)? {

@@ -75,7 +75,7 @@ impl Difference {
     }
 }
 
-/// Why a native parser does not take a document as it prepared it. A [`Declined`] holds no
+/// Why a native parser does not take a document as it prepared it. A [`Decline<'static>`] holds no
 /// reading borrowed from its input.
 pub enum Decline<'a> {
     /// The parser cannot read it: Tika's path should extract it.
@@ -94,9 +94,6 @@ pub enum Decline<'a> {
     /// this metadata: what it started from, with what it found.
     Unwritten(TikaMetadata),
 }
-
-/// A [`Decline`] that holds no reading borrowed from the input.
-pub type Declined = Decline<'static>;
 
 impl std::fmt::Debug for Decline<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -148,7 +145,7 @@ impl std::fmt::Display for Decline<'_> {
 /// Tika's parser, if anywhere, or else why it does not take it.
 pub fn noted<'a>(
     prepared: Result<Prepared<'a>, Decline<'a>>,
-) -> Result<(Prepared<'a>, Option<Difference>), Declined> {
+) -> Result<(Prepared<'a>, Option<Difference>), Decline<'static>> {
     match prepared {
         Ok(reading) => Ok((reading, None)),
         Err(Decline::Differs {
@@ -164,13 +161,15 @@ pub fn noted<'a>(
 /// [`noted`] without the reading: what a preparation of a document decided.
 pub fn decision(
     prepared: Result<Prepared<'_>, Decline<'_>>,
-) -> Result<Option<Difference>, Declined> {
+) -> Result<Option<Difference>, Decline<'static>> {
     noted(prepared).map(|(_, difference)| difference)
 }
 
 /// [`noted`] without the difference: the reading a parser prepared of a document, whether or not
 /// it reads it differently from Tika's parser.
-pub fn reading<'a>(prepared: Result<Prepared<'a>, Decline<'a>>) -> Result<Prepared<'a>, Declined> {
+pub fn reading<'a>(
+    prepared: Result<Prepared<'a>, Decline<'a>>,
+) -> Result<Prepared<'a>, Decline<'static>> {
     noted(prepared).map(|(reading, _)| reading)
 }
 

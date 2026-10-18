@@ -52,9 +52,7 @@ use crate::config::{MarkedContentStrategy, ParserConfigs, Password};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{
-    crypt, Decline, Declined, Failure, Footprint, Parser, Prepared, PASSWORD_USED,
-};
+use crate::formats::{crypt, Decline, Failure, Footprint, Parser, Prepared, PASSWORD_USED};
 use crate::input::{Pages, Paging};
 
 use cos::Pdf;
@@ -283,7 +281,7 @@ fn record<'a>(
     metadata: &TikaMetadata,
     configs: &ParserConfigs,
     limit: usize,
-) -> Result<Recorded<'a>, Declined> {
+) -> Result<Recorded<'a>, Decline<'static>> {
     let deferred = |Unported(reason)| Decline::Deferred(reason);
     let settings = Settings::of(configs).map_err(deferred)?;
     let loaded = load(input, pages, configs)?;
@@ -455,7 +453,7 @@ fn load<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     configs: &ParserConfigs,
-) -> Result<Loaded<'a>, Declined> {
+) -> Result<Loaded<'a>, Decline<'static>> {
     let paging = Paging::new(pages);
     let resolution = xref::resolve(input, &paging)?;
     let password = configs.password.as_ref().map_or("", Password::expose);
@@ -508,7 +506,7 @@ fn load<'a>(
 
 /// How a document the password does not open declines: as Tika's path fails it, where PDFBox
 /// throws `InvalidPasswordException`.
-fn refused(refusal: Refusal) -> Declined {
+fn refused(refusal: Refusal) -> Decline<'static> {
     match refusal {
         Refusal::WrongPassword => Decline::Fails(crypt::encrypted(Some(&format!(
             "org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException: {WRONG_PASSWORD}"

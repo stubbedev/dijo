@@ -27,7 +27,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office::{self, Opened};
 use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{unless_different, Decline, Declined, Difference, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-powerpoint";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
@@ -74,7 +74,7 @@ impl Parser for PptParser {
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Vec<Out>, Option<Difference>), Declined> {
+) -> Result<(Summaries, Vec<Out>, Option<Difference>), Decline<'static>> {
     let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "presentation")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;

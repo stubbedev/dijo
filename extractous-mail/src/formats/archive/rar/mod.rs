@@ -26,7 +26,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Deferral, Opened, Parser, Prepared};
+use crate::formats::{Decline, Deferral, Opened, Parser, Prepared};
 
 const RAR: &str = "application/x-rar-compressed";
 
@@ -50,12 +50,12 @@ impl Parser for RarParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         if metadata
             .get("Content-Type")
             .is_some_and(|media_type| media_type.contains("version=5"))
         {
-            return Err(Declined::Fails(Error::ParseError(
+            return Err(Decline::Fails(Error::ParseError(
                 "Tika does not yet support rar version 5.".to_owned(),
             )));
         }
@@ -63,17 +63,17 @@ impl Parser for RarParser {
             Unopened::Fails {
                 encrypted: true,
                 reason,
-            } => Declined::Fails(Error::Encrypted(reason)),
-            Unopened::Fails { reason, .. } => Declined::Fails(Error::ParseError(reason)),
+            } => Decline::Fails(Error::Encrypted(reason)),
+            Unopened::Fails { reason, .. } => Decline::Fails(Error::ParseError(reason)),
             Unopened::Unported(what) => {
-                Declined::Deferred(format!("junrar reads {what}, which the port does not"))
+                Decline::Deferred(format!("junrar reads {what}, which the port does not"))
             }
         })?;
         let entries = entries(input, &headers)?;
         if let Some(reason) =
             Scan::new().files(input.len(), entries.iter().map(|entry| &entry.file))
         {
-            return Err(Declined::Deferred(reason));
+            return Err(Decline::Deferred(reason));
         }
         Ok(Box::new(move |xhtml| {
             xhtml.element("div", " ")?;

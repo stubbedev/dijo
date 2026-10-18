@@ -18,7 +18,7 @@ use crate::compress::zlib;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, Declined, Deferral, Failure, Opened, Parser, Prepared};
+use crate::formats::{self, Decline, Deferral, Failure, Opened, Parser, Prepared};
 use crate::mime::MediaType;
 
 /// The bytes `CmsParser` reads the content type from.
@@ -325,8 +325,8 @@ fn signed_content(input: &[u8]) -> Option<Signed> {
 }
 
 /// The failure of a document Bouncy Castle fails to read as signed data with `exception`.
-fn unreadable_signed_data(exception: String) -> Declined {
-    Declined::Fails(Error::ParseError(format!(
+fn unreadable_signed_data(exception: String) -> Decline<'static> {
+    Decline::Fails(Error::ParseError(format!(
         "Unable to read the CMS signed data: {exception}"
     )))
 }
@@ -372,7 +372,7 @@ fn prepare_unencrypted<'a>(
     input: &[u8],
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Declined> {
+) -> Result<Prepared<'a>, Decline<'static>> {
     let unread = || "CMS data the port does not read as Bouncy Castle does".to_owned();
     if typed_as_signature(metadata) {
         return match signed_content(input).ok_or_else(unread)? {
@@ -384,7 +384,7 @@ fn prepare_unencrypted<'a>(
     match classify(input).map_err(str::to_owned)? {
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
             Signed::Read(Some(signed)) => Ok(with_content(SIGNED, signed, configs)?),
-            Signed::Read(None) => Err(Declined::Deferred(
+            Signed::Read(None) => Err(Decline::Deferred(
                 "signed data whose kind Bouncy Castle tells by its signers".to_owned(),
             )),
             Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
@@ -465,10 +465,10 @@ impl Parser for CmsParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         header_content_type(input).map_err(str::to_owned)?;
         if let Some(name) = encryption(input) {
-            return Err(Declined::Fails(Error::Encrypted(format!(
+            return Err(Decline::Fails(Error::Encrypted(format!(
                 "S/MIME (CMS {name}) data; decrypting it needs the recipient's private key"
             ))));
         }

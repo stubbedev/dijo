@@ -31,8 +31,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::extractor::normalized_class;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{
-    html, noted, reading, unless_different, Decline, Declined, Deferral, Difference, Failure,
-    Footprint, Opened, Parser, Prepared,
+    html, noted, reading, unless_different, Decline, Deferral, Difference, Failure, Footprint,
+    Opened, Parser, Prepared,
 };
 use crate::java;
 use crate::java::time::format_instant;
@@ -161,7 +161,7 @@ impl Parser for OutlookPstParser {
     }
 }
 
-fn fails(thrown: Thrown) -> Declined {
+fn fails(thrown: Thrown) -> Decline<'static> {
     Decline::Fails(Error::ParseError(thrown.to_string()))
 }
 

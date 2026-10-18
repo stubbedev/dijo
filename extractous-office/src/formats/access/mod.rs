@@ -42,8 +42,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{Embedded, Handed};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{
-    html, noted, unless_different, Decline, Declined, Deferral, Difference, Failure, Opened,
-    Parser, Prepared, StringOut,
+    html, noted, unless_different, Decline, Deferral, Difference, Failure, Opened, Parser,
+    Prepared, StringOut,
 };
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::time::civil::civil_from_days;
@@ -279,7 +279,7 @@ fn date(bits: i64) -> String {
 fn extract(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Extraction, Option<Difference>), Declined> {
+) -> Result<(Extraction, Option<Difference>), Decline<'static>> {
     let thrown = Thrown::reason;
     let database = Database::open(input).map_err(|thrown| match thrown {
         Thrown::Encrypted if configs.password.is_none() => {

@@ -8,7 +8,7 @@ use jxl_oxide::{AuxBoxData, JxlImage};
 
 use super::extractor::{self, Target};
 use super::metadata_extractor::{exif, Metadata};
-use super::{dates_zone, fails, Declined, Read};
+use super::{dates_zone, fails, Decline, Read};
 use crate::formats::embedded::record_exception;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp;
@@ -36,7 +36,10 @@ pub fn as_tika_writes_no_jpeg_xl_document(
 /// The metadata of the JPEG XL image `input` into `metadata`, which is then the image's: its
 /// XMP, then its Exif, then its header, which wins over what the Exif says of the image. Exif
 /// that cannot be read is recorded as a warning.
-pub(super) fn extract_metadata(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> {
+pub(super) fn extract_metadata(
+    input: &[u8],
+    mut metadata: TikaMetadata,
+) -> Result<Read, Decline<'static>> {
     let image = JxlImage::builder()
         .read(input)
         .map_err(|e| fails(format!("Can't read the JPEG XL image: {e}")))?;

@@ -16,7 +16,7 @@ use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
@@ -287,7 +287,7 @@ fn extract_duration(duration: f64, xhtml: &mut Xhtml) -> Result<(), Failure> {
     Ok(xhtml.element("p", &text)?)
 }
 
-fn thrown(thrown: String) -> Declined {
+fn thrown(thrown: String) -> Decline<'static> {
     Decline::Fails(Error::ParseError(thrown))
 }
 

@@ -15,7 +15,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
+use crate::formats::{Decline, Failure, Parser, Prepared, Unported};
 use crate::text::charset::Charset;
 
 use emf::{Comment, TextOut};
@@ -150,7 +150,7 @@ impl Parser for EmfParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let steps = emf_steps(emf::records(input));
         Ok(Box::new(move |xhtml| write(xhtml, steps)))
     }
@@ -351,7 +351,7 @@ impl Parser for WmfParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let steps = wmf_steps(wmf::records(input));
         Ok(Box::new(move |xhtml| write(xhtml, steps)))
     }

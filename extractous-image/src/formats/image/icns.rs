@@ -6,7 +6,7 @@
 use super::fails;
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 
 const SIGNATURE: [u8; 4] = *b"icns";
 /// `MAX_IMAGE_LENGTH_BYTES`.
@@ -87,7 +87,7 @@ fn read_into(input: &[u8], at: usize, header: &mut [u8; 4]) {
 }
 
 /// `ICNSParser.parse` as far as the document: the metadata it sets.
-fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Declined> {
+fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Decline<'static>> {
     let mut header = [0; 4];
     read_into(input, 0, &mut header);
     if header != SIGNATURE {
@@ -181,7 +181,7 @@ impl Parser for IcnsParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let mut read_metadata = metadata.clone();
         read(input, &mut read_metadata)?;
         Ok(Box::new(move |xhtml| {

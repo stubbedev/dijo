@@ -5,7 +5,7 @@
 
 use super::extractor::{self, Target};
 use super::metadata_extractor::{exif, Metadata};
-use super::{dates_zone, fails, Declined, Read};
+use super::{dates_zone, fails, Decline, Read};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp;
 
@@ -45,7 +45,7 @@ struct Stream<'a> {
 
 impl<'a> Stream<'a> {
     /// The next `length` bytes, those of the image's `what`.
-    fn bytes(&mut self, length: usize, what: &str) -> Result<&'a [u8], Declined> {
+    fn bytes(&mut self, length: usize, what: &str) -> Result<&'a [u8], Decline<'static>> {
         let bytes = self
             .at
             .checked_add(length)
@@ -60,13 +60,13 @@ impl<'a> Stream<'a> {
         Ok(bytes)
     }
 
-    fn byte(&mut self, what: &str) -> Result<u8, Declined> {
+    fn byte(&mut self, what: &str) -> Result<u8, Decline<'static>> {
         Ok(self.bytes(1, what)?[0])
     }
 
     /// A `ue7(32)`: seven bits a byte, big end first, up to the byte with its top bit clear, in
     /// at most five bytes and 32 bits.
-    fn ue7(&mut self, what: &str) -> Result<u32, Declined> {
+    fn ue7(&mut self, what: &str) -> Result<u32, Decline<'static>> {
         let start = self.at;
         let mut value: u32 = 0;
         for _ in 0..UE7_MAX {
@@ -87,7 +87,7 @@ impl<'a> Stream<'a> {
     }
 
     /// A `ue7(32)` length.
-    fn length(&mut self, what: &str) -> Result<usize, Declined> {
+    fn length(&mut self, what: &str) -> Result<usize, Decline<'static>> {
         let at = self.at;
         let length = self.ue7(what)?;
         usize::try_from(length)
@@ -96,7 +96,10 @@ impl<'a> Stream<'a> {
 }
 
 /// The metadata of the BPG image `input` into `metadata`, which is then the image's.
-pub(super) fn extract_metadata(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> {
+pub(super) fn extract_metadata(
+    input: &[u8],
+    mut metadata: TikaMetadata,
+) -> Result<Read, Decline<'static>> {
     let mut stream = Stream { input, at: 0 };
     if stream.bytes(SIGNATURE.len(), "signature")? != SIGNATURE {
         return Err(fails("BPG magic signature invalid".to_owned()));

@@ -14,7 +14,7 @@ use super::stream::RecordStream;
 use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys};
 use crate::formats::poi::{thrown, Read};
-use crate::formats::{Decline, Declined, Unported};
+use crate::formats::{Decline, Unported};
 
 /// `Biff8DecryptingStream.RC4_REKEYING_INTERVAL`: the bytes each block key decrypts.
 const RC4_REKEYING_INTERVAL: usize = 1024;
@@ -119,7 +119,7 @@ impl<'a> Records<'a> {
     /// the encryption. The position is where the records are; POI measures the records before
     /// as it would write them, a `WRITEPROTECT` of four bytes and a missing CSP name as an empty
     /// one, and decrypts out of step where they are otherwise (#119).
-    pub(super) fn decrypt(&mut self, configs: &ParserConfigs) -> Result<(), Declined> {
+    pub(super) fn decrypt(&mut self, configs: &ParserConfigs) -> Result<(), Decline<'static>> {
         let Some(file_pass) = &self.file_pass else {
             return Ok(());
         };

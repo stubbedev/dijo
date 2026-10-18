@@ -21,7 +21,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Decline, Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages};
 use crate::mime::{self, Origin};
 
@@ -316,7 +316,7 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
 /// Tika's path should read it rather than this parser, or the error Tika fails it with: the
 /// `EncryptedDocumentException` its `OpenDocumentManifestHandler` throws on a manifest's
 /// `encryption-data`, which `OpenDocumentParser` reads before any part it writes.
-fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Declined> {
+fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Decline<'static>> {
     let deferred = |reason: &str| Decline::Deferred(reason.to_owned());
     let Ok(mut archive) = Archive::open(input, pages) else {
         return Err(deferred(UNREADABLE_ARCHIVE));

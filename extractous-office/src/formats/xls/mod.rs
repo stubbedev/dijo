@@ -41,8 +41,7 @@ use crate::formats::ole2::{office_document, Handed, Summaries};
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{
-    unless_different, Decline, Declined, Difference, Failure, Parser, Prepared, Unported,
-    PASSWORD_USED,
+    unless_different, Decline, Difference, Failure, Parser, Prepared, Unported, PASSWORD_USED,
 };
 use crate::ole2::{EntryKind, Unreadable};
 
@@ -179,7 +178,10 @@ struct Picture {
 }
 
 impl Workbook {
-    fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Self, Option<Difference>), Declined> {
+    fn read(
+        input: &[u8],
+        configs: &ParserConfigs,
+    ) -> Result<(Self, Option<Difference>), Decline<'static>> {
         let (Opened { file, difference }, media_type) =
             office::open_as(input, configs, &MEDIA_TYPES, "workbook")?;
         let root = file.root();
@@ -384,7 +386,7 @@ fn write_out(out: &[Out], xhtml: &mut Xhtml) -> Result<(), Stop> {
 fn read_records(
     stream: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Extracted, Vec<Picture>), Declined> {
+) -> Result<(Extracted, Vec<Picture>), Decline<'static>> {
     let config = &configs.office;
     let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
     let settings = Settings {

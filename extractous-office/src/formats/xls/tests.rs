@@ -168,7 +168,7 @@ fn configs() -> ParserConfigs {
     ParserConfigs::default()
 }
 
-fn read(stream: &[u8]) -> Result<Extracted, Declined> {
+fn read(stream: &[u8]) -> Result<Extracted, Decline<'static>> {
     read_records(stream, &configs()).map(|(read, _)| read)
 }
 
