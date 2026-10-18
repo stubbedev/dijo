@@ -619,26 +619,51 @@ fn reads_jet3_text_in_the_code_page_of_the_database() {
     assert!(xml.contains("<table name=\"Таблиц\">"), "{xml}");
 }
 
-/// A Jet 3 database in a code page the port has no charset of is decoded as Jackcess decodes
-/// every Jet 3 database, in the JVM's default charset, UTF-8.
-#[test]
-fn reads_jet3_text_of_an_unknown_code_page_as_jackcess_does() {
-    let scratch = Scratch::new("access-jet3-unknown-code-page");
+/// The Jet 3 fixture with its header naming the code page `code_page`.
+fn jet3_in_code_page(code_page: u16) -> Vec<u8> {
     let mut header = fixture("jet3-queries.mdb");
     let Ok(format) = format::detect(&header) else {
         panic!("a Jet database");
     };
     let at = JET3_CODE_PAGE;
     let mask = &format.header_mask[at - format.offset_masked_header..];
-    for (i, byte) in 9u16.to_le_bytes().into_iter().enumerate() {
+    for (i, byte) in code_page.to_le_bytes().into_iter().enumerate() {
         header[at + i] = byte ^ mask[i];
     }
-    let unknown = scratch.write("unknown.mdb", &replaced(header, b"Table2", b"T\xc3\xa6ble"));
+    header
+}
+
+/// A Jet 3 database whose header names no code page is decoded in code page 1252, the ANSI code
+/// page of Access 97, where Jackcess decodes every Jet 3 database as UTF-8 (#185).
+#[test]
+fn reads_jet3_text_of_no_code_page_in_code_page_1252() {
+    let scratch = Scratch::new("access-jet3-no-code-page");
+    let unnamed = scratch.write(
+        "unnamed.mdb",
+        &replaced(jet3_in_code_page(0), b"Table2", b"Tr\xe6er\xf8"),
+    );
     let (xml, _) = crate::Extractor::new()
         .set_xml_output(true)
-        .extract_file_to_string(unknown.to_str().unwrap())
+        .extract_file_to_string(unnamed.to_str().unwrap())
         .unwrap();
-    assert!(xml.contains("<table name=\"Tæble\">"), "{xml}");
+    assert!(xml.contains("<table name=\"Træerø\">"), "{xml}");
+}
+
+/// A Jet 3 database in a code page that has no charset fails, naming the code page, where
+/// Jackcess decodes it as UTF-8 (#185).
+#[test]
+fn fails_on_jet3_text_of_a_code_page_without_a_charset() {
+    let scratch = Scratch::new("access-jet3-unknown-code-page");
+    let unknown = scratch.write("unknown.mdb", &jet3_in_code_page(9));
+    let error = crate::Extractor::new()
+        .extract_file_to_string(unknown.to_str().unwrap())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("code page 9, which has no charset"),
+        "{error}"
+    );
 }
 
 #[cfg(feature = "tika")]

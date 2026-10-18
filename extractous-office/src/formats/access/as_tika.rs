@@ -9,7 +9,7 @@ use crate::formats::parity::{ComparedMetadata, NativeRewrite, Normalisation};
 
 /// The rewrite of the native result of the database at `path` as Tika's path decodes it, and
 /// the normalisation of both texts that makes their cells alike: a Jet 3 database's text
-/// decoded from its code page, where Tika decodes it as UTF-8, and the cells
+/// decoded from its code page, where Tika decodes it as UTF-8 (#185), and the cells
 /// [`as_tika_formats_cells`] makes alike.
 pub fn as_tika_writes(path: &Path) -> (NativeRewrite, Normalisation) {
     let rewrite: NativeRewrite = if is_jet3(path) {
