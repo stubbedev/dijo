@@ -1145,7 +1145,7 @@ fn reads_tikas_test_jpeg_xl_images_beyond_tikas_xmp() {
 }
 
 /// The fixture of a JPEG XL image named `name`.
-fn jxl_fixture(name: &str) -> String {
+pub(super) fn jxl_fixture(name: &str) -> String {
     format!("{}/tests/fixtures/jxl/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 

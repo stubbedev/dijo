@@ -98,7 +98,7 @@ fn chm(pages: &[(&str, &[u8])], lzxc: &[u8; 4]) -> Vec<u8> {
 #[test]
 fn reads_the_directory_listing_as_tika_does() {
     let file = chm(&[("/a.html", b"<p>a</p>"), ("/b.css", b"b {}")], b"LZXC");
-    let extractor = Extractor::new(&file).unwrap();
+    let extractor = Extractor::new(&file, Pages::IN_MEMORY).unwrap();
     let names: Vec<&str> = extractor
         .listing
         .entries

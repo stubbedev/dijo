@@ -138,7 +138,7 @@ pub(super) enum Body {
     /// A slide's drawing (`PPDrawing`).
     Drawing(Box<Drawing>),
     /// The document's drawing group (`PPDrawingGroup`): its `DggContainer`.
-    DrawingGroup(Box<Escher>),
+    DrawingGroup(Box<Escher<'static>>),
     /// A `DocumentEncryptionAtom`: the encryption it reads, as CryptoAPI where its version
     /// allows.
     Encryption(Box<EncryptionInfo>),
@@ -223,7 +223,7 @@ impl Record {
     }
 
     /// The `DggContainer` of a `PPDrawingGroup`.
-    pub(super) fn drawing_group(&self) -> Option<&Escher> {
+    pub(super) fn drawing_group(&self) -> Option<&Escher<'static>> {
         match &self.body {
             Body::DrawingGroup(group) => Some(group),
             _ => None,
@@ -462,7 +462,7 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
             if group.content != escher::Content::Container {
                 return Err(Thrown::new("the drawing group's first record is no container").into());
             }
-            Body::DrawingGroup(Box::new(group))
+            Body::DrawingGroup(Box::new(group.into_owned()))
         }
         DOCUMENT_ATOM => {
             let needed = length.max(48);

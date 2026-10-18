@@ -94,6 +94,80 @@ impl Iterator for Text<'_> {
     }
 }
 
+impl<'a> Text<'a> {
+    /// The lines of [`lines`], read a piece at a time, so that only the line being read is
+    /// held, and not the text.
+    pub fn lines(self) -> Lines<'a> {
+        Lines {
+            text: self,
+            pending: String::new(),
+            at: 0,
+            ended: false,
+            after_carriage_return: false,
+        }
+    }
+}
+
+/// The lines of an `AutoDetectReader`'s [`Text`], as [`lines`] splits text.
+pub struct Lines<'a> {
+    text: Text<'a>,
+    /// The text read but not yet returned, from `at` on.
+    pending: String,
+    at: usize,
+    /// Whether the text has no more pieces.
+    ended: bool,
+    /// Whether the last line ended at a carriage return, so that a line feed right after it
+    /// ends no line of its own.
+    after_carriage_return: bool,
+}
+
+impl Lines<'_> {
+    /// Drops what was returned and reads the next piece.
+    fn read_on(&mut self) {
+        self.pending.drain(..self.at);
+        self.at = 0;
+        match self.text.next() {
+            Some(piece) => self.pending.push_str(&piece),
+            None => self.ended = true,
+        }
+    }
+}
+
+impl Iterator for Lines<'_> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        loop {
+            if self.after_carriage_return {
+                if self.at == self.pending.len() && !self.ended {
+                    self.read_on();
+                    continue;
+                }
+                self.after_carriage_return = false;
+                if self.pending[self.at..].starts_with('\n') {
+                    self.at += 1;
+                }
+            }
+            let rest = &self.pending[self.at..];
+            if let Some(end) = rest.find(['\n', '\r']) {
+                let line = rest[..end].to_owned();
+                self.after_carriage_return = rest.as_bytes()[end] == b'\r';
+                self.at += end + 1;
+                return Some(line);
+            }
+            if self.ended {
+                if rest.is_empty() {
+                    return None;
+                }
+                let line = rest.to_owned();
+                self.at = self.pending.len();
+                return Some(line);
+            }
+            self.read_on();
+        }
+    }
+}
+
 /// Sets the metadata an `AutoDetectReader`'s detection sets, in Tika's order: the detected
 /// charset, the detector that won, the trace, and the decoding charset (`getCharset`) when it is a
 /// superset of the detected one.
@@ -152,6 +226,27 @@ mod tests {
         assert_eq!(read("\n"), [""]);
         assert_eq!(read("a\r\nb\rc\n\nd"), ["a", "b", "c", "", "d"]);
         assert_eq!(read("a\r\r\n"), ["a", ""]);
+    }
+
+    #[test]
+    fn streams_the_lines_java_reads_across_pieces() {
+        let streamed = |text: &str| -> Vec<String> {
+            let (_, read) =
+                AutoDetectReader::stream(text.as_bytes(), Some("text/plain"), Pages::IN_MEMORY);
+            read.lines().collect()
+        };
+        for text in ["", "a", "a\n", "\n", "a\r\nb\rc\n\nd", "a\r\r\n"] {
+            assert_eq!(streamed(text), lines(text).collect::<Vec<_>>(), "{text:?}");
+        }
+        let long = "a".repeat(PIECE - 1);
+        for text in [
+            format!("{long}\r\nb\r"),
+            format!("{long}a\r\nb"),
+            format!("{long}\n\nb\n"),
+            format!("{long}{long}\rb"),
+        ] {
+            assert_eq!(streamed(&text), lines(&text).collect::<Vec<_>>());
+        }
     }
 
     #[test]

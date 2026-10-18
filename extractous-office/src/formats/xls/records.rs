@@ -2,7 +2,7 @@
 //! [`RecordStream`], and every other record POI knows read past whole, as its constructors do on
 //! well-formed records.
 
-use super::stream::{java_string, RecordStream, MAX_STRING_LENGTH};
+use super::stream::{java_string, Mark, RecordStream, MAX_STRING_LENGTH};
 use crate::formats::poi::{thrown, Read};
 
 /// Record types, as POI's record classes name them.
@@ -78,6 +78,64 @@ pub(super) struct SharedString {
     pub(super) phonetic: Option<String>,
 }
 
+/// How many strings of the shared string table lie from one mark to the next.
+const STRINGS_PER_MARK: usize = 16;
+
+/// The shared string table as an index of the workbook stream: where every
+/// [`STRINGS_PER_MARK`]th string starts, and how many strings `SSTRecord` read. A string is read
+/// from the stream again where a cell refers to it, so the table holds none of its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SharedStrings {
+    marks: Vec<Mark>,
+    count: usize,
+}
+
+/// The shared strings read where cells refer to them, from a stream of their own.
+pub(super) struct SharedStringReader<'a> {
+    table: SharedStrings,
+    stream: RecordStream<'a>,
+    /// The index of the string the stream is at, if it is at one.
+    next: Option<usize>,
+}
+
+impl<'a> SharedStringReader<'a> {
+    /// The strings of `table`, read from a copy of `stream`.
+    pub(super) fn new(table: SharedStrings, stream: &RecordStream<'a>) -> Self {
+        Self {
+            table,
+            stream: stream.clone(),
+            next: None,
+        }
+    }
+
+    /// How many strings the table holds.
+    pub(super) fn len(&self) -> usize {
+        self.table.count
+    }
+
+    /// The string at `index`, which the table holds: read on from the string the stream is at
+    /// where that comes before it in the same stretch, else from the mark before it.
+    pub(super) fn get(&mut self, index: usize) -> Read<SharedString> {
+        let from_mark = index - index % STRINGS_PER_MARK;
+        let mut next = match self.next {
+            Some(next) if (from_mark..=index).contains(&next) => next,
+            _ => {
+                self.stream
+                    .seek(self.table.marks[index / STRINGS_PER_MARK])?;
+                from_mark
+            }
+        };
+        self.next = None;
+        while next < index {
+            read_unicode_string(&mut self.stream)?;
+            next += 1;
+        }
+        let string = read_unicode_string(&mut self.stream)?;
+        self.next = Some(index + 1);
+        Ok(string)
+    }
+}
+
 /// A record as POI reads it, as far as Tika's listener and POI's record stream look at it.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Record {
@@ -90,7 +148,7 @@ pub(super) enum Record {
         hidden: bool,
         very_hidden: bool,
     },
-    Sst(Vec<SharedString>),
+    Sst(SharedStrings),
     Formula {
         cell: CellRef,
         cached: Cached,
@@ -132,7 +190,8 @@ pub(super) enum Record {
     ExtendedFormat {
         format_index: i16,
     },
-    DrawingGroup(Vec<u8>),
+    /// A drawing group record, by where it starts.
+    DrawingGroup(Mark),
     Drawing(Vec<u8>),
     Continue(Vec<u8>),
     Protect(bool),
@@ -287,7 +346,11 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
             stream.read_i16()?;
             Record::ExtendedFormat { format_index }
         }
-        sid::DRAWING_GROUP => Record::DrawingGroup(stream.read_remainder()?),
+        sid::DRAWING_GROUP => {
+            let start = stream.record_start();
+            stream.read_remainder()?;
+            Record::DrawingGroup(start)
+        }
         sid::DRAWING => Record::Drawing(stream.read_remainder()?),
         sid::CONTINUE => Record::Continue(stream.read_remainder()?),
         sid::PROTECT => Record::Protect(stream.read_i16()? & 1 != 0),
@@ -426,21 +489,28 @@ pub(super) fn decode_rk(number: i32) -> f64 {
 }
 
 /// `SSTRecord`: the strings, as many as the record says are unique, stopping early where the
-/// data runs out.
-fn read_shared_strings(stream: &mut RecordStream<'_>) -> Read<Vec<SharedString>> {
+/// data runs out, each read as POI reads it and kept as where it starts.
+fn read_shared_strings(stream: &mut RecordStream<'_>) -> Read<SharedStrings> {
     let total = stream.read_i32()?;
     let unique = stream.read_i32()?;
-    let mut strings = Vec::new();
+    let mut strings = SharedStrings {
+        marks: Vec::new(),
+        count: 0,
+    };
     if total == 0 {
         return Ok(strings);
     }
-    for _ in 0..unique.max(0) {
+    for index in 0..unique.max(0) as usize {
         if stream.remaining() == 0
             && (!stream.has_next_record()? || stream.next_sid() != Some(sid::CONTINUE))
         {
             break;
         }
-        strings.push(read_unicode_string(stream)?);
+        if index % STRINGS_PER_MARK == 0 {
+            strings.marks.push(stream.mark());
+        }
+        read_unicode_string(stream)?;
+        strings.count += 1;
     }
     Ok(strings)
 }
@@ -794,6 +864,48 @@ mod tests {
         Ok(record)
     }
 
+    /// The strings of a shared string table in `bytes`, by their indexes.
+    fn shared_strings(bytes: &[u8], indexes: &[usize]) -> Vec<String> {
+        let mut stream = RecordStream::new(bytes);
+        stream.has_next_record().unwrap();
+        stream.next_record().unwrap();
+        let Record::Sst(table) = read_record(&mut stream).unwrap() else {
+            panic!("a table");
+        };
+        let mut reader = SharedStringReader::new(table, &stream);
+        indexes
+            .iter()
+            .map(|&index| reader.get(index).unwrap().text)
+            .collect()
+    }
+
+    /// The strings of a table that runs on into `CONTINUE` records are read again from where
+    /// they start, in any order.
+    #[test]
+    fn reads_shared_strings_from_where_they_start() {
+        let words: Vec<String> = (0..40).map(|index| format!("word{index:02}")).collect();
+        let mut first = 40i32.to_le_bytes().to_vec();
+        first.extend(40i32.to_le_bytes());
+        let mut records = Vec::new();
+        let mut data = first;
+        for (index, word) in words.iter().enumerate() {
+            data.extend((word.len() as u16).to_le_bytes());
+            data.push(0);
+            data.extend(word.as_bytes());
+            if index % 7 == 6 {
+                records.push(std::mem::take(&mut data));
+            }
+        }
+        records.push(data);
+        let mut bytes = record(sid::SST, &records[0]);
+        for data in &records[1..] {
+            bytes.extend(record(sid::CONTINUE, data));
+        }
+        let indexes = [0, 1, 39, 17, 18, 16, 33, 2];
+        let expected: Vec<String> = indexes.iter().map(|&index| words[index].clone()).collect();
+        assert_eq!(shared_strings(&bytes, &indexes), expected);
+    }
+
     #[test]
     fn decodes_rk_numbers_as_poi_does() {
         assert_eq!(decode_rk(0x3FF0_0000), 1.0);
@@ -847,15 +959,19 @@ mod tests {
         sst.extend(18i32.to_le_bytes());
         sst.push(b'x');
         sst.extend([1, 0, 12, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, b'y', 0]);
-        let Record::Sst(strings) = read(sid::SST, &sst).unwrap() else {
+        let bytes = record(sid::SST, &sst);
+        let mut stream = RecordStream::new(&bytes);
+        stream.has_next_record().unwrap();
+        stream.next_record().unwrap();
+        let Record::Sst(table) = read_record(&mut stream).unwrap() else {
             panic!("a table");
         };
         assert_eq!(
-            strings,
-            [SharedString {
+            SharedStringReader::new(table, &stream).get(0).unwrap(),
+            SharedString {
                 text: "x".to_owned(),
                 phonetic: Some("y".to_owned())
-            }]
+            }
         );
     }
 

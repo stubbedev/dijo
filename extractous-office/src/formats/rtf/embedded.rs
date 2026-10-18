@@ -1,10 +1,14 @@
 //! Tika's `RTFEmbObjHandler` and `RTFObjDataParser`: the pictures (`\pict`) and objects
 //! (`\objdata`) of an RTF document, collected as the document is read, and each finished one
 //! made into the document it embeds, with the metadata Tika gives it, for the embedded document
-//! extractor to parse.
+//! extractor to parse. Their bytes are spooled as they are read: in memory, and past what is
+//! read whole, to a file of their own.
+
+use std::io::{self, BufWriter, Write};
 
 use super::charsets;
 use super::input::Input;
+use crate::errors::Error;
 use crate::formats::embedded::{
     record_stream_exception, PARSER_OVERRIDE, RELATIONSHIP_ID, RESOURCE_NAME,
 };
@@ -12,6 +16,8 @@ use crate::formats::metadata::office::{ORIGINAL_RESOURCE_NAME, RESOURCE_NAME_EXT
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::ole2::document_type;
+use crate::formats::Failure;
+use crate::input::{self, Spool};
 use crate::mime::{self, ole_directory_type, DetectionError, MediaType, Origin};
 use crate::ole2::{is_ole, EntryId, EntryKind, Ole2, Unreadable};
 
@@ -74,8 +80,22 @@ impl Thrown {
 /// extractor.
 #[derive(Debug)]
 pub(super) struct Handed {
-    pub(super) data: Vec<u8>,
+    pub(super) data: input::Input<'static>,
     pub(super) metadata: TikaMetadata,
+}
+
+/// The bytes of a picture or object being collected.
+type Collected = BufWriter<Spool>;
+
+fn collected() -> Collected {
+    BufWriter::new(Spool::new(None))
+}
+
+/// How a picture or object failed to spool.
+fn spool_failed(error: io::Error) -> Failure {
+    Failure::Extraction(Error::IoError(format!(
+        "Could not spool a picture or object of the RTF document: {error}"
+    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +108,7 @@ enum State {
 /// The picture or object being collected, and what the document's earlier ones leave.
 pub(super) struct Embedded {
     state: State,
-    bytes: Vec<u8>,
+    bytes: Collected,
     high: Option<u8>,
     metadata: TikaMetadata,
     in_object: bool,
@@ -105,7 +125,7 @@ impl Embedded {
     pub(super) fn new() -> Self {
         Self {
             state: State::Nothing,
-            bytes: Vec::new(),
+            bytes: collected(),
             high: None,
             metadata: TikaMetadata::new(),
             in_object: false,
@@ -161,37 +181,56 @@ impl Embedded {
 
     /// Takes a byte of hex data; anything other than a hex digit, such as a line break, is
     /// skipped.
-    pub(super) fn write_hex_char(&mut self, byte: u8) {
+    pub(super) fn write_hex_char(&mut self, byte: u8) -> Result<(), Failure> {
         let Some(value) = hex_value(byte) else {
-            return;
+            return Ok(());
         };
         match self.high.take() {
             None => self.high = Some(16 * value),
-            Some(high) => self.bytes.push(high + value),
+            Some(high) => self
+                .bytes
+                .write_all(&[high + value])
+                .map_err(spool_failed)?,
         }
+        Ok(())
     }
 
     /// Takes `length` bytes of `\binN` data from `input`. Data over the memory limit, or cut
-    /// off, which is then read to its end, fails.
-    pub(super) fn write_bytes(&mut self, input: &mut Input, length: u32) -> Result<(), Thrown> {
+    /// off, which is then read to its end, is thrown on.
+    pub(super) fn write_bytes(
+        &mut self,
+        input: &mut Input,
+        length: u32,
+    ) -> Result<Result<(), Thrown>, Failure> {
         if u64::from(length) > MEMORY_LIMIT {
-            return Err(Thrown::memory_limit(u64::from(length), MEMORY_LIMIT));
+            return Ok(Err(Thrown::memory_limit(u64::from(length), MEMORY_LIMIT)));
         }
-        let data = input.take(length as usize).map_err(|actual| {
-            Thrown::Io(format!(
-                "java.io.EOFException: Length to read: {length} actual: {actual}"
-            ))
-        })?;
-        self.bytes.extend_from_slice(&data);
-        Ok(())
+        let data = match input.take(length as usize) {
+            Ok(data) => data,
+            Err(actual) => {
+                return Ok(Err(Thrown::Io(format!(
+                    "java.io.EOFException: Length to read: {length} actual: {actual}"
+                ))))
+            }
+        };
+        self.bytes.write_all(&data).map_err(spool_failed)?;
+        Ok(Ok(()))
     }
 
     /// `handleCompletedObject`: the document a finished picture or object embeds, if Tika hands
     /// one on. An object whose data `RTFObjDataParser` fails to read with an `IOException` hands
     /// on nothing.
-    pub(super) fn complete(&mut self) -> Result<Option<Handed>, Thrown> {
+    pub(super) fn complete(&mut self) -> Result<Result<Option<Handed>, Thrown>, Failure> {
+        let bytes = std::mem::replace(&mut self.bytes, collected())
+            .into_inner()
+            .map_err(|error| spool_failed(error.into_error()))?
+            .finish()
+            .map_err(spool_failed)?;
+        Ok(self.finish(bytes))
+    }
+
+    fn finish(&mut self, bytes: input::Input<'static>) -> Result<Option<Handed>, Thrown> {
         let state = self.state;
-        let bytes = std::mem::take(&mut self.bytes);
         let mut metadata = std::mem::take(&mut self.metadata);
         let in_object = self.in_object;
         let raw_bitmap = self.raw_bitmap;
@@ -199,7 +238,7 @@ impl Embedded {
         let data = match state {
             State::Nothing => return Ok(None),
             State::Object => match object(&bytes, &mut metadata, &mut self.unnamed) {
-                Ok(Some(data)) => data,
+                Ok(Some(data)) => input::Input::Read(std::sync::Arc::new(data)),
                 Ok(None) | Err(Thrown::Io(_)) => return Ok(None),
                 Err(thrown) => return Err(thrown),
             },
@@ -245,7 +284,7 @@ impl Embedded {
     /// Forgets the picture or object being collected, but not how many were named.
     pub(super) fn reset(&mut self) {
         self.state = State::Nothing;
-        self.bytes.clear();
+        self.bytes = collected();
         self.metadata = TikaMetadata::new();
         self.high = None;
         self.name.clear();
@@ -568,9 +607,9 @@ mod tests {
             .iter()
             .flat_map(|byte| format!("{byte:02x}").into_bytes())
         {
-            embedded.write_hex_char(digit);
+            embedded.write_hex_char(digit).unwrap();
         }
-        embedded.complete().unwrap().unwrap()
+        embedded.complete().unwrap().unwrap().unwrap()
     }
 
     fn property(embedded: &mut Embedded, name: &str, value: &str) {
@@ -659,28 +698,29 @@ mod tests {
         };
         assert!(line.contains("Tried to allocate 20971521 bytes, but 20971520"));
         let mut embedded = Embedded::new();
-        let mut input = Input::new(b"abc");
+        embedded.start_picture();
+        let mut input = Input::new(b"abc", crate::input::Pages::IN_MEMORY);
         assert!(matches!(
             embedded.write_bytes(&mut input, MEMORY_LIMIT as u32 + 1),
-            Err(Thrown::Tika(_))
+            Ok(Err(Thrown::Tika(_)))
         ));
-        assert_eq!(embedded.write_bytes(&mut input, 2), Ok(()));
+        assert_eq!(embedded.write_bytes(&mut input, 2).unwrap(), Ok(()));
         assert_eq!(
-            embedded.write_bytes(&mut input, 4),
+            embedded.write_bytes(&mut input, 4).unwrap(),
             Err(Thrown::Io(
                 "java.io.EOFException: Length to read: 4 actual: 1".to_owned()
             ))
         );
-        assert_eq!(embedded.bytes, b"ab");
+        assert_eq!(&*embedded.complete().unwrap().unwrap().unwrap().data, b"ab");
     }
 
     #[test]
     fn names_pictures_as_tika_does() {
         let mut embedded = Embedded::new();
-        assert!(embedded.complete().unwrap().is_none());
+        assert!(embedded.complete().unwrap().unwrap().is_none());
         embedded.start_picture();
         let picture = finished(&mut embedded, PNG);
-        assert_eq!(picture.data, PNG);
+        assert_eq!(&*picture.data, PNG);
         assert_eq!(picture.metadata.get(RESOURCE_NAME), Some("embedded-0.png"));
         assert_eq!(picture.metadata.get(CONTENT_TYPE), Some("image/png"));
         assert_eq!(picture.metadata.get(THUMBNAIL), Some("false"));

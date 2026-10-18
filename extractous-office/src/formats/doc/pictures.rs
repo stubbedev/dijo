@@ -94,7 +94,7 @@ impl PictureType {
 #[derive(Debug, Clone)]
 pub(super) struct Picture {
     start: i32,
-    blips: Vec<Escher>,
+    blips: Vec<Escher<'static>>,
 }
 
 impl Picture {
@@ -289,12 +289,12 @@ fn all_pictures(document: &Document) -> Read<Vec<Picture>> {
 }
 
 /// `new Picture(blipRecord)`.
-fn stored_picture(blip: Blip) -> Picture {
+fn stored_picture(blip: Blip<'_>) -> Picture {
     Picture {
         start: 0,
         blips: vec![Escher {
             record_id: blip.record_id,
-            content: Content::Picture(blip),
+            content: Content::Picture(blip.into_owned()),
             children: Vec::new(),
         }],
     }
@@ -329,7 +329,7 @@ fn read_picture(data: &[u8], start: i32) -> Read<Picture> {
         }
         let (record, read) = escher::record_at(data, offset)?;
         offset = advance(offset, read)?;
-        blips.push(record);
+        blips.push(record.into_owned());
     }
     Ok(Picture { start, blips })
 }
