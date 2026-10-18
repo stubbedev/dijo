@@ -29,7 +29,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let (mut ported, deferred) = parity::documents(&XlsParser, &[&parity::conformance_corpus()]);
     assert!(deferred.is_empty(), "{deferred:?}");
     ported.sort();
-    assert_eq!(ported.len(), 28);
+    assert_eq!(ported.len(), 29);
     let (departing, compared): (Vec<PathBuf>, Vec<PathBuf>) =
         ported.into_iter().partition(|document| {
             DEPARTING
