@@ -83,6 +83,29 @@ fn records_no_ocr_parser_where_ocr_is_skipped() {
         .any(|parser| parser == PREPARING_OCR_PARSER));
 }
 
+/// A HEIC image libheif cannot decode for OCR fails as the `IOException` our Java
+/// `HeifDecoder` throws out of Tika's `HeifParser`, in a build without Tika too (#173).
+#[test]
+fn fails_on_heif_images_libheif_cannot_decode() {
+    let heic = std::fs::read("../quality/corpus/prose-scan.heic").unwrap();
+    let mut metadata = TikaMetadata::new();
+    metadata.set("Content-Type", "image/heic");
+    let configs = ParserConfigs::default();
+    let prepared = HeifParser.prepare(&heic[..heic.len() / 2], &metadata, &configs);
+    match prepared {
+        Err(Decline::Fails(Error::ParseError(message))) => assert!(
+            message.starts_with(
+                "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: \
+                 Illegal IOException from org.apache.tika.parser.image.HeifParser <- caused by \
+                 java.io.IOException: "
+            ),
+            "{message}"
+        ),
+        Ok(_) => panic!("a truncated HEIC image is read"),
+        Err(other) => panic!("{other:?}"),
+    };
+}
+
 #[cfg(feature = "tika")]
 #[test]
 fn reads_local_jpegs_as_tika_does() {
@@ -177,6 +200,37 @@ fn reads_tikas_test_heif_images_with_tesseract_as_tikas_path_does() {
         &parsed,
         &configs,
     );
+}
+
+/// Damaged HEIF and AVIF images libheif cannot decode for OCR fail as Tika's path fails them,
+/// with the exception it throws (#173). Tika's `CompositeParser` names the parser it wraps the
+/// exception for by the decorator around `HeifParser`, `MimeFilteringDecorator@<hash>`, which
+/// differs on each run, where the native path names `HeifParser`.
+#[cfg(feature = "tika")]
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn fails_on_heif_images_libheif_cannot_decode_as_tikas_path_does() {
+    let module = conformance_corpus().join(
+        "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/\
+         resources/test-documents",
+    );
+    let damaged = [
+        module.join("testAVIF.avif"),
+        module.join("testHEIC_livePhoto.heic"),
+    ];
+    let damaged: Vec<&Path> = damaged.iter().map(PathBuf::as_path).collect();
+    let configs = automatic_language();
+    let cause = |error: &str| {
+        error
+            .split_once(" <- caused by ")
+            .map(|(_, cause)| cause.to_owned())
+    };
+    for path in &damaged {
+        let (native, tika) = crate::formats::parity::errors(path, &configs);
+        assert!(cause(&native).is_some(), "{}: {native}", path.display());
+        assert_eq!(cause(&native), cause(&tika), "{}", path.display());
+    }
+    assert_fails_as_tika_with(&damaged, &configs);
 }
 
 /// The images of the quality corpus with the given names.

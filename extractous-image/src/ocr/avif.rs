@@ -2,8 +2,8 @@
 //! item of the HEIF container (ISO/IEC 23008-12), an AV1 image or a grid of them, its data in
 //! the file, in the `idat` box or constructed from other items, decoded by rav1d, its colours
 //! converted with its matrix coefficients, and cropped, rotated and mirrored as its
-//! transformative properties say. A file whose primary image is coded otherwise is left to
-//! libheif.
+//! transformative properties say. A file whose primary image is coded otherwise, or which this
+//! module cannot decode, is left to libheif, which decides for Tika's path whether it decodes.
 
 use std::collections::BTreeMap;
 
