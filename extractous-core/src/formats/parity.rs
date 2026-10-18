@@ -27,7 +27,10 @@
 //!
 //! Where a native parser departs from Tika's path on purpose, fixing one of Tika's quirks, a
 //! test names the departure, and exactly that is taken out before the results are compared:
-//! see [`Departure`], [`NativeRewrite`] and [`Adjustments`].
+//! see [`Departure`], [`NativeRewrite`] and [`Adjustments`]. One departure no test names: a
+//! document whose native extraction had the HTML parser build a document, of its own or of an
+//! HTML part or embedded page another parser handed it, departs by the HTML parser's white space
+//! (#84), and any other is compared without it.
 //!
 //! What OCR reads is not compared, the quality corpus scores it instead: the text in each div of
 //! class `ocr`, in the XHTML and where it stands in the plain text, and the values of the
@@ -2199,6 +2202,7 @@ fn compare(
     for document in documents {
         let path = document.to_str().unwrap();
         let native_name = routed(path).parser.name();
+        let built = formats::html::documents_built();
         let first = ("stream", Output::Xml, CharSet::UTF_8);
         let mut comparisons = vec![extracted(path, configs, first)];
         let ocr = read_by_ocr(&comparisons[0]);
@@ -2216,6 +2220,17 @@ fn compare(
                 .collect(),
         };
         comparisons.extend(rest.into_iter().map(|way| extracted(path, configs, way)));
+        let departures;
+        let expected = match expected {
+            Expected::Same(naming) => {
+                departures = with_html_departures(naming.departures, built);
+                Expected::Same(Naming {
+                    departures: &departures,
+                    ..naming
+                })
+            }
+            Expected::Failure => Expected::Failure,
+        };
         let (line_breaks, unwritten) = match (&comparisons[0].3, &comparisons[0].4) {
             (Ok(tika), Ok(native)) => {
                 let (tika, native) = (
@@ -2365,6 +2380,21 @@ fn compare(
         }
     }
     assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+/// `departures` and, where the native extractions since the HTML parser had `built` documents
+/// built one more, the HTML parser's own (#84), whichever parser handed it the HTML.
+#[cfg(feature = "tika")]
+fn with_html_departures<'a>(departures: Departures<'a>, built: usize) -> Vec<Departure<'a>> {
+    let mut departures = departures.to_vec();
+    if formats::html::documents_built() > built {
+        for departure in formats::html::DEPARTURES {
+            if !departures.contains(departure) {
+                departures.push(*departure);
+            }
+        }
+    }
+    departures
 }
 
 /// One output of a document, Tika's path's and the native parser's.
@@ -2867,6 +2897,7 @@ fn spools_as_tika_under(
     });
 
     let native_spool = Scratch::new("spool-native");
+    let built = formats::html::documents_built();
     let routed = routed(path);
     let native_name = routed.parser.name();
     let tika_name = routed.parser.tika_name();
@@ -2898,6 +2929,7 @@ fn spools_as_tika_under(
         Ok((text, metadata, stream.embedded()?))
     });
 
+    let departures = &with_html_departures(departures, built);
     match (tika, native) {
         (Ok((text, metadata, embedded)), Ok((native_text, native_metadata, native_embedded))) => {
             let names = tika_names(native_name, tika_name, &[]);

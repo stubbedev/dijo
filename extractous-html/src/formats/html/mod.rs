@@ -56,6 +56,15 @@ pub const TREE_DEPARTURES: extractous_base::formats::parity::Departures = &[
     extractous_base::formats::parity::Departure::Elements("#84"),
 ];
 
+/// How many documents the HTML parser has built by the WHATWG algorithm in this process, every
+/// parser that hands it HTML included: a native extraction that adds to it departs from Tika's
+/// path by [`DEPARTURES`]. Counted across threads, as a stream extraction parses in its own, it
+/// is exact where one test runs per process, as nextest runs them.
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub fn documents_built() -> usize {
+    tree_builder::BUILT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The document of Tika's tests with a `meta` title after its `title` element, which Tika
 /// records as `html:dc:title` and the parser as a further `dc:title` (#86): the parity tests
 /// check what the parser gives instead of comparing it with Tika's.

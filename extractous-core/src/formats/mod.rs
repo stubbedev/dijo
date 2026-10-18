@@ -1363,22 +1363,14 @@ mod tests {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
                     | "extractous::MboxParser" => crate::formats::mail::departures_of(&path),
-                    "extractous::OfficeParser" => [
-                        crate::formats::msg::RECIPIENT_NAMES,
-                        crate::formats::html::DEPARTURES,
-                    ]
-                    .concat(),
+                    "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
                         crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }
                     "extractous::IDMLParser" => {
                         crate::formats::idml::ACCUMULATED_PAGE_COUNTS.to_vec()
                     }
-                    "extractous::JSoupParser" => crate::formats::html::DEPARTURES.to_vec(),
                     "extractous::ChmParser" => crate::formats::chm::DEPARTURES.to_vec(),
-                    "extractous::SourceCodeParser" => {
-                        crate::formats::source_code::DEPARTURES.to_vec()
-                    }
                     "extractous::TSDParser" => crate::formats::tsd::DEPARTURES.to_vec(),
                     _ => walked.unwrap_or_default().to_vec(),
                 };

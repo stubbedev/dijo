@@ -66,11 +66,8 @@ mod tests {
     #[cfg(feature = "tika")]
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::html;
-    #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
-        conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
     #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
@@ -369,16 +366,6 @@ mod tests {
         let (parsed, deferred) = documents(&RtfParser, &[&conformance_corpus()]);
         assert_eq!(deferred, Vec::<PathBuf>::new());
         assert!(parsed.len() >= 43, "{} documents", parsed.len());
-        let (embedded_html, others): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
-            .into_iter()
-            .partition(|path| path.ends_with(EMBEDDED_HTML));
-        assert_eq!(embedded_html.len(), 1);
-        assert_same_as_tika(&others, TIKA_PARSER);
-        assert_same_as_tika_departing(&embedded_html, TIKA_PARSER, html::DEPARTURES);
+        assert_same_as_tika(&as_paths(&parsed), TIKA_PARSER);
     }
-
-    /// The conformance document with HTML documents in its packages, whose white space after
-    /// `</body>` the native HTML parser puts in the body (#84).
-    #[cfg(feature = "tika")]
-    const EMBEDDED_HTML: &str = "testRTFEmbeddedFiles.rtf";
 }

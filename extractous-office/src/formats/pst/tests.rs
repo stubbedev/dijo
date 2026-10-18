@@ -5,8 +5,7 @@ use super::*;
 use crate::formats::parity::Scratch;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
-    documents,
+    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
 };
 
 const OST: &str = "../test_files/documents/offline-folder.ost";
@@ -49,11 +48,7 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
         .collect();
     assert_eq!(names, ["testPST.pst", "testPST_variousBodyTypes.pst"]);
     let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(
-        &parsed,
-        OutlookPstParser.tika_name(),
-        crate::formats::html::DEPARTURES,
-    );
+    assert_same_as_tika(&parsed, OutlookPstParser.tika_name());
 }
 
 #[test]

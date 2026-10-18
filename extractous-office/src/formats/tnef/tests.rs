@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
-    documents, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
 };
 
 const ATTACH_LONG_FILENAME: u16 = 0x3707;
@@ -240,9 +239,5 @@ fn extracts_tikas_test_tnef_messages_as_tikas_path_does() {
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 1, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(
-        &paths,
-        TnefParser.tika_name(),
-        crate::formats::html::DEPARTURES,
-    );
+    assert_same_as_tika(&paths, TnefParser.tika_name());
 }

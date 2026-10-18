@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 #[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
-};
+use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
 #[cfg(feature = "tika")]
 const JAVA: &str = r#"/*
@@ -124,10 +122,9 @@ fn extracts_source_code_as_tikas_path_does() {
     let (parsed, deferred) = documents(&SourceCodeParser, &[scratch.directory()]);
     assert_eq!(deferred, [named]);
     assert_eq!(parsed, [java.clone(), cpp.clone(), groovy.clone()]);
-    assert_same_as_tika_departing(
+    assert_same_as_tika(
         &[java.as_path(), groovy.as_path(), cpp.as_path()],
         SourceCodeParser.tika_name(),
-        DEPARTURES,
     );
 }
 
@@ -139,5 +136,5 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 2, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(&paths, SourceCodeParser.tika_name(), DEPARTURES);
+    assert_same_as_tika(&paths, SourceCodeParser.tika_name());
 }
