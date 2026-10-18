@@ -10,11 +10,13 @@
 
 mod colorspace;
 mod engine;
+mod filters;
 mod image;
 mod png;
 mod sampled;
 #[cfg(test)]
 mod tests;
+mod written;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -216,11 +218,7 @@ fn write_to_buffer(image: &PdImage, extension: &str) -> Result<Vec<u8>, Unwritte
         "jpg" => {
             let color_space = image.color_space()?;
             if !matches!(color_space.name(), "DeviceGray" | "DeviceRGB") {
-                return Err(Unported(format!(
-                    "a JPEG image in the colour space {}, which Java decodes and encodes anew",
-                    color_space.name()
-                ))
-                .into());
+                return Ok(written::jpeg(&sampled::image(image)?));
             }
             copied(image.data_until(&JPEG)?)
         }
@@ -230,15 +228,12 @@ fn write_to_buffer(image: &PdImage, extension: &str) -> Result<Vec<u8>, Unwritte
                 return copied(image.data_until(&JP2)?);
             }
             sampled::image(image)?;
-            Err(
-                Unported("a JPEG 2000 image Java decodes, which the port does not".to_owned())
-                    .into(),
-            )
+            unreachable!("Java has no JPEG 2000 reader, so the image does not decode")
         }
-        "tif" if image.color_space()?.is_device_gray() => Err(Unported(
-            "a CCITT image, which Java writes as a TIFF with its CCITT T.6 writer".to_owned(),
-        )
-        .into()),
+        "tif" if image.color_space()?.is_device_gray() => {
+            Ok(written::tiff(&written::bitonal(&sampled::image(image)?)))
+        }
+        "tif" => Ok(written::tiff(&sampled::image(image)?)),
         "jb2" => copied(image.data_until(&JB2)?),
         _ => Ok(png::write(&sampled::image(image)?)),
     }

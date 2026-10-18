@@ -37,6 +37,96 @@ pub(crate) fn decode(input: &[u8]) -> Result<Jpeg, String> {
         .map_err(|e| format!("cannot decode the JPEG: {e}"))
 }
 
+/// A JPEG's samples as PDFBox's `DCTFilter` reads them through the JDK's reader, interleaved,
+/// `components` a pixel.
+#[derive(Debug)]
+pub struct Raster {
+    pub width: usize,
+    pub height: usize,
+    pub components: usize,
+    pub samples: Vec<u8>,
+}
+
+/// `DCTFilter.decode`, a line feed before the data skipped: a grey JPEG's levels; three
+/// components as the JDK's `read` converts them to RGB, or, where it refuses their Adobe
+/// transform, `readRaster`'s components in reverse order, as PDFBox swaps what it takes for
+/// BGR; four components as `readRaster` gives them, YCCK made CMYK by PDFBox's own formula.
+pub fn pdfbox_raster(input: &[u8]) -> Result<Raster, String> {
+    let data = input.strip_prefix(b"\n").unwrap_or(input);
+    let Planes {
+        frame,
+        planes,
+        space,
+        adobe_transform,
+        ..
+    } = Decoder::new(data)
+        .planes()
+        .map_err(|e| format!("cannot decode the JPEG: {e}"))?;
+    let components = frame.components.len();
+    let upsampled: Vec<Vec<u8>> = frame
+        .components
+        .iter()
+        .zip(&planes)
+        .map(|(component, plane)| frame.upsampled(component, plane))
+        .collect();
+    let pixels = frame.width * frame.height;
+    let interleaved = |order: &[usize]| -> Vec<u8> {
+        (0..pixels)
+            .flat_map(|i| order.iter().map(move |&c| (c, i)))
+            .map(|(c, i)| upsampled[c][i])
+            .collect()
+    };
+    let samples = match (components, space) {
+        (1, _) => interleaved(&[0]),
+        (3, ColorSpace::Unknown) => interleaved(&[2, 1, 0]),
+        (3, _) => match frame.converted(&planes, space, false) {
+            Samples::Rgb(rgb) => rgb,
+            other => unreachable!("three components convert to RGB, not {other:?}"),
+        },
+        (4, _) => match adobe_transform.unwrap_or(0) {
+            0 => interleaved(&[0, 1, 2, 3]),
+            1 | 2 => (0..pixels)
+                .flat_map(|i| ycck_to_cmyk([0, 1, 2, 3].map(|c| f32::from(upsampled[c][i]))))
+                .collect(),
+            other => {
+                return Err(format!(
+                    "java.lang.IllegalArgumentException: Unknown colorTransform {other}"
+                ))
+            }
+        },
+        (other, _) => {
+            return Err(format!(
+                "a JPEG of {other} components, which the JDK's reader does not read"
+            ))
+        }
+    };
+    Ok(Raster {
+        width: frame.width,
+        height: frame.height,
+        components,
+        samples,
+    })
+}
+
+/// `DCTFilter.fromYCCKtoCMYK` of one pixel.
+fn ycck_to_cmyk([y, cb, cr, k]: [f32; 4]) -> [u8; 4] {
+    let clamp = |value: f32| value.clamp(0.0, 255.0) as i32;
+    let r = clamp(y + 1.402 * cr - 179.456);
+    let g = clamp(y - 0.34414 * cb - 0.71414 * cr + 135.45984);
+    let b = clamp(y + 1.772 * cb - 226.816);
+    [(255 - r) as u8, (255 - g) as u8, (255 - b) as u8, k as u8]
+}
+
+/// A JPEG decoded up to its components' samples: the colour space the JDK settles on, the
+/// Adobe transform it names, if any, and the ICC profile it embeds.
+struct Planes {
+    frame: Frame,
+    planes: Vec<Plane>,
+    space: ColorSpace,
+    adobe_transform: Option<u8>,
+    icc_profile: Option<Vec<u8>>,
+}
+
 const DCTSIZE: usize = 8;
 const DCTSIZE2: usize = 64;
 const MAX_COMPONENTS: usize = 10;
@@ -243,7 +333,29 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn decode(mut self) -> Result<Jpeg, String> {
+    fn decode(self) -> Result<Jpeg, String> {
+        let Planes {
+            frame,
+            planes,
+            space,
+            adobe_transform,
+            icc_profile,
+        } = self.planes()?;
+        let space = match space {
+            ColorSpace::Unknown => ColorSpace::YCbCr,
+            known => known,
+        };
+        let samples = frame.converted(&planes, space, adobe_transform.is_some());
+        Ok(Jpeg {
+            width: frame.width,
+            height: frame.height,
+            samples,
+            icc_profile,
+        })
+    }
+
+    /// The image decoded up to its components' samples.
+    fn planes(mut self) -> Result<Planes, String> {
         if self.data.len() < 2 || self.data[0] != 0xFF || self.data[1] != SOI {
             return Err(format!(
                 "Not a JPEG file: starts with {:#04x} {:#04x}",
@@ -257,7 +369,7 @@ impl<'a> Decoder<'a> {
         let icc_profile = self.icc_profile()?;
         let frame = self.frame.as_ref().expect("a scan follows a frame");
         let space = match self.color_space() {
-            ColorSpace::Unknown if frame.components.len() == 3 => ColorSpace::YCbCr,
+            ColorSpace::Unknown if frame.components.len() == 3 => ColorSpace::Unknown,
             ColorSpace::Unknown => {
                 return Err(format!(
                     "a JPEG of {} components, which neither the JDK's reader nor tesseract reads",
@@ -280,11 +392,11 @@ impl<'a> Decoder<'a> {
         }
         let frame = self.frame.take().expect("a decoded image has a frame");
         let planes = frame.planes();
-        let samples = frame.converted(&planes, space, self.adobe_transform.is_some());
-        Ok(Jpeg {
-            width: frame.width,
-            height: frame.height,
-            samples,
+        Ok(Planes {
+            frame,
+            planes,
+            space,
+            adobe_transform: self.adobe_transform,
             icc_profile,
         })
     }

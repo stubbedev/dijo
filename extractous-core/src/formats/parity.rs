@@ -2453,7 +2453,8 @@ fn as_tika_spools(native: Vec<Spooled>, tika: &[Spooled]) -> Vec<Spooled> {
 
 /// The spooled files, where a [`Departure::PngImages`] applies, with each whole PNG file the
 /// image it holds, and no size: its dimensions, colour type, bit depth and resolution, then its
-/// pixels.
+/// pixels; and of the PNG type, which Tika gives the PNG file of a masked JPEG or JPEG 2000
+/// image the type of the data it does not copy (#131).
 #[cfg(feature = "tika")]
 fn with_png_images(spooled: Vec<Spooled>, png_images: bool) -> Vec<Spooled> {
     if !png_images {
@@ -2487,6 +2488,7 @@ fn with_png_images(spooled: Vec<Spooled>, png_images: bool) -> Vec<Spooled> {
             Spooled {
                 size: 0,
                 content,
+                content_type: Some("image/png".to_owned()),
                 ..file
             }
         })
