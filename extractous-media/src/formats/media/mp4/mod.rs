@@ -19,7 +19,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Footprint, Opened, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Opened, Parser, Prepared};
 
 /// `MP4`: the prefix of the QuickTime metadata keys, which the file names.
 const QUICK_TIME_KEY_PREFIX: &str = "mp4:";
@@ -78,8 +78,8 @@ impl Parser for Mp4Parser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let walked = walk::walk(input).map_err(Declined::Deferred)?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let walked = walk::walk(input).map_err(Decline::Deferred)?;
         let mut events = walked.events;
         directory::metadata(&walked.movie, &walked.tracks, &mut events);
         Ok(Box::new(move |xhtml| write(&events, xhtml)))

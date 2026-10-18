@@ -42,7 +42,7 @@ use crate::formats::handlers::parse_inline;
 use crate::formats::html;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text;
-use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::formats::{Decline, Deferral, Failure, Parser, Prepared};
 use crate::java::parse_long;
 
 /// What the port leaves to Tika.
@@ -94,8 +94,8 @@ impl Parser for Rfc822Parser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        prepare_message(Ok(input), metadata).map_err(Declined::Deferred)
+    ) -> Result<Prepared<'a>, Decline<'static>> {
+        prepare_message(Ok(input), metadata).map_err(Decline::Deferred)
     }
 }
 
@@ -116,8 +116,8 @@ impl Parser for EmlxParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        prepare_message(emlx_message(input), metadata).map_err(Declined::Deferred)
+    ) -> Result<Prepared<'a>, Decline<'static>> {
+        prepare_message(emlx_message(input), metadata).map_err(Decline::Deferred)
     }
 }
 

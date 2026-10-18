@@ -7,7 +7,7 @@ use super::{undecoded, write_files};
 use crate::compress::{seven_z, Undecoded};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{crypt, Declined, Parser, Prepared, PASSWORD_USED};
+use crate::formats::{crypt, Decline, Parser, Prepared, PASSWORD_USED};
 
 const SEVEN_Z: &str = "application/x-7z-compressed";
 /// What commons-compress's `SevenZFile` throws on encrypted data it was given no password for,
@@ -35,14 +35,14 @@ impl Parser for SevenZParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let password = configs.password.as_ref().map(|password| password.expose());
         let files = seven_z::files(input, password).map_err(|failure| match failure {
-            Undecoded::Encrypted => Declined::Fails(crypt::encrypted(Some(PASSWORD_REQUIRED))),
+            Undecoded::Encrypted => Decline::Fails(crypt::encrypted(Some(PASSWORD_REQUIRED))),
             reason => undecoded("the 7z archive", reason),
         })?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
-            return Err(Declined::Deferred(reason));
+            return Err(Decline::Deferred(reason));
         }
         Ok(Box::new(move |xhtml| {
             if password.is_some() {

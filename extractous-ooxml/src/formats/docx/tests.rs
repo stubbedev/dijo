@@ -501,13 +501,14 @@ fn reads_packages_without_a_central_directory_by_their_local_headers() {
 #[test]
 fn fails_packages_cut_short_in_an_entry_as_poi_does() {
     let input = std::fs::read(TRUNCATED).unwrap();
+    let configs = ParserConfigs::default();
     let declined = DocxParser
-        .prepare(&input, &TikaMetadata::new(), &ParserConfigs::default())
+        .prepare(&input, &TikaMetadata::new(), &configs)
         .err();
     assert!(
         matches!(
             &declined,
-            Some(Declined::Fails(crate::Error::ParseError(reason)))
+            Some(Decline::Fails(crate::Error::ParseError(reason)))
                 if reason.starts_with("Error opening OOXML file: Truncated ZIP file")
                     && reason.contains("word/styles.xml")
         ),

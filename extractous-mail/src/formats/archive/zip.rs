@@ -27,7 +27,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::time::instant_string;
 use crate::mime::{Key, MediaType};
@@ -156,7 +156,7 @@ impl Parser for ZipParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -172,7 +172,7 @@ impl Parser for ZipParser {
         pages: Pages<'a>,
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         if let Ok(zip) = ZipFile::open(input) {
             let paging = Paging::new(pages);
             check_entries(&zip, input.len(), &paging)?;
@@ -185,7 +185,7 @@ impl Parser for ZipParser {
             return Ok(Box::new(move |xhtml| streamed.write(input, xhtml)));
         }
         let salvaged = salvage(input).map_err(|unsalvaged| {
-            Declined::Deferred(format!(
+            Decline::Deferred(format!(
                 "the detection salvaged the archive, which salvages no more: {unsalvaged:?}"
             ))
         })?;
@@ -205,14 +205,14 @@ impl Parser for ZipParser {
 
 /// Reads each entry of the archive `zip`, `length` bytes in all, to rule out what Tika's path
 /// reads otherwise.
-fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), Declined> {
+fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), Decline<'static>> {
     let mut scan = Scan::new();
     for entry in zip.entries() {
         if entry.is_directory() || !entry.can_read() {
             continue;
         }
         if entry_name(entry).is_none() {
-            return Err(Declined::Deferred(format!(
+            return Err(Decline::Deferred(format!(
                 "the name of the entry {} is detected in a charset the native decoders do \
                  not decode",
                 entry.name
@@ -221,12 +221,12 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
         match zip.read(entry) {
             Some(Content::Complete(content)) => {
                 if let Some(reason) = scan.entry(&content) {
-                    return Err(Declined::Deferred(reason));
+                    return Err(Decline::Deferred(reason));
                 }
                 paging.read(content.len());
             }
             Some(Content::Truncated(_)) => {
-                return Err(Declined::Deferred(format!(
+                return Err(Decline::Deferred(format!(
                     "the data of the entry {} is cut short or corrupt, which Tika's embedded \
                      parser reads as far as it goes",
                     entry.name
@@ -239,7 +239,7 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
                 )))
             }
             None => {
-                return Err(Declined::Deferred(format!(
+                return Err(Decline::Deferred(format!(
                     "the entry {} is compressed with method {}, which the port does not \
                      decompress",
                     entry.name, entry.method
@@ -248,7 +248,7 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
         }
     }
     if let Some(reason) = scan.document(length) {
-        return Err(Declined::Deferred(reason));
+        return Err(Decline::Deferred(reason));
     }
     paging.release();
     Ok(())
@@ -376,7 +376,7 @@ struct Streamed {
 impl Streamed {
     /// Reads each entry of the archive `input`, to rule out what the native path does not read
     /// as Tika's does, and finds the duplicate names.
-    fn scan(input: &[u8]) -> Result<Self, Declined> {
+    fn scan(input: &[u8]) -> Result<Self, Decline<'static>> {
         let mut stream = local_headers(input);
         let mut scan = Scan::new();
         let mut seen = HashSet::new();
@@ -386,7 +386,7 @@ impl Streamed {
                 continue;
             }
             if entry_name(&entry).is_none() {
-                return Err(Declined::Deferred(format!(
+                return Err(Decline::Deferred(format!(
                     "the name of the entry {} is detected in a charset the native decoders do \
                      not decode",
                     entry.name
@@ -395,7 +395,7 @@ impl Streamed {
             match stream.content() {
                 Ok(Content::Complete(content)) => {
                     if let Some(reason) = scan.entry(&content) {
-                        return Err(Declined::Deferred(reason));
+                        return Err(Decline::Deferred(reason));
                     }
                 }
                 Ok(Content::Oversized(_)) => {
@@ -405,7 +405,7 @@ impl Streamed {
                     )))
                 }
                 Err(stream::Failure::Method(method)) => {
-                    return Err(Declined::Deferred(format!(
+                    return Err(Decline::Deferred(format!(
                         "the entry {} is compressed with method {method}, which the port does \
                          not decompress",
                         entry.name
@@ -419,7 +419,7 @@ impl Streamed {
             }
         }
         if let Some(reason) = scan.document(input.len()) {
-            return Err(Declined::Deferred(reason));
+            return Err(Decline::Deferred(reason));
         }
         Ok(Streamed { duplicates })
     }

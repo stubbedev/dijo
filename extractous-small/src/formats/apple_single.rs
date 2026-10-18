@@ -7,7 +7,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Opened, Parser, Prepared};
+use crate::formats::{Decline, Opened, Parser, Prepared};
 use crate::java;
 
 const DATA_FORK: u64 = 1;
@@ -52,8 +52,8 @@ impl Parser for AppleSingleFileParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let content = read(input).map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let content = read(input).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         Ok(Box::new(move |xhtml| {
             let Some(data_fork) = content.data_fork else {
                 return Ok(());

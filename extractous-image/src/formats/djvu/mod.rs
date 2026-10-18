@@ -19,7 +19,7 @@ use crate::errors::Error;
 use crate::formats::image::enricher::OcrReader;
 use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::{is_blank, strip, utf8};
 use crate::ocr::{Bitmap, Decoded};
 use document::{DjvuDocument, Form};
@@ -75,9 +75,9 @@ impl Parser for DjvuParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let document = DjvuDocument::read(input)
-            .map_err(|error| Declined::Fails(Error::ParseError(error.message())))?;
+            .map_err(|error| Decline::Fails(Error::ParseError(error.message())))?;
         let texts: Vec<Result<String, DjvuError>> = document
             .pages()
             .iter()

@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::java::is_regex_space;
 use crate::java::strip;
 use crate::java::{is_blank, utf16_length};
@@ -262,10 +262,10 @@ impl Parser for NotebookParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let blocks = notebook_blocks(input)
-            .map_err(|Unread(why)| Declined::Deferred(why.to_owned()))?
-            .map_err(Declined::Fails)?;
+            .map_err(|Unread(why)| Decline::Deferred(why.to_owned()))?
+            .map_err(Decline::Fails)?;
         Ok(Box::new(move |xhtml| {
             for block in blocks {
                 match block {

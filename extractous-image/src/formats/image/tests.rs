@@ -518,7 +518,7 @@ fn native_read(name: &str, input: &[u8]) -> JdkRead {
                     .collect(),
             )
         }
-        Err(Declined::Fails(error)) => JdkRead::Fails(error.to_string()),
+        Err(Decline::Fails(error)) => JdkRead::Fails(error.to_string()),
         Err(other) => panic!("{name} is not read: {other:?}"),
     }
 }

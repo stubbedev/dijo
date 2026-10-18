@@ -11,7 +11,7 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 
 /// `DIF`: the prefix of the metadata of each leaf element.
 const PREFIX: &str = "dif:";
@@ -43,9 +43,9 @@ impl Parser for DifParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if xml::has_document_type(input) {
-            return Err(Declined::Deferred(
+            return Err(Decline::Deferred(
                 "a document type declaration, under which Xerces may report whitespace as \
                  ignorable, which DIFContentHandler writes as it is"
                     .to_owned(),

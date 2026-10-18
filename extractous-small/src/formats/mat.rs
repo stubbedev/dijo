@@ -15,7 +15,7 @@ use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 
 const MEDIA_TYPE: &str = "application/x-matlab-data";
@@ -87,8 +87,8 @@ impl Parser for MatParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let fails = |thrown: Thrown| Declined::Fails(thrown.into_error(self.tika_name()));
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let fails = |thrown: Thrown| Decline::Fails(thrown.into_error(self.tika_name()));
         let file = MatFile::read(input).map_err(|unread| match unread {
             Unread::Thrown(thrown) => fails(thrown),
             Unread::TooLarge(reason) => too_large(reason),
@@ -109,11 +109,11 @@ impl Parser for MatParser {
 /// A file holding an element that inflates into more than
 /// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, as `reason` says, which jmatio inflates
 /// into memory whole: Tika's path takes it where there is one.
-fn too_large(reason: String) -> Declined {
+fn too_large(reason: String) -> Decline<'static> {
     if cfg!(feature = "tika") {
-        Declined::Deferred(format!("{reason}, which Tika's path inflates whole"))
+        Decline::Deferred(format!("{reason}, which Tika's path inflates whole"))
     } else {
-        Declined::Fails(Error::LimitExceeded(format!(
+        Decline::Fails(Error::LimitExceeded(format!(
             "{reason}, the most the native parser inflates"
         )))
     }

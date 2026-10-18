@@ -7,7 +7,7 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 
 const MTHD: i32 = 0x4d54_6864;
 const MTRK: i32 = 0x4d54_726b;
@@ -279,11 +279,11 @@ impl Parser for MidiParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let sequence = match sequence(input) {
             Ok(sequence) => Some(sequence),
             Err(Unread::Invalid) => None,
-            Err(Unread::Io(thrown)) => return Err(Declined::Fails(Error::ParseError(thrown))),
+            Err(Unread::Io(thrown)) => return Err(Decline::Fails(Error::ParseError(thrown))),
         };
         Ok(Box::new(move |xhtml| {
             xhtml.metadata_mut().set("Content-Type", "audio/midi");

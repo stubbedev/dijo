@@ -4,7 +4,7 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::Summaries;
-use crate::formats::{Declined, Parser, Prepared, Unported};
+use crate::formats::{Decline, Parser, Prepared, Unported};
 use crate::ole2::{Ole2, Unreadable};
 
 /// Tika's `DGN8Parser`.
@@ -28,7 +28,7 @@ impl Parser for Dgn8Parser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let file = Ole2::open(input).map_err(|Unreadable(reason)| {
             Unported(format!("POI cannot open the compound document: {reason}"))
         })?;

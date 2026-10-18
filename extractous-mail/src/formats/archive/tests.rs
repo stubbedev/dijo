@@ -596,12 +596,12 @@ fn leaves_a_stream_decoding_past_the_most_the_native_path_decodes_to_a_limit() {
     let declined = undecoded("the Gzip stream", Undecoded::TooLarge);
     if cfg!(feature = "tika") {
         assert!(
-            matches!(&declined, Declined::Deferred(reason) if reason.contains("Tika's path streams")),
+            matches!(&declined, Decline::Deferred(reason) if reason.contains("Tika's path streams")),
             "{declined:?}"
         );
     } else {
         assert!(
-            matches!(&declined, Declined::Fails(Error::LimitExceeded(reason))
+            matches!(&declined, Decline::Fails(Error::LimitExceeded(reason))
                 if reason.starts_with("the Gzip stream: it decodes into more than")),
             "{declined:?}"
         );

@@ -2439,6 +2439,48 @@ pub fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
     )
 }
 
+/// Where `parser` reads the document at `path` differently from Tika's parser, given the
+/// metadata the detection starts it from, and the XHTML of its reading, which a build without
+/// Tika takes (#144), well-formed. Panics where the parser takes the document or cannot read it.
+pub fn differing_reading(parser: &dyn Parser, path: &Path) -> (formats::Difference, String) {
+    formats::install_routes(&formats::Registry);
+    let name = path.to_str().unwrap();
+    let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
+    let detected = formats::Detected::detect(
+        &formats::OpenedFrom::File(name.into()),
+        &input,
+        crate::mime::Intent::Parse,
+    )
+    .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
+    let configs = ParserConfigs::default();
+    let metadata = detected.metadata_for(parser);
+    let (reading, difference) = match parser.prepare(&input, &metadata, &configs) {
+        Err(formats::Decline::Differs {
+            reading,
+            difference,
+        }) => (reading, difference),
+        Ok(_) => panic!("{name}: {} reads it as Tika's parser does", parser.name()),
+        Err(declined) => panic!("{name}: {} declines it: {declined:?}", parser.name()),
+    };
+    let mut out = formats::StringOut::default();
+    let chain = formats::Chain::Stream {
+        output: formats::Output::Xml,
+        encoding: "UTF-8",
+    };
+    let (_, _, result) = chain.write_to(&mut out, |handler| {
+        formats::xhtml::Xhtml::write(
+            handler,
+            metadata,
+            &formats::ParseContext::new(&configs),
+            reading,
+        )
+    });
+    if let Err(failure) = result {
+        panic!("{name}: the reading fails: {failure:?}");
+    }
+    (difference, out.0)
+}
+
 /// The non-empty files under `roots` whose detected type routing gives `parser`, split into
 /// those it parses and those it defers to Tika.
 pub fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {

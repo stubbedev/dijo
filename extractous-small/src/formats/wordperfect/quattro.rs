@@ -12,7 +12,7 @@ use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::ole2::{self, Ole2, Unreadable};
 
 /// `OLE_DOCUMENT_NAME`, the stream of the workbook's records.
@@ -38,8 +38,8 @@ impl Parser for QuattroProParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let records = records(input).map_err(Declined::Fails)?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let records = records(input).map_err(Decline::Fails)?;
         Ok(Box::new(move |xhtml| {
             xhtml.start_element("p")?;
             Records {
@@ -85,9 +85,9 @@ impl Parser for OldQuattroProParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if ole2::is_ole(input) {
-            return Err(Declined::Deferred(
+            return Err(Decline::Deferred(
                 "a compound document, which OfficeParser opens".to_owned(),
             ));
         }
@@ -102,7 +102,7 @@ impl Parser for OldQuattroProParser {
                 u64::from_le_bytes(signature)
             ),
         ));
-        Err(Declined::Fails(thrown.into_error(self.tika_name())))
+        Err(Decline::Fails(thrown.into_error(self.tika_name())))
     }
 }
 

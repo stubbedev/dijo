@@ -21,7 +21,7 @@ use crate::compress::{ArchiveFile, Undecoded};
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Declined, Failure};
+use crate::formats::{Decline, Failure};
 use crate::java::time::format_instant;
 use crate::Error;
 
@@ -100,12 +100,12 @@ fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
 
 /// Why the native readers do not read `what`, for the reason `undecoded`: a stream beyond the
 /// memory limit fails at once, as Tika's path fails it.
-fn undecoded(what: &str, undecoded: Undecoded) -> Declined {
+fn undecoded(what: &str, undecoded: Undecoded) -> Decline<'static> {
     let reason = format!("{what}: {undecoded}");
     match undecoded {
         Undecoded::TooLarge => too_large(reason),
-        Undecoded::MemoryLimit(_) => Declined::Fails(Error::LimitExceeded(reason)),
-        _ => Declined::Deferred(reason),
+        Undecoded::MemoryLimit(_) => Decline::Fails(Error::LimitExceeded(reason)),
+        _ => Decline::Deferred(reason),
     }
 }
 
@@ -113,11 +113,11 @@ fn undecoded(what: &str, undecoded: Undecoded) -> Declined {
 /// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, as `reason` says: Tika's path streams
 /// it, and takes the document where there is one. Without it, the document exceeds what the
 /// native path decodes.
-fn too_large(reason: String) -> Declined {
+fn too_large(reason: String) -> Decline<'static> {
     if cfg!(feature = "tika") {
-        Declined::Deferred(format!("{reason}, which Tika's path streams"))
+        Decline::Deferred(format!("{reason}, which Tika's path streams"))
     } else {
-        Declined::Fails(Error::LimitExceeded(format!(
+        Decline::Fails(Error::LimitExceeded(format!(
             "{reason}, the most the native parser decodes"
         )))
     }

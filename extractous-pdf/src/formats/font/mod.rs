@@ -9,7 +9,7 @@ use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::pdf::truetype::{Read, TrueType};
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::java::jfloat::float_to_string;
 use crate::java::time::format_instant;
 
@@ -53,15 +53,15 @@ impl Parser for TrueTypeParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let font = match TrueType::read_file(input) {
             Read::Font(font) => font,
             Read::Damaged(_) => {
-                return Err(Declined::Fails(Error::ParseError(
+                return Err(Decline::Fails(Error::ParseError(
                     "FontBox fails to read the TrueType font".to_owned(),
                 )))
             }
-            Read::Unported(reason) => return Err(Declined::Deferred(reason)),
+            Read::Unported(reason) => return Err(Decline::Deferred(reason)),
         };
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
@@ -110,11 +110,11 @@ impl Parser for AdobeFontMetricParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let metrics =
-            afm::parse(input).map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
+            afm::parse(input).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         let (created, comments) = afm::creation_date(&metrics.comments)
-            .map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
+            .map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             if let Some(created) = &created {

@@ -168,7 +168,7 @@ fn configs() -> ParserConfigs {
     ParserConfigs::default()
 }
 
-fn read(stream: &[u8]) -> Result<Extracted, Declined> {
+fn read(stream: &[u8]) -> Result<Extracted, Decline<'static>> {
     read_records(stream, &configs()).map(|(read, _)| read)
 }
 
@@ -320,7 +320,7 @@ fn leaves_xor_obfuscated_workbooks_to_tika() {
     stream.extend(record(sid::FILE_PASS, &[0; 6]));
     assert!(matches!(
         read(&stream),
-        Err(Declined::Deferred(reason)) if reason.contains("XOR obfuscation")
+        Err(Decline::Deferred(reason)) if reason.contains("XOR obfuscation")
     ));
 }
 

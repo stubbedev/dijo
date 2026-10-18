@@ -10,7 +10,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Deferral, Opened, Parser, Prepared};
+use crate::formats::{Decline, Deferral, Opened, Parser, Prepared};
 
 /// The folder of a collection's archives.
 const ARCHIVE: &str = "archive/";
@@ -46,13 +46,13 @@ impl Parser for WaczParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let zip = ZipFile::open(input).map_err(|_| {
-            Declined::Fails(Error::ParseError(
+            Decline::Fails(Error::ParseError(
                 "the WACZ collection is not a ZIP archive".to_owned(),
             ))
         })?;
-        let archives = archives(&zip).map_err(Declined::Deferred)?;
+        let archives = archives(&zip).map_err(Decline::Deferred)?;
         Ok(Box::new(move |xhtml| {
             for archive in &archives {
                 let mut metadata = TikaMetadata::new();

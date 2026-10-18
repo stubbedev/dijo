@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, differing_reading, documents,
+    Scratch,
 };
+#[cfg(feature = "tika")]
+use crate::formats::Difference;
 
 #[cfg(feature = "tika")]
 const NOTES: &str = r#"# Mødenoter æøå
@@ -65,11 +68,9 @@ fn reads_titles_and_tables_as_commonmark_java_does() {
     assert_eq!(row_cells(r"| a \| b |"), 1);
     assert_eq!(lenient_table("a | b\n- | - | -\n"), Some(2));
     assert_eq!(lenient_table("a | b | c\n- | -\n"), None);
-    assert!(matches!(
-        parse("[a](b \"\") [c](d) [e](f\"\")"),
-        Err(Declined::Deferred(_))
-    ));
-    let items = parse("[a](b \"\") [c](d)").unwrap();
+    assert!(parse("[a](b \"\") [c](d) [e](f\"\")").1.is_some());
+    let (items, difference) = parse("[a](b \"\") [c](d)");
+    assert_eq!(difference, None);
     let titles: Vec<Option<String>> = items
         .into_iter()
         .filter_map(|item| match item {
@@ -111,7 +112,17 @@ fn extracts_markdown_as_tikas_path_does() {
     let deep = scratch.write("deep.md", "> ".repeat(70).as_bytes());
     let failing = scratch.write("failing.md", b"[tekst](data:,hej)\n");
     let (parsed, deferred) = documents(&MarkdownParser, &[scratch.directory()]);
-    assert_eq!(deferred, [deep, lenient, windows]);
+    assert_eq!(deferred, [deep.clone(), lenient.clone(), windows.clone()]);
+    for (path, difference) in [
+        (&deep, "blocks nested as deep"),
+        (&lenient, "the delimiter row on line 2"),
+        (&windows, "a data URI of text in windows-1252"),
+    ] {
+        let (Difference(reason), _) = differing_reading(&MarkdownParser, path);
+        assert!(reason.starts_with(difference), "{path:?}: {reason}");
+    }
+    let (_, text) = differing_reading(&MarkdownParser, &lenient);
+    assert!(text.contains("1 | 2 | 3"), "{text}");
     assert_eq!(
         parsed,
         [data.clone(), failing.clone(), latin.clone(), notes.clone()]

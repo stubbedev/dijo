@@ -6,7 +6,7 @@ use rc4::StreamCipher;
 
 use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Rc4Keys};
-use crate::formats::{Declined, Unported};
+use crate::formats::{Decline, Unported};
 
 /// `BLIB_STORE_ENTRY_PARTS`: the fields of a blip store entry, each encrypted on its own.
 const STORE_ENTRY_PARTS: [usize; 11] = [1, 1, 16, 2, 4, 4, 4, 1, 1, 1, 1];
@@ -42,7 +42,7 @@ impl Encryption {
         atom: i32,
         info: &EncryptionInfo,
         configs: &ParserConfigs,
-    ) -> Result<Encryption, Declined> {
+    ) -> Result<Encryption, Decline<'static>> {
         if !matches!(info, EncryptionInfo::CryptoApi(_)) {
             return Err(Unported(
                 "a presentation encrypted with binary RC4, which this port does not decrypt"
@@ -52,7 +52,7 @@ impl Encryption {
         }
         let key = info
             .verify(crypt::password(configs))
-            .ok_or_else(|| Declined::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))?;
+            .ok_or_else(|| Decline::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))?;
         Ok(Encryption { atom, key })
     }
 

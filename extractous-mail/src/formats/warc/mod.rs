@@ -29,7 +29,7 @@ use crate::errors::Error;
 use crate::formats::embedded::{Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Deferral, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Deferral, Failure, Opened, Parser, Prepared};
 use crate::java;
 
 const WARC_PREFIX: &str = "warc:";
@@ -63,9 +63,9 @@ impl Parser for WarcParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let data = reader::decompress(input)
-            .map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
+            .map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         let payloads = payloads(&data)?;
         Ok(Box::new(move |xhtml| {
             let written = payloads.write(xhtml);

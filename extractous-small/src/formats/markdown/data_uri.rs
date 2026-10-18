@@ -43,12 +43,14 @@ pub(super) fn extract(html: &str) -> Vec<DataUri> {
         .collect()
 }
 
-/// The charsets `build` encodes text data in that this port encodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The charset `build` encodes text data in: one this port encodes, or the name of another,
+/// which this port encodes in UTF-8 instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Encoding {
     Utf8,
     Ascii,
     Latin1,
+    Unencoded(String),
 }
 
 impl DataUri {
@@ -65,20 +67,21 @@ impl DataUri {
         MediaType::parse(&self.media_type).map(|parsed| parsed.to_string())
     }
 
-    /// Why the native parser leaves the document to Tika: text data in a charset this port does
-    /// not encode.
-    pub(super) fn unported(&self) -> Option<String> {
+    /// How the native parser reads it differently from Tika: text data in a charset this port
+    /// does not encode, which it encodes in UTF-8.
+    pub(super) fn difference(&self) -> Option<String> {
         match self.encoding() {
-            Ok(Err(charset)) => Some(format!(
-                "a data URI of text in {charset}, which the native parser does not encode"
+            Ok(Encoding::Unencoded(charset)) => Some(format!(
+                "a data URI of text in {charset}, which the native parser encodes in UTF-8"
             )),
-            Ok(Ok(_)) | Err(_) => None,
+            Ok(_) | Err(_) => None,
         }
     }
 
     /// The data `build` takes: none, base 64 decoded as commons-codec decodes it, or text in the
-    /// charset its media type names, UTF-8 where it names none or one Java does not know; or what
-    /// `build` throws on a media type that does not parse or a charset name Java rejects.
+    /// charset its media type names, UTF-8 where it names none or one Java does not know, and
+    /// where this port does not encode it; or what `build` throws on a media type that does not
+    /// parse or a charset name Java rejects.
     pub(super) fn bytes(&self) -> Result<Vec<u8>, Thrown> {
         if self.data.is_empty() {
             return Ok(Vec::new());
@@ -86,9 +89,7 @@ impl DataUri {
         if self.base64 {
             return Ok(java::commons_base64_decode(&self.data));
         }
-        let encoding = self.encoding()?.unwrap_or_else(|charset| {
-            unreachable!("text in {charset} is left to Tika before it is written")
-        });
+        let encoding = self.encoding()?;
         let replaced = |limit: u32| -> Vec<u8> {
             self.data
                 .chars()
@@ -101,22 +102,22 @@ impl DataUri {
                 .collect()
         };
         Ok(match encoding {
-            Encoding::Utf8 => self.data.as_bytes().to_vec(),
+            Encoding::Utf8 | Encoding::Unencoded(_) => self.data.as_bytes().to_vec(),
             Encoding::Ascii => replaced(0x7f),
             Encoding::Latin1 => replaced(0xff),
         })
     }
 
     /// The encoding of text data: the charset its media type names, if Java knows it, else UTF-8;
-    /// the name of one this port does not encode; or what `build` throws.
-    fn encoding(&self) -> Result<Result<Encoding, String>, Thrown> {
+    /// or what `build` throws.
+    fn encoding(&self) -> Result<Encoding, Thrown> {
         if self.base64 || self.data.is_empty() {
-            return Ok(Ok(Encoding::Utf8));
+            return Ok(Encoding::Utf8);
         }
         let media_type = MediaType::parse(&self.media_type)
             .ok_or_else(|| Thrown::Runtime(Exception::bare("java.lang.NullPointerException")))?;
         let Some(name) = media_type.parameter("charset") else {
-            return Ok(Ok(Encoding::Utf8));
+            return Ok(Encoding::Utf8);
         };
         if !is_legal_charset_name(name) {
             return Err(Thrown::Runtime(Exception::new(
@@ -125,13 +126,13 @@ impl DataUri {
             )));
         }
         let Some(charset) = Charset::for_name(name) else {
-            return Ok(Err(name.to_owned()));
+            return Ok(Encoding::Unencoded(name.to_owned()));
         };
         Ok(match charset.name() {
-            "UTF-8" => Ok(Encoding::Utf8),
-            "US-ASCII" => Ok(Encoding::Ascii),
-            "ISO-8859-1" => Ok(Encoding::Latin1),
-            other => Err(other.to_owned()),
+            "UTF-8" => Encoding::Utf8,
+            "US-ASCII" => Encoding::Ascii,
+            "ISO-8859-1" => Encoding::Latin1,
+            other => Encoding::Unencoded(other.to_owned()),
         })
     }
 }
@@ -169,7 +170,7 @@ mod tests {
         ));
         assert!(parse("data:text/plain;charset=windows-1252,hej")
             .unwrap()
-            .unported()
+            .difference()
             .is_some());
         let found = extract("<img src=\"data:image/png;base64,AAAA\"> data:x/y,z' data:a/b,c");
         assert_eq!(found.len(), 2, "{found:?}");

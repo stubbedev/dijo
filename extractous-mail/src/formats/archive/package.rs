@@ -10,7 +10,7 @@ use crate::compress::archiver::Archiver;
 use crate::compress::{ar, cpio, tar, ArchiveFile};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::mime::MediaType;
 
 const GTAR: &str = "application/x-gtar";
@@ -27,7 +27,7 @@ fn named(content_type: &str) -> Option<Archiver> {
 
 /// The format `content_type` names, else the one `ArchiveStreamFactory` recognizes in `input`,
 /// and the files its reader gives, or why the native readers do not read them.
-fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, Declined> {
+fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, Decline<'static>> {
     let archiver = content_type
         .and_then(named)
         .or_else(|| Archiver::detect(input))
@@ -37,7 +37,7 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, De
         Archiver::Ar => ar::files(input),
         Archiver::Cpio => cpio::files(input),
         other => {
-            return Err(Declined::Deferred(format!(
+            return Err(Decline::Deferred(format!(
                 "commons-compress reads it as {other:?}, which PackageParser's port does not"
             )))
         }
@@ -70,10 +70,10 @@ impl Parser for PackageParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let files = read(input, metadata.get("Content-Type"))?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
-            return Err(Declined::Deferred(reason));
+            return Err(Decline::Deferred(reason));
         }
         Ok(Box::new(move |xhtml| {
             let written = write_files(&files, xhtml);

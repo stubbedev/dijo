@@ -5,9 +5,11 @@
 //! commonmark-java merges adjacent text nodes.
 //!
 //! The data URI a link or image leads to, and each one found in HTML that a quote ends, is
-//! parsed as an inline document embedded after it ([`data_uri`]); a document with one of text in
-//! a charset this port does not encode is left to Tika, as is one whose blocks nest deeper than
-//! commonmark-java opens them, where it flattens the rest into paragraph text.
+//! parsed as an inline document embedded after it ([`data_uri`]). The parser reads differently
+//! from Tika a document with a data URI of text in a charset this port does not encode, which it
+//! encodes in UTF-8, one whose blocks nest deeper than commonmark-java opens them, where it
+//! flattens the rest into paragraph text, a table commonmark-java reads leniently and a link
+//! whose title is ambiguous to the parser: a build with Tika leaves them to Tika's path.
 
 mod data_uri;
 
@@ -22,7 +24,7 @@ use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::embedded::{ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
 use crate::java;
 use crate::mime::MediaType;
 
@@ -51,26 +53,29 @@ impl Parser for MarkdownParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if let Some(reason) = AutoDetectReader::defers(input) {
-            return Err(Declined::Deferred(reason.to_owned()));
+            return Err(Decline::Deferred(reason.to_owned()));
         }
         let reader = AutoDetectReader::read(input, metadata.get("Content-Type"))
-            .map_err(|_| Declined::Deferred("the text cannot be decoded natively".to_owned()))?;
-        let events = parse(&reader.text)?;
-        Ok(Box::new(move |xhtml| {
-            let metadata = xhtml.metadata_mut();
-            auto_detect_reader::set_metadata(&reader.detection, metadata);
-            let charset = reader.detection.decode_as.name();
-            metadata.set(
-                "Content-Type",
-                MediaType::named(MEDIA_TYPE)
-                    .with_parameter("charset", charset)
-                    .to_string(),
-            );
-            metadata.set("Content-Encoding", charset);
-            Visitor::new(xhtml).write(events)
-        }))
+            .map_err(|_| Decline::Deferred("the text cannot be decoded natively".to_owned()))?;
+        let (events, difference) = parse(&reader.text);
+        unless_different(
+            Box::new(move |xhtml| {
+                let metadata = xhtml.metadata_mut();
+                auto_detect_reader::set_metadata(&reader.detection, metadata);
+                let charset = reader.detection.decode_as.name();
+                metadata.set(
+                    "Content-Type",
+                    MediaType::named(MEDIA_TYPE)
+                        .with_parameter("charset", charset)
+                        .to_string(),
+                );
+                metadata.set("Content-Encoding", charset);
+                Visitor::new(xhtml).write(events)
+            }),
+            difference,
+        )
     }
 }
 
@@ -88,14 +93,15 @@ enum Item {
     },
 }
 
-/// The items of `text`, or why Tika's path should parse it.
-fn parse(text: &str) -> Result<Vec<Item>, Declined> {
-    if let Some(line) = lenient_table(text) {
-        return Err(Declined::Deferred(format!(
+/// The items of `text`, and the first place where they differ from what commonmark-java and
+/// Tika's visitor make of it, if any.
+fn parse(text: &str) -> (Vec<Item>, Option<Difference>) {
+    let mut difference = lenient_table(text).map(|line| {
+        Difference(format!(
             "the delimiter row on line {line} has more columns than its header row, which \
              commonmark-java takes as a table and GitHub's tables do not"
-        )));
-    }
+        ))
+    });
     let mut iterator = pulldown_cmark::Parser::new_ext(
         text,
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,
@@ -107,11 +113,11 @@ fn parse(text: &str) -> Result<Vec<Item>, Declined> {
     let mut depth = 0usize;
     let mut html_block: Option<String> = None;
     for (event, range) in events {
-        let unported = match &event {
+        let differing = match &event {
             Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => {
-                destination_uri(dest_url).and_then(|uri| uri.unported())
+                destination_uri(dest_url).and_then(|uri| uri.difference())
             }
-            Event::InlineHtml(html) => unported_in(html),
+            Event::InlineHtml(html) => difference_in(html),
             Event::Start(Tag::HtmlBlock) => {
                 html_block = Some(String::new());
                 None
@@ -124,24 +130,38 @@ fn parse(text: &str) -> Result<Vec<Item>, Declined> {
             }
             Event::End(TagEnd::HtmlBlock) => html_block
                 .take()
-                .and_then(|literal| unported_in(block_literal(&literal))),
+                .and_then(|literal| difference_in(block_literal(&literal))),
             _ => None,
         };
-        if let Some(reason) = unported {
-            return Err(Declined::Deferred(reason));
+        if let Some(reason) = differing {
+            difference.get_or_insert(Difference(reason));
         }
         match &event {
             Event::Start(tag) if is_block(tag) => {
                 depth += 1;
                 if depth >= MAX_BLOCK_DEPTH {
-                    return Err(Declined::Deferred(
-                        "blocks nested as deep as commonmark-java flattens them".to_owned(),
-                    ));
+                    difference.get_or_insert_with(|| {
+                        Difference::new("blocks nested as deep as commonmark-java flattens them")
+                    });
                 }
             }
             Event::End(end) if is_block_end(end) => depth -= 1,
             _ => {}
         }
+        let mut title_of = |link_type, dest_url: &str, title, id: &str| {
+            link_title(
+                &text[range.clone()],
+                link_type,
+                dest_url,
+                title,
+                id,
+                definitions,
+            )
+            .unwrap_or_else(|ambiguous| {
+                difference.get_or_insert(ambiguous);
+                None
+            })
+        };
         let item = match event {
             Event::Start(Tag::Link {
                 link_type,
@@ -149,8 +169,7 @@ fn parse(text: &str) -> Result<Vec<Item>, Declined> {
                 title,
                 id,
             }) => {
-                let title =
-                    link_title(&text[range], link_type, &dest_url, title, &id, definitions)?;
+                let title = title_of(link_type, &dest_url, title, &id);
                 let href = match link_type {
                     LinkType::Email => format!("mailto:{dest_url}"),
                     _ => dest_url.to_string(),
@@ -163,14 +182,14 @@ fn parse(text: &str) -> Result<Vec<Item>, Declined> {
                 title,
                 id,
             }) => Item::Image {
-                title: link_title(&text[range], link_type, &dest_url, title, &id, definitions)?,
+                title: title_of(link_type, &dest_url, title, &id),
                 source: dest_url.to_string(),
             },
             event => Item::Event(event.into_static()),
         };
         items.push(item);
     }
-    Ok(items)
+    (items, difference)
 }
 
 /// The data URI a link or image leads to, as `maybeEmbedDataURI` reads it.
@@ -181,11 +200,11 @@ fn destination_uri(destination: &str) -> Option<data_uri::DataUri> {
         .flatten()
 }
 
-/// Why the native parser leaves a document with the HTML `html` to Tika, if it does.
-fn unported_in(html: &str) -> Option<String> {
+/// How the native parser reads a data URI in the HTML `html` differently from Tika, if it does.
+fn difference_in(html: &str) -> Option<String> {
     data_uri::extract(html)
         .iter()
-        .find_map(data_uri::DataUri::unported)
+        .find_map(data_uri::DataUri::difference)
 }
 
 /// An HTML block's literal as commonmark-java holds it, without the line break that ends it.
@@ -195,7 +214,8 @@ fn block_literal(literal: &str) -> &str {
 
 /// The title commonmark-java gives a link or image whose `source` the parser read as
 /// `link_type`: none where the source gives none, which the parser does not tell from an empty
-/// one, and the reference definition's for a reference.
+/// one, and the reference definition's for a reference. A destination that ends as an empty
+/// title would leaves the parser no telling which commonmark-java reads.
 fn link_title(
     source: &str,
     link_type: LinkType,
@@ -203,7 +223,7 @@ fn link_title(
     title: CowStr,
     id: &str,
     definitions: &RefDefs,
-) -> Result<Option<String>, Declined> {
+) -> Result<Option<String>, Difference> {
     if !title.is_empty() {
         return Ok(Some(title.to_string()));
     }
@@ -216,10 +236,9 @@ fn link_title(
                 .find(|empty| inside.ends_with(empty));
             match empty {
                 None => Ok(None),
-                Some(empty) if destination.ends_with(empty) => Err(Declined::Deferred(
+                Some(empty) if destination.ends_with(empty) => Err(Difference::new(
                     "a link whose destination ends as an empty title would, which the parser \
-                     does not tell apart"
-                        .to_owned(),
+                     does not tell apart",
                 )),
                 Some(_) => Ok(Some(String::new())),
             }

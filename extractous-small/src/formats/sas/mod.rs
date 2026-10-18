@@ -15,7 +15,7 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::time::format_instant;
 use reader::{Column, Decoder, Reader};
 use values::{Value, Writer};
@@ -44,13 +44,13 @@ impl Parser for Sas7bdatParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let named = input
             .get(reader::ENCODING_OFFSET)
             .and_then(|&byte| reader::encoding_name(byte));
         let decoder = match named {
             Some(name) => Some(Decoder::named(name).ok_or_else(|| {
-                Declined::Deferred(format!(
+                Decline::Deferred(format!(
                     "text in {name}, which the native parser does not decode"
                 ))
             })?),
@@ -58,7 +58,7 @@ impl Parser for Sas7bdatParser {
         };
         let tika_name = self.tika_name();
         let mut reader = Reader::open(input, decoder)
-            .map_err(|thrown| Declined::Fails(thrown.into_error(tika_name)))?;
+            .map_err(|thrown| Decline::Fails(thrown.into_error(tika_name)))?;
         Ok(Box::new(move |xhtml| {
             write_metadata(&reader, xhtml.metadata_mut());
             write_table(&mut reader, xhtml).map_err(|failure| match failure {

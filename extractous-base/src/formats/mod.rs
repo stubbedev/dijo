@@ -60,14 +60,33 @@ impl From<Stop> for Failure {
 }
 
 /// Why Tika's path should extract a document rather than its native parser: a feature of the
-/// document the parser does not handle as Tika does yet.
+/// document the parser cannot read.
 pub type Deferral = String;
 
-/// Why a native parser writes nothing of a document.
-#[derive(Debug)]
-pub enum Declined {
-    /// Tika's path should extract it.
+/// A detail in which a native parser's reading of a document differs from Tika's parser's, which
+/// the parser otherwise reads: why a build with Tika reads the document on Tika's path, where a
+/// build without it keeps the native reading and records the difference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Difference(pub String);
+
+impl Difference {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
+    }
+}
+
+/// Why a native parser does not take a document as it prepared it. A [`Decline<'static>`] holds no
+/// reading borrowed from its input.
+pub enum Decline<'a> {
+    /// The parser cannot read it: Tika's path should extract it.
     Deferred(Deferral),
+    /// The parser reads it, as `reading` writes it, but differently from Tika's parser in the
+    /// `difference`: Tika's path should extract it in a build that has Tika, and a build
+    /// without Tika takes the reading.
+    Differs {
+        reading: Prepared<'a>,
+        difference: Difference,
+    },
     /// Tika's parser throws this on it before it starts the document: the extraction fails at
     /// once, without output, as Tika's path does.
     Fails(Error),
@@ -76,7 +95,21 @@ pub enum Declined {
     Unwritten(TikaMetadata),
 }
 
-impl From<Deferral> for Declined {
+impl std::fmt::Debug for Decline<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Deferred(deferral) => f.debug_tuple("Deferred").field(deferral).finish(),
+            Self::Differs { difference, .. } => f
+                .debug_struct("Differs")
+                .field("difference", difference)
+                .finish_non_exhaustive(),
+            Self::Fails(error) => f.debug_tuple("Fails").field(error).finish(),
+            Self::Unwritten(metadata) => f.debug_tuple("Unwritten").field(metadata).finish(),
+        }
+    }
+}
+
+impl From<Deferral> for Decline<'_> {
     fn from(deferral: Deferral) -> Self {
         Self::Deferred(deferral)
     }
@@ -88,9 +121,70 @@ impl Unported {
     }
 }
 
-impl From<Unported> for Declined {
+impl From<Unported> for Decline<'_> {
     fn from(Unported(reason): Unported) -> Self {
         Self::Deferred(reason)
+    }
+}
+
+impl std::fmt::Display for Decline<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Deferred(deferral) => f.write_str(deferral),
+            Self::Differs {
+                difference: Difference(difference),
+                ..
+            } => f.write_str(difference),
+            Self::Fails(error) => write!(f, "{error}"),
+            Self::Unwritten(_) => f.write_str("Tika's parser writes no document of it"),
+        }
+    }
+}
+
+/// The reading a parser prepared of a document and where it reads the document differently from
+/// Tika's parser, if anywhere, or else why it does not take it.
+pub fn noted<'a>(
+    prepared: Result<Prepared<'a>, Decline<'a>>,
+) -> Result<(Prepared<'a>, Option<Difference>), Decline<'static>> {
+    match prepared {
+        Ok(reading) => Ok((reading, None)),
+        Err(Decline::Differs {
+            reading,
+            difference,
+        }) => Ok((reading, Some(difference))),
+        Err(Decline::Deferred(deferral)) => Err(Decline::Deferred(deferral)),
+        Err(Decline::Fails(error)) => Err(Decline::Fails(error)),
+        Err(Decline::Unwritten(metadata)) => Err(Decline::Unwritten(metadata)),
+    }
+}
+
+/// [`noted`] without the reading: what a preparation of a document decided.
+pub fn decision(
+    prepared: Result<Prepared<'_>, Decline<'_>>,
+) -> Result<Option<Difference>, Decline<'static>> {
+    noted(prepared).map(|(_, difference)| difference)
+}
+
+/// [`noted`] without the difference: the reading a parser prepared of a document, whether or not
+/// it reads it differently from Tika's parser.
+pub fn reading<'a>(
+    prepared: Result<Prepared<'a>, Decline<'a>>,
+) -> Result<Prepared<'a>, Decline<'static>> {
+    noted(prepared).map(|(reading, _)| reading)
+}
+
+/// What a parser prepared of a document: the `reading`, which it takes unless it reads the
+/// document differently from Tika's parser, in the `difference` given.
+pub fn unless_different(
+    reading: Prepared<'_>,
+    difference: Option<Difference>,
+) -> Result<Prepared<'_>, Decline<'_>> {
+    match difference {
+        None => Ok(reading),
+        Some(difference) => Err(Decline::Differs {
+            reading,
+            difference,
+        }),
     }
 }
 
@@ -148,7 +242,7 @@ pub trait Parser: Sync {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined>;
+    ) -> Result<Prepared<'a>, Decline<'a>>;
 
     /// [`Parser::prepare`], given the `pages` of `input`, which a parser of
     /// [`Footprint::Bounded`] that reads all of a mapped file releases as it reads on.
@@ -158,11 +252,12 @@ pub trait Parser: Sync {
         _pages: Pages<'a>,
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare(input, metadata, configs)
     }
 
-    /// Why Tika's path should extract `input`, if it should.
+    /// Why Tika's path should extract `input`, in a build that has Tika, if it should: what of it
+    /// the parser cannot read, or where it reads it differently from Tika's parser.
     fn defers(
         &self,
         input: &[u8],
@@ -170,8 +265,9 @@ pub trait Parser: Sync {
         configs: &ParserConfigs,
     ) -> Option<Deferral> {
         match self.prepare(input, metadata, configs) {
-            Err(Declined::Deferred(deferral)) => Some(deferral),
-            Ok(_) | Err(Declined::Fails(_) | Declined::Unwritten(_)) => None,
+            Err(Decline::Deferred(deferral)) => Some(deferral),
+            Err(Decline::Differs { difference, .. }) => Some(difference.0),
+            Ok(_) | Err(Decline::Fails(_) | Decline::Unwritten(_)) => None,
         }
     }
 }
@@ -212,19 +308,31 @@ pub struct EmbeddedRoute<'a> {
     /// The metadata the parser starts from.
     pub start: TikaMetadata,
     pub prepared: Prepared<'a>,
+    /// Where the parser reads it differently from Tika's parser, in a build without Tika, which
+    /// takes the native reading where a build with Tika parses the document on Tika's path.
+    #[cfg(not(feature = "tika"))]
+    pub difference: Option<Difference>,
 }
 
 /// Why no native parser prepares a document embedded in one a native parser reads: Tika's path
 /// parses it, unless it is empty or its parser writes no document of it, which the native path
-/// records as Tika does.
+/// records as Tika does. Tika's path records the failure of one Tika's parser fails before it
+/// starts, which only that path can tell.
 #[derive(Debug)]
 pub enum Bridged {
     /// No native parser prepares it.
     Unrouted(Unrouted),
-    /// Its native parser, of this name, declines it: Tika's path parses one the parser defers,
-    /// and records the failure of one Tika's parser fails before it starts, which only that
-    /// path can tell.
-    Declined(&'static str, Declined),
+    /// Its native parser, of this name, cannot read it, for this reason.
+    Deferred(&'static str, Deferral),
+    /// Its native parser, of this name, reads it differently from Tika's parser in this way.
+    #[cfg(feature = "tika")]
+    Differs(&'static str, Difference),
+    /// Tika's parser throws this on it before it starts, as its native parser, of this name,
+    /// reproduces.
+    Fails(&'static str, Error),
+    /// Its native parser, of this name, writes no document of it, as Tika's parser does, and
+    /// leaves this metadata.
+    Unwritten(&'static str, TikaMetadata),
 }
 
 /// The native parser of a document embedded in one a native parser reads, with the metadata it
@@ -295,6 +403,8 @@ fn routes() -> &'static dyn Routes {
 
 /// Routes a document embedded in one a native parser reads to its [`embedded_parser`], and
 /// returns what that parser prepared, if it takes the document, or why Tika's path parses it.
+/// A build without Tika takes the reading of a parser that reads the document differently from
+/// Tika's.
 pub fn route_embedded<'a>(
     data: &'a [u8],
     metadata: &TikaMetadata,
@@ -302,13 +412,27 @@ pub fn route_embedded<'a>(
     configs: &'a ParserConfigs,
 ) -> Result<EmbeddedRoute<'a>, Bridged> {
     let (parser, start) = embedded_parser(data, metadata, opened).map_err(Bridged::Unrouted)?;
-    let prepared = parser
-        .prepare(data, &start, configs)
-        .map_err(|declined| Bridged::Declined(parser.name(), declined))?;
+    let name = parser.name();
+    let (prepared, difference) = match parser.prepare(data, &start, configs) {
+        Ok(prepared) => (prepared, None),
+        Err(Decline::Differs {
+            reading,
+            difference,
+        }) => (reading, Some(difference)),
+        Err(Decline::Deferred(deferral)) => return Err(Bridged::Deferred(name, deferral)),
+        Err(Decline::Fails(error)) => return Err(Bridged::Fails(name, error)),
+        Err(Decline::Unwritten(left)) => return Err(Bridged::Unwritten(name, left)),
+    };
+    #[cfg(feature = "tika")]
+    if let Some(difference) = difference {
+        return Err(Bridged::Differs(name, difference));
+    }
     Ok(EmbeddedRoute {
         parser,
         start,
         prepared,
+        #[cfg(not(feature = "tika"))]
+        difference,
     })
 }
 

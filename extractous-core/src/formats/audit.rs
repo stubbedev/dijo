@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{ParserConfigs, PdfParserConfig, TesseractOcrConfig};
 use crate::errors::Unsupported;
-use crate::formats::{self, Bridged, Declined, Output, Unrouted};
+use crate::formats::{self, Bridged, Difference, Output, Unrouted};
 use crate::input::Source;
 
 thread_local! {
@@ -51,13 +51,16 @@ fn bridge_reason(bridged: &Bridged) -> String {
             format!("no native parser for {}", base_type(media_type))
         }
         Bridged::Unrouted(unrouted) => format!("{unrouted:?}"),
-        Bridged::Declined(parser, Declined::Deferred(reason)) => {
+        Bridged::Deferred(parser, reason) => {
             format!("{parser} defers: {}", short(reason))
         }
-        Bridged::Declined(parser, Declined::Unwritten(_)) => {
+        Bridged::Differs(parser, Difference(reason)) => {
+            format!("{parser} differs: {}", short(reason))
+        }
+        Bridged::Unwritten(parser, _) => {
             format!("{parser} writes no document, which the native path records")
         }
-        Bridged::Declined(parser, Declined::Fails(_)) => {
+        Bridged::Fails(parser, _) => {
             format!("{parser} fails it before starting: Tika records the exception")
         }
     }
