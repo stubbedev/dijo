@@ -17,12 +17,13 @@ use super::ocr::{Layer, PageCheck};
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
-use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
+use super::stripper::{self, Callbacks, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::xfa::{self, Extracted};
 use super::{jfloat, ImageExtraction, Settings, Unported};
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::Difference;
 use crate::java::is_blank;
 
 /// How many annotation types and subtypes Tika lists, at most.
@@ -56,18 +57,10 @@ impl From<Unported> for WriteFailure {
     }
 }
 
-impl From<WriteError> for WriteFailure {
-    fn from(error: WriteError) -> Self {
-        match error {
-            WriteError::Stop(stop) => Self::Stop(stop),
-            WriteError::Unported(unported) => Self::Unported(unported),
-        }
-    }
-}
-
 /// The stripper's callbacks as `PDF2XHTML` and, for a tagged document,
 /// `PDFMarkedContent2XHTML` take them.
 pub(super) struct PageWriter<'p, 'r> {
+    pdf: &'p Pdf<'p>,
     pub(super) out: &'r mut Recording,
     /// `PDFTextStripper.inParagraph`.
     in_paragraph: bool,
@@ -147,6 +140,10 @@ impl PageWriter<'_, '_> {
 }
 
 impl Callbacks for PageWriter<'_, '_> {
+    fn differ(&mut self, difference: Difference) {
+        self.pdf.differ(difference);
+    }
+
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]) {
         if let Some(tagged) = &self.tagged {
             if tagged.reading_order {
@@ -226,6 +223,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             pdf,
             engine: Engine::new(pdf, labels),
             page: PageWriter {
+                pdf,
                 out,
                 in_paragraph: false,
                 tagged,
