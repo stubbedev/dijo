@@ -9,8 +9,8 @@
 //! so an entry's data is junrar's, checked against its CRC, but where junrar slips (#122). An
 //! entry the port cannot give whole, one whose data does not match its CRC, is compressed for
 //! an unknown RAR version, continues in another volume or fails to unpack, is recorded as a
-//! failure where Tika's path gives it empty. What junrar reads that the port does not, RAR 5
-//! and 1.4 archives and self-extractors, is left to Tika.
+//! failure where Tika's path gives it empty. What junrar reads that the port does not, RAR 1.4
+//! archives and self-extractors, is left to Tika.
 
 mod extract;
 mod headers;
@@ -20,13 +20,13 @@ use extract::Extracted;
 use headers::{Name, Unopened};
 
 use super::nesting::Scan;
-use super::{entry_metadata, record_unreadable};
+use super::{entry_metadata, record_unreadable, too_large};
 use crate::compress::{ArchiveFile, MAX_DECODED};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Deferral, Opened, Parser, Prepared};
+use crate::formats::{Decline, Difference, Opened, Parser, Prepared};
 
 const RAR: &str = "application/x-rar-compressed";
 
@@ -50,7 +50,7 @@ impl Parser for RarParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if metadata
             .get("Content-Type")
             .is_some_and(|media_type| media_type.contains("version=5"))
@@ -69,13 +69,13 @@ impl Parser for RarParser {
                 Decline::Deferred(format!("junrar reads {what}, which the port does not"))
             }
         })?;
-        let entries = entries(input, &headers)?;
+        let (entries, difference) = entries(input, &headers)?;
         if let Some(reason) =
             Scan::new().files(input.len(), entries.iter().map(|entry| &entry.file))
         {
             return Err(Decline::Deferred(reason));
         }
-        Ok(Box::new(move |xhtml| {
+        let reading: Prepared<'a> = Box::new(move |xhtml| {
             xhtml.element("div", " ")?;
             for Entry { file, unread } in &entries {
                 let metadata = entry_metadata(file, xhtml)?;
@@ -90,7 +90,14 @@ impl Parser for RarParser {
                 }
             }
             Ok(())
-        }))
+        });
+        match difference {
+            None => Ok(reading),
+            Some(difference) => Err(Decline::Differs {
+                reading,
+                difference,
+            }),
+        }
     }
 }
 
@@ -103,7 +110,7 @@ pub(super) fn is_rar(data: &[u8]) -> bool {
 /// entry the port cannot give, if the port reads it.
 pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile>> {
     let headers = headers::read(data).ok()?;
-    let entries = entries(data, &headers).ok()?;
+    let (entries, _) = entries(data, &headers).ok()?;
     Some(entries.into_iter().map(|entry| entry.file).collect())
 }
 
@@ -113,25 +120,32 @@ struct Entry {
     unread: Option<String>,
 }
 
-/// The files of the archive but its directories.
-fn entries(input: &[u8], headers: &headers::Headers) -> Result<Vec<Entry>, Deferral> {
+/// The files of the archive but its directories, and the first detail in which the port reads
+/// them otherwise than junrar, if any.
+fn entries(
+    input: &[u8],
+    headers: &headers::Headers,
+) -> Result<(Vec<Entry>, Option<Difference>), Decline<'static>> {
     let mut declared = 0i64;
     let mut names = Vec::with_capacity(headers.files.len());
+    let mut difference = None;
     for header in &headers.files {
         match &header.name {
             Name::Decoded(name) => names.push(name),
-            Name::Unported(what) => return Err(format!("an entry has {what}")),
+            Name::Differs(name, what) => {
+                names.push(name);
+                difference =
+                    difference.or_else(|| Some(Difference::new(format!("an entry has {what}"))));
+            }
         }
         if !header.is_directory() && !header.is_split() {
             declared = declared.saturating_add(header.full_unpack_size);
         }
     }
     if declared > MAX_DECODED as i64 {
-        return Err(format!(
-            "its entries declare more than the {MAX_DECODED} bytes the port decodes"
-        ));
+        return Err(too_large("the entries of the RAR archive"));
     }
-    Ok(extract::entries(input, headers)
+    let entries = extract::entries(input, headers)
         .into_iter()
         .map(|(index, extracted)| {
             let header = &headers.files[index];
@@ -151,7 +165,8 @@ fn entries(input: &[u8], headers: &headers::Headers) -> Result<Vec<Entry>, Defer
                 unread,
             }
         })
-        .collect())
+        .collect();
+    Ok((entries, difference))
 }
 
 #[cfg(test)]
