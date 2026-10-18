@@ -9,6 +9,7 @@ use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java::JavaHashMap;
 
 const TIKA_NAME: &str = "org.apache.tika.parser.audio.AudioParser";
@@ -710,7 +711,7 @@ fn power_of_two(exponent: i32) -> f64 {
 /// a sequence, through Tika's `SkipFullyInputStream`, as the 44.1 kHz 16-bit stereo PCM it
 /// would synthesise it to.
 fn midi(bytes: &[u8]) -> Read<FileFormat> {
-    match midi::sequence(bytes, Skipping::Fully) {
+    match midi::sequence(bytes, Pages::IN_MEMORY, Skipping::Fully) {
         Ok(_) => Ok(FileFormat {
             kind: Type::Midi,
             encoding: Encoding::PcmSigned,

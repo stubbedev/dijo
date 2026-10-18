@@ -15,7 +15,8 @@ use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 use crate::java::dtoa::java_double_to_string;
 
@@ -306,8 +307,8 @@ struct TagsAndAudio {
 
 /// `getAllTagHandlers`: the ID3v2 tags at the start, the frames after them, and the ID3v1 tag
 /// and lyrics at the end; or what Java throws.
-fn read(input: &[u8]) -> Result<TagsAndAudio, Thrown> {
-    let mut stream = Stream::new(input);
+fn read<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<TagsAndAudio, Thrown> {
+    let mut stream = Stream::new(input, pages);
     let mut handlers: [Option<Tags>; 3] = [None, None, None];
     while let Some(frame) = Frame::if_present(&mut stream)? {
         if let Some(version) = frame.version() {
@@ -384,13 +385,28 @@ impl Parser for Mp3Parser {
         &["audio/mpeg"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let read = read(input).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
+        let read =
+            read(input, pages).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         Ok(Box::new(move |xhtml| write(&read, xhtml)))
     }
 }
@@ -517,6 +533,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
@@ -537,13 +554,33 @@ mod tests {
     }
 
     /// An ID3v2.3 frame.
-    #[cfg(feature = "tika")]
     fn frame(name: &str, data: &[u8]) -> Vec<u8> {
         let mut frame = name.as_bytes().to_vec();
         frame.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
         frame.extend_from_slice(&[0, 0]);
         frame.extend_from_slice(data);
         frame
+    }
+
+    /// An ID3v2.3 tag of `frames`.
+    fn id3v23(frames: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(frames.len()).unwrap();
+        let synchsafe = [21, 14, 7, 0].map(|shift| u8::try_from(size >> shift & 0x7F).unwrap());
+        let mut tag = b"ID3\x03\x00\x00".to_vec();
+        tag.extend_from_slice(&synchsafe);
+        tag.extend_from_slice(frames);
+        tag
+    }
+
+    /// An MPEG-1 Layer III frame of 128 kbit/s at 44.1 kHz, of 417 bytes, a Xing frame where
+    /// `xing`.
+    fn audio_frame(xing: bool) -> Vec<u8> {
+        let mut audio = vec![0u8; 417];
+        audio[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
+        if xing {
+            audio[36..40].copy_from_slice(b"Xing");
+        }
+        audio
     }
 
     /// A file with an ID3v2.3 tag, three MPEG frames, the first a Xing frame, Lyrics3 v2 lyrics
@@ -560,18 +597,9 @@ mod tests {
             frame("COMM", b"\x00danbeskrivelse\x00en kommentar"),
         ]
         .concat();
-        let size = u32::try_from(frames.len()).unwrap();
-        let synchsafe = [21, 14, 7, 0].map(|shift| u8::try_from(size >> shift & 0x7F).unwrap());
-        let mut mp3 = b"ID3\x03\x00\x00".to_vec();
-        mp3.extend_from_slice(&synchsafe);
-        mp3.extend_from_slice(&frames);
+        let mut mp3 = id3v23(&frames);
         for index in 0..3 {
-            let mut audio = vec![0u8; 417];
-            audio[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
-            if index == 0 {
-                audio[36..40].copy_from_slice(b"Xing");
-            }
-            mp3.extend_from_slice(&audio);
+            mp3.extend_from_slice(&audio_frame(index == 0));
         }
         let fields = b"IND0000210LYR00022B\xF8lgerne sl\xE5r mod land";
         let mut lyrics = b"LYRICSBEGIN".to_vec();
@@ -602,6 +630,26 @@ mod tests {
         assert_same_as_tika(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
+        );
+    }
+
+    /// A file too large to read whole is read a frame at a time, in place, its pages released
+    /// as they are read, in memory that does not grow with the file.
+    #[test]
+    fn extracts_mp3s_too_large_to_read_whole_in_bounded_memory() {
+        let tag = id3v23(&frame("TIT2", b"\x00Lang sang"));
+        let frame = audio_frame(false);
+        let frames = bodies_past_limit(frame.len());
+        let file = LargeFile::new("long.mp3", &tag, frames, |_| frame.clone(), b"");
+        let (text, metadata) = file.extract(Mp3Parser.name());
+        assert!(text.contains("Lang sang"), "{text}");
+        assert_eq!(metadata["audio:bitrate"], ["128000"]);
+        assert_eq!(metadata["audio:is-variable-bitrate"], ["false"]);
+        let seconds: f64 = metadata["xmpDM:duration"][0].parse().unwrap();
+        let expected = frames as f64 * 1152.0 / 44100.0;
+        assert!(
+            (seconds - expected).abs() < expected / 100.0,
+            "{seconds} s of {frames} frames"
         );
     }
 

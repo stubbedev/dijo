@@ -7,7 +7,8 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java::dtoa::java_double_to_string;
 use crate::java::time;
 use crate::java::{self, JavaHashMap};
@@ -236,8 +237,8 @@ struct Entries {
     dated: bool,
 }
 
-/// `FLVParser.parse` up to the output.
-fn read(input: &[u8]) -> Result<Flv, Stop> {
+/// `FLVParser.parse` up to the output, the `pages` of `input` released as its tags are read.
+fn read<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Flv, Stop> {
     let mut data = Input {
         bytes: input,
         at: 0,
@@ -261,7 +262,7 @@ fn read(input: &[u8]) -> Result<Flv, Stop> {
         )));
     }
     let mut entries = Entries::default();
-    let thrown = tags(&mut data, &mut entries)
+    let thrown = tags(&mut data, &mut entries, &Paging::new(pages))
         .err()
         .map(|Stop(thrown)| thrown);
     Ok(Flv {
@@ -272,9 +273,12 @@ fn read(input: &[u8]) -> Result<Flv, Stop> {
 }
 
 /// The tags after the header: each script tag's second AMF value, where it is a map, read for
-/// its entries.
-fn tags(data: &mut Input, entries: &mut Entries) -> Result<(), Stop> {
+/// its entries; each tag counted read once it is.
+fn tags(data: &mut Input, entries: &mut Entries, paging: &Paging) -> Result<(), Stop> {
+    let mut counted = data.at;
     while let Some(kind) = data.read() {
+        paging.read(data.at - counted);
+        counted = data.at;
         let length = data.u24()?;
         data.u32()?;
         data.u24()?;
@@ -325,13 +329,28 @@ impl Parser for FlvParser {
         &["video/x-flv"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let flv = read(input).map_err(|Stop(thrown)| Decline::Fails(Error::ParseError(thrown)))?;
+        let flv =
+            read(input, pages).map_err(|Stop(thrown)| Decline::Fails(Error::ParseError(thrown)))?;
         let difference = flv.entries.dated.then(|| {
             Difference::new(
                 "an AMF date, which Java writes in its default time zone, named, and the port in \
@@ -355,16 +374,24 @@ impl Parser for FlvParser {
     }
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::formats::media::large::{bodies_past_limit, LargeFile};
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika, conformance_corpus, differing_reading, documents, Scratch,
     };
 
+    #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.video.FLVParser";
+
+    /// The header of a file of audio and video.
+    const HEADER: &[u8] = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00";
+    const TYPE_VIDEO: u8 = 9;
 
     fn amf_string(text: &str) -> Vec<u8> {
         let mut bytes = u16::try_from(text.len()).unwrap().to_be_bytes().to_vec();
@@ -372,7 +399,19 @@ mod tests {
         bytes
     }
 
+    /// A tag of `kind` holding `body`, with the size of the tag after it.
+    fn tag(kind: u8, body: &[u8]) -> Vec<u8> {
+        let length = u32::try_from(body.len()).unwrap();
+        let mut tag = vec![kind];
+        tag.extend(&length.to_be_bytes()[1..]);
+        tag.extend([0; 7]);
+        tag.extend(body);
+        tag.extend((length + 11).to_be_bytes());
+        tag
+    }
+
     /// An AMF date of `millis` since 1970, with the offset of the zone it names in minutes.
+    #[cfg(feature = "tika")]
     fn date(millis: f64, offset: i16) -> Vec<u8> {
         let mut date = vec![11];
         date.extend(millis.to_be_bytes());
@@ -407,16 +446,23 @@ mod tests {
         script.push(13);
         script.extend(amf_string(""));
         script.push(9);
-        let mut file = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
-        let length = u32::try_from(script.len()).unwrap();
-        file.push(TYPE_METADATA);
-        file.extend(&length.to_be_bytes()[1..]);
-        file.extend([0; 7]);
-        file.extend(&script);
-        file.extend((length + 11).to_be_bytes());
-        file
+        [HEADER, &tag(TYPE_METADATA, &script)].concat()
     }
 
+    /// A file too large to read whole is read a tag at a time, in place, its pages released as
+    /// they are read, in memory that does not grow with the file.
+    #[test]
+    fn extracts_flash_videos_too_large_to_read_whole_in_bounded_memory() {
+        let video = tag(TYPE_VIDEO, &[0x17; 1 << 16]);
+        let count = bodies_past_limit(video.len());
+        let file = LargeFile::new("long.flv", &flv(&[]), count, |_| video.clone(), b"");
+        let (_, metadata) = file.extract(FlvParser.name());
+        assert_eq!(metadata["flv:hasVideo"], ["true"]);
+        assert_eq!(metadata["flv:duration"], ["12.5"]);
+        assert_eq!(metadata["flv:encoder"], ["Lavf"]);
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_flash_videos_as_tikas_path_does() {
         let scratch = Scratch::new("flv");
@@ -432,6 +478,7 @@ mod tests {
 
     /// Dates are written in UTC, as Tika's path writes them where Java's default time zone is
     /// UTC, and the reading differs from Tika's in other zones.
+    #[cfg(feature = "tika")]
     #[test]
     fn writes_flash_video_dates_in_utc() {
         let scratch = Scratch::new("flv-dates");
@@ -466,6 +513,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_flash_videos_as_tikas_path_does() {

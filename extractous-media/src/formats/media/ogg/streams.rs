@@ -2,8 +2,13 @@
 //! read them for Tika: the stream's info header, its Vorbis-style comments, and for Vorbis and
 //! Opus the duration `OggAudioStatistics` gives from the last granule position of its audio
 //! packets. Where vorbis-java throws, so do these.
+//!
+//! A packet is looked at by its first bytes, which hold every field these read of an audio
+//! packet or an identification header; only the comment headers, and FLAC's metadata blocks as
+//! far as their lengths go, are read whole.
 
-use super::packets::{Packet, Reader, Thrown};
+use super::packets::{Packet, Reader, Thrown, HEAD};
+use crate::input::Pages;
 use crate::java::{self, JavaHashMap};
 
 /// A little-endian `int` at `offset`, `IOUtils.getInt4` cast to `int`; past the data an
@@ -94,7 +99,12 @@ pub(super) struct VorbisInfo {
     pub(super) bitrate_lower: i32,
 }
 
-/// `new VorbisInfo(packet)`.
+/// Every field read from a packet's first bytes lies within the [`HEAD`] they hold: Opus's
+/// channel mapping, 21 bytes and at most 127 channels; FLAC's stream info, 34 bytes after 17;
+/// and Vorbis's identification header, 30 bytes.
+const _: () = assert!(21 + i8::MAX as usize <= HEAD && 17 + 34 <= HEAD && 30 <= HEAD);
+
+/// `new VorbisInfo(packet)`, of the packet's first bytes.
 fn vorbis_info(data: &[u8]) -> Result<VorbisInfo, Thrown> {
     let version = int4(data, 7)?;
     if version != 0 {
@@ -135,26 +145,31 @@ pub(super) struct Vorbis {
 
 /// What a `create` of a header the file expects is: the header, or the class that would not
 /// cast.
-fn expect_header<T>(
-    packet: Option<Packet>,
-    read: impl FnOnce(Packet) -> Result<Option<T>, Thrown>,
-) -> Result<(T, Packet), Thrown> {
+fn expect_header<'a, T>(
+    packet: Option<Packet<'a>>,
+    read: impl FnOnce(&Packet<'a>) -> Result<Option<T>, Thrown>,
+) -> Result<(T, Packet<'a>), Thrown> {
     let packet = packet.ok_or_else(|| "NullPointerException".to_owned())?;
-    let kept = packet.clone();
-    let header = read(packet)?.ok_or_else(|| "ClassCastException".to_owned())?;
-    Ok((header, kept))
+    let header = read(&packet)?.ok_or_else(|| "ClassCastException".to_owned())?;
+    Ok((header, packet))
 }
 
-/// `new VorbisFile(new OggFile(input))` and the statistics of its audio packets.
-pub(super) fn vorbis(input: &[u8]) -> Result<Vorbis, Thrown> {
-    let mut reader = Reader::new(input);
+/// `new VorbisComments(packet)`.
+fn vorbis_comments(packet: &Packet) -> Result<Comments, Thrown> {
+    Comments::read(packet.data().into_owned(), 7, true)
+}
+
+/// `new VorbisFile(new OggFile(input))` and the statistics of its audio packets, the `pages` of
+/// `input` released as they are read.
+pub(super) fn vorbis<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Vorbis, Thrown> {
+    let mut reader = Reader::new(input, pages);
     let first = loop {
         match reader.next()? {
             None => return Err("IllegalArgumentException: Supplied File is not Vorbis".to_owned()),
             Some(packet)
                 if packet.beginning_of_stream
-                    && packet.data.len() > 10
-                    && vorbis_header_type(&packet.data).is_some() =>
+                    && packet.len() > 10
+                    && vorbis_header_type(packet.head()).is_some() =>
             {
                 break packet;
             }
@@ -163,39 +178,41 @@ pub(super) fn vorbis(input: &[u8]) -> Result<Vorbis, Thrown> {
     };
     let sid = first.sid;
     let (info, info_packet) = expect_header(Some(first), |packet| {
-        match vorbis_header_type(&packet.data) {
-            Some(1) => vorbis_info(&packet.data).map(Some),
-            Some(3) => Comments::read(packet.data, 7, true).map(|_| None),
+        match vorbis_header_type(packet.head()) {
+            Some(1) => vorbis_info(packet.head()).map(Some),
+            Some(3) => vorbis_comments(packet).map(|_| None),
             _ => Ok(None),
         }
     })?;
     let (comments, comments_packet) =
         expect_header(
             reader.next_with_sid(sid)?,
-            |packet| match vorbis_header_type(&packet.data) {
-                Some(3) => Comments::read(packet.data, 7, true).map(Some),
-                Some(1) => vorbis_info(&packet.data).map(|_| None),
+            |packet| match vorbis_header_type(packet.head()) {
+                Some(3) => vorbis_comments(packet).map(Some),
+                Some(1) => vorbis_info(packet.head()).map(|_| None),
                 _ => Ok(None),
             },
         )?;
     let (_, setup_packet) =
         expect_header(
             reader.next_with_sid(sid)?,
-            |packet| match vorbis_header_type(&packet.data) {
+            |packet| match vorbis_header_type(packet.head()) {
                 Some(5) => Ok(Some(())),
-                Some(1) => vorbis_info(&packet.data).map(|_| None),
-                Some(3) => Comments::read(packet.data, 7, true).map(|_| None),
+                Some(1) => vorbis_info(packet.head()).map(|_| None),
+                Some(3) => vorbis_comments(packet).map(|_| None),
                 _ => Ok(None),
             },
         )?;
     for header in [&info_packet, &comments_packet, &setup_packet] {
         header.check_overhead()?;
     }
-    let last_granule = last_granule(&mut reader, sid, |data| match vorbis_header_type(data) {
-        Some(1) => vorbis_info(data).map(|_| false),
-        Some(3) => Comments::read(data.to_vec(), 7, true).map(|_| false),
-        Some(_) => Ok(false),
-        None => Ok(true),
+    let last_granule = last_granule(&mut reader, sid, |packet| {
+        match vorbis_header_type(packet.head()) {
+            Some(1) => vorbis_info(packet.head()).map(|_| false),
+            Some(3) => vorbis_comments(packet).map(|_| false),
+            Some(_) => Ok(false),
+            None => Ok(true),
+        }
     })?;
     let duration = duration(last_granule, 0, f64::from(info.rate as i32));
     Ok(Vorbis {
@@ -211,11 +228,11 @@ pub(super) fn vorbis(input: &[u8]) -> Result<Vorbis, Thrown> {
 fn last_granule(
     reader: &mut Reader,
     sid: i32,
-    is_audio: impl Fn(&[u8]) -> Result<bool, Thrown>,
+    is_audio: impl Fn(&Packet) -> Result<bool, Thrown>,
 ) -> Result<i64, Thrown> {
     let mut last = -1;
     while let Some(packet) = reader.next_with_sid(sid)? {
-        if !is_audio(&packet.data)? {
+        if !is_audio(&packet)? {
             continue;
         }
         packet.check_overhead()?;
@@ -289,8 +306,8 @@ fn opus_info(data: &[u8]) -> Result<OpusInfo, Thrown> {
 }
 
 /// `new OpusTags(packet)`.
-fn opus_tags(data: Vec<u8>) -> Result<Comments, Thrown> {
-    let comments = Comments::read(data, OPUS_TAGS.len() as i64, false)?;
+fn opus_tags(packet: &Packet) -> Result<Comments, Thrown> {
+    let comments = Comments::read(packet.data().into_owned(), OPUS_TAGS.len() as i64, false)?;
     if !comments.data.starts_with(OPUS_TAGS) {
         return Err("IllegalArgumentException: Invalid type, not a Opus Header".to_owned());
     }
@@ -305,13 +322,14 @@ enum OpusPacket {
     Audio,
 }
 
-fn opus_packet(data: &[u8]) -> Result<OpusPacket, Thrown> {
-    if !is_opus_header(data) {
+fn opus_packet(packet: &Packet) -> Result<OpusPacket, Thrown> {
+    let head = packet.head();
+    if !is_opus_header(head) {
         return Ok(OpusPacket::Audio);
     }
-    Ok(match data[4] {
-        b'H' => OpusPacket::Info(opus_info(data)?),
-        b'T' => OpusPacket::Tags(opus_tags(data.to_vec())?),
+    Ok(match head[4] {
+        b'H' => OpusPacket::Info(opus_info(head)?),
+        b'T' => OpusPacket::Tags(opus_tags(packet)?),
         _ => OpusPacket::Audio,
     })
 }
@@ -324,12 +342,13 @@ pub(super) struct Opus {
     pub(super) duration: f64,
 }
 
-/// `new OpusFile(new OggFile(input))` and the statistics of its audio packets.
-pub(super) fn opus(input: &[u8]) -> Result<Opus, Thrown> {
-    let mut reader = Reader::new(input);
+/// `new OpusFile(new OggFile(input))` and the statistics of its audio packets, the `pages` of
+/// `input` released as they are read.
+pub(super) fn opus<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Opus, Thrown> {
+    let mut reader = Reader::new(input, pages);
     let mut first = None;
     while let Some(packet) = reader.next()? {
-        if packet.beginning_of_stream && packet.data.len() > 10 && is_opus_header(&packet.data) {
+        if packet.beginning_of_stream && packet.len() > 10 && is_opus_header(packet.head()) {
             first = Some(packet);
             break;
         }
@@ -338,21 +357,21 @@ pub(super) fn opus(input: &[u8]) -> Result<Opus, Thrown> {
         first.ok_or_else(|| "IllegalArgumentException: Supplied File is not Opus".to_owned())?;
     let sid = first.sid;
     let (info, info_packet) = expect_header(Some(first), |packet| {
-        Ok(match opus_packet(&packet.data)? {
+        Ok(match opus_packet(packet)? {
             OpusPacket::Info(info) => Some(info),
             _ => None,
         })
     })?;
     let (comments, comments_packet) = expect_header(reader.next_with_sid(sid)?, |packet| {
-        Ok(match opus_packet(&packet.data)? {
+        Ok(match opus_packet(packet)? {
             OpusPacket::Tags(comments) => Some(comments),
             _ => None,
         })
     })?;
     info_packet.check_overhead()?;
     comments_packet.check_overhead()?;
-    let last_granule = last_granule(&mut reader, sid, |data| {
-        Ok(matches!(opus_packet(data)?, OpusPacket::Audio))
+    let last_granule = last_granule(&mut reader, sid, |packet| {
+        Ok(matches!(opus_packet(packet)?, OpusPacket::Audio))
     })?;
     Ok(Opus {
         duration: duration(last_granule, info.pre_skip, OPUS_GRANULE_RATE),
@@ -391,35 +410,41 @@ fn flac_info(data: &[u8], offset: usize) -> Result<FlacInfo, Thrown> {
 }
 
 /// A FLAC metadata block, `FlacMetadataBlock.create`: its type byte and data.
-struct Block {
+struct Block<'d> {
     kind: u8,
-    data: Vec<u8>,
+    data: &'d [u8],
 }
 
-impl Block {
+impl Block<'_> {
     fn is_last(&self) -> bool {
         self.kind & 0x80 != 0
     }
 }
 
+/// The bytes of a FLAC metadata block's header: its type and length.
+const BLOCK_HEADER: usize = 4;
+
+/// The length of the FLAC metadata block whose header `data` starts with, as far as it does.
+fn block_length(data: &[u8]) -> usize {
+    data.get(1..BLOCK_HEADER).map_or(0, |length| {
+        usize::from(length[0]) << 16 | usize::from(length[1]) << 8 | usize::from(length[2])
+    })
+}
+
 /// `FlacMetadataBlock.create` reading from `data` at `at`.
-fn block(data: &[u8], at: &mut usize) -> Result<Block, Thrown> {
+fn block<'d>(data: &'d [u8], at: &mut usize) -> Result<Block<'d>, Thrown> {
     let kind = *data
         .get(*at)
         .ok_or_else(|| "IllegalArgumentException".to_owned())?;
-    let header = data
-        .get(*at + 1..*at + 4)
-        .ok_or_else(|| "EOFException".to_owned())?;
-    let length =
-        usize::from(header[0]) << 16 | usize::from(header[1]) << 8 | usize::from(header[2]);
+    if data.len() < *at + BLOCK_HEADER {
+        return Err("EOFException".to_owned());
+    }
+    let length = block_length(&data[*at..]);
     let body = data
-        .get(*at + 4..*at + 4 + length)
+        .get(*at + BLOCK_HEADER..*at + BLOCK_HEADER + length)
         .ok_or_else(|| "EOFException".to_owned())?;
-    *at += 4 + length;
-    Ok(Block {
-        kind,
-        data: body.to_vec(),
-    })
+    *at += BLOCK_HEADER + length;
+    Ok(Block { kind, data: body })
 }
 
 /// `FlacTags.FlacTagsAsMetadata` of a comment block's data.
@@ -429,7 +454,7 @@ fn flac_tags_block(data: &[u8]) -> Result<Comments, Thrown> {
     flac_tags(packet)
 }
 
-/// `new FlacTags(packet)`.
+/// `new FlacTags(packet)` of a packet's bytes.
 fn flac_tags(packet: Vec<u8>) -> Result<Comments, Thrown> {
     let comments = Comments::read(packet, 4, false)?;
     let kind = comments.data[0] as i8;
@@ -448,11 +473,11 @@ pub(super) struct Flac {
     pub(super) ogg_version: Option<(u8, u8)>,
 }
 
-/// `FlacFile.open(input)`.
-pub(super) fn flac(input: &[u8]) -> Result<Flac, Thrown> {
+/// `FlacFile.open(input)`, the `pages` of `input` released as they are read.
+pub(super) fn flac<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Flac, Thrown> {
     let header = input.get(..4).ok_or_else(|| "EOFException".to_owned())?;
     match header {
-        b"OggS" => flac_ogg(input),
+        b"OggS" => flac_ogg(input, pages),
         b"fLaC" => flac_native(input),
         _ => Err("IllegalArgumentException: File type not recognised".to_owned()),
     }
@@ -465,15 +490,15 @@ fn flac_native(input: &[u8]) -> Result<Flac, Thrown> {
     if first.kind != 0 {
         return Err("ClassCastException".to_owned());
     }
-    let info = flac_info(&first.data, 0)?;
+    let info = flac_info(first.data, 0)?;
     let mut comments = None;
     loop {
         let next = block(input, &mut at)?;
         match next.kind {
             0 => {
-                flac_info(&next.data, 0)?;
+                flac_info(next.data, 0)?;
             }
-            4 => comments = Some(flac_tags_block(&next.data)?),
+            4 => comments = Some(flac_tags_block(next.data)?),
             _ => {}
         }
         if next.is_last() {
@@ -487,37 +512,41 @@ fn flac_native(input: &[u8]) -> Result<Flac, Thrown> {
     })
 }
 
-/// `new FlacOggFile(new OggFile(input))`.
-fn flac_ogg(input: &[u8]) -> Result<Flac, Thrown> {
-    let mut reader = Reader::new(input);
+/// `new FlacOggFile(new OggFile(input))`: each metadata block read from as much of its packet
+/// as the block's length takes.
+fn flac_ogg<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Flac, Thrown> {
+    let mut reader = Reader::new(input, pages);
     let mut first = None;
     while let Some(packet) = reader.next()? {
+        let head = packet.head();
         if packet.beginning_of_stream
-            && packet.data.len() > 10
-            && packet.data[0] == 0x7f
-            && &packet.data[1..5] == b"FLAC"
+            && packet.len() > 10
+            && head[0] == 0x7f
+            && &head[1..5] == b"FLAC"
         {
             first = Some(packet);
             break;
         }
     }
     let first = first.ok_or_else(|| "NullPointerException".to_owned())?;
-    let version = (byte(&first.data, 5)?, byte(&first.data, 6)?);
-    byte(&first.data, 8)?;
-    let info = flac_info(&first.data, 17)?;
+    let head = first.head();
+    let version = (byte(head, 5)?, byte(head, 6)?);
+    byte(head, 8)?;
+    let info = flac_info(head, 17)?;
     let tags = reader
         .next_with_sid(first.sid)?
         .ok_or_else(|| "NullPointerException".to_owned())?;
-    let comments = flac_tags(tags.data)?;
+    let comments = flac_tags(tags.data().into_owned())?;
     while let Some(packet) = reader.next_with_sid(first.sid)? {
+        let data = packet.prefix(BLOCK_HEADER + block_length(packet.head()));
         let mut at = 0;
-        let next = block(&packet.data, &mut at)?;
+        let next = block(&data, &mut at)?;
         match next.kind {
             0 => {
-                flac_info(&next.data, 0)?;
+                flac_info(next.data, 0)?;
             }
             4 => {
-                flac_tags_block(&next.data)?;
+                flac_tags_block(next.data)?;
             }
             _ => {}
         }

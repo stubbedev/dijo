@@ -129,17 +129,31 @@ fn skeleton_packet(data: &[u8]) -> Result<(), Thrown> {
     }
 }
 
-/// A packet as `OggPacketReader` returns it.
+/// A packet as `OggPacketReader` returns it, of which only the first [`HEAD`] bytes are kept,
+/// unless it is a Skeleton `fisbone` packet, which is read whole: a packet may run over all of
+/// a file's pages.
 struct Packet {
     sid: i32,
     data: Vec<u8>,
     beginning: bool,
 }
 
-/// `OggPacketReader.getNextPacket` over the whole input: the packets until the input ends or a
-/// page is cut short.
-fn packets(data: &[u8]) -> Result<Vec<Packet>, Thrown> {
-    let mut packets = Vec::new();
+/// The bytes kept of a packet: more than any packet but a `fisbone` is read for.
+const HEAD: usize = 255;
+const FISBONE: &[u8] = b"fisbone\0";
+
+/// Appends `fragment` to the bytes kept of `packet`.
+fn append(packet: &mut Vec<u8>, fragment: &[u8]) {
+    let head = HEAD.saturating_sub(packet.len()).min(fragment.len());
+    packet.extend_from_slice(&fragment[..head]);
+    if packet.starts_with(FISBONE) {
+        packet.extend_from_slice(&fragment[head..]);
+    }
+}
+
+/// `OggPacketReader.getNextPacket` over the whole input: `each` of the packets until the input
+/// ends or a page is cut short.
+fn packets(data: &[u8], mut each: impl FnMut(Packet)) -> Result<(), Thrown> {
     let mut position = 0;
     let mut left_over: Option<Vec<u8>> = None;
     loop {
@@ -150,7 +164,7 @@ fn packets(data: &[u8]) -> Result<Vec<Packet>, Thrown> {
                 return Err(Thrown::Io);
             }
             let Some(&byte) = data.get(position) else {
-                return Ok(packets);
+                return Ok(());
             };
             position += 1;
             matched = match (matched, byte) {
@@ -166,25 +180,24 @@ fn packets(data: &[u8]) -> Result<Vec<Packet>, Thrown> {
             searched += 1;
         }
         match data.get(position) {
-            None => return Ok(packets),
+            None => return Ok(()),
             Some(0) => {}
             Some(_) => return Err(Thrown::Runtime),
         }
         let Some(header) = data.get(position..position + 23) else {
-            return Ok(packets);
+            return Ok(());
         };
         let flags = header[1];
         let sid = i32::from_le_bytes([header[10], header[11], header[12], header[13]]);
         let segments = usize::from(header[22]);
         position += 23;
         let Some(lacing) = data.get(position..position + segments) else {
-            return Ok(packets);
+            return Ok(());
         };
-        let lacing = lacing.to_vec();
         position += segments;
         let size: usize = lacing.iter().map(|&l| usize::from(l)).sum();
         let Some(body) = data.get(position..position + size) else {
-            return Ok(packets);
+            return Ok(());
         };
         position += size;
         let beginning_page = flags & 0x02 != 0;
@@ -205,14 +218,12 @@ fn packets(data: &[u8]) -> Result<Vec<Packet>, Thrown> {
                     continues = true;
                 }
             }
-            let mut packet = body[offset..offset + packet_size].to_vec();
-            if let Some(previous) = left_over.take() {
-                packet.splice(0..0, previous);
-            }
+            let mut packet = left_over.take().unwrap_or_default();
+            append(&mut packet, &body[offset..offset + packet_size]);
             if continues {
                 left_over = Some(packet);
             } else {
-                packets.push(Packet {
+                each(Packet {
                     sid,
                     data: packet,
                     beginning: beginning_page && lv == 0,
@@ -246,18 +257,28 @@ pub(crate) fn detect(data: &[u8]) -> Result<Option<MediaType>, Thrown> {
     let mut total = 0;
     let mut streams: HashMap<StreamType, usize> = HashMap::new();
     let mut skeletons: HashSet<i32> = HashSet::new();
-    for packet in packets(data)? {
+    let mut thrown = None;
+    packets(data, |packet| {
+        if thrown.is_some() {
+            return;
+        }
         if packet.beginning {
             total += 1;
             let kind = identify(&packet.data);
             if kind == SKELETON {
-                skeleton_packet(&packet.data)?;
+                if let Err(error) = skeleton_packet(&packet.data) {
+                    thrown = Some(error);
+                    return;
+                }
                 skeletons.insert(packet.sid);
             }
             *streams.entry(kind).or_insert(0) += 1;
         } else if skeletons.contains(&packet.sid) {
-            skeleton_packet(&packet.data)?;
+            thrown = skeleton_packet(&packet.data).err();
         }
+    })?;
+    if let Some(thrown) = thrown {
+        return Err(thrown);
     }
     let only = |filter: &dyn Fn(&StreamType) -> bool| {
         streams
@@ -319,12 +340,19 @@ pub(crate) fn detect(data: &[u8]) -> Result<Option<MediaType>, Thrown> {
 mod tests {
     use super::*;
 
-    fn page(sid: u32, flags: u8, packets: &[&[u8]]) -> Vec<u8> {
+    fn laced_page(sid: u32, flags: u8, lacing: &[u8], body: &[u8]) -> Vec<u8> {
         let mut page = b"OggS\0".to_vec();
         page.push(flags);
         page.extend([0u8; 8]);
         page.extend(sid.to_le_bytes());
         page.extend([0u8; 8]);
+        page.push(lacing.len() as u8);
+        page.extend(lacing);
+        page.extend(body);
+        page
+    }
+
+    fn page(sid: u32, flags: u8, packets: &[&[u8]]) -> Vec<u8> {
         let mut lacing = Vec::new();
         for packet in packets {
             let mut left = packet.len();
@@ -334,12 +362,7 @@ mod tests {
             }
             lacing.push(left as u8);
         }
-        page.push(lacing.len() as u8);
-        page.extend(lacing);
-        for packet in packets {
-            page.extend(*packet);
-        }
-        page
+        laced_page(sid, flags, &lacing, &packets.concat())
     }
 
     fn vorbis_header() -> Vec<u8> {
@@ -361,6 +384,24 @@ mod tests {
         theora.extend([0u8; 40]);
         data.extend(page(2, 0x02, &[&theora]));
         assert_eq!(detect(&data).unwrap().unwrap().as_str(), "video/theora");
+    }
+
+    /// A packet that runs over pages is kept by its first bytes, as many as it is named by.
+    #[test]
+    fn names_a_stream_by_the_start_of_a_packet_over_pages() {
+        let mut header = vorbis_header();
+        header.resize(HEAD * 4, 0);
+        let mut data = laced_page(1, 0x02, &[255], &header[..HEAD]);
+        data.extend(page(1, 0x02, &[&header[HEAD..]]));
+        assert_eq!(detect(&data).unwrap().unwrap().as_str(), "audio/vorbis");
+        let mut packet = Vec::new();
+        append(&mut packet, &header);
+        assert_eq!(packet, header[..HEAD]);
+        let fisbone = [FISBONE, &[0; HEAD * 2]].concat();
+        let mut packet = Vec::new();
+        append(&mut packet, &fisbone[..HEAD]);
+        append(&mut packet, &fisbone[HEAD..]);
+        assert_eq!(packet, fisbone);
     }
 
     #[test]
