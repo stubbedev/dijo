@@ -323,22 +323,26 @@ pub(crate) mod tests {
         let (parsed, deferred) = documents(parser, roots);
         assert!(deferred.is_empty(), "deferred: {deferred:?}");
         assert_eq!(parsed.len(), count, "documents of {tika_name}");
+        let named = |names: &[&str], path: &Path| {
+            names
+                .iter()
+                .any(|name| path.file_name().is_some_and(|file| file == *name))
+        };
         let (excepted, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
-            parsed.into_iter().partition(|path| {
-                except
-                    .iter()
-                    .any(|name| path.file_name().is_some_and(|file| file == *name))
-            });
-        let (other, paths): (Vec<&Path>, Vec<&Path>) =
-            parsed.iter().map(PathBuf::as_path).partition(|path| {
-                OTHER_SENDER_NAMES
-                    .iter()
-                    .any(|name| path.file_name().is_some_and(|file| file == *name))
-            });
+            parsed.into_iter().partition(|path| named(except, path));
+        let (other, paths): (Vec<&Path>, Vec<&Path>) = parsed
+            .iter()
+            .map(PathBuf::as_path)
+            .partition(|path| named(&OTHER_SENDER_NAMES, path));
+        let (anchored, paths): (Vec<&Path>, Vec<&Path>) = paths
+            .into_iter()
+            .partition(|path| named(&crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS, path));
         assert_same_as_tika_departing(&paths, tika_name, DEPARTURES);
         let mut departures = DEPARTURES.to_vec();
         departures.push(Departure::Values("message:from-name", "#77"));
         assert_same_as_tika_departing(&other, tika_name, &departures);
+        let departures = [DEPARTURES, crate::formats::parity::ANCHORED_BLOCKS].concat();
+        assert_same_as_tika_departing(&anchored, tika_name, &departures);
         excepted
     }
 

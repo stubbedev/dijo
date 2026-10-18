@@ -5,7 +5,8 @@ use super::*;
 use crate::compress::zip::file::tests::zip;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
+    documents, Scratch, ANCHORED_BLOCKS, ANCHORED_BLOCK_DOCUMENTS,
 };
 
 #[cfg(feature = "tika")]
@@ -144,6 +145,13 @@ fn extracts_tikas_test_packages_as_tikas_path_does() {
     let (parsed, deferred) = documents(&IworkPackageParser, &[&conformance_corpus()]);
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 18, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    let (anchored, paths): (Vec<&Path>, Vec<&Path>) =
+        parsed.iter().map(PathBuf::as_path).partition(|path| {
+            ANCHORED_BLOCK_DOCUMENTS
+                .iter()
+                .any(|name| path.ends_with(name))
+        });
+    assert_eq!(anchored.len(), 1, "{parsed:?}");
     assert_same_as_tika(&paths, TIKA_NAME);
+    assert_same_as_tika_departing(&anchored, TIKA_NAME, ANCHORED_BLOCKS);
 }
