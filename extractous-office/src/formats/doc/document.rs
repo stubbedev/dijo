@@ -21,7 +21,7 @@ use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys};
 use crate::formats::escher::{self, Escher};
 use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown};
-use crate::formats::{Declined, Unported};
+use crate::formats::{Decline, Declined, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 const WORD_DOCUMENT: &str = "WordDocument";
@@ -320,7 +320,7 @@ fn encryption(
     let info = EncryptionInfo::read(header, mode).map_err(|unopened| unopened.unported())?;
     info.verify(crypt::password(configs))
         .map(Some)
-        .ok_or_else(|| Declined::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))
+        .ok_or_else(|| Decline::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))
 }
 
 /// `lKey` of the FIB's base: the length of the encryption header at the table stream's start,

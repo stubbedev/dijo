@@ -18,7 +18,7 @@ use crate::formats::embedded::{self, ResourceType, Wrapping, INTERNAL_PATH, RESO
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Failure, Opened, Parser, Prepared};
 use crate::java;
 use crate::mime::Detected;
 
@@ -75,14 +75,14 @@ impl Parser for GeoGebraParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let zip = ZipFile::open(input).map_err(|_| {
-            Declined::Fails(Error::ParseError(
+            Decline::Fails(Error::ParseError(
                 "commons-compress's ZipFile cannot open the GeoGebra archive".to_owned(),
             ))
         })?;
         let book =
-            Book::read(&zip).map_err(|Unread(reason)| Declined::Deferred(reason.to_owned()))?;
+            Book::read(&zip).map_err(|Unread(reason)| Decline::Deferred(reason.to_owned()))?;
         Ok(Box::new(move |xhtml| book.write(xhtml)))
     }
 }

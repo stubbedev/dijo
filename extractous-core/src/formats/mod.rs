@@ -388,32 +388,85 @@ pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     }
 }
 
-/// Writes the document of `bytes` bytes that `parser` prepared to `handler`, through the
-/// `SecureContentHandler` Tika's `AutoDetectParser` puts in front of it.
+/// What a native parser prepared of a document that the extraction takes.
+struct Taken<'a> {
+    prepared: Prepared<'a>,
+    /// Where the parser reads the document differently from Tika's parser, in a build without
+    /// Tika, which takes the native reading and records the difference.
+    #[cfg(not(feature = "tika"))]
+    difference: Option<Difference>,
+}
+
+/// Why the extraction writes nothing of what a native parser prepared of a document, which the
+/// parser reads.
+enum Refused {
+    /// The extraction fails at once, without output, as Tika's path does.
+    Fails(Error),
+    /// The parser writes no document of it and leaves this metadata.
+    Unwritten(TikaMetadata),
+}
+
+/// What the extraction takes of what `parser` `prepared` of a document, or why Tika's path
+/// should extract it, which a build without Tika fails with. A reading that differs from Tika's
+/// parser's is left to Tika's path in a build with Tika, and taken in a build without it.
+fn take<'a>(
+    parser: &dyn Parser,
+    prepared: Result<Prepared<'a>, Decline<'a>>,
+) -> Result<Result<Taken<'a>, Refused>, Unsupported> {
+    let leave_to_tika = |reason| Unsupported::Deferred {
+        parser: parser.name(),
+        reason,
+    };
+    match prepared {
+        Ok(prepared) => Ok(Ok(Taken {
+            prepared,
+            #[cfg(not(feature = "tika"))]
+            difference: None,
+        })),
+        #[cfg(feature = "tika")]
+        Err(Decline::Differs { difference, .. }) => Err(leave_to_tika(difference.0)),
+        #[cfg(not(feature = "tika"))]
+        Err(Decline::Differs {
+            reading,
+            difference,
+        }) => Ok(Ok(Taken {
+            prepared: reading,
+            difference: Some(difference),
+        })),
+        Err(Decline::Deferred(reason)) => Err(leave_to_tika(reason)),
+        Err(Decline::Fails(error)) => Ok(Err(Refused::Fails(error))),
+        Err(Decline::Unwritten(metadata)) => Ok(Err(Refused::Unwritten(metadata))),
+    }
+}
+
+/// Writes the document of `bytes` bytes that `parser` prepared, as the extraction `taken` it, to
+/// `handler`, through the `SecureContentHandler` Tika's `AutoDetectParser` puts in front of it.
+/// A reading that differs from Tika's parser's records the difference as a warning.
 fn run<'h>(
     parser: &dyn Parser,
-    prepared: Prepared<'_>,
+    taken: Taken<'_>,
     metadata: TikaMetadata,
     bytes: usize,
     context: &'h ParseContext<'h>,
     handler: &'h mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
     let mut secure = Secure::new(handler, bytes);
-    let (mut metadata, record, result) = Xhtml::write(&mut secure, metadata, context, prepared);
+    let (mut metadata, record, result) =
+        Xhtml::write(&mut secure, metadata, context, taken.prepared);
     record.finish(&mut metadata, parser.name());
+    #[cfg(not(feature = "tika"))]
+    if let Some(Difference(difference)) = taken.difference {
+        let warning = format!(
+            "{} read the document differently from Tika: {difference}",
+            parser.name()
+        );
+        embedded::record_exception(&mut metadata, &warning);
+    }
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
     if result.is_ok() {
         mark_password_used(&mut metadata, context.configs());
     }
     (metadata, result)
-}
-
-/// Why `parser` leaves a document to Tika: the `reason` it defers it for.
-fn deferred(parser: &dyn Parser, reason: Deferral) -> Unsupported {
-    Unsupported::Deferred {
-        parser: parser.name(),
-        reason,
-    }
 }
 
 /// Whether a prepared document still keeps to its memory budget, before anything of it is
@@ -479,11 +532,12 @@ pub(crate) fn parse_to_string_through(
         .expect("a string extraction's chain limits its text");
     within_budget(|| {
         let metadata = detected.metadata_for(parser);
-        let prepared = match parser.prepare_paged(input, input.pages(), &metadata, configs) {
-            Ok(prepared) => prepared,
-            Err(Declined::Deferred(reason)) => return Ok(Err(deferred(parser, reason))),
-            Err(Declined::Fails(error)) => return Err(error),
-            Err(Declined::Unwritten(metadata)) => {
+        let prepared = parser.prepare_paged(input, input.pages(), &metadata, configs);
+        let taken = match take(parser, prepared) {
+            Ok(Ok(taken)) => taken,
+            Err(unsupported) => return Ok(Err(unsupported)),
+            Ok(Err(Refused::Fails(error))) => return Err(error),
+            Ok(Err(Refused::Unwritten(metadata))) => {
                 let metadata = unwritten(parser.name(), metadata, configs);
                 return Ok(Ok((String::new(), metadata.to_map())));
             }
@@ -495,7 +549,7 @@ pub(crate) fn parse_to_string_through(
             .paging(input.pages())
             .with_write_limit(max_length);
         let (metadata, result) = chain.write_to(&mut out, |handler| {
-            run(parser, prepared, metadata, input.len(), &context, handler)
+            run(parser, taken, metadata, input.len(), &context, handler)
         });
         match result {
             Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
@@ -617,16 +671,20 @@ pub(crate) fn parse_to_stream(
             within_budget(|| {
                 let metadata = start;
                 let prepared = parser.prepare_paged(&input, input.pages(), &metadata, &configs);
-                let taken = match &prepared {
-                    Err(Declined::Deferred(reason)) => Err(deferred(parser, reason.clone())),
-                    _ => Ok(()),
+                let taken = match take(parser, prepared) {
+                    Ok(taken) => {
+                        let _ = decided.send(Ok(()));
+                        taken
+                    }
+                    Err(unsupported) => {
+                        let _ = decided.send(Err(unsupported));
+                        return;
+                    }
                 };
-                let _ = decided.send(taken);
-                let prepared = match prepared {
-                    Ok(prepared) => prepared_within_budget(parser).map(|()| prepared),
-                    Err(Declined::Deferred(_)) => return,
-                    Err(Declined::Fails(error)) => Err(error),
-                    Err(Declined::Unwritten(metadata)) => {
+                let taken = match taken {
+                    Ok(taken) => prepared_within_budget(parser).map(|()| taken),
+                    Err(Refused::Fails(error)) => Err(error),
+                    Err(Refused::Unwritten(metadata)) => {
                         let metadata = unwritten(parser.name(), metadata, &configs);
                         let _ = sender.send(Message::Done {
                             tail: Vec::new(),
@@ -636,8 +694,8 @@ pub(crate) fn parse_to_stream(
                         return;
                     }
                 };
-                let prepared = match prepared {
-                    Ok(prepared) => prepared,
+                let taken = match taken {
+                    Ok(taken) => taken,
                     Err(error) => {
                         let _ = sender.send(Message::Done {
                             tail: Vec::new(),
@@ -663,7 +721,7 @@ pub(crate) fn parse_to_stream(
                 .reading(detected.file.clone())
                 .paging(input.pages());
                 let (metadata, result) = chain.write_to(&mut out, |handler| {
-                    run(parser, prepared, metadata, input.len(), &context, handler)
+                    run(parser, taken, metadata, input.len(), &context, handler)
                 });
                 let outcome = match result {
                     Ok(()) => Ok(metadata.to_map()),
@@ -1419,6 +1477,89 @@ mod tests {
         assert!(text.contains("These are a few of my favorite things"));
     }
 
+    /// A parser that reads every document as the paragraph "native", differently from Tika's
+    /// parser in "a detail".
+    struct DifferingParser;
+
+    impl Parser for DifferingParser {
+        fn name(&self) -> &'static str {
+            "extractous::DifferingParser"
+        }
+        fn tika_name(&self) -> &'static str {
+            "org.apache.tika.parser.EmptyParser"
+        }
+        fn media_types(&self) -> &'static [&'static str] {
+            &[]
+        }
+        fn prepare<'a>(
+            &self,
+            _input: &'a [u8],
+            _metadata: &TikaMetadata,
+            _configs: &'a ParserConfigs,
+        ) -> Result<Prepared<'a>, Decline<'a>> {
+            unless_different(
+                Box::new(|xhtml| Ok(xhtml.element("p", "native")?)),
+                Some(Difference::new("a detail")),
+            )
+        }
+    }
+
+    /// A reading that differs from Tika's parser's is left to Tika's path in a build with Tika,
+    /// and taken in a build without it, which records the difference as a warning, in a string
+    /// extraction and a stream alike (#144).
+    #[test]
+    fn takes_a_reading_that_differs_from_tikas_only_without_tika() {
+        let routed = route_file("../test_files/documents/simple.odt").unwrap();
+        let parsed = parse_to_string(
+            &DifferingParser,
+            &routed.input,
+            &routed.detected,
+            &ParserConfigs::default(),
+            100_000,
+            Output::Text,
+        )
+        .unwrap();
+        let options = StreamOptions {
+            char_set: CharSet::UTF_8,
+            output: Output::Text,
+            deadline: None,
+            spool: None,
+        };
+        let streamed = parse_to_stream(
+            &DifferingParser,
+            routed.input.to_static(),
+            routed.detected,
+            ParserConfigs::default(),
+            options,
+        )
+        .unwrap();
+        #[cfg(feature = "tika")]
+        {
+            let left = Unsupported::Deferred {
+                parser: "extractous::DifferingParser",
+                reason: "a detail".to_owned(),
+            };
+            assert_eq!(parsed.unwrap_err(), left);
+            assert_eq!(streamed.err(), Some(left));
+        }
+        #[cfg(not(feature = "tika"))]
+        {
+            let warning = vec![
+                "extractous::DifferingParser read the document differently from Tika: a detail\n"
+                    .to_owned(),
+            ];
+            let (text, metadata) = parsed.unwrap();
+            assert_eq!(text.trim(), "native");
+            assert_eq!(metadata.get(embedded::EXCEPTION_WARNING), Some(&warning));
+            let (mut stream, _) = streamed.unwrap();
+            let mut text = String::new();
+            stream.read_to_string(&mut text).unwrap();
+            assert_eq!(text.trim(), "native");
+            let metadata = stream.metadata().unwrap();
+            assert_eq!(metadata.get(embedded::EXCEPTION_WARNING), Some(&warning));
+        }
+    }
+
     /// A stream comes with the metadata known before the parse, however much output the parse
     /// writes before the stream returns, and the parse's own once it has been read (#67).
     #[test]
@@ -1623,6 +1764,27 @@ mod tests {
             [format!(
                 "extractous could not parse the embedded document \"data.mat\": {no_parser}"
             )]
+        );
+    }
+
+    /// A build without Tika reads natively an embedded document its parser reads differently
+    /// from Tika's parser, and records the difference in the embedding document (#144).
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn reads_an_embedded_document_its_parser_reads_differently_from_tika() {
+        let page =
+            b"<html><body><p>Inside.</p><img src=\"data:image/gif;base64,R0lGOD\"></body></html>";
+        let archive = crate::compress::zip::file::tests::zip(&[("page.html", page)]);
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&archive)
+            .unwrap();
+        assert!(text.contains("Inside."), "{text}");
+        assert_eq!(
+            metadata["tk:exception:embedded-exception"],
+            [
+                "extractous::JSoupParser read the embedded document \"page.html\" differently \
+                 from Tika: a data URI would be parsed as an embedded document"
+            ]
         );
     }
 

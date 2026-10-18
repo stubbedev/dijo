@@ -7,7 +7,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::ole2::{Ole2, Unreadable};
 
 /// `OLE_DOCUMENT_NAME`, the stream of the workbook's records.
@@ -33,8 +33,8 @@ impl Parser for QuattroProParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let records = records(input).map_err(Declined::Fails)?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let records = records(input).map_err(Decline::Fails)?;
         Ok(Box::new(move |xhtml| {
             xhtml.start_element("p")?;
             Records {

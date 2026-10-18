@@ -7,7 +7,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Declined, Footprint, Parser, Prepared};
 use crate::java::JavaHashMap;
 
 /// The warning Tika records for a file no reader takes.
@@ -712,7 +712,7 @@ fn power_of_two(exponent: i32) -> f64 {
 /// none takes the file.
 fn file_format(bytes: &[u8]) -> Result<Option<FileFormat>, Declined> {
     if bytes.starts_with(b"MThd") {
-        return Err(Declined::Deferred(
+        return Err(Decline::Deferred(
             "a file that starts as MIDI, which the JDK's MIDI audio reader may take".to_owned(),
         ));
     }
@@ -721,9 +721,7 @@ fn file_format(bytes: &[u8]) -> Result<Option<FileFormat>, Declined> {
         match reader(bytes) {
             Ok(format) => return Ok(Some(format)),
             Err(Rejected::Unsupported) => {}
-            Err(Rejected::Thrown(thrown)) => {
-                return Err(Declined::Fails(Error::ParseError(thrown)))
-            }
+            Err(Rejected::Thrown(thrown)) => return Err(Decline::Fails(Error::ParseError(thrown))),
         }
     }
     Ok(None)
@@ -757,7 +755,7 @@ impl Parser for AudioParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let format = file_format(input)?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();

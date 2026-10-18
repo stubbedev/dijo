@@ -28,7 +28,7 @@ use crate::formats::ooxml::{
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 use crate::java::is_blank;
 
@@ -138,7 +138,7 @@ impl Parser for PptxParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -148,7 +148,7 @@ impl Parser for PptxParser {
         pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, pages)?;
         let read = Presentation::open(package, &configs.office)
             .and_then(Presentation::prepare)

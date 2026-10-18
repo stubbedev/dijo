@@ -41,7 +41,10 @@ use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{Embedded, Handed};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{html, Declined, Deferral, Failure, Opened, Parser, Prepared, StringOut};
+use crate::formats::{
+    html, noted, unless_different, Decline, Declined, Deferral, Difference, Failure, Opened,
+    Parser, Prepared, StringOut,
+};
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::time::civil::civil_from_days;
 
@@ -86,9 +89,9 @@ impl Parser for JackcessParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let extraction = extract(input, configs)?;
-        Ok(Box::new(move |xhtml| extraction.write(xhtml)))
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let (extraction, difference) = extract(input, configs)?;
+        unless_different(Box::new(move |xhtml| extraction.write(xhtml)), difference)
     }
 }
 
@@ -273,13 +276,16 @@ fn date(bits: i64) -> String {
 /// Reads the database as `JackcessExtractor.parse` does. A database under Office encryption
 /// fails as encrypted where no password is given, as Tika's path fails on it, and is left to
 /// Tika where one is.
-fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined> {
+fn extract(
+    input: &[u8],
+    configs: &ParserConfigs,
+) -> Result<(Extraction, Option<Difference>), Declined> {
     let thrown = Thrown::reason;
     let database = Database::open(input).map_err(|thrown| match thrown {
         Thrown::Encrypted if configs.password.is_none() => {
-            Declined::Fails(crypt::encrypted(Some(INCORRECT_PASSWORD)))
+            Decline::Fails(crypt::encrypted(Some(INCORRECT_PASSWORD)))
         }
-        thrown => Declined::Deferred(thrown.reason()),
+        thrown => Decline::Deferred(thrown.reason()),
     })?;
     let mut metadata = Vec::new();
     let add_all = |maps: PropertyMaps, prefix: &'static str, metadata: &mut Vec<Entry>| {
@@ -307,9 +313,12 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined
     )
     .map_err(thrown)?;
     let mut tables = Vec::new();
+    let mut difference = None;
     for info in database.tables().map_err(thrown)? {
         let table = database.load_table(&info).map_err(thrown)?;
-        tables.push(table_content(&database, &table, info.page, configs)?);
+        let (content, read_otherwise) = table_content(&database, &table, info.page, configs)?;
+        difference = difference.or(read_otherwise);
+        tables.push(content);
     }
     let mut queries = Vec::new();
     for definition in database.queries().map_err(thrown)? {
@@ -318,11 +327,14 @@ fn extract(input: &[u8], configs: &ParserConfigs) -> Result<Extraction, Declined
             Sql::Unsupported => "unsupported query type".to_owned(),
         });
     }
-    Ok(Extraction {
-        metadata,
-        tables,
-        queries,
-    })
+    Ok((
+        Extraction {
+            metadata,
+            tables,
+            queries,
+        },
+        difference,
+    ))
 }
 
 /// The summary properties: the title, author and company as Tika's properties, the others under
@@ -373,8 +385,9 @@ fn table_content(
     table: &table::Table,
     page: i32,
     configs: &ParserConfigs,
-) -> Result<TableContent, Deferral> {
+) -> Result<(TableContent, Option<Difference>), Deferral> {
     let thrown = Thrown::reason;
+    let mut difference = None;
     let columns = &table.columns;
     let mut rich: Option<Vec<bool>> = None;
     let mut rows = Vec::new();
@@ -418,7 +431,9 @@ fn table_content(
                 data_type => {
                     let text = text(value, data_type).map_err(thrown)?;
                     if rich[index] {
-                        Cell::Text(rich_text(&text, configs)?)
+                        let (text, read_otherwise) = rich_text(&text, configs)?;
+                        difference = difference.or(read_otherwise);
+                        Cell::Text(text)
                     } else {
                         Cell::Text(text)
                     }
@@ -427,11 +442,14 @@ fn table_content(
         }
         rows.push(cells);
     }
-    Ok(TableContent {
-        name: table.name.clone(),
-        headers: columns.iter().map(|column| column.name.clone()).collect(),
-        rows,
-    })
+    Ok((
+        TableContent {
+            name: table.name.clone(),
+            headers: columns.iter().map(|column| column.name.clone()).collect(),
+            rows,
+        },
+        difference,
+    ))
 }
 
 /// `isRichText` of each column: a memo whose `TextFormat` property is the byte of rich text.
@@ -471,16 +489,22 @@ fn rich_text_columns(
 }
 
 /// What `JSoupParser` writes of rich text, as text, all of it: Tika writes it through a
-/// `BodyContentHandler` whose write limit of 100,000 characters fails the parse (#122).
-fn rich_text(html: &str, configs: &ParserConfigs) -> Result<String, Deferral> {
+/// `BodyContentHandler` whose write limit of 100,000 characters fails the parse (#122). Where
+/// the HTML parser reads the rich text differently from Tika's, it says how.
+fn rich_text(
+    html: &str,
+    configs: &ParserConfigs,
+) -> Result<(String, Option<Difference>), Deferral> {
     let mut metadata = TikaMetadata::new();
     metadata.set("Content-Type", "text/html; charset=UTF-8");
-    let prepared = html::prepare(html.as_bytes(), &metadata)
+    let (prepared, difference) = noted(html::prepare(html.as_bytes(), &metadata))
         .map_err(|reason| format!("rich text in an Access table that defers: {reason}"))?;
     let context = ParseContext::new(configs);
     let mut out = StringOut::default();
     let mut handler = Body::new(ToText::new(&mut out));
     let (_, _, result) = Xhtml::write(&mut handler, metadata, &context, prepared);
     result.map_err(|failure| format!("rich text in an Access table that fails: {failure:?}"))?;
-    Ok(out.0)
+    let difference = difference
+        .map(|Difference(reason)| Difference(format!("rich text in an Access table: {reason}")));
+    Ok((out.0, difference))
 }

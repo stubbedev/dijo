@@ -13,7 +13,7 @@
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 
 /// 1.2.840.113549.1.9.16.1.31, `id-ct-timestampedData`.
 const TIMESTAMPED_DATA: &[u8] = &[
@@ -261,7 +261,7 @@ impl Parser for TsdParser {
         input: &'a [u8],
         _: &TikaMetadata,
         _: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let content = content(input);
         Ok(Box::new(move |xhtml| {
             if let Some(content) = content {

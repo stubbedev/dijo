@@ -20,7 +20,7 @@ use crate::formats::odf::meta::{attribute_value, merge_subjects, MetaHandlers};
 use crate::formats::odf::OFFICE_NS;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 
 const WHAT: &str = "The flat OpenDocument XML";
 const DOCUMENT: &str = "document";
@@ -255,7 +255,7 @@ impl Parser for FlatOpenDocumentParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         Ok(Box::new(move |xhtml| write(input, configs, xhtml)))
     }
 }

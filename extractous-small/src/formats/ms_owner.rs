@@ -4,7 +4,7 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -33,7 +33,7 @@ impl Parser for MsOwnerFileParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let (names, thrown) = names(input);
         Ok(Box::new(move |xhtml| {
             for name in &names {

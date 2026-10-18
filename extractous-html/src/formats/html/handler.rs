@@ -10,11 +10,13 @@
 //! each `meta` named `title`, wherever it stands. Tika records a meta title after the `title`
 //! element as `html:dc:title` and drops one before it (#86).
 //!
-//! The parser leaves to Tika the documents this would hand to an embedded document extractor
-//! or resolve links against a URL (see [`deferral`]), so it never does either.
+//! It never hands data to an embedded document extractor or resolves links against a URL: where
+//! Tika's handler would (see [`difference`]), the parser reads the document differently from
+//! Tika's.
 
 use super::dom::{Attribute, Dom, NodeData, NodeId, DOCUMENT};
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::Difference;
 use crate::java;
 use crate::java::is_blank;
 use crate::mime::MediaType;
@@ -398,17 +400,19 @@ fn icbm(value: &str) -> Option<(&str, &str)> {
     Some((latitude, &rest[..second_end]))
 }
 
-/// Why Tika's path should read a document rather than this parser: Tika would hand a data URI
-/// or an `iframe`'s `srcdoc` to its embedded document extractor (with OCR, under extractous's
+/// Where this parser reads a document differently from Tika's: Tika would hand a data URI or an
+/// `iframe`'s `srcdoc` to its embedded document extractor (with OCR, under extractous's
 /// defaults), or resolve links against a URL (a `base` in the head, an `object`'s codebase or
-/// the resource name), which takes Java's `URL`. Decided over the tree, as `HtmlHandler` meets
-/// the nodes.
-pub(super) fn deferral(dom: &Dom, resource_name: Option<&str>) -> Option<&'static str> {
+/// the resource name), which takes Java's `URL`, where this parser leaves the data and the links
+/// as they are. Decided over the tree, as `HtmlHandler` meets the nodes.
+pub(super) fn difference(dom: &Dom, resource_name: Option<&str>) -> Option<Difference> {
     if resource_name.is_some_and(|name| has_scheme(java::trim(name))) {
-        return Some("the resource name is a URL that links would be resolved against");
+        return Some(Difference::new(
+            "the resource name is a URL that links would be resolved against",
+        ));
     }
     let mut scan = Scan::default();
-    scan.node(dom, DOCUMENT)
+    scan.node(dom, DOCUMENT).map(Difference::new)
 }
 
 #[derive(Default)]

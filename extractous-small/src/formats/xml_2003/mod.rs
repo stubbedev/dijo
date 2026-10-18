@@ -14,7 +14,7 @@ pub use word::WordMlParser;
 use crate::formats::element_metadata::{ElementHandlers, Values};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Prepared};
+use crate::formats::{Decline, Failure, Prepared};
 
 /// `MS_OFFICE_PROPERTIES_URN`, the namespace of the document properties.
 const OFFICE_URN: &str = "urn:schemas-microsoft-com:office:office";
@@ -93,9 +93,9 @@ fn prepare<'a, B: Body + 'a>(
     input: &'a [u8],
     media_type: &'static str,
     body: B,
-) -> Result<Prepared<'a>, Declined> {
+) -> Result<Prepared<'a>, Decline<'a>> {
     if xml::has_document_type(input) {
-        return Err(Declined::Deferred(
+        return Err(Decline::Deferred(
             "a document type declaration, under which Xerces may report whitespace as \
              ignorable, which the property handlers keep and the body's drop"
                 .to_owned(),

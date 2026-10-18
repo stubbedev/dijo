@@ -25,9 +25,10 @@ use extractor::{extract, Extracted};
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office, Summaries};
+use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared, Unported};
 use crate::ole2::{write, EntryId, EntryKind, Node, Ole2, Unreadable};
 use properties::{EMBEDDED_MESSAGE_HEADER, MESSAGE_HEADER, PROPERTIES};
 
@@ -55,26 +56,32 @@ impl Parser for MsgParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, extracted) = read(input, configs).map_err(|Unported(reason)| reason)?;
-        Ok(Box::new(move |xhtml| {
-            summaries.write(xhtml.metadata_mut());
-            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            extracted.write(xhtml)
-        }))
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let (summaries, extracted, difference) = read(input, configs)?;
+        unless_different(
+            Box::new(move |xhtml| {
+                summaries.write(xhtml.metadata_mut());
+                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                extracted.write(xhtml)
+            }),
+            difference,
+        )
     }
 }
 
 /// The summary information and what Tika's extractor makes of the message in a compound
-/// document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Unported> {
-    let file = office::open(input, configs, MEDIA_TYPE, "message")?;
+/// document, and where POI reads it differently from a stream, if it does.
+fn read(
+    input: &[u8],
+    configs: &ParserConfigs,
+) -> Result<(Summaries, Extracted, Option<Difference>), Unported> {
+    let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "message")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let message = Message::read(&file, root, false)
         .map_err(|thrown| Unported(format!("POI throws reading the message: {}", thrown.0)))?;
-    let extracted = extract(&file, message, configs)?;
-    Ok((summaries, extracted))
+    let (extracted, read_otherwise) = extract(&file, message, configs)?;
+    Ok((summaries, extracted, difference.or(read_otherwise)))
 }
 
 /// The most messages this port reads stored one in another, where Java's stack would end first.
@@ -108,7 +115,12 @@ impl EmbeddedMessage {
                 thrown.0
             ))
         })?;
-        let extracted = extract(file, message, configs)?;
+        let (extracted, difference) = extract(file, message, configs)?;
+        if let Some(Difference(reason)) = difference {
+            return Err(Unported(format!(
+                "a stored message this port reads differently from Tika: {reason}"
+            )));
+        }
         let data = standalone(file, directory).map_err(|Unreadable(reason)| {
             Unported(format!(
                 "a stored message POI cannot read, whose failure Tika records: {reason}"
