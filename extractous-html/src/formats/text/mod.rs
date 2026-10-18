@@ -73,7 +73,7 @@ use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
-use crate::input::Pages;
+use crate::input::{Input, Pages};
 use crate::mime::MediaType;
 
 /// The UTF-16 units of each read of `handleText`'s buffer, each written as one `characters`
@@ -140,10 +140,10 @@ pub(crate) fn prepare<'a>(
 
 /// What [`prepare`] prepares of a `text/plain` part of an email: plain text, never a table.
 /// Tika sniffs such a part for a table, and makes it `text/csv` when it looks like one (#82).
-pub fn prepare_plain(input: Vec<u8>) -> Result<Prepared<'static>, Decline<'static>> {
+pub fn prepare_plain(input: Input<'static>) -> Result<Prepared<'static>, Decline<'static>> {
     let difference = AutoDetectReader::difference(&input, None);
     unless_different(
-        Box::new(move |xhtml| write(&input, Pages::IN_MEMORY, None, Sniff::Never, xhtml)),
+        Box::new(move |xhtml| write(&input, input.pages(), None, Sniff::Never, xhtml)),
         difference,
     )
 }

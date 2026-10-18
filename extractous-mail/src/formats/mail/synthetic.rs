@@ -2,29 +2,22 @@
 //! as the corpora's are: transfer encodings, charsets, multipart structures, boundaries at the
 //! edges of mime4j's buffers, headers and the parts handed to the embedded document extractor.
 
-#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "tika")]
 use super::EmlxParser;
 use super::Rfc822Parser;
-#[cfg(feature = "tika")]
 use super::DEPARTURES;
-#[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika_departing, documents, Scratch,
 };
 use crate::formats::Parser;
 
-#[cfg(feature = "tika")]
 const HEADER: &str = "From: Ada Lovelace <ada@example.org>\r\nTo: Charles Babbage <charles@example.org>\r\nSubject: Notes\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\nMIME-Version: 1.0\r\n";
 
-#[cfg(feature = "tika")]
 fn message(headers: &str, body: &str) -> Vec<u8> {
     format!("{HEADER}{headers}\r\n{body}").into_bytes()
 }
 
-#[cfg(feature = "tika")]
 fn multipart(subtype: &str, boundary: &str, parts: &[&str]) -> String {
     let mut body =
         format!("Content-Type: multipart/{subtype}; boundary=\"{boundary}\"\r\n\r\npreamble\r\n");
@@ -35,7 +28,6 @@ fn multipart(subtype: &str, boundary: &str, parts: &[&str]) -> String {
     body
 }
 
-#[cfg(feature = "tika")]
 fn lines(count: usize, width: usize) -> String {
     (0..count)
         .map(|line| format!("{line:05} {}\r\n", "x".repeat(width)))
@@ -43,7 +35,6 @@ fn lines(count: usize, width: usize) -> String {
 }
 
 /// The messages, by file name.
-#[cfg(feature = "tika")]
 fn messages() -> Vec<(String, Vec<u8>)> {
     let plain = "Content-Type: text/plain; charset=utf-8\r\n\r\nPlain part, caf\u{e9}.";
     let html = "Content-Type: text/html; charset=utf-8\r\n\r\n<html><body><p>HTML <b>part</b> &amp; more</p></body></html>";
@@ -134,7 +125,6 @@ fn messages() -> Vec<(String, Vec<u8>)> {
     messages
 }
 
-#[cfg(feature = "tika")]
 #[test]
 fn extracts_synthetic_messages_as_tikas_path_does() {
     let scratch = Scratch::new("mail-synthetic");
@@ -188,7 +178,6 @@ fn defers_dates_naming_a_time_zone() {
     assert!(reason.is_some_and(|reason| reason.contains("time zone")));
 }
 
-#[cfg(feature = "tika")]
 #[test]
 fn fails_where_tikas_path_fails() {
     let scratch = Scratch::new("mail-failures");

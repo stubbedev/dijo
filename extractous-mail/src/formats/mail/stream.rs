@@ -13,7 +13,7 @@ use super::codec::BodyDecoder;
 use super::field::{is_whitespace, RawField};
 use super::structured::{ContentDisposition, ContentType};
 use super::Unported;
-use crate::input::{Input, Spool};
+use crate::input::{Input, Paging, Spool};
 
 const BUFFER_SIZE: usize = 4096;
 const MAX_LINE_LENGTH: usize = 100_000;
@@ -616,10 +616,12 @@ impl Entity {
     }
 }
 
-/// The root of the chain: the message's bytes, read in full as a `TikaInputStream` reads.
+/// The root of the chain: the message's bytes, read in full as a `TikaInputStream` reads, the
+/// pages read released as it goes.
 struct Root<'a> {
     input: &'a [u8],
     pos: usize,
+    paging: &'a Paging<'a>,
 }
 
 impl Root<'_> {
@@ -630,6 +632,7 @@ impl Root<'_> {
         let count = out.len().min(self.input.len() - self.pos);
         out[..count].copy_from_slice(&self.input[self.pos..self.pos + count]);
         self.pos += count;
+        self.paging.read(count);
         Some(count)
     }
 }
@@ -668,10 +671,20 @@ fn read_data(root: &mut Root, entities: &mut [Entity], out: &mut [u8]) -> Option
     read
 }
 
-/// Reads the messages's parts as `MimeStreamParser.parse` reports them.
-pub(super) fn events(input: &[u8]) -> Result<Vec<Event>, MimeError> {
+/// Reads the messages's parts as `MimeStreamParser.parse` reports them, handing each to `each`
+/// as it is read, and releasing the pages of `input` that `paging` holds as they are read: what
+/// mime4j fails on, or the failure of `each`, which ends the reading.
+pub(super) fn events<'a, E: From<MimeError>>(
+    input: &'a [u8],
+    paging: &'a Paging<'a>,
+    mut each: impl FnMut(Event) -> Result<(), E>,
+) -> Result<(), E> {
     let mut stream = Stream {
-        root: Root { input, pos: 0 },
+        root: Root {
+            input,
+            pos: 0,
+            paging,
+        },
         entities: vec![Entity::new(
             State::StartMessage,
             State::EndMessage,
@@ -682,30 +695,29 @@ pub(super) fn events(input: &[u8]) -> Result<Vec<Event>, MimeError> {
         total_header_count: 0,
         total_header_length: 0,
     };
-    let mut events = Vec::new();
     let mut state = State::StartMessage;
     loop {
         match state {
             State::Body => {
                 let body = stream.current().body().clone();
                 let content = stream.body_content(&body)?;
-                events.push(Event::Body(body, content));
+                each(Event::Body(body, content))?;
             }
-            State::EndBodyPart => events.push(Event::EndBodyPart),
-            State::EndMultipart => events.push(Event::EndMultipart),
+            State::EndBodyPart => each(Event::EndBodyPart)?,
+            State::EndMultipart => each(Event::EndMultipart)?,
             State::Field => {
                 let field = stream
                     .current()
                     .field
                     .clone()
                     .expect("an entity in its field state has a field");
-                events.push(Event::Field(field));
+                each(Event::Field(field))?;
             }
-            State::StartBodyPart => events.push(Event::StartBodyPart),
+            State::StartBodyPart => each(Event::StartBodyPart)?,
             State::StartMultipart => {
-                events.push(Event::StartMultipart(stream.current().body().clone()));
+                each(Event::StartMultipart(stream.current().body().clone()))?;
             }
-            State::EndOfStream => return Ok(events),
+            State::EndOfStream => return Ok(()),
             _ => {}
         }
         state = stream.next()?;
@@ -1011,8 +1023,18 @@ impl Stream<'_> {
 mod tests {
     use super::*;
 
+    fn collected(input: &[u8]) -> Result<Vec<Event>, MimeError> {
+        let paging = Paging::new(crate::input::Pages::IN_MEMORY);
+        let mut collected = Vec::new();
+        events(input, &paging, |event| {
+            collected.push(event);
+            Ok::<(), MimeError>(())
+        })?;
+        Ok(collected)
+    }
+
     fn summary(input: &[u8]) -> Vec<String> {
-        events(input)
+        collected(input)
             .unwrap()
             .into_iter()
             .map(|event| match event {
@@ -1099,6 +1121,6 @@ mod tests {
     fn fails_on_lines_past_the_limit() {
         let mut message = b"Subject: ".to_vec();
         message.extend(std::iter::repeat_n(b'a', MAX_LINE_LENGTH));
-        assert!(events(&message).is_err());
+        assert!(collected(&message).is_err());
     }
 }
