@@ -19,14 +19,17 @@ mod unpack;
 use extract::Extracted;
 use headers::{Name, Unopened};
 
+use std::convert::Infallible;
+
 use super::nesting::Scan;
-use super::{entry_metadata, record_unreadable, too_large};
+use super::{entry_metadata, record_unreadable, too_large, DEFERS};
 use crate::compress::{ArchiveFile, MAX_DECODED};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Difference, Opened, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Footprint, Opened, Parser, Prepared};
+use crate::input::{Input, Pages, Paging};
 
 const RAR: &str = "application/x-rar-compressed";
 
@@ -45,9 +48,25 @@ impl Parser for RarParser {
         &[RAR]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the headers, and writes each file as it is unpacked, spooled, before the next is
+    /// unpacked, the pages of the archive released after each.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -69,27 +88,29 @@ impl Parser for RarParser {
                 Decline::Deferred(format!("junrar reads {what}, which the port does not"))
             }
         })?;
-        let (entries, difference) = entries(input, &headers)?;
-        if let Some(reason) =
-            Scan::new().files(input.len(), entries.iter().map(|entry| &entry.file))
-        {
-            return Err(Decline::Deferred(reason));
+        let (names, difference) = names(&headers);
+        if DEFERS {
+            scan(input, &headers, &names)?;
         }
+        let paging = Paging::new(pages);
+        paging.release();
         let reading: Prepared<'a> = Box::new(move |xhtml| {
             xhtml.element("div", " ")?;
-            for Entry { file, unread } in &entries {
-                let metadata = entry_metadata(file, xhtml)?;
+            extract::each(input, &headers, |index, extracted| {
+                let (file, unread) = file(&headers.files[index], &names[index], extracted);
+                let metadata = entry_metadata(&file, xhtml)?;
                 match unread {
-                    None => xhtml.parse_embedded_opened(
+                    None => xhtml.parse_embedded_input_opened(
                         &file.content,
                         &metadata,
                         Wrapping::UnderlyingPackageEntry,
                         Opened::Alone,
                     )?,
-                    Some(reason) => record_unreadable(xhtml.metadata_mut(), &file.name, reason),
+                    Some(reason) => record_unreadable(xhtml.metadata_mut(), &file.name, &reason),
                 }
-            }
-            Ok(())
+                paging.release();
+                Ok::<(), Failure>(())
+            })
         });
         match difference {
             None => Ok(reading),
@@ -110,63 +131,88 @@ pub(super) fn is_rar(data: &[u8]) -> bool {
 /// entry the port cannot give, if the port reads it.
 pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile<'static>>> {
     let headers = headers::read(data).ok()?;
-    let (entries, _) = entries(data, &headers).ok()?;
-    Some(entries.into_iter().map(|entry| entry.file).collect())
+    let (names, _) = names(&headers);
+    let mut files = Vec::new();
+    let extracted = extract::each(data, &headers, |index, extracted| {
+        files.push(file(&headers.files[index], &names[index], extracted).0);
+        Ok::<(), Infallible>(())
+    });
+    match extracted {
+        Ok(()) => Some(files),
+        Err(never) => match never {},
+    }
 }
 
-/// A file of the archive, and why its data cannot be given, if it cannot.
-struct Entry {
-    file: ArchiveFile<'static>,
-    unread: Option<String>,
-}
-
-/// The files of the archive but its directories, and the first detail in which the port reads
-/// them otherwise than junrar, if any.
-fn entries(
-    input: &[u8],
-    headers: &headers::Headers,
-) -> Result<(Vec<Entry>, Option<Difference>), Decline<'static>> {
-    let mut declared = 0i64;
+/// The names of the files of the archive, and the first detail in which the port reads them
+/// otherwise than junrar, if any.
+fn names(headers: &headers::Headers) -> (Vec<String>, Option<Difference>) {
     let mut names = Vec::with_capacity(headers.files.len());
     let mut difference = None;
     for header in &headers.files {
         match &header.name {
-            Name::Decoded(name) => names.push(name),
+            Name::Decoded(name) => names.push(name.clone()),
             Name::Differs(name, what) => {
-                names.push(name);
+                names.push(name.clone());
                 difference =
                     difference.or_else(|| Some(Difference::new(format!("an entry has {what}"))));
             }
         }
-        if !header.is_directory() && !header.is_split() {
-            declared = declared.saturating_add(header.full_unpack_size);
-        }
     }
+    (names, difference)
+}
+
+/// Why Tika's path should read the archive `input`, which a build with Tika defers to it: its
+/// files decode into more than the native path holds in memory to scan them, or what they hold
+/// may reach Tika's limits otherwise than the native path's.
+fn scan(
+    input: &[u8],
+    headers: &headers::Headers,
+    names: &[String],
+) -> Result<(), Decline<'static>> {
+    let declared = headers
+        .files
+        .iter()
+        .filter(|header| !header.is_directory() && !header.is_split())
+        .fold(0i64, |declared, header| {
+            declared.saturating_add(header.full_unpack_size)
+        });
     if declared > MAX_DECODED as i64 {
         return Err(too_large("the entries of the RAR archive"));
     }
-    let entries = extract::entries(input, headers)
-        .into_iter()
-        .map(|(index, extracted)| {
-            let header = &headers.files[index];
-            let (content, unread) = match extracted {
-                Extracted::Data(content) => (content, None),
-                Extracted::Unread(reason) => (Vec::new(), Some(reason)),
-            };
-            Entry {
-                file: ArchiveFile {
-                    name: names[index].clone(),
-                    size: header.full_unpack_size as u64,
-                    modified_millis: header.modified_millis,
-                    created_millis: header.created_millis,
-                    directory: false,
-                    content: content.into(),
-                },
-                unread,
-            }
-        })
-        .collect();
-    Ok((entries, difference))
+    let mut files = Vec::new();
+    let extracted = extract::each(input, headers, |index, extracted| {
+        files.push(file(&headers.files[index], &names[index], extracted).0);
+        Ok::<(), Infallible>(())
+    });
+    if let Err(never) = extracted {
+        match never {}
+    }
+    match Scan::new().files(input.len(), &files) {
+        Some(reason) => Err(Decline::Deferred(reason)),
+        None => Ok(()),
+    }
+}
+
+/// The file of `header`, named `name`, as extracting it gave it, `extracted`, and why its data
+/// cannot be given, if it cannot.
+fn file(
+    header: &headers::FileHeader,
+    name: &str,
+    extracted: Extracted,
+) -> (ArchiveFile<'static>, Option<String>) {
+    let (content, unread) = match extracted {
+        Extracted::Data(content) => (content, None),
+        Extracted::Unread(reason) => (Input::Borrowed(&[]), Some(reason)),
+    };
+    let file = ArchiveFile {
+        name: name.to_owned(),
+        size: header.full_unpack_size as u64,
+        modified_millis: header.modified_millis,
+        created_millis: header.created_millis,
+        directory: false,
+        content,
+    };
+    (file, unread)
 }
 
 #[cfg(test)]

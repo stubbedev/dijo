@@ -835,13 +835,19 @@ impl<'h> Xhtml<'h> {
         metadata: &TikaMetadata,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
-        self.parse_embedded_paged(
-            input,
-            input.pages(),
-            metadata,
-            wrapping,
-            Opened::WithMetadata,
-        )
+        self.parse_embedded_input_opened(input, metadata, wrapping, Opened::WithMetadata)
+    }
+
+    /// [`Xhtml::parse_embedded_input`] of a document whose `TikaInputStream` the parser
+    /// `opened` as given.
+    pub fn parse_embedded_input_opened(
+        &mut self,
+        input: &Input<'_>,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        opened: Opened,
+    ) -> Result<(), Failure> {
+        self.parse_embedded_paged(input, input.pages(), metadata, wrapping, opened)
     }
 
     /// Parses a storage of a compound document embedded in this one with a native parser, as

@@ -6,17 +6,17 @@ use flate2::Crc;
 
 use super::bits::{BitInput, MAX_SIZE};
 use super::{Thrown, OUT_OF_BOUNDS};
-use crate::compress::MAX_DECODED;
+use crate::compress::{Decoding, Limited};
+use crate::input::{self, Spool};
 
-/// `ComprDataIO` over the archive's bytes.
+/// `ComprDataIO` over the archive's bytes, which spools what an entry unpacks into, up to the
+/// archive's decode limit.
 pub(super) struct DataIo<'a> {
     archive: &'a [u8],
     position: u64,
     packed_left: i64,
-    unpacked: Vec<u8>,
+    unpacked: Option<Decoding<Spool>>,
     crc: Crc,
-    /// The bytes every extraction of the archive kept, which [`MAX_DECODED`] bounds.
-    kept: usize,
 }
 
 impl<'a> DataIo<'a> {
@@ -25,24 +25,28 @@ impl<'a> DataIo<'a> {
             archive,
             position: 0,
             packed_left: 0,
-            unpacked: Vec::new(),
+            unpacked: None,
             crc: Crc::new(),
-            kept: 0,
         }
     }
 
     /// `init(OutputStream)` and `init(FileHeader)`: the packed data of `packed` bytes from
     /// `start` on, unpacked afresh, with a fresh CRC.
     pub(super) fn start(&mut self, start: u64, packed: i64) {
-        self.unpacked = Vec::new();
+        self.unpacked = Some(Decoding::spooled(self.archive.len()));
         self.position = start;
         self.packed_left = packed;
         self.crc = Crc::new();
     }
 
     /// What the extraction unpacked, once it is over.
-    pub(super) fn take_data(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.unpacked)
+    pub(super) fn take_data(&mut self) -> Result<input::Input<'static>, Thrown> {
+        match self.unpacked.take().map(Decoding::finish) {
+            None => Ok(input::Input::Borrowed(&[])),
+            Some(Ok(Limited::Whole(data))) => Ok(data),
+            Some(Ok(Limited::Cut(_))) => Err(TOO_LARGE),
+            Some(Err(_)) => Err(UNSPOOLED),
+        }
     }
 
     /// The CRC-32 of the data written since [`DataIo::start`].
@@ -88,11 +92,11 @@ impl<'a> DataIo<'a> {
             .zip(usize::try_from(count).ok())
             .and_then(|(offset, count)| data.get(offset..offset.checked_add(count)?))
             .ok_or(OUT_OF_BOUNDS)?;
-        self.kept += unpacked.len();
-        if self.kept > MAX_DECODED {
+        let decoding = self.unpacked.as_mut().ok_or(UNSTARTED)?;
+        decoding.write(unpacked).map_err(|_| UNSPOOLED)?;
+        if decoding.is_cut() {
             return Err(TOO_LARGE);
         }
-        self.unpacked.extend_from_slice(unpacked);
         self.crc.update(unpacked);
         Ok(())
     }
@@ -100,6 +104,8 @@ impl<'a> DataIo<'a> {
 
 const EOF: Thrown = Thrown("an EOFException, the archive ending before the entry's packed data");
 const TOO_LARGE: Thrown = Thrown("unpacked data past the most bytes the port decodes");
+const UNSPOOLED: Thrown = Thrown("unpacked data that cannot be spooled to a temporary file");
+const UNSTARTED: Thrown = Thrown("unpacked data written before its entry is started");
 
 /// The packed data an unpacker reads, through its bit input: `Unpack15`'s `readTop` and
 /// `readBorder` over junrar's `BitInput`, refilled from the archive.

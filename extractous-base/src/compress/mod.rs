@@ -303,7 +303,7 @@ impl<W: Held> Decoding<W> {
     }
 
     /// Adds `decoded`, up to the limit, past which the stream is cut.
-    pub(crate) fn write(&mut self, decoded: &[u8]) -> Result<(), Undecoded> {
+    pub fn write(&mut self, decoded: &[u8]) -> Result<(), Undecoded> {
         let room = self.limit - self.written;
         let kept = usize::try_from(room).map_or(decoded.len(), |room| room.min(decoded.len()));
         self.out.write_all(&decoded[..kept]).map_err(unspooled)?;
@@ -313,17 +313,17 @@ impl<W: Held> Decoding<W> {
     }
 
     /// Whether the stream decoded past the limit, which ends its decoding.
-    pub(crate) fn is_cut(&self) -> bool {
+    pub fn is_cut(&self) -> bool {
         self.cut
     }
 
     /// How many bytes it holds.
-    pub(crate) fn written(&self) -> u64 {
+    pub fn written(&self) -> u64 {
         self.written
     }
 
     /// What the stream decoded into: all of it, or cut at the limit.
-    pub(crate) fn finish<'a>(self) -> Result<Limited<W::Bytes<'a>>, Undecoded> {
+    pub fn finish<'a>(self) -> Result<Limited<W::Bytes<'a>>, Undecoded> {
         let cut = self.cut;
         let held = self.out.held()?;
         Ok(if cut {
@@ -335,7 +335,7 @@ impl<W: Held> Decoding<W> {
 
     /// Adds what `reader`, a crate's decoder, gives up to its end or the limit, failing where it
     /// fails.
-    pub(crate) fn read_from(&mut self, mut reader: impl Read) -> Result<(), Undecoded> {
+    pub fn read_from(&mut self, mut reader: impl Read) -> Result<(), Undecoded> {
         let mut chunk = vec![0; CHUNK];
         while !self.cut {
             match reader.read(&mut chunk) {
