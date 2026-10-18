@@ -155,9 +155,8 @@ pub(super) fn extract_metadata(input: &[u8], mut metadata: TikaMetadata) -> Resu
 /// Tika's result of a BPG image, from the native one: without the metadata of the extensions,
 /// which Tika never reads, and with the bit depth Tika reads from the wrong end of the header's
 /// first byte (#132).
-#[cfg(test)]
-#[cfg(feature = "tika")]
-pub(super) fn as_tika_misreads_the_header(
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_tika_misreads_the_header(
     text: &mut String,
     metadata: &mut crate::formats::parity::ComparedMetadata,
     tika: &crate::formats::parity::ComparedMetadata,

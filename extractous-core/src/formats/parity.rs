@@ -1168,6 +1168,7 @@ fn without_departures(
             | Departure::BlankLines(_)
             | Departure::Elements(_)
             | Departure::PngImages(_)
+            | Departure::WholeContent(_)
             | Departure::Paragraphs(..) => None,
         })
         .collect();
@@ -2543,7 +2544,7 @@ impl Drop for Scratch {
 /// A spooled embedded document as the two paths are compared on it: everything but where the
 /// spool is, and the bytes copied.
 #[cfg(feature = "tika")]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Spooled {
     name: String,
     content_type: Option<String>,
@@ -2674,6 +2675,50 @@ fn with_line_feeds(spooled: Vec<Spooled>, line_breaks: bool) -> Vec<Spooled> {
             }
         })
         .collect()
+}
+
+/// The files the native path spooled, where a [`Departure::WholeContent`] applies, each cut to
+/// the length of Tika's file in its place where it starts with all of that file.
+#[cfg(feature = "tika")]
+fn cut_as_tikas(native: Vec<Spooled>, tika: &[Spooled], whole_content: bool) -> Vec<Spooled> {
+    if !whole_content {
+        return native;
+    }
+    native
+        .into_iter()
+        .zip(tika)
+        .map(|(native, tika)| {
+            if native.truncated || !native.content.starts_with(&tika.content) {
+                return native;
+            }
+            Spooled {
+                size: tika.size,
+                content: tika.content.clone(),
+                ..native
+            }
+        })
+        .collect()
+}
+
+/// The files the native path spooled, where a [`Departure::Paragraphs`] applies, as Tika's
+/// path spooled them, where it spooled one if Tika's did and each it spooled whole holds what
+/// one of Tika's whole files holds; else as they are.
+#[cfg(feature = "tika")]
+fn of_revisions_alike(native: Vec<Spooled>, tika: &[Spooled], any_revision: bool) -> Vec<Spooled> {
+    if !any_revision || native.is_empty() != tika.is_empty() {
+        return native;
+    }
+    let alike = native
+        .iter()
+        .filter(|native| !native.truncated)
+        .all(|native| {
+            tika.iter()
+                .any(|tika| !tika.truncated && tika.content == native.content)
+        });
+    if !alike {
+        return native;
+    }
+    tika.to_vec()
 }
 
 #[cfg(feature = "tika")]
@@ -2823,8 +2868,15 @@ fn spools_as_tika_under(
             }
             let (tika_extracted, _) =
                 with_native_edit_time(tika_extracted, &native_extracted, CharSet::UTF_8);
-            let (mut tika_extracted, mut native_extracted) =
+            let (tika_extracted, native_extracted) =
                 without_ocr_both(tika_extracted, native_extracted);
+            let (mut tika_extracted, mut native_extracted) = as_paragraphs(
+                tika_extracted,
+                native_extracted,
+                CharSet::UTF_8,
+                departures,
+                false,
+            );
             with_native_failures_masked(&mut tika_extracted, &mut native_extracted);
             native_extracted.text = without_unwritten(
                 &String::from_utf8_lossy(&native_extracted.text),
@@ -2838,6 +2890,12 @@ fn spools_as_tika_under(
             let png_images = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::PngImages(_)));
+            let whole_content = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::WholeContent(_)));
+            let of_any_revision = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::Paragraphs(..)));
             let tika = (
                 tika_extracted,
                 with_png_images(
@@ -2845,17 +2903,22 @@ fn spools_as_tika_under(
                     png_images,
                 ),
             );
+            let native_spooled = as_tika_spools(
+                with_png_images(
+                    with_line_feeds(
+                        spooled(native_embedded, native_spool.directory()),
+                        line_breaks,
+                    ),
+                    png_images,
+                ),
+                &tika.1,
+            );
             let native = (
                 native_extracted,
-                as_tika_spools(
-                    with_png_images(
-                        with_line_feeds(
-                            spooled(native_embedded, native_spool.directory()),
-                            line_breaks,
-                        ),
-                        png_images,
-                    ),
+                of_revisions_alike(
+                    cut_as_tikas(native_spooled, &tika.1, whole_content),
                     &tika.1,
+                    of_any_revision,
                 ),
             );
             if native == tika {
@@ -3082,5 +3145,51 @@ mod tests {
             without_temporary_names("/tmp/apache-tika-12-34.pdf: x"),
             "/tmp/apache-tika-N: x"
         );
+    }
+
+    #[cfg(feature = "tika")]
+    fn file(number: usize, content: &[u8], truncated: bool) -> Spooled {
+        Spooled {
+            name: format!("embedded-{number}"),
+            content_type: None,
+            file: number.to_string(),
+            size: content.len() as u64,
+            truncated,
+            content: content.to_vec(),
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn compares_whole_content_with_as_much_of_its_start_as_tika_spooled() {
+        let tika = [file(0, b"Kalmar", false), file(1, b"Lund", false)];
+        let native = vec![file(0, b"Kalmarsund", false), file(1, b"Lunde", true)];
+        assert_eq!(
+            cut_as_tikas(native, &tika, true),
+            [file(0, b"Kalmar", false), file(1, b"Lunde", true)]
+        );
+        let other = vec![file(0, b"Kolding", false)];
+        assert_eq!(cut_as_tikas(other.clone(), &tika, true), other);
+        let longer = vec![file(0, b"Kalmarsund", false)];
+        assert_eq!(cut_as_tikas(longer.clone(), &tika, false), longer);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn compares_the_files_of_any_revision_by_their_contents() {
+        let tika = [
+            file(0, b"old", false),
+            file(1, b"new", false),
+            file(2, b"cu", true),
+        ];
+        let reordered = vec![file(0, b"new", false), file(1, b"cut", true)];
+        assert_eq!(of_revisions_alike(reordered.clone(), &tika, true), tika);
+        assert_eq!(
+            of_revisions_alike(reordered.clone(), &tika, false),
+            reordered
+        );
+        let unknown = vec![file(0, b"newer", false)];
+        assert_eq!(of_revisions_alike(unknown.clone(), &tika, true), unknown);
+        assert_eq!(of_revisions_alike(Vec::new(), &tika, true), []);
     }
 }

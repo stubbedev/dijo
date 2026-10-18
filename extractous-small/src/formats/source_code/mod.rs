@@ -40,6 +40,11 @@ const ENTITY_CHARACTERS: [(char, char); 4] = [
     ('"', '"'),
 ];
 
+/// Where the parser's output departs from Tika's, for the parity tests: the HTML document it
+/// writes, which the HTML parser reads by the WHATWG algorithm (#84).
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub const DEPARTURES: crate::formats::parity::Departures = crate::formats::html::DEPARTURES;
+
 /// Tika's `SourceCodeParser`.
 pub struct SourceCodeParser;
 

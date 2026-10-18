@@ -54,6 +54,12 @@ pub const TREE_DEPARTURES: extractous_base::formats::parity::Departures = &[
     extractous_base::formats::parity::Departure::Elements("#84"),
 ];
 
+/// The document of Tika's tests with a `meta` title after its `title` element, which Tika
+/// records as `html:dc:title` and the parser as a further `dc:title` (#86): the parity tests
+/// check what the parser gives instead of comparing it with Tika's.
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub const TWO_TITLES: &str = "testHTML_metadata_two_titles.html";
+
 /// Tika's `JSoupParser`.
 pub struct JSoupParser;
 
@@ -299,11 +305,6 @@ mod tests {
             Some(&vec!["ActualTitle".to_owned(), "OldMetaTitle".to_owned()])
         );
     }
-
-    /// The document of Tika's tests with a `meta` title after its `title` element, which Tika
-    /// records as `html:dc:title` and the port as a further `dc:title` (#86).
-    #[cfg(feature = "tika")]
-    const TWO_TITLES: &str = "testHTML_metadata_two_titles.html";
 
     #[test]
     fn decodes_with_a_byte_order_mark_over_the_detection() {

@@ -83,6 +83,21 @@ const MAX_RECURSION_DEPTH: usize = 100;
 pub(super) use crate::formats::Unported;
 use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
 
+/// For the parity tests: the failure of an XFA form's XML, which Tika records as the stack trace
+/// of Woodstox's exception and the native parser as the failure its own XML parser reports
+/// (#125).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const XFA_FAILURE: crate::formats::parity::Departures =
+    &[crate::formats::parity::Departure::Values(
+        crate::formats::embedded::EXCEPTION_WARNING,
+        "#125",
+    )];
+
+/// For the parity tests: the document of Tika's tests whose XFA form's XML fails, which departs
+/// by [`XFA_FAILURE`].
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const MALFORMED_XFA: &str = "testPDF_malformedXFA.pdf";
+
 /// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
 pub struct PdfParser;
 
@@ -586,7 +601,7 @@ mod tests {
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika_delegating, assert_same_as_tika_delegating_departing_with,
-        assert_same_as_tika_delegating_with, conformance_corpus, Departure, Departures, Scratch,
+        assert_same_as_tika_delegating_with, conformance_corpus, Scratch,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -1320,11 +1335,6 @@ mod tests {
 
     /// The XFA data of a document whose form's XML fails at its mismatched end tag.
     const MALFORMED_XFA_DATA: &str = "<form1><navn>Kari</nav></form1>";
-
-    /// The failure of an XFA form's XML, which Tika records as the stack trace of Woodstox's
-    /// exception and the native parser as the failure its own XML parser reports (#125).
-    #[cfg(feature = "tika")]
-    pub(super) const XFA_FAILURE: Departures = &[Departure::Values(EXCEPTION_WARNING, "#125")];
 
     #[cfg(feature = "tika")]
     #[test]
@@ -2098,7 +2108,7 @@ mod tests {
         }
         let (malformed, paths): (Vec<&Path>, Vec<&Path>) = paths
             .into_iter()
-            .partition(|path| path.ends_with("testPDF_malformedXFA.pdf"));
+            .partition(|path| path.ends_with(MALFORMED_XFA));
         assert_eq!(malformed.len(), 1, "{malformed:?}");
         assert_same_as_tika_delegating_departing_with(
             &malformed,
