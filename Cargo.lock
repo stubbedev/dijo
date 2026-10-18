@@ -940,6 +940,7 @@ dependencies = [
 name = "extractous-office"
 version = "0.2.1"
 dependencies = [
+ "aes",
  "extractous-base",
  "extractous-core",
  "extractous-html",

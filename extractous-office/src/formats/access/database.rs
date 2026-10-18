@@ -10,7 +10,9 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
-use super::buffer::Thrown;
+use super::buffer::{
+    Context as ErrorContext, Thrown, CLASS_CAST, ILLEGAL_ARGUMENT, INDEX_OUT_OF_BOUNDS,
+};
 use super::column::{Column, Complex, DataType, Value};
 use super::format::{self, Detected};
 use super::pages::Pages;
@@ -96,15 +98,21 @@ impl Context for Bootstrap {
         Err(no_finder())
     }
 
-    fn complex(&self, _page: i32, _column: &Column, _id: i32) -> Result<Complex, Thrown> {
+    fn complex(
+        &self,
+        _page: i32,
+        _table: &str,
+        _column: &Column,
+        _id: i32,
+    ) -> Result<Complex, Thrown> {
         Err(no_finder())
     }
 }
 
+/// What Jackcess throws reading the system catalog's properties or complex columns before its
+/// table finder is made: it dereferences the finder, still null.
 fn no_finder() -> Thrown {
-    Thrown::other(
-        "java.lang.NullPointerException: the system catalog needs its table finder to be read",
-    )
+    Thrown::null_pointer()
 }
 
 /// A catalog row's table, as a `TableInfo`: its name and the page its definition starts on.
@@ -127,15 +135,17 @@ impl TableInfo {
 }
 
 impl<'a> Database<'a> {
-    /// `DatabaseImpl.open`, read-only, with `CryptCodecProvider` and no password.
-    pub(super) fn open(file: &'a [u8]) -> Result<Self, Thrown> {
-        let format = match format::detect(file)? {
-            Detected::Format(format) => format,
-            Detected::Msisam => {
-                return Err(Thrown::unported("an MSISAM (Microsoft Money) database"))
-            }
-        };
-        let pages = Pages::open(file, format)?;
+    /// The pages of `file`, as `DatabaseImpl.open` opens it read-only with a `CryptCodecProvider`
+    /// of `password`: its format, and the codec of its pages.
+    pub(super) fn pages(file: &'a [u8], password: &str) -> Result<Pages<'a>, Thrown> {
+        match format::detect(file)? {
+            Detected::Format(format) => Pages::open(file, format, password),
+            Detected::Msisam => Err(Thrown::unported("an MSISAM (Microsoft Money) database")),
+        }
+    }
+
+    /// The rest of `DatabaseImpl.open`: the system catalog of the database of `pages`.
+    pub(super) fn open(pages: Pages<'a>) -> Result<Self, Thrown> {
         let catalog_table = Table::read(
             &pages,
             TABLE_SYSTEM_CATALOG.to_owned(),
@@ -191,7 +201,8 @@ impl<'a> Database<'a> {
                     .map(|row| row.id)
             })
             .ok_or_else(|| {
-                Thrown::other("java.io.IOException: Did not find required parent table id")
+                Thrown::io("Did not find required parent table id")
+                    .in_context(ErrorContext::Database)
             })?;
         let db_parent = db_parent
             .or_else(|| {
@@ -199,7 +210,7 @@ impl<'a> Database<'a> {
                     .map(|row| row.id)
             })
             .ok_or_else(|| {
-                Thrown::other("java.io.IOException: Did not find required parent db id")
+                Thrown::io("Did not find required parent db id").in_context(ErrorContext::Database)
             })?;
         self.table_parent = table_parent;
         self.db_parent = db_parent;
@@ -264,10 +275,7 @@ impl<'a> Database<'a> {
                 && row.flags & SYSTEM_OBJECT_FLAGS == 0
         }) {
             let Some(name) = &row.name else {
-                return Err(Thrown::other(format!(
-                    "a user's table without a name in the catalog, its definition on page {}",
-                    row.id
-                )));
+                return Err(Thrown::null_pointer());
             };
             tables.push(TableInfo {
                 name: name.clone(),
@@ -351,16 +359,16 @@ impl<'a> Database<'a> {
 
     fn read_complex_columns(&self) -> Result<Vec<ComplexRow>, Thrown> {
         let Some(info) = self.system_table_info(TABLE_SYSTEM_COMPLEX_COLUMNS)? else {
-            return Err(Thrown::other(
-                "java.io.IOException: Could not find system table MSysComplexColumns",
-            ));
+            return Err(Thrown::io("Could not find system table MSysComplexColumns")
+                .in_context(ErrorContext::Database));
         };
         let table = self.load_table(&info)?;
         let key = match table.primary_key() {
             None => {
-                return Err(Thrown::other(
-                    "java.lang.IllegalArgumentException: No primary key index found",
-                ))
+                return Err(
+                    Thrown::runtime(ILLEGAL_ARGUMENT, "No primary key index found")
+                        .in_context(ErrorContext::Table(table.name.clone())),
+                )
             }
             Some(&[key]) if table.columns[key].data_type == DataType::Long => key,
             Some(_) => {
@@ -388,16 +396,15 @@ impl<'a> Database<'a> {
     /// `getQueries`: each query of the catalog with the rows of `MSysQueries` that are its.
     pub(super) fn queries(&self) -> Result<Vec<QueryDefinition>, Thrown> {
         let Some(info) = self.system_table_info(TABLE_SYSTEM_QUERIES)? else {
-            return Err(Thrown::other(
-                "java.io.IOException: Could not find system table MSysQueries",
-            ));
+            return Err(Thrown::io("Could not find system table MSysQueries")
+                .in_context(ErrorContext::Database));
         };
         let table = self.load_table(&info)?;
         let mut definitions = Vec::new();
         let mut rows_by_id: HashMap<i32, Vec<QueryRow>> = HashMap::new();
         for row in &self.catalog {
-            if row.name.is_some() && row.object_type == Some(TYPE_QUERY) {
-                definitions.push((row.id, row.flags));
+            if let (Some(name), Some(TYPE_QUERY)) = (&row.name, row.object_type) {
+                definitions.push((row.id, row.flags, name.clone()));
                 rows_by_id.insert(row.id, Vec::new());
             }
         }
@@ -410,7 +417,8 @@ impl<'a> Database<'a> {
         }
         Ok(definitions
             .into_iter()
-            .map(|(id, flags)| QueryDefinition {
+            .map(|(id, flags, name)| QueryDefinition {
+                name,
                 flags,
                 rows: rows_by_id.get(&id).cloned().unwrap_or_default(),
             })
@@ -423,36 +431,42 @@ impl Context for Database<'_> {
         self.object_properties(page)
     }
 
-    fn complex(&self, page: i32, column: &Column, complex_id: i32) -> Result<Complex, Thrown> {
+    fn complex(
+        &self,
+        page: i32,
+        table: &str,
+        column: &Column,
+        complex_id: i32,
+    ) -> Result<Complex, Thrown> {
+        let in_column = || ErrorContext::Column {
+            table: table.to_owned(),
+            column: column.name.clone(),
+        };
         let row = self
             .complex_columns()?
             .iter()
             .find(|row| row.key == Some(complex_id))
             .ok_or_else(|| {
-                Thrown::other(format!(
-                    "java.io.IOException: Could not find complex column info for complex \
-                     column with id {complex_id}"
+                Thrown::io(format!(
+                    "Could not find complex column info for complex column with id {complex_id}"
                 ))
+                .in_context(in_column())
             })?;
-        let unboxed = |value: Option<i32>| {
-            value.ok_or_else(|| {
-                Thrown::other("java.lang.NullPointerException: a complex column's id is null")
-            })
-        };
+        let unboxed = |value: Option<i32>| value.ok_or_else(Thrown::null_pointer);
         let table_id = unboxed(row.table_id)?;
         if table_id != page {
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Found complex column for table {table_id} but expected \
-                 table {page}"
-            )));
+            return Err(Thrown::io(format!(
+                "Found complex column for table {table_id} but expected table {page}"
+            ))
+            .in_context(in_column()));
         }
         if let Some(name) = &row.column_name {
             if !crate::java::equals_ignore_case(name, &column.name) {
-                return Err(Thrown::other(format!(
-                    "java.io.IOException: Found complex column info for column {name} but \
-                     expected column {}",
+                return Err(Thrown::io(format!(
+                    "Found complex column info for column {name} but expected column {}",
                     column.name
-                )));
+                ))
+                .in_context(in_column()));
             }
         }
         let flat_table_id = unboxed(row.flat_table_id)?;
@@ -460,10 +474,11 @@ impl Context for Database<'_> {
         let type_table = self.table_by_id(type_object_id)?;
         let flat_table = self.table_by_id(flat_table_id)?;
         let (Some(type_table), Some(flat_table)) = (type_table, flat_table) else {
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Could not find supporting tables ({type_object_id}, \
-                 {flat_table_id}) for complex column with id {complex_id}"
-            )));
+            return Err(Thrown::io(format!(
+                "Could not find supporting tables ({type_object_id}, {flat_table_id}) for complex \
+                 column with id {complex_id}"
+            ))
+            .in_context(in_column()));
         };
         complex_info(&type_table, &flat_table, flat_table_id)
     }
@@ -492,16 +507,16 @@ fn complex_info(type_table: &Table, flat_table: &Table, flat_page: i32) -> Resul
                 .rfind(|column| !column.auto_number && column.data_type == DataType::Long)
         });
     if primary_key.is_none() || foreign_key.is_none() {
-        return Err(Thrown::other(format!(
-            "java.io.IOException: Could not find expected columns in flat table {} for complex \
-             column",
+        return Err(Thrown::io(format!(
+            "Could not find expected columns in flat table {} for complex column",
             flat_table.name
         )));
     }
     let multi_value = || -> Result<Complex, Thrown> {
         if type_columns.is_empty() {
-            return Err(Thrown::other(
-                "java.lang.IndexOutOfBoundsException: Index 0 out of bounds for length 0",
+            return Err(Thrown::index_out_of_bounds(
+                INDEX_OUT_OF_BOUNDS,
+                Some("Index 0 out of bounds for length 0".to_owned()),
             ));
         }
         Ok(Complex::MultiValue {
@@ -588,6 +603,7 @@ fn is_version_history(type_table: &Table) -> bool {
 
 /// A named query of the catalog: its flags and its rows of `MSysQueries`.
 pub(super) struct QueryDefinition {
+    pub(super) name: String,
     pub(super) flags: i32,
     pub(super) rows: Vec<QueryRow>,
 }
@@ -647,7 +663,7 @@ fn cast<T>(value: Option<&Value>, pick: impl Fn(&Value) -> Option<T>) -> Result<
         None => Ok(None),
         Some(value) => pick(value)
             .map(Some)
-            .ok_or_else(|| Thrown::other(format!("java.lang.ClassCastException: {value:?}"))),
+            .ok_or_else(|| Thrown::runtime(CLASS_CAST, format!("{value:?}"))),
     }
 }
 

@@ -5,7 +5,10 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use super::buffer::{Buffer, Thrown};
+use super::buffer::{
+    Buffer, Context as ErrorContext, Thrown, ARRAY_INDEX_OUT_OF_BOUNDS, CLASS_CAST,
+    ILLEGAL_ARGUMENT, INDEX_OUT_OF_BOUNDS,
+};
 use super::column::{Column, Complex, DataType, Definition, Value};
 use super::format::Format;
 use super::pages::{Pages, PAGE_TYPE_DATA, PAGE_TYPE_TABLE_DEF};
@@ -76,8 +79,14 @@ pub(super) trait Context {
     fn properties(&self, page: i32) -> Result<PropertyMaps, Thrown>;
 
     /// `ComplexColumnSupport.create`: what the supporting tables of the complex column `column`,
-    /// whose id is `complex_id`, of the table on `page` make it.
-    fn complex(&self, page: i32, column: &Column, complex_id: i32) -> Result<Complex, Thrown>;
+    /// whose id is `complex_id`, of the table named `table` on `page` make it.
+    fn complex(
+        &self,
+        page: i32,
+        table: &str,
+        column: &Column,
+        complex_id: i32,
+    ) -> Result<Complex, Thrown>;
 }
 
 /// A table definition.
@@ -107,10 +116,11 @@ impl Table {
         let format = pages.format;
         let first = pages.page(page)?;
         if first[0] != PAGE_TYPE_TABLE_DEF {
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Looking for {name} at page {page}, but page type is {}",
+            return Err(Thrown::io(format!(
+                "Looking for {name} at page {page}, but page type is {}",
                 first[0] as i8
-            )));
+            ))
+            .in_context(ErrorContext::Database));
         }
         let definition = complete_definition(pages, first)?;
         let mut buffer = Buffer::new(&definition);
@@ -170,19 +180,18 @@ impl Table {
                 continue;
             };
             let Some(value_column) = value_column else {
-                return Err(Thrown::other(
-                    "java.lang.NullPointerException: a version history without a memo",
-                ));
+                return Err(Thrown::null_pointer());
             };
             if !self
                 .columns
                 .iter()
                 .any(|other| crate::java::equals_ignore_case(&other.name, value_column))
             {
-                return Err(Thrown::other(format!(
-                    "java.lang.IllegalArgumentException: Column with name {value_column} does \
-                     not exist in this table"
-                )));
+                return Err(Thrown::runtime(
+                    ILLEGAL_ARGUMENT,
+                    format!("Column with name {value_column} does not exist in this table"),
+                )
+                .in_context(ErrorContext::Table(self.name.clone())));
             }
         }
         Ok(())
@@ -195,9 +204,10 @@ impl Table {
         let text = |name: &str| match properties.value(name) {
             None => Ok(None),
             Some(Value::Text(text)) => Ok(Some(text.clone())),
-            Some(_) => Err(Thrown::other(format!(
-                "java.lang.ClassCastException: a {name} that is no String"
-            ))),
+            Some(_) => Err(Thrown::runtime(
+                CLASS_CAST,
+                format!("a {name} that is no String"),
+            )),
         };
         if text(VALIDATION_RULE)?.is_some_and(|rule| !crate::java::trim(&rule).is_empty()) {
             text(VALIDATION_TEXT)?;
@@ -233,9 +243,7 @@ impl Table {
                     None => {}
                     Some(Value::Byte(result_type)) => type_byte = *result_type as u8,
                     Some(_) => {
-                        return Err(Thrown::other(
-                            "java.lang.ClassCastException: a ResultType that is no Byte",
-                        ))
+                        return Err(Thrown::runtime(CLASS_CAST, "a ResultType that is no Byte"))
                     }
                 }
             }
@@ -248,7 +256,7 @@ impl Table {
                 };
                 let complex_id = buffer.i32_at(offset + id_offset as i64)?;
                 let (context, page) = context;
-                column.complex = Some(context.complex(page, &column, complex_id)?);
+                column.complex = Some(context.complex(page, &self.name, &column, complex_id)?);
             }
             self.columns.push(column);
         }
@@ -266,7 +274,7 @@ impl Table {
         logical_index_count: i32,
     ) -> Result<(), Thrown> {
         let format = pages.format;
-        for _ in 0..index_count.max(0) {
+        for index_number in 0..index_count.max(0) {
             buffer.forward(format.skip_before_index)?;
             let mut columns = Vec::new();
             let mut valid = true;
@@ -277,10 +285,13 @@ impl Table {
                     continue;
                 }
                 let Some(position) = self.columns.iter().position(|c| c.number == number) else {
-                    return Err(Thrown::other(format!(
-                        "java.io.IOException: Could not find column with number {number} for \
-                         index"
-                    )));
+                    return Err(Thrown::io(format!(
+                        "Could not find column with number {number} for index"
+                    ))
+                    .in_context(ErrorContext::Index {
+                        table: self.name.clone(),
+                        index: index_number.to_string(),
+                    }));
                 };
                 valid &= is_indexable(&self.columns[position]);
                 columns.push(position);
@@ -303,11 +314,13 @@ impl Table {
                 .ok()
                 .filter(|&data| data < self.index_datas.len())
                 .ok_or_else(|| {
-                    Thrown::other(format!(
-                        "java.lang.IndexOutOfBoundsException: Index {data} out of bounds for \
-                         length {}",
-                        self.index_datas.len()
-                    ))
+                    Thrown::index_out_of_bounds(
+                        INDEX_OUT_OF_BOUNDS,
+                        Some(format!(
+                            "Index {data} out of bounds for length {}",
+                            self.index_datas.len()
+                        )),
+                    )
                 })?;
             self.indexes.push(Index {
                 number,
@@ -407,7 +420,7 @@ fn complete_definition<'a>(
     let mut seen = HashSet::new();
     while next_page != 0 {
         if !seen.insert(next_page) {
-            return Err(Thrown::other(
+            return Err(Thrown::unported(
                 "a table definition whose pages loop, which Jackcess follows until it runs out \
                  of memory",
             ));
@@ -517,14 +530,13 @@ fn read_row(
             break (start, end);
         }
         if end - start < 4 {
-            return Err(Thrown::other(
-                "java.io.IOException: invalid overflow row info",
-            ));
+            return Err(Thrown::io("invalid overflow row info")
+                .in_context(ErrorContext::Table(table.name.clone())));
         }
         let overflow_row = i32::from(buffer.u8_at(i64::from(start))?);
         let overflow_page = buffer.u24_at(i64::from(start) + 1)?;
         if !seen.insert((overflow_page, overflow_row)) {
-            return Err(Thrown::other(
+            return Err(Thrown::unported(
                 "overflow rows that loop, which Jackcess follows for ever",
             ));
         }
@@ -545,7 +557,7 @@ fn read_row(
             Some(data) => data,
             None => data.insert(RowData::new(buffer, format)?),
         };
-        values.push(data.value(column, pages)?);
+        values.push(data.value(&table.name, column, pages)?);
     }
     Ok(values)
 }
@@ -589,18 +601,25 @@ impl<'p> RowData<'p> {
             .ok()
             .and_then(|index| self.null_mask.get(index))
             .ok_or_else(|| {
-                Thrown::other(format!(
-                    "java.lang.ArrayIndexOutOfBoundsException: Index {index} out of bounds for \
-                     length {}",
-                    self.null_mask.len()
-                ))
+                Thrown::index_out_of_bounds(
+                    ARRAY_INDEX_OUT_OF_BOUNDS,
+                    Some(format!(
+                        "Index {index} out of bounds for length {}",
+                        self.null_mask.len()
+                    )),
+                )
             })?;
         let bit = 1i32.wrapping_shl((number % 8) as u32) as u8;
         Ok(byte & bit == 0)
     }
 
-    /// `getRowColumn`.
-    fn value(&mut self, column: &Column, pages: &Pages<'_>) -> Result<Option<Value>, Thrown> {
+    /// `getRowColumn` of a column of the table named `table`.
+    fn value(
+        &mut self,
+        table: &str,
+        column: &Column,
+        pages: &Pages<'_>,
+    ) -> Result<Option<Value>, Thrown> {
         let format = pages.format;
         let null = self.is_null(column.number)?;
         if column.stores_in_null_mask() {
@@ -631,12 +650,14 @@ impl<'p> RowData<'p> {
                 .ok()
                 .filter(|&index| index + 1 < offsets.len())
                 .ok_or_else(|| {
-                    Thrown::other(format!(
-                        "java.lang.ArrayIndexOutOfBoundsException: Index {} out of bounds for \
-                         length {}",
-                        column.var_len_index,
-                        offsets.len()
-                    ))
+                    Thrown::index_out_of_bounds(
+                        ARRAY_INDEX_OUT_OF_BOUNDS,
+                        Some(format!(
+                            "Index {} out of bounds for length {}",
+                            column.var_len_index,
+                            offsets.len()
+                        )),
+                    )
                 })?;
             let (start, end) = (offsets[index], offsets[index + 1]);
             (
@@ -647,7 +668,12 @@ impl<'p> RowData<'p> {
         let mut data = self.buffer;
         data.set_position(position)?;
         let bytes = data.take(length)?;
-        column.read(bytes, pages)
+        column.read(bytes, pages).map_err(|thrown| {
+            thrown.io_in_context(ErrorContext::Column {
+                table: table.to_owned(),
+                column: column.name.clone(),
+            })
+        })
     }
 
     /// `readJumpTableVarColOffsets`: Jet 3's variable column offsets, a byte each, with the

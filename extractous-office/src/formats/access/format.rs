@@ -247,7 +247,7 @@ pub(super) enum Detected {
 /// `JetFormat.getFormat`.
 pub(super) fn detect(file: &[u8]) -> Result<Detected, Thrown> {
     if file.len() < HEADER_LENGTH {
-        return Err(Thrown::other("java.io.IOException: Empty database file"));
+        return Err(Thrown::io("Empty database file"));
     }
     let version = file[OFFSET_VERSION] as i8;
     Ok(Detected::Format(match version {
@@ -257,8 +257,8 @@ pub(super) fn detect(file: &[u8]) -> Result<Detected, Thrown> {
         2 => &ACE12,
         3 | 5 | 6 => &ACE14,
         _ => {
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Unsupported {} version: {version}",
+            return Err(Thrown::io(format!(
+                "Unsupported {} version: {version}",
                 if version < 0 { "older" } else { "newer" }
             )))
         }

@@ -1,10 +1,15 @@
 //! Jackcess's `PageChannel` over a database read whole: pages by number, the first unmasked,
-//! the others decoded by the Jet codec of `jackcess-encrypt`'s `CryptCodecProvider`.
+//! the others decoded by the codec of `jackcess-encrypt`'s `CryptCodecProvider`: the Jet codec, or
+//! Office encryption.
 
 use std::borrow::Cow;
 
+use rc4::{KeyInit, Rc4, StreamCipher};
+
 use super::buffer::Thrown;
+use super::crypt::Decryption;
 use super::format::{Charset, CodecType, Encoding, Format};
+use crate::formats::Difference;
 
 pub(super) const PAGE_TYPE_DATA: u8 = 0x01;
 /// Where Jet 3's header names the database's code page.
@@ -19,19 +24,32 @@ pub(super) struct Pages<'a> {
     pub(super) format: &'static Format,
     /// The charset of the database's text: the code page its header names, in Jet 3.
     pub(super) charset: Charset,
-    /// The RC4 key of the Jet codec, where the database's encoding key is not blank.
-    encoding_key: Option<[u8; ENCODING_KEY_LENGTH]>,
+    codec: Codec,
+}
+
+/// What decodes the pages after the first.
+enum Codec {
+    /// Nothing: the database's encoding key is blank.
+    None,
+    /// The Jet codec, RC4 under the encoding key XORed with each page's number.
+    Jet([u8; ENCODING_KEY_LENGTH]),
+    /// Office encryption, opened with the password.
+    Office(Box<Decryption>),
 }
 
 impl<'a> Pages<'a> {
-    /// `PageChannel.initialize`'s codec: `CryptCodecProvider.createHandler`, which the port has
-    /// for the Jet codec; a database under Office encryption is refused as encrypted.
-    pub(super) fn open(file: &'a [u8], format: &'static Format) -> Result<Self, Thrown> {
+    /// `PageChannel.initialize`'s codec: `CryptCodecProvider.createHandler`, Office encryption
+    /// opened with `password`.
+    pub(super) fn open(
+        file: &'a [u8],
+        format: &'static Format,
+        password: &str,
+    ) -> Result<Self, Thrown> {
         let mut pages = Self {
             file,
             format,
             charset: Charset::Unicode,
-            encoding_key: None,
+            codec: Codec::None,
         };
         let root = pages.root()?;
         if format.encoding == Encoding::CodePage {
@@ -53,11 +71,19 @@ impl<'a> Pages<'a> {
         if key == [0; ENCODING_KEY_LENGTH] {
             return Ok(pages);
         }
-        match format.codec {
-            CodecType::Jet => pages.encoding_key = Some(key),
-            CodecType::Office => return Err(Thrown::Encrypted),
-        }
+        pages.codec = match format.codec {
+            CodecType::Jet => Codec::Jet(key),
+            CodecType::Office => Codec::Office(Box::new(Decryption::open(&root, key, password)?)),
+        };
         Ok(pages)
+    }
+
+    /// Why Jackcess refuses the password that opens the database's encryption, if it does.
+    pub(super) fn refused(&self) -> Option<Difference> {
+        match &self.codec {
+            Codec::Office(decryption) => decryption.refused.clone(),
+            Codec::None | Codec::Jet(_) => None,
+        }
     }
 
     /// The length of the database file.
@@ -69,9 +95,8 @@ impl<'a> Pages<'a> {
     pub(super) fn root(&self) -> Result<Vec<u8>, Thrown> {
         let size = self.format.page_size;
         let Some(page) = self.file.get(..size) else {
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Failed attempting to read {size} bytes from page 0, only \
-                 read {}",
+            return Err(Thrown::io(format!(
+                "Failed attempting to read {size} bytes from page 0, only read {}",
                 self.file.len()
             )));
         };
@@ -99,35 +124,27 @@ impl<'a> Pages<'a> {
             }
         };
         let page = &self.file[index * size..(index + 1) * size];
-        let Some(key) = self.encoding_key else {
-            return Ok(Cow::Borrowed(page));
-        };
-        let mut page_key = (number as u32).to_le_bytes();
-        for (byte, key) in page_key.iter_mut().zip(key) {
-            *byte ^= key;
+        match &self.codec {
+            Codec::None => Ok(Cow::Borrowed(page)),
+            Codec::Jet(key) => {
+                let mut page_key = (number as u32).to_le_bytes();
+                for (byte, key) in page_key.iter_mut().zip(key) {
+                    *byte ^= key;
+                }
+                let mut decoded = page.to_vec();
+                rc4(&page_key, &mut decoded);
+                Ok(Cow::Owned(decoded))
+            }
+            Codec::Office(decryption) => decryption.decrypt(number, page).map(Cow::Owned),
         }
-        let mut decoded = page.to_vec();
-        rc4(&page_key, &mut decoded);
-        Ok(Cow::Owned(decoded))
     }
 }
 
 /// RC4 applied to `data` in place.
 pub(super) fn rc4(key: &[u8], data: &mut [u8]) {
-    let mut state: [u8; 256] = std::array::from_fn(|i| i as u8);
-    let mut j: u8 = 0;
-    for i in 0..256 {
-        j = j.wrapping_add(state[i]).wrapping_add(key[i % key.len()]);
-        state.swap(i, usize::from(j));
-    }
-    let (mut i, mut j) = (0u8, 0u8);
-    for byte in data {
-        i = i.wrapping_add(1);
-        j = j.wrapping_add(state[usize::from(i)]);
-        state.swap(usize::from(i), usize::from(j));
-        let k = state[usize::from(state[usize::from(i)].wrapping_add(state[usize::from(j)]))];
-        *byte ^= k;
-    }
+    Rc4::new_from_slice(key)
+        .expect("an RC4 key of 1 to 256 bytes")
+        .apply_keystream(data);
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Jackcess's `PropertyMaps`: the properties a database object keeps in the `LvProp` column of
 //! its row of the system catalog, as maps of the object itself, its columns and its indexes.
 
-use super::buffer::{Buffer, Thrown};
+use super::buffer::{Buffer, Thrown, ARRAY_INDEX_OUT_OF_BOUNDS, INDEX_OUT_OF_BOUNDS};
 use super::column::{read_property, DataType, Value};
 use super::format::Charset;
 use super::pages::Pages;
@@ -119,9 +119,7 @@ impl PropertyMaps {
                 .map(|b| format!("{b:02X}"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Unknown property map type {shown}"
-            )));
+            return Err(Thrown::io(format!("Unknown property map type {shown}")));
         };
         buffer.forward(map_type.len())?;
         let mut names: Option<Vec<String>> = None;
@@ -171,18 +169,18 @@ impl PropertyMaps {
             let data_type = DataType::from_byte_or_throw(block.u8()?)?;
             let name_index = block.i16()?;
             let data_size = block.i16()?;
-            let names = names.ok_or_else(|| {
-                Thrown::other("java.lang.NullPointerException: no property name list")
-            })?;
+            let names = names.ok_or_else(Thrown::null_pointer)?;
             let name = usize::try_from(name_index)
                 .ok()
                 .and_then(|index| names.get(index))
                 .ok_or_else(|| {
-                    Thrown::other(format!(
-                        "java.lang.IndexOutOfBoundsException: Index {name_index} out of bounds \
-                         for length {}",
-                        names.len()
-                    ))
+                    Thrown::index_out_of_bounds(
+                        INDEX_OUT_OF_BOUNDS,
+                        Some(format!(
+                            "Index {name_index} out of bounds for length {}",
+                            names.len()
+                        )),
+                    )
                 })?
                 .clone();
             let data = block.take(i64::from(data_size))?;
@@ -222,8 +220,9 @@ fn read_value(
         DataType::Ole => DataType::Binary,
         DataType::Boolean => {
             let first = data.first().ok_or_else(|| {
-                Thrown::other(
-                    "java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0",
+                Thrown::index_out_of_bounds(
+                    ARRAY_INDEX_OUT_OF_BOUNDS,
+                    Some("Index 0 out of bounds for length 0".to_owned()),
                 )
             })?;
             return Ok(Some(Value::Boolean(*first != 0)));
