@@ -10,7 +10,7 @@ mod heif;
 pub mod icc;
 mod java2d;
 pub(crate) mod jbig2;
-mod jpeg;
+pub mod jpeg;
 mod pages;
 mod prepare;
 mod raster;

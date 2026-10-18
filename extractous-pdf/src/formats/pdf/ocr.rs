@@ -15,6 +15,7 @@ use super::quality::{self, Assessment, Unmapped};
 use super::Unported;
 use crate::config::{ParserConfigs, Password, PdfOcrStrategy, PdfParserConfig};
 use crate::errors::Error;
+use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::image::enricher::write_text;
 use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -26,8 +27,6 @@ use crate::ocr::{
 
 /// Each page whose text layer was replaced by OCR text, as `page:fault`.
 const REJECTED_TEXT_LAYER: &str = "extractous:rejected-text-layer";
-/// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
-const WARNING: &str = "tk:exception:warn";
 
 /// `PagesConfig.Auto`: a page of at most `total_chars` glyphs is OCRed, and so is one with more
 /// glyphs without characters than `unmapped`. Our `PdfConfig` and Tika's `limit < 1` check
@@ -457,7 +456,7 @@ impl PageReading {
     fn warn(&self, xhtml: &mut Xhtml, index: usize) {
         if let Self::Failed(failure) = self {
             xhtml.metadata_mut().add(
-                WARNING,
+                EXCEPTION_WARNING,
                 format!("OCR of page {} failed: {failure}", index + 1),
             );
         }

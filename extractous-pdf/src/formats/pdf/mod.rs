@@ -9,8 +9,8 @@
 //! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
 //! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
 //! Tika's path fails it where that password does not open it. Documents with a page Tika would
-//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms and
-//! fonts it cannot measure, among others), are left to Tika.
+//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms with a
+//! document type declaration and fonts it cannot measure, among others), are left to Tika.
 
 mod afm;
 mod attachment;
@@ -23,6 +23,7 @@ mod encoding;
 mod engine;
 mod font;
 mod form;
+mod function;
 mod images;
 mod matrix;
 mod metadata;
@@ -196,9 +197,6 @@ enum ImageExtraction {
     On {
         /// `setExtractUniqueInlineImagesOnly`.
         unique_only: bool,
-        /// Whether our `TextLayerCheckingPdfParser` weighs each page's text with what OCR
-        /// reads in its images.
-        assessed_with_ocr: bool,
     },
 }
 
@@ -212,7 +210,6 @@ impl Settings {
             true if ocr.reads_only_ocr() => ImageExtraction::Off,
             true => ImageExtraction::On {
                 unique_only: config.extracts_unique_inline_images_only(),
-                assessed_with_ocr: ocr.holds_pages() && !configs.ocr.skips_ocr(),
             },
         };
         Ok(Self {
@@ -486,6 +483,9 @@ fn load<'a>(
         _ => None,
     };
     pdf.decrypt_with(state, id);
+    let found = resolution
+        .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))?;
+    pdf.place(found);
     Ok(Loaded { pdf, access })
 }
 
@@ -581,11 +581,12 @@ mod tests {
     #[cfg(feature = "tika")]
     use crate::config::PdfOcrStrategy;
     use crate::config::{PdfParserConfig, TesseractOcrConfig};
+    use crate::formats::embedded::EXCEPTION_WARNING;
     use crate::formats::parity::documents;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_same_as_tika_delegating, assert_same_as_tika_delegating_with, conformance_corpus,
-        Scratch,
+        assert_same_as_tika_delegating, assert_same_as_tika_delegating_departing_with,
+        assert_same_as_tika_delegating_with, conformance_corpus, Departure, Departures, Scratch,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -1264,8 +1265,9 @@ mod tests {
         assert_same_as_tika_delegating(&[&type3], tika_name(), &DELEGATES);
     }
 
-    /// A document of an XFA form whose data `data` holds.
-    fn xfa_form(data: &str) -> Vec<u8> {
+    /// A document of an XFA form whose data `data` holds, and of the AcroForm fields `fields`,
+    /// numbered from 11 on.
+    fn xfa_form(data: &str, fields: &[&str]) -> Vec<u8> {
         let template = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.0/\">\n\
              <subform><draw><value><text>Ans&#248;gning om tilskud</text></value></draw>\n\
              <field name=\"navn\"><assist><toolTip>Dit <p>fulde</p> navn</toolTip></assist>\
@@ -1278,15 +1280,20 @@ mod tests {
             |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
         let mut objects = page_objects(TEXT);
         objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
+        let references: String = (0..fields.len())
+            .map(|index| format!("{} 0 R ", index + 11))
+            .collect();
         objects.extend([
-            "<< /Fields [] /XFA [(preamble) 7 0 R (template) 8 0 R (datasets) 9 0 R \
-             (postamble) 10 0 R] >>"
-                .to_owned(),
+            format!(
+                "<< /Fields [{references}] /XFA [(preamble) 7 0 R (template) 8 0 R \
+                 (datasets) 9 0 R (postamble) 10 0 R] >>"
+            ),
             stream("<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"),
             stream(template),
             stream(&data),
             stream("</xdp:xdp>"),
         ]);
+        objects.extend(fields.iter().map(|field| (*field).to_owned()));
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         document(&objects, b"", &[])
     }
@@ -1297,9 +1304,57 @@ mod tests {
         let scratch = Scratch::new("pdf-xfa");
         let xfa = scratch.write(
             "xfa.pdf",
-            &xfa_form("<form1><navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>"),
+            &xfa_form(
+                "<form1><navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>",
+                &[],
+            ),
         );
         assert_same_as_tika_delegating(&[&xfa], tika_name(), &DELEGATES);
+    }
+
+    /// The fields of an AcroForm, which a document of an XFA form shows once the form fails.
+    const ACRO_FIELDS: [&str; 2] = [
+        "<< /FT /Tx /T (navn) /TU (Fulde navn) /V (Kari Nordmann) >>",
+        "<< /FT /Tx /T (by) /V (Bergen) >>",
+    ];
+
+    /// The XFA data of a document whose form's XML fails at its mismatched end tag.
+    const MALFORMED_XFA_DATA: &str = "<form1><navn>Kari</nav></form1>";
+
+    /// The failure of an XFA form's XML, which Tika records as the stack trace of Woodstox's
+    /// exception and the native parser as the failure its own XML parser reports (#125).
+    #[cfg(feature = "tika")]
+    pub(super) const XFA_FAILURE: Departures = &[Departure::Values(EXCEPTION_WARNING, "#125")];
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_the_acroform_of_a_failing_xfa_form_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-xfa-malformed");
+        let malformed = scratch.write("malformed.pdf", &xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
+        assert_same_as_tika_delegating_departing_with(
+            &[&malformed],
+            tika_name(),
+            &DELEGATES,
+            XFA_FAILURE,
+            &ParserConfigs::default(),
+        );
+    }
+
+    #[test]
+    fn records_why_an_xfa_form_fails_and_reads_its_acroform() {
+        let (xml, metadata) = native_xml(&xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
+        let content = "<div class=\"xfa_content\"><p>Ans\u{f8}gning om tilskud</p>\n</div>";
+        assert!(xml.contains(content), "{xml}");
+        assert!(
+            xml.contains("<li altName=\"Fulde navn\">navn: Kari Nordmann</li>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<li>by: Bergen</li>"), "{xml}");
+        let warnings = metadata.get(EXCEPTION_WARNING).unwrap();
+        assert!(
+            warnings.len() == 1 && warnings[0].starts_with("javax.xml.stream.XMLStreamException: "),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -1308,6 +1363,7 @@ mod tests {
         // ended as a value of `form1` (#109).
         let (xml, _) = native_xml(&xfa_form(
             "\n<form1>\n<navn>Kari</navn>\n<by>Oslo</by>\n</form1>\n",
+            &[],
         ));
         assert!(
             xml.contains("<li fieldName=\"navn\">Dit fulde\n navn: Kari</li>"),
@@ -1315,6 +1371,265 @@ mod tests {
         );
         assert!(xml.contains("<li fieldName=\"by\">by: Oslo</li>"), "{xml}");
         assert!(xml.contains("<li fieldName=\"tom\">tom: </li>"), "{xml}");
+    }
+
+    /// The documents qpdf 12.3.2 wrote of one page and an information dictionary, encrypted
+    /// for the empty user password with RC4, AES-128 and AES-256 and with every object it
+    /// could put in an object stream there:
+    /// `qpdf [--allow-weak-crypto] --object-streams=generate --encrypt "" eier 128|256
+    /// [--use-aes=n|y] -- plain.pdf out.pdf`.
+    const ENCRYPTED_OBJECT_STREAMS: [&str; 3] = [
+        "tests/fixtures/pdf/object-streams-rc4.pdf",
+        "tests/fixtures/pdf/object-streams-aes.pdf",
+        "tests/fixtures/pdf/object-streams-aes256.pdf",
+    ];
+
+    /// The document at `path` with a comment before its first object, which moves every object
+    /// off the offset its cross-reference stream gives, so that PDFBox searches the document for
+    /// its objects and object streams.
+    fn moved_objects(path: &str) -> Vec<u8> {
+        let input = std::fs::read(path).unwrap();
+        replace(&input, b"\n1 0 obj", b"\n%flyttet\n1 0 obj")
+    }
+
+    #[test]
+    fn decrypts_the_object_streams_a_search_finds() {
+        for path in ENCRYPTED_OBJECT_STREAMS {
+            let input = moved_objects(path);
+            let deferral =
+                PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(deferral, None, "{path}");
+            let (xml, _) = native_xml(&input);
+            assert!(
+                xml.contains("Den yngste var den smukkeste"),
+                "{path}: {xml}"
+            );
+            assert!(
+                xml.contains("<meta name=\"dc:creator\" content=\"Kari\" />"),
+                "{path}: {xml}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn decrypts_the_object_streams_a_search_finds_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-encrypted-search");
+        let moved: Vec<PathBuf> = ENCRYPTED_OBJECT_STREAMS
+            .iter()
+            .map(|path| {
+                let name = Path::new(path).file_name().unwrap().to_str().unwrap();
+                scratch.write(name, &moved_objects(path))
+            })
+            .collect();
+        assert_same_as_tika_delegating(&as_paths(&moved), tika_name(), &DELEGATES);
+    }
+
+    /// The offset the last `startxref` of `document` gives.
+    fn startxref(document: &[u8]) -> usize {
+        let at = document
+            .windows(b"startxref".len())
+            .rposition(|window| window == b"startxref")
+            .unwrap();
+        let rest = std::str::from_utf8(&document[at + b"startxref".len()..]).unwrap();
+        rest.split_whitespace().next().unwrap().parse().unwrap()
+    }
+
+    /// Writes the object `number` holding `object` at the end of `out`, returning its offset.
+    fn object_at(out: &mut Vec<u8>, number: usize, object: &[u8]) -> usize {
+        let offset = out.len();
+        out.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+        out.extend_from_slice(object);
+        out.extend_from_slice(b"\nendobj\n");
+        offset
+    }
+
+    /// The rows of a cross-reference stream of the widths `[1 4 2]` placing objects in the file
+    /// at `offsets`.
+    fn stream_rows(offsets: &[usize]) -> Vec<u8> {
+        offsets
+            .iter()
+            .flat_map(|&offset| {
+                let mut row = vec![1];
+                row.extend_from_slice(&(offset as u32).to_be_bytes());
+                row.extend_from_slice(&[0, 0]);
+                row
+            })
+            .collect()
+    }
+
+    /// A document of a page, updated with an information dictionary in a section whose trailer
+    /// gives its `/Prev` as an object of its own.
+    fn indirect_prev() -> Vec<u8> {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let mut out = document(&objects, b"", &[]);
+        let prev = startxref(&out);
+        let info = object_at(&mut out, 6, b"<< /Title (Opdateret) /Author (Kari) >>");
+        let number = object_at(&mut out, 7, prev.to_string().as_bytes());
+        let xref = out.len();
+        out.extend_from_slice(
+            format!(
+                "xref\n6 2\n{info:010} 00000 n \n{number:010} 00000 n \ntrailer\n<< /Size 8 \
+                 /Root 1 0 R /Info 6 0 R /Prev 7 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A document of a page, updated in a hybrid section whose trailer gives its `/XRefStm` as an
+    /// object of its own, the stream placing the information dictionary the table leaves out.
+    fn indirect_xref_stream_offset() -> Vec<u8> {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let mut out = document(&objects, b"", &[]);
+        let prev = startxref(&out);
+        let info = object_at(&mut out, 6, b"<< /Title (Hybrid) /Author (Kari) >>");
+        let number_at = out.len();
+        let digits = 10;
+        let stream_at = number_at + "7 0 obj\n".len() + digits + "\nendobj\n".len();
+        let number = object_at(&mut out, 7, format!("{stream_at:0digits$}").as_bytes());
+        let rows = stream_rows(&[info]);
+        let mut stream = format!(
+            "<< /Type /XRef /Size 9 /W [1 4 2] /Index [6 1] /Length {} >>\nstream\n",
+            rows.len()
+        )
+        .into_bytes();
+        stream.extend_from_slice(&rows);
+        stream.extend_from_slice(b"\nendstream");
+        assert_eq!(object_at(&mut out, 8, &stream), stream_at);
+        let xref = out.len();
+        out.extend_from_slice(
+            format!(
+                "xref\n7 2\n{number:010} 00000 n \n{stream_at:010} 00000 n \ntrailer\n<< /Size 9 \
+                 /Root 1 0 R /Info 6 0 R /Prev {prev} /XRefStm 7 0 R >>\nstartxref\n{xref}\n\
+                 %%EOF\n"
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A document of a page and an information dictionary whose cross-reference stream gives
+    /// its `/Length` as an object of its own.
+    fn indirect_xref_stream_length() -> Vec<u8> {
+        let mut objects = page_objects(TEXT);
+        objects.push("<< /Title (Str\\370mmen) /Author (Kari) >>".to_owned());
+        let mut out = b"%PDF-1.5\n".to_vec();
+        let mut offsets: Vec<usize> = objects
+            .iter()
+            .enumerate()
+            .map(|(index, object)| object_at(&mut out, index + 1, object.as_bytes()))
+            .collect();
+        let length_number = objects.len() + 1;
+        let stream_number = length_number + 1;
+        let rows_length = 7 * stream_number;
+        offsets.push(object_at(
+            &mut out,
+            length_number,
+            rows_length.to_string().as_bytes(),
+        ));
+        offsets.push(out.len());
+        let rows = stream_rows(&offsets);
+        assert_eq!(rows.len(), rows_length);
+        let mut stream = format!(
+            "<< /Type /XRef /Size {} /W [1 4 2] /Index [1 {stream_number}] /Root 1 0 R \
+             /Info 6 0 R /Length {length_number} 0 R >>\nstream\n",
+            stream_number + 1
+        )
+        .into_bytes();
+        stream.extend_from_slice(&rows);
+        stream.extend_from_slice(b"\nendstream");
+        let xref = object_at(&mut out, stream_number, &stream);
+        out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+        out
+    }
+
+    /// The documents whose cross-reference gives what PDFBox reads as it reads it as objects
+    /// of their own, and the title each gives.
+    fn indirect_cross_references() -> [(Vec<u8>, &'static str); 3] {
+        [
+            (indirect_prev(), "Opdateret"),
+            (indirect_xref_stream_offset(), "Hybrid"),
+            (indirect_xref_stream_length(), "Str\u{f8}mmen"),
+        ]
+    }
+
+    #[test]
+    fn follows_the_references_of_the_cross_reference_as_pdfbox_does() {
+        for (input, title) in indirect_cross_references() {
+            let deferral =
+                PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(deferral, None, "{title}");
+            let (xml, _) = native_xml(&input);
+            assert!(xml.contains(&format!("<title>{title}</title>")), "{xml}");
+            assert!(xml.contains("Den yngste var den smukkeste"), "{xml}");
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn follows_the_references_of_the_cross_reference_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-indirect-xref");
+        let paths: Vec<PathBuf> = indirect_cross_references()
+            .iter()
+            .enumerate()
+            .map(|(index, (input, _))| scratch.write(&format!("indirect-{index}.pdf"), input))
+            .collect();
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+    }
+
+    /// A document of a page and a file specification, object 6, whose update gives the object
+    /// a generation 1 of another file, the table listing both generations.
+    fn two_generations() -> Vec<u8> {
+        let stream = |text: &str| {
+            format!(
+                "<< /Type /EmbeddedFile /Length {} >>\nstream\n{text}\nendstream",
+                text.len() + 1
+            )
+        };
+        let mut objects = page_objects(TEXT);
+        objects.extend([
+            "<< /Type /Filespec /F (gammel.txt) /EF << /F 7 0 R >> >>".to_owned(),
+            stream("Den gamle udgave af filen."),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let mut out = document(&objects, b"", &[]);
+        let prev = startxref(&out);
+        let spec = out.len();
+        out.extend_from_slice(
+            b"6 1 obj\n<< /Type /Filespec /F (ny.txt) /EF << /F 8 0 R >> >>\nendobj\n",
+        );
+        let file = object_at(&mut out, 8, stream("Den nye udgave af filen.").as_bytes());
+        let xref = out.len();
+        out.extend_from_slice(
+            format!(
+                "xref\n6 1\n{spec:010} 00001 n \n8 1\n{file:010} 00000 n \ntrailer\n<< /Size 9 \
+                 /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn extracts_the_files_of_both_generations_of_an_object() {
+        let input = two_generations();
+        let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+        assert_eq!(deferral, None);
+        let (xml, _) = native_xml(&input);
+        let old = xml.find("Den gamle udgave af filen.").expect(&xml);
+        let new = xml.find("Den nye udgave af filen.").expect(&xml);
+        assert!(old < new, "{xml}");
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_the_files_of_both_generations_of_an_object_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-generations");
+        let path = scratch.write("generations.pdf", &two_generations());
+        assert_same_as_tika_delegating(&[&path], tika_name(), &DELEGATES);
     }
 
     #[test]
@@ -1763,10 +2078,8 @@ mod tests {
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
         let (parsed, deferred) = documents(&PdfParser, &[&conformance_corpus()]);
-        for path in &deferred {
-            println!("deferred {}: {}", path.display(), deferral_of(path));
-        }
-        println!("{} parsed, {} deferred", parsed.len(), deferred.len());
+        let reasons: Vec<String> = deferred.iter().map(|path| deferral_of(path)).collect();
+        assert!(deferred.is_empty(), "{deferred:?}: {reasons:?}");
         // Tika extracts its Mac, DOS and Unix copies of one file as files of their own (#109).
         let (copies, paths): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
             .into_iter()
@@ -1783,6 +2096,17 @@ mod tests {
         for path in nested {
             assert_reads_the_pages_of_embedded_pdfs(path);
         }
+        let (malformed, paths): (Vec<&Path>, Vec<&Path>) = paths
+            .into_iter()
+            .partition(|path| path.ends_with("testPDF_malformedXFA.pdf"));
+        assert_eq!(malformed.len(), 1, "{malformed:?}");
+        assert_same_as_tika_delegating_departing_with(
+            &malformed,
+            tika_name(),
+            &DELEGATES,
+            XFA_FAILURE,
+            &ParserConfigs::default(),
+        );
         assert_same_as_tika_delegating(&paths, tika_name(), &DELEGATES);
         let [copies] = copies[..] else {
             panic!("{copies:?}");
