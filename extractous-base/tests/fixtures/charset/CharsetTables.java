@@ -40,7 +40,8 @@ import java.util.zip.DeflaterOutputStream;
  * The decoder reference has one line per multi-byte charset and per charset of
  * {@link #PORTED}: its name and, in hexadecimal and separated by a tab, the hash
  * {@link DecoderReference} takes of what its decoder makes of pseudo-random bytes (of the
- * decoded text alone for a charset of {@link #PORTED}).
+ * decoded text alone for a charset of {@link #PORTED}), and one per charset of {@link #ISO_2022}
+ * with the hash of what its decoder makes of pseudo-random escapes, shifts and bytes.
  */
 public final class CharsetTables {
 
@@ -59,6 +60,10 @@ public final class CharsetTables {
     /** The charsets whose decoders the Rust port mirrors without tables. */
     static final List<String> PORTED =
             List.of("UTF-8", "UTF-16", "UTF-16BE", "UTF-16LE", "x-ISCII91");
+
+    /** The ISO-2022 charsets whose decoders the Rust port mirrors around the multi-byte tables. */
+    static final List<String> ISO_2022 =
+            List.of("ISO-2022-KR", "ISO-2022-CN", "x-ISO-2022-CN-CNS", "x-ISO-2022-CN-GB");
 
     public static void main(String[] args) throws IOException {
         if (args.length != 2) {
@@ -84,6 +89,10 @@ public final class CharsetTables {
         }
         for (String name : PORTED) {
             reference.add(name + "\t" + Long.toHexString(DecoderReference.textHash(
+                    Charset.forName(name))));
+        }
+        for (String name : ISO_2022) {
+            reference.add(name + "\t" + Long.toHexString(DecoderReference.iso2022Hash(
                     Charset.forName(name))));
         }
         out.flush();
@@ -354,6 +363,48 @@ final class DecoderReference {
             for (int i = 0; firstCharacters && i < input.length; i++) {
                 hash = (hash ^ decodeFirst(charset, input, i)) * FNV_PRIME;
             }
+        }
+        return hash;
+    }
+
+    /** The escapes and shifts of the ISO-2022 decoders, known and unknown, whole and cut short. */
+    static final String[] ISO_2022_TOKENS = {
+        "\u001b$)C", "\u001b$)A", "\u001b$)G", "\u001b$)X", "\u001b$A", "\u001b$*H",
+        "\u001b$+I", "\u001b$*X", "\u001bN", "\u001bO", "\u001b", "\u001b$", "\u001b$)",
+        "\u000e", "\u000f", "\n",
+    };
+    static final int ISO_2022_INPUTS = 20000;
+    static final int ISO_2022_MAX_TOKENS = 24;
+
+    /**
+     * The hash of the texts an ISO-2022 decoder makes of inputs of tokens: an escape or shift of
+     * {@link #ISO_2022_TOKENS}, mostly bytes that a shift-out pairs into characters, and now and
+     * then a byte with its high bit set or any 7-bit byte.
+     */
+    static long iso2022Hash(Charset charset) {
+        final long[] state = {0x2022};
+        long hash = FNV_OFFSET;
+        for (int n = 0; n < ISO_2022_INPUTS; n++) {
+            final ByteArrayOutputStream input = new ByteArrayOutputStream();
+            final long tokens = 1 + Long.remainderUnsigned(next(state), ISO_2022_MAX_TOKENS);
+            for (long t = 0; t < tokens; t++) {
+                final long r = next(state);
+                final int kind = (int) Long.remainderUnsigned(r, 32);
+                final long rest = r >>> 8;
+                if (kind < ISO_2022_TOKENS.length) {
+                    input.writeBytes(ISO_2022_TOKENS[kind].getBytes(StandardCharsets.ISO_8859_1));
+                } else if (kind < 30) {
+                    input.write(0x21 + (int) Long.remainderUnsigned(rest, 94));
+                } else if (kind == 30) {
+                    input.write(0x80 | (int) (rest & 0x7F));
+                } else {
+                    input.write((int) (rest & 0x7F));
+                }
+            }
+            for (char unit : new String(input.toByteArray(), charset).toCharArray()) {
+                hash = (hash ^ unit) * FNV_PRIME;
+            }
+            hash = (hash ^ ERROR) * FNV_PRIME;
         }
         return hash;
     }

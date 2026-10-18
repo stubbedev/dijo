@@ -582,7 +582,7 @@ fn assert_zip_bomb(ended: Result<Vec<String>, crate::Error>, cause: &str) {
 
 #[test]
 fn leaves_a_stream_decoding_past_the_most_the_native_path_decodes_to_a_limit() {
-    let declined = undecoded("the Gzip stream", Undecoded::TooLarge);
+    let declined = undecoded("the Gzip stream", Undecoded::TooLarge, "CompressorParser");
     if cfg!(feature = "tika") {
         assert!(
             matches!(&declined, Decline::Deferred(reason) if reason.contains("Tika's path streams")),
@@ -712,4 +712,64 @@ fn writes_an_entry_up_to_the_most_the_native_path_decodes_and_stops_there() {
         }
         other => panic!("not stopped at the limit: {other:?}"),
     }
+}
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn writes_a_7z_archive_up_to_the_entry_past_the_most_the_native_path_decodes() {
+    let line = "All work and no play makes Jack a dull boy.\n";
+    let lines = crate::compress::MAX_DECODED / line.len() + 1000;
+    let archive = crate::compress::seven_z::tests::seven_z(&[
+        ("before.txt", b"Before the large entry."),
+        ("padding.bin", &incompressible(3_000_000)),
+        ("large.txt", line.repeat(lines).as_bytes()),
+        ("after.txt", b"After the large entry."),
+    ]);
+    let (text, ended) = extract(&archive);
+    assert!(text.contains("Before the large entry."), "{}", &text[..100]);
+    assert!(text.contains(line), "{}", &text[..100]);
+    assert!(
+        text.len().abs_diff(crate::compress::MAX_DECODED) < 1000,
+        "{}",
+        text.len()
+    );
+    assert!(!text.contains("After the large entry."));
+    match ended {
+        Err(Error::LimitExceeded(message)) => {
+            assert!(message.starts_with("the 7z archive: "), "{message}");
+            assert!(
+                message.contains("the most the native parser decodes"),
+                "{message}"
+            );
+        }
+        other => panic!("not stopped at the limit: {other:?}"),
+    }
+}
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn writes_an_entry_cut_short_as_far_as_it_decodes_and_goes_on() {
+    let mut archive = zip(&[
+        ("broken.txt", &[7u8; 5000]),
+        ("after.txt", b"After the broken entry."),
+    ]);
+    let start =
+        30 + "broken.txt".len() + usize::from(u16::from_le_bytes([archive[28], archive[29]]));
+    archive[start] = 0xFF;
+    let (text, ended) = extract(&archive);
+    assert!(text.contains("After the broken entry."), "{text}");
+    let recorded = ended.expect("the archive goes on past the entry");
+    let (unreadable, rest): (Vec<&String>, Vec<&String>) = recorded
+        .iter()
+        .partition(|recorded| recorded.contains("Can't read archive stream"));
+    assert_eq!(unreadable.len(), 1, "{recorded:?}");
+    assert!(
+        unreadable[0].contains("(broken.txt): Truncated ZIP file"),
+        "{recorded:?}"
+    );
+    assert!(
+        rest.iter()
+            .all(|recorded| recorded.contains("read the document differently from Tika")),
+        "{recorded:?}"
+    );
 }

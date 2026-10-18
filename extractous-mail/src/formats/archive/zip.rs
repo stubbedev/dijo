@@ -16,7 +16,7 @@ use super::nesting::Scan;
 use super::{record_unreadable, too_large, write_entry_div, Cut, DEFERS};
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
-use crate::compress::zip::salvage::salvage;
+use crate::compress::zip::salvage::{salvage, Unsalvaged};
 use crate::compress::zip::stream::{self, ZipStream};
 use crate::compress::zip::Content;
 use crate::config::ParserConfigs;
@@ -26,11 +26,11 @@ use crate::formats::embedded::{
 };
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::time::instant_string;
 use crate::mime::{Key, MediaType};
-use crate::text::charset::{self, Charset};
+use crate::text::charset;
 
 const ZIP: &str = "application/zip";
 const JAR: &str = "application/java-archive";
@@ -171,52 +171,87 @@ impl Parser for ZipParser {
         pages: Pages<'a>,
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if let Ok(zip) = ZipFile::open(input) {
             let paging = Paging::new(pages);
-            check_entries(&zip, input.len(), &paging)?;
-            return Ok(Box::new(move |xhtml| {
-                write_archive(input, &zip, xhtml, &paging)
-            }));
+            let difference = check_entries(&zip, input.len(), &paging)?;
+            return reading(
+                Box::new(move |xhtml| write_archive(input, &zip, xhtml, &paging)),
+                difference,
+            );
         }
         if metadata.get(Key::Salvaged.name()) != Some("true") {
-            let streamed = Streamed::scan(input)?;
-            return Ok(Box::new(move |xhtml| streamed.write(input, xhtml)));
+            return streamed(input, None);
         }
-        let salvaged = salvage(input).map_err(|unsalvaged| {
-            Decline::Deferred(format!(
-                "the detection salvaged the archive, which salvages no more: {unsalvaged:?}"
-            ))
-        })?;
-        let unopened = || "the salvaged archive does not open".to_owned();
+        let salvaged = match salvage(input) {
+            Ok(salvaged) => salvaged,
+            Err(Unsalvaged::Thrown) => return streamed(input, None),
+            Err(Unsalvaged::Unported(reason)) => {
+                return streamed(
+                    input,
+                    Some(Difference::new(format!(
+                        "the detection salvaged the archive, which the native parser does not \
+                         salvage, for {reason}, and reads by its local headers instead"
+                    ))),
+                )
+            }
+        };
         let in_memory = Paging::new(Pages::IN_MEMORY);
-        check_entries(
-            &ZipFile::open(&salvaged).map_err(|_| unopened())?,
+        let difference = check_entries(
+            &ZipFile::open(&salvaged).expect("a salvaged archive opens"),
             input.len(),
             &in_memory,
         )?;
-        Ok(Box::new(move |xhtml| {
-            let zip = ZipFile::open(&salvaged).map_err(|_| Failure::Malformed(unopened()))?;
-            write_archive(input, &zip, xhtml, &in_memory)
-        }))
+        reading(
+            Box::new(move |xhtml| {
+                let zip = ZipFile::open(&salvaged).expect("a salvaged archive opens");
+                write_archive(input, &zip, xhtml, &in_memory)
+            }),
+            difference,
+        )
     }
 }
 
+/// `prepared`, the native reading of an archive, as it differs from Tika's in `difference`, if
+/// it does.
+fn reading(
+    prepared: Prepared<'_>,
+    difference: Option<Difference>,
+) -> Result<Prepared<'_>, Decline<'_>> {
+    match difference {
+        None => Ok(prepared),
+        Some(difference) => Err(Decline::Differs {
+            reading: prepared,
+            difference,
+        }),
+    }
+}
+
+/// The archive `input` read by its local headers, as its native reading differs from Tika's in
+/// `difference`, if it does.
+fn streamed(input: &[u8], difference: Option<Difference>) -> Result<Prepared<'_>, Decline<'_>> {
+    let streamed = Streamed::scan(input)?;
+    let difference = difference.or_else(|| streamed.difference.clone());
+    reading(
+        Box::new(move |xhtml| streamed.write(input, xhtml)),
+        difference,
+    )
+}
+
 /// Reads each entry of the archive `zip`, `length` bytes in all, to rule out what Tika's path
-/// reads otherwise.
-fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), Decline<'static>> {
+/// reads otherwise, and finds the first detail in which the native reading differs from it.
+fn check_entries(
+    zip: &ZipFile,
+    length: usize,
+    paging: &Paging,
+) -> Result<Option<Difference>, Decline<'static>> {
     let mut scan = Scan::new();
+    let mut difference = None;
     for entry in zip.entries() {
         if entry.is_directory() || !entry.can_read() {
             continue;
         }
-        if entry_name(entry).is_none() {
-            return Err(Decline::Deferred(format!(
-                "the name of the entry {} is detected in a charset the native decoders do \
-                 not decode",
-                entry.name
-            )));
-        }
+        difference = difference.or(entry_name(entry).1);
         match zip.read(entry) {
             Some(Content::Complete(content)) => {
                 if let Some(reason) = scan.entry(&content) {
@@ -224,23 +259,12 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
                 }
                 paging.read(content.len());
             }
-            Some(Content::Truncated(_)) => {
-                return Err(Decline::Deferred(format!(
-                    "the data of the entry {} is cut short or corrupt, which Tika's embedded \
-                     parser reads as far as it goes",
-                    entry.name
-                )))
-            }
             Some(Content::Oversized(_)) if DEFERS => {
                 return Err(too_large(&the_entry(&entry.name)))
             }
             Some(Content::Oversized(_)) => break,
-            None => {
-                return Err(Decline::Deferred(format!(
-                    "the entry {} is compressed with method {}, which the port does not \
-                     decompress",
-                    entry.name, entry.method
-                )))
+            Some(Content::Truncated(_)) | None => {
+                difference = difference.or_else(|| Some(cut_short(&entry.name)));
             }
         }
     }
@@ -248,7 +272,17 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
         return Err(Decline::Deferred(reason));
     }
     paging.release();
-    Ok(())
+    Ok(difference)
+}
+
+/// How the native reading of an entry of `name` whose data is cut short or corrupt differs
+/// from Tika's.
+fn cut_short(name: &str) -> Difference {
+    Difference::new(format!(
+        "the data of the entry {name} is cut short or corrupt: the native parser writes what it \
+         decodes of it and records the failure, where the stream Tika's embedded parser reads \
+         throws, which fails the archive unless that parser catches it"
+    ))
 }
 
 /// `parseWithZipFile` of the archive `zip`, read from `input` or salvaged from it. Tika checks
@@ -274,10 +308,7 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
         if entry.is_directory() {
             continue;
         }
-        let name = entry_name(entry).ok_or_else(|| {
-            Failure::Malformed(format!("the name of {} cannot be decoded", entry.name))
-        })?;
-        let name = zip_file::entry_name(name, entry.version_made_by);
+        let name = zip_file::entry_name(entry_name(entry).0, entry.version_made_by);
         if entry.uses_encryption() {
             record_unread(
                 xhtml,
@@ -294,12 +325,23 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
             );
             continue;
         }
+        let metadata = entry_metadata(entry, &name);
         let (content, cut) = match zip.read(entry) {
             Some(Content::Complete(content)) => (content, None),
             Some(Content::Oversized(content)) if !DEFERS => (content, Some(Cut(the_entry(&name)))),
-            _ => return Err(undeferred(&name)),
+            Some(Content::Oversized(_)) => return Err(undeferred(&name)),
+            Some(Content::Truncated(content)) if !content.is_empty() => {
+                write_entry(xhtml, &metadata, &name, &content, None)?;
+                record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
+                continue;
+            }
+            Some(Content::Truncated(_)) | None => {
+                write_entry_div(xhtml, &name)?;
+                record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
+                continue;
+            }
         };
-        write_entry(xhtml, &entry_metadata(entry, &name), &name, &content, cut)?;
+        write_entry(xhtml, &metadata, &name, &content, cut)?;
         paging.read(content.len());
     }
     Ok(())
@@ -387,9 +429,11 @@ fn local_headers(input: &[u8]) -> ZipStream<'_> {
 }
 
 /// What reading an archive by its local headers finds before it is written: the names of the
-/// entries that occur more than once, at most a hundred, in order.
+/// entries that occur more than once, at most a hundred, in order, and the first detail in
+/// which the native reading differs from Tika's.
 struct Streamed {
     duplicates: Vec<String>,
+    difference: Option<Difference>,
 }
 
 impl Streamed {
@@ -400,17 +444,12 @@ impl Streamed {
         let mut scan = Scan::new();
         let mut seen = HashSet::new();
         let mut duplicates = Vec::new();
+        let mut difference = None;
         while let Ok(Some(entry)) = stream.next_entry() {
             if entry.is_directory() {
                 continue;
             }
-            if entry_name(&entry).is_none() {
-                return Err(Decline::Deferred(format!(
-                    "the name of the entry {} is detected in a charset the native decoders do \
-                     not decode",
-                    entry.name
-                )));
-            }
+            difference = difference.or(entry_name(&entry).1);
             match stream.content() {
                 Ok(Content::Complete(content)) => {
                     if let Some(reason) = scan.entry(&content) {
@@ -422,11 +461,15 @@ impl Streamed {
                 }
                 Ok(Content::Oversized(_)) => break,
                 Err(stream::Failure::Method(method)) => {
-                    return Err(Decline::Deferred(format!(
-                        "the entry {} is compressed with method {method}, which the port does \
-                         not decompress",
-                        entry.name
-                    )))
+                    difference = difference.or_else(|| {
+                        Some(Difference::new(format!(
+                            "the entry {} has a data descriptor after data compressed with \
+                             method {method}, whose end the native parser does not find: it \
+                             stops at the entry, where commons-compress reads on",
+                            entry.name
+                        )))
+                    });
+                    break;
                 }
                 Ok(Content::Truncated(_)) => break,
                 Err(_) => continue,
@@ -438,7 +481,10 @@ impl Streamed {
         if let Some(reason) = scan.document(input.len()) {
             return Err(Decline::Deferred(reason));
         }
-        Ok(Streamed { duplicates })
+        Ok(Streamed {
+            duplicates,
+            difference,
+        })
     }
 
     /// `parseWithStream`: the duplicate names as the integrity check's result, which cannot
@@ -474,10 +520,7 @@ impl Streamed {
             if entry.is_directory() {
                 continue;
             }
-            let name = entry_name(&entry).ok_or_else(|| {
-                Failure::Malformed(format!("the name of {} cannot be decoded", entry.name))
-            })?;
-            let name = zip_file::entry_name(name, entry.version_made_by);
+            let name = zip_file::entry_name(entry_name(&entry).0, entry.version_made_by);
             if entry.uses_encryption() {
                 record_unread(
                     xhtml,
@@ -500,12 +543,7 @@ impl Streamed {
                     )?;
                 }
                 Ok(Content::Truncated(_)) => {
-                    record_unreadable(
-                        xhtml.metadata_mut(),
-                        &name,
-                        "Truncated ZIP file: its data ends with the archive, as the last entry \
-                         of a split archive's segment does",
-                    );
+                    record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED_SEGMENT);
                     return Ok(());
                 }
                 Err(_) => record_unread(
@@ -523,16 +561,18 @@ impl Streamed {
 
 /// `detectEntryName`: a name from the Unicode extra field as commons-compress read it, a name
 /// flagged UTF-8 (EFS) decoded so when it is valid UTF-8, else the name's bytes decoded in the
-/// charset Tika's encoding detector finds, told a name flagged UTF-8 claims so; `None` for a
-/// charset the native decoders do not decode. Tika takes the flag only as a hint to its
-/// detector, which may find another charset (#99).
-fn entry_name(entry: &ZipEntry) -> Option<String> {
+/// charset Tika's encoding detector finds, told a name flagged UTF-8 claims so. Tika takes the
+/// flag only as a hint to its detector, which may find another charset (#99). With the name,
+/// how it may differ from Tika's: where its bytes are malformed in a charset Java decodes
+/// otherwise than the WHATWG decoder, which replaces them its own way, and where the native
+/// decoders do not decode the charset, for which the name is as commons-compress decodes it.
+fn entry_name(entry: &ZipEntry) -> (String, Option<Difference>) {
     if entry.name_source == NameSource::UnicodeExtraField {
-        return Some(entry.name.clone());
+        return (entry.name.clone(), None);
     }
     if entry.name_source == NameSource::NameWithEfsFlag {
         if let Ok(name) = std::str::from_utf8(&entry.raw_name) {
-            return Some(name.to_owned());
+            return (name.to_owned(), None);
         }
     }
     let detection = match entry.name_source {
@@ -541,11 +581,27 @@ fn entry_name(entry: &ZipEntry) -> Option<String> {
         }
         _ => charset::detect(&entry.raw_name, None),
     };
-    decode_name(&entry.raw_name, detection.decode_as)
-}
-
-fn decode_name(raw: &[u8], charset: Charset) -> Option<String> {
-    charset.decode_exactly(raw)
+    let charset = detection.decode_as;
+    if let Some(name) = charset.decode_exactly(&entry.raw_name) {
+        return (name, None);
+    }
+    let differs = |how: &str| {
+        Some(Difference::new(format!(
+            "the name of the entry {} is detected in {}, {how}",
+            entry.name,
+            charset.name()
+        )))
+    };
+    match charset.decode(&entry.raw_name) {
+        Some(name) => (
+            name,
+            differs("in which its malformed bytes are replaced as the WHATWG decoder replaces them"),
+        ),
+        None => (
+            entry.name.clone(),
+            differs("which the native decoders do not decode, so it is read as commons-compress reads it"),
+        ),
+    }
 }
 
 /// An entry Tika cannot read: its failure recorded. Tika also writes its name in a paragraph,
@@ -553,6 +609,12 @@ fn decode_name(raw: &[u8], charset: Charset) -> Option<String> {
 fn record_unread(xhtml: &mut Xhtml, exception: &str) {
     record_stream_exception(xhtml.metadata_mut(), exception);
 }
+
+/// What the stream of an entry whose data is cut short or corrupt throws.
+const TRUNCATED: &str = "Truncated ZIP file: its data is cut short or corrupt";
+/// What the stream of an entry whose data ends with the archive throws.
+const TRUNCATED_SEGMENT: &str = "Truncated ZIP file: its data ends with the archive, as the \
+                                 last entry of a split archive's segment does";
 
 fn instant(time: Instant) -> String {
     instant_string(time.seconds, time.nanos)
@@ -678,13 +740,38 @@ mod tests {
     }
 
     #[test]
-    fn defers_methods_it_does_not_decompress() {
-        let mut data = zip(&[("a", b"hej")]);
-        let cd = central_record(&data);
-        data[8..10].copy_from_slice(&12u16.to_le_bytes());
-        data[cd + 10..cd + 12].copy_from_slice(&12u16.to_le_bytes());
-        let reason = defers(&data).unwrap();
-        assert!(reason.contains("method 12"), "{reason}");
+    fn reads_every_method_commons_compress_decompresses() {
+        use crate::compress::zip::file::tests::zip_compressed;
+        use std::io::Write;
+        let text = b"Hej fra K\xC3\xB8benhavn, hej igen.";
+        let mut deflater =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        deflater.write_all(text).unwrap();
+        let methods = [
+            (9, deflater.finish().unwrap()),
+            (12, crate::compress::bzip2::tests::bzip2(text)),
+            (93, crate::compress::zstd::tests::zstd(text)),
+            (95, crate::compress::xz::tests::xz(text)),
+        ];
+        for (method, data) in methods {
+            let archive = zip_compressed("a.txt", method, &data, text.len() as u32);
+            assert_eq!(defers(&archive), None, "method {method}");
+            let zip = ZipFile::open(&archive).unwrap();
+            let entry = &zip.entries()[0];
+            assert_eq!(entry.method, method);
+            assert_eq!(
+                zip.read(entry).map(|content| content.bytes().to_vec()),
+                Some(text.to_vec()),
+                "method {method}"
+            );
+            let mut stream = ZipStream::new(&archive, false);
+            stream.next_entry().unwrap().unwrap();
+            assert_eq!(
+                stream.content().map(|content| content.bytes().to_vec()),
+                Ok(text.to_vec()),
+                "method {method}"
+            );
+        }
     }
 
     #[cfg(feature = "tika")]

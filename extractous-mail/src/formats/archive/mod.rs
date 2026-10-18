@@ -20,6 +20,7 @@ pub use zip::ZipParser;
 use crate::compress::{ArchiveFile, Limited, Undecoded};
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure};
 use crate::java::time::format_instant;
@@ -112,15 +113,30 @@ fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
 /// Whether there is a Tika path to leave a document to.
 const DEFERS: bool = cfg!(feature = "tika");
 
-/// Why the native readers do not read `what`, for the reason `undecoded`: a stream beyond the
-/// memory limit fails at once, as Tika's path fails it.
-fn undecoded(what: &str, undecoded: Undecoded) -> Decline<'static> {
+/// Why the native readers do not read `what`, for the reason `undecoded`, given to Tika's
+/// parser `tika_name`: a stream beyond the memory limit fails at once, as Tika's path fails it.
+/// Data that fails to decode fails as the reader's `IOException` fails Tika's parser, where
+/// there is no Tika's path to fail with the reader's own message; what the native readers do
+/// not read is left to Tika's path.
+fn undecoded(what: &str, undecoded: Undecoded, tika_name: &str) -> Decline<'static> {
     match undecoded {
         Undecoded::TooLarge => too_large(what),
         Undecoded::MemoryLimit(_) => {
             Decline::Fails(Error::LimitExceeded(format!("{what}: {undecoded}")))
         }
-        _ => Decline::Deferred(format!("{what}: {undecoded}")),
+        Undecoded::Unported(_) => Decline::Deferred(format!("{what}: {undecoded}")),
+        Undecoded::Fails(_) | Undecoded::Encrypted | Undecoded::BadPassword if DEFERS => {
+            Decline::Deferred(format!(
+                "{what}: {undecoded}, which Tika's path fails with its reader's own exception"
+            ))
+        }
+        Undecoded::Fails(_) | Undecoded::Encrypted | Undecoded::BadPassword => Decline::Fails(
+            Thrown::Io(Exception::new(
+                "java.io.IOException",
+                format!("{what}: {undecoded}"),
+            ))
+            .into_error(tika_name),
+        ),
     }
 }
 

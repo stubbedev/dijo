@@ -4,12 +4,13 @@
 //! with the detected charset's vendor superset by the JDK's decoders; and one U+FEFF dropped from
 //! the start of the text. That drops the byte order mark of UTF-8, UTF-16LE/BE and UTF-32LE/BE,
 //! which Java's decoders for those charsets keep as a character; Java's `UTF-16` decoder, named
-//! only by a declared charset, drops a byte order mark itself, so a second one goes too.
+//! only by a declared charset, drops a byte order mark itself, so a second one goes too. A
+//! declared charset the port does not decode is passed over ([`AutoDetectReader::difference`]).
 
 use std::ops::Range;
 
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::Failure;
+use crate::formats::Difference;
 use crate::input::{Pages, Paging};
 use crate::text::charset::{self, Detection, Pieces};
 
@@ -24,13 +25,14 @@ pub struct AutoDetectReader {
 }
 
 impl AutoDetectReader {
-    /// Reads `input` as Tika does when the metadata's `Content-Type` is `content_type`.
-    pub fn read(input: &[u8], content_type: Option<&str>) -> Result<Self, Failure> {
-        let (detection, text) = Self::stream(input, content_type, Pages::IN_MEMORY)?;
-        Ok(Self {
+    /// Reads `input` as Tika does when the metadata's `Content-Type` is `content_type`, but for
+    /// the [`AutoDetectReader::difference`].
+    pub fn read(input: &[u8], content_type: Option<&str>) -> Self {
+        let (detection, text) = Self::stream(input, content_type, Pages::IN_MEMORY);
+        Self {
             detection,
             text: text.collect(),
-        })
+        }
     }
 
     /// The detection of [`AutoDetectReader::read`], and the text, read a piece at a time, the
@@ -39,29 +41,33 @@ impl AutoDetectReader {
         input: &'a [u8],
         content_type: Option<&str>,
         pages: Pages<'a>,
-    ) -> Result<(Detection, Text<'a>), Failure> {
-        let detection = charset::detect(input, content_type);
-        let pieces = detection.decode_as.pieces(input, PIECE).ok_or_else(|| {
-            Failure::Malformed(format!(
-                "the text is detected as {}, which the native decoders do not decode",
-                detection.decode_as.name()
-            ))
-        })?;
-        Ok((
+    ) -> (Detection, Text<'a>) {
+        let detection = charset::detect_decodable(input, content_type);
+        let pieces = detection
+            .decode_as
+            .pieces(input, PIECE)
+            .expect("the port decodes every charset its detection settles on");
+        (
             detection,
             Text {
                 pieces,
                 paging: Paging::new(pages),
                 started: false,
             },
-        ))
+        )
     }
 
-    /// Why a parser reading through an `AutoDetectReader` should leave `input` to Tika: a
-    /// detector may name a charset the native decoders do not decode.
-    pub fn defers(input: &[u8]) -> Option<&'static str> {
-        charset::undecodable(input)
-            .map(|_| "a detector may report a charset the native decoders do not decode")
+    /// Where reading `input` of the content type `content_type` differs from Tika's
+    /// `AutoDetectReader`: a declaration names a charset the native decoders do not decode,
+    /// which the reader passes over where Tika's detection weighs it.
+    pub fn difference(input: &[u8], content_type: Option<&str>) -> Option<Difference> {
+        charset::undecodable_declaration(input, content_type).map(|charset| {
+            Difference::new(format!(
+                "a declaration names the charset {}, which the native decoders do not decode, \
+                 so the text is read as if it named none",
+                charset.name()
+            ))
+        })
     }
 }
 
@@ -150,11 +156,7 @@ mod tests {
 
     #[test]
     fn drops_one_byte_order_mark() {
-        let read = |input: &[u8]| {
-            AutoDetectReader::read(input, Some("text/plain"))
-                .unwrap()
-                .text
-        };
+        let read = |input: &[u8]| AutoDetectReader::read(input, Some("text/plain")).text;
         assert_eq!(read(b"\xEF\xBB\xBFplain text"), "plain text");
         assert_eq!(
             read(b"\xEF\xBB\xBF\xEF\xBB\xBFplain text"),

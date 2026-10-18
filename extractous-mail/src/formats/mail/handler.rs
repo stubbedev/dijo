@@ -39,24 +39,13 @@ pub(super) enum Inline {
     Html(Vec<u8>),
 }
 
-/// Why the message cannot be read: mime4j's failure, which Tika reports, or something the port
-/// leaves to Tika.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Problem {
-    Malformed(String),
-    Unported(Unported),
-}
-
-impl From<Unported> for Problem {
-    fn from(unported: Unported) -> Self {
-        Problem::Unported(unported)
-    }
-}
-
-impl From<MimeError> for Problem {
-    fn from(error: MimeError) -> Self {
-        Problem::Malformed(error.0)
-    }
+/// A message as the handler reads it: what its body holds, and the first thing of it the port
+/// does not read as Tika does, which leaves out the header, or the rest of the part's
+/// `Content-Disposition`, it is in.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Read {
+    pub(super) items: Vec<Item>,
+    pub(super) unported: Option<Unported>,
 }
 
 /// A part of a `multipart/alternative`, kept until the alternative ends.
@@ -69,20 +58,24 @@ enum Part {
     Body(TikaMetadata, Vec<u8>),
 }
 
-/// Reads a message: its header fields into `metadata` as Tika sets them, and its body.
-pub(super) fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<Vec<Item>, Problem> {
+/// Reads a message: its header fields into `metadata` as Tika sets them, and its body; or
+/// mime4j's failure, which Tika reports.
+pub(super) fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<Read, MimeError> {
     let mut handler = Handler {
         metadata,
         items: Vec::new(),
         parts: Vec::new(),
         arena: Vec::new(),
         alternatives: Vec::new(),
+        unported: None,
     };
     for event in events(input)? {
         match event {
             Event::Field(field) => {
                 if handler.parts.is_empty() {
-                    handler.field(field.name(), &field.body())?;
+                    if let Err(unported) = handler.field(field.name(), &field.body()) {
+                        handler.unported.get_or_insert(unported);
+                    }
                 }
             }
             Event::StartMultipart(body) => handler.start_multipart(body),
@@ -97,10 +90,13 @@ pub(super) fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<Vec<Item
                     handler.items.push(Item::EndEntry);
                 }
             }
-            Event::Body(body, content) => handler.body(&body, content)?,
+            Event::Body(body, content) => handler.body(&body, content),
         }
     }
-    Ok(handler.items)
+    Ok(Read {
+        items: handler.items,
+        unported: handler.unported,
+    })
 }
 
 struct Handler<'a> {
@@ -111,6 +107,7 @@ struct Handler<'a> {
     arena: Vec<Part>,
     /// The parts of the `multipart/alternative` being read, innermost last.
     alternatives: Vec<usize>,
+    unported: Option<Unported>,
 }
 
 impl Handler<'_> {
@@ -212,8 +209,11 @@ impl Handler<'_> {
 
     /// `body`: a leaf part, kept while an alternative is open, parsed inline at the top level
     /// when it is text, and handed on otherwise.
-    fn body(&mut self, body: &BodyDescriptor, content: Vec<u8>) -> Result<(), Unported> {
-        let metadata = self.part_metadata(body)?;
+    fn body(&mut self, body: &BodyDescriptor, content: Vec<u8>) {
+        let mut metadata = self.part_metadata(body);
+        if let Err(unported) = disposition_metadata(body, &mut metadata) {
+            self.unported.get_or_insert(unported);
+        }
         if let Some(&open) = self.alternatives.last() {
             self.arena.push(Part::Body(metadata, content));
             let index = self.arena.len() - 1;
@@ -225,12 +225,10 @@ impl Handler<'_> {
         } else {
             self.handle_embedded(metadata, content);
         }
-        Ok(())
     }
 
-    /// The metadata `body` gives a part: its type, charset, the multipart it is in, and what
-    /// its `Content-Disposition` says.
-    fn part_metadata(&self, body: &BodyDescriptor) -> Result<TikaMetadata, Unported> {
+    /// The metadata `body` gives a part: its type, charset and the multipart it is in.
+    fn part_metadata(&self, body: &BodyDescriptor) -> TikaMetadata {
         let mut metadata = TikaMetadata::new();
         metadata.set("Content-Type", body.mime_type.clone());
         if let Some(charset) = &body.charset {
@@ -243,44 +241,7 @@ impl Handler<'_> {
                 None => metadata.remove("multipart:boundary"),
             }
         }
-        let Some(disposition) = body.disposition()? else {
-            return Ok(metadata);
-        };
-        if disposition.kind.is_empty() {
-            return Ok(metadata);
-        }
-        let mut description = disposition.kind.clone();
-        if disposition.kind.eq_ignore_ascii_case("attachment") {
-            ResourceType::Attachment.set(&mut metadata);
-        } else if disposition.kind.eq_ignore_ascii_case("inline") {
-            ResourceType::Inline.set(&mut metadata);
-        }
-        for (name, value) in disposition.parameters.iter() {
-            description.push_str(&format!("; {name}=\"{value}\""));
-            let property = if name.eq_ignore_ascii_case("creation-date") {
-                Some("dcterms:created")
-            } else if name.eq_ignore_ascii_case("modification-date") {
-                Some("dcterms:modified")
-            } else {
-                None
-            };
-            if let Some(property) = property {
-                if let Some(date) = parse_date(value)? {
-                    metadata.set(property, date.format());
-                }
-            }
-        }
-        if let Some(name) = body
-            .content_type_parameter("name")
-            .filter(|name| !is_blank(name))
-        {
-            metadata.set("tk:resource-name", name.to_owned());
-        }
-        if let Some(filename) = disposition.filename().filter(|name| !is_blank(name)) {
-            metadata.set("tk:resource-name", filename.to_owned());
-        }
-        metadata.set("Content-Disposition", description);
-        Ok(metadata)
+        metadata
     }
 
     fn handle_best_parts(&mut self, part: Option<usize>) {
@@ -351,6 +312,51 @@ impl Handler<'_> {
     }
 }
 
+/// What the `Content-Disposition` of `body` says of a part, added to its `metadata`.
+fn disposition_metadata(
+    body: &BodyDescriptor,
+    metadata: &mut TikaMetadata,
+) -> Result<(), Unported> {
+    let Some(disposition) = body.disposition()? else {
+        return Ok(());
+    };
+    if disposition.kind.is_empty() {
+        return Ok(());
+    }
+    let mut description = disposition.kind.clone();
+    if disposition.kind.eq_ignore_ascii_case("attachment") {
+        ResourceType::Attachment.set(metadata);
+    } else if disposition.kind.eq_ignore_ascii_case("inline") {
+        ResourceType::Inline.set(metadata);
+    }
+    for (name, value) in disposition.parameters.iter() {
+        description.push_str(&format!("; {name}=\"{value}\""));
+        let property = if name.eq_ignore_ascii_case("creation-date") {
+            Some("dcterms:created")
+        } else if name.eq_ignore_ascii_case("modification-date") {
+            Some("dcterms:modified")
+        } else {
+            None
+        };
+        if let Some(property) = property {
+            if let Some(date) = parse_date(value)? {
+                metadata.set(property, date.format());
+            }
+        }
+    }
+    if let Some(name) = body
+        .content_type_parameter("name")
+        .filter(|name| !is_blank(name))
+    {
+        metadata.set("tk:resource-name", name.to_owned());
+    }
+    if let Some(filename) = disposition.filename().filter(|name| !is_blank(name)) {
+        metadata.set("tk:resource-name", filename.to_owned());
+    }
+    metadata.set("Content-Disposition", description);
+    Ok(())
+}
+
 /// `detectInlineTextOrHtml` for a part whose type is known: text that is not an attachment.
 fn is_inline_text(metadata: &TikaMetadata) -> bool {
     !ResourceType::Attachment.is_of(metadata)
@@ -409,7 +415,8 @@ mod tests {
         let message = b"From: Ada <ada@example.org>\r\nSubject: =?utf-8?q?Caf=C3=A9?=\r\nDate: Tue, 05 Mar 2024 14:30:00 +0100\r\nDate: not a date\r\nX-Mailer: test\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b\r\nContent-Type: application/pdf; name=a.pdf\r\nContent-Disposition: attachment; filename=\"b.pdf\"\r\n\r\n%PDF\r\n--b--\r\n";
         let mut metadata = TikaMetadata::new();
         metadata.set("tk:resource-name", "notes.eml");
-        let items = read(message, &mut metadata).unwrap();
+        let Read { items, unported } = read(message, &mut metadata).unwrap();
+        assert_eq!(unported, None);
         assert_eq!(metadata.get("dc:title"), Some("Café"));
         assert_eq!(metadata.get("tk:resource-name"), Some("notes.eml"));
         assert_eq!(
@@ -435,7 +442,7 @@ mod tests {
     #[test]
     fn keeps_the_best_alternative() {
         let message = b"Content-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n--b--\r\n";
-        let items = read(message, &mut TikaMetadata::new()).unwrap();
+        let items = read(message, &mut TikaMetadata::new()).unwrap().items;
         assert_eq!(items, [Item::Inline(Inline::Html(b"<p>html</p>".to_vec()))]);
     }
 }

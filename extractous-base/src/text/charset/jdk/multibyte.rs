@@ -164,6 +164,41 @@ impl MultiByte {
         }
     }
 
+    /// What `DoubleByte.Decoder.decodeDouble` makes of a pair: `None` where it gives U+FFFD.
+    pub(super) fn decode_double(&self, b1: u8, b2: u8) -> Option<char> {
+        assert_eq!(
+            self.family,
+            Family::DoubleByte,
+            "{} decodes pairs",
+            self.name
+        );
+        match self.step(self.tables(), &[b1, b2]) {
+            Step::Char { length: 2, c } => Some(c),
+            _ => None,
+        }
+    }
+
+    /// What `EUC_TW.Decoder.decodeSingleOrReplace` makes of a pair of CNS 11643's plane
+    /// `plane + 1`, which EUC-TW writes as the pair for plane 1 and after a single shift and the
+    /// plane's byte for the others: `None` where it gives U+FFFD, for a pair the plane does not
+    /// map or maps to a supplementary character.
+    pub(super) fn decode_cns(&self, plane: u8, b1: u8, b2: u8) -> Option<char> {
+        assert_eq!(
+            self.family,
+            Family::EucTw,
+            "{} decodes CNS planes",
+            self.name
+        );
+        let step = match plane {
+            0 => self.step(self.tables(), &[b1, b2]),
+            _ => self.step(self.tables(), &[0x8E, 0xA1 + plane, b1, b2]),
+        };
+        match step {
+            Step::Char { c, .. } if c.len_utf16() == 1 => Some(c),
+            _ => None,
+        }
+    }
+
     fn step(&self, tables: &Tables, bytes: &[u8]) -> Step {
         let first = bytes[0];
         match cell(tables.singles[usize::from(first)]) {

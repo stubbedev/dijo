@@ -10,6 +10,7 @@ use crate::compress::archiver::Archiver;
 use crate::compress::{ar, cpio, tar, ArchiveFile};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Parser, Prepared};
 use crate::mime::MediaType;
 
@@ -34,7 +35,21 @@ fn read(
     let archiver = content_type
         .and_then(named)
         .or_else(|| Archiver::detect(input))
-        .ok_or_else(|| "commons-compress recognizes no archive in it".to_owned())?;
+        .ok_or_else(|| {
+            Decline::Fails(
+                Thrown::Tika(
+                    Exception::new(
+                        "org.apache.tika.exception.TikaException",
+                        "Unable to unpack document stream",
+                    )
+                    .caused_by(Exception::new(
+                        "org.apache.commons.compress.archivers.ArchiveException",
+                        "No Archiver found for the stream signature",
+                    )),
+                )
+                .into_error(PackageParser.tika_name()),
+            )
+        })?;
     let files = match archiver {
         Archiver::Tar => tar::files(input),
         Archiver::Ar => ar::files(input),
@@ -48,7 +63,7 @@ fn read(
     let what = format!("the {archiver:?} archive");
     match files {
         Ok(files) => within_limit(what, files),
-        Err(reason) => Err(undecoded(&what, reason)),
+        Err(reason) => Err(undecoded(&what, reason, PackageParser.tika_name())),
     }
 }
 
@@ -101,18 +116,53 @@ mod tests {
         PackageParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
     }
 
+    /// The error preparing `input` fails with.
+    fn failure(input: &[u8]) -> String {
+        let configs = ParserConfigs::default();
+        let failure = match PackageParser.prepare(input, &TikaMetadata::new(), &configs) {
+            Err(Decline::Fails(error)) => error.to_string(),
+            Err(declined) => panic!("not failed: {declined:?}"),
+            Ok(_) => panic!("not failed"),
+        };
+        failure
+    }
+
     #[test]
     fn defers_what_the_native_readers_do_not_read_as_commons_compress_does() {
         assert_eq!(defers(&tar(&[(b"a.txt", b'0', b"text")])), None);
         assert_eq!(defers(&cpio(&[("a.txt", b"text")])), None);
-        let data = tar(&[(b"a.txt", b'0', b"text")]);
-        let cut = defers(&data[..515]).unwrap();
-        assert!(cut.contains("Tar archive"), "{cut}");
         let zip = defers(&zip(&[("a", b"text")])).unwrap();
         assert!(zip.contains("Zip"), "{zip}");
-        let none = defers(b"plain text").unwrap();
-        assert!(none.contains("no archive"), "{none}");
-        let old_cpio = defers(b"070707000000000000000000000000000000000000000000").unwrap();
-        assert!(old_cpio.contains("reading it fails"), "{old_cpio}");
+    }
+
+    #[test]
+    fn fails_what_commons_compress_fails_on_as_tika_does() {
+        assert_eq!(
+            failure(b"plain text"),
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unable to unpack \
+             document stream <- caused by org.apache.commons.compress.archivers.\
+             ArchiveException: No Archiver found for the stream signature"
+        );
+        let data = tar(&[(b"a.txt", b'0', b"text")]);
+        let old_cpio = b"070707000000000000000000000000000000000000000000";
+        if cfg!(feature = "tika") {
+            let cut = defers(&data[..515]).unwrap();
+            assert!(cut.contains("Tar archive"), "{cut}");
+            let old_cpio = defers(old_cpio).unwrap();
+            assert!(old_cpio.contains("reading it fails"), "{old_cpio}");
+            return;
+        }
+        let io = "TIKA-198: Illegal IOException from org.apache.tika.parser.pkg.PackageParser <- \
+                  caused by java.io.IOException: the";
+        let cut = failure(&data[..515]);
+        assert!(
+            cut.contains(&format!("{io} Tar archive: reading it fails")),
+            "{cut}"
+        );
+        let old_cpio = failure(old_cpio);
+        assert!(
+            old_cpio.contains(&format!("{io} Cpio archive: reading it fails")),
+            "{old_cpio}"
+        );
     }
 }

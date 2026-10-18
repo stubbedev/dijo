@@ -47,7 +47,7 @@ thiserror = { version = "2.0.17" }
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 unicode-script = "0.5.8"
-zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs", "legacy-zip"] }
+zip = { version = "9.0.3", default-features = false, features = ["bzip2", "deflate-flate2-zlib-rs", "deflate64", "legacy-zip", "xz"] }
 
 [target.'cfg(windows)'.dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }

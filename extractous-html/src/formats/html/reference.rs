@@ -45,8 +45,7 @@ fn parses_as_tika_does() {
             deferred.push(case.label.as_str());
             continue;
         }
-        let document = read(&case.input, Some(&case.content_type))
-            .unwrap_or_else(|e| panic!("{}: {e:?}", case.label));
+        let document = read(&case.input, Some(&case.content_type));
         let compared = if digest(&tree(&document.dom)) == case.extra[0] {
             Compared::Everything
         } else {

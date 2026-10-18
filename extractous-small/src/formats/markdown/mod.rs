@@ -52,12 +52,10 @@ impl Parser for MarkdownParser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if let Some(reason) = AutoDetectReader::defers(input) {
-            return Err(Decline::Deferred(reason.to_owned()));
-        }
-        let reader = AutoDetectReader::read(input, metadata.get("Content-Type"))
-            .map_err(|_| Decline::Deferred("the text cannot be decoded natively".to_owned()))?;
-        let (events, difference) = parse(&reader.text);
+        let content_type = metadata.get("Content-Type");
+        let reader = AutoDetectReader::read(input, content_type);
+        let (events, markdown_difference) = parse(&reader.text);
+        let difference = AutoDetectReader::difference(input, content_type).or(markdown_difference);
         unless_different(
             Box::new(move |xhtml| {
                 let metadata = xhtml.metadata_mut();

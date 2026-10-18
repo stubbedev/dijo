@@ -264,6 +264,30 @@ fn dates_entries_in_utc_and_drops_dates_out_of_range() {
 }
 
 #[test]
+fn reads_names_junrar_may_take_otherwise_as_differing() {
+    let long = "a".repeat(300);
+    let archive = rar(0, &[stored(long.as_bytes(), 0, b"tekst")]);
+    let configs = ParserConfigs::default();
+    let Err(crate::formats::Decline::Differs { difference, .. }) =
+        RarParser.prepare(&archive, &TikaMetadata::new(), &configs)
+    else {
+        panic!("a name past what junrar surely takes is not read as differing");
+    };
+    assert!(difference.0.contains("so long"), "{difference:?}");
+    assert_eq!(archive_files(&archive).unwrap()[0].name, long);
+}
+
+#[test]
+fn fails_a_rar_5_archive_as_junrar_does() {
+    let configs = ParserConfigs::default();
+    let declined = RarParser.prepare(b"Rar!\x1a\x07\x01\x00rest", &TikaMetadata::new(), &configs);
+    let Err(crate::formats::Decline::Fails(Error::ParseError(reason))) = declined else {
+        panic!("a RAR 5 archive is not failed");
+    };
+    assert!(reason.starts_with("UnsupportedRarV5Exception"), "{reason}");
+}
+
+#[test]
 fn leaves_a_solid_stream_alone_across_a_stored_entry() {
     let files = archive_files(include_bytes!(
         "../../../../tests/fixtures/rar/stored-in-solid-stream.rar"

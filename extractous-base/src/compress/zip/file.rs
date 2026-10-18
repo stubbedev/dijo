@@ -7,8 +7,8 @@ use std::borrow::Cow;
 
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
-    decode_legacy, decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, BZIP2, CFH_SIG,
-    DEFLATE64, DEFLATED, IMPLODING, LFH_SIG, STORED, UNSHRINKING, XZ, ZSTD,
+    decode, decode_name, decompresses, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG,
+    DEFLATED, LFH_SIG, STORED,
 };
 use crate::compress::crc32;
 
@@ -71,10 +71,7 @@ impl ZipEntry {
     /// `ZipUtil.canHandleEntryData`: not encrypted, and compressed a way commons-compress reads.
     pub fn can_read(&self) -> bool {
         !self.uses_encryption()
-            && (matches!(
-                self.method,
-                STORED | UNSHRINKING | IMPLODING | DEFLATED | DEFLATE64 | BZIP2 | XZ
-            ) || ZSTD.contains(&self.method))
+            && (matches!(self.method, STORED | DEFLATED) || decompresses(self.method))
     }
 
     /// `getPlatform`: the high byte of the version made by.
@@ -367,13 +364,7 @@ impl<'a> ZipFile<'a> {
                 Content::Truncated(Cow::Borrowed(raw))
             }),
             DEFLATED => Some(inflate(raw)),
-            UNSHRINKING | IMPLODING => Some(decode_legacy(
-                entry.method,
-                entry.flags,
-                raw,
-                u64::try_from(entry.size).ok()?,
-            )),
-            _ => None,
+            method => decode(method, entry.flags, raw, u64::try_from(entry.size).ok()?),
         }
     }
 }
@@ -425,6 +416,24 @@ pub mod tests {
             writer.write_all(content).unwrap();
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    /// An archive of one entry, `name`, whose data is `data`, compressed with `method` from
+    /// `size` bytes.
+    pub fn zip_compressed(name: &str, method: u16, data: &[u8], size: u32) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file(name, options).unwrap();
+        writer.write_all(data).unwrap();
+        let mut archive = writer.finish().unwrap().into_inner();
+        let central = archive.len() - 22 - 46 - name.len();
+        assert_eq!(archive[central..central + 4], *b"PK\x01\x02");
+        for (method_at, size_at) in [(8, 22), (central + 10, central + 24)] {
+            archive[method_at..method_at + 2].copy_from_slice(&method.to_le_bytes());
+            archive[size_at..size_at + 4].copy_from_slice(&size.to_le_bytes());
+        }
+        archive
     }
 
     #[test]
