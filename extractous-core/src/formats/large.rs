@@ -230,10 +230,7 @@ impl LargeFile {
                     chain,
                     &mut out,
                 );
-                (
-                    parsed,
-                    memory::peak().expect("the extraction has a budget"),
-                )
+                (parsed, memory::peak().expect("the extraction has a budget"))
             })
         });
         let metadata = parsed
