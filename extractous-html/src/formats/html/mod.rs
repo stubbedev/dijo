@@ -45,6 +45,15 @@ pub const DEPARTURES: extractous_base::formats::parity::Departures =
         "#84",
     )];
 
+/// [`DEPARTURES`], for the parity tests of parsers that hand it pages whose tree differs from
+/// jsoup's, by the WHATWG algorithm: their XHTML compared on its text, its elements aside (#84).
+/// The HTML reference test compares such pages on their metadata alone.
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub const TREE_DEPARTURES: extractous_base::formats::parity::Departures = &[
+    extractous_base::formats::parity::Departure::BlankLines("#84"),
+    extractous_base::formats::parity::Departure::Elements("#84"),
+];
+
 /// Tika's `JSoupParser`.
 pub struct JSoupParser;
 
