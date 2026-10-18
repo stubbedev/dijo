@@ -8,7 +8,7 @@ mod streams;
 
 use std::collections::HashSet;
 
-use streams::Comments;
+use streams::{BlockHeader, Comments};
 
 use super::{extract_pictures, NumberAndTotal, Picture};
 use crate::config::ParserConfigs;
@@ -24,7 +24,6 @@ use crate::java::decimal_format::DecimalFormat;
 use crate::text::charset::Charset;
 
 const METADATA_BLOCK_PICTURE: &str = "metadata_block_picture";
-const PICTURE_BLOCK_TYPE: u8 = 6;
 
 /// A stream's comments as `OggAudioParser.fields` reads them: by lower-cased name, in the order
 /// of the comment packet where `rawFields` reads it, else in the order of vorbis-java's map.
@@ -417,19 +416,16 @@ fn native_pictures(input: &[u8]) -> Vec<Picture> {
         return pictures;
     }
     let mut at = 4;
-    while let Some(header) = input.get(at..at + 4) {
-        at += 4;
-        let last = header[0] & 0x80 != 0;
-        let length =
-            usize::from(header[1]) << 16 | usize::from(header[2]) << 8 | usize::from(header[3]);
-        let Some(block) = input.get(at..at + length) else {
+    while let Some(header) = BlockHeader::read(&input[at..]) {
+        at += streams::BLOCK_HEADER;
+        let Some(block) = input.get(at..at + header.length) else {
             break;
         };
-        at += length;
-        if header[0] & 0x7F == PICTURE_BLOCK_TYPE {
+        at += header.length;
+        if header.kind == streams::PICTURE {
             pictures.extend(picture_block(block));
         }
-        if last {
+        if header.last {
             break;
         }
     }
@@ -507,7 +503,9 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    use crate::formats::parity::{
+        assert_read_where_tika_fails, assert_same_as_tika, conformance_corpus, documents,
+    };
     use extractous_core::large::{bodies_past_limit, LargeFile};
 
     /// Vorbis comments with a vendor, after `header`.
@@ -644,6 +642,57 @@ mod tests {
         let (text, metadata) = file.extract(FlacParser.name());
         assert!(text.contains("Lang sang"), "{text}");
         assert_eq!(metadata["xmpDM:duration"], ["3600.0"]);
+    }
+
+    /// A FLAC frame's sync code and header, which read as a metadata block header give a type of
+    /// 127 and a length past the file.
+    const FLAC_FRAME: &[u8] = &[0xFF, 0xF8, 0x69, 0x08, 0x00, 0x00];
+
+    /// A native FLAC file and an Ogg FLAC file, each with a comment block, titled `title`, that
+    /// is flagged as the last metadata block, then audio.
+    fn flac_files_with_last_comments(title: &str) -> [Vec<u8>; 2] {
+        let info = stream_info(44100);
+        let tags = flac_block(0x84, &comments(b"", &[&format!("TITLE={title}")]));
+        let mut native = b"fLaC".to_vec();
+        native.extend(flac_block(0, &info));
+        native.extend_from_slice(&tags);
+        native.extend_from_slice(FLAC_FRAME);
+        let mut head = b"\x7fFLAC\x01\x00\x00\x01fLaC".to_vec();
+        head.extend(flac_block(0, &info));
+        let mut ogg = page(2, 0, 0, &[&head]);
+        ogg.extend(page(0, 0, 1, &[&tags]));
+        ogg.extend(page(4, 44100, 2, &[FLAC_FRAME]));
+        [native, ogg]
+    }
+
+    /// A comment block flagged as the last metadata block is read as comments, and nothing after
+    /// it as a metadata block, where vorbis-java matches the block's type with the flag and so
+    /// reads no comments (#182).
+    #[test]
+    fn reads_flac_comments_flagged_as_the_last_metadata_block() {
+        for (file, ogg_version) in flac_files_with_last_comments("Sidste blok")
+            .iter()
+            .zip([None, Some((1, 0))])
+        {
+            let flac = streams::flac(file, Pages::IN_MEMORY).unwrap();
+            assert_eq!(flac.ogg_version, ogg_version);
+            assert_eq!(flac.info.sample_rate, 44100);
+            let comments = flac.comments.expect("the comment block");
+            assert_eq!(comments.all.get("title").unwrap(), &["Sidste blok"]);
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_flac_comments_flagged_as_the_last_block_where_tikas_path_fails() {
+        let scratch = crate::formats::parity::Scratch::new("ogg-last-comments");
+        let [native, ogg] = flac_files_with_last_comments("Sidste blok");
+        let files = [
+            scratch.write("last-comments.flac", &native),
+            scratch.write("last-comments.oga", &ogg),
+        ];
+        let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+        assert_read_where_tika_fails(&paths, "#182");
     }
 
     #[cfg(feature = "tika")]
