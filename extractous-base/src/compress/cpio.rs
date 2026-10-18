@@ -8,7 +8,7 @@
 
 use std::io::Read;
 
-use super::{throws, ArchiveFile, Undecoded, MAX_DECODED};
+use super::{limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED};
 
 const NEW: &[u8; 6] = b"070701";
 const NEW_CRC: &[u8; 6] = b"070702";
@@ -23,7 +23,7 @@ fn fail(error: std::io::Error) -> Undecoded {
 
 /// The files of the cpio archive `data`, or why they are not read natively. Each entry is read
 /// in the format its own magic names, as `getNextCPIOEntry` reads it.
-pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
+pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
     let mut input = data;
     let mut files = Vec::new();
     loop {
@@ -33,9 +33,11 @@ pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
             OldFormat::of(input)?.entry(input)?
         };
         let Some(file) = file else {
-            return Ok(files);
+            return Ok(Limited::Whole(files));
         };
-        files.push(file);
+        if let Some(cut) = file.add_to(&mut files) {
+            return Ok(cut);
+        }
         input = rest;
     }
 }
@@ -55,8 +57,8 @@ fn file(name: String, mode: u64, mtime: i64, content: Vec<u8>) -> ArchiveFile {
 }
 
 /// The entry in the new ASCII format at the start of `input`, none for the trailer, and what
-/// follows it.
-fn new_entry(input: &[u8]) -> Result<(Option<ArchiveFile>, &[u8]), Undecoded> {
+/// follows it, the file cut where its data passes [`MAX_DECODED`] bytes.
+fn new_entry(input: &[u8]) -> Result<(Option<Limited<ArchiveFile>>, &[u8]), Undecoded> {
     let mut reader = cpio::newc::Reader::new(input).map_err(fail)?;
     let entry = reader.entry().clone();
     if entry.is_trailer() {
@@ -67,9 +69,18 @@ fn new_entry(input: &[u8]) -> Result<(Option<ArchiveFile>, &[u8]), Undecoded> {
         .take(MAX_DECODED as u64 + 1)
         .read_to_end(&mut content)
         .map_err(fail)?;
-    if content.len() > MAX_DECODED {
-        return Err(Undecoded::TooLarge);
-    }
+    let file_of = |content| {
+        file(
+            entry.name().to_owned(),
+            u64::from(entry.mode()),
+            i64::from(entry.mtime()),
+            content,
+        )
+    };
+    let content = match limit(content) {
+        Limited::Whole(content) => content,
+        Limited::Cut(content) => return Ok((Some(Limited::Cut(file_of(content))), &[])),
+    };
     if content.len() as u64 != u64::from(entry.file_size()) {
         return Err(throws("the input ends inside an entry's data"));
     }
@@ -82,13 +93,7 @@ fn new_entry(input: &[u8]) -> Result<(Option<ArchiveFile>, &[u8]), Undecoded> {
         }
     }
     let rest = reader.finish().map_err(fail)?;
-    let file = file(
-        entry.name().to_owned(),
-        u64::from(entry.mode()),
-        i64::from(entry.mtime()),
-        content,
-    );
-    Ok((Some(file), rest))
+    Ok((Some(Limited::Whole(file_of(content))), rest))
 }
 
 /// The old formats, which the cpio crate does not read: binary, in the byte order of the machine
@@ -164,8 +169,9 @@ impl OldFormat {
     }
 
     /// `readOldBinaryEntry` or `readOldAsciiEntry` and the entry's data at the start of `input`,
-    /// none for the trailer, and what follows it.
-    fn entry(self, input: &[u8]) -> Result<(Option<ArchiveFile>, &[u8]), Undecoded> {
+    /// none for the trailer, and what follows it, the file cut where its data passes
+    /// [`MAX_DECODED`] bytes.
+    fn entry(self, input: &[u8]) -> Result<(Option<Limited<ArchiveFile>>, &[u8]), Undecoded> {
         let mut cursor = Cursor(input);
         cursor.take(self.magic_length())?;
         let mut fields = [0u64; 10];
@@ -191,14 +197,18 @@ impl OldFormat {
         if name == TRAILER {
             return Ok((None, &[]));
         }
-        let size = usize::try_from(file_size)
-            .ok()
-            .filter(|&size| size <= MAX_DECODED)
-            .ok_or(Undecoded::TooLarge)?;
+        let mtime = i64::try_from(mtime).expect("at most 33 bits");
+        let size = usize::try_from(file_size).unwrap_or(usize::MAX);
+        if size > MAX_DECODED {
+            let content = cursor.take(MAX_DECODED)?.to_vec();
+            return Ok((Some(Limited::Cut(file(name, mode, mtime, content))), &[]));
+        }
         let content = cursor.take(size)?.to_vec();
         cursor.take(self.padding(size))?;
-        let mtime = i64::try_from(mtime).expect("at most 33 bits");
-        Ok((Some(file(name, mode, mtime, content)), cursor.0))
+        Ok((
+            Some(Limited::Whole(file(name, mode, mtime, content))),
+            cursor.0,
+        ))
     }
 
     /// The bytes that pad `length` bytes to the alignment.
@@ -255,6 +265,7 @@ pub mod tests {
     fn reads_entries_up_to_the_trailer() {
         let data = cpio(&[("dir/", b""), ("dir/a.txt", b"odd")]);
         let found: Vec<(String, bool, Vec<u8>)> = files(&data)
+            .and_then(Limited::whole)
             .unwrap()
             .into_iter()
             .map(|file| (file.name, file.directory, file.content))
@@ -293,6 +304,7 @@ mod old_format_tests {
 
     fn found(data: &[u8]) -> Vec<(String, bool, Vec<u8>, Option<i64>)> {
         files(data)
+            .and_then(Limited::whole)
             .unwrap()
             .into_iter()
             .map(|file| {

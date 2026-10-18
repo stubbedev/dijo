@@ -3,9 +3,9 @@
 //! gunzipped where it starts as gzip does; the data package and everything else left unread.
 //! Tika's also hands on each folder under `archive/` as an empty document (#118).
 
-use crate::compress::gzip;
 use crate::compress::zip::file::ZipFile;
 use crate::compress::zip::Content;
+use crate::compress::{gzip, Limited};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
@@ -87,6 +87,7 @@ fn archives(zip: &ZipFile<'_>) -> Result<Vec<Archive>, Deferral> {
         };
         let data = if data.starts_with(&GZIP_MAGIC) {
             gzip::decode(&data)
+                .and_then(Limited::whole)
                 .map_err(|_| "a gzip archive the port does not decode".to_owned())?
                 .content
         } else {

@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::docx::body::{Body, Context};
 use crate::formats::docx::notes::InlineParts;
-use crate::formats::docx::numbering::ListManager;
 use crate::formats::docx::text::{TextHandler, TextOptions};
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::ooxml::extractor::{self, Ignore};
@@ -412,9 +411,8 @@ impl<'a> Presentation<'a> {
     ) -> Result<bool, Failure> {
         let links = self.links(slide);
         xhtml.start_element_with("div", &[("class", "slide-content")])?;
-        let mut lists = ListManager::default();
         let inline = InlineParts::default();
-        let body = Body::new(xhtml, Context::plain(&mut lists, &inline, true));
+        let body = Body::new(xhtml, Context::plain(&inline, true));
         let handler = self.read(
             slide,
             TextHandler::new(body, &links, TextOptions::default()),
@@ -479,9 +477,8 @@ impl<'a> Presentation<'a> {
         }
         xhtml.start_element_with("div", &[("class", label)])?;
         let none = HashMap::new();
-        let mut lists = ListManager::default();
         let inline = InlineParts::default();
-        let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
+        let body = Body::new(xhtml, Context::plain(&inline, false));
         let mut handler = TextHandler::new(body, &none, TextOptions::default());
         for (part, links) in &parts {
             handler.set_relationships(links);

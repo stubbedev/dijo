@@ -1,7 +1,7 @@
 //! gzip files, which flate2 decodes, read as `GzipCompressorInputStream` reads them without
 //! `decompressConcatenated`: the first member only; and `GzipUtils`'s names of what they hold.
 
-use super::{read_whole, Undecoded};
+use super::{read_limited, Limited, Undecoded};
 
 /// `GzipUtils`'s suffixes of gzip file names, with what replaces each in the uncompressed name.
 const UNCOMPRESSED_SUFFIXES: [(&str, &str); 11] = [
@@ -51,9 +51,9 @@ pub struct Member {
 
 /// The first member of the gzip file `data`, as flate2 reads it: the header checked, the
 /// content checked against the trailer's CRC and size, whatever follows ignored.
-pub fn decode(data: &[u8]) -> Result<Member, Undecoded> {
+pub fn decode(data: &[u8]) -> Result<Limited<Member>, Undecoded> {
     let mut decoder = flate2::bufread::GzDecoder::new(data);
-    let content = read_whole(&mut decoder)?;
+    let content = read_limited(&mut decoder)?;
     let file_name = decoder
         .header()
         .and_then(flate2::GzHeader::filename)
@@ -61,7 +61,7 @@ pub fn decode(data: &[u8]) -> Result<Member, Undecoded> {
             Ok(name) => name.to_owned(),
             Err(_) => name.iter().map(|&byte| char::from(byte)).collect(),
         });
-    Ok(Member { file_name, content })
+    Ok(content.map(|content| Member { file_name, content }))
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -97,7 +97,11 @@ pub mod tests {
     fn decodes_the_first_member() {
         let utf8 = gzip(b"first", Some("caf\u{e9}.txt"));
         assert_eq!(
-            decode(&utf8).unwrap().file_name.as_deref(),
+            decode(&utf8)
+                .and_then(Limited::whole)
+                .unwrap()
+                .file_name
+                .as_deref(),
             Some("caf\u{e9}.txt")
         );
         let mut data = utf8;
@@ -105,7 +109,7 @@ pub mod tests {
         data.splice(latin1..latin1 + 2, [0xE9]);
         data.extend_from_slice(&gzip(b"second", None));
         data.extend_from_slice(b"trailing garbage");
-        let member = decode(&data).unwrap();
+        let member = decode(&data).and_then(Limited::whole).unwrap();
         assert_eq!(member.file_name.as_deref(), Some("caf\u{e9}.txt"));
         assert_eq!(member.content, b"first");
     }
@@ -133,6 +137,9 @@ pub mod tests {
         extra[3] |= 0x04;
         extra.extend_from_slice(&[5, 0, b'a', b'b', 9, 0, 0]);
         extra.extend_from_slice(&data[10..]);
-        assert_eq!(decode(&extra).unwrap().content, b"some content");
+        assert_eq!(
+            decode(&extra).and_then(Limited::whole).unwrap().content,
+            b"some content"
+        );
     }
 }

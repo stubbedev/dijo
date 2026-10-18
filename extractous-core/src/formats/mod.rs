@@ -125,6 +125,7 @@ static PARSERS: &[&dyn Parser] = &[
     &dgn::Dgn8Parser,
     &doc::DocParser,
     &docx::DocxParser,
+    &docx::flat::Word2006MlParser,
     &dwg::DwgParser,
     &feed::FeedParser,
     &font::AdobeFontMetricParser,

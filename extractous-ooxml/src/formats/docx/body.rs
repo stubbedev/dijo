@@ -73,7 +73,8 @@ impl ParagraphProperties {
 /// comments do without.
 pub(crate) struct Context<'c> {
     pub(super) styles: Option<&'c Styles>,
-    pub(super) lists: &'c mut ListManager,
+    /// The list manager numbering the paragraphs, absent where the handler numbers none.
+    pub(super) lists: Option<&'c mut ListManager>,
     pub(super) inline: &'c InlineParts,
     /// Whether the handler records features of the document in its metadata.
     pub(super) records_metadata: bool,
@@ -84,14 +85,10 @@ pub(crate) struct Context<'c> {
 impl<'c> Context<'c> {
     /// What `new OOXMLTikaBodyPartHandler(xhtml)` writes with, or with `(xhtml, metadata)` when
     /// it `records_metadata`: no styles, list numbers or notes, and no deleted or moved text.
-    pub(crate) fn plain(
-        lists: &'c mut ListManager,
-        inline: &'c InlineParts,
-        records_metadata: bool,
-    ) -> Self {
+    pub(crate) fn plain(inline: &'c InlineParts, records_metadata: bool) -> Self {
         Self {
             styles: None,
-            lists,
+            lists: None,
             inline,
             records_metadata,
             include_deleted: false,
@@ -141,6 +138,11 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
         (self.emitted_comments, self.ole_references)
     }
 
+    /// The output, once the handler is done with it.
+    pub(super) fn into_xhtml(self) -> &'x mut Xhtml<'h> {
+        self.xhtml
+    }
+
     pub(super) fn include_deleted(&self) -> bool {
         self.context.include_deleted
     }
@@ -183,11 +185,12 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
             self.open.push(tag.clone());
             self.paragraph_tag = tag;
         }
-        if properties.level >= 0 && properties.num_id >= 0 {
-            let number = self
-                .context
-                .lists
-                .formatted_number(properties.num_id, properties.level);
+        if let (true, true, Some(lists)) = (
+            properties.level >= 0,
+            properties.num_id >= 0,
+            self.context.lists.as_deref_mut(),
+        ) {
+            let number = lists.formatted_number(properties.num_id, properties.level);
             self.xhtml.characters(&number)?;
         }
         self.paragraph_depth += 1;
@@ -461,9 +464,8 @@ fn play_note(
     events: &[Recorded],
     close: bool,
 ) -> Result<Played, Failure> {
-    let mut lists = ListManager::new(None);
     let empty = InlineParts::default();
-    let body = Body::new(xhtml, Context::plain(&mut lists, &empty, false));
+    let body = Body::new(xhtml, Context::plain(&empty, false));
     let mut handler = TextHandler::new(body, &inline.relationships, TextOptions::default());
     match events.iter().try_for_each(|event| event.play(&mut handler)) {
         Ok(()) => Ok(Played::Done),

@@ -4,7 +4,7 @@
 //! the compressed file.
 
 use super::nesting::Scan;
-use super::undecoded;
+use super::{undecoded, within_limit, Cut};
 use crate::compress::compressor::Compressor;
 use crate::compress::gzip;
 use crate::config::ParserConfigs;
@@ -83,9 +83,11 @@ impl Parser for CompressorParser {
                 (compressor, detected_media_type(compressor))
             }
         };
+        let what = format!("the {compressor:?} stream");
         let decoded = compressor
             .decode(input)
-            .map_err(|reason| undecoded(&format!("the {compressor:?} stream"), reason))?;
+            .map_err(|reason| undecoded(&what, reason))?;
+        let (decoded, cut) = within_limit(what, decoded)?;
         let mut scan = Scan::new();
         if let Some(reason) = scan.entry(&decoded.content) {
             return Err(Decline::Deferred(reason));
@@ -101,7 +103,9 @@ impl Parser for CompressorParser {
             if let Some(media_type) = detected {
                 xhtml.metadata_mut().set("Content-Type", media_type);
             }
-            let parsed = xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry);
+            let parsed = xhtml
+                .parse_embedded(&content, &entry, Wrapping::PackageEntry)
+                .and_then(|()| Cut::end(cut));
             if !matches!(parsed, Err(Failure::Stopped(_))) {
                 xhtml.end_document()?;
             }

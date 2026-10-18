@@ -1,6 +1,6 @@
 //! Compound documents whose content Tika's `OfficeParser` does not read: Works, Project and
-//! SolidWorks documents, StarOffice documents, Corel presentations and compound documents of no
-//! known kind. Tika writes their summary information as metadata and, where POI names their
+//! SolidWorks documents, StarOffice documents, Corel presentations, OLE objects embedded whole
+//! and compound documents of no known kind. Tika writes their summary information as metadata and, where POI names their
 //! kind, sets it as the content type.
 
 use crate::config::ParserConfigs;
@@ -17,13 +17,19 @@ const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
 
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
-const DOCUMENT_TYPES: [&str; 5] = [
+const DOCUMENT_TYPES: [&str; 7] = [
     "application/vnd.ms-works",
     "application/vnd.ms-project",
     "application/sldworks",
     MS_GRAPH_CHART,
     DRM_ENCRYPTED,
+    "application/x-tika-msoffice-embedded; format=ole10_native",
+    "application/x-tika-msoffice-embedded; format=comp_obj",
 ];
+
+/// The type of the compound documents of no known kind, whose subtypes no parser of their own
+/// reads, such as an OLE object embedded whole, Tika's composite parser hands `OfficeParser`.
+const UNKNOWN_COMPOUND: &str = "application/x-tika-msoffice";
 
 /// The entry of an encrypted package, on which `OfficeParser` throws for a document of a kind it
 /// reads nothing of but its summary.
@@ -60,9 +66,13 @@ impl Parser for CompoundDocumentParser {
             "application/vnd.stardivision.impress",
             "application/vnd.stardivision.writer",
             "application/x-corelpresentations",
-            "application/x-tika-msoffice",
+            UNKNOWN_COMPOUND,
             DRM_ENCRYPTED,
         ]
+    }
+
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &[UNKNOWN_COMPOUND]
     }
 
     /// Defers documents POI does not open as this port does, macros extracted when asked to and
@@ -153,6 +163,11 @@ mod tests {
             scratch.write("writer.sdw", &compound(&["StarWriterDocument"], b"star")),
             scratch.write("calc.sdc", &compound(&["StarCalcDocument"], b"star")),
             scratch.write("unknown.ole", &compound(&["Mystery"], b"data")),
+            scratch.write(
+                "object.bin",
+                &compound(&["CONTENTS", "\u{1}CompObj"], b"object"),
+            ),
+            scratch.write("native.bin", &compound(&["\u{1}Ole10Native"], b"native")),
         ];
         let deferred_one = scratch.write(
             "encrypted.wps",

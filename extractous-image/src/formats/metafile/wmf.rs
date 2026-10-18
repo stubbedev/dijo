@@ -5,11 +5,8 @@
 //! many it cannot read, bitmaps among them, none of which give text (#127).
 
 use super::{slice, u16_at, u32_at, Picture};
+use crate::formats::wmf_placeable;
 
-/// `META_PLACEABLE`'s key, before the header of a placeable picture.
-const PLACEABLE_KEY: u32 = 0x9AC6_CDD7;
-/// The bytes of `META_PLACEABLE`.
-const PLACEABLE_LENGTH: usize = 22;
 /// `META_EOF`.
 const EOF: u16 = 0x0000;
 /// `META_SELECTOBJECT`.
@@ -49,8 +46,8 @@ pub(super) enum Record<'a> {
 /// The records of the WMF picture `data` up to its end-of-file record or its end.
 pub(super) fn records(data: &[u8]) -> Picture<Record<'_>> {
     let mut picture = Picture::default();
-    let mut at = if u32_at(data, 0, "the placeable key") == Ok(PLACEABLE_KEY) {
-        PLACEABLE_LENGTH
+    let mut at = if u32_at(data, 0, "the placeable key") == Ok(wmf_placeable::KEY) {
+        wmf_placeable::LENGTH
     } else {
         0
     };

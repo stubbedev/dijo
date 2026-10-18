@@ -9,10 +9,10 @@
 
 use std::io::Read;
 
-use super::{ascii, throws, ArchiveFile, Undecoded, MAX_DECODED};
+use super::{ascii, limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED};
 
 /// The files of the `ar` archive `data`, or why they are not read natively.
-pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
+pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
     let mut archive = ar::Archive::new(data);
     let mut files = Vec::new();
     while let Some(entry) = archive.next_entry() {
@@ -27,10 +27,7 @@ pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
             .take(MAX_DECODED as u64 + 1)
             .read_to_end(&mut content)
             .map_err(|e| throws(e.to_string()))?;
-        if content.len() > MAX_DECODED {
-            return Err(Undecoded::TooLarge);
-        }
-        files.push(ArchiveFile {
+        let file = limit(content).map(|content| ArchiveFile {
             name,
             size,
             modified_millis: modified.checked_mul(1000),
@@ -38,8 +35,11 @@ pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
             directory: false,
             content,
         });
+        if let Some(cut) = file.add_to(&mut files) {
+            return Ok(cut);
+        }
     }
-    Ok(files)
+    Ok(Limited::Whole(files))
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -71,6 +71,7 @@ pub mod tests {
             ("caf\u{e9}.txt", b"utf-8"),
         ]);
         let found: Vec<(String, Vec<u8>)> = files(&data)
+            .and_then(Limited::whole)
             .unwrap()
             .into_iter()
             .map(|file| (file.name, file.content))
@@ -108,7 +109,12 @@ pub mod tests {
         let mut data = b"!<arch>\n".to_vec();
         data.extend_from_slice(&member("/", &[0, 0, 0, 0]));
         data.extend_from_slice(&member("a.txt/", b"text"));
-        let names: Vec<String> = files(&data).unwrap().into_iter().map(|f| f.name).collect();
+        let names: Vec<String> = files(&data)
+            .and_then(Limited::whole)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert_eq!(names, ["a.txt"]);
     }
 }

@@ -2691,33 +2691,21 @@ fn with_png_images(spooled: Vec<Spooled>, png_images: bool) -> Vec<Spooled> {
         .collect()
 }
 
-/// The bytes a placeable WMF picture starts with, `META_PLACEABLE`'s key.
-#[cfg(feature = "tika")]
-const PLACEABLE_KEY: [u8; 4] = [0xD7, 0xCD, 0xC6, 0x9A];
-
 /// The spooled files, where a [`Departure::PlaceableHeaders`] applies, with the placeable header
 /// of each WMF file given 72 units per inch, as POI writes it, and the checksum that goes with
 /// them: the XOR of the ten words before it.
 #[cfg(feature = "tika")]
 fn with_pois_placeable_headers(spooled: Vec<Spooled>, placeable_headers: bool) -> Vec<Spooled> {
-    const UNITS_PER_INCH: std::ops::Range<usize> = 14..16;
-    const CHECKSUM: std::ops::Range<usize> = 20..22;
+    use extractous_base::formats::wmf_placeable as placeable;
     if !placeable_headers {
         return spooled;
     }
     spooled
         .into_iter()
         .map(|mut file| {
-            if file.content.len() < CHECKSUM.end || !file.content.starts_with(&PLACEABLE_KEY) {
-                return file;
+            if placeable::starts(&file.content) {
+                placeable::set_units_per_inch(&mut file.content, 72);
             }
-            file.content[UNITS_PER_INCH].copy_from_slice(&72u16.to_le_bytes());
-            let checksum = file.content[..CHECKSUM.start]
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .fold(0u16, |sum, &word| sum ^ u16::from_le_bytes(word));
-            file.content[CHECKSUM].copy_from_slice(&checksum.to_le_bytes());
             file
         })
         .collect()

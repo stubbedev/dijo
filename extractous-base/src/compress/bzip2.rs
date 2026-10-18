@@ -2,11 +2,11 @@
 //! without `decompressConcatenated`: the first stream only, its block and stream CRCs checked,
 //! whatever follows it ignored.
 
-use super::{read_whole, Undecoded};
+use super::{read_limited, Limited, Undecoded};
 
 /// The content of the first bzip2 stream of `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
-    read_whole(::bzip2::bufread::BzDecoder::new(data))
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
+    read_limited(::bzip2::bufread::BzDecoder::new(data))
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -27,7 +27,10 @@ pub mod tests {
     fn decodes_the_first_stream() {
         let mut data = bzip2(b"Hello World\n");
         data.extend_from_slice(&bzip2(b"second"));
-        assert_eq!(decode(&data).unwrap(), b"Hello World\n");
+        assert_eq!(
+            decode(&data).and_then(Limited::whole).unwrap(),
+            b"Hello World\n"
+        );
     }
 
     #[test]

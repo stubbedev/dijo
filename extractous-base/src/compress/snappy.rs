@@ -3,11 +3,11 @@
 //! uncompressed chunks checked against their masked CRC-32C, padding and skippable chunks
 //! skipped.
 
-use super::{read_whole, Undecoded};
+use super::{read_limited, Limited, Undecoded};
 
 /// The content of the framed Snappy stream `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
-    read_whole(snap::read::FrameDecoder::new(data))
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
+    read_limited(snap::read::FrameDecoder::new(data))
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -28,7 +28,7 @@ pub mod tests {
     fn decodes_chunks_checking_their_sums() {
         let content = b"Lorem ipsum dolor sit amet, Lorem ipsum dolor sit amet, consectetur";
         let data = snappy(content);
-        assert_eq!(decode(&data).unwrap(), content);
+        assert_eq!(decode(&data).and_then(Limited::whole).unwrap(), content);
         let mut corrupt = data.clone();
         let last = corrupt.len() - 1;
         corrupt[last] ^= 1;

@@ -4,7 +4,7 @@
 
 use crate::formats::escher::{kind as escher_kind, Content, Escher};
 use crate::formats::poi::{i32_at, inflate};
-use crate::formats::Unported;
+use crate::formats::{wmf_placeable, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 use super::encryption::Encryption;
@@ -518,35 +518,15 @@ impl MetafileHeader {
     /// units per inch those the picture's size gives, where POI writes 72 whatever the units
     /// (#119); none where the size gives none.
     fn placeable(&self) -> Result<Vec<u8>, Unported> {
-        const KEY: i32 = 0x9AC6_CDD7_u32 as i32;
-        let inch = i32::from(self.units_per_inch().ok_or_else(|| {
+        let units_per_inch = self.units_per_inch().ok_or_else(|| {
             Unported(
                 "a WMF picture whose bounds and size give no units per inch for its placeable \
                  header"
                     .to_owned(),
             )
-        })?);
-        let width = self.right.wrapping_sub(self.left);
-        let height = self.bottom.wrapping_sub(self.top);
-        let left = self.left;
-        let top = self.top;
-        let right = left.wrapping_add(width);
-        let bottom = top.wrapping_add(height);
-        let mut checksum = 0i32;
-        checksum ^= KEY & 0x0000_FFFF;
-        checksum ^= (KEY & (0xFFFF_0000_u32 as i32)) >> 16;
-        for value in [left, top, right, bottom, inch] {
-            checksum ^= value;
-        }
-        let mut out = Vec::with_capacity(22);
-        out.extend(KEY.to_le_bytes());
-        out.extend(0u16.to_le_bytes());
-        for value in [left, top, right, bottom, inch] {
-            out.extend((value as u16).to_le_bytes());
-        }
-        out.extend(0i32.to_le_bytes());
-        out.extend((checksum as u16).to_le_bytes());
-        Ok(out)
+        })?;
+        let bounds = [self.left, self.top, self.right, self.bottom].map(|value| value as u16);
+        Ok(wmf_placeable::header(bounds, units_per_inch).to_vec())
     }
 }
 
@@ -632,7 +612,7 @@ mod tests {
         };
         let placeable = header(100, 1_270_000).placeable().unwrap();
         assert_eq!(placeable.len(), 22);
-        assert_eq!(&placeable[..4], &[0xD7, 0xCD, 0xC6, 0x9A]);
+        assert!(wmf_placeable::starts(&placeable));
         assert_eq!(&placeable[10..12], &100u16.to_le_bytes());
         assert_eq!(&placeable[14..16], &72u16.to_le_bytes());
         assert_eq!(&placeable[20..], &[0x0F, 0x57]);
