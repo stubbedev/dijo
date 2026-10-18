@@ -1,7 +1,8 @@
 //! Tika's `CompressorParser` over compressed files: the content, decoded whole with the
 //! compressor their content type names or, failing that, the one their first bytes show,
 //! handed to the embedded document extractor as one entry, named by the gzip header or after
-//! the compressed file.
+//! the compressed file. The content is decoded to a spool, which keeps no more of it in memory
+//! than a file read whole, so the parser's memory stays bounded whatever the file's size.
 
 use super::nesting::Scan;
 use super::{undecoded, within_limit, Cut};
@@ -10,7 +11,8 @@ use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java::is_blank;
 use crate::Error;
 
@@ -64,12 +66,27 @@ impl Parser for CompressorParser {
         &WITH_SUBTYPES
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let paging = Paging::new(pages);
         let content_type = metadata.get("Content-Type").unwrap_or_default();
         let (compressor, detected) = match Compressor::named(content_type) {
             Some(compressor) => (compressor, None),
@@ -87,6 +104,7 @@ impl Parser for CompressorParser {
         let decoded = compressor
             .decode(input)
             .map_err(|reason| undecoded(&what, reason, self.tika_name()))?;
+        paging.release();
         let (decoded, cut) = within_limit(what, decoded)?;
         let mut scan = Scan::new();
         if let Some(reason) = scan.entry(&decoded.content) {
@@ -104,7 +122,7 @@ impl Parser for CompressorParser {
                 xhtml.metadata_mut().set("Content-Type", media_type);
             }
             let parsed = xhtml
-                .parse_embedded(&content, &entry, Wrapping::PackageEntry)
+                .parse_embedded_input(&content, &entry, Wrapping::PackageEntry)
                 .and_then(|()| Cut::end(cut));
             if !matches!(parsed, Err(Failure::Stopped(_))) {
                 xhtml.end_document()?;

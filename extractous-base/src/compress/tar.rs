@@ -5,11 +5,12 @@
 //! slash. What commons-compress reads differently stays with Tika's path: global PAX headers
 //! that set more than a comment, and PAX sparse files, which commons-compress reassembles.
 
-use std::io::Read;
+use std::io::Cursor;
 
 use super::tar_header::normalize;
 use super::zip::decode_name;
-use super::{limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED};
+use super::{throws, ArchiveFile, Decoding, Limited, Undecoded};
+use crate::input::{Input, Pages};
 
 /// The global PAX header key that commons-compress keeps without applying it.
 const COMMENT: &str = "comment";
@@ -20,11 +21,16 @@ fn fail(error: std::io::Error) -> Undecoded {
     throws(error.to_string())
 }
 
-/// The files of the TAR archive `data`, or why they are not read natively.
-pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
-    let mut archive = tar::Archive::new(data);
+/// The files of the TAR archive `data`, whose pages are `pages`, or why they are not read
+/// natively: a file's data in place, a GNU sparse file's reassembled to a spool, up to the
+/// [`decode_limit`](super::decode_limit) of the archive, at which the files end.
+pub fn files<'a>(
+    data: &'a [u8],
+    pages: Pages<'a>,
+) -> Result<Limited<Vec<ArchiveFile<'a>>>, Undecoded> {
+    let mut archive = tar::Archive::new(Cursor::new(data));
     let mut files = Vec::new();
-    for entry in archive.entries().map_err(fail)? {
+    for entry in archive.entries_with_seek().map_err(fail)? {
         let mut entry = entry.map_err(fail)?;
         let kind = entry.header().entry_type();
         if kind.is_pax_global_extensions() {
@@ -53,19 +59,19 @@ pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
         };
         let modified = entry.header().mtime().map_err(fail)?;
         let directory = kind.is_dir() || name.ends_with('/');
-        let mut content = Vec::new();
-        if !directory {
-            (&mut entry)
-                .take(MAX_DECODED as u64 + 1)
-                .read_to_end(&mut content)
-                .map_err(fail)?;
-        }
-        let content = limit(content);
-        if !directory
-            && matches!(&content, Limited::Whole(content) if content.len() as u64 != entry.size())
-        {
-            return Err(throws("Truncated TAR archive"));
-        }
+        let content = if directory {
+            Limited::Whole(Input::Borrowed(&[]))
+        } else if kind.is_gnu_sparse() {
+            let mut decoding = Decoding::spooled(data.len());
+            decoding.read_from(&mut entry)?;
+            let content = decoding.finish()?;
+            if matches!(&content, Limited::Whole(content) if content.len() as u64 != entry.size()) {
+                return Err(truncated());
+            }
+            content
+        } else {
+            Limited::Whole(Input::Within(stored(data, &entry)?, pages))
+        };
         let file = content.map(|content| ArchiveFile {
             name,
             size,
@@ -85,17 +91,34 @@ pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
     Ok(Limited::Whole(files))
 }
 
+fn truncated() -> Undecoded {
+    throws("Truncated TAR archive")
+}
+
+/// The data of `entry`, a file the archive `data` stores whole, in place.
+fn stored<'a>(
+    data: &'a [u8],
+    entry: &tar::Entry<'_, Cursor<&[u8]>>,
+) -> Result<&'a [u8], Undecoded> {
+    let start = usize::try_from(entry.raw_file_position()).map_err(|_| truncated())?;
+    let length = usize::try_from(entry.size()).map_err(|_| truncated())?;
+    start
+        .checked_add(length)
+        .and_then(|end| data.get(start..end))
+        .ok_or_else(truncated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tar_header::tests::{header, pax, tar};
     use super::*;
 
     fn names_and_contents(data: &[u8]) -> Vec<(String, bool, Vec<u8>)> {
-        files(data)
+        files(data, Pages::IN_MEMORY)
             .and_then(Limited::whole)
             .unwrap()
             .into_iter()
-            .map(|file| (file.name, file.directory, file.content))
+            .map(|file| (file.name, file.directory, file.content.to_vec()))
             .collect()
     }
 
@@ -128,7 +151,7 @@ mod tests {
         let mut data = header(b"dir/", b'5', 512);
         data.extend_from_slice(&header(b"inside.txt", b'0', 0));
         data.extend_from_slice(&tar(&[(b"after.txt", b'0', b"after")]));
-        let names: Vec<String> = files(&data)
+        let names: Vec<String> = files(&data, Pages::IN_MEMORY)
             .and_then(Limited::whole)
             .unwrap()
             .into_iter()
@@ -143,8 +166,18 @@ mod tests {
             (b"global", b'g', &pax(&[("path", "global.txt")])),
             (b"file", b'0', b"data"),
         ]);
-        assert!(matches!(files(&global), Err(Undecoded::Unported(_))));
+        assert!(matches!(
+            files(&global, Pages::IN_MEMORY),
+            Err(Undecoded::Unported(_))
+        ));
         let data = tar(&[(b"a.txt", b'0', b"content"), (b"b.txt", b'0', b"more")]);
-        assert!(files(&data[..512 + 3]).is_err());
+        assert!(files(&data[..512 + 3], Pages::IN_MEMORY).is_err());
+        let read = files(&data, Pages::IN_MEMORY)
+            .and_then(Limited::whole)
+            .unwrap();
+        let Input::Within(stored, _) = read[1].content else {
+            panic!("a stored file is not read in place");
+        };
+        assert_eq!(stored.as_ptr(), data[1536..].as_ptr());
     }
 }

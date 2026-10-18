@@ -11,6 +11,7 @@ use super::stream::{events, BodyDescriptor, Event, MimeError};
 use super::Unported;
 use crate::formats::embedded::ResourceType;
 use crate::formats::metadata::TikaMetadata;
+use crate::input::Input;
 use crate::java::is_blank;
 use crate::mime::MediaType;
 
@@ -29,14 +30,14 @@ pub(super) enum Item {
     /// A part parsed inline, as part of the message's own text.
     Inline(Inline),
     /// A part handed to the embedded document extractor, with the metadata it is given.
-    Embedded(Vec<u8>, TikaMetadata),
+    Embedded(Input<'static>, TikaMetadata),
 }
 
 /// A text or HTML part, which Tika parses with its text or HTML parser into the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Inline {
-    Text(Vec<u8>),
-    Html(Vec<u8>),
+    Text(Input<'static>),
+    Html(Input<'static>),
 }
 
 /// A message as the handler reads it: what its body holds, and the first thing of it the port
@@ -55,7 +56,7 @@ enum Part {
         mime_type: String,
         children: Vec<usize>,
     },
-    Body(TikaMetadata, Vec<u8>),
+    Body(TikaMetadata, Input<'static>),
 }
 
 /// Reads a message: its header fields into `metadata` as Tika sets them, and its body; or
@@ -209,7 +210,7 @@ impl Handler<'_> {
 
     /// `body`: a leaf part, kept while an alternative is open, parsed inline at the top level
     /// when it is text, and handed on otherwise.
-    fn body(&mut self, body: &BodyDescriptor, content: Vec<u8>) {
+    fn body(&mut self, body: &BodyDescriptor, content: Input<'static>) {
         let mut metadata = self.part_metadata(body);
         if let Err(unported) = disposition_metadata(body, &mut metadata) {
             self.unported.get_or_insert(unported);
@@ -291,7 +292,7 @@ impl Handler<'_> {
     }
 
     /// `handleInlineBodyPart`: HTML and plain text parsed inline, anything else handed on.
-    fn handle_inline(&mut self, metadata: TikaMetadata, content: Vec<u8>) {
+    fn handle_inline(&mut self, metadata: TikaMetadata, content: Input<'static>) {
         let kind = metadata.get("Content-Type").unwrap_or_default();
         if kind.eq_ignore_ascii_case("text/html") {
             self.items.push(Item::Inline(Inline::Html(content)));
@@ -304,7 +305,7 @@ impl Handler<'_> {
 
     /// `handleEmbedded`: a part handed to the embedded document extractor, an attachment unless
     /// its disposition says otherwise.
-    fn handle_embedded(&mut self, mut metadata: TikaMetadata, content: Vec<u8>) {
+    fn handle_embedded(&mut self, mut metadata: TikaMetadata, content: Input<'static>) {
         if !ResourceType::is_set(&metadata) {
             ResourceType::Attachment.set(&mut metadata);
         }
@@ -426,7 +427,10 @@ mod tests {
         assert_eq!(metadata.get("message:raw-header:X-Mailer"), Some("test"));
         assert_eq!(metadata.get("multipart:subtype"), Some("mixed"));
         assert_eq!(items.len(), 6);
-        assert_eq!(items[1], Item::Inline(Inline::Text(b"hello".to_vec())));
+        assert_eq!(
+            items[1],
+            Item::Inline(Inline::Text(Input::Borrowed(b"hello")))
+        );
         let Item::Embedded(content, embedded) = &items[4] else {
             panic!("the attachment is embedded: {items:?}");
         };
@@ -443,6 +447,9 @@ mod tests {
     fn keeps_the_best_alternative() {
         let message = b"Content-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n--b--\r\n";
         let items = read(message, &mut TikaMetadata::new()).unwrap().items;
-        assert_eq!(items, [Item::Inline(Inline::Html(b"<p>html</p>".to_vec()))]);
+        assert_eq!(
+            items,
+            [Item::Inline(Inline::Html(Input::Borrowed(b"<p>html</p>")))]
+        );
     }
 }

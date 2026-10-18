@@ -267,7 +267,7 @@ impl<'a> Unpack<'a> {
     }
 
     /// What the entry unpacked into.
-    pub(super) fn take_data(&mut self) -> Vec<u8> {
+    pub(super) fn take_data(&mut self) -> Result<crate::input::Input<'static>, Thrown> {
         self.input.io.take_data()
     }
 

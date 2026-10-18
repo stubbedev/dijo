@@ -7,6 +7,7 @@ use extractous_core::Extractor;
 use extractous_mime::mime;
 use extractous_native as bundle;
 
+mod jxl;
 pub mod ocr;
 
 /// The tests count allocations as the command line does, so that budgets are enforced in them,

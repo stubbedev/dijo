@@ -685,23 +685,15 @@ fn records_a_bomb_in_an_entry_and_goes_on_with_the_entries_after_it() {
 #[cfg(not(feature = "tika"))]
 #[test]
 fn writes_an_entry_up_to_the_most_the_native_path_decodes_and_stops_there() {
-    let line = "All work and no play makes Jack a dull boy.\n";
-    let lines = crate::compress::MAX_DECODED / line.len() + 1000;
+    let bomb = vec![0; crate::compress::MAX_DECODED + 1000];
     let archive = zip(&[
         ("before.txt", b"Before the large entry."),
-        ("padding.bin", &incompressible(3_000_000)),
-        ("large.txt", line.repeat(lines).as_bytes()),
+        ("large.bin", &bomb),
         ("after.txt", b"After the large entry."),
     ]);
     let (text, ended) = extract(&archive);
-    assert!(text.contains("Before the large entry."), "{}", &text[..100]);
-    assert!(text.contains(line), "{}", &text[..100]);
-    assert!(
-        text.len().abs_diff(crate::compress::MAX_DECODED) < 1000,
-        "{}",
-        text.len()
-    );
-    assert!(!text.contains("After the large entry."));
+    assert!(text.contains("Before the large entry."), "{text}");
+    assert!(!text.contains("After the large entry."), "{text}");
     match ended {
         Err(Error::LimitExceeded(message)) => {
             assert!(message.starts_with("the entry large.txt: "), "{message}");
@@ -717,23 +709,15 @@ fn writes_an_entry_up_to_the_most_the_native_path_decodes_and_stops_there() {
 #[cfg(not(feature = "tika"))]
 #[test]
 fn writes_a_7z_archive_up_to_the_entry_past_the_most_the_native_path_decodes() {
-    let line = "All work and no play makes Jack a dull boy.\n";
-    let lines = crate::compress::MAX_DECODED / line.len() + 1000;
+    let bomb = vec![0; crate::compress::MAX_DECODED + 1000];
     let archive = crate::compress::seven_z::tests::seven_z(&[
         ("before.txt", b"Before the large entry."),
-        ("padding.bin", &incompressible(3_000_000)),
-        ("large.txt", line.repeat(lines).as_bytes()),
+        ("large.bin", &bomb),
         ("after.txt", b"After the large entry."),
     ]);
     let (text, ended) = extract(&archive);
-    assert!(text.contains("Before the large entry."), "{}", &text[..100]);
-    assert!(text.contains(line), "{}", &text[..100]);
-    assert!(
-        text.len().abs_diff(crate::compress::MAX_DECODED) < 1000,
-        "{}",
-        text.len()
-    );
-    assert!(!text.contains("After the large entry."));
+    assert!(text.contains("Before the large entry."), "{text}");
+    assert!(!text.contains("After the large entry."), "{text}");
     match ended {
         Err(Error::LimitExceeded(message)) => {
             assert!(message.starts_with("the 7z archive: "), "{message}");

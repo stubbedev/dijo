@@ -11,7 +11,10 @@ use std::io::Read;
 
 use flate2::{Decompress, FlushDecompress, Status};
 
-use super::MAX_DECODED;
+#[cfg(doc)]
+use super::{decode_limit, MAX_DECODED};
+use super::{Decoding, Held, Limited, Undecoded, CHUNK};
+use crate::input::Input;
 
 pub(crate) const LFH_SIG: [u8; 4] = *b"PK\x03\x04";
 pub(crate) const CFH_SIG: [u8; 4] = *b"PK\x01\x02";
@@ -28,24 +31,54 @@ pub(crate) const XZ: u16 = 95;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Corrupt;
 
-/// An entry's content: all of it, what was read before the data failed, or the first
-/// [`MAX_DECODED`] bytes of an entry that inflates past them, which is not read on.
-/// A stored entry's is the archive's own bytes; an inflated entry's is its own.
+/// An entry's data as it is read: all of it, what was read before the data failed, or what an
+/// entry that decodes past the limit decodes into up to it, which is not read on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Content<'a> {
-    Complete(Cow<'a, [u8]>),
-    Truncated(Cow<'a, [u8]>),
-    Oversized(Cow<'a, [u8]>),
+pub enum Decoded<D> {
+    Complete(D),
+    Truncated(D),
+    Oversized(D),
 }
 
-impl Content<'_> {
-    pub fn bytes(&self) -> &[u8] {
+/// An entry's content in memory, up to [`MAX_DECODED`] bytes: a stored entry's the archive's own
+/// bytes, an inflated entry's its own.
+pub type Content<'a> = Decoded<Cow<'a, [u8]>>;
+
+/// An entry's content as a document embedded in the archive, up to [`decode_limit`] bytes: a
+/// stored entry's the archive's own bytes, an inflated entry's spooled.
+pub type Spooled<'a> = Decoded<Input<'a>>;
+
+impl<D> Decoded<D> {
+    pub fn map<E>(self, f: impl FnOnce(D) -> E) -> Decoded<E> {
         match self {
-            Content::Complete(bytes) | Content::Truncated(bytes) | Content::Oversized(bytes) => {
-                bytes
+            Decoded::Complete(data) => Decoded::Complete(f(data)),
+            Decoded::Truncated(data) => Decoded::Truncated(f(data)),
+            Decoded::Oversized(data) => Decoded::Oversized(f(data)),
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8]
+    where
+        D: AsRef<[u8]>,
+    {
+        match self {
+            Decoded::Complete(bytes) | Decoded::Truncated(bytes) | Decoded::Oversized(bytes) => {
+                bytes.as_ref()
             }
         }
     }
+}
+
+/// What `decoding` holds of an entry's data, which it decoded to its end where `complete`.
+fn decoded<'a, W: Held>(
+    decoding: Decoding<W>,
+    complete: bool,
+) -> Result<Decoded<W::Bytes<'a>>, Undecoded> {
+    Ok(match decoding.finish()? {
+        Limited::Cut(data) => Decoded::Oversized(data),
+        Limited::Whole(data) if complete => Decoded::Complete(data),
+        Limited::Whole(data) => Decoded::Truncated(data),
+    })
 }
 
 /// Bytes decoded as UTF-8, a malformed sequence replaced by `?`, as commons-compress decodes
@@ -78,38 +111,37 @@ pub(crate) fn u64_at(data: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(data[offset..offset + 8].try_into().expect("eight bytes"))
 }
 
-/// Raw deflate data inflated as `InflaterInputStream` inflates it: to the end of the deflate
-/// stream, or as far as it goes before the input runs out or turns out corrupt, or past
-/// [`MAX_DECODED`] bytes.
-pub(crate) fn inflate(raw: &[u8]) -> Content<'static> {
+/// Raw deflate data inflated into `decoding` as `InflaterInputStream` inflates it: to the end of
+/// the deflate stream, or as far as it goes before the input runs out or turns out corrupt, or
+/// past the limit of `decoding`.
+pub(crate) fn inflate_into<'a, W: Held>(
+    raw: &[u8],
+    mut decoding: Decoding<W>,
+) -> Result<Decoded<W::Bytes<'a>>, Undecoded> {
     let mut inflater = Decompress::new(false);
-    let mut out = Vec::new();
+    let mut chunk = vec![0; CHUNK];
     loop {
-        let (before_in, before_out) = (inflater.total_in(), out.len());
-        out.reserve(64 * 1024);
+        let (before_in, before_out) = (inflater.total_in(), inflater.total_out());
         let consumed = usize::try_from(before_in).expect("the input fits in memory");
         let input: &[u8] = match consumed.cmp(&raw.len()) {
             std::cmp::Ordering::Less => &raw[consumed..],
             std::cmp::Ordering::Equal => &[0],
-            std::cmp::Ordering::Greater => return Content::Truncated(Cow::Owned(out)),
+            std::cmp::Ordering::Greater => return decoded(decoding, false),
         };
-        match inflater.decompress_vec(input, &mut out, FlushDecompress::None) {
-            Ok(_) if out.len() > MAX_DECODED => return oversized(out),
-            Ok(Status::StreamEnd) => return Content::Complete(Cow::Owned(out)),
-            Err(_) => return Content::Truncated(Cow::Owned(out)),
-            Ok(_) if inflater.total_in() == before_in && out.len() == before_out => {
-                return Content::Truncated(Cow::Owned(out))
+        let status = inflater.decompress(input, &mut chunk, FlushDecompress::None);
+        let produced = usize::try_from(inflater.total_out() - before_out)
+            .expect("at most a chunk is produced");
+        decoding.write(&chunk[..produced])?;
+        match status {
+            _ if decoding.is_cut() => return decoded(decoding, false),
+            Ok(Status::StreamEnd) => return decoded(decoding, true),
+            Err(_) => return decoded(decoding, false),
+            Ok(_) if inflater.total_in() == before_in && produced == 0 => {
+                return decoded(decoding, false)
             }
             Ok(_) => {}
         }
     }
-}
-
-/// The content of an entry that decodes past [`MAX_DECODED`] bytes, of which `decoded` holds
-/// more.
-fn oversized(mut decoded: Vec<u8>) -> Content<'static> {
-    decoded.truncate(MAX_DECODED);
-    Content::Oversized(Cow::Owned(decoded))
 }
 
 /// Whether commons-compress decompresses data compressed with `method`, neither stored nor
@@ -146,29 +178,41 @@ pub(crate) fn method_name(code: u16) -> Option<&'static str> {
 }
 
 /// The data `raw` of an entry compressed with `method` and the general purpose `flags`, `size`
-/// bytes once decoded, as commons-compress's `ZipFile.getInputStream` decodes it, without
-/// checking its CRC: all of it, what was decoded before the data failed, or past
-/// [`MAX_DECODED`] bytes. `None` for a method commons-compress does not decompress, and for
-/// stored and deflated data, which the readers take from the archive as far as it goes.
-pub(crate) fn decode(method: u16, flags: u16, raw: &[u8], size: u64) -> Option<Content<'static>> {
+/// bytes once decoded, decoded into `decoding` as commons-compress's `ZipFile.getInputStream`
+/// decodes it, without checking its CRC: all of it, what was decoded before the data failed, or
+/// past the limit of `decoding`. `None` for a method commons-compress does not decompress, and
+/// for stored and deflated data, which the readers take from the archive as far as it goes.
+pub(crate) fn decode_into<'a, W: Held>(
+    method: u16,
+    flags: u16,
+    raw: &[u8],
+    size: u64,
+    mut decoding: Decoding<W>,
+) -> Option<Result<Decoded<W::Bytes<'a>>, Undecoded>> {
     if ZSTD.contains(&method) {
-        return Some(match super::zstd::decode(raw) {
-            Ok(super::Limited::Whole(content)) => Content::Complete(Cow::Owned(content)),
-            Ok(super::Limited::Cut(content)) => Content::Oversized(Cow::Owned(content)),
-            Err(_) => Content::Truncated(Cow::Owned(Vec::new())),
+        return Some(match super::zstd::decode_into(raw, &mut decoding) {
+            Ok(()) => decoded(decoding, true),
+            Err(Undecoded::Unspooled(reason)) => Err(Undecoded::Unspooled(reason)),
+            Err(_) => decoded(decoding, false),
         });
     }
-    decompresses(method).then(|| decode_with_zip_crate(method, flags, raw, size))
+    decompresses(method).then(|| decode_with_zip_crate(method, flags, raw, size, decoding))
 }
 
 /// Data of a method other than Zstandard, as the `zip` crate decodes it, read from a local
 /// header written for it, the only way the crate takes data of the legacy methods.
-fn decode_with_zip_crate(method: u16, flags: u16, raw: &[u8], size: u64) -> Content<'static> {
+fn decode_with_zip_crate<'a, W: Held>(
+    method: u16,
+    flags: u16,
+    raw: &[u8],
+    size: u64,
+    mut decoding: Decoding<W>,
+) -> Result<Decoded<W::Bytes<'a>>, Undecoded> {
     const DATA_DESCRIPTOR: u16 = 0x0008;
     const IMPLODE_OPTIONS: u16 = 0x0006;
     const DOS_EPOCH_DATE: u16 = 0x0021;
-    let mut stream = Vec::with_capacity(30 + raw.len());
-    stream.extend_from_slice(&LFH_SIG);
+    let mut header = Vec::with_capacity(30);
+    header.extend_from_slice(&LFH_SIG);
     for field in [
         10,
         flags & IMPLODE_OPTIONS | DATA_DESCRIPTOR,
@@ -176,30 +220,24 @@ fn decode_with_zip_crate(method: u16, flags: u16, raw: &[u8], size: u64) -> Cont
         0,
         DOS_EPOCH_DATE,
     ] {
-        stream.extend_from_slice(&field.to_le_bytes());
+        header.extend_from_slice(&field.to_le_bytes());
     }
-    stream.extend_from_slice(&[0; 16]);
-    stream.extend_from_slice(raw);
+    header.extend_from_slice(&[0; 16]);
     let options = zip::read::ZipReadOptions::new()
         .ignore_crc32(true)
         .override_compressed_size(raw.len() as u64)
         .override_uncompressed_size(size);
-    let mut out = Vec::new();
-    let mut input = stream.as_slice();
+    let mut input = header.as_slice().chain(raw);
     let read = match zip::read::read_zipfile_from_stream_with_options(&mut input, options) {
-        Ok(Some(entry)) => entry
-            .take(MAX_DECODED as u64 + 1)
-            .read_to_end(&mut out)
-            .is_ok(),
+        Ok(Some(entry)) => match decoding.read_from(entry) {
+            Ok(()) => true,
+            Err(Undecoded::Unspooled(reason)) => return Err(Undecoded::Unspooled(reason)),
+            Err(_) => false,
+        },
         Ok(None) | Err(_) => false,
     };
-    if out.len() > MAX_DECODED {
-        oversized(out)
-    } else if read && out.len() as u64 == size {
-        Content::Complete(Cow::Owned(out))
-    } else {
-        Content::Truncated(Cow::Owned(out))
-    }
+    let complete = read && decoding.written() == size;
+    decoded(decoding, complete)
 }
 
 #[cfg(test)]
@@ -252,7 +290,8 @@ mod tests {
         let start = usize::try_from(entry.data_offset).unwrap();
         let raw = &LEGACY[start..start + 300];
         let size = u64::try_from(entry.size).unwrap();
-        let Some(Content::Truncated(bytes)) = decode(IMPLODING, entry.flags, raw, size) else {
+        let decoded = decode_into(IMPLODING, entry.flags, raw, size, Decoding::in_memory());
+        let Some(Ok(Content::Truncated(bytes))) = decoded else {
             panic!("data cut short is decoded whole");
         };
         assert!(bytes.len() < 1078);

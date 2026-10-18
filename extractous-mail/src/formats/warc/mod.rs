@@ -11,6 +11,8 @@
 
 mod headers;
 mod http;
+#[cfg(all(test, not(feature = "tika")))]
+mod large;
 mod media_type;
 mod ragel;
 mod reader;
@@ -30,7 +32,10 @@ use crate::errors::Error;
 use crate::formats::embedded::{record_exception, Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Deferral, Difference, Failure, Opened, Parser, Prepared};
+use std::convert::Infallible;
+
+use crate::formats::{Decline, Deferral, Difference, Failure, Footprint, Opened, Parser, Prepared};
+use crate::input::{Input, Pages, Paging};
 use crate::java;
 
 const WARC_PREFIX: &str = "warc:";
@@ -59,18 +64,39 @@ impl Parser for WarcParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Decompresses the archive, to a spool where it is gzipped, and reads its records to rule
+    /// out what Tika's path reads otherwise, keeping none of them; they are read again as they
+    /// are written, a record at a time.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let data = reader::decompress(input)
+        let data = reader::decompress(input, pages)
             .map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         let mut difference = None;
-        let payloads = payloads(&data, &mut difference)?;
+        let checked = visit(&data, &mut difference, |_| Ok::<(), Infallible>(()))?;
+        if let Err(never) = checked {
+            match never {}
+        }
+        Paging::new(data.pages()).release();
         let reading: Prepared<'a> = Box::new(move |xhtml| {
-            let written = payloads.write(xhtml);
+            let written = write(&data, xhtml);
             xhtml.end_document()?;
             written
         });
@@ -84,50 +110,56 @@ impl Parser for WarcParser {
     }
 }
 
-/// A payload `WARCParser` hands the embedded document extractor.
-struct Payload {
-    body: Vec<u8>,
+/// A payload `WARCParser` hands the embedded document extractor: the pieces of its record's
+/// block it is made of.
+struct Payload<'a> {
+    body: Vec<&'a [u8]>,
     metadata: TikaMetadata,
 }
 
 /// What `WARCParser` makes of a record it reads on past: a payload, or an exception it records.
-enum Item {
-    Payload(Payload),
+enum Item<'a> {
+    Payload(Payload<'a>),
     Recorded(String),
 }
 
-/// The items of an archive, and what jwarc or `WARCParser` throws after them, failing the
-/// parse.
-struct Payloads {
-    items: Vec<Item>,
-    thrown: Option<String>,
-}
-
-impl Payloads {
-    /// Hands each payload to the embedded document extractor, then fails as Tika's parse does
-    /// after them, if it does.
-    fn write(&self, xhtml: &mut Xhtml<'_>) -> Result<(), Failure> {
-        for item in &self.items {
-            match item {
-                Item::Payload(payload) => xhtml.parse_embedded_opened(
-                    &payload.body,
+/// Hands each payload of the archive `data` to the embedded document extractor, a record at a
+/// time, the pages of the archive released after each, then fails as Tika's parse does after
+/// them, if it does.
+fn write(data: &Input<'_>, xhtml: &mut Xhtml<'_>) -> Result<(), Failure> {
+    let pages = data.pages();
+    let paging = Paging::new(pages);
+    let mut difference = None;
+    let visited = visit(data, &mut difference, |item| {
+        match item {
+            Item::Payload(payload) => {
+                let document = Input::joined(&payload.body, pages).map_err(|error| {
+                    Failure::Extraction(Error::IoError(format!(
+                        "spooling the payload of a WARC record fails: {error}"
+                    )))
+                })?;
+                xhtml.parse_embedded_input_opened(
+                    &document,
                     &payload.metadata,
                     Wrapping::PackageEntry,
                     Opened::Alone,
-                )?,
-                Item::Recorded(exception) => record_exception(xhtml.metadata_mut(), exception),
+                )?;
             }
+            Item::Recorded(exception) => record_exception(xhtml.metadata_mut(), &exception),
         }
-        match &self.thrown {
-            Some(thrown) => Err(Failure::Malformed(thrown.clone())),
-            None => Ok(()),
-        }
+        paging.release();
+        Ok::<(), Failure>(())
+    })
+    .expect("an archive whose reading was not deferred when prepared is not when written");
+    match visited? {
+        Some(thrown) => Err(Failure::Malformed(thrown)),
+        None => Ok(()),
     }
 }
 
 /// What `processRecord` makes of a record.
-enum Processed {
-    Payload(Payload),
+enum Processed<'a> {
+    Payload(Payload<'a>),
     /// An exception `WARCParser` records, going on with the next record.
     Recorded(String),
     Nothing,
@@ -140,38 +172,45 @@ fn differs(difference: &mut Option<Difference>, what: &str) {
     difference.get_or_insert_with(|| Difference::new(what));
 }
 
-/// The payloads of the records of `data`, read as `WARCParser.parse` reads them, with the first
-/// detail in which the native reading differs from it noted in `difference`, or why Tika's path
-/// should read the archive.
-fn payloads(data: &[u8], difference: &mut Option<Difference>) -> Result<Payloads, Deferral> {
-    let (records, stop) = reader::records(data);
-    let mut items = Vec::new();
-    for record in &records {
-        match process(record, difference)? {
-            Processed::Payload(payload) => items.push(Item::Payload(payload)),
-            Processed::Recorded(exception) => items.push(Item::Recorded(exception)),
-            Processed::Nothing => {}
-            Processed::Thrown(thrown) => {
-                return Ok(Payloads {
-                    items,
-                    thrown: Some(thrown),
-                })
-            }
+/// Hands `each` the items of the records of `data` in turn, read as `WARCParser.parse` reads
+/// them, with the first detail in which the native reading differs from it noted in
+/// `difference`: what jwarc or `WARCParser` throws after them, failing the parse, if anything;
+/// the failure of `each`, which ends them; or why Tika's path should read the archive.
+fn visit<'a, E>(
+    data: &'a [u8],
+    difference: &mut Option<Difference>,
+    mut each: impl FnMut(Item<'a>) -> Result<(), E>,
+) -> Result<Result<Option<String>, E>, Deferral> {
+    let mut at = 0;
+    let stop = loop {
+        let record = match reader::next(data, &mut at) {
+            Ok(Some(record)) => record,
+            Ok(None) => break None,
+            Err(stop) => break Some(stop),
+        };
+        let item = match process(&record, difference)? {
+            Processed::Payload(payload) => Item::Payload(payload),
+            Processed::Recorded(exception) => Item::Recorded(exception),
+            Processed::Nothing => continue,
+            Processed::Thrown(thrown) => return Ok(Ok(Some(thrown))),
+        };
+        if let Err(failure) = each(item) {
+            return Ok(Err(failure));
         }
-    }
-    let thrown = match stop {
-        None => None,
-        Some(Stop::Thrown(thrown)) => Some(thrown),
+    };
+    let (thrown, recorded) = match stop {
+        None => (None, None),
+        Some(Stop::Thrown(thrown)) => (Some(thrown), None),
         Some(Stop::NegativeLength) => {
             differs(
                 difference,
                 "a record with a negative Content-Length, which jwarc's LengthedBody \
                  mishandles, where the native parser records the record's failure and stops",
             );
-            items.push(Item::Recorded(
-                "ParsingException: a record with a negative Content-Length".to_owned(),
-            ));
-            None
+            (
+                None,
+                Some("ParsingException: a record with a negative Content-Length"),
+            )
         }
         Some(Stop::CutBlock) => {
             differs(
@@ -179,21 +218,26 @@ fn payloads(data: &[u8], difference: &mut Option<Difference>) -> Result<Payloads
                 "a record cut short of its Content-Length, which Tika records or fails on as \
                  the record's parser reads it, where the native parser records it and stops",
             );
-            items.push(Item::Recorded(
-                "EOFException: a record cut short of its Content-Length".to_owned(),
-            ));
-            None
+            (
+                None,
+                Some("EOFException: a record cut short of its Content-Length"),
+            )
         }
     };
-    Ok(Payloads { items, thrown })
+    if let Some(recorded) = recorded {
+        if let Err(failure) = each(Item::Recorded(recorded.to_owned())) {
+            return Ok(Err(failure));
+        }
+    }
+    Ok(Ok(thrown))
 }
 
 /// `processRecord` and `processResponse` of `record`, noting in `difference` how the native
 /// reading differs from Tika's.
-fn process(
-    record: &Record<'_>,
+fn process<'a>(
+    record: &Record<'a>,
     difference: &mut Option<Difference>,
-) -> Result<Processed, Deferral> {
+) -> Result<Processed<'a>, Deferral> {
     let headers = &record.headers;
     let kind = match headers.sole("WARC-Type") {
         Ok(Some(kind)) => kind,
@@ -480,15 +524,14 @@ mod tests {
     fn records_what_tika_records_as_differing() {
         let recorded = |data: &[u8]| {
             let mut difference = None;
-            let payloads = payloads(data, &mut difference).unwrap();
-            let recorded: Vec<String> = payloads
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    Item::Recorded(exception) => Some(exception.clone()),
-                    Item::Payload(_) => None,
-                })
-                .collect();
+            let mut recorded = Vec::new();
+            let visited = visit(data, &mut difference, |item| {
+                if let Item::Recorded(exception) = item {
+                    recorded.push(exception);
+                }
+                Ok::<(), Infallible>(())
+            });
+            assert!(matches!(visited, Ok(Ok(None))));
             (recorded, difference.expect("the reading differs").0)
         };
         let cut = [

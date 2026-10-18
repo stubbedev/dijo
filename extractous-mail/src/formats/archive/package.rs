@@ -2,16 +2,19 @@
 //! embedded document extractor with the metadata `handleEntryMetadata` gives it, in archive
 //! order. The archive is read as the format its detected type names, and keeps that type; Tika
 //! reads it as the format `ArchiveStreamFactory` recognizes in its bytes and sets that format's
-//! type, but for GNU TAR (#101).
+//! type, but for GNU TAR (#101). The files' data is read in place, so the parser's memory
+//! stays bounded whatever the archive's size, but for a GNU sparse file, which is reassembled
+//! to a spool.
 
 use super::nesting::Scan;
 use super::{undecoded, within_limit, write_files, Cut};
 use crate::compress::archiver::Archiver;
-use crate::compress::{ar, cpio, tar, ArchiveFile};
+use crate::compress::{ar, cpio, tar, ArchiveFile, Limited};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::mime::MediaType;
 
 const GTAR: &str = "application/x-gtar";
@@ -27,11 +30,13 @@ fn named(content_type: &str) -> Option<Archiver> {
 }
 
 /// The format `content_type` names, else the one `ArchiveStreamFactory` recognizes in `input`,
-/// and the files its reader gives, or why the native readers do not read them.
-fn read(
-    input: &[u8],
+/// whose pages are `pages`, and the files its reader gives, or why the native readers do not
+/// read them.
+fn read<'a>(
+    input: &'a [u8],
+    pages: Pages<'a>,
     content_type: Option<&str>,
-) -> Result<(Vec<ArchiveFile>, Option<Cut>), Decline<'static>> {
+) -> Result<(Vec<ArchiveFile<'a>>, Option<Cut>), Decline<'static>> {
     let archiver = content_type
         .and_then(named)
         .or_else(|| Archiver::detect(input))
@@ -51,9 +56,9 @@ fn read(
             )
         })?;
     let files = match archiver {
-        Archiver::Tar => tar::files(input),
-        Archiver::Ar => ar::files(input),
-        Archiver::Cpio => cpio::files(input),
+        Archiver::Tar => tar::files(input, pages),
+        Archiver::Ar => ar::files(input, pages).map(Limited::Whole),
+        Archiver::Cpio => cpio::files(input, pages).map(Limited::Whole),
         other => {
             return Err(Decline::Deferred(format!(
                 "commons-compress reads it as {other:?}, which PackageParser's port does not"
@@ -87,18 +92,34 @@ impl Parser for PackageParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
-        let (files, cut) = read(input, metadata.get("Content-Type"))?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let paging = Paging::new(pages);
+        let (files, cut) = read(input, pages, metadata.get("Content-Type"))?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
             return Err(Decline::Deferred(reason));
         }
+        paging.release();
         Ok(Box::new(move |xhtml| {
-            let written = write_files(&files, xhtml).and_then(|()| Cut::end(cut));
+            let written = write_files(&files, xhtml, &paging).and_then(|()| Cut::end(cut));
             xhtml.end_document()?;
             written
         }))

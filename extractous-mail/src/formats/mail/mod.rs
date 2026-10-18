@@ -25,6 +25,8 @@ mod codec;
 mod date;
 mod field;
 mod handler;
+#[cfg(all(test, not(feature = "tika")))]
+mod large;
 mod mbox;
 #[cfg(test)]
 mod reference;
@@ -45,6 +47,7 @@ use crate::formats::html;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text;
 use crate::formats::{Decline, Difference, Failure, Parser, Prepared};
+use crate::input::Input;
 use crate::java::parse_long;
 
 /// What the port leaves to Tika.
@@ -214,7 +217,7 @@ enum Part {
     /// A text or HTML part its native parser prepared, to parse inline.
     Inline(Prepared<'static>),
     /// A part handed to the embedded document extractor, with the metadata it is given.
-    Embedded(Vec<u8>, TikaMetadata),
+    Embedded(Input<'static>, TikaMetadata),
 }
 
 /// `RFC822Parser.parse` of `message` prepared: the message read, with the metadata it adds to
@@ -257,7 +260,7 @@ fn prepare_message(
             Item::StartEntry => Part::StartEntry,
             Item::EndEntry => Part::EndEntry,
             Item::Inline(Inline::Text(content)) => Part::Inline(
-                text::prepare_plain(content)
+                text::prepare_plain(content.to_vec())
                     .map_err(|reason| Decline::Deferred(format!("a text part defers: {reason}")))?,
             ),
             Item::Inline(Inline::Html(content)) => {
@@ -296,7 +299,7 @@ fn prepare_message(
                 }
                 Part::Inline(prepared) => parse_inline(prepared, xhtml)?,
                 Part::Embedded(content, metadata) => {
-                    xhtml.parse_embedded(&content, &metadata, Wrapping::Bare)?;
+                    xhtml.parse_embedded_input(&content, &metadata, Wrapping::Bare)?;
                 }
             }
         }

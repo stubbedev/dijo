@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use lopdf::{Dictionary, Object};
 
-use super::cos::{as_dict, int_value, name_string, Identity, Pdf};
+use super::cos::{as_dict, int_value, is_dict, name_string, Identity, Pdf};
 
 const MAX_NODES: usize = 500_000;
 const MAX_LEAVES: usize = 1_000_000;
@@ -292,10 +292,7 @@ impl<'p, S> StructureIndex<'p, S> {
                                 self.fail("structure-tree-nodes");
                                 return;
                             }
-                            let own_page = pdf
-                                .get_identified(dict, b"Pg")
-                                .filter(|(_, object)| as_dict(object).is_some())
-                                .map(|(identity, _)| identity);
+                            let own_page = pdf.identity_of(dict, b"Pg", is_dict);
                             let page = own_page.or(page);
                             let raw_type = pdf.name_as_string(dict, b"S");
                             let structure_type = self.resolve_type(raw_type.as_deref());
@@ -315,11 +312,8 @@ impl<'p, S> StructureIndex<'p, S> {
                             let Some(parent) = parent else {
                                 continue;
                             };
-                            let stream = pdf.get_identified(dict, b"Stm").map(|(id, _)| id);
-                            let own_page = pdf
-                                .get_identified(dict, b"Pg")
-                                .filter(|(_, object)| as_dict(object).is_some())
-                                .map(|(identity, _)| identity);
+                            let stream = pdf.identity_of(dict, b"Stm", |_| true);
+                            let own_page = pdf.identity_of(dict, b"Pg", is_dict);
                             let scope = stream.or(own_page).or(page);
                             let mcid = pdf.int(dict, b"MCID", -1);
                             if let (Some(scope), true) = (scope, mcid >= 0) {
@@ -333,10 +327,7 @@ impl<'p, S> StructureIndex<'p, S> {
                             if self.nodes[parent].objr.is_none() {
                                 self.nodes[parent].objr = pdf.dict(dict, b"Obj");
                             }
-                            let own_page = pdf
-                                .get_identified(dict, b"Pg")
-                                .filter(|(_, object)| as_dict(object).is_some())
-                                .map(|(identity, _)| identity);
+                            let own_page = pdf.identity_of(dict, b"Pg", is_dict);
                             let structure_type = &self.nodes[parent].structure_type;
                             if let (Some(page), true) = (
                                 own_page.or(page),

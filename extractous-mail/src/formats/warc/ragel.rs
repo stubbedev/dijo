@@ -20,6 +20,49 @@ pub(super) struct Tables {
 /// The state every machine fails into.
 pub(super) const ERROR: usize = 0;
 
+/// The keys a machine runs over, read where it stands, so that a machine over bytes, which
+/// stops at the end of a header, reads no more of them than it runs over.
+pub(super) trait Keys {
+    fn len(&self) -> usize;
+    fn key(&self, at: usize) -> i32;
+}
+
+impl Keys for [i32] {
+    fn len(&self) -> usize {
+        <[i32]>::len(self)
+    }
+
+    fn key(&self, at: usize) -> i32 {
+        self[at]
+    }
+}
+
+/// Bytes as the keys of a machine generated for Java's `byte`s read unsigned, `b & 0xff`.
+pub(super) struct Unsigned<'a>(pub(super) &'a [u8]);
+
+impl Keys for Unsigned<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn key(&self, at: usize) -> i32 {
+        i32::from(self.0[at])
+    }
+}
+
+/// Bytes as the keys of a machine generated for Java's `byte`s, which are signed.
+pub(super) struct Signed<'a>(pub(super) &'a [u8]);
+
+impl Keys for Signed<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn key(&self, at: usize) -> i32 {
+        i32::from(self.0[at] as i8)
+    }
+}
+
 /// What an action asks of the loop: to go on, or to stop after the current key (`fbreak`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Flow {
@@ -36,7 +79,7 @@ impl Tables {
     pub(super) fn exec<E>(
         &self,
         cs: &mut usize,
-        keys: &[i32],
+        keys: &(impl Keys + ?Sized),
         start: usize,
         end_of_input: bool,
         on_action: &mut dyn FnMut(u16, usize) -> Result<Flow, E>,
@@ -46,7 +89,7 @@ impl Tables {
             return Ok(p);
         }
         while p < keys.len() {
-            let transition = self.transition(*cs, keys[p]);
+            let transition = self.transition(*cs, keys.key(p));
             *cs = usize::from(self.trans_targs[transition]);
             for &action in self.action_list(self.trans_actions[transition]) {
                 if on_action(action, p)? == Flow::Break {

@@ -7,10 +7,13 @@
 //! middle of a line where a refilled buffer starts, and one at the end of a buffer whatever
 //! follows it (#71).
 
-use super::codec::{decode_base64, decode_quoted_printable};
+use std::io::Write;
+
+use super::codec::BodyDecoder;
 use super::field::{is_whitespace, RawField};
 use super::structured::{ContentDisposition, ContentType};
 use super::Unported;
+use crate::input::{Input, Spool};
 
 const BUFFER_SIZE: usize = 4096;
 const MAX_LINE_LENGTH: usize = 100_000;
@@ -36,7 +39,7 @@ pub(super) enum Event {
     StartBodyPart,
     EndBodyPart,
     /// A leaf body, its transfer encoding decoded.
-    Body(BodyDescriptor, Vec<u8>),
+    Body(BodyDescriptor, Input<'static>),
 }
 
 /// Why mime4j stops reading a message, which Tika reports as a failure to parse it.
@@ -983,21 +986,24 @@ impl Stream<'_> {
         }
     }
 
-    /// The body of the current entity as the handler reads it, its transfer encoding decoded.
-    fn body_content(&mut self, body: &BodyDescriptor) -> Result<Vec<u8>, MimeError> {
-        let encoding = body.transfer_encoding();
-        let mut raw = Vec::new();
+    /// The body of the current entity as the handler reads it, its transfer encoding decoded a
+    /// chunk at a time to a spool, which holds no more of it in memory than a file read whole.
+    fn body_content(&mut self, body: &BodyDescriptor) -> Result<Input<'static>, MimeError> {
+        let unspooled = |error: std::io::Error| {
+            MimeError(format!("spooling the body of a part fails: {error}"))
+        };
+        let mut decoder = BodyDecoder::of(body.transfer_encoding());
+        let mut spool = Spool::new(None);
         let mut chunk = vec![0; COPY_BUFFER_SIZE];
+        let mut decoded = Vec::with_capacity(COPY_BUFFER_SIZE);
         while let Some(count) = read_data(&mut self.root, &mut self.entities, &mut chunk) {
-            raw.extend_from_slice(&chunk[..count]);
+            decoder.feed(&chunk[..count], &mut decoded);
+            spool.write_all(&decoded).map_err(unspooled)?;
+            decoded.clear();
         }
-        Ok(if encoding.eq_ignore_ascii_case("base64") {
-            decode_base64(&raw)
-        } else if encoding.eq_ignore_ascii_case("quoted-printable") {
-            decode_quoted_printable(&raw)
-        } else {
-            raw
-        })
+        decoder.finish(&mut decoded);
+        spool.write_all(&decoded).map_err(unspooled)?;
+        spool.finish().map_err(unspooled)
     }
 }
 

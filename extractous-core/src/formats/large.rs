@@ -7,7 +7,7 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::fs::File;
-use std::io::{BufWriter, Write as _};
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use crate::config::ParserConfigs;
@@ -112,19 +112,30 @@ impl LargeFile {
         mut body: impl FnMut(u64) -> Vec<u8>,
         tail: &[u8],
     ) -> Self {
+        let file = Self::written(name, |out| {
+            out.write_all(head)?;
+            for index in 0..count {
+                out.write_all(&body(index))?;
+            }
+            out.write_all(tail)
+        });
+        assert!(std::fs::metadata(&file.path).unwrap().len() > MAX_READ_WHOLE);
+        file
+    }
+
+    /// What `write` writes: a file larger than [`MAX_READ_WHOLE`], or one that decodes into
+    /// more.
+    pub fn written(
+        name: &str,
+        write: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+    ) -> Self {
         let dir = crate::isolate::temp_dir()
             .join(format!("extractous-large-{name}-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join(name);
         let mut out = BufWriter::new(File::create(&path).unwrap());
-        out.write_all(head).unwrap();
-        for index in 0..count {
-            out.write_all(&body(index)).unwrap();
-        }
-        out.write_all(tail).unwrap();
-        let file = out.into_inner().unwrap();
-        file.sync_all().unwrap();
-        assert!(file.metadata().unwrap().len() > MAX_READ_WHOLE);
+        write(&mut out).unwrap();
+        out.into_inner().unwrap().sync_all().unwrap();
         Self { dir, path }
     }
 
@@ -156,7 +167,8 @@ impl LargeFile {
     }
 
     /// The file's text and metadata, extracted by `extractor` under `budget` and never holding
-    /// more, on its own thread or on any working for it, which `parser` must have read.
+    /// more, on its own thread or on any working for it, which `parser` must have read, itself
+    /// or a document embedded in it.
     pub fn extract_with(
         &self,
         extractor: &Extractor,
@@ -180,7 +192,11 @@ impl LargeFile {
             budget_peak <= budget,
             "{path} held {budget_peak} bytes in large allocations and reservations at their peak"
         );
-        assert_eq!(metadata["tk:parsed-by"].last().unwrap(), parser);
+        let parsers = &metadata["tk:parsed-by"];
+        assert!(
+            parsers.iter().any(|by| by == parser),
+            "{path} is parsed by {parsers:?}"
+        );
         (text, metadata)
     }
 }
