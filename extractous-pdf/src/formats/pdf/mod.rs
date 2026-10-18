@@ -61,7 +61,7 @@ use crate::formats::{
 };
 use crate::input::{Pages, Paging};
 
-use cos::Pdf;
+use cos::{Document, Pdf};
 use engine::differ_past;
 use ocr::{OcrCheck, PageOcr, RejectedThresholds};
 use recording::Recording;
@@ -189,7 +189,7 @@ fn prepare<'a>(
                 };
                 let (written, recording) = streamed.write(metadata, xhtml);
                 let ocr_pages = match settings.ocr.dispatches_every_page() {
-                    true => loaded.pdf.pages().len(),
+                    true => loaded.document.page_count(),
                     false => recording.unrecognized_pages(),
                 };
                 ended(xhtml, written, ocr_pages, recording.caught())
@@ -342,17 +342,17 @@ fn record<'a>(
         return Err(failure);
     }
     if recorded?.is_break() {
-        let difference = difference(&loaded.pdf);
+        let difference = difference(&loaded.document);
         return Ok((Recorded::Large(Box::new(loaded), settings), difference));
     }
-    let page_count = loaded.pdf.pages().len();
+    let page_count = loaded.document.page_count();
     let page_ocr = PageOcr::of(
         recording.pages_read(),
         page_count,
         settings.ocr,
         input,
         configs,
-        &loaded.pdf,
+        &loaded.document,
     );
     let ocr_pages = match settings.ocr.dispatches_every_page() {
         true => page_count,
@@ -363,23 +363,23 @@ fn record<'a>(
         page_ocr,
         ocr_pages,
     };
-    Ok((whole, difference(&loaded.pdf)))
+    Ok((whole, difference(&loaded.document)))
 }
 
-/// The first detail in which the extraction of `pdf` so far read it otherwise than Tika's path:
-/// one it noted, else an object it needed and could not read, or that the cross-reference table
-/// does not list and PDFBox finds, which it took for `null`.
-fn difference(pdf: &Pdf) -> Option<Difference> {
-    if let Some(difference) = pdf.difference() {
+/// The first detail in which the extraction of `document` so far read it otherwise than Tika's
+/// path: one it noted, else an object it needed and could not read, or that the
+/// cross-reference table does not list and PDFBox finds, which it took for `null`.
+fn difference(document: &Document) -> Option<Difference> {
+    if let Some(difference) = document.difference() {
         return Some(difference);
     }
-    if let Some(((number, generation), Unported(reason))) = pdf.unread_object_needed() {
+    if let Some(((number, generation), Unported(reason))) = document.unread_object_needed() {
         return Some(Difference(format!(
             "object {number} {generation}, which the port cannot read and takes for null: \
              {reason}"
         )));
     }
-    match pdf.first_found(&pdf.unlisted_objects_needed()) {
+    match document.first_found(&document.unlisted_objects_needed()) {
         Ok(None) => None,
         Ok(Some((number, _))) => Some(Difference(format!(
             "object {number}, which the cross-reference table does not list and PDFBox finds \
@@ -431,13 +431,13 @@ impl Streamed<'_, '_> {
 
     /// Extracts the document into `xhtml` through `recording`.
     fn write_recording(&self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        let page_count = self.loaded.pdf.pages().len();
+        let page_count = self.loaded.document.page_count();
         let pages = StreamedPages {
             input: self.input,
             page_count,
             check: self.settings.ocr,
             configs: self.configs,
-            pdf: &self.loaded.pdf,
+            document: &self.loaded.document,
         };
         let mut flushed = Ok(());
         let written = extract(
@@ -462,7 +462,7 @@ impl Streamed<'_, '_> {
             }
         }
         pages.flush(recording, xhtml)?;
-        match difference(&self.loaded.pdf) {
+        match difference(&self.loaded.document) {
             Some(difference) if !self.known => late_difference(xhtml, difference),
             _ => Ok(()),
         }
@@ -495,7 +495,7 @@ struct StreamedPages<'a> {
     page_count: usize,
     check: OcrCheck,
     configs: &'a ParserConfigs,
-    pdf: &'a Pdf<'a>,
+    document: &'a Document<'a>,
 }
 
 impl StreamedPages<'_> {
@@ -508,7 +508,7 @@ impl StreamedPages<'_> {
             self.check,
             self.input,
             self.configs,
-            self.pdf,
+            self.document,
         );
         match page_ocr {
             None => recording.flush(xhtml, None),
@@ -519,7 +519,7 @@ impl StreamedPages<'_> {
 
 /// A document's objects, what the password opens it with, and the version of its header.
 struct Loaded<'a> {
-    pdf: Pdf<'a>,
+    document: Document<'a>,
     access: Access,
     version: f32,
 }
@@ -544,40 +544,40 @@ fn load<'a>(
     let resolution = resolved.resolution;
     let password = configs.password.as_ref().map_or("", Password::expose);
     let opening = Opening::of(resolution.encryption(input), password).map_err(refused)?;
-    let mut pdf = Pdf::new(input, paging, &resolution);
+    let mut document = Document::new(input, paging, &resolution);
     if let Some(difference) = resolved.difference {
-        pdf.differ(difference);
+        document.differ(difference);
     }
     let Opening::Standard {
         document_id,
         encryption,
     } = opening
     else {
-        return loaded(pdf, Access::Unencrypted, version);
+        return loaded(document, Access::Unencrypted, version);
     };
-    match decryption(&pdf, &document_id, encryption, password) {
+    match decryption(&document.view(), &document_id, encryption, password) {
         Decryption::Decrypted(state, access) => {
-            let id = match pdf.trailer().get(b"Encrypt") {
+            let id = match document.trailer().get(b"Encrypt") {
                 Ok(lopdf::Object::Reference(id)) => Some(*id),
                 _ => None,
             };
-            pdf.decrypt_with(*state, id);
-            match resolution
-                .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))
-            {
-                Ok(found) => pdf.place(found),
-                Err(Unported(reason)) => pdf.differ(Difference(format!(
+            document.decrypt_with(*state, id);
+            match resolution.object_stream_placements(input, &|id, dict, data| {
+                document.decrypted(id, dict, data)
+            }) {
+                Ok(found) => document.place(found),
+                Err(Unported(reason)) => document.differ(Difference(format!(
                     "the port leaves out the object streams PDFBox's search finds: {reason}"
                 ))),
             }
-            loaded(pdf, access, version)
+            loaded(document, access, version)
         }
         Decryption::Refused(refusal) => Err(refused(refusal)),
         Decryption::Undecrypted(why) => {
-            pdf.differ(Difference(format!(
+            document.differ(Difference(format!(
                 "an encrypted document the port reads undecrypted, as the owner's: {why}"
             )));
-            loaded(pdf, Access::Owner, version)
+            loaded(document, Access::Owner, version)
         }
     }
 }
@@ -639,13 +639,19 @@ fn decryption(pdf: &Pdf, document_id: &[u8], encryption: Encryption, password: &
     }
 }
 
-/// The loaded document of `pdf`, opened with `access`, its header of `version`, or how it
-/// fails where it lacks the catalog or page tree root `PDFParser.initialParse` checks it for.
-fn loaded(pdf: Pdf<'_>, access: Access, version: f32) -> Result<Loaded<'_>, Decline<'static>> {
-    pdf.check_catalog()
+/// The loaded `document`, opened with `access`, its header of `version`, or how it fails where
+/// it lacks the catalog or page tree root `PDFParser.initialParse` checks it for.
+fn loaded(
+    document: Document<'_>,
+    access: Access,
+    version: f32,
+) -> Result<Loaded<'_>, Decline<'static>> {
+    document
+        .view()
+        .check_catalog()
         .map_err(|message| io_failure(Exception::new("java.io.IOException", message)))?;
     Ok(Loaded {
-        pdf,
+        document,
         access,
         version,
     })
@@ -680,7 +686,7 @@ fn extract(
     out: &mut Recording,
     after_page: &mut dyn FnMut(&mut Recording) -> ControlFlow<()>,
 ) -> Result<ControlFlow<()>, WriteFailure> {
-    let pdf = &loaded.pdf;
+    let pdf = &loaded.document.view();
     let mut startxrefs = 0;
     for offset in metadata::scan_startxrefs(input, pdf.paging()) {
         if offset.startxref == 0 {
@@ -734,12 +740,14 @@ fn extract(
     DocumentWriter::new(pdf, out, tagged, settings).write(after_page)
 }
 
-/// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data.
+/// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data, read
+/// in a scope of its own.
 fn is_illustrator(pdf: &Pdf) -> bool {
-    let pages = pdf.pages();
-    let Some(page) = pages.first() else {
+    let Some(page) = pdf.pages().first() else {
         return false;
     };
+    let pdf = pdf.scoped();
+    let page = pdf.page(page);
     pdf.dict(page.dict, b"PieceInfo")
         .and_then(|piece_info| pdf.dict(piece_info, b"Illustrator"))
         .and_then(|illustrator| pdf.dict(illustrator, b"Private"))
@@ -2283,7 +2291,7 @@ mod tests {
         });
         assert!(matches!(written, Ok(ControlFlow::Continue(()))));
         assert_eq!(recording.unrecognized_pages(), 1);
-        let Some(Difference(difference)) = difference(&loaded.pdf) else {
+        let Some(Difference(difference)) = difference(&loaded.document) else {
             panic!("no difference");
         };
         assert!(

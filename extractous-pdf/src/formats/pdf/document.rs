@@ -6,9 +6,9 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use flate2::{Decompress, FlushDecompress, Status};
-use lopdf::{Dictionary, Object};
+use lopdf::{Dictionary, Object, ObjectId};
 
-use super::cos::{as_dict, Identity, Pdf};
+use super::cos::{as_dict, Document, Identity, Pdf};
 use super::font::rectangle;
 use super::Unported;
 
@@ -22,11 +22,64 @@ static EMPTY_PAGE: LazyLock<Dictionary> = LazyLock::new(|| {
 /// `PDRectangle.LETTER`, the media box PDFBox gives a page without one.
 const LETTER: [f32; 4] = [0.0, 0.0, 612.0, 792.0];
 
+/// A page as the page tree lists it, which is read when it is processed, in the page's scope.
+#[derive(Debug)]
+pub(super) enum PageRef {
+    /// A page dictionary the cross-reference table lists.
+    Indirect(ObjectId),
+    /// A page dictionary held in a node of the tree, or the tree's root held in the catalog,
+    /// where `identity` says.
+    Direct {
+        identity: Identity,
+        dict: Box<Dictionary>,
+    },
+    /// The empty page `PDPageTree.getKids` puts in place of a kid that reads as `null`, held
+    /// where `identity` says.
+    Empty(Identity),
+}
+
+impl PageRef {
+    /// How the page `dict` of `identity` is listed.
+    fn of(identity: Identity, dict: &Dictionary) -> Self {
+        match identity {
+            Identity::Indirect(id) => Self::Indirect(id),
+            identity => Self::Direct {
+                identity,
+                dict: Box::new(dict.clone()),
+            },
+        }
+    }
+}
+
 /// A page of the document.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Page<'a> {
     pub(super) identity: Identity,
     pub(super) dict: &'a Dictionary,
+}
+
+impl Document<'_> {
+    /// How many pages the page tree lists.
+    pub(super) fn page_count(&self) -> usize {
+        self.view().pages().len()
+    }
+}
+
+/// What a kid of a page tree node reads as, read in a scope of its own.
+enum Kid {
+    /// It reads as nothing.
+    Missing,
+    /// It is no dictionary.
+    Other,
+    Dictionary {
+        identity: Identity,
+        has_kids: bool,
+        /// Whether it is a node of the page tree, and one of type `Pages`.
+        node: bool,
+        pages: bool,
+        /// The page it is, if it is one.
+        page: Option<PageRef>,
+    },
 }
 
 impl Pdf<'_> {
@@ -65,19 +118,48 @@ impl Pdf<'_> {
         self.int(root, b"Count", 0)
     }
 
-    /// `PDPageTree.iterator`: the pages, leaves of the tree in order, each visited once.
-    pub(super) fn pages(&self) -> Vec<Page<'_>> {
-        let (identity, root) = self.page_tree_root();
-        let mut pages = Vec::new();
-        if self.name(root, b"Type") == Some(b"Page") {
-            pages.push(Page {
-                identity,
-                dict: root,
-            });
-            return pages;
+    /// `PDPageTree.iterator`: the pages, leaves of the tree in order, each visited once. The
+    /// tree is walked once, its nodes held for the document and its pages not.
+    pub(super) fn pages(&self) -> &[PageRef] {
+        self.pages.get_or_init(|| self.view().walk_pages())
+    }
+
+    /// The page `page`, read for this scope.
+    pub(super) fn page<'a>(&'a self, page: &'a PageRef) -> Page<'a> {
+        match page {
+            PageRef::Indirect(id) => Page {
+                identity: Identity::Indirect(*id),
+                dict: self
+                    .indirect(*id)
+                    .and_then(as_dict)
+                    .expect("a page reads again as it read when the page tree was walked"),
+            },
+            PageRef::Direct { identity, dict } => Page {
+                identity: *identity,
+                dict,
+            },
+            PageRef::Empty(identity) => Page {
+                identity: *identity,
+                dict: &EMPTY_PAGE,
+            },
         }
+    }
+
+    fn walk_pages(&self) -> Vec<PageRef> {
+        let (identity, root) = self.page_tree_root();
+        if self.name(root, b"Type") == Some(b"Page") {
+            return vec![PageRef::of(identity, root)];
+        }
+        let mut pages = Vec::new();
         let mut visited: HashSet<Identity> = HashSet::new();
-        self.enqueue_kids(root, self.trailer_rebuilt, &mut visited, &mut pages);
+        let mut scope = self.scoped();
+        self.enqueue_kids(
+            root,
+            self.trailer_rebuilt,
+            &mut scope,
+            &mut visited,
+            &mut pages,
+        );
         pages
     }
 
@@ -85,15 +167,38 @@ impl Pdf<'_> {
         self.name(node, b"Type") == Some(b"Pages") || node.has(b"Kids")
     }
 
+    /// What `kid` reads as in `scope`, which holds what it read until it is trimmed.
+    fn kid(scope: &mut Pdf, kid: &Object) -> Kid {
+        scope.trim();
+        let Some((identity, object)) = scope.resolve_identified(kid) else {
+            return Kid::Missing;
+        };
+        let Some(dict) = as_dict(object) else {
+            return Kid::Other;
+        };
+        let node = scope.is_page_tree_node(dict);
+        let page = (!node && scope.name(dict, b"Type") == Some(b"Page"))
+            .then(|| PageRef::of(identity, dict));
+        Kid::Dictionary {
+            identity,
+            has_kids: dict.has(b"Kids"),
+            node,
+            pages: scope.name(dict, b"Type") == Some(b"Pages"),
+            page,
+        }
+    }
+
     /// `enqueueKids`, over `getKids`, which puts an empty page in place of a kid that reads as
     /// `null`, unless `checked`, as the kids of the page tree nodes `COSParser.checkPages`
     /// walks are where the trailer was rebuilt: it drops such a kid, and one held directly.
-    fn enqueue_kids<'a>(
-        &'a self,
-        node: &'a Dictionary,
+    /// Each kid is read in `scope`, and only the nodes of the tree are read for the document.
+    fn enqueue_kids(
+        &self,
+        node: &Dictionary,
         checked: bool,
+        scope: &mut Pdf,
         visited: &mut HashSet<Identity>,
-        pages: &mut Vec<Page<'a>>,
+        pages: &mut Vec<PageRef>,
     ) {
         if !self.is_page_tree_node(node) {
             return;
@@ -105,29 +210,36 @@ impl Pdf<'_> {
             if checked && !matches!(kid, Object::Reference(_)) {
                 continue;
             }
-            let Some((identity, object)) = self.resolve_identified(kid) else {
-                if !checked {
-                    pages.push(Page {
-                        identity: Identity::of_direct(kid),
-                        dict: &EMPTY_PAGE,
-                    });
+            let (identity, has_kids, is_node, is_pages, page) = match Self::kid(scope, kid) {
+                Kid::Missing => {
+                    if !checked {
+                        pages.push(PageRef::Empty(Identity::of_direct(kid)));
+                    }
+                    continue;
                 }
-                continue;
-            };
-            let Some(dict) = as_dict(object) else {
-                continue;
+                Kid::Other => continue,
+                Kid::Dictionary {
+                    identity,
+                    has_kids,
+                    node,
+                    pages,
+                    page,
+                } => (identity, has_kids, node, pages, page),
             };
             if visited.contains(&identity) {
                 continue;
             }
-            if dict.has(b"Kids") {
+            if has_kids {
                 visited.insert(identity);
             }
-            if self.is_page_tree_node(dict) {
-                let checked = checked && self.name(dict, b"Type") == Some(b"Pages");
-                self.enqueue_kids(dict, checked, visited, pages);
-            } else if self.name(dict, b"Type") == Some(b"Page") {
-                pages.push(Page { identity, dict });
+            if is_node {
+                let child = self
+                    .resolve(kid)
+                    .and_then(as_dict)
+                    .expect("a node of the page tree reads again as it read");
+                self.enqueue_kids(child, checked && is_pages, scope, visited, pages);
+            } else if let Some(page) = page {
+                pages.push(page);
             }
         }
     }
