@@ -361,8 +361,7 @@ fn decrypts_a_protected_package_too_large_to_read_whole_to_a_spool() {
         write_docx(&mut package, CompressionMethod::Stored, LARGE)?;
         let (info, stream) = encrypted_package(DEFAULT_PASSWORD, &package);
         drop(package);
-        let document =
-            |name: &str, content| (name.encode_utf16().collect(), Node::Document(content));
+        let document = |name: &str, content| (name.encode_utf16().collect(), Node::Owned(content));
         let compound = ole2::write(&Storage {
             class_id: [0; 16],
             entries: vec![

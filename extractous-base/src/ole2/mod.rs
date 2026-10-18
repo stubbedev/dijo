@@ -9,9 +9,7 @@ use std::collections::HashSet;
 
 mod write;
 
-#[cfg(any(test, feature = "testing"))]
-pub use write::Storage;
-pub use write::{write, Node};
+pub use write::{write, Node, Storage};
 
 /// The signature an OLE2 compound document starts with.
 pub(crate) const SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
@@ -865,10 +863,7 @@ pub mod tests {
                         entries: Vec::new(),
                     }),
                 ),
-                None => (
-                    name.encode_utf16().collect(),
-                    Node::Document(content.to_vec()),
-                ),
+                None => (name.encode_utf16().collect(), Node::Owned(content.to_vec())),
             })
             .collect();
         write::write(&Storage {

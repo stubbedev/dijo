@@ -96,9 +96,10 @@ fn anchored_textboxes(path: &Path) -> Vec<String> {
     let input = std::fs::read(path).unwrap();
     let configs = ParserConfigs::default();
     let file = office::open(&input, &configs, MEDIA_TYPE, "Word document").unwrap();
-    let Ok(Word::Modern(document)) = Document::read(&file, file.root(), &configs) else {
+    let Ok(Word::Modern(streams)) = Word::read(&file, file.root(), &configs) else {
         return Vec::new();
     };
+    let document = streams.document().unwrap();
     let anchored = document.anchored_textboxes().unwrap();
     let (start, end) = document.story(fib::Story::Textbox);
     let story = document.range(start, end).unwrap();
@@ -110,7 +111,7 @@ fn anchored_textboxes(path: &Path) -> Vec<String> {
             .iter()
             .any(|(_, textbox)| span.start >= textbox.start && span.start < textbox.end)
         {
-            let text = extractor::strip_fields(document.text_of(span).unwrap()).unwrap();
+            let text = extractor::strip_fields(&document.text_of(span).unwrap()).unwrap();
             let text = String::from_utf16_lossy(&extractor::clean(&text));
             let text = text.trim();
             if !text.is_empty() {
@@ -232,22 +233,23 @@ fn decrypts_an_encrypted_document_with_its_password_only() {
     let configs = |password: &str| {
         ParserConfigs::default().with_password(Some(&crate::config::Password::new(password)))
     };
-    let (_, extracted) = read(&input, &configs("tika")).unwrap();
-    let text: String = extracted
-        .out
-        .iter()
-        .filter_map(|out| match out {
-            extractor::Out::Text(text) => Some(String::from_utf16_lossy(text)),
-            _ => None,
-        })
-        .collect();
+    let opened = configs("tika");
+    let (file, _) = plan(&input, &opened).unwrap();
+    let mut text = String::new();
+    planned(read(&file, &opened, &mut |out| {
+        if let Out::Text(units) = out {
+            text.push_str(&String::from_utf16_lossy(&units));
+        }
+        Ok::<(), Infallible>(())
+    }))
+    .unwrap();
     assert!(
         text.contains("This is an encrypted Word 2007 File."),
         "{text}"
     );
     for configs in [ParserConfigs::default(), configs("wrong")] {
         assert!(matches!(
-            read(&input, &configs),
+            plan(&input, &configs),
             Err(Decline::Fails(crate::Error::Encrypted(_)))
         ));
     }
@@ -272,4 +274,102 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let alike = without_departures(&ported);
     assert_eq!(ported.len() - alike.len(), DEPARTURES.len());
     assert_same_as_tika(&alike, 2);
+}
+
+/// A Word 97 document whose text is `text` in code page 1252, of one piece, one character run
+/// and one paragraph run, with no styles and no fonts.
+fn word97(text: &[u8]) -> Vec<u8> {
+    use crate::ole2::{write, Node, Storage};
+    const TEXT_AT: usize = 1024;
+    let put = |bytes: &mut Vec<u8>, at: usize, value: i32| {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    };
+    let length = text.len() as i32;
+    let mut main = vec![0; TEXT_AT];
+    main[2..4].copy_from_slice(&193u16.to_le_bytes());
+    main[0xA..0xC].copy_from_slice(&fib::TABLE_ONE_FLAG.to_le_bytes());
+    put(&mut main, 64 + 0xC, length);
+    main[152..154].copy_from_slice(&93u16.to_le_bytes());
+    for (field, offset, size) in [
+        (fib::field::DOP, 0, 500),
+        (fib::field::STSHF, 500, 6),
+        (fib::field::STTBFFFN, 512, 4),
+        (fib::field::CLX, 520, 21),
+        (fib::field::PLCFBTECHPX, 544, 12),
+        (fib::field::PLCFBTEPAPX, 556, 12),
+    ] {
+        put(&mut main, 154 + field * 8, offset);
+        put(&mut main, 154 + field * 8 + 4, size);
+    }
+    main.extend_from_slice(text);
+    main.resize(main.len().next_multiple_of(512), 0);
+    let character_page = main.len();
+    main.resize(character_page + 1024, 0);
+    let paragraph_page = character_page + 512;
+    for page in [character_page, paragraph_page] {
+        put(&mut main, page, TEXT_AT as i32);
+        put(&mut main, page + 4, TEXT_AT as i32 + length);
+        main[page + 511] = 1;
+    }
+    main[paragraph_page + 8] = 0x40;
+    main[paragraph_page + 0x81] = 1;
+
+    let mut table = vec![0; 568];
+    table[500..506].copy_from_slice(&[4, 0, 0, 0, 10, 0]);
+    table[520] = 2;
+    put(&mut table, 521, 16);
+    put(&mut table, 525, 0);
+    put(&mut table, 529, length);
+    put(&mut table, 535, (TEXT_AT as i32 * 2) | 0x4000_0000);
+    for (bin, page) in [(544, character_page), (556, paragraph_page)] {
+        put(&mut table, bin, TEXT_AT as i32);
+        put(&mut table, bin + 4, TEXT_AT as i32 + length);
+        put(&mut table, bin + 8, (page / 512) as i32);
+    }
+    let units = |name: &str| name.encode_utf16().collect::<Vec<u16>>();
+    write(&Storage {
+        class_id: [0; 16],
+        entries: vec![
+            (units("WordDocument"), Node::Owned(main)),
+            (units("1Table"), Node::Owned(table)),
+        ],
+    })
+    .unwrap()
+}
+
+/// A Word document too large to read whole is read in place, its paragraphs read from the main
+/// stream one at a time and written a piece at a time, in memory that does not grow with it.
+#[test]
+fn extracts_documents_too_large_to_read_whole_in_bounded_memory() {
+    use crate::input::MAX_READ_WHOLE;
+    use extractous_core::large::LargeFile;
+    use std::io::Write as _;
+
+    let mut text = Vec::new();
+    let mut lines = 0u64;
+    let mut paragraph_start = 0;
+    while text.len() as u64 <= MAX_READ_WHOLE {
+        write!(text, "Linje {lines} i logbogen").unwrap();
+        lines += 1;
+        if text.len() - paragraph_start > 1 << 16 {
+            text.push(b'\r');
+            paragraph_start = text.len();
+        } else {
+            text.push(0x0B);
+        }
+    }
+    *text.last_mut().unwrap() = b'\r';
+    let document = word97(&text);
+    drop(text);
+    let file = LargeFile::new("large.doc", &document, 0, |_| Vec::new(), b"");
+    drop(document);
+    let last = format!("Linje {} i logbogen", lines - 1);
+    let (mut first_seen, mut last_seen) = (false, false);
+    let metadata = file.extract_lines("extractous::OfficeParser", |line| match line.trim() {
+        "Linje 0 i logbogen" => first_seen = true,
+        line if line == last => last_seen = first_seen,
+        _ => {}
+    });
+    assert!(first_seen && last_seen);
+    assert_eq!(metadata["Content-Type"], ["application/msword"]);
 }

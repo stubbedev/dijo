@@ -1,11 +1,14 @@
 //! The records of a PowerPoint document stream as POI's `Record.createRecordForType` builds them:
 //! containers with their children, atoms with the bytes their constructors keep, slide drawings
 //! and the drawing group as Escher, each constructor's own checks, and the exceptions they throw,
-//! which POI passes over for a record that claims more bytes than its source holds.
+//! which POI passes over for a record that claims more bytes than its source holds. A record
+//! borrows its bytes from the stream it is built from.
+
+use std::borrow::Cow;
 
 use crate::formats::crypt::{EncryptionInfo, Mode};
 use crate::formats::escher::{self, Escher, Factory};
-use crate::formats::poi::{i16_at, i32_at, safely_clone, u16_at, u8_at, Read, Thrown, Unread};
+use crate::formats::poi::{i16_at, i32_at, safely_borrow, u16_at, u8_at, Read, Thrown, Unread};
 use crate::formats::Unported;
 
 use super::drawing::Drawing;
@@ -122,36 +125,36 @@ impl Depth {
 
 /// A record of the document stream.
 #[derive(Debug)]
-pub(super) struct Record {
+pub(super) struct Record<'d> {
     pub(super) kind: u16,
     /// The first two bytes of its header: its version and instance.
     pub(super) options: u16,
-    pub(super) body: Body,
+    pub(super) body: Body<'d>,
 }
 
 /// What a record holds.
 #[derive(Debug)]
-pub(super) enum Body {
+pub(super) enum Body<'d> {
     /// An atom's bytes after its header, as far as its constructor reads them.
-    Atom(Vec<u8>),
-    Container(Vec<Record>),
+    Atom(Cow<'d, [u8]>),
+    Container(Vec<Record<'d>>),
     /// A slide's drawing (`PPDrawing`).
-    Drawing(Box<Drawing>),
+    Drawing(Box<Drawing<'d>>),
     /// The document's drawing group (`PPDrawingGroup`): its `DggContainer`.
-    DrawingGroup(Box<Escher<'static>>),
+    DrawingGroup(Box<Escher<'d>>),
     /// A `DocumentEncryptionAtom`: the encryption it reads, as CryptoAPI where its version
     /// allows.
     Encryption(Box<EncryptionInfo>),
 }
 
-impl Record {
+impl<'d> Record<'d> {
     /// `getInstance` as POI's records read it from a signed short: the options shifted.
     pub(super) fn instance(&self) -> i32 {
         i32::from(self.options as i16 >> 4)
     }
 
     /// The children of a container, none for an atom.
-    pub(super) fn children(&self) -> &[Record] {
+    pub(super) fn children(&self) -> &[Record<'d>] {
         match &self.body {
             Body::Container(children) => children,
             _ => &[],
@@ -166,14 +169,40 @@ impl Record {
         }
     }
 
+    /// The bytes of an atom where they lie in the stream it was built from, or `None` where it
+    /// holds a copy.
+    pub(super) fn in_place(&self) -> Option<&'d [u8]> {
+        match &self.body {
+            Body::Atom(Cow::Borrowed(data)) => Some(data),
+            _ => None,
+        }
+    }
+
+    /// The same, owning the bytes it borrowed.
+    pub(super) fn into_owned(self) -> Record<'static> {
+        Record {
+            kind: self.kind,
+            options: self.options,
+            body: match self.body {
+                Body::Atom(data) => Body::Atom(Cow::Owned(data.into_owned())),
+                Body::Container(children) => {
+                    Body::Container(children.into_iter().map(Record::into_owned).collect())
+                }
+                Body::Drawing(drawing) => Body::Drawing(Box::new(drawing.into_owned())),
+                Body::DrawingGroup(group) => Body::DrawingGroup(Box::new(group.into_owned())),
+                Body::Encryption(info) => Body::Encryption(info),
+            },
+        }
+    }
+
     /// `findFirstOfType`.
-    pub(super) fn first(&self, kind: u16) -> Option<&Record> {
+    pub(super) fn first(&self, kind: u16) -> Option<&Record<'d>> {
         self.children().iter().find(|child| child.kind == kind)
     }
 
     /// The last child of the type, which the containers that keep one of their children of a
     /// type, assigning each they meet, keep.
-    pub(super) fn last(&self, kind: u16) -> Option<&Record> {
+    pub(super) fn last(&self, kind: u16) -> Option<&Record<'d>> {
         self.children()
             .iter()
             .rev()
@@ -182,7 +211,7 @@ impl Record {
 
     /// The last child of the type after the first, as `Document` keeps its environment, drawing
     /// group and objects.
-    pub(super) fn last_after_first(&self, kind: u16) -> Option<&Record> {
+    pub(super) fn last_after_first(&self, kind: u16) -> Option<&Record<'d>> {
         self.children()
             .iter()
             .skip(1)
@@ -215,7 +244,7 @@ impl Record {
     }
 
     /// The drawing of a `PPDrawing`.
-    pub(super) fn drawing(&self) -> Option<&Drawing> {
+    pub(super) fn drawing(&self) -> Option<&Drawing<'d>> {
         match &self.body {
             Body::Drawing(drawing) => Some(drawing),
             _ => None,
@@ -223,7 +252,7 @@ impl Record {
     }
 
     /// The `DggContainer` of a `PPDrawingGroup`.
-    pub(super) fn drawing_group(&self) -> Option<&Escher<'static>> {
+    pub(super) fn drawing_group(&self) -> Option<&Escher<'d>> {
         match &self.body {
             Body::DrawingGroup(group) => Some(group),
             _ => None,
@@ -284,7 +313,7 @@ fn ushort_at(data: &[u8], at: i64) -> Read<u16> {
 
 /// `Record.buildRecordAtOffset`: the record at `offset`, `None` where it claims more bytes than
 /// `source` holds and its constructor throws.
-pub(super) fn build_at(source: &[u8], offset: i64, depth: Depth) -> Built<Option<Record>> {
+pub(super) fn build_at(source: &[u8], offset: i64, depth: Depth) -> Built<Option<Record<'_>>> {
     let kind = ushort_at(source, offset + 2)?;
     let length = record_length(uint_at(source, offset + 4)?)?;
     create(kind, source, offset, length, depth)
@@ -308,7 +337,7 @@ pub(super) fn children_at(
     start: i64,
     length: i64,
     depth: Depth,
-) -> Built<Vec<Record>> {
+) -> Built<Vec<Record<'_>>> {
     let mut children = Vec::new();
     let mut position = start;
     while position <= start + length - 8 {
@@ -336,7 +365,7 @@ fn create(
     start: i64,
     length: i64,
     depth: Depth,
-) -> Built<Option<Record>> {
+) -> Built<Option<Record<'_>>> {
     match construct(kind, source, start, length, depth) {
         Ok(body) => {
             let options = u16_at(source, start as usize).unwrap_or_default();
@@ -351,14 +380,15 @@ fn create(
     }
 }
 
-/// `IOUtils.safelyClone(source, offset, length, max)` at Java offsets.
-fn clone(source: &[u8], offset: i64, length: i64, max: i64) -> Read<Vec<u8>> {
-    safely_clone(source, offset, length, max)
+/// The bytes `IOUtils.safelyClone(source, offset, length, max)` copies, at Java offsets, in
+/// place.
+fn clone(source: &[u8], offset: i64, length: i64, max: i64) -> Read<&[u8]> {
+    safely_borrow(source, offset, length, max)
 }
 
 /// The bytes after the header up to `fixed` bytes from the start, which a constructor reads
 /// whatever the record claims, failing where `source` ends first.
-fn fixed(source: &[u8], start: i64, fixed: i64, length: i64) -> Read<Vec<u8>> {
+fn fixed(source: &[u8], start: i64, fixed: i64, length: i64) -> Read<&[u8]> {
     if start + fixed > source.len() as i64 {
         return Err(Thrown::new(format!(
             "Index {} out of bounds for length {}",
@@ -367,17 +397,28 @@ fn fixed(source: &[u8], start: i64, fixed: i64, length: i64) -> Read<Vec<u8>> {
         )));
     }
     let end = (start + fixed.max(length)).min(source.len() as i64);
-    Ok(source[(start + 8) as usize..end as usize].to_vec())
+    Ok(&source[(start + 8) as usize..end as usize])
+}
+
+/// The body of an atom of `data`.
+fn atom_of(data: &[u8]) -> Body<'_> {
+    Body::Atom(Cow::Borrowed(data))
 }
 
 /// An atom whose constructor copies what follows its header, up to `max` bytes.
-fn atom(source: &[u8], start: i64, length: i64, max: i64) -> Read<Body> {
-    Ok(Body::Atom(clone(source, start + 8, length - 8, max)?))
+fn atom(source: &[u8], start: i64, length: i64, max: i64) -> Read<Body<'_>> {
+    Ok(atom_of(clone(source, start + 8, length - 8, max)?))
 }
 
 /// A container whose `findInterestingChildren` reads its first `needed` children, failing
 /// where it has fewer.
-fn container(source: &[u8], start: i64, length: i64, needed: usize, depth: Depth) -> Built<Body> {
+fn container(
+    source: &[u8],
+    start: i64,
+    length: i64,
+    needed: usize,
+    depth: Depth,
+) -> Built<Body<'_>> {
     let children = children_at(source, start + 8, length - 8, depth.deeper()?)?;
     if children.len() < needed {
         return Err(Thrown::new(format!(
@@ -391,7 +432,7 @@ fn container(source: &[u8], start: i64, length: i64, needed: usize, depth: Depth
 }
 
 /// The constructor of a record type, as `RecordTypes` names it, run on the record.
-fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) -> Built<Body> {
+fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) -> Built<Body<'_>> {
     use kind::*;
     Ok(match kind {
         SLIDE | NOTES | MAIN_MASTER | VBA_INFO | LIST | SOUND_COLLECTION | HAND_OUT
@@ -455,14 +496,14 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
         PP_DRAWING => Body::Drawing(Box::new(Drawing::read(source, start, depth.deeper()?)?)),
         PP_DRAWING_GROUP => {
             let contents = clone(source, start, length, MAX_OLE_ATOM)?;
-            let (record, _) = escher::made_at(&contents, 0, Factory::Slides)?;
+            let (record, _) = escher::made_at(contents, 0, Factory::Slides)?;
             let Some(group) = record.children.into_iter().next() else {
                 return Err(Thrown::new("Index 0 out of bounds for length 0").into());
             };
             if group.content != escher::Content::Container {
                 return Err(Thrown::new("the drawing group's first record is no container").into());
             }
-            Body::DrawingGroup(Box::new(group.into_owned()))
+            Body::DrawingGroup(Box::new(group))
         }
         DOCUMENT_ATOM => {
             let needed = length.max(48);
@@ -473,32 +514,32 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
                 ))
                 .into());
             }
-            Body::Atom(fixed(source, start, needed, length)?)
+            atom_of(fixed(source, start, needed, length)?)
         }
         SLIDE_ATOM => {
             let length = length.max(30);
             let data = fixed(source, start, 30, length)?;
             clone(source, start + 30, length - 30, MAX_ATOM)?;
-            Body::Atom(data)
+            atom_of(data)
         }
         NOTES_ATOM => {
             let length = length.max(8);
             let data = fixed(source, start, 14, length)?;
             clone(source, start + 14, length - 14, MAX_ATOM)?;
-            Body::Atom(data)
+            atom_of(data)
         }
         SLIDE_PERSIST_ATOM => {
             let length = length.max(8);
             let data = fixed(source, start, 24, length)?;
             clone(source, start + 24, length - 24, MAX_PERSIST_RESERVED)?;
-            Body::Atom(data)
+            atom_of(data)
         }
-        SS_SLIDE_INFO_ATOM => Body::Atom(fixed(source, start, 24, 24)?),
+        SS_SLIDE_INFO_ATOM => atom_of(fixed(source, start, 24, 24)?),
         TEXT_HEADER_ATOM => {
             if length < 12 && (source.len() as i64) - start < 12 {
                 return Err(Thrown::new("Not enough data to form a TextHeaderAtom").into());
             }
-            Body::Atom(fixed(source, start, 12, length.max(12))?)
+            atom_of(fixed(source, start, 12, length.max(12))?)
         }
         STYLE_TEXT_PROP_ATOM => {
             let mut length = length;
@@ -510,13 +551,13 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
             }
             atom(source, start, length, MAX_ATOM)?
         }
-        COLOR_SCHEME_ATOM => Body::Atom(fixed(source, start, 40, length)?),
-        DATE_TIME_MC_ATOM | OE_PLACEHOLDER_ATOM => Body::Atom(fixed(source, start, 16, length)?),
+        COLOR_SCHEME_ATOM => atom_of(fixed(source, start, 40, length)?),
+        DATE_TIME_MC_ATOM | OE_PLACEHOLDER_ATOM => atom_of(fixed(source, start, 16, length)?),
         EX_OBJ_REF_ATOM | OUTLINE_TEXT_REF_ATOM | EX_CONTROL_ATOM => {
-            Body::Atom(fixed(source, start, 12, length)?)
+            atom_of(fixed(source, start, 12, length)?)
         }
-        VBA_INFO_ATOM => Body::Atom(fixed(source, start, 20, length)?),
-        ROUND_TRIP_HF_PLACEHOLDER => Body::Atom(fixed(source, start, 9, length)?),
+        VBA_INFO_ATOM => atom_of(fixed(source, start, 20, length)?),
+        ROUND_TRIP_HF_PLACEHOLDER => atom_of(fixed(source, start, 9, length)?),
         USER_EDIT_ATOM => {
             let length = length.max(34);
             let read = if 36 < length { 40 } else { 36 };
@@ -527,21 +568,21 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
                 ))
                 .into());
             }
-            Body::Atom(data)
+            atom_of(data)
         }
         PERSIST_PTR_FULL_BLOCK | PERSIST_PTR_INCREMENTAL_BLOCK => {
             let data = clone(source, start + 8, length.max(8) - 8, MAX_ATOM)?;
-            persist_pointers(&data)?;
-            Body::Atom(data)
+            persist_pointers(data)?;
+            atom_of(data)
         }
         TEXT_RULER_ATOM => {
             check_ruler(source, start, length)?;
-            Body::Atom(Vec::new())
+            atom_of(&[])
         }
         STYLE_TEXT_PROP9_ATOM => {
             let data = clone(source, start + 8, length - 8, MAX_STYLE_ATOM)?;
-            check_numbering(&data)?;
-            Body::Atom(data)
+            check_numbering(data)?;
+            atom_of(data)
         }
         MASTER_TEXT_PROP_ATOM => atom(source, start, length, MAX_STYLE_ATOM)?,
         EX_OLE_OBJ_ATOM => {
@@ -591,13 +632,13 @@ fn construct(kind: u16, source: &[u8], start: i64, length: i64, depth: Depth) ->
         }
         _ => {
             let contents = clone(source, start, length.max(0), MAX_UNKNOWN)?;
-            u16_at(&contents, 2)?;
-            Body::Atom(Vec::new())
+            u16_at(contents, 2)?;
+            atom_of(&[])
         }
     })
 }
 
-fn body_children(body: &Body) -> &[Record] {
+fn body_children<'b, 'd>(body: &'b Body<'d>) -> &'b [Record<'d>] {
     match body {
         Body::Container(children) => children,
         _ => &[],
@@ -605,7 +646,7 @@ fn body_children(body: &Body) -> &[Record] {
 }
 
 /// An atom's check that it holds at least `length` bytes.
-fn at_least(body: &Body, length: usize, name: &str) -> Read<()> {
+fn at_least(body: &Body<'_>, length: usize, name: &str) -> Read<()> {
     let Body::Atom(data) = body else {
         return Ok(());
     };

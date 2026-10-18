@@ -3,13 +3,14 @@
 //! named properties', its recipients' and its attachments'; and the 7-bit strings decoded with
 //! the code page they are set to.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use super::properties::{read_properties, PropertySet, PROPERTIES};
 use super::types::{property, Type, MULTIVALUED_FLAG};
 use crate::formats::poi::{Read, Thrown};
 use crate::java::parse_hex_int;
-use crate::ole2::{EntryId, EntryKind, Ole2};
+use crate::ole2::{Content, EntryId, EntryKind, Node, Ole2};
 use crate::text::charset::Charset;
 
 const ATTACHMENT_PREFIX: &str = "__attach_version1.0_#";
@@ -17,17 +18,26 @@ const RECIPIENT_PREFIX: &str = "__recip_version1.0_#";
 pub(super) const NAME_ID: &str = "__nameid_version1.0";
 const DEFAULT_ENCODING: &str = "CP1252";
 
-/// A string chunk, `StringChunk`: its bytes and its text as decoded.
+/// A string chunk, `StringChunk`: its bytes, in place where they lie in one run, and its text
+/// as decoded.
 #[derive(Debug, Clone)]
-pub(super) struct Text {
-    pub(super) raw: Vec<u8>,
+pub(super) struct Text<'a> {
+    pub(super) raw: Cow<'a, [u8]>,
     pub(super) value: String,
 }
 
-impl Text {
-    fn read(raw: Vec<u8>, kind: Type) -> Read<Text> {
+impl<'a> Text<'a> {
+    fn read(content: &Content<'a>, kind: Type) -> Read<Text<'a>> {
+        let raw = content.bytes();
         let value = decode(&raw, kind, DEFAULT_ENCODING)?;
         Ok(Text { raw, value })
+    }
+
+    fn into_owned(self) -> Text<'static> {
+        Text {
+            raw: Cow::Owned(self.raw.into_owned()),
+            value: self.value,
+        }
     }
 
     /// `set7BitEncoding`: an ASCII string decoded again with the charset named.
@@ -63,9 +73,10 @@ fn decode(raw: &[u8], kind: Type, encoding: &str) -> Read<String> {
 
 /// What a chunk holds.
 #[derive(Debug, Clone)]
-pub(super) enum Value {
-    Text(Text),
-    Bytes(Vec<u8>),
+pub(super) enum Value<'a> {
+    Text(Text<'a>),
+    /// A binary stream, in place.
+    Bytes(Node<'a>),
     /// `MessageSubmissionChunk`: the submission id, with the date it names.
     Submission(Submission),
     /// `DirectoryChunk`: an embedded message's storage.
@@ -81,26 +92,56 @@ pub(super) struct Submission {
     pub(super) date: Option<[i32; 6]>,
 }
 
-/// A chunk: a stream, or a storage of an embedded message, by the property it holds.
-#[derive(Debug, Clone)]
-pub(super) struct Chunk {
-    pub(super) id: i32,
-    pub(super) kind: Type,
-    pub(super) value: Value,
+impl Value<'_> {
+    fn into_owned(self) -> Value<'static> {
+        match self {
+            Value::Text(text) => Value::Text(text.into_owned()),
+            Value::Bytes(node) => Value::Bytes(node.into_owned()),
+            Value::Submission(submission) => Value::Submission(submission),
+            Value::Directory(entry) => Value::Directory(entry),
+            Value::Properties(properties) => Value::Properties(properties),
+        }
+    }
 }
 
-impl Chunk {
-    pub(super) fn text(&self) -> Option<&Text> {
+/// A chunk: a stream, or a storage of an embedded message, by the property it holds.
+#[derive(Debug, Clone)]
+pub(super) struct Chunk<'a> {
+    pub(super) id: i32,
+    pub(super) kind: Type,
+    pub(super) value: Value<'a>,
+}
+
+impl<'a> Chunk<'a> {
+    pub(super) fn text(&self) -> Option<&Text<'a>> {
         match &self.value {
             Value::Text(text) => Some(text),
             _ => None,
         }
     }
 
-    pub(super) fn bytes(&self) -> Option<&[u8]> {
+    /// A binary chunk's stream, as it is handed on.
+    pub(super) fn stream(&self) -> Option<&Node<'a>> {
         match &self.value {
-            Value::Bytes(bytes) => Some(bytes),
+            Value::Bytes(node) => Some(node),
             _ => None,
+        }
+    }
+
+    /// A binary chunk's bytes, in place where they lie in one run.
+    pub(super) fn bytes(&self) -> Option<Cow<'_, [u8]>> {
+        match &self.value {
+            Value::Bytes(Node::Document(content)) => Some(content.bytes()),
+            Value::Bytes(Node::Owned(bytes)) => Some(Cow::Borrowed(bytes)),
+            _ => None,
+        }
+    }
+
+    fn into_owned(self) -> Chunk<'static> {
+        Chunk {
+            id: self.id,
+            kind: self.kind,
+            value: self.value.into_owned(),
         }
     }
 }
@@ -108,26 +149,32 @@ impl Chunk {
 /// A group of chunks: the message's own, a recipient's, an attachment's or the named
 /// properties'.
 #[derive(Debug, Clone, Default)]
-pub(super) struct Group {
+pub(super) struct Group<'a> {
     /// The chunks in the order they were recorded.
-    pub(super) chunks: Vec<Chunk>,
+    pub(super) chunks: Vec<Chunk<'a>>,
 }
 
-impl Group {
+impl<'a> Group<'a> {
     /// The last chunk of a property id recorded, as the group's field of that property keeps
     /// it.
-    pub(super) fn last(&self, id: i32) -> Option<&Chunk> {
+    pub(super) fn last(&self, id: i32) -> Option<&Chunk<'a>> {
         self.chunks.iter().rev().find(|chunk| chunk.id == id)
     }
 
     /// The last chunk of a property that is a string, as the group's field of it keeps it.
-    pub(super) fn string(&self, id: i32) -> Option<&Text> {
+    pub(super) fn string(&self, id: i32) -> Option<&Text<'a>> {
         self.last(id).and_then(Chunk::text)
     }
 
     /// The chunks of a property, in the order they were recorded.
-    pub(super) fn all(&self, id: i32) -> impl Iterator<Item = &Chunk> {
+    pub(super) fn all(&self, id: i32) -> impl Iterator<Item = &Chunk<'a>> {
         self.chunks.iter().filter(move |chunk| chunk.id == id)
+    }
+
+    fn into_owned(self) -> Group<'static> {
+        Group {
+            chunks: self.chunks.into_iter().map(Chunk::into_owned).collect(),
+        }
     }
 
     /// `record`'s casts of the chunks of the properties the group keeps in fields: a string
@@ -137,7 +184,7 @@ impl Group {
             let fits = if strings.contains(&chunk.id) {
                 chunk.text().is_some()
             } else if binaries.contains(&chunk.id) {
-                chunk.bytes().is_some()
+                chunk.stream().is_some()
             } else {
                 true
             };
@@ -165,12 +212,12 @@ impl Group {
 
 /// A recipient's chunks, by the number of its storage.
 #[derive(Debug, Clone)]
-pub(super) struct Recipient {
+pub(super) struct Recipient<'a> {
     number: i32,
-    pub(super) group: Group,
+    pub(super) group: Group<'a>,
 }
 
-impl Recipient {
+impl Recipient<'_> {
     /// `getRecipientEmailAddress`.
     pub(super) fn email_address(&self) -> Read<Option<String>> {
         let group = &self.group;
@@ -194,7 +241,7 @@ impl Recipient {
             }
         }
         if let Some(bytes) = group.last(property::SEARCH_KEY).and_then(Chunk::bytes) {
-            let search = decode(bytes, Type::ASCII_STRING, DEFAULT_ENCODING)?;
+            let search = decode(&bytes, Type::ASCII_STRING, DEFAULT_ENCODING)?;
             if let Some(at) = search.find("SMTP:") {
                 return Ok(Some(search[at + 5..].to_owned()));
             }
@@ -205,10 +252,10 @@ impl Recipient {
 
 /// An attachment's chunks, by the name of its storage.
 #[derive(Debug, Clone)]
-pub(super) struct Attachment {
+pub(super) struct Attachment<'a> {
     pub(super) name: String,
     pub(super) entry: EntryId,
-    pub(super) group: Group,
+    pub(super) group: Group<'a>,
 }
 
 /// The string properties `Chunks.record` keeps in fields.
@@ -250,16 +297,16 @@ const ATTACHMENT_BINARIES: [i32; 2] = [property::ATTACH_RENDERING, property::REC
 
 /// A message, `MAPIMessage`.
 #[derive(Debug, Clone)]
-pub(super) struct Message {
-    pub(super) main: Group,
-    pub(super) name_ids: Option<Group>,
-    pub(super) recipients: Vec<Recipient>,
-    pub(super) attachments: Vec<Attachment>,
+pub(super) struct Message<'a> {
+    pub(super) main: Group<'a>,
+    pub(super) name_ids: Option<Group<'a>>,
+    pub(super) recipients: Vec<Recipient<'a>>,
+    pub(super) attachments: Vec<Attachment<'a>>,
 }
 
-impl Message {
+impl<'a> Message<'a> {
     /// `new MAPIMessage(directory)`.
-    pub(super) fn read(file: &Ole2<'_>, directory: EntryId, embedded: bool) -> Read<Message> {
+    pub(super) fn read(file: &Ole2<'a>, directory: EntryId, embedded: bool) -> Read<Message<'a>> {
         let mut name_ids = None;
         let mut recipients = Vec::new();
         let mut attachments = Vec::new();
@@ -294,6 +341,31 @@ impl Message {
             recipients,
             attachments,
         })
+    }
+
+    /// The same, owning the streams it read in place.
+    pub(super) fn into_owned(self) -> Message<'static> {
+        Message {
+            main: self.main.into_owned(),
+            name_ids: self.name_ids.map(Group::into_owned),
+            recipients: self
+                .recipients
+                .into_iter()
+                .map(|recipient| Recipient {
+                    number: recipient.number,
+                    group: recipient.group.into_owned(),
+                })
+                .collect(),
+            attachments: self
+                .attachments
+                .into_iter()
+                .map(|attachment| Attachment {
+                    name: attachment.name,
+                    entry: attachment.entry,
+                    group: attachment.group.into_owned(),
+                })
+                .collect(),
+        }
     }
 
     /// `has7BitEncodingStrings`.
@@ -365,7 +437,7 @@ enum GroupKind {
 
 /// `processChunks`: the chunks of a storage's streams and of its directories named as
 /// directory properties, each multi-valued property's values after the others.
-fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Group> {
+fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Read<Group<'a>> {
     let mut group = Group::default();
     let mut multi: BTreeMap<i32, BTreeMap<i32, Chunk>> = BTreeMap::new();
     for entry in file.children(directory) {
@@ -378,7 +450,7 @@ fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Grou
             if !is_document {
                 return Err(Thrown::new("a properties storage that is no stream"));
             }
-            let data = read(file, entry)?;
+            let data = read(file, entry)?.bytes();
             let properties = match kind {
                 GroupKind::Message { embedded } => read_properties(&data, Some(embedded)),
                 GroupKind::Storage => read_properties(&data, None),
@@ -404,7 +476,7 @@ fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Grou
                     "a message submission id that is no stream, which POI leaves unread",
                 ));
             }
-            let value = Value::Submission(submission(&read(file, entry)?));
+            let value = Value::Submission(submission(&read(file, entry)?.bytes()));
             if multi_index.is_none() {
                 group.chunks.push(Chunk { id, kind, value });
             }
@@ -412,7 +484,7 @@ fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Grou
         }
         if kind == Type::BINARY && id == property::ATTACH_DATA {
             if multi_index.is_none() {
-                let value = Value::Bytes(read(file, entry)?);
+                let value = Value::Bytes(Node::Document(read(file, entry)?));
                 group.chunks.push(Chunk { id, kind, value });
             }
             continue;
@@ -432,9 +504,9 @@ fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Grou
                 }
                 let data = read(file, entry)?;
                 let value = if is_text {
-                    Value::Text(Text::read(data, kind)?)
+                    Value::Text(Text::read(&data, kind)?)
                 } else {
-                    Value::Bytes(data)
+                    Value::Bytes(Node::Document(data))
                 };
                 multi
                     .entry(id)
@@ -445,9 +517,9 @@ fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Grou
                 let value = if kind == Type::DIRECTORY && !is_document {
                     Value::Directory(entry)
                 } else if kind == Type::BINARY && is_document {
-                    Value::Bytes(read(file, entry)?)
+                    Value::Bytes(Node::Document(read(file, entry)?))
                 } else if is_text && is_document {
-                    Value::Text(Text::read(read(file, entry)?, kind)?)
+                    Value::Text(Text::read(&read(file, entry)?, kind)?)
                 } else {
                     continue;
                 };
@@ -461,9 +533,9 @@ fn read_group(file: &Ole2<'_>, directory: EntryId, kind: GroupKind) -> Read<Grou
     Ok(group)
 }
 
-/// A stream read whole; POI swallows a failure to read one, which this port leaves to Tika.
-fn read(file: &Ole2<'_>, entry: EntryId) -> Read<Vec<u8>> {
-    file.read(entry)
+/// A stream, in place; POI swallows a failure to read one, which this port leaves to Tika.
+fn read<'a>(file: &Ole2<'a>, entry: EntryId) -> Read<Content<'a>> {
+    file.content(entry)
         .map_err(|_| Thrown::new("a message stream POI cannot read"))
 }
 

@@ -1678,13 +1678,13 @@ mod tests {
     }
 
     /// Files too large to read whole, in a directory of their own removed when they are dropped:
-    /// a WAVE file, an MP4 file, a PDF and a Word document of 2 GiB each.
+    /// a WAVE file, an MP4 file, a PDF and an Access database of 2 GiB each.
     struct LargeFiles {
         dir: std::path::PathBuf,
         wave: String,
         mp4: String,
         pdf: String,
-        doc: String,
+        database: String,
     }
 
     impl LargeFiles {
@@ -1694,11 +1694,11 @@ mod tests {
             std::fs::create_dir(&dir).unwrap();
             let large = 2u64 << 30;
             let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
-            let (wave, mp4, pdf, doc) = (
+            let (wave, mp4, pdf, database) = (
                 path("long.wav"),
                 path("long.mp4"),
                 path("long.pdf"),
-                path("long.doc"),
+                path("long.mdb"),
             );
             let samples = u32::try_from(large).unwrap() - 44;
             sparse(wave.as_ref(), &wave_header(samples), large);
@@ -1710,8 +1710,8 @@ mod tests {
             );
             sparse(pdf.as_ref(), b"%PDF-1.4\n", large);
             sparse(
-                doc.as_ref(),
-                &crate::ole2::tests::compound(&["WordDocument"], b""),
+                database.as_ref(),
+                b"\x00\x01\x00\x00Standard Jet DB\x00",
                 large,
             );
             Self {
@@ -1719,7 +1719,7 @@ mod tests {
                 wave,
                 mp4,
                 pdf,
-                doc,
+                database,
             }
         }
     }
@@ -1747,16 +1747,16 @@ mod tests {
         }
         #[cfg(feature = "tika")]
         assert!(matches!(
-            route_file(&files.doc),
+            route_file(&files.database),
             Err(Unsupported::TooLarge {
-                parser: "extractous::OfficeParser",
+                parser: "extractous::JackcessParser",
                 limit: input::MAX_READ_WHOLE,
             })
         ));
         #[cfg(not(feature = "tika"))]
         {
-            let routed = route_file(&files.doc).unwrap();
-            assert_eq!(routed.parser.name(), "extractous::OfficeParser");
+            let routed = route_file(&files.database).unwrap();
+            assert_eq!(routed.parser.name(), "extractous::JackcessParser");
             assert!(routed.input.is_mapped());
         }
     }

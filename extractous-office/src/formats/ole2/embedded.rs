@@ -5,7 +5,10 @@
 //! storage as a compound document of its own, written so that POI iterates it as it iterated the
 //! storage, and parsed by the parser of the type Tika's detection names the open storage.
 
+use std::borrow::Cow;
+
 use crate::config::ParserConfigs;
+use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::embedded::{PARSER_OVERRIDE, RELATIONSHIP_ID, RESOURCE_NAME};
 use crate::formats::metadata::office::{
@@ -16,11 +19,12 @@ use crate::formats::msg::{EmbeddedMessage, MsgParser};
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Failure, Parser, Unported};
+use crate::input::Input;
 use crate::java::equals_ignore_case;
 use crate::java::is_blank;
 use crate::java::to_lower_case;
 use crate::mime::{self, ole_container_type, ole_directory_type, MediaType, Origin};
-use crate::ole2::{class_id_string, write, EntryId, EntryKind, Ole2, Unreadable};
+use crate::ole2::{class_id_string, Content, EntryId, EntryKind, Node, Ole2, Unreadable};
 
 const CONTENT_TYPE: &str = "Content-Type";
 const CONTENT_LENGTH: &str = "Content-Length";
@@ -34,11 +38,48 @@ const MESSAGE_TITLES: [&str; 3] = [
     "__substg1.0_0070001F",
 ];
 
-/// A document handed on to be parsed, with the metadata Tika gives it.
+/// A document handed on to be parsed, with the metadata Tika gives it: a stream in place in the
+/// compound document it is stored in, bytes made of one, or a storage, written as a compound
+/// document of its own only as it is handed on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Embedded {
-    pub(crate) data: Vec<u8>,
+pub(crate) struct Embedded<'a> {
+    pub(crate) data: Node<'a>,
     pub(crate) metadata: TikaMetadata,
+}
+
+impl<'a> Embedded<'a> {
+    /// A document of bytes of its own.
+    pub(crate) fn owned(data: Vec<u8>, metadata: TikaMetadata) -> Self {
+        Self {
+            data: Node::Owned(data),
+            metadata,
+        }
+    }
+
+    /// `parseEmbedded` of the document, wrapped as `wrapping` says, its bytes in place where
+    /// they lie in one run, and copied together, to a file of their own past what is read
+    /// whole, where they do not.
+    pub(crate) fn write(self, xhtml: &mut Xhtml, wrapping: Wrapping) -> Result<(), Failure> {
+        let data = handed_on(self.data)?;
+        xhtml.parse_embedded_input(&data, &self.metadata, wrapping)
+    }
+
+    pub(crate) fn into_owned(self) -> Embedded<'static> {
+        Embedded {
+            data: self.data.into_owned(),
+            metadata: self.metadata,
+        }
+    }
+}
+
+/// The bytes of a document as it is handed on, failing the extraction where they cannot be
+/// spooled.
+pub(crate) fn handed_on(data: Node<'_>) -> Result<Input<'_>, Failure> {
+    data.into_input().map_err(|error| {
+        Failure::Extraction(Error::IoError(format!(
+            "Could not spool an embedded document of a compound document: {error}"
+        )))
+    })
 }
 
 /// What `handleEmbeddedOfficeDoc` hands on: a document, which Tika parses from its bytes, as
@@ -47,18 +88,18 @@ pub(crate) struct Embedded {
 /// Outlook message stored in another document, which Tika's `OfficeParser` reads from its
 /// storage as a message embedded in another, and the native one reads alike.
 #[derive(Debug)]
-pub(crate) enum Handed {
-    Document(Embedded),
-    Message(Box<StoredMessage>),
+pub(crate) enum Handed<'a> {
+    Document(Embedded<'a>),
+    Message(Box<StoredMessage<'a>>),
 }
 
 /// An Outlook message read from its storage, with the metadata Tika hands it on with.
-pub(crate) struct StoredMessage {
-    message: EmbeddedMessage,
+pub(crate) struct StoredMessage<'a> {
+    message: EmbeddedMessage<'a>,
     metadata: TikaMetadata,
 }
 
-impl std::fmt::Debug for StoredMessage {
+impl std::fmt::Debug for StoredMessage<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("StoredMessage")
@@ -67,16 +108,14 @@ impl std::fmt::Debug for StoredMessage {
     }
 }
 
-impl Handed {
+impl Handed<'_> {
     /// `parseEmbedded` of what is handed on, wrapped as `wrapping` says.
     pub(crate) fn write(self, xhtml: &mut Xhtml, wrapping: Wrapping) -> Result<(), Failure> {
         match self {
-            Handed::Document(Embedded { data, metadata }) => {
-                xhtml.parse_embedded(&data, &metadata, wrapping)
-            }
+            Handed::Document(embedded) => embedded.write(xhtml, wrapping),
             Handed::Message(stored) => {
                 let StoredMessage { message, metadata } = *stored;
-                let data = message.data().to_vec();
+                let data = handed_on(message.standalone())?;
                 xhtml.parse_container_natively(
                     &data,
                     &metadata,
@@ -84,6 +123,20 @@ impl Handed {
                     MsgParser.name(),
                     |child| message.write(child),
                 )
+            }
+        }
+    }
+
+    /// The same, owning what it read in place.
+    pub(crate) fn into_owned(self) -> Handed<'static> {
+        match self {
+            Handed::Document(embedded) => Handed::Document(embedded.into_owned()),
+            Handed::Message(stored) => {
+                let StoredMessage { message, metadata } = *stored;
+                Handed::Message(Box::new(StoredMessage {
+                    message: message.into_owned(),
+                    metadata,
+                }))
             }
         }
     }
@@ -126,13 +179,13 @@ pub(crate) fn document_type(media_type: &MediaType) -> (MediaType, &'static str)
 /// `handleEmbeddedOfficeDoc(dir, metadata, resourceName, xhtml, outputHtml)`: the document to
 /// hand on, with `metadata` and what Tika adds to it, an embedded message read under `configs`;
 /// `None` where Tika hands on nothing, or why Tika records a failure or fails instead.
-pub(crate) fn office_document(
-    file: &Ole2<'_>,
+pub(crate) fn office_document<'a>(
+    file: &Ole2<'a>,
     directory: EntryId,
     mut metadata: TikaMetadata,
     resource_name: Option<&str>,
     configs: &ParserConfigs,
-) -> Result<Option<Handed>, Unported> {
+) -> Result<Option<Handed<'a>>, Unported> {
     let name = file.name(directory);
     let class_id = class_id_string(&file.class_id(directory));
     let package = file
@@ -143,8 +196,14 @@ pub(crate) fn office_document(
         metadata.set(CONTENT_LENGTH, data.len().to_string());
         metadata.set(RELATIONSHIP_ID, name);
         metadata.set(EMBEDDED_STORAGE_CLASS_ID, class_id);
-        metadata.set(CONTENT_TYPE, mime::zip_container_type(&data).to_string());
-        return Ok(Some(Handed::Document(Embedded { data, metadata })));
+        metadata.set(
+            CONTENT_TYPE,
+            mime::zip_container_type(&data.bytes()).to_string(),
+        );
+        return Ok(Some(Handed::Document(Embedded {
+            data: Node::Document(data),
+            metadata,
+        })));
     }
     metadata.set(RELATIONSHIP_ID, name.clone());
     metadata.set(EMBEDDED_STORAGE_CLASS_ID, class_id);
@@ -198,8 +257,11 @@ pub(crate) fn office_document(
         metadata.set(PARSER_OVERRIDE, opened.to_string());
     }
     let storage = file.storage(directory).map_err(unreadable)?;
-    let data = write(&storage).map_err(unreadable)?;
-    Ok(Some(Handed::Document(Embedded { data, metadata })))
+    storage.check_writable().map_err(unreadable)?;
+    Ok(Some(Handed::Document(Embedded {
+        data: Node::Storage(storage),
+        metadata,
+    })))
 }
 
 /// `tryToGetMsgTitle`: the subject, conversation topic or display name of a message storage,
@@ -237,23 +299,23 @@ fn unreadable(Unreadable(reason): Unreadable) -> Unported {
     ))
 }
 
-/// A document entry read whole, failing as POI's cast and read do.
-fn read_document(file: &Ole2<'_>, entry: EntryId) -> Result<Vec<u8>, Unported> {
+/// A document entry, in place, failing as POI's cast and read do.
+fn read_document<'a>(file: &Ole2<'a>, entry: EntryId) -> Result<Content<'a>, Unported> {
     if file.kind(entry) != EntryKind::Document {
         return Err(Unported(
             "an embedded storage's stream is a directory, which Tika fails on".to_owned(),
         ));
     }
-    file.read(entry).map_err(unreadable)
+    file.content(entry).map_err(unreadable)
 }
 
 /// `handleOLENative`: the file an OLE 1.0 object's record holds.
-fn ole_native(
-    file: &Ole2<'_>,
+fn ole_native<'a>(
+    file: &Ole2<'a>,
     directory: EntryId,
     resource: &str,
     mut metadata: TikaMetadata,
-) -> Result<Option<Embedded>, Unported> {
+) -> Result<Option<Embedded<'a>>, Unported> {
     let entry = file
         .child_ignoring_case(directory, OLE10_NATIVE)
         .ok_or_else(|| Unported("an OLE 1.0 object without its record".to_owned()))?;
@@ -264,7 +326,11 @@ fn ole_native(
             record.len()
         )));
     }
-    let native = match Ole10Native::parse(&record) {
+    let parsed = match record.bytes() {
+        Cow::Borrowed(bytes) => Ole10Native::parse(bytes),
+        Cow::Owned(bytes) => Ole10Native::parse(&bytes).map(Ole10Native::into_owned),
+    };
+    let native = match parsed {
         Ok(native) => native,
         Err(Unread::Invalid) => return Ok(None),
         Err(Unread::Failed(message)) => {
@@ -282,18 +348,18 @@ fn ole_native(
     }
     metadata.set(CONTENT_LENGTH, native.data.len().to_string());
     Ok(Some(Embedded {
-        data: native.data,
+        data: native.data.into(),
         metadata,
     }))
 }
 
 /// `handleCompObj`: an object's `CONTENTS` stream, named by the type Tika detects in it.
-fn contents(
-    file: &Ole2<'_>,
+fn contents<'a>(
+    file: &Ole2<'a>,
     directory: EntryId,
     resource: &str,
     mut metadata: TikaMetadata,
-) -> Result<Option<Embedded>, Unported> {
+) -> Result<Option<Embedded<'a>>, Unported> {
     let entry = match file
         .child(directory, "CONTENTS")
         .or_else(|| file.child(directory, "Contents"))
@@ -317,7 +383,7 @@ fn contents(
         }
     };
     let data = read_document(file, entry)?;
-    let detected = mime::detect(&data, Origin::Bytes)
+    let detected = mime::detect(&data.bytes(), Origin::Bytes)
         .map_err(|error| Unported(format!("Tika's detection fails on an object: {error:?}")))?
         .media_type;
     let extension = mime::extension(&detected);
@@ -325,7 +391,10 @@ fn contents(
     metadata.set(RESOURCE_NAME, with_extension(resource, extension));
     metadata.set(RESOURCE_NAME_EXTENSION_INFERRED, "true");
     metadata.set(CONTENT_LENGTH, data.len().to_string());
-    Ok(Some(Embedded { data, metadata }))
+    Ok(Some(Embedded {
+        data: Node::Document(data),
+        metadata,
+    }))
 }
 
 /// `extractOCXName`: the name an ActiveX control's storage gives it.
@@ -375,7 +444,7 @@ fn with_extension(name: &str, extension: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ole2::{Node, Storage};
+    use crate::ole2::{write, Node, Storage};
 
     fn units(name: &str) -> Vec<u16> {
         name.encode_utf16().collect()
@@ -393,7 +462,7 @@ mod tests {
         .unwrap()
     }
 
-    fn handed_on(data: &[u8]) -> Option<Embedded> {
+    fn object_of(data: &[u8]) -> Option<Embedded<'_>> {
         let file = Ole2::open(data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();
         match office_document(
@@ -413,13 +482,13 @@ mod tests {
     #[test]
     fn parses_an_ms_graph_storage_as_tika_detects_it_open() {
         let data = embedding(vec![
-            (units("Workbook"), Node::Document(vec![1; 10])),
+            (units("Workbook"), Node::Owned(vec![1; 10])),
             (
                 units("\u{1}CompObj"),
-                Node::Document(b"..MSGraph.Chart.8..".to_vec()),
+                Node::Owned(b"..MSGraph.Chart.8..".to_vec()),
             ),
         ]);
-        let embedded = handed_on(&data).unwrap();
+        let embedded = object_of(&data).unwrap();
         let metadata = &embedded.metadata;
         assert_eq!(metadata.get(CONTENT_TYPE), Some("application/vnd.ms-graph"));
         assert_eq!(metadata.get(RESOURCE_NAME), Some("_123"));
@@ -432,10 +501,10 @@ mod tests {
     #[test]
     fn hands_on_a_storage_as_a_compound_document_named_by_its_type() {
         let data = embedding(vec![
-            (units("WordDocument"), Node::Document(vec![1; 10])),
-            (units("1Table"), Node::Document(vec![2; 5])),
+            (units("WordDocument"), Node::Owned(vec![1; 10])),
+            (units("1Table"), Node::Owned(vec![2; 5])),
         ]);
-        let embedded = handed_on(&data).unwrap();
+        let embedded = object_of(&data).unwrap();
         let metadata = &embedded.metadata;
         assert_eq!(metadata.get(CONTENT_TYPE), Some("application/msword"));
         assert_eq!(metadata.get(PARSER_OVERRIDE), None);
@@ -446,7 +515,8 @@ mod tests {
             metadata.get(EMBEDDED_STORAGE_CLASS_ID),
             Some("{01010101-0101-0101-0101-010101010101}")
         );
-        let copy = Ole2::open(&embedded.data).unwrap();
+        let written = embedded.data.into_input().unwrap();
+        let copy = Ole2::open(&written).unwrap();
         assert_eq!(copy.top_level_names(), ["WordDocument", "1Table"]);
         assert_eq!(copy.class_id(copy.root()), [1; 16]);
     }
@@ -454,11 +524,11 @@ mod tests {
     #[test]
     fn hands_on_the_contents_of_an_object_named_by_its_detected_type() {
         let data = embedding(vec![
-            (units("\u{1}CompObj"), Node::Document(vec![0; 8])),
-            (units("CONTENTS"), Node::Document(b"%PDF-1.4\n%".to_vec())),
+            (units("\u{1}CompObj"), Node::Owned(vec![0; 8])),
+            (units("CONTENTS"), Node::Owned(b"%PDF-1.4\n%".to_vec())),
         ]);
-        let embedded = handed_on(&data).unwrap();
-        assert_eq!(embedded.data, b"%PDF-1.4\n%");
+        let embedded = object_of(&data).unwrap();
+        assert_eq!(embedded.data, Node::Owned(b"%PDF-1.4\n%".to_vec()));
         assert_eq!(embedded.metadata.get(CONTENT_TYPE), Some("application/pdf"));
         assert_eq!(embedded.metadata.get(RESOURCE_NAME), Some("_123.pdf"));
     }
@@ -468,12 +538,9 @@ mod tests {
         let data = embedding(vec![
             (
                 units("__substg1.0_0037001F"),
-                Node::Document(vec![b'H', 0, b'i', 0, 7]),
+                Node::Owned(vec![b'H', 0, b'i', 0, 7]),
             ),
-            (
-                units("__properties_version1.0"),
-                Node::Document(vec![0; 24]),
-            ),
+            (units("__properties_version1.0"), Node::Owned(vec![0; 24])),
         ]);
         let file = Ole2::open(&data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();
@@ -510,11 +577,8 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         let data = embedding(vec![
-            (units("__substg1.0_0037001F"), Node::Document(subject)),
-            (
-                units("__properties_version1.0"),
-                Node::Document(vec![0; 24]),
-            ),
+            (units("__substg1.0_0037001F"), Node::Owned(subject)),
+            (units("__properties_version1.0"), Node::Owned(vec![0; 24])),
         ]);
         let file = Ole2::open(&data).unwrap();
         let object = file.child(file.root(), "_123").unwrap();

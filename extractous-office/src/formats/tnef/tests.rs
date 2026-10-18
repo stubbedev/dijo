@@ -241,3 +241,42 @@ fn extracts_tikas_test_tnef_messages_as_tikas_path_does() {
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika(&paths, TnefParser.tika_name());
 }
+
+/// A message too large to read whole is read in place, each attachment handed on from where it
+/// lies, in memory that does not grow with it.
+#[test]
+fn extracts_messages_too_large_to_read_whole_in_bounded_memory() {
+    use extractous_core::large::{bodies_past_limit, LargeFile};
+    use std::fmt::Write as _;
+
+    let log = |index: u64| {
+        let mut text = String::new();
+        let mut line = 0;
+        while text.len() < 8 << 20 {
+            writeln!(text, "Linje {index}-{line} i logbogen").unwrap();
+            line += 1;
+        }
+        (text, line)
+    };
+    let (first, _) = log(0);
+    let count = bodies_past_limit(first.len());
+    drop(first);
+    let body = |index: u64| {
+        let (text, _) = log(index);
+        attachment(
+            Some(&format!("logbog-{index}.txt")),
+            &[],
+            Some(text.as_bytes()),
+        )
+    };
+    let file = LargeFile::new("large.dat", &message(&[]), count, body, b"");
+    let (_, lines) = log(count - 1);
+    let last = format!("Linje {}-{} i logbogen", count - 1, lines - 1);
+    let (mut first_seen, mut last_seen) = (false, false);
+    file.extract_lines("extractous::TNEFParser", |line| match line.trim() {
+        "Linje 0-0 i logbogen" => first_seen = true,
+        line if line == last => last_seen = first_seen,
+        _ => {}
+    });
+    assert!(first_seen && last_seen);
+}

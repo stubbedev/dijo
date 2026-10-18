@@ -12,6 +12,10 @@
 //! the password, or failed as Tika's path fails it where the password does not open it. A
 //! document POI reads differently from this port is left to Tika, as are macros extracted when
 //! asked to: see [`DocParser::defers`].
+//!
+//! The document is read twice: once as far as deciding whether it is extracted, every
+//! paragraph read and its events let go, then as it is written, its events handed on as they
+//! are made.
 
 mod bins;
 mod bytes;
@@ -28,18 +32,19 @@ mod sprm;
 mod styles;
 mod text;
 
-use document::{Document, Word};
-use extractor::{extract, Extracted, Out};
+use std::convert::Infallible;
+
+use document::Word;
+use extractor::{extract, paragraphs, Out, Sink};
 
 use crate::config::ParserConfigs;
-use crate::formats::metadata::office::{
-    COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
-};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
+use crate::formats::poi::{planned, written, Halt};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::ole2::Ole2;
 
 const MEDIA_TYPE: &str = "application/msword";
 
@@ -57,6 +62,19 @@ impl Parser for DocParser {
         &[MEDIA_TYPE]
     }
 
+    /// It reads the streams in place, keeping the piece table, the character and paragraph
+    /// runs, the style sheet and the other tables POI reads as indexes, and reads the text of
+    /// a paragraph or a run from the main stream where it is written; the pictures are handed
+    /// on from the data stream and the objects from their storages, as they come. What grows is
+    /// what POI's model holds that Tika's output needs: the runs, which a document has about as
+    /// many of as paragraphs; the text of the footnotes, comments, endnotes and text boxes,
+    /// which Tika's extractor gives a paragraph at a time; an encrypted document's streams,
+    /// decrypted whole as POI decrypts them, and a stream whose blocks are scattered, copied
+    /// together; and a document before Word 97, read whole as `HWPFOldDocument` reads it.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     /// Fails encrypted documents the password does not open and documents POI or Tika throws
     /// on, and defers macros extracted when asked to.
     fn prepare<'a>(
@@ -65,61 +83,62 @@ impl Parser for DocParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, extracted) = read(input, configs)?;
+        let (file, summaries) = plan(input, configs)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
-            write(extracted, xhtml)
+            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+            written(read(&file, configs, &mut |out| write(out, xhtml)))
         }))
     }
 }
 
-/// The summary information and what Tika's extractor makes of the Word document in a compound
-/// document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Decline<'static>> {
+/// The compound document of a Word document and its summary information, the document read as
+/// far as writing it, its events let go.
+fn plan<'a>(
+    input: &'a [u8],
+    configs: &ParserConfigs,
+) -> Result<(Ole2<'a>, Summaries), Decline<'static>> {
     let file = office::open(input, configs, MEDIA_TYPE, "Word document")?;
-    let root = file.root();
-    let extracted = match Document::read(&file, root, configs)? {
-        Word::Modern(document) => extract(&document, &file, root, configs)?,
-        Word::Old(document) => Extracted::paragraphs(document.paragraph_text()),
-    };
-    Ok((Summaries::read(&file, root)?, extracted))
+    planned(read(&file, configs, &mut |_| Ok::<(), Infallible>(())))?;
+    let summaries = Summaries::read(&file, file.root())?;
+    Ok((file, summaries))
 }
 
-/// Writes the document as Tika's extractor does while it reads it. Where the output stops
-/// taking text, Tika's parse ends there, before the metadata of the document's features.
-fn write(extracted: Extracted, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    let metadata = xhtml.metadata_mut();
-    metadata.set("Content-Type", MEDIA_TYPE);
-    for location in extracted.save_locations {
-        metadata.add(ORIGINAL_RESOURCE_NAME, location);
-    }
-    for out in extracted.out {
-        match out {
-            Out::Start(tag) => xhtml.start_element(tag)?,
-            Out::StartWith(tag, attributes) => {
-                let attributes: Vec<(&str, &str)> = attributes
-                    .iter()
-                    .map(|(name, value)| (*name, value.as_str()))
-                    .collect();
-                xhtml.start_element_with(tag, &attributes)?;
-            }
-            Out::End(tag) => xhtml.end_element(tag)?,
-            Out::Text(text) => xhtml.characters_utf16(&text)?,
-            Out::Embedded(handed, wrapping) => handed.write(xhtml, wrapping)?,
+/// What Tika's extractor makes of the Word document in a compound document, handed to `sink`
+/// as it is made.
+fn read<E>(
+    file: &Ole2<'_>,
+    configs: &ParserConfigs,
+    sink: &mut Sink<'_, E>,
+) -> Result<(), Halt<E>> {
+    let root = file.root();
+    match Word::read(file, root, configs)? {
+        Word::Modern(streams) => {
+            let document = streams.document()?;
+            extract(&document, file, root, configs, sink)
         }
+        Word::Old(document) => paragraphs(document.paragraph_text(), sink).map_err(Halt::Written),
     }
-    let metadata = xhtml.metadata_mut();
-    if extracted.has_comments {
-        metadata.set(HAS_COMMENTS, "true");
-    }
-    for author in extracted.revision_authors {
-        metadata.add(COMMENT_PERSONS, author);
-    }
-    if extracted.has_hidden_text {
-        metadata.set(HAS_HIDDEN_TEXT, "true");
-    }
-    if extracted.has_track_changes {
-        metadata.set(HAS_TRACK_CHANGES, "true");
+}
+
+/// Writes an event of the document as Tika's extractor does while it reads it. Where the
+/// output stops taking text, Tika's parse ends there, before the metadata of the document's
+/// features.
+fn write(out: Out<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    match out {
+        Out::Start(tag) => xhtml.start_element(tag)?,
+        Out::StartWith(tag, attributes) => {
+            let attributes: Vec<(&str, &str)> = attributes
+                .iter()
+                .map(|(name, value)| (*name, value.as_str()))
+                .collect();
+            xhtml.start_element_with(tag, &attributes)?;
+        }
+        Out::End(tag) => xhtml.end_element(tag)?,
+        Out::Text(text) => xhtml.characters_utf16(&text)?,
+        Out::Embedded(handed, wrapping) => handed.write(xhtml, wrapping)?,
+        Out::Add(name, value) => xhtml.metadata_mut().add(name, value),
+        Out::Set(name, value) => xhtml.metadata_mut().set(name, value),
     }
     Ok(())
 }

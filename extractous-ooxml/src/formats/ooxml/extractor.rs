@@ -483,7 +483,7 @@ enum OleObject<'b> {
     /// lies in one run.
     Entry(Input<'b>),
     /// The record of an OLE 1.0 object.
-    Native(Ole10Native),
+    Native(Ole10Native<'static>),
     /// Any other compound document, parsed whole.
     Whole,
 }
@@ -531,7 +531,7 @@ fn read_ole_object<'b>(
         )));
     }
     match Ole10Native::parse(&record) {
-        Ok(native) => Ok(OleObject::Native(native)),
+        Ok(native) => Ok(OleObject::Native(native.into_owned())),
         Err(Unread::Invalid) => Ok(OleObject::Skipped),
         Err(Unread::Failed(message)) => Err(fails(message)),
     }
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(native.label.as_deref(), Some("a.txt"));
         assert_eq!(native.file_name.as_deref(), Some("C:\\a.txt"));
         assert_eq!(native.command.as_deref(), Some(""));
-        assert_eq!(native.data, b"x");
+        assert_eq!(&*native.data, b"x");
     }
 
     #[test]
