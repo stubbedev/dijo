@@ -19,7 +19,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, kind, name};
 use crate::formats::ooxml::{Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Paging};
 use crate::java::is_blank;
 use crate::text::charset::Charset;
 
@@ -93,15 +94,31 @@ impl Parser for XlsbParser {
         &["application/vnd.ms-excel.sheet.binary.macroenabled.12"]
     }
 
-    /// Defers workbooks with OLE objects Tika opens, macros it extracts when asked to, a strict
-    /// or other main document, and packages POI does not open as this port does.
+    /// The sheets are read a record at a time as they are written; the styles, the shared
+    /// strings and a sheet's comments, which cells refer to, are read whole first, as POI does.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Defers workbooks with OLE objects Tika opens, macros it extracts when asked to, a strict
+    /// or other main document, and packages POI does not open as this port does.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+        let package = Package::open(input, pages)?;
         refuse_strict(&package, &[BINARY_WORKBOOK_TYPE])?;
         let workbook = open(package, &configs.office).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
@@ -315,15 +332,18 @@ fn nullable_wide_string(data: &[u8], offset: usize) -> Result<(String, usize), T
 }
 
 /// `XSSFBParser.parse`: each record whose id `wanted` takes handed to `handle`, the others
-/// skipped. A record longer than POI allocates fails, as one cut short does.
+/// skipped. A record longer than POI allocates fails, as one cut short does. The pages of a part
+/// spooled to a mapped file are released as its records are read.
 fn parse_records(
-    data: &[u8],
+    data: &Input<'_>,
     wanted: &dyn Fn(u32) -> bool,
     mut handle: impl FnMut(u32, &[u8]) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     let short = || Failure::Malformed("IllegalStateException: Unexpected end-of-file".to_owned());
+    let paging = Paging::new(data.pages());
     let mut at = 0;
     while let Some(&first) = data.get(at) {
+        let start = at;
         at += 1;
         let id = if first & 0x80 != 0 {
             let second = *data.get(at).ok_or_else(short)?;
@@ -363,6 +383,7 @@ fn parse_records(
         if wanted {
             handle(id, &data[at..end])?;
         }
+        paging.read(end - start);
         at = end;
     }
     Ok(())
@@ -376,7 +397,7 @@ struct Styles {
 }
 
 impl Styles {
-    fn read(data: &[u8]) -> Result<Self, Failure> {
+    fn read(data: &Input<'_>) -> Result<Self, Failure> {
         let mut styles = Styles::default();
         let (mut in_cell_formats, mut in_formats) = (false, false);
         parse_records(data, &|_| true, |id, data| {
@@ -435,7 +456,7 @@ fn out_of_bounds(at: usize, data: &[u8]) -> Failure {
 }
 
 /// `TikaXSSFBSharedStringsTable`'s strings.
-fn shared_strings(data: &[u8]) -> Result<Vec<String>, Failure> {
+fn shared_strings(data: &Input<'_>) -> Result<Vec<String>, Failure> {
     let mut strings = Vec::new();
     parse_records(data, &|_| true, |id, data| {
         if id == record::SST_ITEM {
@@ -454,7 +475,7 @@ struct Comment {
 }
 
 /// `TikaXSSFBCommentsTable`: the comments by cell.
-fn comments(data: &[u8]) -> Result<BTreeMap<(i32, i32), Comment>, Failure> {
+fn comments(data: &Input<'_>) -> Result<BTreeMap<(i32, i32), Comment>, Failure> {
     let mut comments = BTreeMap::new();
     let mut authors: Vec<String> = Vec::new();
     let (mut author, mut row, mut column) = (-1i32, -1i32, -1i32);
@@ -1132,14 +1153,16 @@ mod tests {
     fn reads_records_of_long_ids_and_lengths() {
         let data = [0x9C, 0x01, 0x82, 0x01, 0xAA, 0xBB];
         let mut seen = Vec::new();
-        assert!(parse_records(&data, &|_| true, |id, data| {
-            seen.push((id, data.len()));
-            Ok(())
-        })
-        .is_err());
+        assert!(
+            parse_records(&Input::Borrowed(&data), &|_| true, |id, data| {
+                seen.push((id, data.len()));
+                Ok(())
+            })
+            .is_err()
+        );
         let mut data = vec![0x9C, 0x01, 0x82, 0x00];
         data.extend_from_slice(&[0; 2]);
-        parse_records(&data, &|_| true, |id, data| {
+        parse_records(&Input::Borrowed(&data), &|_| true, |id, data| {
             seen.push((id, data.len()));
             Ok(())
         })
