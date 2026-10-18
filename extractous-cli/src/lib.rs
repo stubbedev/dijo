@@ -539,17 +539,12 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
         Embedded::Separate => {
             let scratch = embedded_scratch(spool_dir, index);
             fs::create_dir(&scratch)?;
-            let limits = tree::Limits {
-                max_depth: args.max_depth,
-                max_documents: args.max_embedded,
-                max_expanded_bytes: args.max_expanded_bytes,
-            };
             let rendered = tree::render_tree(
                 extractor,
                 path,
                 &input.display,
                 options,
-                limits,
+                args.limits.limits(),
                 &scratch,
                 cache.map(|cache| (cache, output_settings(args))),
                 writer,

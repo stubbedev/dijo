@@ -506,6 +506,50 @@ fn clients_that_go_silent_are_cut_off() {
     assert_eq!(server.request("GET", "/readyz", &[], b"").status, 200);
 }
 
+/// The records of nested.zip's documents, extracted separately by a server started with `args`,
+/// and how many of them were skipped for a limit.
+fn separate_records(args: &[&str]) -> (Vec<serde_json::Value>, usize) {
+    let server = Server::start(args);
+    let response = server.post_file("/extract?format=json&embedded=separate", &[], "nested.zip");
+    assert_eq!(response.status, 200);
+    let records: Vec<serde_json::Value> = response
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let skipped = records
+        .iter()
+        .filter(|record| record["errors"][0]["category"] == "limit-exceeded")
+        .inspect(|record| assert_eq!(record["status"], "failed", "{record}"))
+        .count();
+    (records, skipped)
+}
+
+#[test]
+fn embedded_document_limits_are_configurable() {
+    let (records, skipped) = separate_records(&[]);
+    assert_eq!((records.len(), skipped), (8, 0));
+
+    let (records, skipped) = separate_records(&["--max-embedded", "2"]);
+    assert_eq!((records.len(), skipped), (7, 4), "{records:?}");
+    let in_processes = ["--isolation", "process", "--workers", "1"];
+    let (records, skipped) =
+        separate_records(&[&in_processes[..], &["--max-embedded", "2"]].concat());
+    assert_eq!((records.len(), skipped), (7, 4), "{records:?}");
+
+    let (records, skipped) = separate_records(&["--max-depth", "1"]);
+    assert!(skipped > 0, "{records:?}");
+    for record in &records {
+        let depth = record["source"]["embedded_path"]
+            .as_str()
+            .map_or(0, |path| path.split('/').count());
+        assert_eq!(depth > 1, record["status"] == "failed", "{record}");
+    }
+
+    let (records, skipped) = separate_records(&["--max-expanded-bytes", "100"]);
+    assert!(skipped > 0, "{records:?}");
+}
+
 /// Every spooled upload is removed, however its request ends.
 #[test]
 fn no_request_leaves_files_behind() {

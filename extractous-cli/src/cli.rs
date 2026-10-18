@@ -101,6 +101,9 @@ pub struct ServeArgs {
     pub client_timeout: NonZeroU64,
 
     #[command(flatten)]
+    pub limits: EmbeddedLimitsArgs,
+
+    #[command(flatten)]
     pub runtime: RuntimeArgs,
 
     #[command(flatten)]
@@ -124,6 +127,49 @@ pub struct ServeArgs {
         default_value_t = 30
     )]
     pub shutdown_grace: u64,
+}
+
+/// Bounds on the documents embedded in an input, when each is extracted as a document of its
+/// own.
+#[derive(Debug, Args)]
+pub struct EmbeddedLimitsArgs {
+    /// With separate embedded documents: how deep to descend into them.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = Limits::DEFAULT.max_depth,
+        env = "EXTRACTOUS_MAX_DEPTH"
+    )]
+    pub max_depth: usize,
+
+    /// With separate embedded documents: how many one input may contain.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = Limits::DEFAULT.max_documents,
+        env = "EXTRACTOUS_MAX_EMBEDDED"
+    )]
+    pub max_embedded: usize,
+
+    /// With separate embedded documents: how many bytes those of one input may expand to in
+    /// all, which stops decompression bombs.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        default_value_t = Limits::DEFAULT.max_expanded_bytes,
+        env = "EXTRACTOUS_MAX_EXPANDED_BYTES"
+    )]
+    pub max_expanded_bytes: u64,
+}
+
+impl EmbeddedLimitsArgs {
+    pub fn limits(&self) -> Limits {
+        Limits {
+            max_depth: self.max_depth,
+            max_documents: self.max_embedded,
+            max_expanded_bytes: self.max_expanded_bytes,
+        }
+    }
 }
 
 /// Where the output of complete extractions is kept for reuse.
@@ -283,28 +329,8 @@ pub struct ExtractArgs {
     #[arg(long, value_enum, default_value_t = Embedded::Inline, env = "EXTRACTOUS_EMBEDDED")]
     pub embedded: Embedded,
 
-    /// With --embedded separate: how deep to descend into embedded documents.
-    #[arg(
-        long,
-        value_name = "N",
-        default_value_t = 16,
-        env = "EXTRACTOUS_MAX_DEPTH"
-    )]
-    pub max_depth: usize,
-
-    /// With --embedded separate: how many embedded documents one input may contain.
-    #[arg(
-        long,
-        value_name = "N",
-        default_value_t = 10_000,
-        env = "EXTRACTOUS_MAX_EMBEDDED"
-    )]
-    pub max_embedded: usize,
-
-    /// With --embedded separate: how many bytes the embedded documents of one input may expand
-    /// to in all, which stops decompression bombs.
-    #[arg(long, value_name = "BYTES", default_value_t = Limits::DEFAULT.max_expanded_bytes, env = "EXTRACTOUS_MAX_EXPANDED_BYTES")]
-    pub max_expanded_bytes: u64,
+    #[command(flatten)]
+    pub limits: EmbeddedLimitsArgs,
 
     #[command(flatten)]
     pub runtime: RuntimeArgs,

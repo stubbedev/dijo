@@ -36,6 +36,7 @@ use crate::cli::{processors_per_process, Embedded, Format, Isolation, Ocr, Serve
 use crate::normalize::{Step, Steps};
 use crate::render::RenderOptions;
 use crate::spool::Spool;
+use crate::tree::Limits;
 use handlers::{error_body, ExtractRequest, Head, Task};
 use metrics::Metrics;
 use processes::ProcessOptions;
@@ -56,6 +57,7 @@ struct State {
     spool: Spool,
     capacity: usize,
     max_input_bytes: Option<u64>,
+    limits: Limits,
     timeout: Option<Duration>,
     client_timeout: Duration,
     next_id: AtomicU64,
@@ -126,6 +128,7 @@ fn start(args: &ServeArgs) -> Result<bool, String> {
         spool,
         capacity: workers + args.queue,
         max_input_bytes: args.max_input_bytes,
+        limits: args.limits.limits(),
         timeout: args.timeout.map(Duration::from_secs),
         client_timeout: Duration::from_secs(args.client_timeout.get()),
         next_id: AtomicU64::new(0),
@@ -340,10 +343,14 @@ fn parse_flag(name: &str, value: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, String> {
+fn parse_extract_request(
+    request: &Request<Incoming>,
+    state: &State,
+) -> Result<ExtractRequest, String> {
     let mut extract = ExtractRequest {
         deadline: None,
         embedded: Embedded::Inline,
+        limits: state.limits,
         render: RenderOptions {
             format: Format::Text,
             metadata: false,
@@ -403,7 +410,7 @@ fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, 
 }
 
 async fn extract(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
-    let task = match parse_extract_request(&request) {
+    let task = match parse_extract_request(&request, state) {
         Ok(extract) => Task::Extract(extract),
         Err(message) => return error(400, &message),
     };

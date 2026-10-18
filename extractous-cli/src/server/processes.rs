@@ -23,6 +23,7 @@ use crate::server::handlers::{
 };
 use crate::server::metrics::Metrics;
 use crate::server::workers::{client_gone, Chunk, Job};
+use crate::tree::Limits;
 
 const JOB: u8 = b'J';
 const READY: u8 = b'Y';
@@ -44,6 +45,7 @@ enum WireTask {
     Extract {
         remaining: Option<Duration>,
         embedded: Embedded,
+        limits: Limits,
         render: RenderOptions,
         ocr: Ocr,
         ocr_lang: Option<String>,
@@ -60,6 +62,7 @@ impl WireTask {
                     .deadline
                     .map(|deadline| deadline.saturating_duration_since(Instant::now())),
                 embedded: request.embedded,
+                limits: request.limits,
                 render: request.render,
                 ocr: request.ocr,
                 ocr_lang: request.ocr_lang.clone(),
@@ -78,6 +81,7 @@ impl WireTask {
             WireTask::Extract {
                 remaining,
                 embedded,
+                limits,
                 render,
                 ocr,
                 ocr_lang,
@@ -85,6 +89,7 @@ impl WireTask {
             } => Task::Extract(ExtractRequest {
                 deadline: remaining.map(|remaining| Instant::now() + remaining),
                 embedded,
+                limits,
                 render,
                 ocr,
                 ocr_lang,
