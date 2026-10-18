@@ -15,6 +15,7 @@ pub mod brotli;
 pub mod bzip2;
 pub mod compressor;
 pub mod cpio;
+pub mod dump;
 pub mod gzip;
 pub mod lz4;
 pub mod lzw;

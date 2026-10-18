@@ -1,18 +1,20 @@
-//! Tika's `PackageParser` over TAR, ar, cpio and ARJ archives: each file but a directory handed
-//! to the embedded document extractor with the metadata `handleEntryMetadata` gives it, in
-//! archive order, and a file whose data the archive's stream cannot read recorded as such, its
-//! name written in a paragraph. The archive is read as the format its detected type names, and
-//! keeps that type; Tika reads it as the format `ArchiveStreamFactory` recognizes in its bytes
-//! and sets that format's type, but for GNU TAR (#101). Without a type the parser names, it is
-//! read as the format of its bytes: ZIP data by its local headers, as `ZipArchiveInputStream`
-//! reads it; 7z data refused, as commons-compress refuses to stream it. The files' data is read
-//! in place, so the parser's memory stays bounded whatever the archive's size, but for a sparse
-//! TAR file and compressed ZIP data, which are decoded to a spool.
+//! Tika's `PackageParser` over TAR, ar, cpio, ARJ and Unix dump archives: each file but a
+//! directory handed to the embedded document extractor with the metadata `handleEntryMetadata`
+//! gives it, in archive order, and a file whose data the archive's stream cannot read recorded
+//! as such, its name written in a paragraph. The archive is read as the format its detected
+//! type names, and keeps that type; Tika reads it as the format `ArchiveStreamFactory`
+//! recognizes in its bytes and sets that format's type, but for GNU TAR (#101). Without a type
+//! the parser names, it is read as the format of its bytes: ZIP data by its local headers, as
+//! `ZipArchiveInputStream` reads it; 7z data refused, as commons-compress refuses to stream it.
+//! The files' data is read in place, so the parser's memory stays bounded whatever the
+//! archive's size, but for a sparse TAR file, compressed ZIP data and a dump's data, which are
+//! decoded to a spool.
 
 use super::nesting::Scan;
 use super::{undecoded, within_limit, write_file, Cut};
 use crate::compress::archiver::Archiver;
 use crate::compress::arj::{self, ArjData};
+use crate::compress::dump;
 use crate::compress::zip::stream::{Failure as ZipFailure, ZipStream};
 use crate::compress::zip::Decoded;
 use crate::compress::{ar, cpio, tar, ArchiveFile, Limited, Undecoded};
@@ -27,6 +29,7 @@ use crate::mime::MediaType;
 
 const GTAR: &str = "application/x-gtar";
 const ARJ: &str = "application/x-arj";
+const DUMP: &str = "application/x-tika-unix-dump";
 
 /// The format `content_type` names.
 fn named(content_type: &str) -> Option<Archiver> {
@@ -35,6 +38,7 @@ fn named(content_type: &str) -> Option<Archiver> {
         "application/x-archive" => Some(Archiver::Ar),
         "application/x-cpio" => Some(Archiver::Cpio),
         ARJ => Some(Archiver::Arj),
+        DUMP => Some(Archiver::Dump),
         _ => None,
     }
 }
@@ -131,10 +135,30 @@ fn read<'a>(
             "org.apache.commons.compress.archivers.StreamingNotSupportedException",
             "The 7z doesn't support streaming.",
         ))),
-        Archiver::Dump => Err(Decline::Deferred(
-            "commons-compress reads it as a Unix dump, which PackageParser's port does not"
-                .to_owned(),
-        )),
+        Archiver::Dump => {
+            let limited = dump::entries(input).map_err(|unread| match unread {
+                dump::Unread::Unopened(reason) => unable_to_unpack(Exception::new(
+                    "org.apache.commons.compress.archivers.ArchiveException",
+                    reason,
+                )),
+                dump::Unread::Fails(reason) => failed(reason),
+            })?;
+            let files = limited.map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| ArchiveFile {
+                        name: entry.name,
+                        size: entry.size,
+                        modified_millis: Some(entry.modified_millis),
+                        created_millis: None,
+                        directory: entry.directory,
+                        content: entry.content,
+                    })
+                    .collect()
+            });
+            let (files, cut) = within_limit(what.clone(), files)?;
+            Ok(Package::of(files, cut))
+        }
     }
 }
 
@@ -253,6 +277,7 @@ impl Parser for PackageParser {
             "application/x-archive",
             "application/x-cpio",
             ARJ,
+            DUMP,
         ]
     }
 
@@ -414,6 +439,25 @@ mod tests {
                 .any(|exception| exception.contains("Can't read archive stream (B.BIN)")),
             "{exceptions:?}"
         );
+    }
+
+    #[test]
+    fn reads_unix_dumps() {
+        use crate::compress::dump::tests::{data, directory, dump, header, DIRECTORY, FILE};
+        let tape = dump(&[
+            header(2, 2, DIRECTORY, 1024, 1),
+            directory(&[(2, "."), (2, ".."), (10, "notes.txt")]),
+            header(2, 10, FILE, 13, 1),
+            data(b"dumped notes\n"),
+        ]);
+        assert_eq!(
+            entries(&tape, Some(DUMP)),
+            [
+                (String::new(), Some(Vec::new())),
+                ("notes.txt".to_owned(), Some(b"dumped notes\n".to_vec())),
+            ]
+        );
+        assert_eq!(entries(&tape, None), entries(&tape, Some(DUMP)));
     }
 
     #[test]
