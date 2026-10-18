@@ -97,3 +97,29 @@ fn extracts_workbooks_too_large_to_read_whole_in_bounded_memory() {
     });
     assert!(first_seen && last_seen);
 }
+
+/// A compound document given to Tika's `OldExcelParser` is read as `OldExcelExtractor` opens
+/// it: its "Book" stream, else its "Workbook" stream; one with neither is one POI throws on.
+#[test]
+fn reads_the_book_stream_of_a_compound_document_as_old_excel_extractor_does() {
+    use crate::formats::{reading, Parser};
+    let mut stream = bof(sid::BOF);
+    stream.extend(label(old_sid::LABEL, b"Bog"));
+    stream.extend(record(sid::EOF, &[]));
+    let configs = crate::config::ParserConfigs::default();
+    for name in ["Book", "WORKBOOK"] {
+        let file = crate::ole2::tests::compound(&[name], &stream);
+        assert_eq!(
+            super::super::old_book(&file).unwrap().into_owned(),
+            stream,
+            "{name}"
+        );
+        let metadata = crate::formats::metadata::TikaMetadata::new();
+        assert!(reading(super::super::OldExcelParser.prepare(&file, &metadata, &configs)).is_ok());
+    }
+    let file = crate::ole2::tests::compound(&["Other"], &stream);
+    assert!(matches!(
+        super::super::old_book(&file),
+        Err(Unread::Thrown(_))
+    ));
+}

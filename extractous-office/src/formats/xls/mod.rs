@@ -42,7 +42,7 @@ use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::{office_document, Handed, Summaries};
-use crate::formats::poi::{written, Halt, Thrown, Unread, OFFICE_PARSER};
+use crate::formats::poi::{written, Halt, Thrown, Unread, ILLEGAL_ARGUMENT, OFFICE_PARSER};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{
     unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared, Unported,
@@ -60,6 +60,8 @@ const MEDIA_TYPES: [&str; 2] = [MEDIA_TYPE, WORKS_SPREADSHEET];
 const WORKBOOK_ENTRY_NAMES: [&str; 4] = ["Workbook", "WORKBOOK", "BOOK", "WorkBook"];
 /// Tika's parser of the workbooks of Excel 2 to 4 stored bare.
 const OLD_EXCEL_PARSER: &str = "org.apache.tika.parser.microsoft.OldExcelParser";
+/// The stream `OldExcelExtractor` reads of a compound document without a "Book" stream.
+const OLD_WORKBOOK_ENTRY: &str = "Workbook";
 /// The entry of a workbook before BIFF8, which Tika reads with its `OldExcelExtractor`.
 const OLD_BOOK_ENTRY: &str = "Book";
 /// The start of the names of the storages documents are embedded in.
@@ -108,23 +110,63 @@ impl Parser for OldExcelParser {
         Footprint::Bounded
     }
 
-    /// Fails workbooks POI throws on, encrypted ones among them, which POI refuses.
+    /// Fails workbooks POI throws on, encrypted ones among them, which POI refuses. A compound
+    /// document is read as `OldExcelExtractor` opens one: its "Book" stream, else its
+    /// "Workbook" stream.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if crate::ole2::is_ole(input) {
-            return Err(Unported(
-                "a compound document typed as a bare old workbook, which POI opens as one"
-                    .to_owned(),
-            )
-            .into());
+        let declined = |unread: Unread| unread.declined_by(OLD_EXCEL_PARSER);
+        if !crate::ole2::is_ole(input) {
+            plan_old(input, OLD_EXCEL_PARSER)?;
+            return Ok(Box::new(move |xhtml| write_old(input, xhtml)));
         }
-        plan_old(input, OLD_EXCEL_PARSER)?;
-        Ok(Box::new(move |xhtml| write_old(input, xhtml)))
+        let stream = old_book(input).map_err(declined)?;
+        plan_old(&stream, OLD_EXCEL_PARSER)?;
+        Ok(Box::new(move |xhtml| write_old(&stream, xhtml)))
     }
+}
+
+/// `OldExcelExtractor.open(directory)` of a compound document: its "Book" stream, else its
+/// "Workbook" stream, each looked for ignoring case, in place where it lies in one run.
+fn old_book(input: &[u8]) -> Result<Cow<'_, [u8]>, Unread> {
+    let file = Ole2::open_stream(input).map_err(|Unreadable(reason)| {
+        Thrown::new(format!(
+            "POIFSFileSystem cannot open the compound document: {reason}"
+        ))
+    })?;
+    let root = file.root();
+    let stream = |name: &str| {
+        file.child_ignoring_case(root, name)
+            .filter(|&entry| file.kind(entry) == EntryKind::Document)
+    };
+    let book = match stream(OLD_BOOK_ENTRY) {
+        Some(book) => book,
+        None => match file.child_ignoring_case(root, OLD_WORKBOOK_ENTRY) {
+            Some(entry) if file.kind(entry) == EntryKind::Document => entry,
+            Some(_) => {
+                return Err(Thrown::runtime(
+                    ILLEGAL_ARGUMENT,
+                    "Did not have an Excel 5/95 Book stream: the Workbook entry, a directory",
+                )
+                .into())
+            }
+            None => {
+                return Err(
+                    Thrown::new("the compound document has no Book or Workbook stream").into(),
+                )
+            }
+        },
+    };
+    Ok(file
+        .content(book)
+        .map_err(|Unreadable(reason)| {
+            Thrown::new(format!("cannot read the old workbook stream: {reason}"))
+        })?
+        .bytes())
 }
 
 impl Parser for XlsParser {
