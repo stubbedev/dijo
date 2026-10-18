@@ -9,6 +9,7 @@
 //! port does not read, is left to Tika: see [`DocxParser::prepare`].
 
 pub(crate) mod body;
+pub mod flat;
 pub(crate) mod notes;
 pub(crate) mod numbering;
 mod styles;
@@ -465,7 +466,7 @@ impl<'a> Document<'a> {
             xhtml,
             Context {
                 styles,
-                lists,
+                lists: Some(lists),
                 inline,
                 records_metadata: true,
                 include_deleted: self.config.includes_deleted_content(),
@@ -713,9 +714,8 @@ pub(crate) fn write_general_text_part(
     links: &HashMap<String, String>,
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
-    let mut lists = ListManager::new(None);
     let inline = InlineParts::default();
-    let body = Body::new(xhtml, Context::plain(&mut lists, &inline, false));
+    let body = Body::new(xhtml, Context::plain(&inline, false));
     let mut handler = TextHandler::new(body, links, TextOptions::default());
     extractor::write_general_text_part(package, part, &mut handler)
 }
