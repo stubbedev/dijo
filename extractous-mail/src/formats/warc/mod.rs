@@ -286,7 +286,8 @@ mod tests {
     use super::*;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Scratch,
     };
 
     #[cfg(feature = "tika")]
@@ -388,7 +389,7 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 6, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
+        assert_same_as_tika_departing(&paths, TIKA_NAME, crate::formats::html::DEPARTURES);
     }
 
     #[test]

@@ -99,7 +99,8 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Scratch,
     };
 
     const RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\n\
@@ -134,6 +135,8 @@ mod tests {
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
+    /// Its page ends `</body>\n</html>`: the HTML parser puts the line feed in the body, so the
+    /// native XHTML ends the page's `package-entry` with it, where Tika's has none (#84).
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_http_response_as_tikas_path_does() {
@@ -141,6 +144,10 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 1, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, HttpParser.tika_name());
+        assert_same_as_tika_departing(
+            &paths,
+            HttpParser.tika_name(),
+            crate::formats::html::TREE_DEPARTURES,
+        );
     }
 }
