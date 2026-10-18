@@ -61,7 +61,7 @@ use crate::input::{Pages, Paging};
 use cos::Pdf;
 use ocr::{OcrCheck, PageOcr};
 use recording::Recording;
-use security::{Access, Opening, Refusal, WRONG_PASSWORD};
+use security::{Access, Encryption, Opening, Refusal, WRONG_PASSWORD};
 use structure::StructureIndex;
 use tagged::Tagged;
 use writer::{DocumentWriter, WriteFailure};
@@ -506,38 +506,40 @@ fn load<'a>(
     let password = configs.password.as_ref().map_or("", Password::expose);
     let opening = Opening::of(resolution.encryption(input)?, password).map_err(refused)?;
     let mut pdf = Pdf::new(input, paging, &resolution)?;
-    let (decryption_password, access) = match &opening {
-        Opening::Unencrypted => {
-            return Ok(Loaded {
-                pdf,
-                access: Access::Unencrypted,
-            })
-        }
-        Opening::Rc4 {
+    let Opening::Standard {
+        document_id,
+        encryption,
+    } = opening
+    else {
+        return Ok(Loaded {
+            pdf,
+            access: Access::Unencrypted,
+        });
+    };
+    let unread = || Unported("an encryption dictionary the port cannot read".to_owned());
+    let undecrypted = |error| Unported(format!("encryption lopdf does not decrypt: {error}"));
+    let (state, access) = match encryption {
+        Encryption::Rc4 {
             access,
             user_password,
-        } => (user_password.as_str(), Some(*access)),
-        Opening::Aes256 => (password, None),
-    };
-    let mut encryption = pdf
-        .encryption_document()
-        .ok_or_else(|| Unported("an encryption dictionary the port cannot read".to_owned()))?;
-    if encryption
-        .authenticate_password(decryption_password)
-        .is_err()
-    {
-        return Err(match opening {
-            Opening::Aes256 => refused(security::aes256_rejection(password)),
-            _ => Unported("encryption lopdf does not decrypt".to_owned()).into(),
-        });
-    }
-    let state = EncryptionState::decode(&encryption, decryption_password)
-        .map_err(|error| Unported(format!("encryption lopdf does not decrypt: {error}")))?;
-    let access = match access {
-        Some(access) => access,
-        None => {
-            encryption.encryption_state = Some(state.clone());
-            security::aes256_access(&mut encryption, password).map_err(refused)?
+            entries,
+        } => {
+            let document = pdf
+                .encryption_document(&document_id, &entries)
+                .ok_or_else(unread)?;
+            let state = EncryptionState::decode(&document, &user_password).map_err(undecrypted)?;
+            (state, access)
+        }
+        Encryption::Aes256(revision) => {
+            let document = pdf
+                .encryption_document(&document_id, &security::standard_entries())
+                .ok_or_else(unread)?;
+            let bytes =
+                security::aes256_password(&document, revision, password).map_err(refused)?;
+            let opener = security::aes256_opener(&document, &bytes).map_err(refused)?;
+            let state = EncryptionState::decode(&document, &bytes).map_err(undecrypted)?;
+            let access = opener.access(state.permissions().bits());
+            (state, access)
         }
     };
     let id = match pdf.trailer().get(b"Encrypt") {
@@ -561,6 +563,7 @@ fn refused(refusal: Refusal) -> Decline<'static> {
         Refusal::NoSecurityHandler(filter) => Decline::Fails(crypt::encrypted(Some(&format!(
             "java.io.IOException: No security handler for filter {filter}"
         )))),
+        Refusal::Thrown(thrown) => Decline::Fails(thrown.into_error(TIKA_PDF_PARSER)),
         Refusal::Unported(unported) => unported.into(),
     }
 }
@@ -740,14 +743,20 @@ mod tests {
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
     /// cross-reference table whose entries `shift` moves off their objects.
-    pub(super) fn document(objects: &[&str], prefix: &[u8], shift: &[(usize, usize)]) -> Vec<u8> {
+    pub(super) fn document<O: AsRef<[u8]>>(
+        objects: &[O],
+        prefix: &[u8],
+        shift: &[(usize, usize)],
+    ) -> Vec<u8> {
         let mut out = prefix.to_vec();
         let start = out.len();
         out.extend_from_slice(b"%PDF-1.4\n");
         let mut offsets = Vec::with_capacity(objects.len());
         for (index, object) in objects.iter().enumerate() {
             offsets.push(out.len() - start);
-            out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+            out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            out.extend_from_slice(object.as_ref());
+            out.extend_from_slice(b"\nendobj\n");
         }
         let xref = out.len() - start;
         out.extend_from_slice(
@@ -821,7 +830,7 @@ mod tests {
     }
 
     /// `haystack` with the first `needle` replaced by `replacement`.
-    fn replace(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    pub(super) fn replace(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
         let at = find(haystack, needle);
         [&haystack[..at], replacement, &haystack[at + needle.len()..]].concat()
     }
@@ -909,7 +918,7 @@ mod tests {
         assert!(xhtml.contains("After the state"), "{xhtml}");
     }
 
-    const TEXT: &str =
+    pub(super) const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
 

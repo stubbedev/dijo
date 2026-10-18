@@ -3,11 +3,12 @@
 
 use crate::errors::Error;
 
-/// A Java exception: its class and its message, if it has one.
+/// A Java exception: its class, its message, if it has one, and the exception it wraps, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exception {
     class: &'static str,
     message: Option<String>,
+    cause: Option<Box<Exception>>,
 }
 
 impl Exception {
@@ -15,6 +16,7 @@ impl Exception {
         Self {
             class,
             message: Some(message.into()),
+            cause: None,
         }
     }
 
@@ -22,14 +24,37 @@ impl Exception {
         Self {
             class,
             message: None,
+            cause: None,
+        }
+    }
+
+    /// An exception of `class` made of its `cause` alone, as `new IOException(cause)` takes the
+    /// cause's `toString` for its message.
+    pub fn wrapping(class: &'static str, cause: Exception) -> Self {
+        Self {
+            class,
+            message: Some(cause.to_java_string()),
+            cause: Some(Box::new(cause)),
         }
     }
 
     /// `Throwable.toString`: the class, then the message, if there is one.
-    fn describe(&self) -> String {
+    fn to_java_string(&self) -> String {
         match &self.message {
             Some(message) => format!("{}: {message}", self.class),
             None => self.class.to_owned(),
+        }
+    }
+
+    /// The exception and the causes it wraps, as our Java reports them.
+    fn describe(&self) -> String {
+        match &self.cause {
+            Some(cause) => format!(
+                "{} <- caused by {}",
+                self.to_java_string(),
+                cause.describe()
+            ),
+            None => self.to_java_string(),
         }
     }
 }
@@ -44,7 +69,8 @@ pub enum Thrown {
 }
 
 impl Thrown {
-    /// The error Tika's path fails with when the parser `tika_name` throws this.
+    /// The error Tika's path fails with when the parser `tika_name` throws this: the
+    /// `TikaException` `CompositeParser` wraps it in, as our Java reports it.
     pub fn into_error(self, tika_name: &str) -> Error {
         let (wrapped, cause) = match self {
             Self::Io(cause) => (
@@ -56,7 +82,11 @@ impl Thrown {
                 cause,
             ),
         };
-        Error::ParseError(format!("{wrapped} <- caused by {}", cause.describe()))
+        Error::ParseError(format!(
+            "Parse error occurred : org.apache.tika.exception.TikaException: {wrapped} <- caused \
+             by {}",
+            cause.describe()
+        ))
     }
 }
 
@@ -69,14 +99,31 @@ mod tests {
         let io = Thrown::Io(Exception::new("java.io.EOFException", "short"));
         assert_eq!(
             io.into_error("org.example.Parser").to_string(),
-            "TIKA-198: Illegal IOException from org.example.Parser <- caused by \
-             java.io.EOFException: short"
+            "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+             IOException from org.example.Parser <- caused by java.io.EOFException: short"
         );
         let runtime = Thrown::Runtime(Exception::bare("java.lang.NullPointerException"));
         assert_eq!(
             runtime.into_error("org.example.Parser").to_string(),
-            "Unexpected RuntimeException from org.example.Parser <- caused by \
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
+             RuntimeException from org.example.Parser <- caused by \
              java.lang.NullPointerException"
+        );
+    }
+
+    #[test]
+    fn reports_each_cause_an_exception_wraps() {
+        let cause = Exception::new(
+            "java.lang.IllegalArgumentException",
+            "Input buffer too short",
+        );
+        let io = Thrown::Io(Exception::wrapping("java.io.IOException", cause));
+        assert_eq!(
+            io.into_error("org.example.Parser").to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+             IOException from org.example.Parser <- caused by java.io.IOException: \
+             java.lang.IllegalArgumentException: Input buffer too short <- caused by \
+             java.lang.IllegalArgumentException: Input buffer too short"
         );
     }
 }

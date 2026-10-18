@@ -11,6 +11,7 @@ use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 use super::content::{is_digit, is_end_of_name, is_whitespace, Lexer};
 use super::cos::OBJECT_READ;
+use super::security::DocumentId;
 use super::Unported;
 use crate::input::Paging;
 
@@ -422,13 +423,14 @@ fn compressed_object(stream: &Dictionary, decoded: &[u8], number: i64) -> Option
 }
 
 impl Resolution {
-    /// The encryption dictionary the trailer names, as PDFBox reads it from `data`, and the
-    /// first string of the trailer's `ID`, empty where it has none; `None` for a document the
-    /// trailer names no encryption of.
+    /// The encryption dictionary the trailer names, as PDFBox reads it from `data`, each
+    /// reference among its entries and those of the dictionaries in it resolved once, as
+    /// `getDictionaryObject` resolves it, and the first entry of the trailer's `ID`; `None` for
+    /// a document the trailer names no encryption of.
     pub(super) fn encryption(
         &self,
         data: &[u8],
-    ) -> Result<Option<(Dictionary, Vec<u8>)>, Unported> {
+    ) -> Result<Option<(Dictionary, DocumentId)>, Unported> {
         let dictionary = match self.trailer.get(b"Encrypt") {
             Err(_) => return Ok(None),
             Ok(Object::Dictionary(dictionary)) => dictionary.clone(),
@@ -445,19 +447,50 @@ impl Resolution {
                 ))
             }
         };
-        let id = match self.trailer.get(b"ID") {
-            Ok(Object::Array(items)) => match items.first() {
-                None => Vec::new(),
-                Some(Object::String(bytes, _)) => bytes.clone(),
-                Some(_) => {
-                    return Err(Unported(
-                        "a document ID that is no string, which PDFBox fails on".to_owned(),
-                    ))
-                }
+        let resolved = |object: &Object| self.resolved_once(data, object);
+        let id = match self.trailer.get(b"ID").ok().and_then(resolved) {
+            Some(Object::Array(items)) => match items.first() {
+                None => DocumentId::Bytes(Vec::new()),
+                Some(first) => match resolved(first) {
+                    Some(Object::String(bytes, _)) => DocumentId::Bytes(bytes),
+                    Some(other) => DocumentId::NotAString(other),
+                    None => DocumentId::Null,
+                },
             },
-            _ => Vec::new(),
+            _ => DocumentId::Bytes(Vec::new()),
         };
-        Ok(Some((dictionary, id)))
+        Ok(Some((self.resolved_entries(data, &dictionary, 0), id)))
+    }
+
+    /// `COSObject.getObject` of `object` where it is a reference, as PDFBox resolves it once:
+    /// `None` for `null` or an object it does not find; a reference read where the reference
+    /// leads stays a reference.
+    fn resolved_once(&self, data: &[u8], object: &Object) -> Option<Object> {
+        let object = match object {
+            Object::Reference(id) => {
+                referenced(data, &self.table, Key::from_id(*id), &mut Vec::new())?
+            }
+            object => object.clone(),
+        };
+        (!matches!(object, Object::Null)).then_some(object)
+    }
+
+    /// A copy of `dictionary` with each entry resolved once, and the entries of the
+    /// dictionaries among them, `depth` levels down, likewise.
+    fn resolved_entries(&self, data: &[u8], dictionary: &Dictionary, depth: usize) -> Dictionary {
+        const MAX_DEPTH: usize = 2;
+        let mut resolved = Dictionary::new();
+        for (key, value) in dictionary.iter() {
+            match self.resolved_once(data, value) {
+                Some(Object::Dictionary(inner)) if depth < MAX_DEPTH => resolved.set(
+                    key.clone(),
+                    Object::Dictionary(self.resolved_entries(data, &inner, depth + 1)),
+                ),
+                Some(object) => resolved.set(key.clone(), object),
+                None => {}
+            }
+        }
+        resolved
     }
 
     /// Where each object the table lists is read from, by its key as `lopdf` names it.

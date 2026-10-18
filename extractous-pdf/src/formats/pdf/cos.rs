@@ -14,6 +14,7 @@ use lopdf::{Dictionary, Document, EncryptionState, Object, ObjectId, Stream};
 use super::content::Lexer;
 use super::xref::{self, java_trim, Placement, Read, Resolution, Source, Thrown};
 use super::Unported;
+use crate::formats::thrown::Exception;
 use crate::formats::Difference;
 use crate::input::Paging;
 use crate::text::charset::Charset;
@@ -150,8 +151,13 @@ impl<'d> Pdf<'d> {
     }
 
     /// The document's encryption dictionary, as `lopdf` reads it to open the document: in a
-    /// document of its own, whose trailer is this one's.
-    pub(super) fn encryption_document(&self) -> Option<Document> {
+    /// document of its own, whose trailer is this one's with the document ID `document_id`, as
+    /// PDFBox reads it, and whose dictionary has `entries` in place of its own.
+    pub(super) fn encryption_document(
+        &self,
+        document_id: &[u8],
+        entries: &Dictionary,
+    ) -> Option<Document> {
         let encrypt = self.trailer.get(b"Encrypt").ok()?;
         let dict = self.resolve(encrypt).and_then(as_dict)?;
         let id = match encrypt {
@@ -161,8 +167,14 @@ impl<'d> Pdf<'d> {
         let mut doc = Document::new();
         doc.trailer = self.trailer.clone();
         doc.trailer.set("Encrypt", Object::Reference(id));
-        doc.objects
-            .insert(id, Object::Dictionary(self.inlined(dict, 0)));
+        let document_id = Object::string_literal(document_id.to_vec());
+        doc.trailer
+            .set("ID", Object::Array(vec![document_id.clone(), document_id]));
+        let mut dict = self.inlined(dict, 0);
+        for (key, value) in entries.iter() {
+            dict.set(key.clone(), value.clone());
+        }
+        doc.objects.insert(id, Object::Dictionary(dict));
         Some(doc)
     }
 
@@ -737,6 +749,36 @@ fn decode_filter(
     Stream::new(dict, data)
         .decompressed_content()
         .map_err(|e| Unported(format!("a stream's {name} data does not decode: {e}")))
+}
+
+/// The class of PDFBox's COS layer that reads `object`, a reference left unresolved read as
+/// the `COSObject` that stands for it.
+fn cos_class(object: &Object) -> &'static str {
+    match object {
+        Object::Null => "COSNull",
+        Object::Boolean(_) => "COSBoolean",
+        Object::Integer(_) => "COSInteger",
+        Object::Real(_) => "COSFloat",
+        Object::Name(_) => "COSName",
+        Object::String(..) => "COSString",
+        Object::Array(_) => "COSArray",
+        Object::Dictionary(_) => "COSDictionary",
+        Object::Stream(_) => "COSStream",
+        Object::Reference(_) => "COSObject",
+    }
+}
+
+/// The `ClassCastException` the JVM throws where PDFBox casts `object` to the COS class `to`.
+pub(super) fn class_cast(object: &Object, to: &str) -> Exception {
+    let from = format!("org.apache.pdfbox.cos.{}", cos_class(object));
+    let to = format!("org.apache.pdfbox.cos.{to}");
+    Exception::new(
+        "java.lang.ClassCastException",
+        format!(
+            "class {from} cannot be cast to class {to} ({from} and {to} are in unnamed module of \
+             loader 'app')"
+        ),
+    )
 }
 
 /// The dictionary of a dictionary or a stream, which PDFBox's `COSStream` extends.

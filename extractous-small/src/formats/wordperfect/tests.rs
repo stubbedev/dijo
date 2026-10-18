@@ -226,8 +226,8 @@ fn fails_old_quattro_pro_as_office_parser_does() {
         .to_string();
     assert_eq!(
         error,
-        "TIKA-198: Illegal IOException from org.apache.tika.parser.microsoft.OfficeParser <- \
-         caused by org.apache.poi.poifs.filesystem.NotOLE2FileException: Invalid header \
+        "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+         IOException from org.apache.tika.parser.microsoft.OfficeParser <- caused by org.apache.poi.poifs.filesystem.NotOLE2FileException: Invalid header \
          signature; read 0x00C9100100020000, expected 0xE11AB1A1E011CFD0 - Your file appears \
          not to be a valid OLE2 document"
     );
