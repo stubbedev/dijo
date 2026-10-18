@@ -12,6 +12,8 @@ use crate::formats::poi::{i16_at, i32_at, u8_at, Read, Thrown};
 
 const MAX_GRPPRL_LENGTH: i64 = 500_000_000;
 const PAGE_SIZE: i32 = 512;
+/// The characters that end a paragraph: a paragraph mark, a cell mark and a page break.
+pub(super) const PARAGRAPH_MARKS: [u8; 3] = [13, 7, 12];
 
 /// POI's `SprmBuffer`: bytes a grpprl is written to, with the room past its end that POI's
 /// buffers keep, which its comparisons and readers see.
@@ -341,11 +343,11 @@ fn binary_search_start(runs: &[PropertyRun], by_start: &[usize], start: i32) -> 
 }
 
 /// `PAPBinTable.rebuild`: the runs of the pieces' modifiers added, then a paragraph for each
-/// paragraph, cell or page mark of the text, with the grpprls of the runs ending in it joined in
-/// the order they were read.
+/// paragraph, cell or page mark of the text, at the positions `marks` gives in order, with the
+/// grpprls of the runs ending in it joined in the order they were read.
 pub(super) fn rebuild_paragraph_runs(
     mut runs: Vec<PropertyRun>,
-    text: &[u16],
+    marks: &[i32],
     clx: &ComplexFileTable,
 ) -> Read<Vec<PropertyRun>> {
     for piece in &clx.pieces {
@@ -369,12 +371,9 @@ pub(super) fn rebuild_paragraph_runs(
     let mut rebuilt = Vec::new();
     let mut last_start = 0;
     let mut last_index = 0;
-    for (char_index, &unit) in text.iter().enumerate() {
-        if !matches!(unit, 13 | 7 | 12) {
-            continue;
-        }
-        let char_index = char_index as i32;
+    for &char_index in marks {
         let start_inclusive = last_start;
+
         let end_exclusive = char_index + 1;
         let mut broken = false;
         let mut ending: Vec<usize> = Vec::new();

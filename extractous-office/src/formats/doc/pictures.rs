@@ -2,12 +2,13 @@
 //! character runs place in the data stream and those the drawing group stores, their types and
 //! content, and the order Tika numbers and claims them in.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use super::document::Document;
 use super::range::CharacterRun;
 use crate::formats::escher::{self, kind, Blip, Content, Escher};
-use crate::formats::poi::{i16_at, i32_at, inflate, safely_clone, u8_at, Read, Thrown};
+use crate::formats::poi::{i16_at, i32_at, inflate, narrowed, safely_clone, u8_at, Read, Thrown};
 
 const PICF_SIZE: usize = 68;
 /// `PICF.mm` of a picture whose name follows its header.
@@ -90,14 +91,14 @@ impl PictureType {
 }
 
 /// A picture, `Picture`: where its data starts in the data stream, 0 for one the drawing
-/// group stores, and the records of its blips.
+/// group stores, and the records of its blips, in place in the stream that holds them.
 #[derive(Debug, Clone)]
-pub(super) struct Picture {
+pub(super) struct Picture<'d> {
     start: i32,
-    blips: Vec<Escher<'static>>,
+    blips: Vec<Escher<'d>>,
 }
 
-impl Picture {
+impl<'d> Picture<'d> {
     /// `suggestPictureType`.
     pub(super) fn kind(&self) -> PictureType {
         let [record] = &self.blips[..] else {
@@ -110,30 +111,32 @@ impl Picture {
     }
 
     /// `getRawContent`.
-    fn raw_content(&self) -> &[u8] {
+    fn raw_content(&self) -> Cow<'d, [u8]> {
+        const NONE: Cow<'static, [u8]> = Cow::Borrowed(&[]);
         let [record] = &self.blips[..] else {
-            return &[];
+            return NONE;
         };
         match &record.content {
-            Content::Picture(blip) => &blip.data,
-            Content::Stored(stored) => stored.blip.as_ref().map_or(&[], |blip| &blip.data),
-            _ => &[],
+            Content::Picture(blip) => blip.data.clone(),
+            Content::Stored(stored) => stored.blip.as_ref().map_or(NONE, |blip| blip.data.clone()),
+            _ => NONE,
         }
     }
 
     /// `getContent`: a compressed picture inflated, a PNG without the header before it, any
-    /// other as it is. A compressed picture that does not inflate leaves no content, which
-    /// fails Tika's parse when it hands the picture on.
-    pub(super) fn content(&self) -> Read<Vec<u8>> {
+    /// other as it is, in place. A compressed picture that does not inflate leaves no content,
+    /// which fails Tika's parse when it hands the picture on.
+    pub(super) fn content(&self) -> Read<Cow<'d, [u8]>> {
         let raw = self.raw_content();
         if COMPRESSED
             .iter()
-            .any(|signature| matches_signature(raw, signature, 32))
+            .any(|signature| matches_signature(&raw, signature, 32))
         {
             return inflate(&raw[33..], None)
+                .map(Cow::Owned)
                 .map_err(|_| Thrown::new("a compressed picture does not inflate"));
         }
-        Ok(escher::picture_data(raw).to_vec())
+        Ok(narrowed(&raw, escher::picture_data))
     }
 }
 
@@ -149,8 +152,8 @@ fn matches_signature(data: &[u8], signature: &[u8], offset: usize) -> bool {
 
 /// Tika's `PicturesSource`: the document's pictures, which character runs claim them, and
 /// which have been handed on.
-pub(super) struct Pictures {
-    all: Vec<Picture>,
+pub(super) struct Pictures<'d> {
+    all: Vec<Picture<'d>>,
     /// The index of the picture each start offset finds, the last of those starting there.
     by_start: HashMap<i32, usize>,
     /// The pictures no run of the main text claims, `None` for those claimed.
@@ -159,9 +162,9 @@ pub(super) struct Pictures {
     output: HashSet<usize>,
 }
 
-impl Pictures {
+impl<'d> Pictures<'d> {
     /// `new PicturesSource(document)`.
-    pub(super) fn read(document: &Document) -> Read<Pictures> {
+    pub(super) fn read(document: &Document<'d>) -> Read<Pictures<'d>> {
         let all = all_pictures(document)?;
         let mut by_start = HashMap::new();
         for (index, picture) in all.iter().enumerate() {
@@ -212,7 +215,7 @@ impl Pictures {
         None
     }
 
-    pub(super) fn get(&self, picture: usize) -> &Picture {
+    pub(super) fn get(&self, picture: usize) -> &Picture<'d> {
         &self.all[picture]
     }
 
@@ -234,13 +237,12 @@ pub(super) fn has_picture(document: &Document, run: &CharacterRun) -> Read<bool>
     if !chp.special || chp.object || chp.ole2 || chp.data {
         return Ok(false);
     }
-    let text = document.text_of(run.span)?;
-    if text != [0x01] && text != [0x01, 0x15] {
+    if !document.text_is(run.span, &[0x01])? && !document.text_is(run.span, &[0x01, 0x15])? {
         return Ok(false);
     }
     let offset = chp.fc_pic;
-    let block_type = i16_at(&document.data, at(offset, 0xE)?)?;
-    let mm = i16_at(&document.data, at(offset, 0x6)?)?;
+    let block_type = i16_at(document.data, at(offset, 0xE)?)?;
+    let mm = i16_at(document.data, at(offset, 0x6)?)?;
     Ok(match block_type {
         0x08 | 0x0A => true,
         0x00 | 0x02 => mm == 0x64,
@@ -257,7 +259,7 @@ fn at(offset: i32, past: i32) -> Read<usize> {
 
 /// `PicturesTable.getAllPictures`: the pictures the runs of the whole text place, then those
 /// the drawing group stores.
-fn all_pictures(document: &Document) -> Read<Vec<Picture>> {
+fn all_pictures<'d>(document: &Document<'d>) -> Read<Vec<Picture<'d>>> {
     let mut pictures = Vec::new();
     let overall = document.range(0, document.text.len() as i32)?;
     for index in 0..document.run_count(overall)? {
@@ -265,7 +267,7 @@ fn all_pictures(document: &Document) -> Read<Vec<Picture>> {
             continue;
         };
         if has_picture(document, &run)? {
-            pictures.push(read_picture(&document.data, run.chp.fc_pic)?);
+            pictures.push(read_picture(document.data, run.chp.fc_pic)?);
         }
     }
     if let Some(store) = &document.picture_store {
@@ -276,8 +278,7 @@ fn all_pictures(document: &Document) -> Read<Vec<Picture>> {
             if let Some(blip) = &stored.blip {
                 pictures.push(stored_picture(blip.clone()));
             } else if stored.offset > 0 {
-                if let Ok((delayed, _)) = escher::record_at(&document.main, stored.offset as usize)
-                {
+                if let Ok((delayed, _)) = escher::record_at(document.main, stored.offset as usize) {
                     if let Content::Picture(blip) = delayed.content {
                         pictures.push(stored_picture(blip));
                     }
@@ -289,12 +290,12 @@ fn all_pictures(document: &Document) -> Read<Vec<Picture>> {
 }
 
 /// `new Picture(blipRecord)`.
-fn stored_picture(blip: Blip<'_>) -> Picture {
+fn stored_picture(blip: Blip<'_>) -> Picture<'_> {
     Picture {
         start: 0,
         blips: vec![Escher {
             record_id: blip.record_id,
-            content: Content::Picture(blip.into_owned()),
+            content: Content::Picture(blip),
             children: Vec::new(),
         }],
     }
@@ -302,7 +303,7 @@ fn stored_picture(blip: Blip<'_>) -> Picture {
 
 /// `new Picture(dataBlockStartOffset, dataStream, false)`: its `PICFAndOfficeArtData`, the
 /// picture's header, its name, its shape and the blip records after it.
-fn read_picture(data: &[u8], start: i32) -> Read<Picture> {
+fn read_picture(data: &[u8], start: i32) -> Read<Picture<'_>> {
     let mut offset = at(start, 0)?;
     let length = i64::from(i32_at(data, offset)?);
     let mm = i16_at(data, offset + 6)?;
@@ -329,7 +330,7 @@ fn read_picture(data: &[u8], start: i32) -> Read<Picture> {
         }
         let (record, read) = escher::record_at(data, offset)?;
         offset = advance(offset, read)?;
-        blips.push(record.into_owned());
+        blips.push(record);
     }
     Ok(Picture { start, blips })
 }
