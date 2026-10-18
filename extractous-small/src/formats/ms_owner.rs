@@ -4,7 +4,7 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -26,6 +26,10 @@ impl Parser for MsOwnerFileParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &["application/x-ms-owner"]
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(
@@ -101,6 +105,15 @@ mod tests {
         file.extend(unicode.encode_utf16().flat_map(u16::to_le_bytes));
         file.resize(162, 0x20);
         file
+    }
+
+    /// An owner file too large to read whole is read as far as its names.
+    #[test]
+    fn reads_owner_files_too_large_to_read_whole() {
+        let head = owner(b"Mette", "Mette", 5);
+        let file = extractous_core::large::LargeFile::padded("~$lang.docx", &head);
+        let metadata = file.extract_each(MsOwnerFileParser.name(), |_| {});
+        assert_eq!(metadata[MODIFIER], ["Mette"]);
     }
 
     #[test]

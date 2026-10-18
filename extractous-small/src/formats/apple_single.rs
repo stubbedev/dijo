@@ -7,7 +7,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Opened, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Opened, Parser, Prepared};
 use crate::java;
 
 const DATA_FORK: u64 = 1;
@@ -45,6 +45,10 @@ impl Parser for AppleSingleFileParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &["application/applefile"]
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(
@@ -161,11 +165,15 @@ fn read(input: &[u8]) -> Result<Content<'_>, String> {
     })
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    use extractous_core::large::LargeFile;
+
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
@@ -191,6 +199,16 @@ mod tests {
         file
     }
 
+    /// An AppleSingle file too large to read whole hands its data fork on in place.
+    #[test]
+    fn reads_apple_single_files_too_large_to_read_whole() {
+        let length = u32::try_from(LargeFile::padding_length()).unwrap();
+        let head = apple_single(&[(1, b""), (3, b"long.bin")], Some(length));
+        let file = LargeFile::padded("long.as", &head);
+        file.extract_each(AppleSingleFileParser.name(), |_| {});
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_apple_single_files_as_tikas_path_does() {
         let scratch = Scratch::new("apple-single");
@@ -239,6 +257,7 @@ mod tests {
         assert!(read(&file).unwrap_err().contains("runs past the end"));
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_apple_single_file_as_tikas_path_does() {

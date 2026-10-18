@@ -21,6 +21,8 @@ use crate::{memory, Metadata};
 
 /// The memory an extraction of a large file may take: a fraction of the file.
 const BUDGET: u64 = 16 << 20;
+/// What [`LargeFile::padded`] pads a header with, a body at a time.
+const PADDING: &[u8] = &[0; 1 << 20];
 
 thread_local! {
     /// The bytes this thread holds of what it allocated.
@@ -126,6 +128,28 @@ impl LargeFile {
         Self { dir, path }
     }
 
+    /// `head`, then zeros to make a file larger than [`MAX_READ_WHOLE`]: the file of a parser
+    /// that reads only a header, and what it points to, in place.
+    pub fn padded(name: &str, head: &[u8]) -> Self {
+        Self::new(
+            name,
+            head,
+            bodies_past_limit(PADDING.len()),
+            |_| PADDING.to_vec(),
+            b"",
+        )
+    }
+
+    /// Where the file is.
+    pub fn path(&self) -> &str {
+        self.path.to_str().unwrap()
+    }
+
+    /// How many zeros [`LargeFile::padded`] writes after its head.
+    pub fn padding_length() -> u64 {
+        bodies_past_limit(PADDING.len()) * PADDING.len() as u64
+    }
+
     /// The file's text and metadata, extracted under [`BUDGET`] and never holding more, which
     /// `parser` must have read.
     pub fn extract(&self, parser: &str) -> (String, Metadata) {
@@ -157,7 +181,7 @@ impl LargeFile {
     /// thread as a string extraction without a length limit, under [`BUDGET`] and never holding
     /// more besides what `each` keeps, which `parser` must have read.
     pub fn extract_each(&self, parser: &str, each: impl FnMut(&str)) -> Metadata {
-        let path = self.path.to_str().unwrap();
+        let path = self.path();
         let mut out = Each(each);
         let chain = Chain::String {
             output: Output::Text,
