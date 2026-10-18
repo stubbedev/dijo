@@ -13,7 +13,7 @@ use lopdf::{Dictionary, Object};
 use super::super::cos::{as_dict, float_value, int_value, name_string, Pdf};
 use super::super::function::{self, Function};
 use super::super::Unported;
-use super::{Thrown, Unwritten};
+use super::{Exception, Unwritten};
 use crate::ocr::bitmap::Bitmap;
 use crate::ocr::icc::{accepted_components, gray_to_srgb_levels, IccToRgb, ToSrgb};
 
@@ -700,14 +700,14 @@ fn named(
         _ => {}
     }
     let Some(resources) = resources else {
-        return Err(Unwritten::Stream(Thrown::new(
+        return Err(Unwritten::Stream(Exception::new(
             MISSING_RESOURCE,
             format!("Unknown color space: {}", name_string(name)),
         )));
     };
     match spaces.and_then(|spaces| spaces.get(name).ok()) {
         Some(object) => create_nested(pdf, object, Some(resources), was_default, depth + 1),
-        None => Err(Unwritten::Stream(Thrown::new(
+        None => Err(Unwritten::Stream(Exception::new(
             MISSING_RESOURCE,
             format!("Missing color space: {}", name_string(name)),
         ))),
@@ -1101,13 +1101,13 @@ fn indexed(
 }
 
 fn thrown_io(message: &str) -> Unwritten {
-    Unwritten::Stream(Thrown::new(IO_EXCEPTION, message.to_owned()))
+    Unwritten::Stream(Exception::new(IO_EXCEPTION, message.to_owned()))
 }
 
 /// `PDPattern.toRGBImage`'s `UnsupportedOperationException`, which Tika does not catch, so
 /// that it fails the whole document; the port records it as the image's failure (#125).
 fn unsupported() -> Unwritten {
-    Unwritten::Stream(Thrown::bare(UNSUPPORTED_OPERATION))
+    Unwritten::Stream(Exception::bare(UNSUPPORTED_OPERATION))
 }
 
 #[cfg(test)]

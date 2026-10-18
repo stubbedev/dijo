@@ -9,8 +9,8 @@ use std::borrow::Cow;
 use hayro_ccitt::{DecodeSettings, Decoder, DecoderContext, EncodingMode};
 use lopdf::{Dictionary, Object};
 
-use super::super::cos::{as_dict, name_string, Pdf};
-use super::{Thrown, Unwritten};
+use super::super::cos::{as_dict, invalid_filter, name_string, Pdf};
+use super::{Exception, Unwritten};
 use crate::ocr::jpeg;
 
 const IO_EXCEPTION: &str = "java.io.IOException";
@@ -29,11 +29,8 @@ pub(super) fn decoded(
     parameters: Option<&Object>,
     height: i32,
 ) -> Result<Vec<u8>, Unwritten> {
-    if let Some(invalid) = filters.iter().find(|filter| !FILTERS.contains(filter)) {
-        return Err(thrown_io(format!(
-            "Invalid filter: COSName{{{}}}",
-            name_string(invalid)
-        )));
+    if let Some(invalid) = invalid_filter(filters) {
+        return Err(Unwritten::Stream(invalid));
     }
     let mut data = data.into_owned();
     for (index, filter) in filters.iter().enumerate() {
@@ -48,7 +45,7 @@ pub(super) fn decoded(
         data = match *filter {
             b"DCTDecode" | b"DCT" => {
                 jpeg::pdfbox_raster(&data)
-                    .map_err(|reason| Unwritten::Stream(Thrown::new(IIO_EXCEPTION, reason)))?
+                    .map_err(|reason| Unwritten::Stream(Exception::new(IIO_EXCEPTION, reason)))?
                     .samples
             }
             b"CCITTFaxDecode" | b"CCF" => ccitt(pdf, &data, params, height)?,
@@ -77,7 +74,7 @@ pub(super) fn decoded(
 /// The `MissingImageReaderException` PDFBox's `JPXFilter` throws in Tika, whose Java has no
 /// JPEG 2000 reader.
 pub(super) fn missing_jpeg_2000_reader() -> Unwritten {
-    Unwritten::MissingReader(Thrown::new(
+    Unwritten::MissingReader(Exception::new(
         MISSING_READER,
         "Cannot read JPEG2000 image: Java Advanced Imaging (JAI) Image I/O Tools are not \
          installed"
@@ -213,7 +210,7 @@ impl Decoder for Bitmap {
 }
 
 fn thrown_io(message: String) -> Unwritten {
-    Unwritten::Stream(Thrown::new(IO_EXCEPTION, message))
+    Unwritten::Stream(Exception::new(IO_EXCEPTION, message))
 }
 
 /// `CryptFilter.decode` of the data of the image of `dictionary`, which it passes through or
@@ -227,27 +224,6 @@ fn crypt(pdf: &Pdf, dictionary: &Dictionary) -> Result<(), Unwritten> {
         ))),
     }
 }
-
-/// The filters `FilterFactory` has, by their names and abbreviations.
-const FILTERS: [&[u8]; 17] = [
-    b"FlateDecode",
-    b"Fl",
-    b"DCTDecode",
-    b"DCT",
-    b"CCITTFaxDecode",
-    b"CCF",
-    b"LZWDecode",
-    b"LZW",
-    b"ASCIIHexDecode",
-    b"AHx",
-    b"ASCII85Decode",
-    b"A85",
-    b"RunLengthDecode",
-    b"RL",
-    b"Crypt",
-    b"JPXDecode",
-    b"JBIG2Decode",
-];
 
 /// `JBIG2Filter.decode`: the image the PDFBox JBIG2 plugin reads of `data`, the data of the
 /// parameters' `JBIG2Globals` stream before it, if they give one, as one stream of segments, as

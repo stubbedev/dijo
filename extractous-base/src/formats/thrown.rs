@@ -59,6 +59,13 @@ impl Exception {
     }
 }
 
+impl std::fmt::Display for Exception {
+    /// `Throwable.toString`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_java_string())
+    }
+}
+
 /// What a Tika parser throws out of its `parse`, which `CompositeParser` wraps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Thrown {

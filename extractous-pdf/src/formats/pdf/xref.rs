@@ -112,6 +112,9 @@ pub(super) struct Resolution {
     /// For an encrypted document whose objects PDFBox searched for, those it found: it searches
     /// their object streams once it can decrypt them ([`Resolution::object_stream_placements`]).
     encrypted_search: Option<HashMap<Key, Location>>,
+    /// Whether PDFBox rebuilt the trailer from a search of the document's objects
+    /// (`trailerWasRebuild`).
+    rebuilt: bool,
     /// The objects PDFBox read while it read the cross-reference, where it found them, which
     /// its pool keeps for the rest of the document.
     pooled: HashMap<Key, (Location, Object)>,
@@ -155,6 +158,7 @@ pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unport
         table,
         trailer,
         encrypted_search,
+        rebuilt: false,
         pooled,
     })
 }
@@ -196,6 +200,7 @@ fn rebuild(data: &[u8], pooled: HashMap<Key, (Location, Object)>) -> Read<Resolu
         table,
         trailer,
         encrypted_search: None,
+        rebuilt: true,
         pooled,
     })
 }
@@ -533,6 +538,11 @@ impl Resolution {
     /// The trailer, as PDFBox merges it.
     pub(super) fn trailer(&self) -> &Dictionary {
         &self.trailer
+    }
+
+    /// Whether PDFBox rebuilt the trailer from a search of the document's objects.
+    pub(super) fn rebuilt(&self) -> bool {
+        self.rebuilt
     }
 }
 

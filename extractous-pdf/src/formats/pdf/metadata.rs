@@ -6,13 +6,17 @@
 use lopdf::Object;
 
 use super::content::parse_literal;
-use super::cos::{name_string, text_string, Pdf};
+use super::cos::{class_cast, invalid_filter, name_string, text_string, Pdf};
 use super::jfloat;
 use super::recording::Recording;
+use super::writer::WriteFailure;
 use super::Unported;
+use crate::formats::embedded::EMBEDDED_STREAM_EXCEPTION;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xmp::{
     self, date, Property, DCTERMS_CREATED, DCTERMS_MODIFIED, DC_CREATOR, DC_SUBJECT, DC_TITLE,
 };
+use crate::formats::Difference;
 use crate::input::Paging;
 use crate::java::is_blank;
 use crate::java::time::format_instant;
@@ -97,45 +101,57 @@ fn read_startxref(input: &[u8], cursor: &mut usize) -> Option<StartXRef> {
     })
 }
 
-/// `COSParser.parseHeader`: the version of the `%PDF-` header, as PDFBox reads it.
-pub(super) fn header_version(input: &[u8]) -> Result<f32, Unported> {
-    const MARKER: &str = "%PDF-";
+/// `PDFParser.parse`'s reading of the header: the version of the `%PDF-` header, else of a
+/// `%FDF-` one, else the version a `COSDocument` starts with, as the lenient parser goes on
+/// without a header; or the `IOException` `readLine` throws where the search for a header runs
+/// past the end of the document.
+pub(super) fn header_version(input: &[u8]) -> Result<f32, Exception> {
+    const DOCUMENT_VERSION: f32 = 1.4;
+    for (marker, default) in [("%PDF-", "1.4"), ("%FDF-", "1.0")] {
+        if let Some(version) = parse_header(input, marker, default)? {
+            return Ok(version);
+        }
+    }
+    Ok(DOCUMENT_VERSION)
+}
+
+/// `COSParser.parseHeader`: the version of the header `marker` starts, as PDFBox reads it,
+/// `default` where it gives none, or none where the lines it searches hold no such header.
+fn parse_header(input: &[u8], marker: &str, default: &str) -> Result<Option<f32>, Exception> {
     let mut lines = LineReader { input, position: 0 };
     let mut header = lines.next_line()?;
-    if !header.contains(MARKER) {
+    if !header.contains(marker) {
         header = lines.next_line()?;
-        while !header.contains(MARKER) {
+        while !header.contains(marker) {
             if header.chars().next().is_some_and(crate::java::is_digit) {
                 break;
             }
             header = lines.next_line()?;
         }
     }
-    let Some(start) = header.find(MARKER) else {
-        return Err(Unported(
-            "a document without a %PDF- header, which PDFBox fails on".to_owned(),
-        ));
+    let Some(start) = header.find(marker) else {
+        return Ok(None);
     };
     let header: Vec<char> = header[start..].chars().collect();
-    let version: Vec<char> = header[MARKER.len()..].to_vec();
+    let version: Vec<char> = header[marker.len()..].to_vec();
     let exact = version.len() == 3 && version[0].is_ascii_digit() && version[2].is_ascii_digit();
     let version: String = if exact {
         version.iter().collect()
     } else if version.len() < 3 {
-        "1.4".to_owned()
+        default.to_owned()
     } else {
         version[..3].iter().collect()
     };
-    let parts = java_split_count(&format!("{MARKER}{version}"));
+    let parts = java_split_count(&format!("{marker}{version}"));
     let parsed = if parts == 2 {
         java_parse_float(&version)
     } else {
         None
     };
-    Ok(match parsed {
+    Ok(Some(match parsed {
         Some(version) if version >= 0.0 => version,
         _ => 1.7,
-    })
+    }))
 }
 
 /// The number of parts `String.split("-")` gives: trailing empty strings removed.
@@ -166,10 +182,14 @@ struct LineReader<'a> {
 
 impl LineReader<'_> {
     /// `BaseParser.readLine`.
-    fn next_line(&mut self) -> Result<String, Unported> {
+    fn next_line(&mut self) -> Result<String, Exception> {
         if self.position >= self.input.len() {
-            return Err(Unported(
-                "a document without a %PDF- header, which PDFBox fails on".to_owned(),
+            return Err(Exception::new(
+                "java.io.IOException",
+                format!(
+                    "Error: End-of-File, expected line at offset {}",
+                    self.position
+                ),
             ));
         }
         let mut line = String::new();
@@ -189,25 +209,26 @@ impl LineReader<'_> {
 
 /// `PDMetadataExtractor.addMetadata(Metadata, Property, String)`: a decoded, non-blank value,
 /// added once, and only as a further value of a property that takes several.
-fn add_metadata(
-    metadata: &mut Recording,
-    property: &Property,
-    value: Option<&str>,
-) -> Result<(), Unported> {
+/// A value Tika throws on adding, the port leaves out, `pdf` noting the difference.
+fn add_metadata(pdf: &Pdf, metadata: &mut Recording, property: &Property, value: Option<&str>) {
     let Some(value) = value.filter(|value| !is_blank(value)) else {
-        return Ok(());
+        return;
     };
     let decoded = xmp_decode(value);
     if is_blank(&decoded) {
-        return Ok(());
+        return;
     }
     if property.is_multi() || metadata.get(property.name).is_none() {
         if metadata.values(property.name).contains(&decoded) {
-            return Ok(());
+            return;
         }
-        xmp::add(metadata, property, &decoded)?;
+        if let Err(Unported(reason)) = xmp::add(metadata, property, &decoded) {
+            pdf.differ(Difference(format!(
+                "the port leaves out a value of {}: {reason}",
+                property.name
+            )));
+        }
     }
-    Ok(())
 }
 
 /// `PDMetadataExtractor.decode`: a value written as a PDF literal string with a byte order
@@ -238,12 +259,19 @@ fn add_date(metadata: &mut Recording, name: &str, millis: Option<i64>) {
     }
 }
 
-/// `PDDocumentInformation`'s date of `key`: a text string read by `DateConverter`.
-fn info_date(pdf: &Pdf, info: &lopdf::Dictionary, key: &[u8]) -> Result<Option<i64>, Unported> {
-    match pdf.get(info, key) {
-        Some(Object::String(bytes, _)) => date::to_calendar(&text_string(bytes)),
-        _ => Ok(None),
-    }
+/// `PDDocumentInformation`'s date of `key`: a text string read by `DateConverter`. A date the
+/// port does not read as PDFBox does is left out, `pdf` noting the difference.
+fn info_date(pdf: &Pdf, info: &lopdf::Dictionary, key: &[u8]) -> Option<i64> {
+    let Some(Object::String(bytes, _)) = pdf.get(info, key) else {
+        return None;
+    };
+    date::to_calendar(&text_string(bytes)).unwrap_or_else(|Unported(reason)| {
+        pdf.differ(Difference(format!(
+            "the port leaves out the date {}: {reason}",
+            String::from_utf8_lossy(key)
+        )));
+        None
+    })
 }
 
 /// `PDFParser.extractMetadata` from the catalog's language on: the XMP packet, the page count,
@@ -253,18 +281,16 @@ pub(super) fn document(
     metadata: &mut Recording,
     version: f32,
     acro_form_fields: bool,
-) -> Result<(), Unported> {
-    let catalog = pdf.catalog().ok_or_else(|| {
-        Unported("a document without a catalog, which PDFBox fails on".to_owned())
-    })?;
+) -> Result<(), WriteFailure> {
+    let catalog = pdf.catalog().expect("a loaded document has a catalog");
     if let Some(language) = pdf.text(catalog, b"Lang") {
         metadata.set("dc:language", language);
     }
     if acro_form_fields {
         metadata.set("pdf:has-acro-form-fields", "true");
     }
-    xmp_metadata(pdf, pdf.stream(catalog, b"Metadata"), metadata)?;
-    metadata.set("xmpTPg:NPages", pdf.number_of_pages()?.to_string());
+    xmp_metadata(pdf, pdf.stream(catalog, b"Metadata"), metadata);
+    metadata.set("xmpTPg:NPages", pdf.number_of_pages().to_string());
     let empty = lopdf::Dictionary::new();
     let info = pdf.dict(pdf.trailer(), b"Info").unwrap_or(&empty);
     let title = pdf.text(info, b"Title");
@@ -275,32 +301,58 @@ pub(super) fn document(
     let subject = pdf.text(info, b"Subject");
     let trapped = pdf.name_as_string(info, b"Trapped");
     let text = xmp::text;
-    add_metadata(metadata, &text("pdf:docinfo:title"), title.as_deref())?;
-    add_metadata(metadata, &text("pdf:docinfo:creator"), author.as_deref())?;
+    add_metadata(pdf, metadata, &text("pdf:docinfo:title"), title.as_deref());
+    add_metadata(
+        pdf,
+        metadata,
+        &text("pdf:docinfo:creator"),
+        author.as_deref(),
+    );
     if metadata.get("dc:creator").is_none() {
-        add_metadata(metadata, &DC_CREATOR, author.as_deref())?;
+        add_metadata(pdf, metadata, &DC_CREATOR, author.as_deref());
     }
     if metadata.get("dc:title").is_none() {
-        add_metadata(metadata, &DC_TITLE, title.as_deref())?;
+        add_metadata(pdf, metadata, &DC_TITLE, title.as_deref());
     }
     add_metadata(
+        pdf,
         metadata,
         &text("pdf:docinfo:creator-tool"),
         creator.as_deref(),
-    )?;
-    add_metadata(metadata, &text("xmp:CreatorTool"), creator.as_deref())?;
-    add_metadata(metadata, &text("pdf:docinfo:keywords"), keywords.as_deref())?;
-    add_metadata(metadata, &text("pdf:docinfo:producer"), producer.as_deref())?;
-    add_metadata(metadata, &text("pdf:producer"), producer.as_deref())?;
-    add_metadata(metadata, &text("pdf:docinfo:subject"), subject.as_deref())?;
-    add_metadata(metadata, &DC_SUBJECT, keywords.as_deref())?;
-    add_metadata(metadata, &DC_SUBJECT, subject.as_deref())?;
-    add_metadata(metadata, &text("pdf:docinfo:trapped"), trapped.as_deref())?;
-    add_metadata(metadata, &text("pdf:trapped"), trapped.as_deref())?;
-    let created = info_date(pdf, info, b"CreationDate")?;
+    );
+    add_metadata(pdf, metadata, &text("xmp:CreatorTool"), creator.as_deref());
+    add_metadata(
+        pdf,
+        metadata,
+        &text("pdf:docinfo:keywords"),
+        keywords.as_deref(),
+    );
+    add_metadata(
+        pdf,
+        metadata,
+        &text("pdf:docinfo:producer"),
+        producer.as_deref(),
+    );
+    add_metadata(pdf, metadata, &text("pdf:producer"), producer.as_deref());
+    add_metadata(
+        pdf,
+        metadata,
+        &text("pdf:docinfo:subject"),
+        subject.as_deref(),
+    );
+    add_metadata(pdf, metadata, &DC_SUBJECT, keywords.as_deref());
+    add_metadata(pdf, metadata, &DC_SUBJECT, subject.as_deref());
+    add_metadata(
+        pdf,
+        metadata,
+        &text("pdf:docinfo:trapped"),
+        trapped.as_deref(),
+    );
+    add_metadata(pdf, metadata, &text("pdf:trapped"), trapped.as_deref());
+    let created = info_date(pdf, info, b"CreationDate");
     add_date(metadata, "pdf:docinfo:created", created);
     add_date(metadata, DCTERMS_CREATED.name, created);
-    let modified = info_date(pdf, info, b"ModDate")?;
+    let modified = info_date(pdf, info, b"ModDate");
     add_date(metadata, DCTERMS_MODIFIED.name, modified);
     add_date(metadata, "pdf:docinfo:modified", modified);
     const HANDLED: [&str; 9] = [
@@ -322,10 +374,10 @@ pub(super) fn document(
         match pdf.get(info, key) {
             Some(Object::Array(items)) => {
                 for item in items {
-                    custom(metadata, &name, item)?;
+                    custom(pdf, metadata, &name, item);
                 }
             }
-            Some(value) => custom(metadata, &name, value)?,
+            Some(value) => custom(pdf, metadata, &name, value),
             None => {}
         }
     }
@@ -334,9 +386,7 @@ pub(super) fn document(
     add_format(metadata, format!("application/pdf; version={version}"));
     if let Some(extensions) = pdf.get(catalog, b"Extensions") {
         let Some(extensions) = super::cos::as_dict(extensions) else {
-            return Err(Unported(
-                "an /Extensions entry that is not a dictionary, which Tika fails on".to_owned(),
-            ));
+            return Err(not_a_dictionary(extensions));
         };
         for (name, _) in extensions.iter() {
             if name == b"ADBE" {
@@ -344,10 +394,7 @@ pub(super) fn document(
                     continue;
                 };
                 let Some(adobe) = super::cos::as_dict(adobe) else {
-                    return Err(Unported(
-                        "an Adobe extension that is not a dictionary, which Tika fails on"
-                            .to_owned(),
-                    ));
+                    return Err(not_a_dictionary(adobe));
                 };
                 let base = pdf
                     .name_as_string(adobe, b"BaseVersion")
@@ -370,24 +417,32 @@ pub(super) fn document(
 }
 
 /// `PDMetadataExtractor.extract(PDMetadata, ...)`: whether there is an XMP stream, and what
-/// it holds, the PDF/A version derived from it.
+/// it holds, the PDF/A version derived from it. A stream of a filter PDFBox does not have
+/// records the exception its `exportXMPMetadata` throws; a stream or packet the port does not
+/// read as PDFBox does is left out, `pdf` noting the difference.
 pub(super) fn xmp_metadata(
     pdf: &Pdf,
     stream: Option<&lopdf::Stream>,
     metadata: &mut dyn xmp::Sink,
-) -> Result<(), Unported> {
+) {
     let Some(stream) = stream else {
         metadata.set("pdf:has-xmp", "false".to_owned());
-        return Ok(());
+        return;
     };
     metadata.set("pdf:has-xmp", "true".to_owned());
-    let packet = pdf.decode(stream).map_err(|unported| {
-        Unported(format!(
-            "an XMP stream PDFBox fails to read, whose exception Tika records: {}",
-            unported.0
-        ))
-    })?;
-    xmp::extract(&packet, metadata, xmp_decode)?;
+    let filters = pdf.filter_names(pdf.get(&stream.dict, b"Filter"));
+    if let Some(invalid) = invalid_filter(&filters) {
+        metadata.add(EMBEDDED_STREAM_EXCEPTION, format!("{invalid}\n"));
+        return;
+    }
+    let read = pdf
+        .decode(stream)
+        .and_then(|packet| xmp::extract(&packet, metadata, xmp_decode));
+    if let Err(Unported(reason)) = read {
+        pdf.differ(Difference(format!(
+            "the port leaves out an XMP packet it does not read as PDFBox does: {reason}"
+        )));
+    }
     if let Some(conformance) = metadata.get("pdfaid:conformance").map(str::to_owned) {
         let part = metadata
             .get("pdfaid:part")
@@ -397,7 +452,12 @@ pub(super) fn xmp_metadata(
             format!("A-{part}{}", conformance.to_lowercase()),
         );
     }
-    Ok(())
+}
+
+/// The `ClassCastException` Tika's `PDFParser` throws casting `object` to a dictionary, which
+/// fails the document.
+fn not_a_dictionary(object: &Object) -> WriteFailure {
+    WriteFailure::Throws(Thrown::Runtime(class_cast(object, "COSDictionary")))
 }
 
 /// `PDFParser.addFormat`: another value of `dc:format`, set as an array.
@@ -409,11 +469,14 @@ fn add_format(metadata: &mut Recording, value: String) {
 
 /// `PDMetadataExtractor.addMetadata(Metadata, KeyPrefix, String, COSBase)`: a custom entry of
 /// the document information dictionary, an array's items as they are held, unresolved.
-fn custom(metadata: &mut Recording, name: &str, value: &Object) -> Result<(), Unported> {
+///
+/// A number of `COSFloat`, which PDFBox prints as the document wrote it, is printed as Java
+/// prints the float, `pdf` noting the difference.
+fn custom(pdf: &Pdf, metadata: &mut Recording, name: &str, value: &Object) {
     match value {
         Object::Array(items) => {
             for item in items {
-                custom(metadata, name, item)?;
+                custom(pdf, metadata, name, item);
             }
         }
         Object::String(bytes, _) => custom_text(metadata, name, &text_string(bytes)),
@@ -428,13 +491,20 @@ fn custom(metadata: &mut Recording, name: &str, value: &Object) -> Result<(), Un
         }
         Object::Integer(value) => custom_text(metadata, name, &format!("COSInt{{{value}}}")),
         Object::Boolean(value) => custom_text(metadata, name, &value.to_string()),
-        Object::Real(_) | Object::Reference(_) => {
-            return Err(Unported(
-                "a custom document information value Tika writes as PDFBox prints it".to_owned(),
-            ))
+        Object::Reference((number, generation)) => custom_text(
+            metadata,
+            name,
+            &format!("COSObject{{{number} {generation} R}}"),
+        ),
+        Object::Real(value) => {
+            pdf.differ(Difference(format!(
+                "the custom document information value {name}, a number PDFBox prints as the \
+                 document writes it"
+            )));
+            let printed = jfloat::float_to_string(*value);
+            custom_text(metadata, name, &format!("COSFloat{{{printed}}}"));
         }
     }
-    Ok(())
 }
 
 fn custom_text(metadata: &mut Recording, name: &str, value: &str) {

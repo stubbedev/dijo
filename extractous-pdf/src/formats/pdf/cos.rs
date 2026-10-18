@@ -38,7 +38,7 @@ pub(super) enum Identity {
 }
 
 impl Identity {
-    fn of_direct(object: &Object) -> Self {
+    pub(super) fn of_direct(object: &Object) -> Self {
         Self::Direct(std::ptr::from_ref(object) as usize)
     }
 }
@@ -82,6 +82,9 @@ pub(super) struct Pdf<'d> {
     /// Whether the document's bytes spell `Filespec`, as a file specification outside an
     /// object stream must.
     pub(super) spells_filespec: bool,
+    /// Whether PDFBox rebuilt the trailer from a search of the objects, after which it drops
+    /// the kids of the page tree it cannot read.
+    pub(super) trailer_rebuilt: bool,
 }
 
 impl<'d> Pdf<'d> {
@@ -130,6 +133,7 @@ impl<'d> Pdf<'d> {
             unlisted_needed: RefCell::new(BTreeSet::new()),
             difference: RefCell::new(None),
             spells_filespec,
+            trailer_rebuilt: resolution.rebuilt(),
         };
         pdf.release_pages();
         Ok(pdf)
@@ -610,18 +614,7 @@ impl<'d> Pdf<'d> {
         parameters: Option<&Object>,
         stop: &[&[u8]],
     ) -> Result<Vec<u8>, Unported> {
-        let filters: Vec<&[u8]> = match filters {
-            None => return Ok(content.into_owned()),
-            Some(Object::Name(name)) => vec![name.as_slice()],
-            Some(Object::Array(names)) => names
-                .iter()
-                .filter_map(|name| match self.resolve(name) {
-                    Some(Object::Name(name)) => Some(name.as_slice()),
-                    _ => None,
-                })
-                .collect(),
-            Some(_) => return Ok(content.into_owned()),
-        };
+        let filters = self.filter_names(filters);
         let mut data = content.into_owned();
         for (index, filter) in filters.iter().enumerate() {
             if stop.contains(filter) {
@@ -647,6 +640,22 @@ impl<'d> Pdf<'d> {
             data = decode_filter(filter, params, data)?;
         }
         Ok(data)
+    }
+
+    /// `COSStream.getFilters` of the `Filter` entry `value`: its name, or the names in its
+    /// array.
+    pub(super) fn filter_names<'a>(&'a self, value: Option<&'a Object>) -> Vec<&'a [u8]> {
+        match value {
+            Some(Object::Name(name)) => vec![name.as_slice()],
+            Some(Object::Array(items)) => items
+                .iter()
+                .filter_map(|item| match self.resolve(item) {
+                    Some(Object::Name(name)) => Some(name.as_slice()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// The crypt filter `CryptFilter.decode` fails on for the stream of `dictionary`, if any:
@@ -771,6 +780,37 @@ fn decode_filter(
     Stream::new(dict, data)
         .decompressed_content()
         .map_err(|e| Unported(format!("a stream's {name} data does not decode: {e}")))
+}
+
+/// The filters `FilterFactory` has, by their names and abbreviations.
+const FILTERS: [&[u8]; 17] = [
+    b"FlateDecode",
+    b"Fl",
+    b"DCTDecode",
+    b"DCT",
+    b"CCITTFaxDecode",
+    b"CCF",
+    b"LZWDecode",
+    b"LZW",
+    b"ASCIIHexDecode",
+    b"AHx",
+    b"ASCII85Decode",
+    b"A85",
+    b"RunLengthDecode",
+    b"RL",
+    b"Crypt",
+    b"JPXDecode",
+    b"JBIG2Decode",
+];
+
+/// The `IOException` `FilterFactory.getFilter` throws on the first of `filters` it has no filter
+/// of, which `COSStream.getFilterList` meets before it decodes anything, if any.
+pub(super) fn invalid_filter(filters: &[&[u8]]) -> Option<Exception> {
+    let invalid = filters.iter().find(|filter| !FILTERS.contains(filter))?;
+    Some(Exception::new(
+        "java.io.IOException",
+        format!("Invalid filter: COSName{{{}}}", name_string(invalid)),
+    ))
 }
 
 /// The class of PDFBox's COS layer that reads `object`, a reference left unresolved read as

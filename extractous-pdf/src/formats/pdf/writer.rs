@@ -22,6 +22,7 @@ use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::xfa::{self, Extracted};
 use super::{jfloat, ImageExtraction, Settings, Unported};
 use crate::formats::embedded::EXCEPTION_WARNING;
+use crate::formats::thrown::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Difference;
 use crate::java::is_blank;
@@ -43,6 +44,8 @@ pub(super) enum WriteFailure {
     /// The recording outgrew the extraction's memory budget.
     Stop(Stop),
     Unported(Unported),
+    /// Tika's `PDFParser` throws this, which fails the document.
+    Throws(Thrown),
 }
 
 impl From<Stop> for WriteFailure {
@@ -252,7 +255,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         &mut self,
         after_page: &mut dyn FnMut(&mut Recording) -> ControlFlow<()>,
     ) -> Result<ControlFlow<()>, WriteFailure> {
-        for page in self.pdf.pages()? {
+        for page in self.pdf.pages() {
             self.page.out.enter_page();
             self.process_page(page)?;
             self.page.out.leave_page();

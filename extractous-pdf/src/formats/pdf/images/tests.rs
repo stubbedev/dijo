@@ -971,7 +971,9 @@ fn decodes_jbig2_and_crypt_filtered_images() {
         ],
         "{xml}"
     );
-    let failures = metadata.get(super::EMBEDDED_STREAM_EXCEPTION).unwrap();
+    let failures = metadata
+        .get(crate::formats::embedded::EMBEDDED_STREAM_EXCEPTION)
+        .unwrap();
     assert!(
         failures.len() == 1
             && failures[0].starts_with("java.io.IOException: Unsupported crypt filter Im3"),

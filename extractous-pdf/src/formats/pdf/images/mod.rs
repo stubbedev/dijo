@@ -21,7 +21,6 @@ mod tests;
 mod written;
 
 use std::collections::HashMap;
-use std::fmt;
 
 use super::attachment::EmbeddedFile;
 use super::cos::{Identity, Pdf};
@@ -29,8 +28,11 @@ use super::document::Page;
 use super::metadata::xmp_metadata;
 use super::writer::{PageWriter, WriteFailure};
 use super::Unported;
-use crate::formats::embedded::{ResourceType, EXCEPTION_WARNING, RESOURCE_NAME};
+use crate::formats::embedded::{
+    ResourceType, EMBEDDED_STREAM_EXCEPTION, EXCEPTION_WARNING, RESOURCE_NAME,
+};
 use crate::formats::metadata::TikaMetadata;
+pub(super) use crate::formats::thrown::Exception;
 
 use engine::Drawn;
 use image::{PdImage, Suffix, JB2, JP2, JPEG};
@@ -41,50 +43,15 @@ const MAX_IMAGE_LENGTH_BYTES: usize = 100 * 1024 * 1024;
 const EXTENSION_INFERRED: &str = "tk:resource-name-extension-inferred";
 /// `TikaPagedText.PAGE_NUMBER`.
 const PAGE_NUMBER: &str = "tk:page:number";
-/// `TikaCoreProperties.EMBEDDED_STREAM_EXCEPTION`, in the document's metadata.
-const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
-
-/// A Java exception PDFBox throws while it reads an image, as `Throwable.toString` names it.
-#[derive(Debug, Clone)]
-pub(super) struct Thrown {
-    class: &'static str,
-    message: Option<String>,
-}
-
-impl Thrown {
-    fn new(class: &'static str, message: String) -> Self {
-        Self {
-            class,
-            message: Some(message),
-        }
-    }
-
-    /// An exception without a message.
-    fn bare(class: &'static str) -> Self {
-        Self {
-            class,
-            message: None,
-        }
-    }
-}
-
-impl fmt::Display for Thrown {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.message {
-            Some(message) => write!(f, "{}: {message}", self.class),
-            None => f.write_str(self.class),
-        }
-    }
-}
 
 /// Why an image's file is not written.
 #[derive(Debug)]
 pub(super) enum Unwritten {
     /// An `IOException` `writeToBuffer` throws, which `processImage` records as an exception
     /// of the embedded stream.
-    Stream(Thrown),
+    Stream(Exception),
     /// A `MissingImageReaderException`, which `processImage` records as a warning.
-    MissingReader(Thrown),
+    MissingReader(Exception),
     /// Data larger than `ImageGraphicsEngine` copies.
     TooLarge,
     Unported(Unported),
@@ -184,7 +151,7 @@ impl Images {
         ResourceType::Inline.set(&mut metadata);
         metadata.set(PAGE_NUMBER, page_number.to_string());
         if !image.is_inline() {
-            xmp_metadata(pdf, image.metadata(), &mut metadata)?;
+            xmp_metadata(pdf, image.metadata(), &mut metadata);
         }
         match write_to_buffer(image, extension) {
             Ok(data) => {
