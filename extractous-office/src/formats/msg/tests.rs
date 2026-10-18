@@ -10,7 +10,7 @@ const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The messages this port leaves to Tika, by file name, with a part of the reason.
 #[cfg(feature = "tika")]
-const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "partial block")];
+const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "7-bit strings")];
 
 #[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
@@ -192,18 +192,17 @@ fn names_recipients_by_their_display_names() {
     assert_eq!(get("message:to-display-name"), [""]);
 }
 
-/// A message whose compound document POI reads short from a stream, and whose 7-bit strings
-/// Tika may decode otherwise, is read natively, whole and in the charset the message gives, as
-/// a build without Tika takes it (#144).
+/// A message whose 7-bit strings Tika may decode otherwise is read natively, whole and in the
+/// charset the message gives, as a build without Tika takes it (#144).
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn reads_natively_a_message_poi_reads_short_from_a_stream() {
+fn reads_natively_a_message_whose_7_bit_strings_tika_may_decode_otherwise() {
     let path = corpus(&[&parity::conformance_corpus()])
         .into_iter()
         .find(|path| path.ends_with("testMSG_chinese.msg"))
         .expect("Tika's test message");
     let (crate::formats::Difference(reason), text) = parity::differing_reading(&MsgParser, &path);
-    assert!(reason.contains("partial block"), "{reason}");
+    assert!(reason.contains("7-bit strings"), "{reason}");
     assert!(
         text.contains("Alfresco MSG format testing ( MSG 格式測試 ) 中文測試"),
         "{text}"

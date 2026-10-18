@@ -25,7 +25,7 @@ use extractor::{extract, Extracted};
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared, Unported};
@@ -70,18 +70,18 @@ impl Parser for MsgParser {
 }
 
 /// The summary information and what Tika's extractor makes of the message in a compound
-/// document, and where POI reads it differently from a stream, if it does.
+/// document, and where the native parsers read it differently from Tika's, if they do.
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
 ) -> Result<(Summaries, Extracted, Option<Difference>), Unported> {
-    let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "message")?;
+    let file = office::open(input, configs, MEDIA_TYPE, "message")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let message = Message::read(&file, root, false)
         .map_err(|thrown| Unported(format!("POI throws reading the message: {}", thrown.0)))?;
     let (extracted, read_otherwise) = extract(&file, message, configs)?;
-    Ok((summaries, extracted, difference.or(read_otherwise)))
+    Ok((summaries, extracted, read_otherwise))
 }
 
 /// The most messages this port reads stored one in another, where Java's stack would end first.

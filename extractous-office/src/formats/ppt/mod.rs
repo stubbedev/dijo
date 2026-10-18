@@ -24,7 +24,7 @@ use extractor::{extract, Out};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
@@ -75,13 +75,13 @@ impl Parser for PptParser {
 }
 
 /// The summary information and what Tika's extractor makes of the presentation in a compound
-/// document, and where the native reading differs from Tika's, if it does: POI reads the
-/// document differently from a stream, or fails on a picture or object Tika records.
+/// document, and where the native reading differs from Tika's, if it does: POI fails on a
+/// picture or object Tika records.
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
 ) -> Result<(Summaries, Vec<Out>, Option<Difference>), Decline<'static>> {
-    let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "presentation")?;
+    let file = office::open(input, configs, MEDIA_TYPE, "presentation")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let directory = show::presentation_directory(&file, root)?;
@@ -93,7 +93,7 @@ fn read(
     let pictures = pictures::read(&file, directory, &records, encryption.as_ref())?;
     let objects = pictures::objects(&records);
     let (out, recorded) = extract(&show, objects, &pictures, configs)?;
-    Ok((summaries, out, difference.or(recorded)))
+    Ok((summaries, out, recorded))
 }
 
 /// Writes the presentation as Tika's extractor does while it reads it. Where the length limit

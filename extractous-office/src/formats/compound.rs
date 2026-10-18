@@ -5,9 +5,9 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::{unless_different, Decline, Difference, Parser, Prepared, Unported};
+use crate::formats::{Decline, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::Ole2;
 use crate::Error;
@@ -67,28 +67,25 @@ impl Parser for CompoundDocumentParser {
 
     /// Defers documents POI does not open as this port does, macros extracted when asked to and
     /// an encrypted package Tika throws on, and fails a DRM encrypted document as `OfficeParser`
-    /// does. A document POI reads differently from a stream differs from Tika's path.
+    /// does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, document_type, difference) = read(input, configs)?;
+        let (summaries, document_type) = read(input, configs)?;
         if document_type == Some(DRM_ENCRYPTED) {
             return Err(Decline::Fails(Error::Encrypted(DRM_UNSUPPORTED.to_owned())));
         }
-        unless_different(
-            Box::new(move |xhtml| {
-                let metadata = xhtml.metadata_mut();
-                summaries.write(metadata);
-                if let Some(document_type) = document_type {
-                    metadata.set("Content-Type", document_type);
-                }
-                Ok(())
-            }),
-            difference,
-        )
+        Ok(Box::new(move |xhtml| {
+            let metadata = xhtml.metadata_mut();
+            summaries.write(metadata);
+            if let Some(document_type) = document_type {
+                metadata.set("Content-Type", document_type);
+            }
+            Ok(())
+        }))
     }
 }
 
@@ -104,12 +101,12 @@ pub(crate) fn is_ms_graph_chart(input: &[u8]) -> bool {
 }
 
 /// The summary information of a compound document, the content type `OfficeParser` sets for
-/// it, if any, and where POI reads it differently from a stream, if it does.
+/// it, if any.
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Option<&'static str>, Option<Difference>), Unported> {
-    let Opened { file, difference } = office::open_file(input, configs)?;
+) -> Result<(Summaries, Option<&'static str>), Unported> {
+    let file = office::open_file(input, configs)?;
     let root = file.root();
     let detected = ole_directory_type(&file, root);
     let document_type = DOCUMENT_TYPES
@@ -124,7 +121,7 @@ fn read(
             "an encrypted package, on which Tika throws an EncryptedDocumentException".to_owned(),
         ));
     }
-    Ok((Summaries::read(&file, root)?, document_type, difference))
+    Ok((Summaries::read(&file, root)?, document_type))
 }
 
 #[cfg(all(test, feature = "tika"))]

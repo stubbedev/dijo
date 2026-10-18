@@ -14,16 +14,14 @@ use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, PackageEncryption, ENCRYPTED_PACKAGE, ENCRYPTION_INFO};
 use crate::formats::docx::DocxParser;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::pptx::PptxParser;
 use crate::formats::xlsx::XlsxParser;
 use crate::formats::{
-    self, decision, unless_different, Decline, Difference, Failure, Parser, Prepared, Unported,
-    PASSWORD_USED,
+    self, decision, unless_different, Decline, Failure, Parser, Prepared, Unported, PASSWORD_USED,
 };
 use crate::mime::{self, Origin};
-use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 const MEDIA_TYPE: &str = "application/x-tika-ooxml-protected";
 /// The native parsers of the formats `OOXMLParser` reads.
@@ -60,7 +58,6 @@ impl Parser for ProtectedParser {
             package,
             media_type,
             parser,
-            difference,
         } = Package::read(input, configs)?;
         let mut prepared_metadata = metadata.clone();
         let asks_password = configs.password.is_some();
@@ -70,8 +67,7 @@ impl Parser for ProtectedParser {
             asks_password,
             &media_type,
         );
-        let decided = decision(parser.prepare(&package, &prepared_metadata, configs))?;
-        let difference = difference.or(decided);
+        let difference = decision(parser.prepare(&package, &prepared_metadata, configs))?;
         let reading: Prepared<'a> = Box::new(move |xhtml| {
             write_metadata(xhtml.metadata_mut(), &summaries, asks_password, &media_type);
             let metadata = xhtml.metadata_mut().clone();
@@ -113,23 +109,19 @@ struct Package {
     /// The type of the package, as `OOXMLExtractorFactory` sets it before it extracts it.
     media_type: String,
     parser: &'static dyn Parser,
-    /// Where POI reads the compound document differently from a stream, if it does.
-    difference: Option<Difference>,
 }
 
 impl Package {
     fn read(input: &[u8], configs: &ParserConfigs) -> Result<Package, Decline<'static>> {
-        let Opened { file, difference } =
-            office::open(input, configs, MEDIA_TYPE, "protected package")?;
-        let root = file.root();
-        let summaries = Summaries::read(&file, root)?;
-        let info = stream(&file, root, ENCRYPTION_INFO)?;
+        let file = office::open(input, configs, MEDIA_TYPE, "protected package")?;
+        let summaries = Summaries::read(&file, file.root())?;
+        let info = file.root_document(ENCRYPTION_INFO).map_err(Unported)?;
         let encryption = PackageEncryption::read(&info).map_err(|unopened| unopened.unported())?;
         let key = encryption
             .verify(crypt::password(configs))
             .map_err(|unopened| unopened.unported())?
             .ok_or_else(|| Decline::Fails(crypt::encrypted(None)))?;
-        let encrypted = stream(&file, root, ENCRYPTED_PACKAGE)?;
+        let encrypted = file.root_document(ENCRYPTED_PACKAGE).map_err(Unported)?;
         let package = key
             .decrypt(&encrypted)
             .map_err(|unopened| unopened.unported())?;
@@ -151,25 +143,8 @@ impl Package {
             package,
             media_type,
             parser,
-            difference,
         })
     }
-}
-
-/// The stream `name` of the root, which POI opens by its exact name, failing where it is
-/// missing.
-fn stream(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unported> {
-    let entry = file
-        .child(root, name)
-        .filter(|&entry| file.kind(entry) == EntryKind::Document)
-        .ok_or_else(|| {
-            Unported(format!(
-                "the protected package has no stream {name}, which POI fails on"
-            ))
-        })?;
-    file.read(entry).map_err(|Unreadable(reason)| {
-        Unported(format!("POI cannot read the stream {name}: {reason}"))
-    })
 }
 
 #[cfg(all(test, feature = "tika"))]

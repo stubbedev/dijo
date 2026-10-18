@@ -98,9 +98,21 @@ impl LoopDetector {
     }
 }
 
+/// Where `POIFSFileSystem` reads a compound document from, which decides how it reads the block
+/// the data ends inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// A file (`FileBackedDataSource`): a block is read whole, zeros past the end of the file.
+    File,
+    /// A stream read into memory (`ByteArrayBackedDataSource`): a block is read short, only as far
+    /// as the data goes.
+    Stream,
+}
+
 /// A compound document POI opened.
 pub struct Ole2<'a> {
     data: &'a [u8],
+    source: Source,
     block_size: usize,
     bats: Vec<Vec<i32>>,
     sbats: Vec<Vec<i32>>,
@@ -110,18 +122,19 @@ pub struct Ole2<'a> {
 impl<'a> Ole2<'a> {
     /// `new POIFSFileSystem(file)`.
     pub fn open(data: &'a [u8]) -> Result<Ole2<'a>> {
-        Self::open_as(data, false)
+        Self::open_as(data, Source::File)
     }
 
     /// `new POIFSFileSystem(stream)`, which reads the stream into memory first: only as much
     /// of it as the header's block allocation tables can address, and nothing when they count
-    /// no block or too many. A stream ending in a partial block, which POI then reads short
-    /// where it pads a file's, is unreadable here.
+    /// no block or too many. The block the stream ends inside is read short where a file's is
+    /// padded: a block allocation table in it fails, a document reads on into the next block of
+    /// its chain, and a small block past its end fails.
     pub fn open_stream(data: &'a [u8]) -> Result<Ole2<'a>> {
-        Self::open_as(data, true)
+        Self::open_as(data, Source::Stream)
     }
 
-    fn open_as(data: &'a [u8], stream: bool) -> Result<Ole2<'a>> {
+    fn open_as(data: &'a [u8], source: Source) -> Result<Ole2<'a>> {
         if data.is_empty() {
             return Err(Unreadable("the document is empty"));
         }
@@ -131,19 +144,15 @@ impl<'a> Ole2<'a> {
         if header[..8] != SIGNATURE {
             return Err(Unreadable("the document has no OLE2 signature"));
         }
-        let block_size = match header[30] {
-            12 => 4096,
-            9 => 512,
-            _ => return Err(Unreadable("the block size is neither 512 nor 4096")),
-        };
+        let block_size = block_size(header[30])?;
         let bat_count = int_at(&header, 0x2C);
-        let data = if stream {
-            streamed(data, block_size, bat_count)?
-        } else {
-            data
+        let data = match source {
+            Source::Stream => streamed(data, block_size, bat_count)?,
+            Source::File => data,
         };
         let mut file = Ole2 {
             data,
+            source,
             block_size,
             bats: Vec::new(),
             sbats: Vec::new(),
@@ -199,21 +208,37 @@ impl<'a> Ole2<'a> {
         Ok(())
     }
 
-    /// A big block, padded with zeros past the end of the file, as POI reads one.
+    /// A big block as POI's data source reads it: padded with zeros past the end of a file, short
+    /// past the end of a stream.
     fn block(&self, index: i32) -> Result<Vec<u8>> {
         let start = (i64::from(index) + 1) * self.block_size as i64;
         if start < 0 || start >= self.data.len() as i64 {
             return Err(Unreadable("a block lies outside the document"));
         }
         let start = start as usize;
-        let mut block = vec![0u8; self.block_size];
         let end = (start + self.block_size).min(self.data.len());
-        block[..end - start].copy_from_slice(&self.data[start..end]);
+        let mut block = self.data[start..end].to_vec();
+        if self.source == Source::File {
+            block.resize(self.block_size, 0);
+        }
         Ok(block)
     }
 
+    /// A big block whole, as `PropertyTable` copies a short one into a block of zeros.
+    fn padded_block(&self, index: i32) -> Result<Vec<u8>> {
+        let mut block = self.block(index)?;
+        block.resize(self.block_size, 0);
+        Ok(block)
+    }
+
+    /// A block of a block allocation table, which `BATBlock.createBATBlock` reads whole.
     fn int_block(&self, index: i32) -> Result<Vec<i32>> {
         let block = self.block(index)?;
+        if block.len() < self.block_size {
+            return Err(Unreadable(
+                "a block allocation table lies in the block the stream ends inside",
+            ));
+        }
         Ok(block
             .as_chunks::<4>()
             .0
@@ -278,7 +303,7 @@ impl<'a> Ole2<'a> {
 
     fn read_properties(&mut self, start: i32) -> Result<()> {
         for block in self.chain(start)? {
-            let data = self.block(block)?;
+            let data = self.padded_block(block)?;
             for raw in data.as_chunks::<PROPERTY_SIZE>().0 {
                 let kind = match raw[0x42] {
                     1 => EntryKind::Directory,
@@ -501,7 +526,11 @@ impl<'a> Ole2<'a> {
                     .map_err(|_| Unreadable("a small block lies before the mini stream"))?;
                 let within = (byte_offset % self.block_size as i64) as usize;
                 let block = self.block(self.nth_in_chain(root.start, big)?)?;
-                let piece = &block[within..within + SMALL_BLOCK_SIZE];
+                let piece = block
+                    .get(within..within + SMALL_BLOCK_SIZE)
+                    .ok_or(Unreadable(
+                        "a small block lies past the end of the block the stream ends inside",
+                    ))?;
                 content.extend_from_slice(&piece[..piece.len().min(size - content.len())]);
                 next = Self::next_in(&self.sbats, self.block_size / 4, next)?;
             }
@@ -522,6 +551,47 @@ impl<'a> Ole2<'a> {
     }
 }
 
+/// The size of a big block, as the header's shift gives it.
+fn block_size(shift: u8) -> Result<usize> {
+    match shift {
+        12 => Ok(4096),
+        9 => Ok(512),
+        _ => Err(Unreadable("the block size is neither 512 nor 4096")),
+    }
+}
+
+/// `BATBlock.calculateMaximumSize`: the bytes `bat_count` block allocation table blocks address,
+/// the header included.
+fn maximum_size(block_size: usize, bat_count: i32) -> i64 {
+    (1 + i64::from(bat_count) * (block_size / 4) as i64) * block_size as i64
+}
+
+/// What the header of a compound document declares of its size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Declared {
+    /// The size of a big block.
+    pub block_size: usize,
+    /// `BATBlock.calculateMaximumSize`: the bytes its block allocation tables address, the
+    /// header included, which `new POIFSFileSystem(stream)` allocates.
+    pub size: i64,
+}
+
+impl Declared {
+    /// What the header `data` starts with declares, or `None` where `new HeaderBlock(data)`
+    /// fails: no whole header, no signature, or a block size POI does not read.
+    pub fn read(data: &[u8]) -> Option<Declared> {
+        let header = data.get(..512)?;
+        if header[..8] != SIGNATURE {
+            return None;
+        }
+        let block_size = block_size(header[30]).ok()?;
+        Some(Declared {
+            block_size,
+            size: maximum_size(block_size, int_at(header, 0x2C)),
+        })
+    }
+}
+
 /// The part of a stream `POIFSFileSystem` reads into memory, as `sanityCheckBlockCount` and
 /// `BATBlock.calculateMaximumSize` bound it.
 fn streamed(data: &[u8], block_size: usize, bat_count: i32) -> Result<&[u8]> {
@@ -530,19 +600,13 @@ fn streamed(data: &[u8], block_size: usize, bat_count: i32) -> Result<&[u8]> {
             "the block allocation table count is out of range",
         ));
     }
-    let addressable = (1 + bat_count as usize * (block_size / 4)) * block_size;
+    let addressable = maximum_size(block_size, bat_count) as usize;
     if addressable > MAX_ALLOCATION_SIZE {
         return Err(Unreadable(
             "the block allocation tables address too much to read",
         ));
     }
-    let data = &data[..data.len().min(addressable)];
-    if !data.len().is_multiple_of(block_size) {
-        return Err(Unreadable(
-            "the stream ends in a partial block, which POI reads short",
-        ));
-    }
-    Ok(data)
+    Ok(&data[..data.len().min(addressable)])
 }
 
 /// `ClassID.toString()`: 16 bytes as a stream holds a class id, written as a UUID in braces and
@@ -628,5 +692,44 @@ pub mod tests {
         data.truncate(600);
         assert!(Ole2::open(&data).is_err());
         assert!(Ole2::open(b"PK\x03\x04").is_err());
+    }
+
+    /// A document in the block the data ends inside: a file pads the block with zeros, a stream
+    /// reads it short and fails where the document's chain ends before its size.
+    #[test]
+    fn reads_the_last_block_short_from_a_stream_and_padded_from_a_file() {
+        let content = vec![b'x'; 4096 + 100];
+        let whole = compound(&["Big"], &content);
+        let ends_with_content = whole.len() - 412;
+        assert!(whole[ends_with_content..].iter().all(|&byte| byte == 0));
+        assert_eq!(whole[ends_with_content - 1], b'x');
+        let read = |data: &[u8], source: Source| {
+            let file = Ole2::open_as(data, source)?;
+            file.read(file.child(file.root(), "Big").unwrap())
+        };
+        let short = &whole[..ends_with_content];
+        assert_eq!(read(short, Source::File).unwrap(), content);
+        assert_eq!(read(short, Source::Stream).unwrap(), content);
+        let cut = &whole[..ends_with_content - 10];
+        let mut padded = content.clone();
+        padded[4096 + 90..].fill(0);
+        assert_eq!(read(cut, Source::File).unwrap(), padded);
+        assert_eq!(
+            read(cut, Source::Stream),
+            Err(Unreadable("a document's chain ends before its size"))
+        );
+    }
+
+    #[test]
+    fn reads_what_a_header_declares_as_poi_does() {
+        let data = compound(&["One"], b"content");
+        assert_eq!(
+            Declared::read(&data),
+            Some(Declared {
+                block_size: 512,
+                size: (1 + 128) * 512
+            })
+        );
+        assert_eq!(Declared::read(&data[..511]), None);
     }
 }

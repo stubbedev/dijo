@@ -36,13 +36,11 @@ use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::{office_document, Handed, Summaries};
 use crate::formats::poi::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{
-    unless_different, Decline, Difference, Failure, Parser, Prepared, Unported, PASSWORD_USED,
-};
+use crate::formats::{Decline, Failure, Parser, Prepared, Unported, PASSWORD_USED};
 use crate::ole2::{EntryKind, Unreadable};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-excel";
@@ -139,8 +137,8 @@ impl Parser for XlsParser {
         if is_ms_graph_chart(input) {
             return CompoundDocumentParser.prepare(input, metadata, configs);
         }
-        let (workbook, difference) = Workbook::read(input, configs)?;
-        unless_different(Box::new(move |xhtml| workbook.write(xhtml)), difference)
+        let workbook = Workbook::read(input, configs)?;
+        Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
 }
 
@@ -178,12 +176,8 @@ struct Picture {
 }
 
 impl Workbook {
-    fn read(
-        input: &[u8],
-        configs: &ParserConfigs,
-    ) -> Result<(Self, Option<Difference>), Decline<'static>> {
-        let (Opened { file, difference }, media_type) =
-            office::open_as(input, configs, &MEDIA_TYPES, "workbook")?;
+    fn read(input: &[u8], configs: &ParserConfigs) -> Result<Self, Decline<'static>> {
+        let (file, media_type) = office::open_as(input, configs, &MEDIA_TYPES, "workbook")?;
         let root = file.root();
         let summaries = Summaries::read(&file, root)?;
         let Some(name) = WORKBOOK_ENTRY_NAMES
@@ -205,14 +199,11 @@ impl Workbook {
             let stream = file.read(book).map_err(|Unreadable(reason)| {
                 Unported(format!("POI cannot read the old workbook stream: {reason}"))
             })?;
-            return Ok((
-                Workbook {
-                    summaries,
-                    media_type,
-                    content: WorkbookContent::Old(old::text(&stream)?),
-                },
-                difference,
-            ));
+            return Ok(Workbook {
+                summaries,
+                media_type,
+                content: WorkbookContent::Old(old::text(&stream)?),
+            });
         };
         let entry = file
             .child_ignoring_case(root, name)
@@ -238,19 +229,16 @@ impl Workbook {
                 )?);
             }
         }
-        Ok((
-            Workbook {
-                summaries,
-                media_type,
-                content: WorkbookContent::Biff8(Box::new(Biff8 {
-                    asks_password: configs.password.is_some(),
-                    read,
-                    pictures,
-                    storages,
-                })),
-            },
-            difference,
-        ))
+        Ok(Workbook {
+            summaries,
+            media_type,
+            content: WorkbookContent::Biff8(Box::new(Biff8 {
+                asks_password: configs.password.is_some(),
+                read,
+                pictures,
+                storages,
+            })),
+        })
     }
 
     fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
