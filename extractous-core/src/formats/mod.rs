@@ -1095,10 +1095,6 @@ mod tests {
                 "Tika writes the name of an encrypted entry as text (#99)",
             ),
             (
-                "testEPUB_multi-metadata-vals.epub",
-                "Tika writes the pictures outside the spine in HashMap order (#88)",
-            ),
-            (
                 "testControlCharacters.doc",
                 "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
             ),
@@ -1396,6 +1392,12 @@ mod tests {
                 }
                 if parser.media_types() == ppt::PptParser.media_types() {
                     departures.extend_from_slice(ppt::DEPARTURES);
+                }
+                if parser.media_types() == protected::ProtectedParser.media_types() {
+                    departures.extend_from_slice(protected::DEPARTURES);
+                }
+                if epub::IN_HASH_ORDER.contains(&name.as_ref()) {
+                    departures.extend_from_slice(epub::MANIFEST_ORDER);
                 }
                 if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
                     departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);

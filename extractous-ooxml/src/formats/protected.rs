@@ -29,6 +29,18 @@ const MEDIA_TYPE: &str = "application/x-tika-ooxml-protected";
 /// The native parsers of the formats `OOXMLParser` reads.
 const PACKAGE_PARSERS: [&dyn Parser; 3] = [&DocxParser, &XlsxParser, &PptxParser];
 
+/// For the parity tests: the line breaks and tabs Tika's path writes twice, where the package's
+/// XHTML goes through two handlers (#119), and the head saying whether a workbook's sheets are
+/// protected, which Tika's path writes `false` before it reads the sheets (#95).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const DEPARTURES: crate::formats::parity::Departures = &[
+    crate::formats::parity::Departure::DoubledBreaks("#119"),
+    crate::formats::parity::Departure::FinalInHead(
+        crate::formats::xlsx::excel::PROTECTED_WORKSHEET,
+        "#95",
+    ),
+];
+
 pub struct ProtectedParser;
 
 impl Parser for ProtectedParser {

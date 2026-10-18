@@ -98,8 +98,8 @@ mod sheet_kind {
 }
 
 /// Metadata names the Excel extractor sets.
-mod excel {
-    pub(super) const PROTECTED_WORKSHEET: &str = "msoffice:excel:protected-worksheet";
+pub(crate) mod excel {
+    pub(crate) const PROTECTED_WORKSHEET: &str = "msoffice:excel:protected-worksheet";
     pub(super) const HAS_HIDDEN_COLUMNS: &str = "msoffice:excel:has-hidden-cols";
     pub(super) const HAS_HIDDEN_ROWS: &str = "msoffice:excel:has-hidden-rows";
     pub(super) const HAS_EXTERNAL_LINKS: &str = "msoffice:excel:has-external-links";

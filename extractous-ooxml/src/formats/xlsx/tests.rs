@@ -72,7 +72,7 @@ const DEPARTURES: Adjustments = Adjustments {
     metadata: &[],
     wrappers: &[],
     repeated: &["<a class=\"external-ref-externalResource\" "],
-    final_in_head: &["msoffice:excel:protected-worksheet"],
+    final_in_head: &[super::excel::PROTECTED_WORKSHEET],
 };
 
 #[cfg(feature = "tika")]

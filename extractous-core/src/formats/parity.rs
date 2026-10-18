@@ -1294,7 +1294,10 @@ fn without_departures(
             | Departure::PlaceableHeaders(_)
             | Departure::WholeContent(_)
             | Departure::Paragraphs(..)
-            | Departure::Links(_) => None,
+            | Departure::Links(_)
+            | Departure::DoubledBreaks(_)
+            | Departure::FinalInHead(..)
+            | Departure::UnreadEmbedded(_) => None,
         })
         .collect();
     let unset: Vec<&str> = departures
@@ -1339,6 +1342,18 @@ fn without_departures(
     {
         text = without_blank_lines(&text);
     }
+    if output == Output::Xml
+        && departures
+            .iter()
+            .any(|departure| matches!(departure, Departure::DoubledBreaks(_)))
+    {
+        text = without_doubled_breaks(&text);
+    }
+    for departure in departures {
+        if let Departure::FinalInHead(name, _) = departure {
+            text = with_final_value_in_head(&text, &extracted.metadata, name);
+        }
+    }
     for name in names {
         let meta = format!("<meta name=\"{name}\" content=\"");
         let mut kept = String::with_capacity(text.len());
@@ -1357,6 +1372,31 @@ fn without_departures(
     formats::encode(&text, char_set, &mut encoded);
     extracted.text = encoded;
     extracted
+}
+
+/// `xhtml` with the content of the `meta` element of the metadata `name` in its head the
+/// metadata's final value, as a [`Departure::FinalInHead`] compares it, where it has one value.
+#[cfg(feature = "tika")]
+fn with_final_value_in_head(xhtml: &str, metadata: &ComparedMetadata, name: &str) -> String {
+    let Some([value]) = metadata
+        .iter()
+        .find(|(metadata_name, _)| metadata_name == name)
+        .map(|(_, values)| values.as_slice())
+    else {
+        return xhtml.to_owned();
+    };
+    let element = format!("<meta name=\"{name}\" content=\"");
+    let head_end = xhtml.find("</head>").unwrap_or(xhtml.len());
+    let Some(start) = xhtml[..head_end]
+        .find(&element)
+        .map(|at| at + element.len())
+    else {
+        return xhtml.to_owned();
+    };
+    let end = xhtml[start..]
+        .find('"')
+        .map_or(xhtml.len(), |end| start + end);
+    format!("{}{value}{}", &xhtml[..start], &xhtml[end..])
 }
 
 /// Both results as a [`Departure::Paragraphs`] compares them, given whether the length limit of
@@ -2929,6 +2969,56 @@ fn with_line_feeds(spooled: Vec<Spooled>, line_breaks: bool) -> Vec<Spooled> {
         .collect()
 }
 
+/// Tika's spooled files, where a [`Departure::UnreadEmbedded`] applies, without those of names
+/// the `native` spool lacks, as many as the native metadata has warnings Tika's has not, and the
+/// files after them numbered on; and the native metadata without those warnings.
+#[cfg(feature = "tika")]
+fn without_unread(
+    tika: Vec<Spooled>,
+    native: &[Spooled],
+    native_metadata: &mut ComparedMetadata,
+    tika_metadata: &ComparedMetadata,
+    unread_embedded: bool,
+) -> Vec<Spooled> {
+    if !unread_embedded {
+        return tika;
+    }
+    let Some(at) = native_metadata
+        .iter()
+        .position(|(name, _)| name == EXCEPTION_WARNING)
+    else {
+        return tika;
+    };
+    let mut tikas_warnings: Vec<&String> = tika_metadata
+        .iter()
+        .filter(|(name, _)| name == EXCEPTION_WARNING)
+        .flat_map(|(_, values)| values)
+        .collect();
+    let warnings = &mut native_metadata[at].1;
+    let recorded = warnings.len();
+    warnings.retain(|warning| {
+        let found = tikas_warnings.iter().position(|tikas| *tikas == warning);
+        found.map(|found| tikas_warnings.remove(found)).is_some()
+    });
+    let unread = recorded - warnings.len();
+    if warnings.is_empty() {
+        native_metadata.remove(at);
+    }
+    let mut left_out = 0;
+    tika.into_iter()
+        .filter(|file| {
+            let kept = left_out == unread || native.iter().any(|native| native.name == file.name);
+            left_out += usize::from(!kept);
+            kept
+        })
+        .enumerate()
+        .map(|(index, file)| Spooled {
+            file: index.to_string(),
+            ..file
+        })
+        .collect()
+}
+
 /// The files the native path spooled, where a [`Departure::WholeContent`] applies, each cut to
 /// the length of Tika's file in its place where it starts with all of that file.
 #[cfg(feature = "tika")]
@@ -3153,20 +3243,25 @@ fn spools_as_tika_under(
             let of_any_revision = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::Paragraphs(..)));
+            let unread_embedded = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::UnreadEmbedded(_)));
+            let native_files = spooled(native_embedded, native_spool.directory());
+            let tika_files = without_unread(
+                spooled(embedded, tika_spool.directory()),
+                &native_files,
+                &mut native_extracted.metadata,
+                &tika_extracted.metadata,
+                unread_embedded,
+            );
             let tika = (
                 tika_extracted,
-                with_png_images(
-                    with_line_feeds(spooled(embedded, tika_spool.directory()), line_breaks),
-                    png_images,
-                ),
+                with_png_images(with_line_feeds(tika_files, line_breaks), png_images),
             );
             let native_spooled = as_tika_spools(
                 with_png_images(
                     with_line_feeds(
-                        with_pois_placeable_headers(
-                            spooled(native_embedded, native_spool.directory()),
-                            placeable_headers,
-                        ),
+                        with_pois_placeable_headers(native_files, placeable_headers),
                         line_breaks,
                     ),
                     png_images,
@@ -3226,6 +3321,17 @@ fn spools_as_tika_under(
             }
         }
         (Err(_), Err(_)) => Ok(0),
+        (Err(tika), Ok((_, native_metadata, _)))
+            if departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::UnreadEmbedded(_)))
+                && format!("{tika:?}").contains("FileAlreadyExistsException")
+                && native_metadata
+                    .iter()
+                    .any(|(name, _)| name == EXCEPTION_WARNING) =>
+        {
+            Ok(0)
+        }
         (tika, native) => Err(format!(
             "{path} with a budget of {budget} bytes: tika {:?}, native {:?}",
             tika.map(|_| ()),
@@ -3489,5 +3595,91 @@ mod tests {
         let unknown = vec![file(0, b"newer", false)];
         assert_eq!(of_revisions_alike(unknown.clone(), &tika, true), unknown);
         assert_eq!(of_revisions_alike(Vec::new(), &tika, true), []);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn leaves_out_the_files_tika_spooled_of_the_documents_the_native_parser_did_not_read() {
+        let named = |name: &str, number: usize| Spooled {
+            name: name.to_owned(),
+            ..file(number, name.as_bytes(), false)
+        };
+        let warnings = |values: &[&str]| -> ComparedMetadata {
+            vec![(
+                EXCEPTION_WARNING.to_owned(),
+                values.iter().map(|value| (*value).to_owned()).collect(),
+            )]
+        };
+        let tika = vec![named("a", 0), named("x", 1), named("b", 2), named("y", 3)];
+        let native = [named("a", 0), named("b", 1), named("y", 2)];
+        let mut metadata = warnings(&["kept", "unread"]);
+        assert_eq!(
+            without_unread(
+                tika.clone(),
+                &native,
+                &mut metadata,
+                &warnings(&["kept"]),
+                true
+            ),
+            [
+                Spooled {
+                    file: "0".to_owned(),
+                    ..named("a", 0)
+                },
+                Spooled {
+                    file: "1".to_owned(),
+                    ..named("b", 2)
+                },
+                Spooled {
+                    file: "2".to_owned(),
+                    ..named("y", 3)
+                },
+            ]
+        );
+        assert_eq!(metadata, warnings(&["kept"]));
+        let mut metadata = warnings(&["unread"]);
+        assert_eq!(
+            without_unread(tika.clone(), &native, &mut metadata, &Vec::new(), true).len(),
+            3
+        );
+        assert!(metadata.is_empty());
+        let mut unwarned = Vec::new();
+        assert_eq!(
+            without_unread(tika.clone(), &native, &mut unwarned, &Vec::new(), true),
+            tika
+        );
+        let mut metadata = warnings(&["unread"]);
+        assert_eq!(
+            without_unread(tika.clone(), &native, &mut metadata, &Vec::new(), false),
+            tika
+        );
+        assert_eq!(metadata, warnings(&["unread"]));
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn compares_doubled_breaks_once_and_the_head_with_final_values() {
+        let departures = [
+            Departure::DoubledBreaks("#119"),
+            Departure::FinalInHead("protected", "#95"),
+        ];
+        let tika = Extracted {
+            text: "<head>\n<meta name=\"protected\" content=\"false\" />\n</head><body>\
+                   <p>a</p>\n\n<p>b</p>\n\n</body>"
+                .as_bytes()
+                .to_vec(),
+            metadata: vec![("protected".to_owned(), vec!["true".to_owned()])],
+        };
+        let compared = without_departures(tika.clone(), Output::Xml, CharSet::UTF_8, &departures);
+        assert_eq!(
+            String::from_utf8(compared.text).unwrap(),
+            "<head>\n<meta name=\"protected\" content=\"true\" />\n</head><body>\
+             <p>a</p>\n<p>b</p>\n</body>"
+        );
+        assert_eq!(compared.metadata, tika.metadata);
+        let as_text = without_departures(tika.clone(), Output::Text, CharSet::UTF_8, &departures);
+        assert!(String::from_utf8(as_text.text)
+            .unwrap()
+            .contains("</p>\n\n<p>"));
     }
 }

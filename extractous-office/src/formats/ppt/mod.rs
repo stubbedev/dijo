@@ -34,10 +34,14 @@ const MEDIA_TYPE: &str = "application/vnd.ms-powerpoint";
 const WARNING: &str = "tk:exception:warn";
 
 /// For the parity tests: the placeable header of each WMF picture, which gives the picture's
-/// own units per inch where POI writes 72 whatever its units (#119).
+/// own units per inch where POI writes 72 whatever its units (#119); and an object whose data
+/// does not inflate, which is recorded and not spooled, where Tika's path spools what the
+/// budget reaches of it or fails on the next document's spool file (#167).
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const DEPARTURES: crate::formats::parity::Departures =
-    &[crate::formats::parity::Departure::PlaceableHeaders("#119")];
+pub const DEPARTURES: crate::formats::parity::Departures = &[
+    crate::formats::parity::Departure::PlaceableHeaders("#119"),
+    crate::formats::parity::Departure::UnreadEmbedded("#167"),
+];
 
 pub struct PptParser;
 
