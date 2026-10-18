@@ -364,9 +364,8 @@ language-groups:
     set -euo pipefail
     sources=extractous-cli/models/language-groups.tsv
     ci/fetch-wikipedia.sh "$sources" target/wikipedia
-    rev=$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile $PWD/devenv.lock)).nodes.nixpkgs.locked.rev")
     python=$(nix build --no-link --print-out-paths --impure --expr \
-        "((builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\").legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ ps.pyarrow ]))")
+        "((import $PWD/ci/nixpkgs.nix).legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ ps.pyarrow ]))")
     "$python/bin/python3" -I extractous-cli/models/language-groups.py "$sources" target/wikipedia target/language-groups
     LANGUAGE_GROUPS_SENTENCES="$PWD/target/language-groups" cargo test --release --package extractous --lib \
         language::groups::tests::train -- --ignored
