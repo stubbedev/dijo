@@ -9,7 +9,13 @@ use walkdir::WalkDir;
 
 /// Tika's sources, which the native image is built from, relative to this crate.
 const TIKA_NATIVE_DIR: &str = "../extractous-core/tika-native";
-const TIKA_NATIVE_INPUTS: [&str; 5] = ["build.gradle", "gradle", "gradlew", "gradlew.bat", "src"];
+const TIKA_NATIVE_INPUTS: [&str; 5] = [
+    "build.gradle",
+    "gradle",
+    "gradlew",
+    "gradlew.bat",
+    "src/main",
+];
 const FINGERPRINT_FILE: &str = ".fingerprint";
 const COMPRESSED_EXTENSION: &str = "gz";
 const LIBS_LAYOUT: &[u8] = b"gzip-per-library, graalvm runpath entries as $ORIGIN";
