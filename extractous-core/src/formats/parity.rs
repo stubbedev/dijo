@@ -2190,6 +2190,32 @@ pub fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
     );
 }
 
+/// Asserts that Tika's path fails on each document, which the native parser reads on purpose,
+/// fixing the quirk of `issue`, a failure of Tika's on valid input. The parser's own tests check
+/// what it reads.
+#[cfg(feature = "tika")]
+pub fn assert_read_where_tika_fails(documents: &[&Path], issue: &str) {
+    let configs = ParserConfigs::default();
+    for document in documents {
+        let tika = tika_error(document, &configs);
+        let routed = routed(document.to_str().unwrap());
+        if let Err(native) = formats::parse_to_string(
+            routed.parser,
+            &routed.input,
+            &routed.detected,
+            &configs,
+            SMALL_LIMIT,
+            Output::Text,
+        ) {
+            panic!(
+                "{}: the native parser fails, where it reads what Tika's path fails on ({issue}): \
+                 {native:?}, Tika's path {tika:?}",
+                document.display()
+            );
+        }
+    }
+}
+
 #[cfg(feature = "tika")]
 fn compare(
     documents: &[&Path],

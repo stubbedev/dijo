@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+    assert_fails_as_tika, assert_read_where_tika_fails, assert_same_as_tika, conformance_corpus,
+    documents, Scratch,
 };
 #[cfg(feature = "tika")]
 use crate::ole2::tests::compound;
@@ -69,16 +70,18 @@ fn wp6() -> Vec<u8> {
     bytes
 }
 
+/// A record of Quattro Pro's: its type, its length and `body`.
+fn record(kind: u16, body: &[u8]) -> Vec<u8> {
+    let mut bytes = kind.to_le_bytes().to_vec();
+    bytes.extend(u16::try_from(body.len()).unwrap().to_le_bytes());
+    bytes.extend(body);
+    bytes
+}
+
 /// A Quattro Pro 9 workbook's records: its beginning, its user, a sheet, a string table, labels
 /// and a comment.
 #[cfg(feature = "tika")]
 fn quattro_records() -> Vec<u8> {
-    fn record(kind: u16, body: &[u8]) -> Vec<u8> {
-        let mut bytes = kind.to_le_bytes().to_vec();
-        bytes.extend((body.len() as u16).to_le_bytes());
-        bytes.extend(body);
-        bytes
-    }
     fn label(text: &str) -> Vec<u8> {
         let mut bytes = ((text.len() - 1) as u16).to_le_bytes().to_vec();
         bytes.push(1);
@@ -199,50 +202,153 @@ fn extracts_tikas_test_wordperfect_and_quattro_pro_as_tikas_path_does() {
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika(&paths, QuattroProParser.tika_name());
 
-    let (failing, deferred) = documents(&OldQuattroProParser, &[&corpus]);
+    let (read, deferred) = documents(&OldQuattroProParser, &[&corpus]);
     assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(failing.len(), 4, "{failing:?}");
-    let paths: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
-    assert_fails_as_tika(&paths);
+    assert_eq!(read.len(), TIKAS_QUATTRO_CELLS.len(), "{read:?}");
+    for path in &read {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let (_, cells) = TIKAS_QUATTRO_CELLS
+            .iter()
+            .find(|(spreadsheet, _)| *spreadsheet == name)
+            .unwrap_or_else(|| panic!("{name} is no Quattro Pro test spreadsheet"));
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_file_to_string(path.to_str().unwrap())
+            .unwrap();
+        for cell in *cells {
+            assert!(xml.contains(cell), "{cell:?} in {name}: {xml}");
+        }
+    }
+    let paths: Vec<&Path> = read.iter().map(PathBuf::as_path).collect();
+    assert_read_where_tika_fails(&paths, "#158");
 }
 
-/// The first records of a Quattro Pro 1 spreadsheet for Windows, as `testQuattro.wb1` starts.
-const QUATTRO_WB1: [u8; 16] = [
-    0x00, 0x00, 0x02, 0x00, 0x01, 0x10, 0xC9, 0x00, 0x02, 0x00, 0x00, 0x06, 0x4C, 0x00, 0x02, 0x00,
-];
-
-/// The first records of a Quattro Pro spreadsheet for DOS, as `testQuattro.wq1` starts.
-#[cfg(feature = "tika")]
-const QUATTRO_WQ1: [u8; 16] = [
-    0x00, 0x00, 0x02, 0x00, 0x20, 0x51, 0x06, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x00,
-];
-
-#[test]
-fn fails_old_quattro_pro_as_office_parser_does() {
-    let error = crate::Extractor::new()
-        .extract_bytes_to_string(&QUATTRO_WB1)
-        .unwrap_err()
-        .to_string();
-    assert_eq!(
-        error,
-        "TIKA-198: Illegal IOException from org.apache.tika.parser.microsoft.OfficeParser <- \
-         caused by org.apache.poi.poifs.filesystem.NotOLE2FileException: Invalid header \
-         signature; read 0x00C9100100020000, expected 0xE11AB1A1E011CFD0 - Your file appears \
-         not to be a valid OLE2 document"
-    );
+/// A spreadsheet of Quattro Pro for DOS (`.wq1`): a label, an integer, a number, a formula's
+/// value and its text result, and an error.
+fn quattro_dos() -> Vec<u8> {
+    fn cell(column: u16, row: u16, data: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x80];
+        body.extend(column.to_le_bytes());
+        body.extend(row.to_le_bytes());
+        body.extend(data);
+        body
+    }
+    let mut formula = 30f64.to_le_bytes().to_vec();
+    formula.extend([3, 0, 1, 2, 3]);
+    [
+        record(0x0000, &0x5120u16.to_le_bytes()),
+        record(0x0006, &[0; 8]),
+        record(0x000F, &cell(0, 0, b"'\x07Fangst\x91")),
+        record(0x000D, &cell(1, 0, &7i16.to_le_bytes())),
+        record(0x000E, &cell(0, 1, &2.5f64.to_le_bytes())),
+        record(0x0010, &cell(3, 1, &formula)),
+        record(0x0010, &cell(0, 2, &formula)),
+        record(0x0033, &cell(0, 2, b"\x05torsk")),
+        record(0x000E, &cell(1, 2, &f64::NAN.to_le_bytes())),
+        record(0x0001, &[]),
+    ]
+    .concat()
 }
 
+/// A spreadsheet of Quattro Pro for Windows (`.wb1`) of two pages, a label on each, and what
+/// follows its end.
+fn quattro_windows() -> Vec<u8> {
+    fn cell(column: u8, page: u8, row: u16, data: &[u8]) -> Vec<u8> {
+        let mut body = vec![column, page];
+        body.extend(row.to_le_bytes());
+        body.extend(1u16.to_le_bytes());
+        body.extend(data);
+        body
+    }
+    [
+        record(0x0000, &0x1001u16.to_le_bytes()),
+        record(0x000F, &cell(0, 0, 0, b"'Sild\xe6\0x")),
+        record(0x000D, &cell(0, 0, 1, &(-3i16).to_le_bytes())),
+        record(0x000F, &cell(1, 1, 0, b"^Kuller\0")),
+        record(0x0001, &[]),
+        record(0x0000, b"QPW$ExtendedStorage"),
+    ]
+    .concat()
+}
+
+fn extract_xml(bytes: &[u8]) -> String {
+    crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(bytes)
+        .unwrap()
+        .0
+}
+
+#[test]
+fn reads_quattro_pro_for_dos_cells() {
+    let xml = extract_xml(&quattro_dos());
+    let rows = [
+        "<tr>\t<td>Fangst\u{e6}</td>\t<td>7</td></tr>",
+        "<tr>\t<td>2.5</td>\t<td />\t<td />\t<td>30</td></tr>",
+        "<tr>\t<td>torsk</td></tr>",
+    ];
+    for row in rows {
+        assert!(xml.contains(row), "{row:?} in {xml}");
+    }
+    assert_eq!(xml.matches("<tr>").count(), 3, "{xml}");
+}
+
+#[test]
+fn reads_quattro_pro_for_windows_pages() {
+    let xml = extract_xml(&quattro_windows());
+    assert_eq!(xml.matches("<div class=\"page\">").count(), 2, "{xml}");
+    assert!(xml.contains("<td>Sild\u{e6}</td>"), "{xml}");
+    assert!(xml.contains("<td>-3</td>"), "{xml}");
+    assert!(xml.contains("<tr>\t<td />\t<td>Kuller</td></tr>"), "{xml}");
+}
+
+#[test]
+fn fails_quattro_pro_spreadsheets_that_do_not_read() {
+    let fails = |bytes: &[u8]| {
+        crate::Extractor::new()
+            .extract_bytes_to_string(bytes)
+            .unwrap_err()
+            .to_string()
+    };
+    let mut cut = quattro_dos();
+    cut.truncate(40);
+    assert!(fails(&cut).contains("is cut"), "{}", fails(&cut));
+    let mut short = quattro_dos();
+    short[20] = 2;
+    assert!(fails(&short).contains("is cut"), "{}", fails(&short));
+}
+
+/// The cells of Tika's Quattro Pro 1 to 6 test spreadsheets, which Tika's path fails on.
+#[cfg(feature = "tika")]
+const TIKAS_QUATTRO_CELLS: [(&str, &[&str]); 4] = [
+    ("testQuattro.wq1", &["<td>OBSERV</td>", "<td>4001</td>"]),
+    (
+        "testQuattro.wq2",
+        &[
+            "<td>SATURATED HYDRAULIC CONDUCTIVITY: INVERSE AUGERHOLE METHOD</td>",
+            "<td>DEPTH(D):</td>",
+            "<td>sal</td>",
+            "<td>1.012679207245471E-15</td>",
+        ],
+    ),
+    (
+        "testQuattro.wb1",
+        &["<td>X</td>", "<td>Y</td>", "<td>18</td>"],
+    ),
+    ("testQuattro.wb2", &["<td>Z</td>", "<td>10</td>"]),
+];
+
 #[cfg(feature = "tika")]
 #[test]
-fn fails_old_quattro_pro_as_tikas_path_does() {
+fn reads_quattro_pro_where_tikas_path_fails() {
     let scratch = Scratch::new("old-quattro");
     let spreadsheets = [
-        scratch.write("sheet.wb1", &QUATTRO_WB1),
-        scratch.write("sheet.wq1", &QUATTRO_WQ1),
+        scratch.write("sheet.wq1", &quattro_dos()),
+        scratch.write("sheet.wb1", &quattro_windows()),
     ];
-    let (failing, deferred) = documents(&OldQuattroProParser, &[scratch.directory()]);
+    let (read, deferred) = documents(&OldQuattroProParser, &[scratch.directory()]);
     assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(failing.len(), spreadsheets.len(), "{failing:?}");
+    assert_eq!(read.len(), spreadsheets.len(), "{read:?}");
     let paths: Vec<&Path> = spreadsheets.iter().map(PathBuf::as_path).collect();
-    assert_fails_as_tika(&paths);
+    assert_read_where_tika_fails(&paths, "#158");
 }

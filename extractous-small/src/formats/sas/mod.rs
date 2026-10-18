@@ -17,7 +17,7 @@ use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::time::format_instant;
-use reader::{Column, Decoder, Reader};
+use reader::{Column, Decoder, Next, Reader};
 use values::{Value, Writer};
 
 const MEDIA_TYPE: &str = "application/x-sas-data";
@@ -156,7 +156,7 @@ impl From<Thrown> for Written {
 }
 
 /// The data set's name as a heading, then a table of a row of column headings and a row for
-/// each row of data, up to the first row parso reads none of.
+/// each row of data the file does not mark deleted.
 fn write_table(reader: &mut Reader, xhtml: &mut Xhtml) -> Result<(), Written> {
     if let Some(name) = &reader.properties.name {
         xhtml.element("h1", name)?;
@@ -172,7 +172,12 @@ fn write_table(reader: &mut Reader, xhtml: &mut Xhtml) -> Result<(), Written> {
     xhtml.end_element("tr")?;
     xhtml.newline()?;
     let mut writer = Writer::default();
-    while let Some(row) = reader.read_next()? {
+    loop {
+        let row = match reader.read_next()? {
+            Next::Row(row) => row,
+            Next::Deleted => continue,
+            Next::End => break,
+        };
         let texts = row_texts(&reader.columns, &row, &mut writer)?;
         xhtml.start_element("tr")?;
         for text in texts {

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, differing_reading, documents,
-    Scratch,
+    assert_read_where_tika_fails, assert_same_as_tika, conformance_corpus, differing_reading,
+    documents, Scratch,
 };
 #[cfg(feature = "tika")]
 use crate::formats::Difference;
@@ -110,7 +110,7 @@ fn extracts_markdown_as_tikas_path_does() {
     );
     let lenient = scratch.write("lenient.md", b"a | b\n- | - | -\n1 | 2 | 3\n");
     let deep = scratch.write("deep.md", "> ".repeat(70).as_bytes());
-    let failing = scratch.write("failing.md", b"[tekst](data:,hej)\n");
+    let untyped = scratch.write("untyped.md", UNTYPED_DATA_URI.as_bytes());
     let (parsed, deferred) = documents(&MarkdownParser, &[scratch.directory()]);
     assert_eq!(deferred, [deep.clone(), lenient.clone(), windows.clone()]);
     for (path, difference) in [
@@ -125,13 +125,30 @@ fn extracts_markdown_as_tikas_path_does() {
     assert!(text.contains("1 | 2 | 3"), "{text}");
     assert_eq!(
         parsed,
-        [data.clone(), failing.clone(), latin.clone(), notes.clone()]
+        [data.clone(), latin.clone(), notes.clone(), untyped.clone()]
     );
     assert_same_as_tika(
         &[notes.as_path(), latin.as_path(), data.as_path()],
         MarkdownParser.tika_name(),
     );
-    assert_fails_as_tika(&[failing.as_path()]);
+    assert_read_where_tika_fails(&[untyped.as_path()], "#157");
+}
+
+/// A link to a data URI of text without a media type, which Tika's path fails on.
+const UNTYPED_DATA_URI: &str = "[tekst](data:,hej)\n";
+
+#[test]
+fn embeds_text_of_data_uris_without_a_media_type() {
+    let scratch = crate::formats::parity::Scratch::new("markdown-untyped");
+    let path = scratch.write("untyped.md", UNTYPED_DATA_URI.as_bytes());
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    assert!(
+        xml.contains("<div class=\"package-entry\">") && xml.contains("hej"),
+        "{xml}"
+    );
 }
 
 /// Data URIs where Tika's Markdown parser embeds their documents: a link's, an image's, one in

@@ -1123,6 +1123,22 @@ mod tests {
                 "Tika records the JBIG2 dimension node twice (#120)",
             ),
             (
+                "testQuattro.wq1",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
+                "testQuattro.wq2",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
+                "testQuattro.wb1",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
+                "testQuattro.wb2",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
                 "testFODS_embeddedChart.fods",
                 "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
             ),
@@ -1309,7 +1325,7 @@ mod tests {
                 let walked = (parser.name() == onenote::OneNoteParser.name())
                     .then(|| onenote::walked(&name))
                     .flatten();
-                // The fixes of #89, #99, #105, #118, #129 and #132 depart from Tika's path
+                // The fixes of #89, #99, #105, #118, #129, #132 and #156 depart from Tika's path
                 // systematically.
                 let head: crate::formats::parity::Normalisation =
                     crate::formats::dc_xml::without_head;
@@ -1337,6 +1353,7 @@ mod tests {
                     "extractous::DIFParser" => {
                         Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
                     }
+                    "extractous::MatParser" => Some((crate::formats::mat::as_jmatio_names, None)),
                     "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
                     "extractous::OneNoteParser" => Some((
                         crate::formats::onenote::as_tika_names_packaged_objects,

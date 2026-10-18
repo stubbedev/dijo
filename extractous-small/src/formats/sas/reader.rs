@@ -236,6 +236,15 @@ pub(super) struct Column {
     pub(super) kind: Kind,
 }
 
+/// What [`Reader::read_next`] reads: a row's cells, a row the file marks deleted, which parso
+/// reads as none and Tika's parser ends the table at (#155), or the end of the rows.
+#[derive(Debug)]
+pub(super) enum Next {
+    Row(Vec<Option<Value>>),
+    Deleted,
+    End,
+}
+
 /// `SasFileProperties`, as far as the reader and Tika's parser read them.
 #[derive(Debug, Default)]
 pub(super) struct Properties {
@@ -954,17 +963,16 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// `readNext`: the next row, or none at the end of the rows, or at a deleted row, where
-    /// parso stops too.
-    pub(super) fn read_next(&mut self) -> Result<Option<Vec<Option<Value>>>, Thrown> {
+    /// `readNext`: the next row, a deleted one, or the end of the rows.
+    pub(super) fn read_next(&mut self) -> Result<Next, Thrown> {
         let index = self.row_in_file;
         self.row_in_file = self.row_in_file.wrapping_add(1);
         if i64::from(index) >= self.properties.row_count || self.eof {
-            return Ok(None);
+            return Ok(Next::End);
         }
         let bit_offset = self.bit_offset();
         let row_length = self.properties.row_length;
-        let mut row = None;
+        let mut row = Next::Deleted;
         match self.page_type {
             PAGE_META_TYPE_1 | PAGE_META_TYPE_2 | PAGE_CMETA_TYPE => {
                 if self.data_pointers.is_empty() && self.page_type == PAGE_CMETA_TYPE {
@@ -977,7 +985,7 @@ impl<'a> Reader<'a> {
                     .ok()
                     .and_then(|at| self.data_pointers.get(at))
                     .ok_or_else(|| index_out_of_bounds(at, self.data_pointers.len()))?;
-                row = Some(self.row(pointer.offset, pointer.length)?);
+                row = Next::Row(self.row(pointer.offset, pointer.length)?);
                 if to_i64(self.data_pointers.len()) == i64::from(self.row_on_page) {
                     self.read_next_page()?;
                     self.row_on_page = 0;
@@ -996,7 +1004,7 @@ impl<'a> Reader<'a> {
                         + align
                         + pointers
                         + i64::from(at) * row_length;
-                    row = Some(self.row(offset, row_length)?);
+                    row = Next::Row(self.row(offset, row_length)?);
                 }
                 self.row_on_page += 1;
                 let rows = self
@@ -1016,7 +1024,7 @@ impl<'a> Reader<'a> {
                 if self.page_type == PAGE_DATA_TYPE || self.is_kept(at)? {
                     let offset =
                         bit_offset + SUBHEADER_POINTERS_OFFSET + i64::from(at) * row_length;
-                    row = Some(self.row(offset, row_length)?);
+                    row = Next::Row(self.row(offset, row_length)?);
                 }
                 self.row_on_page += 1;
                 if self.row_on_page == self.block_count {
@@ -1024,7 +1032,7 @@ impl<'a> Reader<'a> {
                     self.row_on_page = 0;
                 }
             }
-            _ => {}
+            _ => return Ok(Next::End),
         }
         Ok(row)
     }
