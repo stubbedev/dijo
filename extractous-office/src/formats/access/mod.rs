@@ -171,7 +171,7 @@ impl Extraction {
                     xhtml.start_element("td")?;
                     match cell {
                         Cell::Text(text) => xhtml.characters(&text)?,
-                        Cell::Resource(document) => xhtml.parse_embedded_opened(
+                        Cell::Resource(document) => xhtml.parse_embedded_input_opened(
                             &handed_on(document.data)?,
                             &document.metadata,
                             Wrapping::Bare,

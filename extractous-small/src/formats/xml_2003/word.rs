@@ -10,8 +10,12 @@ use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute, Attribute};
-use crate::formats::{Decline, Failure, Opened, Parser, Prepared};
-use crate::java;
+use std::io::{BufWriter, Write as _};
+
+use crate::errors::Error;
+use crate::formats::{Decline, Failure, Footprint, Opened, Parser, Prepared};
+use crate::input::{Input, Pages, Spool};
+use crate::java::{self, CommonsBase64};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-wordml";
 /// `WORD_ML_URL`, the namespace of the document's elements.
@@ -34,13 +38,27 @@ impl Parser for WordMlParser {
         &[MEDIA_TYPE]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        super::prepare(input, MEDIA_TYPE, Word::default())
+        super::prepare(input, pages, MEDIA_TYPE, Word::default())
     }
 }
 
@@ -75,7 +93,7 @@ fn ignores_characters(namespace: &str, name: &str) -> bool {
 }
 
 /// The state of `WordMLHandler`, `HyperlinkHandler` and `PictHandler`.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Word {
     ignore_characters: bool,
     in_body: bool,
@@ -92,16 +110,57 @@ struct Link {
     href: Option<String>,
 }
 
-/// `PictHandler`'s picture: its binary data, as it reads and once decoded, its name and the
+/// `PictHandler`'s picture: its binary data, as it reads and once read, its name and the
 /// original name of its image.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Picture {
     in_pict: bool,
-    in_bin: bool,
-    encoded: String,
-    data: Option<Vec<u8>>,
+    binary: Option<Binary>,
+    data: Option<Input<'static>>,
     name: Option<String>,
     source: Option<String>,
+}
+
+/// The binary data of a picture being read, decoded as it comes, in memory up to what is read
+/// whole and past it in a file of its own.
+struct Binary {
+    decoder: CommonsBase64,
+    decoded: Vec<u8>,
+    spool: BufWriter<Spool>,
+}
+
+/// How a picture's binary data failed to spool.
+fn spool_failed(error: std::io::Error) -> Failure {
+    Failure::Extraction(Error::IoError(format!(
+        "Could not spool the binary data of a picture of the WordML document: {error}"
+    )))
+}
+
+impl Binary {
+    fn new() -> Self {
+        Self {
+            decoder: CommonsBase64::default(),
+            decoded: Vec::new(),
+            spool: BufWriter::new(Spool::new(None)),
+        }
+    }
+
+    fn push(&mut self, text: &str) -> Result<(), Failure> {
+        self.decoder.push(text, &mut self.decoded);
+        self.spool.write_all(&self.decoded).map_err(spool_failed)?;
+        self.decoded.clear();
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Input<'static>, Failure> {
+        self.decoder.finish(&mut self.decoded);
+        self.spool.write_all(&self.decoded).map_err(spool_failed)?;
+        self.spool
+            .into_inner()
+            .map_err(|error| spool_failed(error.into_error()))?
+            .finish()
+            .map_err(spool_failed)
+    }
 }
 
 impl Word {
@@ -197,7 +256,7 @@ impl Picture {
             if local_name == "pict" {
                 self.in_pict = true;
             } else if local_name == "binData" {
-                self.in_bin = true;
+                self.binary.get_or_insert_with(Binary::new);
                 self.name = attribute(attributes, WORD_ML, "name")
                     .map(|name| name.replacen("wordml://", "", 1));
             }
@@ -235,9 +294,8 @@ impl Picture {
             xhtml.end_element("img")?;
             self.embed(xhtml, Wrapping::Bare)
         } else if local_name == "binData" {
-            self.in_bin = false;
-            self.data = Some(java::commons_base64_decode(&self.encoded));
-            self.encoded.clear();
+            let binary = self.binary.take().unwrap_or_else(Binary::new);
+            self.data = Some(binary.finish()?);
             if self.in_pict {
                 return Ok(());
             }
@@ -293,8 +351,8 @@ impl Body for Word {
         if self.link.open {
             self.link.text.push_str(text);
         }
-        if self.picture.in_bin {
-            self.picture.encoded.push_str(text);
+        if let Some(binary) = &mut self.picture.binary {
+            binary.push(text)?;
         } else if self.picture.in_pict {
             xhtml.characters_chunk(text)?;
         }

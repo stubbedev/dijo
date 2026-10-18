@@ -6,18 +6,16 @@
 //! way, or one using what this port does not read, is [`Unported`]; one POI fails to open is
 //! [`Unopened::Corrupt`].
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::sync::Arc;
 
 use zip::ZipArchive;
 
 use super::uri::{self, Resolution};
 use crate::compress::zip::file::ZipFile;
 use crate::compress::zip::stream::{self, ZipStream};
-use crate::compress::zip::Content;
+use crate::compress::zip::Decoded;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::{self, central_directory_records};
 pub(crate) use crate::formats::Unported;
@@ -127,8 +125,17 @@ impl From<Unopened> for Decline<'_> {
 enum Entries<'a> {
     /// The central directory.
     Directory(ZipArchive<Cursor<&'a [u8]>>),
-    /// The local headers, front to back: each entry's content, read as the archive was opened.
-    Stream(Vec<Input<'a>>),
+    /// The local headers, front to back: each entry checked to read whole as the archive was
+    /// opened, and read again from where it starts once it is asked for.
+    Stream(Vec<StreamedEntry<'a>>),
+}
+
+/// An entry of an archive read by its local headers.
+struct StreamedEntry<'a> {
+    /// The stream at the entry.
+    at: ZipStream<'a>,
+    /// The length of its content.
+    size: u64,
 }
 
 /// The archive of a package.
@@ -171,11 +178,12 @@ impl<'a> Archive<'a> {
 
     /// `ZipInputStreamZipEntrySource` over `ZipHelper.openZipStream`: every entry read whole
     /// as the archive is opened, by a stream that reads names as UTF-8 and allows stored entries
-    /// with a data descriptor.
+    /// with a data descriptor. Each entry is only checked here, keeping nothing of it, and read
+    /// again where it is asked for.
     fn stream(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unopened> {
         let mut zip = ZipStream::new(input, true).without_unicode_extra_fields();
         let mut names = Vec::new();
-        let mut contents = Vec::new();
+        let mut entries = Vec::new();
         let mut seen = HashSet::new();
         while let Some(entry) = zip.next_entry().map_err(unstreamed)? {
             if entry.name.is_empty() {
@@ -189,45 +197,59 @@ impl<'a> Archive<'a> {
                     entry.name
                 )));
             }
-            let content = match zip.content().map_err(unstreamed)? {
-                Content::Complete(content) => content,
-                Content::Truncated(_) => {
+            let size = match zip.verify().map_err(unstreamed)? {
+                Decoded::Complete(size) => size,
+                Decoded::Truncated(_) => {
                     return Err(Unopened::Corrupt(format!(
                         "Truncated ZIP file: the archive has no central directory, and the data \
                          of its entry {} ends before the entry does",
                         entry.name
                     )))
                 }
-                Content::Oversized(_) => {
+                Decoded::Oversized(_) => {
                     return Err(Unported(format!(
-                        "the entry {} inflates past what the port holds",
+                        "the entry {} inflates past what the port spools",
                         entry.name
                     ))
                     .into())
                 }
             };
-            contents.push(match content {
-                Cow::Borrowed(stored) => Input::Within(stored, pages),
-                Cow::Owned(inflated) => Input::Read(Arc::new(inflated)),
+            entries.push(StreamedEntry {
+                at: zip.clone(),
+                size,
             });
             names.push(entry.name);
         }
         Ok(Self {
             input,
             pages,
-            entries: Entries::Stream(contents),
+            entries: Entries::Stream(entries),
             names,
         })
     }
 
-    /// The content of the entry `index`: the archive's own bytes where it is stored.
+    /// The content of the entry `index`: the archive's own bytes where it is stored, else
+    /// decoded to a spool, in memory as far as a file is read whole and mapped beyond.
     fn read(&self, index: usize) -> Result<Input<'a>, Unported> {
+        let unread = |reason: &dyn std::fmt::Display| {
+            Unported(format!(
+                "the ZIP entry {} cannot be read: {reason}",
+                self.names[index]
+            ))
+        };
         match &self.entries {
             Entries::Directory(archive) => {
                 zip_file::read_entry(&mut archive.clone(), self.input, self.pages, index)
-                    .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))
+                    .map_err(|e| unread(&e))
             }
-            Entries::Stream(contents) => Ok(contents[index].clone()),
+            Entries::Stream(entries) => match entries[index].at.spool(self.pages) {
+                Ok(Ok(Decoded::Complete(content))) => Ok(content),
+                Ok(Ok(Decoded::Truncated(_) | Decoded::Oversized(_))) => {
+                    Err(unread(&"it no longer decodes whole"))
+                }
+                Ok(Err(undecoded)) => Err(unread(&undecoded)),
+                Err(failure) => Err(unread(&format!("{failure:?}"))),
+            },
         }
     }
 
@@ -244,7 +266,7 @@ impl<'a> Archive<'a> {
                         self.names[index]
                     ))
                 }),
-            Entries::Stream(contents) => Ok(contents[index].len() as u64),
+            Entries::Stream(entries) => Ok(entries[index].size),
         }
     }
 }
@@ -429,7 +451,7 @@ impl<'a> Package<'a> {
         };
         let bytes = self.archive.read(self.parts[rels_part].entry)?;
         let mut reader = RelationshipsReader::default();
-        xml::parse_sax(&bytes, &rels_name, &mut reader)
+        xml::parse_part(&bytes, &rels_name, &mut reader)
             .map_err(|e| Unported(format!("POI fails on {rels_name}: {}", describe(&e))))?;
         if reader
             .found
@@ -616,9 +638,9 @@ struct ContentTypes {
 }
 
 impl ContentTypes {
-    fn read(bytes: &[u8]) -> Result<Self, Unported> {
+    fn read(bytes: &Input<'_>) -> Result<Self, Unported> {
         let mut reader = ContentTypesReader::default();
-        xml::parse_sax(bytes, CONTENT_TYPES, &mut reader)
+        xml::parse_part(bytes, CONTENT_TYPES, &mut reader)
             .map_err(|e| Unported(format!("POI fails on {CONTENT_TYPES}: {}", describe(&e))))?;
         let mut defaults = HashMap::new();
         let mut overrides = HashMap::new();

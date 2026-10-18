@@ -52,7 +52,37 @@ impl Deref for Input<'_> {
     }
 }
 
-impl Input<'_> {
+impl AsRef<[u8]> for Input<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+/// Bytes are equal by what they hold, wherever they are held.
+impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for Input<'_> {
+    fn eq(&self, other: &T) -> bool {
+        **self == *other.as_ref()
+    }
+}
+
+impl Eq for Input<'_> {}
+
+impl From<Vec<u8>> for Input<'_> {
+    fn from(bytes: Vec<u8>) -> Self {
+        Input::Read(Arc::new(bytes))
+    }
+}
+
+impl<'a> From<std::borrow::Cow<'a, [u8]>> for Input<'a> {
+    fn from(bytes: std::borrow::Cow<'a, [u8]>) -> Self {
+        match bytes {
+            std::borrow::Cow::Borrowed(bytes) => Input::Borrowed(bytes),
+            std::borrow::Cow::Owned(bytes) => bytes.into(),
+        }
+    }
+}
+
+impl<'a> Input<'a> {
     /// The same bytes, owned: the caller's copied, the others shared.
     pub fn to_static(&self) -> Input<'static> {
         match self {
@@ -61,6 +91,23 @@ impl Input<'_> {
             }
             Input::Read(bytes) => Input::Read(Arc::clone(bytes)),
             Input::Mapped(map) => Input::Mapped(Arc::clone(map)),
+        }
+    }
+
+    /// The bytes of `pieces` of other bytes, whose pages are `pages`, joined: one piece in
+    /// place, several spooled.
+    pub fn joined(pieces: &[&'a [u8]], pages: Pages<'a>) -> io::Result<Input<'a>> {
+        match pieces {
+            [] => Ok(Input::Borrowed(&[])),
+            [piece] => Ok(Input::Within(piece, pages)),
+            pieces => {
+                let length = pieces.iter().map(|piece| piece.len() as u64).sum();
+                let mut spool = Spool::new(Some(length));
+                for piece in pieces {
+                    spool.write_all(piece)?;
+                }
+                spool.finish()
+            }
         }
     }
 
@@ -205,26 +252,33 @@ impl Drop for Paging<'_> {
     }
 }
 
+/// The most memory a [`Spool`] reserves on what a stream says it holds, which may be wrong: a
+/// document's own declaration costs no more than this until its bytes come.
+const SPOOL_RESERVED: u64 = 1 << 20;
+
 /// Collects a stream of a document's bytes, as Tika's `CachingSource` caches a stream: in memory
 /// up to [`MAX_READ_WHOLE`], and beyond it in a temporary file of its own, mapped once complete,
-/// which is deleted once its map is dropped. A stream known to be larger goes to the file from
-/// its first byte.
+/// which is deleted once its map is dropped.
 pub struct Spool {
     memory: Vec<u8>,
     file: Option<File>,
-    larger_than_read_whole: bool,
+    /// Whether the stream says it holds more than [`MAX_READ_WHOLE`] bytes, which go to the file
+    /// from the first.
+    large: bool,
 }
 
 impl Spool {
-    /// A spool for a stream of `expected` bytes, if the stream says how many.
+    /// A spool for a stream of `expected` bytes, if the stream says how many. What it says is a
+    /// hint, not a limit: a stream that says it is larger than [`MAX_READ_WHOLE`] goes to the
+    /// file from its first byte, one that says it is smaller has up to a mebibyte
+    /// of memory reserved for it, and any stream holds what it holds, more or less than it says.
     pub fn new(expected: Option<u64>) -> Self {
-        let capacity = expected
-            .filter(|&length| length <= MAX_READ_WHOLE)
-            .unwrap_or(0);
+        let large = expected.is_some_and(|length| length > MAX_READ_WHOLE);
+        let capacity = expected.filter(|_| !large).unwrap_or(0).min(SPOOL_RESERVED);
         Self {
-            memory: Vec::with_capacity(usize::try_from(capacity).expect("at most MAX_READ_WHOLE")),
+            memory: Vec::with_capacity(usize::try_from(capacity).expect("at most SPOOL_RESERVED")),
             file: None,
-            larger_than_read_whole: expected.is_some_and(|length| length > MAX_READ_WHOLE),
+            large,
         }
     }
 
@@ -256,7 +310,7 @@ impl Spool {
 impl Write for Spool {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.file.is_none()
-            && !self.larger_than_read_whole
+            && !self.large
             && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE
         {
             self.memory.extend_from_slice(bytes);
@@ -359,12 +413,20 @@ mod tests {
     }
 
     #[test]
-    fn spools_a_stream_known_to_be_past_the_limit_to_a_file_from_its_first_byte() {
-        let mut large = Spool::new(Some(MAX_READ_WHOLE + 1));
-        large.write_all(b"abc").unwrap();
-        assert!(large.memory.is_empty());
-        let large = large.finish().unwrap();
-        assert!(large.is_mapped());
-        assert_eq!(&*large, b"abc");
+    fn spools_streams_said_to_be_large_to_a_file_from_the_first() {
+        let mut said_large = Spool::new(Some(MAX_READ_WHOLE + 1));
+        said_large.write_all(b"abc").unwrap();
+        let said_large = said_large.finish().unwrap();
+        assert!(said_large.is_mapped());
+        assert_eq!(&*said_large, b"abc");
+
+        let chunk = vec![7u8; 1 << 20];
+        let mut said_small = Spool::new(Some(3));
+        for _ in 0..=MAX_READ_WHOLE >> 20 {
+            said_small.write_all(&chunk).unwrap();
+        }
+        let said_small = said_small.finish().unwrap();
+        assert!(said_small.is_mapped());
+        assert_eq!(said_small.len() as u64, MAX_READ_WHOLE + (1 << 20));
     }
 }

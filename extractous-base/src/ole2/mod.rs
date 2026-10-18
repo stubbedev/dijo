@@ -483,6 +483,11 @@ impl<'a> Ole2<'a> {
     /// `createDocumentInputStream(name)` on the root, read whole: the document found ignoring
     /// case, or why POI cannot read it.
     pub fn root_document(&self, name: &str) -> std::result::Result<Vec<u8>, String> {
+        self.root_content(name).map(|content| content.to_vec())
+    }
+
+    /// [`Ole2::root_document`] in place.
+    pub fn root_content(&self, name: &str) -> std::result::Result<Content<'a>, String> {
         let entry = self
             .child_ignoring_case(self.root(), name)
             .ok_or_else(|| format!("the compound document has no entry {name:?}"))?;
@@ -491,7 +496,7 @@ impl<'a> Ole2<'a> {
                 "the compound document's entry {name:?} is not a document"
             ));
         }
-        self.read(entry).map_err(|Unreadable(reason)| {
+        self.content(entry).map_err(|Unreadable(reason)| {
             format!("the compound document's entry {name:?} is unreadable: {reason}")
         })
     }

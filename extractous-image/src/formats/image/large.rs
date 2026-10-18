@@ -242,6 +242,47 @@ fn extracts_heif_images_too_large_to_read_whole_in_bounded_memory() {
     assert_eq!(metadata["tiff:ImageWidth"], ["512"]);
 }
 
+/// The JPEG XL test card, its codestream split over `jxlp` boxes, with a box of a type no reader
+/// knows, too large to read whole, after its first `jxlp` box: before the rest of its
+/// codestream and its Brotli-compressed Exif and XMP boxes.
+fn large_jpeg_xl() -> LargeFile {
+    let card = std::fs::read(super::tests::jxl_fixture("card.jxl")).unwrap();
+    let first_jxlp = 32;
+    assert_eq!(&card[first_jxlp + 4..first_jxlp + 8], b"jxlp");
+    let size = u32::from_be_bytes(card[first_jxlp..first_jxlp + 4].try_into().unwrap());
+    let rest = first_jxlp + size as usize;
+    let mut head = card[..rest].to_vec();
+    head.extend((padding_of(PADDING) + 8).to_be_bytes());
+    head.extend(b"zzzz");
+    zero_padded("card.jxl", &head, &card[rest..])
+}
+
+/// A JPEG XL image with a box too large to read whole has its boxes walked in place and its
+/// codestream's header parsed from its first bytes, and with OCR its codestream alone decoded.
+#[test]
+fn extracts_jpeg_xl_images_too_large_to_read_whole_in_bounded_memory() {
+    let file = large_jpeg_xl();
+    let metadata = metadata_of(&file, "extractous::JXLParser");
+    for (name, expected) in [
+        ("tiff:ImageWidth", "96"),
+        ("tiff:ImageLength", "80"),
+        ("tiff:BitsPerSample", "8"),
+        ("tiff:Orientation", "6"),
+        ("tiff:Make", "Extractous"),
+        ("dc:title", "Fyret"),
+    ] {
+        assert_eq!(metadata[name], [expected], "{name}: {metadata:?}");
+    }
+    assert!(!metadata.contains_key("tk:exception:warn"), "{metadata:?}");
+    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
+    let (_, metadata) = file.extract_with(&Extractor::new(), BUDGET, super::PREPARING_OCR_PARSER);
+    let [report] = metadata[crate::ocr::REPORT].as_slice() else {
+        panic!("one reading: {metadata:?}");
+    };
+    assert!(report.contains("\"prepared\":true"), "{report}");
+    assert!(!metadata.contains_key("tk:exception:warn"), "{metadata:?}");
+}
+
 /// A raw camera image too large to read whole has its IFDs walked for previews in place.
 #[test]
 fn extracts_raw_images_too_large_to_read_whole_in_bounded_memory() {

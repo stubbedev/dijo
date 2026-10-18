@@ -832,6 +832,7 @@ dependencies = [
  "extractous-office",
  "extractous-ooxml",
  "extractous-pdf",
+ "extractous-science",
  "extractous-small",
  "extractous-tika",
  "png",
@@ -870,7 +871,9 @@ dependencies = [
  "hayro-jbig2",
  "hayro-jpeg2000",
  "image",
+ "jxl-bitstream",
  "jxl-oxide",
+ "jxl-oxide-common",
  "lcms2-sys",
  "libloading",
  "rav1d",
@@ -893,6 +896,7 @@ dependencies = [
  "extractous-mime",
  "extractous-small",
  "flate2",
+ "memchr",
  "regex",
  "rusqlite",
  "tar",
@@ -992,6 +996,16 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode-script",
+]
+
+[[package]]
+name = "extractous-science"
+version = "0.2.1"
+dependencies = [
+ "extractous-base",
+ "extractous-core",
+ "extractous-html",
+ "memchr",
 ]
 
 [[package]]

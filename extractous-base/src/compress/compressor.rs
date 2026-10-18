@@ -3,6 +3,7 @@
 //! only as named.
 
 use super::{brotli, bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Limited, Undecoded};
+use crate::input::Input;
 
 /// A compression format `CompressorStreamFactory` decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub enum Compressor {
 pub struct Decoded {
     /// The original file name a gzip header holds.
     pub file_name: Option<String>,
-    pub content: Vec<u8>,
+    pub content: Input<'static>,
 }
 
 const ALL: [Compressor; 11] = [
@@ -101,11 +102,11 @@ impl Compressor {
             .find(|compressor| compressor.media_type() == media_type)
     }
 
-    /// The stream `data` decoded whole, up to [`MAX_DECODED`](super::MAX_DECODED) bytes, as
-    /// commons-compress decodes it without `decompressConcatenated`, or why it is not decoded
-    /// natively.
+    /// The stream `data` decoded whole to a spool, up to [`decode_limit`](super::decode_limit)
+    /// bytes, as commons-compress decodes it without `decompressConcatenated`, or why it is not
+    /// decoded natively.
     pub fn decode(self, data: &[u8]) -> Result<Limited<Decoded>, Undecoded> {
-        let content = |content: Limited<Vec<u8>>| {
+        let content = |content: Limited<Input<'static>>| {
             content.map(|content| Decoded {
                 file_name: None,
                 content,

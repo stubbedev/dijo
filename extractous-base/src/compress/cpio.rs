@@ -6,9 +6,8 @@
 //!
 //! Names are read as UTF-8, which commons-compress, decoding names as US-ASCII, rejects.
 
-use std::io::Read;
-
-use super::{limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED};
+use super::{throws, ArchiveFile, Undecoded};
+use crate::input::{Input, Pages};
 
 const NEW: &[u8; 6] = b"070701";
 const NEW_CRC: &[u8; 6] = b"070702";
@@ -21,69 +20,67 @@ fn fail(error: std::io::Error) -> Undecoded {
     throws(error.to_string())
 }
 
-/// The files of the cpio archive `data`, or why they are not read natively. Each entry is read
-/// in the format its own magic names, as `getNextCPIOEntry` reads it.
-pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
+/// The files of the cpio archive `data`, whose pages are `pages`, each file's data in place,
+/// or why they are not read natively. Each entry is read in the format its own magic names, as
+/// `getNextCPIOEntry` reads it.
+pub fn files<'a>(data: &'a [u8], pages: Pages<'a>) -> Result<Vec<ArchiveFile<'a>>, Undecoded> {
     let mut input = data;
     let mut files = Vec::new();
     loop {
-        let (file, rest) = if input.starts_with(NEW) || input.starts_with(NEW_CRC) {
+        let (entry, rest) = if input.starts_with(NEW) || input.starts_with(NEW_CRC) {
             new_entry(input)?
         } else {
             OldFormat::of(input)?.entry(input)?
         };
-        let Some(file) = file else {
-            return Ok(Limited::Whole(files));
+        let Some(entry) = entry else {
+            return Ok(files);
         };
-        if let Some(cut) = file.add_to(&mut files) {
-            return Ok(cut);
-        }
+        files.push(entry.file(pages));
         input = rest;
     }
 }
 
-/// The file of an entry of `name`, `mode` and modification time `mtime` in seconds, holding
-/// `content`: a directory, by its mode, without it.
-fn file(name: String, mode: u64, mtime: i64, content: Vec<u8>) -> ArchiveFile {
-    let directory = mode & u64::from(FILE_TYPE) == u64::from(DIRECTORY);
-    ArchiveFile {
-        name,
-        size: content.len() as u64,
-        modified_millis: Some(mtime * 1000),
-        created_millis: None,
-        directory,
-        content: if directory { Vec::new() } else { content },
+/// An entry of `name`, `mode` and modification time `mtime` in seconds, holding `content`.
+struct Entry<'a> {
+    name: String,
+    mode: u64,
+    mtime: i64,
+    content: &'a [u8],
+}
+
+impl<'a> Entry<'a> {
+    /// The entry's file, whose data has the pages `pages`: a directory, by its mode, without it.
+    fn file(self, pages: Pages<'a>) -> ArchiveFile<'a> {
+        let directory = self.mode & u64::from(FILE_TYPE) == u64::from(DIRECTORY);
+        ArchiveFile {
+            name: self.name,
+            size: self.content.len() as u64,
+            modified_millis: Some(self.mtime * 1000),
+            created_millis: None,
+            directory,
+            content: if directory {
+                Input::Borrowed(&[])
+            } else {
+                Input::Within(self.content, pages)
+            },
+        }
     }
 }
 
 /// The entry in the new ASCII format at the start of `input`, none for the trailer, and what
-/// follows it, the file cut where its data passes [`MAX_DECODED`] bytes.
-fn new_entry(input: &[u8]) -> Result<(Option<Limited<ArchiveFile>>, &[u8]), Undecoded> {
-    let mut reader = cpio::newc::Reader::new(input).map_err(fail)?;
-    let entry = reader.entry().clone();
+/// follows it.
+fn new_entry(input: &[u8]) -> Result<(Option<Entry<'_>>, &[u8]), Undecoded> {
+    let mut rest = input;
+    let entry = cpio::newc::Reader::new(&mut rest)
+        .map_err(fail)?
+        .entry()
+        .clone();
     if entry.is_trailer() {
         return Ok((None, &[]));
     }
-    let mut content = Vec::new();
-    (&mut reader)
-        .take(MAX_DECODED as u64 + 1)
-        .read_to_end(&mut content)
-        .map_err(fail)?;
-    let file_of = |content| {
-        file(
-            entry.name().to_owned(),
-            u64::from(entry.mode()),
-            i64::from(entry.mtime()),
-            content,
-        )
-    };
-    let content = match limit(content) {
-        Limited::Whole(content) => content,
-        Limited::Cut(content) => return Ok((Some(Limited::Cut(file_of(content))), &[])),
-    };
-    if content.len() as u64 != u64::from(entry.file_size()) {
-        return Err(throws("the input ends inside an entry's data"));
-    }
+    let size = usize::try_from(entry.file_size()).expect("a 32-bit size fits in usize");
+    let ends_inside = || throws("the input ends inside an entry's data");
+    let content = rest.get(..size).ok_or_else(ends_inside)?;
     if let Some(checksum) = entry.checksum() {
         let sum = content
             .iter()
@@ -92,8 +89,16 @@ fn new_entry(input: &[u8]) -> Result<(Option<Limited<ArchiveFile>>, &[u8]), Unde
             return Err(throws("CRC Error"));
         }
     }
-    let rest = reader.finish().map_err(fail)?;
-    Ok((Some(Limited::Whole(file_of(content))), rest))
+    let rest = rest
+        .get(size + (4 - size % 4) % 4..)
+        .ok_or_else(ends_inside)?;
+    let entry = Entry {
+        name: entry.name().to_owned(),
+        mode: u64::from(entry.mode()),
+        mtime: i64::from(entry.mtime()),
+        content,
+    };
+    Ok((Some(entry), rest))
 }
 
 /// The old formats, which the cpio crate does not read: binary, in the byte order of the machine
@@ -169,9 +174,8 @@ impl OldFormat {
     }
 
     /// `readOldBinaryEntry` or `readOldAsciiEntry` and the entry's data at the start of `input`,
-    /// none for the trailer, and what follows it, the file cut where its data passes
-    /// [`MAX_DECODED`] bytes.
-    fn entry(self, input: &[u8]) -> Result<(Option<Limited<ArchiveFile>>, &[u8]), Undecoded> {
+    /// none for the trailer, and what follows it.
+    fn entry(self, input: &[u8]) -> Result<(Option<Entry<'_>>, &[u8]), Undecoded> {
         let mut cursor = Cursor(input);
         cursor.take(self.magic_length())?;
         let mut fields = [0u64; 10];
@@ -199,16 +203,15 @@ impl OldFormat {
         }
         let mtime = i64::try_from(mtime).expect("at most 33 bits");
         let size = usize::try_from(file_size).unwrap_or(usize::MAX);
-        if size > MAX_DECODED {
-            let content = cursor.take(MAX_DECODED)?.to_vec();
-            return Ok((Some(Limited::Cut(file(name, mode, mtime, content))), &[]));
-        }
-        let content = cursor.take(size)?.to_vec();
+        let content = cursor.take(size)?;
         cursor.take(self.padding(size))?;
-        Ok((
-            Some(Limited::Whole(file(name, mode, mtime, content))),
-            cursor.0,
-        ))
+        let entry = Entry {
+            name,
+            mode,
+            mtime,
+            content,
+        };
+        Ok((Some(entry), cursor.0))
     }
 
     /// The bytes that pad `length` bytes to the alignment.
@@ -264,11 +267,10 @@ pub mod tests {
     #[test]
     fn reads_entries_up_to_the_trailer() {
         let data = cpio(&[("dir/", b""), ("dir/a.txt", b"odd")]);
-        let found: Vec<(String, bool, Vec<u8>)> = files(&data)
-            .and_then(Limited::whole)
+        let found: Vec<(String, bool, Vec<u8>)> = files(&data, Pages::IN_MEMORY)
             .unwrap()
             .into_iter()
-            .map(|file| (file.name, file.directory, file.content))
+            .map(|file| (file.name, file.directory, file.content.to_vec()))
             .collect();
         assert_eq!(
             found,
@@ -282,6 +284,7 @@ pub mod tests {
     #[test]
     fn fails_on_what_is_cut_short_or_corrupt() {
         let data = cpio(&[("a.txt", b"content")]);
+        let files = |data| files(data, Pages::IN_MEMORY);
         assert!(files(&data[..data.len() - 130]).is_err());
         let mut corrupt = data.clone();
         let at = corrupt.windows(7).position(|w| w == b"content").unwrap();
@@ -303,15 +306,14 @@ mod old_format_tests {
     ];
 
     fn found(data: &[u8]) -> Vec<(String, bool, Vec<u8>, Option<i64>)> {
-        files(data)
-            .and_then(Limited::whole)
+        files(data, Pages::IN_MEMORY)
             .unwrap()
             .into_iter()
             .map(|file| {
                 (
                     file.name,
                     file.directory,
-                    file.content,
+                    file.content.to_vec(),
                     file.modified_millis,
                 )
             })
@@ -407,6 +409,7 @@ mod old_format_tests {
 
     #[test]
     fn fails_on_old_archives_cut_short() {
+        let files = |data| files(data, Pages::IN_MEMORY);
         let odc = odc();
         assert!(matches!(
             files(&odc[..odc.len() - 90]),

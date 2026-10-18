@@ -18,8 +18,10 @@ use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
 use crate::compress::zip::stream::{self, ZipStream};
-use crate::compress::zip::Content;
+use crate::compress::zip::{Content, Decoded};
+use crate::compress::Undecoded;
 use crate::config::ParserConfigs;
+use crate::errors::Error;
 use crate::formats::embedded::{
     record_exception, record_stream_exception, Wrapping, ENCRYPTED_DOCUMENT, INTERNAL_PATH,
     RESOURCE_NAME,
@@ -27,7 +29,7 @@ use crate::formats::embedded::{
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
-use crate::input::{Pages, Paging};
+use crate::input::{Input, Pages, Paging};
 use crate::java::time::instant_string;
 use crate::mime::{Key, MediaType};
 use crate::text::charset;
@@ -176,19 +178,23 @@ impl Parser for ZipParser {
             let paging = Paging::new(pages);
             let difference = check_entries(&zip, input.len(), &paging)?;
             return reading(
-                Box::new(move |xhtml| write_archive(input, &zip, xhtml, &paging)),
+                Box::new(move |xhtml| write_archive(input, &zip, xhtml, pages, &paging)),
                 difference,
             );
         }
         if metadata.get(Key::Salvaged.name()) != Some("true") {
-            return streamed(input, None);
+            return streamed(input, pages, None);
         }
         let salvaged = match salvage(input) {
             Ok(salvaged) => salvaged,
-            Err(Unsalvaged::Thrown) => return streamed(input, None),
+            Err(Unsalvaged::Unspooled(reason)) => {
+                return Err(Decline::Fails(Error::IoError(reason)))
+            }
+            Err(Unsalvaged::Thrown) => return streamed(input, pages, None),
             Err(Unsalvaged::Unported(reason)) => {
                 return streamed(
                     input,
+                    pages,
                     Some(Difference::new(format!(
                         "the detection salvaged the archive, which the native parser does not \
                          salvage, for {reason}, and reads by its local headers instead"
@@ -205,7 +211,8 @@ impl Parser for ZipParser {
         reading(
             Box::new(move |xhtml| {
                 let zip = ZipFile::open(&salvaged).expect("a salvaged archive opens");
-                write_archive(input, &zip, xhtml, &in_memory)
+                let pages = salvaged.pages();
+                write_archive(input, &zip, xhtml, pages, &Paging::new(pages))
             }),
             difference,
         )
@@ -229,11 +236,15 @@ fn reading(
 
 /// The archive `input` read by its local headers, as its native reading differs from Tika's in
 /// `difference`, if it does.
-fn streamed(input: &[u8], difference: Option<Difference>) -> Result<Prepared<'_>, Decline<'_>> {
+fn streamed<'a>(
+    input: &'a [u8],
+    pages: Pages<'a>,
+    difference: Option<Difference>,
+) -> Result<Prepared<'a>, Decline<'a>> {
     let streamed = Streamed::scan(input)?;
     let difference = difference.or_else(|| streamed.difference.clone());
     reading(
-        Box::new(move |xhtml| streamed.write(input, xhtml)),
+        Box::new(move |xhtml| streamed.write(input, pages, xhtml)),
         difference,
     )
 }
@@ -252,18 +263,22 @@ fn check_entries(
             continue;
         }
         difference = difference.or(entry_name(entry).1);
-        match zip.read(entry) {
-            Some(Content::Complete(content)) => {
-                if let Some(reason) = scan.entry(&content) {
-                    return Err(Decline::Deferred(reason));
-                }
-                paging.read(content.len());
+        let verified = if DEFERS {
+            zip.read(entry)
+                .map(|content| scanned(&mut scan, content))
+                .transpose()?
+        } else {
+            zip.verify(entry)
+        };
+        match verified {
+            Some(Decoded::Complete(_)) => {
+                paging.read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
             }
-            Some(Content::Oversized(_)) if DEFERS => {
+            Some(Decoded::Oversized(_)) if DEFERS => {
                 return Err(too_large(&the_entry(&entry.name)))
             }
-            Some(Content::Oversized(_)) => break,
-            Some(Content::Truncated(_)) | None => {
+            Some(Decoded::Oversized(_)) => break,
+            Some(Decoded::Truncated(_)) | None => {
                 difference = difference.or_else(|| Some(cut_short(&entry.name)));
             }
         }
@@ -273,6 +288,17 @@ fn check_entries(
     }
     paging.release();
     Ok(difference)
+}
+
+/// How an entry's `content` reads, where it is complete once `scan` has found nothing in it to
+/// leave the archive to Tika's path for.
+fn scanned(scan: &mut Scan, content: Content) -> Result<Decoded<u64>, Decline<'static>> {
+    if let Content::Complete(content) = &content {
+        if let Some(reason) = scan.entry(content) {
+            return Err(Decline::Deferred(reason));
+        }
+    }
+    Ok(content.map(|bytes| bytes.len() as u64))
 }
 
 /// How the native reading of an entry of `name` whose data is cut short or corrupt differs
@@ -288,22 +314,28 @@ fn cut_short(name: &str) -> Difference {
 /// `parseWithZipFile` of the archive `zip`, read from `input` or salvaged from it. Tika checks
 /// the integrity of `input` after the document has ended, so its result never reaches the
 /// document's head, and not at all when an entry fails it (#99).
-fn write_archive(
+fn write_archive<'a>(
     input: &[u8],
-    zip: &ZipFile,
+    zip: &ZipFile<'a>,
     xhtml: &mut Xhtml,
+    pages: Pages<'a>,
     paging: &Paging,
 ) -> Result<(), Failure> {
     check_integrity(input, &CentralNames::of(zip), xhtml.metadata_mut());
     paging.release();
     update_media_type(zip, xhtml.metadata_mut());
-    let written = write_entries(zip, xhtml, paging);
+    let written = write_entries(zip, xhtml, pages, paging);
     xhtml.end_document()?;
     written
 }
 
 /// `parseWithZipFile`'s loop over the entries, which ends the document whatever happens.
-fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<(), Failure> {
+fn write_entries<'a>(
+    zip: &ZipFile<'a>,
+    xhtml: &mut Xhtml,
+    pages: Pages<'a>,
+    paging: &Paging,
+) -> Result<(), Failure> {
     for entry in zip.entries() {
         if entry.is_directory() {
             continue;
@@ -326,25 +358,33 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
             continue;
         }
         let metadata = entry_metadata(entry, &name);
-        let (content, cut) = match zip.read(entry) {
-            Some(Content::Complete(content)) => (content, None),
-            Some(Content::Oversized(content)) if !DEFERS => (content, Some(Cut(the_entry(&name)))),
-            Some(Content::Oversized(_)) => return Err(undeferred(&name)),
-            Some(Content::Truncated(content)) if !content.is_empty() => {
+        let (content, cut) = match zip.spool(entry, pages) {
+            Some(Err(undecoded)) => return Err(unspooled(&name, &undecoded)),
+            Some(Ok(Decoded::Complete(content))) => (content, None),
+            Some(Ok(Decoded::Oversized(content))) if !DEFERS => {
+                (content, Some(Cut(the_entry(&name))))
+            }
+            Some(Ok(Decoded::Oversized(_))) => return Err(undeferred(&name)),
+            Some(Ok(Decoded::Truncated(content))) if !content.is_empty() => {
                 write_entry(xhtml, &metadata, &name, &content, None)?;
                 record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
                 continue;
             }
-            Some(Content::Truncated(_)) | None => {
+            Some(Ok(Decoded::Truncated(_))) | None => {
                 write_entry_div(xhtml, &name)?;
                 record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
                 continue;
             }
         };
         write_entry(xhtml, &metadata, &name, &content, cut)?;
-        paging.read(content.len());
+        paging.read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
     }
     Ok(())
+}
+
+/// The failure of the archive whose entry of `name` cannot be spooled, as `undecoded` says.
+fn unspooled(name: &str, undecoded: &Undecoded) -> Failure {
+    Failure::Extraction(Error::IoError(format!("the entry {name}: {undecoded}")))
 }
 
 /// Writes the entry of `name` and `metadata` holding `content`: all of its data, or, as `cut`
@@ -353,11 +393,11 @@ fn write_entry(
     xhtml: &mut Xhtml,
     metadata: &TikaMetadata,
     name: &str,
-    content: &[u8],
+    content: &Input,
     cut: Option<Cut>,
 ) -> Result<(), Failure> {
     write_entry_div(xhtml, name)?;
-    xhtml.parse_embedded(content, metadata, Wrapping::PackageEntry)?;
+    xhtml.parse_embedded_input(content, metadata, Wrapping::PackageEntry)?;
     Cut::end(cut)
 }
 
@@ -450,16 +490,20 @@ impl Streamed {
                 continue;
             }
             difference = difference.or(entry_name(&entry).1);
-            match stream.content() {
-                Ok(Content::Complete(content)) => {
-                    if let Some(reason) = scan.entry(&content) {
-                        return Err(Decline::Deferred(reason));
-                    }
+            let verified = if DEFERS {
+                match stream.content() {
+                    Ok(content) => Ok(scanned(&mut scan, content)?),
+                    Err(failure) => Err(failure),
                 }
-                Ok(Content::Oversized(_)) if DEFERS => {
+            } else {
+                stream.verify()
+            };
+            match verified {
+                Ok(Decoded::Complete(_)) => {}
+                Ok(Decoded::Oversized(_)) if DEFERS => {
                     return Err(too_large(&the_entry(&entry.name)))
                 }
-                Ok(Content::Oversized(_)) => break,
+                Ok(Decoded::Oversized(_)) => break,
                 Err(stream::Failure::Method(method)) => {
                     difference = difference.or_else(|| {
                         Some(Difference::new(format!(
@@ -471,7 +515,7 @@ impl Streamed {
                     });
                     break;
                 }
-                Ok(Content::Truncated(_)) => break,
+                Ok(Decoded::Truncated(_)) => break,
                 Err(_) => continue,
             }
             if !seen.insert(entry.name.clone()) && duplicates.len() < MAX_INTEGRITY_CHECK_ENTRIES {
@@ -490,7 +534,12 @@ impl Streamed {
     /// `parseWithStream`: the duplicate names as the integrity check's result, which cannot
     /// compare the entries with a central directory, then each entry but a directory up to
     /// the first whose data cannot be read whole or where the stream fails.
-    fn write(&self, input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    fn write<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        xhtml: &mut Xhtml,
+    ) -> Result<(), Failure> {
         let metadata = xhtml.metadata_mut();
         set_media_type(ZIP, metadata);
         if self.duplicates.is_empty() {
@@ -529,11 +578,12 @@ impl Streamed {
                 continue;
             }
             let metadata = entry_metadata(&entry, &name);
-            match stream.content() {
-                Ok(Content::Complete(content)) => {
+            match stream.spool(pages) {
+                Ok(Err(undecoded)) => return Err(unspooled(&name, &undecoded)),
+                Ok(Ok(Decoded::Complete(content))) => {
                     write_entry(xhtml, &metadata, &name, &content, None)?;
                 }
-                Ok(Content::Oversized(content)) if !DEFERS => {
+                Ok(Ok(Decoded::Oversized(content))) if !DEFERS => {
                     write_entry(
                         xhtml,
                         &metadata,
@@ -542,7 +592,7 @@ impl Streamed {
                         Some(Cut(the_entry(&name))),
                     )?;
                 }
-                Ok(Content::Truncated(_)) => {
+                Ok(Ok(Decoded::Truncated(_))) => {
                     record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED_SEGMENT);
                     return Ok(());
                 }
@@ -553,7 +603,7 @@ impl Streamed {
                          ({name})"
                     ),
                 ),
-                Ok(Content::Oversized(_)) => return Err(undeferred(&name)),
+                Ok(Ok(Decoded::Oversized(_))) => return Err(undeferred(&name)),
             }
         }
     }

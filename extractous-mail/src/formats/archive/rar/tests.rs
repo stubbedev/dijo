@@ -192,7 +192,7 @@ fn reads_names_times_and_directories_as_junrar_does() {
         archive_files(&std::fs::read(path).unwrap())
             .unwrap()
             .into_iter()
-            .map(|file| (file.name, file.content))
+            .map(|file| (file.name, file.content.to_vec()))
             .collect()
     };
     assert_eq!(
@@ -322,4 +322,32 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     }
     let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
     assert_fails_as_tika(&failing);
+}
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn spools_an_entry_too_large_to_read_whole_one_entry_at_a_time() {
+    use std::io::Read;
+
+    use super::super::large::{Binary, BUDGET, END};
+    use crate::input::MAX_READ_WHOLE;
+    use extractous_core::large::LargeFile;
+
+    let mut large = Vec::new();
+    Binary::new(MAX_READ_WHOLE + (16 << 20))
+        .read_to_end(&mut large)
+        .unwrap();
+    let archive = rar(
+        0,
+        &[
+            stored(b"large.bin", 0, &large),
+            stored(b"end.txt", 0, END.as_bytes()),
+        ],
+    );
+    drop(large);
+    let file = LargeFile::written("large.rar", |out| out.write_all(&archive));
+    drop(archive);
+    let extractor = extractous_core::Extractor::new();
+    let (text, _) = file.extract_with(&extractor, BUDGET, "extractous::RarParser");
+    assert!(text.contains(END), "{text}");
 }

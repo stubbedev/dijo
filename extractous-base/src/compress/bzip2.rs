@@ -2,11 +2,12 @@
 //! without `decompressConcatenated`: the first stream only, its block and stream CRCs checked,
 //! whatever follows it ignored.
 
-use super::{read_limited, Limited, Undecoded};
+use super::{spool_limited, Limited, Undecoded};
+use crate::input::Input;
 
 /// The content of the first bzip2 stream of `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
-    read_limited(::bzip2::bufread::BzDecoder::new(data))
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
+    spool_limited(::bzip2::bufread::BzDecoder::new(data), data.len(), None)
 }
 
 #[cfg(any(test, feature = "testing"))]

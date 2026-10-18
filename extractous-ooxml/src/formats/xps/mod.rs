@@ -2,6 +2,8 @@
 //! package's signature and properties, then each fixed page of each document the document
 //! sequence references, in a `page` div, its text laid out by Tika's `XPSPageContentHandler`,
 //! then the images the pages are filled with, parsed as embedded documents, and the thumbnail.
+//! Pages are read and written one at a time, so that what the parser holds is one page's
+//! layout and the sources of the images seen so far.
 
 mod page;
 
@@ -13,7 +15,7 @@ use crate::formats::ooxml::extractor;
 use crate::formats::ooxml::{Package, Properties, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Opened, Parser, Prepared};
 use crate::input::{Input, Pages};
 
 use page::{Block, Images, PageHandler};
@@ -38,51 +40,50 @@ impl Parser for XpsParser {
         &["application/vnd.ms-xpsdocument"]
     }
 
-    /// Defers packages POI does not open as this port does.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Defers packages POI does not open as this port does.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let package = Package::open(input, Pages::IN_MEMORY)?;
+        let package = Package::open(input, pages)?;
         let properties = Properties::read(&package).map_err(|Unported(reason)| reason)?;
-        let document = read_document(&package);
         Ok(Box::new(move |xhtml| {
             extractor::write_signature(&package, xhtml.metadata_mut());
             properties.write(xhtml.metadata_mut());
-            write(&package, document, xhtml)?;
+            let mut images = Images::new();
+            write_sequences(&package, &mut images, xhtml)?;
+            write_images(&package, images, xhtml)?;
             extractor::write_thumbnails(&package, xhtml)?;
             Ok(())
         }))
     }
 }
 
-/// The document as `buildXHTML` reads it before writing anything of it: its pages, and the
-/// failure that ends the parse after them, if one does.
-struct Document {
-    pages: Vec<Vec<Block>>,
-    images: Images,
-    failure: Option<Failure>,
-}
-
-/// Reads the pages of every document the package's document sequences reference, as far as
-/// Tika's parse gets.
-fn read_document(package: &Package) -> Document {
-    let mut document = Document {
-        pages: Vec::new(),
-        images: Images::new(),
-        failure: None,
-    };
-    if let Err(failure) = read_sequences(package, &mut document) {
-        document.failure = Some(failure);
-    }
-    document
-}
-
-/// `buildXHTML`'s reading of the document sequences: the part of each relationship to one.
-/// Tika reads the part of the first relationship for each (#127).
-fn read_sequences(package: &Package, document: &mut Document) -> Result<(), Failure> {
+/// `buildXHTML`'s reading of the document sequences: the part of each relationship to one, each
+/// page of the documents it references written as it is read, and the images the pages draw
+/// added to `images`. A failure ends the parse after the pages written before it. Tika reads the
+/// part of the first relationship for each (#127).
+fn write_sequences(
+    package: &Package,
+    images: &mut Images,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     let mut sequences: Vec<_> =
         Package::relationships_of(&package.relationships, XPS_DOCUMENT).collect();
     if sequences.is_empty() {
@@ -98,18 +99,20 @@ fn read_sequences(package: &Package, document: &mut Document) -> Result<(), Fail
         let bytes = package.read(part)?;
         let mut references = SourcesOf::new("DocumentReference", false);
         xml::parse_part(&bytes, package.name(part), &mut references)?;
+        drop(bytes);
         for reference in references.sources {
-            read_fixed_document(package, &reference, document)?;
+            write_fixed_document(package, &reference, images, xhtml)?;
         }
     }
     Ok(())
 }
 
 /// `handleDocumentRef`: the pages of the fixed document at `reference`.
-fn read_fixed_document(
+fn write_fixed_document(
     package: &Package,
     reference: &str,
-    document: &mut Document,
+    images: &mut Images,
+    xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
     let relative_root = match reference.rfind('/') {
         Some(at) if at > 0 => &reference[..at],
@@ -120,6 +123,7 @@ fn read_fixed_document(
         .map_err(|_| Failure::Malformed(format!("IOException trying to read: {reference}")))?;
     let mut pages = SourcesOf::new("PageContent", true);
     xml::parse_part(&bytes, path, &mut pages)?;
+    drop(bytes);
     for source in pages.sources {
         let joined = if source.starts_with('/') {
             source
@@ -130,9 +134,10 @@ fn read_fixed_document(
         let bytes = zip_entry(package, page_path)?;
         let mut handler = PageHandler::default();
         xml::parse_part(&bytes, page_path, &mut handler)?;
-        let (blocks, images) = handler.finish()?;
-        document.pages.push(blocks);
-        page::merge_images(&mut document.images, images);
+        drop(bytes);
+        let (blocks, page_images) = handler.finish()?;
+        write_page(blocks, xhtml)?;
+        page::merge_images(images, page_images);
     }
     Ok(())
 }
@@ -197,19 +202,19 @@ impl SaxHandler for SourcesOf {
     }
 }
 
-/// Writes the pages read, then, unless reading them failed, parses the images.
-fn write(package: &Package, document: Document, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    for blocks in document.pages {
-        xhtml.start_element_with("div", &[("class", "page")])?;
-        for block in blocks {
-            write_block(block, xhtml)?;
-        }
-        xhtml.end_element("div")?;
+/// Writes a page read.
+fn write_page(blocks: Vec<Block>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    xhtml.start_element_with("div", &[("class", "page")])?;
+    for block in blocks {
+        write_block(block, xhtml)?;
     }
-    if let Some(failure) = document.failure {
-        return Err(failure);
-    }
-    for (source, image) in document.images {
+    xhtml.end_element("div")?;
+    Ok(())
+}
+
+/// Parses the images the pages draw.
+fn write_images(package: &Package, images: Images, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    for (source, image) in images {
         let mut metadata = TikaMetadata::new();
         if let Some(location) = image.original_location {
             metadata.set(ORIGINAL_RESOURCE_NAME, location);
@@ -218,7 +223,12 @@ fn write(package: &Package, document: Document, xhtml: &mut Xhtml) -> Result<(),
         let Ok(data) = zip_entry(package, &source) else {
             continue;
         };
-        xhtml.parse_embedded_opened(&data, &metadata, Wrapping::PackageEntry, Opened::Alone)?;
+        xhtml.parse_embedded_input_opened(
+            &data,
+            &metadata,
+            Wrapping::PackageEntry,
+            Opened::Alone,
+        )?;
     }
     Ok(())
 }

@@ -5,22 +5,32 @@
 use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
 use ruzstd::decoding::StreamingDecoder;
 
-use super::{limit, read_limited, throws, Limited, Undecoded, MAX_DECODED};
+use super::Held;
+
+use super::{throws, Decoding, Limited, Undecoded};
+use crate::input::Input;
 
 /// The content of the Zstandard file `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
+    let mut decoding = Decoding::spooled(data.len(), None);
+    decode_into(data, &mut decoding)?;
+    decoding.finish()
+}
+
+/// Decodes the Zstandard file `data` into `decoding`, up to its limit.
+pub(crate) fn decode_into(
+    data: &[u8],
+    decoding: &mut Decoding<impl Held>,
+) -> Result<(), Undecoded> {
     let mut input = data;
-    let mut out = Vec::new();
     while !input.is_empty() {
         match StreamingDecoder::new(&mut input) {
-            Ok(mut frame) => match read_limited(&mut frame)? {
-                Limited::Whole(content) => out.extend_from_slice(&content),
-                Limited::Cut(content) => {
-                    out.extend_from_slice(&content);
-                    out.truncate(MAX_DECODED);
-                    return Ok(Limited::Cut(out));
+            Ok(mut frame) => {
+                decoding.read_from(&mut frame)?;
+                if decoding.is_cut() {
+                    return Ok(());
                 }
-            },
+            }
             Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
                 length,
                 ..
@@ -31,11 +41,8 @@ pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
             }
             Err(e) => return Err(throws(e.to_string())),
         }
-        if out.len() > MAX_DECODED {
-            return Ok(limit(out));
-        }
     }
-    Ok(Limited::Whole(out))
+    Ok(())
 }
 
 #[cfg(any(test, feature = "testing"))]

@@ -351,32 +351,60 @@ pub fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
 /// `=`, the bits of an unfinished unit beyond its whole bytes dropped.
 pub fn commons_base64_decode(text: &str) -> Vec<u8> {
     let mut decoded = Vec::with_capacity(text.len() / 4 * 3);
-    let mut bits: u32 = 0;
-    let mut count = 0;
-    for byte in text.bytes() {
-        let value = match byte {
-            b'=' => break,
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => continue,
-        };
-        bits = (bits << 6) | u32::from(value);
-        count += 1;
-        if count == 4 {
-            decoded.extend_from_slice(&bits.to_be_bytes()[1..]);
-            bits = 0;
-            count = 0;
+    let mut decoder = CommonsBase64::default();
+    decoder.push(text, &mut decoded);
+    decoder.finish(&mut decoded);
+    decoded
+}
+
+/// [`commons_base64_decode`] of a text that comes in pieces, each decoded as it comes.
+#[derive(Debug, Default)]
+pub struct CommonsBase64 {
+    /// The bits of the unit read so far.
+    bits: u32,
+    /// How many characters of the unit are read.
+    count: u8,
+    /// Whether a `=` has ended the text.
+    ended: bool,
+}
+
+impl CommonsBase64 {
+    /// Decodes the next piece of the text onto `decoded`.
+    pub fn push(&mut self, text: &str, decoded: &mut Vec<u8>) {
+        if self.ended {
+            return;
+        }
+        for byte in text.bytes() {
+            let value = match byte {
+                b'=' => {
+                    self.ended = true;
+                    return;
+                }
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'+' | b'-' => 62,
+                b'/' | b'_' => 63,
+                _ => continue,
+            };
+            self.bits = (self.bits << 6) | u32::from(value);
+            self.count += 1;
+            if self.count == 4 {
+                decoded.extend_from_slice(&self.bits.to_be_bytes()[1..]);
+                self.bits = 0;
+                self.count = 0;
+            }
         }
     }
-    match count {
-        2 => decoded.push((bits >> 4) as u8),
-        3 => decoded.extend_from_slice(&((bits >> 2) as u16).to_be_bytes()),
-        _ => {}
+
+    /// Decodes the whole bytes of the unfinished unit the text ends in onto `decoded`.
+    pub fn finish(self, decoded: &mut Vec<u8>) {
+        match self.count {
+            2 => decoded.push((self.bits >> 4) as u8),
+            3 => decoded.extend_from_slice(&((self.bits >> 2) as u16).to_be_bytes()),
+            _ => {}
+        }
     }
-    decoded
 }
 
 /// `new String(bytes, ISO_8859_1)`, without a copy for ASCII bytes it owns.
@@ -757,6 +785,24 @@ mod tests {
         assert_eq!(commons_base64_decode("SGVqI"), b"Hej");
         assert_eq!(commons_base64_decode("øSGVq"), b"Hej");
         assert!(commons_base64_decode("").is_empty());
+    }
+
+    #[test]
+    fn decodes_commons_base64_in_pieces_as_whole() {
+        for text in ["SG\nVq IGRp*", "SGVqIGQ=", "SGVq=IGRp", "SGVqI", "-_-_+/"] {
+            for cut in 0..=text.len() {
+                let mut decoder = CommonsBase64::default();
+                let mut decoded = Vec::new();
+                decoder.push(&text[..cut], &mut decoded);
+                decoder.push(&text[cut..], &mut decoded);
+                decoder.finish(&mut decoded);
+                assert_eq!(
+                    decoded,
+                    commons_base64_decode(text),
+                    "{text:?} cut at {cut}"
+                );
+            }
+        }
     }
 
     #[test]

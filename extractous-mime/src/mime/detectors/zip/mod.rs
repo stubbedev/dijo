@@ -83,7 +83,9 @@ fn detect_zip(data: &[u8], intent: Intent) -> Result<ZipDetection, Unsalvageable
                 }
             }
             Err(Unsalvaged::Thrown) => {}
-            Err(Unsalvaged::Unported(reason)) => return Err(Unsalvageable(reason)),
+            Err(Unsalvaged::Unported(reason) | Unsalvaged::Unspooled(reason)) => {
+                return Err(Unsalvageable(reason))
+            }
         }
     }
     Ok(match by_stream(data, false) {

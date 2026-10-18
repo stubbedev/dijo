@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use lopdf::{Dictionary, Object, ObjectId, StringFormat};
 
-use super::cos::{as_dict, text_string, Pdf};
+use super::cos::{as_dict, text_string, Identity, Pdf};
 use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::embedded::{ResourceType, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
@@ -31,16 +31,28 @@ pub(super) type Attributes = Vec<(String, String)>;
 pub(super) enum FileSpec<'p> {
     /// `PDSimpleFileSpecification`: a file a string names.
     Simple { bytes: &'p [u8], hex: bool },
-    /// `PDComplexFileSpecification`.
-    Complex(&'p Dictionary),
+    /// `PDComplexFileSpecification`, of the dictionary of `identity`.
+    Complex {
+        identity: Identity,
+        dict: &'p Dictionary,
+    },
 }
 
 /// What Tika's set of extracted file specifications tells them apart by: a `COSDictionary`
-/// by identity, a `COSString` by its text and form.
+/// by identity, which Java's for the `COSDictionary` PDFBox reads it into follows, a
+/// `COSString` by its text and form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum SpecKey {
-    Dictionary(usize),
+    Dictionary(Identity),
     String { text: String, hex: bool },
+}
+
+impl SpecKey {
+    /// Whether this is a dictionary held directly in another object, told apart by where it is
+    /// held.
+    pub(super) fn is_direct(&self) -> bool {
+        matches!(self, Self::Dictionary(identity) if identity.is_direct())
+    }
 }
 
 impl FileSpec<'_> {
@@ -50,27 +62,23 @@ impl FileSpec<'_> {
                 text: text_string(bytes),
                 hex,
             },
-            Self::Complex(dict) => SpecKey::Dictionary(identity(dict)),
+            Self::Complex { identity, .. } => SpecKey::Dictionary(identity),
         }
     }
 }
 
-/// A dictionary's identity, which Java's for the `COSDictionary` PDFBox reads it into
-/// follows: one object read once.
-fn identity(dict: &Dictionary) -> usize {
-    std::ptr::from_ref(dict) as usize
-}
-
-/// `PDFileSpecification.createFS` of an annotation's file specification.
-pub(super) fn file_spec(object: Option<&Object>) -> Result<Option<FileSpec<'_>>, Unported> {
+/// `PDFileSpecification.createFS` of an annotation's file specification, of its identity.
+pub(super) fn file_spec(
+    object: Option<(Identity, &Object)>,
+) -> Result<Option<FileSpec<'_>>, Unported> {
     match object {
         None => Ok(None),
-        Some(Object::String(bytes, format)) => Ok(Some(FileSpec::Simple {
+        Some((_, Object::String(bytes, format))) => Ok(Some(FileSpec::Simple {
             bytes,
             hex: *format == StringFormat::Hexadecimal,
         })),
-        Some(other) => match as_dict(other) {
-            Some(dict) => Ok(Some(FileSpec::Complex(dict))),
+        Some((identity, other)) => match as_dict(other) {
+            Some(dict) => Ok(Some(FileSpec::Complex { identity, dict })),
             None => Err(Unported(
                 "a file specification neither a string nor a dictionary, which PDFBox fails on"
                     .to_owned(),
@@ -127,7 +135,7 @@ pub(super) fn written(
             set_or_replace(&mut attributes, "id", &text_string(bytes));
             return Ok(vec![Written::Link(attributes)]);
         }
-        FileSpec::Complex(dict) => dict,
+        FileSpec::Complex { dict, .. } => dict,
     };
     if !attributes.iter().any(|(key, _)| key == "source") {
         attributes.push(("source".to_owned(), "attachment".to_owned()));
@@ -186,13 +194,18 @@ pub(super) fn written(
 }
 
 /// `PDFDOMUtil.findType` for file specifications, as `processPageAnnotation` looks for them
-/// in an annotation: the dictionaries of type `Filespec` within it, itself included, not
-/// looking into pages and parents, nor below a specification.
-pub(super) fn find_file_specs<'p>(pdf: &'p Pdf, annotation: &'p Dictionary) -> Vec<&'p Dictionary> {
+/// in an annotation of `identity`: the dictionaries of type `Filespec` within it, itself
+/// included, not looking into pages and parents, nor below a specification, each with its
+/// identity.
+pub(super) fn find_file_specs<'p>(
+    pdf: &'p Pdf,
+    identity: Identity,
+    annotation: &'p Dictionary,
+) -> Vec<(Identity, &'p Dictionary)> {
     let mut found = Vec::new();
     find(
         pdf,
-        Node::Dictionary(annotation),
+        Node::Dictionary(identity, annotation),
         0,
         &mut HashSet::new(),
         &mut found,
@@ -204,18 +217,24 @@ pub(super) fn find_file_specs<'p>(pdf: &'p Pdf, annotation: &'p Dictionary) -> V
 #[derive(Clone, Copy)]
 enum Node<'p> {
     Reference(ObjectId),
-    Dictionary(&'p Dictionary),
+    Dictionary(Identity, &'p Dictionary),
     Array(&'p [Object]),
     Other,
 }
 
 impl<'p> Node<'p> {
-    fn of(object: &'p Object) -> Self {
+    /// The node `object` is, of the identity `identity`.
+    fn of(identity: Identity, object: &'p Object) -> Self {
         match object {
             Object::Reference(id) => Self::Reference(*id),
             Object::Array(items) => Self::Array(items),
-            other => as_dict(other).map_or(Self::Other, Self::Dictionary),
+            other => as_dict(other).map_or(Self::Other, |dict| Self::Dictionary(identity, dict)),
         }
+    }
+
+    /// The node a value held directly is.
+    fn direct(object: &'p Object) -> Self {
+        Self::of(Identity::of_direct(object), object)
     }
 
     /// What Java's `HashSet<COSBase>` tells nodes apart by: a reference by the object it
@@ -225,7 +244,7 @@ impl<'p> Node<'p> {
             Self::Reference((number, generation)) => {
                 Some((0, (number as usize) << 16 | usize::from(generation)))
             }
-            Self::Dictionary(dict) => Some((1, identity(dict))),
+            Self::Dictionary(_, dict) => Some((1, std::ptr::from_ref(dict) as usize)),
             Self::Array(items) => Some((2, items.as_ptr() as usize)),
             Self::Other => None,
         }
@@ -237,7 +256,7 @@ fn find<'p>(
     node: Node<'p>,
     depth: usize,
     seen: &mut HashSet<(u8, usize)>,
-    found: &mut Vec<&'p Dictionary>,
+    found: &mut Vec<(Identity, &'p Dictionary)>,
 ) {
     let Some(key) = node.seen_key() else {
         return;
@@ -249,21 +268,22 @@ fn find<'p>(
     match node {
         Node::Reference(id) => {
             if let Some(target) = pdf.indirect(id) {
-                find(pdf, Node::of(target), depth + 1, seen, found);
+                let target = Node::of(Identity::Indirect(id), target);
+                find(pdf, target, depth + 1, seen, found);
             }
         }
-        Node::Dictionary(dict) => match pdf.name(dict, b"Type") {
-            Some(FILESPEC) => found.push(dict),
+        Node::Dictionary(identity, dict) => match pdf.name(dict, b"Type") {
+            Some(FILESPEC) => found.push((identity, dict)),
             Some(b"P" | b"Page" | b"Parent") => {}
             _ => {
                 for (_, value) in dict.iter() {
-                    find(pdf, Node::of(value), depth + 1, seen, found);
+                    find(pdf, Node::direct(value), depth + 1, seen, found);
                 }
             }
         },
         Node::Array(items) => {
             for item in items {
-                find(pdf, Node::of(item), depth + 1, seen, found);
+                find(pdf, Node::direct(item), depth + 1, seen, found);
             }
         }
         Node::Other => {}
@@ -275,16 +295,17 @@ fn find<'p>(
 /// files names that are not among them, and the `IOException` it throws where that tree is
 /// deeper than Tika follows, before it processes the specifications the tree names.
 pub(super) struct DocumentSpecs<'p> {
-    pub(super) specs: Vec<(String, &'p Dictionary)>,
+    pub(super) specs: Vec<(String, FileSpec<'p>)>,
     pub(super) thrown: Option<Exception>,
 }
 
 pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> DocumentSpecs<'p> {
-    let mut specs: Vec<(String, &Dictionary)> = file_spec_objects(pdf)
+    let listed = file_spec_objects(pdf);
+    let mut seen: HashSet<Identity> = listed.iter().map(|&(identity, _)| identity).collect();
+    let mut specs: Vec<(String, FileSpec)> = listed
         .into_iter()
-        .map(|dict| (String::new(), dict))
+        .map(|(identity, dict)| (String::new(), FileSpec::Complex { identity, dict }))
         .collect();
-    let mut seen: HashSet<usize> = specs.iter().map(|(_, dict)| identity(dict)).collect();
     let Some(tree) = pdf
         .catalog()
         .and_then(|catalog| pdf.dict(catalog, b"Names"))
@@ -302,9 +323,9 @@ pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> DocumentSpecs<'p> {
             thrown: Some(thrown),
         };
     }
-    for (name, spec) in named {
-        if seen.insert(identity(spec)) {
-            specs.push((name, spec));
+    for (name, identity, dict) in named {
+        if seen.insert(identity) {
+            specs.push((name, FileSpec::Complex { identity, dict }));
         }
     }
     DocumentSpecs {
@@ -319,19 +340,41 @@ pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> DocumentSpecs<'p> {
 /// the document (#109). The table keeps an earlier generation of an object an update replaces,
 /// and so does PDFBox's.
 ///
-/// PDFBox reads every object for it. A document whose bytes do not spell `Filespec` and whose
-/// table puts no object in an object stream holds none, and its objects are left unread.
-fn file_spec_objects<'p>(pdf: &'p Pdf) -> Vec<&'p Dictionary> {
+/// PDFBox reads every object for it; here each is read in a scope of its own, and only the
+/// file specifications are held for the document. A document whose bytes do not spell
+/// `Filespec` and whose table puts no object in an object stream holds none, and its objects
+/// are left unread.
+fn file_spec_objects<'p>(pdf: &'p Pdf) -> Vec<(Identity, &'p Dictionary)> {
     let listed = pdf.listed();
     if !pdf.spells_filespec && !listed.iter().any(|&id| pdf.is_compressed(id)) {
         return Vec::new();
     }
-    listed
+    let mut scope = pdf.scoped();
+    let specs: Vec<ObjectId> = listed
         .into_iter()
-        .filter_map(|id| pdf.indirect(id).and_then(as_dict))
-        .filter(|dict| pdf.name(dict, b"Type") == Some(FILESPEC))
+        .filter(|&id| {
+            scope.trim();
+            scope
+                .indirect(id)
+                .and_then(as_dict)
+                .is_some_and(|dict| scope.name(dict, b"Type") == Some(FILESPEC))
+        })
+        .collect();
+    drop(scope);
+    specs
+        .into_iter()
+        .map(|id| {
+            let dict = pdf
+                .indirect(id)
+                .and_then(as_dict)
+                .expect("a file specification reads again as it read");
+            (Identity::Indirect(id), dict)
+        })
         .collect()
 }
+
+/// A name of the tree of embedded files, and the specification it names, of its identity.
+type Named<'p> = (String, Identity, &'p Dictionary);
 
 /// `extractFilesfromEFTree`: the names and specifications of a node of the tree of embedded
 /// files and of the nodes below it, depth first.
@@ -339,7 +382,7 @@ fn name_tree<'p>(
     pdf: &'p Pdf,
     node: Option<&'p Dictionary>,
     depth: usize,
-    named: &mut Vec<(String, &'p Dictionary)>,
+    named: &mut Vec<Named<'p>>,
 ) -> Result<(), Exception> {
     if depth > MAX_RECURSION_DEPTH {
         return Err(Exception::new(
@@ -362,7 +405,7 @@ fn name_tree<'p>(
 /// stands. PDFBox's `PDNameTreeNode.getNames` keeps a repeated name where it first stands with
 /// its last value, and gives no names for a node with one entry naming with what is not a
 /// string, or naming what is not a dictionary (#109); such an entry is skipped alone here.
-fn node_names<'p>(pdf: &'p Pdf, node: &'p Dictionary) -> Vec<(String, &'p Dictionary)> {
+fn node_names<'p>(pdf: &'p Pdf, node: &'p Dictionary) -> Vec<Named<'p>> {
     let Some(items) = pdf.array(node, b"Names") else {
         return Vec::new();
     };
@@ -372,7 +415,8 @@ fn node_names<'p>(pdf: &'p Pdf, node: &'p Dictionary) -> Vec<(String, &'p Dictio
         .iter()
         .filter_map(|[key, value]| match pdf.resolve(key) {
             Some(Object::String(bytes, _)) => {
-                Some((text_string(bytes), pdf.resolve(value).and_then(as_dict)?))
+                let (identity, spec) = pdf.resolve_identified(value)?;
+                Some((text_string(bytes), identity, as_dict(spec)?))
             }
             _ => None,
         })

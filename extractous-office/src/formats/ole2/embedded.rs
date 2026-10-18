@@ -61,7 +61,7 @@ impl<'a> Embedded<'a> {
     /// whole, where they do not.
     pub(crate) fn write(self, xhtml: &mut Xhtml, wrapping: Wrapping) -> Result<(), Failure> {
         let data = handed_on(self.data)?;
-        xhtml.parse_embedded(&data, &self.metadata, wrapping)
+        xhtml.parse_embedded_input(&data, &self.metadata, wrapping)
     }
 
     pub(crate) fn into_owned(self) -> Embedded<'static> {

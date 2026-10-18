@@ -4,9 +4,11 @@
 //! after it skipped.
 
 use super::headers::{Headers, NotSole};
-use super::ragel::{Flow, ERROR};
+use super::ragel::{Flow, Unsigned, ERROR};
 use super::tables::{WARC, WARC_FIRST_FINAL, WARC_START};
 use super::text::TextBuffer;
+use crate::compress::{gzip, Decoding, Limited, Undecoded};
+use crate::input::{Input, Pages};
 use crate::java;
 use crate::java::time::{civil, format_instant};
 
@@ -36,12 +38,12 @@ impl From<NotSole> for Stop {
     }
 }
 
-/// `WarcReader`'s decompression of `input`: gzip members inflated one after another, or the
-/// bytes as they are; or what it throws.
-pub(super) fn decompress(input: &[u8]) -> Result<Vec<u8>, String> {
+/// `WarcReader`'s decompression of `input`, whose pages are `pages`: gzip members inflated one
+/// after another to a spool, or the bytes as they are, in place; or what it throws.
+pub(super) fn decompress<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Input<'a>, String> {
     if input.len() < 4 {
         if input.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Input::Borrowed(&[]));
         }
         return Err("EOFException".to_owned());
     }
@@ -52,7 +54,7 @@ pub(super) fn decompress(input: &[u8]) -> Result<Vec<u8>, String> {
     if magic == 0xFD2F_B528 || magic == 0x184D_2A5D {
         return Err("IOException: ZStandard decoder not found".to_owned());
     }
-    Ok(input.to_vec())
+    Ok(Input::Within(input, pages))
 }
 
 const FHCRC: u8 = 2;
@@ -61,10 +63,13 @@ const FNAME: u8 = 8;
 const FCOMMENT: u8 = 16;
 
 /// `GunzipChannel`: each member's header read, its deflate data inflated and its size checked
-/// against the trailer's, the CRC left unchecked, until the input ends at a member boundary.
-fn gunzip(input: &[u8]) -> Result<Vec<u8>, String> {
+/// against the trailer's, the CRC left unchecked, until the input ends at a member boundary;
+/// what the members inflate into spooled, up to the decode limit of `input`.
+fn gunzip(input: &[u8]) -> Result<Input<'static>, String> {
     let thrown = |what: &str| what.to_owned();
-    let mut out = Vec::new();
+    let unspooled = |undecoded: Undecoded| format!("IOException: {undecoded}");
+    let mut out = Decoding::spooled(input.len(), gzip::declared_size(input));
+    let mut chunk = vec![0; 64 * 1024];
     let mut at = 0;
     while at < input.len() {
         let header = input
@@ -107,15 +112,20 @@ fn gunzip(input: &[u8]) -> Result<Vec<u8>, String> {
             at += 2;
         }
         let member = &input[at..];
-        let start = out.len();
+        let start = out.written();
         let mut inflater = flate2::Decompress::new(false);
         loop {
-            out.reserve(64 * 1024);
             let (read, written) = (inflater.total_in(), inflater.total_out());
             let offset = usize::try_from(read).expect("the input fits in memory");
             let status = inflater
-                .decompress_vec(&member[offset..], &mut out, flate2::FlushDecompress::None)
+                .decompress(&member[offset..], &mut chunk, flate2::FlushDecompress::None)
                 .map_err(|e| format!("ZipException: {e}"))?;
+            let produced = usize::try_from(inflater.total_out() - written)
+                .expect("at most a chunk is produced");
+            out.write(&chunk[..produced]).map_err(unspooled)?;
+            if out.is_cut() {
+                return Err(unspooled(Undecoded::TooLarge));
+            }
             if status == flate2::Status::StreamEnd {
                 break;
             }
@@ -128,31 +138,20 @@ fn gunzip(input: &[u8]) -> Result<Vec<u8>, String> {
             .get(at..at + 8)
             .ok_or_else(|| thrown("EOFException: reading gzip trailer"))?;
         let size = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
-        if size != (out.len() - start) as u32 {
+        if size != (out.written() - start) as u32 {
             return Err(thrown("ZipException: gzip uncompressed size mismatch"));
         }
         at += 8;
     }
-    Ok(out)
-}
-
-/// The records of decompressed `data`, in order, and where the reader stops if it stops
-/// short of the end.
-pub(super) fn records(data: &[u8]) -> (Vec<Record<'_>>, Option<Stop>) {
-    let mut records = Vec::new();
-    let mut at = 0;
-    loop {
-        match next(data, &mut at) {
-            Ok(Some(record)) => records.push(record),
-            Ok(None) => return (records, None),
-            Err(stop) => return (records, Some(stop)),
-        }
+    match out.finish().map_err(unspooled)? {
+        Limited::Whole(data) => Ok(data),
+        Limited::Cut(_) => Err(unspooled(Undecoded::TooLarge)),
     }
 }
 
 /// `WarcReader.next`: the record at `at`, which moves past it and its trailer, or `None` at the
 /// end of the data.
-fn next<'a>(data: &'a [u8], at: &mut usize) -> Result<Option<Record<'a>>, Stop> {
+pub(super) fn next<'a>(data: &'a [u8], at: &mut usize) -> Result<Option<Record<'a>>, Stop> {
     if *at == data.len() {
         return Ok(None);
     }
@@ -200,7 +199,6 @@ fn trailer_length(rest: &[u8], protocol: Protocol) -> usize {
 /// The header at the start of `data`, by jwarc's strict WARC machine: its fields, its protocol
 /// and its length.
 fn parse_header(data: &[u8]) -> Result<(Headers, Protocol, usize), Stop> {
-    let keys: Vec<i32> = data.iter().map(|&byte| i32::from(byte)).collect();
     let mut state = Header {
         buffer: TextBuffer::default(),
         name: None,
@@ -209,7 +207,7 @@ fn parse_header(data: &[u8]) -> Result<(Headers, Protocol, usize), Stop> {
     };
     let mut cs = WARC_START;
     let end = WARC
-        .exec(&mut cs, &keys, 0, false, &mut |action, p| {
+        .exec(&mut cs, &Unsigned(data), 0, false, &mut |action, p| {
             Ok::<_, ()>(state.act(action, data[p]))
         })
         .expect("the WARC actions never fail");
@@ -344,6 +342,20 @@ fn arc_date(digits: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The records of decompressed `data`, in order, and where the reader stops if it stops
+    /// short of the end.
+    fn records(data: &[u8]) -> (Vec<Record<'_>>, Option<Stop>) {
+        let mut records = Vec::new();
+        let mut at = 0;
+        loop {
+            match next(data, &mut at) {
+                Ok(Some(record)) => records.push(record),
+                Ok(None) => return (records, None),
+                Err(stop) => return (records, Some(stop)),
+            }
+        }
+    }
+
     #[test]
     fn reads_warc_and_arc_headers_as_jwarc_does() {
         let data = b"WARC/1.0\r\nWARC-Type: response\r\nContent-Length: 3\r\nX: a\r\n b\r\n\r\nabc\r\n\r\n\
@@ -372,7 +384,7 @@ mod tests {
         assert!(matches!(stop, Some(Stop::Thrown(_))));
         let (_, stop) = records(b"WARC/1.0\r\nContent-Length: 1\r\ncontent-length: 2\r\n\r\n");
         assert!(matches!(stop, Some(Stop::Thrown(_))));
-        assert!(decompress(&[0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 0, 1]).is_err());
+        assert!(decompress(&[0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 0, 1], Pages::IN_MEMORY).is_err());
     }
 
     #[test]

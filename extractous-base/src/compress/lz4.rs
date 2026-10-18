@@ -2,7 +2,8 @@
 //! without `decompressConcatenated`: the skippable frames before the first frame passed over,
 //! and that frame alone decoded, whatever follows it ignored.
 
-use super::{read_limited, throws, Limited, Undecoded};
+use super::{spool_limited, throws, Limited, Undecoded};
+use crate::input::Input;
 
 const MAGIC: [u8; 4] = [0x04, 0x22, 0x4D, 0x18];
 const BLOCK_CHECKSUM: u8 = 0x10;
@@ -11,8 +12,23 @@ const CONTENT_CHECKSUM: u8 = 0x04;
 const UNCOMPRESSED: u32 = 0x8000_0000;
 
 /// The content of the first LZ4 frame of `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
-    read_limited(lz4_flex::frame::FrameDecoder::new(first_frame(data)?))
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
+    let frame = first_frame(data)?;
+    spool_limited(
+        lz4_flex::frame::FrameDecoder::new(frame),
+        data.len(),
+        declared_size(frame),
+    )
+}
+
+/// The content size the descriptor of `frame` declares, if it declares one.
+fn declared_size(frame: &[u8]) -> Option<u64> {
+    if frame.get(4)? & CONTENT_SIZE == 0 {
+        return None;
+    }
+    Some(u64::from_le_bytes(
+        frame.get(6..14)?.try_into().expect("eight bytes"),
+    ))
 }
 
 fn u32_at(data: &[u8], at: usize) -> Result<u32, Undecoded> {

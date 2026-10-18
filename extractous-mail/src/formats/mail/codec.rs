@@ -31,44 +31,123 @@ fn base64_value(byte: u8) -> Option<u32> {
     }
 }
 
+/// A body's transfer encoding, decoded a chunk of the body at a time, as [`decode_base64`]
+/// decodes a whole one.
+#[derive(Debug)]
+pub(super) enum BodyDecoder {
+    /// Any encoding but these two, which the body is read as it is.
+    Identity,
+    /// Base64, with the sextets of the quantum the chunks so far end in.
+    Base64 { data: u32, sextets: u32 },
+    /// Quoted-printable, with the line the chunks so far end in, decoded a line at a time as
+    /// RFC 2045 says: `=XX` an escaped byte (in either case), `=` ending a line a soft line
+    /// break, the space and tab before a line break or the end dropped as transport padding,
+    /// every line break kept as it is, and a malformed escape kept as it is. mime4j's
+    /// `QuotedPrintableInputStream` makes every line break a CRLF, reads `= x` as a soft line
+    /// break that keeps `= `, and decides `==` before a line break by looking ahead within its
+    /// buffer alone (#73).
+    QuotedPrintable { line: Vec<u8> },
+}
+
+impl BodyDecoder {
+    /// The decoder of the transfer encoding `encoding`.
+    pub(super) fn of(encoding: &str) -> Self {
+        if encoding.eq_ignore_ascii_case("base64") {
+            BodyDecoder::Base64 {
+                data: 0,
+                sextets: 0,
+            }
+        } else if encoding.eq_ignore_ascii_case("quoted-printable") {
+            BodyDecoder::QuotedPrintable { line: Vec::new() }
+        } else {
+            BodyDecoder::Identity
+        }
+    }
+
+    /// About the most bytes a body of `encoded` bytes decodes into.
+    pub(super) fn decoded_length(&self, encoded: u64) -> u64 {
+        match self {
+            BodyDecoder::Base64 { .. } => encoded / 4 * 3,
+            BodyDecoder::Identity | BodyDecoder::QuotedPrintable { .. } => encoded,
+        }
+    }
+
+    /// Decodes the next `chunk` of the body into `out`.
+    pub(super) fn feed(&mut self, chunk: &[u8], out: &mut Vec<u8>) {
+        match self {
+            BodyDecoder::Identity => out.extend_from_slice(chunk),
+            BodyDecoder::Base64 { data, sextets } => {
+                for &byte in chunk {
+                    if byte == BASE64_PAD {
+                        flush_base64(out, *data, *sextets);
+                        *data = 0;
+                        *sextets = 0;
+                        continue;
+                    }
+                    let Some(value) = base64_value(byte) else {
+                        continue;
+                    };
+                    *data = (*data << 6) | value;
+                    *sextets += 1;
+                    if *sextets == 4 {
+                        out.extend_from_slice(&[
+                            (*data >> 16) as u8,
+                            (*data >> 8) as u8,
+                            *data as u8,
+                        ]);
+                        *data = 0;
+                        *sextets = 0;
+                    }
+                }
+            }
+            BodyDecoder::QuotedPrintable { line } => {
+                for piece in chunk.split_inclusive(|&byte| byte == LF) {
+                    line.extend_from_slice(piece);
+                    if piece.ends_with(&[LF]) {
+                        decode_quoted_printable_line(line, out);
+                        line.clear();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Decodes into `out` what the body ends in.
+    pub(super) fn finish(self, out: &mut Vec<u8>) {
+        match self {
+            BodyDecoder::Identity => {}
+            BodyDecoder::Base64 { data, sextets } => flush_base64(out, data, sextets),
+            BodyDecoder::QuotedPrintable { line } => decode_quoted_printable_line(&line, out),
+        }
+    }
+}
+
+/// The bytes of a base64 quantum of `sextets` sextets in `data` that ends early.
+fn flush_base64(out: &mut Vec<u8>, data: u32, sextets: u32) {
+    match sextets {
+        2 => out.push((data >> 4) as u8),
+        3 => {
+            out.push((data >> 10) as u8);
+            out.push((data >> 2) as u8);
+        }
+        _ => {}
+    }
+}
+
+/// `input` decoded whole by `decoder`.
+fn decode_whole(mut decoder: BodyDecoder, input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    decoder.feed(input, &mut out);
+    decoder.finish(&mut out);
+    out
+}
+
 /// Base64 decoded leniently: every byte outside the alphabet skipped, a pad ending the quantum
 /// before it, so that concatenated blocks all decode, and the sextets of a short last quantum
 /// decoded as far as they go. mime4j's `Base64InputStream` drops everything from the first pad
 /// on and a short last quantum (#72).
 pub(super) fn decode_base64(input: &[u8]) -> Vec<u8> {
-    fn flush(out: &mut Vec<u8>, data: u32, sextets: u32) {
-        match sextets {
-            2 => out.push((data >> 4) as u8),
-            3 => {
-                out.push((data >> 10) as u8);
-                out.push((data >> 2) as u8);
-            }
-            _ => {}
-        }
-    }
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    let mut data = 0u32;
-    let mut sextets = 0;
-    for &byte in input {
-        if byte == BASE64_PAD {
-            flush(&mut out, data, sextets);
-            data = 0;
-            sextets = 0;
-            continue;
-        }
-        let Some(value) = base64_value(byte) else {
-            continue;
-        };
-        data = (data << 6) | value;
-        sextets += 1;
-        if sextets == 4 {
-            out.extend_from_slice(&[(data >> 16) as u8, (data >> 8) as u8, data as u8]);
-            data = 0;
-            sextets = 0;
-        }
-    }
-    flush(&mut out, data, sextets);
-    out
+    decode_whole(BodyDecoder::of("base64"), input)
 }
 
 /// An encoded word's base64 decoded as [`decode_base64`] decodes it, up to the first pad: an
@@ -90,34 +169,26 @@ fn hex_value(byte: Option<u8>) -> Option<u8> {
     }
 }
 
-/// Quoted-printable decoded as RFC 2045 says, over the whole text at once: `=XX` an escaped
-/// byte (in either case), `=` ending a line a soft line break, the space and tab before a line
-/// break or the end dropped as transport padding, every line break kept as it is, and a
-/// malformed escape kept as it is. mime4j's `QuotedPrintableInputStream` makes every line
-/// break a CRLF, reads `= x` as a soft line break that keeps `= `, and decides `==` before a
-/// line break by looking ahead within its buffer alone (#73).
-pub(super) fn decode_quoted_printable(input: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len());
-    for line in input.split_inclusive(|&byte| byte == LF) {
-        let (content, line_break) = match line {
-            [content @ .., CR, LF] => (content, &line[line.len() - 2..]),
-            [content @ .., LF] => (content, &line[line.len() - 1..]),
-            content => (content, &[][..]),
-        };
-        let end = content
-            .iter()
-            .rposition(|&byte| byte != b' ' && byte != b'\t')
-            .map_or(0, |last| last + 1);
-        let content = &content[..end];
-        match content.strip_suffix(&[EQ]) {
-            Some(soft) => decode_escapes(soft, &mut out),
-            None => {
-                decode_escapes(content, &mut out);
-                out.extend_from_slice(line_break);
-            }
+/// A line of quoted-printable text, with the line break that ends it if any, decoded into
+/// `out`.
+fn decode_quoted_printable_line(line: &[u8], out: &mut Vec<u8>) {
+    let (content, line_break) = match line {
+        [content @ .., CR, LF] => (content, &line[line.len() - 2..]),
+        [content @ .., LF] => (content, &line[line.len() - 1..]),
+        content => (content, &[][..]),
+    };
+    let end = content
+        .iter()
+        .rposition(|&byte| byte != b' ' && byte != b'\t')
+        .map_or(0, |last| last + 1);
+    let content = &content[..end];
+    match content.strip_suffix(&[EQ]) {
+        Some(soft) => decode_escapes(soft, out),
+        None => {
+            decode_escapes(content, out);
+            out.extend_from_slice(line_break);
         }
     }
-    out
 }
 
 /// The escapes of a line of quoted-printable text decoded, an `=` not followed by two
@@ -296,6 +367,34 @@ pub(super) fn percent_decode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode_quoted_printable(input: &[u8]) -> Vec<u8> {
+        decode_whole(BodyDecoder::of("quoted-printable"), input)
+    }
+
+    #[test]
+    fn decodes_bodies_a_chunk_at_a_time_as_whole() {
+        let bodies: [(&str, &[u8]); 3] = [
+            ("base64", b"aGVs\r\nbG8=IGlnbm9yZWQ=aGk"),
+            (
+                "quoted-printable",
+                b"a=3Db \r\nsoft=\r\nbreak  \nx=4\r\ntail=",
+            ),
+            ("7bit", b"plain\r\ntext"),
+        ];
+        for (encoding, body) in bodies {
+            let whole = decode_whole(BodyDecoder::of(encoding), body);
+            for size in 1..body.len() {
+                let mut decoder = BodyDecoder::of(encoding);
+                let mut out = Vec::new();
+                for chunk in body.chunks(size) {
+                    decoder.feed(chunk, &mut out);
+                }
+                decoder.finish(&mut out);
+                assert_eq!(out, whole, "{encoding} in chunks of {size}");
+            }
+        }
+    }
 
     #[test]
     fn decodes_base64_leniently() {

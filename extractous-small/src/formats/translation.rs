@@ -8,7 +8,8 @@ use crate::formats::jdk_zip::{self, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Xhtml};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 
 /// The attributes `TMXContentHandler.extractAttributes` copies onto a unit's or variant's
@@ -60,9 +61,23 @@ impl Parser for TmxParser {
         &["application/x-tmx"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -78,7 +93,7 @@ impl Parser for TmxParser {
                 variants: 0,
                 in_segment: false,
             };
-            let parsed = xml::parse_sax(input, "the TMX document", &mut handler);
+            let parsed = xml::parse_paged(input, pages, "the TMX document", &mut handler);
             if parsed.is_ok() {
                 handler.end_document();
             }
@@ -201,14 +216,28 @@ impl Parser for Xliff12Parser {
         &["application/x-xliff+xml"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let mut finder = NamespacedUnitAttribute(false);
-        let _ = xml::parse_sax(input, "the XLIFF document", &mut finder);
+        let _ = xml::parse_paged(input, pages, "the XLIFF document", &mut finder);
         if finder.0 {
             return Err(Decline::Deferred(
                 "a trans-unit attribute in a namespace, which Tika copies onto the XHTML, whose \
@@ -226,7 +255,7 @@ impl Parser for Xliff12Parser {
                 units: 0,
                 in_unit: false,
             };
-            let parsed = xml::parse_sax(input, "the XLIFF document", &mut handler);
+            let parsed = xml::parse_paged(input, pages, "the XLIFF document", &mut handler);
             if parsed.is_ok() {
                 let metadata = handler.xhtml.metadata_mut();
                 metadata.set("file-count", handler.files.to_string());
@@ -554,5 +583,55 @@ mod tests {
             .unwrap();
         assert!(!metadata.contains_key("original"), "{metadata:?}");
         assert_eq!(metadata["source-language"], ["da"]);
+    }
+}
+
+#[cfg(test)]
+mod large {
+    use extractous_core::large::{bodies_past_limit, LargeFile};
+
+    use super::*;
+
+    /// A translation memory too large to read whole, with CRLF line ends, is decoded a window at
+    /// a time and each unit written as it is read, in either build, under a memory budget far
+    /// below its size.
+    #[test]
+    fn writes_translation_memories_too_large_to_read_whole_a_unit_at_a_time() {
+        let unit = |index: u64| {
+            format!(
+                "<tu tuid=\"{index}\"><tuv xml:lang=\"en\"><seg>Line {index}</seg></tuv>\
+                 <tuv xml:lang=\"da\"><seg>Linje {index}</seg></tuv></tu>\r\n"
+            )
+            .into_bytes()
+        };
+        let count = bodies_past_limit(unit(1_000_000).len());
+        let file = LargeFile::new(
+            "long.tmx",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<tmx version=\"1.4\">\r\n\
+<header creationtool=\"t\" creationtoolversion=\"1\" segtype=\"sentence\" o-tmf=\"x\" \
+adminlang=\"en\" srclang=\"en\" datatype=\"plaintext\"/>\r\n<body>\r\n",
+            count,
+            unit,
+            b"</body>\r\n</tmx>\r\n",
+        );
+        let mut lines = 0u64;
+        let metadata = file.extract_lines(TmxParser.name(), |line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return;
+            }
+            let index = lines / 2;
+            let expected = if lines.is_multiple_of(2) {
+                format!("Line {index}")
+            } else {
+                format!("Linje {index}")
+            };
+            assert_eq!(line, expected);
+            lines += 1;
+        });
+        assert_eq!(lines, 2 * count);
+        assert_eq!(metadata["tu-count"], [count.to_string()]);
+        assert_eq!(metadata["tuv-count"], [(2 * count).to_string()]);
+        assert_eq!(metadata["target-language"], ["da"]);
     }
 }

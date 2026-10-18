@@ -2,7 +2,8 @@
 
 use std::fmt::Write as _;
 
-use extractous_core::large::LargeFile;
+use extractous_core::large::{LargeFile, BUDGET};
+use extractous_core::Extractor;
 
 use super::truetype::programs::of_glyphs;
 use super::PdfParser;
@@ -90,6 +91,63 @@ fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
     body
 }
 
+/// The text of a document whose pages each show `Page {index}`, as the extraction writes it.
+fn pages_text(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .map(|words| words.join(" "))
+        .collect()
+}
+
+/// How many bytes of samples each page's image holds: a 128 by 128 greyscale image.
+const IMAGE_BYTES: usize = 128 * 128;
+
+/// Thousands of pages, each of its own content and image, in a document well over the size
+/// at which a mapped file's pages are released: what the extraction reads of a page is let go
+/// of with the page, so that it holds no more than a page's objects and the page tree however
+/// many pages there are.
+#[test]
+fn extracts_documents_of_thousands_of_pages_in_memory_bounded_by_the_page() {
+    let count = 6000;
+    let file = Paged {
+        count,
+        objects_per_page: 3,
+        page: &|index, first| {
+            let content = format!(
+                "q 100 0 0 100 72 600 cm /Im Do Q BT /F 12 Tf 72 720 Td (Page {index}) Tj ET"
+            );
+            let samples: Vec<u8> = (0..IMAGE_BYTES)
+                .map(|at| (at as u64 * 7 + index) as u8)
+                .collect();
+            vec![
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] \
+                     /Resources << /Font << /F << /Type /Font /Subtype /Type1 \
+                     /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> \
+                     /XObject << /Im {} 0 R >> >> /Contents {} 0 R >>",
+                    first + 2,
+                    first + 1
+                )
+                .into_bytes(),
+                stream("", content.as_bytes()),
+                stream(
+                    "/Type /XObject /Subtype /Image /Width 128 /Height 128 \
+                     /ColorSpace /DeviceGray /BitsPerComponent 8",
+                    &samples,
+                ),
+            ]
+        },
+    }
+    .write("images.pdf");
+    let size = std::fs::metadata(file.path()).unwrap().len();
+    assert!(size > 80 << 20, "the document is {size} bytes");
+    let (text, metadata) = file.extract_with(&Extractor::new(), BUDGET, PdfParser.name());
+    assert_eq!(metadata["xmpTPg:NPages"], [count.to_string()]);
+    let expected: Vec<String> = (0..count).map(|index| format!("Page {index}")).collect();
+    assert_eq!(pages_text(&text), expected);
+}
+
 /// Pages each of a font of their own, embedding a program of thousands of glyphs: the fonts of
 /// the pages long past are let go, so that the fonts held stay bounded however many pages
 /// there are.
@@ -131,12 +189,6 @@ fn extracts_documents_of_a_font_per_page_in_bounded_memory() {
     .write("fonts.pdf");
     let (text, metadata) = file.extract(PdfParser.name());
     assert_eq!(metadata["xmpTPg:NPages"], [count.to_string()]);
-    let pages: Vec<String> = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .chunks(2)
-        .map(|words| words.join(" "))
-        .collect();
     let expected: Vec<String> = (0..count).map(|index| format!("Page {index}")).collect();
-    assert_eq!(pages, expected);
+    assert_eq!(pages_text(&text), expected);
 }

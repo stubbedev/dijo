@@ -253,3 +253,35 @@ fn types_values_as_sqlite_jdbc_does() {
     );
     assert_eq!(declared_type(None, "x"), None);
 }
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn reads_a_database_too_large_to_read_whole_in_place() {
+    use extractous_core::large::{LargeFile, BUDGET};
+
+    use crate::formats::archive::large::END;
+    use crate::input::MAX_READ_WHOLE;
+
+    let scratch = Scratch::new("sqlite-large");
+    let path = scratch.directory().join("large.db");
+    let rows = MAX_READ_WHOLE / (1 << 20) + 16;
+    database(
+        &path,
+        &format!(
+            "CREATE TABLE large(b BLOB);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {rows})
+             INSERT INTO large SELECT zeroblob(1048576) FROM n;
+             CREATE TABLE ending(t TEXT);
+             INSERT INTO ending VALUES ('{END}');"
+        ),
+    );
+    let file = LargeFile::written("large.db", |out| {
+        std::io::copy(&mut std::fs::File::open(&path)?, out).map(|_| ())
+    });
+    let (text, _) = file.extract_with(
+        &extractous_core::Extractor::new(),
+        BUDGET,
+        "extractous::SQLite3Parser",
+    );
+    assert!(text.contains(END), "{text}");
+}
