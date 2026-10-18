@@ -6,6 +6,8 @@
 
 mod audio;
 mod flv;
+#[cfg(test)]
+mod large;
 mod midi;
 mod mp3;
 mod mp4;
