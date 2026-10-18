@@ -16,7 +16,8 @@ use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
@@ -305,13 +306,27 @@ impl Parser for VorbisParser {
         &["audio/vorbis"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let vorbis = streams::vorbis(input).map_err(thrown)?;
+        let vorbis = streams::vorbis(input, pages).map_err(thrown)?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "audio/vorbis");
@@ -353,13 +368,27 @@ impl Parser for OpusParser {
         &["audio/opus"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let opus = streams::opus(input).map_err(thrown)?;
+        let opus = streams::opus(input, pages).map_err(thrown)?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "audio/opus");
@@ -419,13 +448,27 @@ impl Parser for FlacParser {
         &["audio/x-flac", "audio/x-oggflac"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let flac = streams::flac(input).map_err(thrown)?;
+        let flac = streams::flac(input, pages).map_err(thrown)?;
         let Some(comments) = flac.comments.clone() else {
             return Err(thrown(
                 "NullPointerException: a FLAC file without comments".to_owned(),
@@ -463,11 +506,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
 
     /// Vorbis comments with a vendor, after `header`.
-    #[cfg(feature = "tika")]
     fn comments(header: &[u8], entries: &[&str]) -> Vec<u8> {
         let mut data = header.to_vec();
         data.extend_from_slice(&4u32.to_le_bytes());
@@ -494,7 +537,6 @@ mod tests {
         block
     }
 
-    #[cfg(feature = "tika")]
     fn flac_block(kind: u8, data: &[u8]) -> Vec<u8> {
         let mut block = vec![kind];
         block.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes()[1..]);
@@ -502,31 +544,113 @@ mod tests {
         block
     }
 
-    /// An Ogg page of one stream holding `packets`, each under 255 bytes.
-    #[cfg(feature = "tika")]
-    fn page(flags: u8, granule: u64, sequence: u32, packets: &[&[u8]]) -> Vec<u8> {
+    /// An Ogg page of one stream, of `data` cut by the `lacing` values.
+    fn laced_page(flags: u8, granule: u64, sequence: u32, lacing: &[u8], data: &[u8]) -> Vec<u8> {
         let mut page = b"OggS\x00".to_vec();
         page.push(flags);
         page.extend_from_slice(&granule.to_le_bytes());
         page.extend_from_slice(&0x1234u32.to_le_bytes());
         page.extend_from_slice(&sequence.to_le_bytes());
         page.extend_from_slice(&[0; 4]);
-        page.push(u8::try_from(packets.len()).unwrap());
-        for packet in packets {
-            page.push(u8::try_from(packet.len()).unwrap());
-        }
-        for packet in packets {
-            page.extend_from_slice(packet);
-        }
+        page.push(u8::try_from(lacing.len()).unwrap());
+        page.extend_from_slice(lacing);
+        page.extend_from_slice(data);
         page
+    }
+
+    /// An Ogg page of one stream holding `packets`, each under 255 bytes.
+    fn page(flags: u8, granule: u64, sequence: u32, packets: &[&[u8]]) -> Vec<u8> {
+        let lacing: Vec<u8> = packets
+            .iter()
+            .map(|packet| u8::try_from(packet.len()).unwrap())
+            .collect();
+        laced_page(flags, granule, sequence, &lacing, &packets.concat())
+    }
+
+    /// An Opus identification header of a stereo stream with a pre-skip of 312 samples.
+    fn opus_head() -> Vec<u8> {
+        let mut head = b"OpusHead\x01\x02".to_vec();
+        head.extend_from_slice(&312u16.to_le_bytes());
+        head.extend_from_slice(&48000u32.to_le_bytes());
+        head.extend_from_slice(&[0, 0, 0]);
+        head
+    }
+
+    /// A FLAC stream info block's data: 44.1 kHz stereo of `samples` samples.
+    fn stream_info(samples: u32) -> Vec<u8> {
+        let mut info = vec![0u8; 34];
+        info[10..14].copy_from_slice(&[0x0A, 0xC4, 0x42, 0xF0]);
+        info[14..18].copy_from_slice(&samples.to_be_bytes());
+        info
+    }
+
+    /// A file too large to read whole of `headers`, the pages of a stream's headers, then one
+    /// audio packet over every page after them, ending on one of granule position `granule`:
+    /// an audio packet as large as the file, which is never joined.
+    fn long_ogg(name: &str, headers: &[u8], granule: u64) -> LargeFile {
+        let fragment = vec![0u8; 255 * 255];
+        let continued = laced_page(0, u64::MAX, 2, &[255; 255], &fragment);
+        let count = bodies_past_limit(continued.len());
+        let last = laced_page(4, granule, 3, &[1], &[0]);
+        LargeFile::new(name, headers, count, |_| continued.clone(), &last)
+    }
+
+    /// The pages of a Vorbis stream's headers, then the audio after them, as large as the file,
+    /// are read in place, their pages released as they are read, in memory that does not grow
+    /// with the file.
+    #[test]
+    fn extracts_vorbis_files_too_large_to_read_whole_in_bounded_memory() {
+        let mut info = b"\x01vorbis".to_vec();
+        info.extend_from_slice(&0u32.to_le_bytes());
+        info.push(2);
+        info.extend_from_slice(&44100u32.to_le_bytes());
+        info.extend_from_slice(&[0; 4]);
+        info.extend_from_slice(&128_000u32.to_le_bytes());
+        info.extend_from_slice(&[0; 4]);
+        info.extend_from_slice(&[0xB8, 1]);
+        let mut tags = comments(b"\x03vorbis", &["TITLE=Lang sang"]);
+        tags.push(1);
+        let setup = [b"\x05vorbis".as_slice(), &[0; 16]].concat();
+        let headers = [page(2, 0, 0, &[&info]), page(0, 0, 1, &[&tags, &setup])].concat();
+        let file = long_ogg("long.ogg", &headers, 44100 * 3600);
+        let (text, metadata) = file.extract(VorbisParser.name());
+        assert!(text.contains("Lang sang"), "{text}");
+        assert_eq!(metadata["audio:bitrate"], ["128000"]);
+        assert_eq!(metadata["xmpDM:duration"], ["3600.0"]);
+    }
+
+    /// The same of an Opus stream.
+    #[test]
+    fn extracts_opus_files_too_large_to_read_whole_in_bounded_memory() {
+        let tags = comments(b"OpusTags", &["ALBUM=Album"]);
+        let headers = [page(2, 0, 0, &[&opus_head()]), page(0, 0, 1, &[&tags])].concat();
+        let file = long_ogg("long.opus", &headers, 312 + 48000 * 3600);
+        let (text, metadata) = file.extract(OpusParser.name());
+        assert!(text.contains("Album"), "{text}");
+        assert_eq!(metadata["xmpDM:duration"], ["3600.0"]);
+    }
+
+    /// A native FLAC file is read as far as its metadata blocks, in place, whatever the audio
+    /// after them.
+    #[test]
+    fn extracts_flac_files_too_large_to_read_whole_in_bounded_memory() {
+        let mut flac = b"fLaC".to_vec();
+        flac.extend(flac_block(0, &stream_info(44100 * 3600)));
+        flac.extend(flac_block(4, &comments(b"", &["TITLE=Lang sang"])));
+        flac.extend(flac_block(0x81, &[0; 1024]));
+        let frames = vec![0u8; 1 << 20];
+        let count = bodies_past_limit(frames.len());
+        let file = LargeFile::new("long.flac", &flac, count, |_| frames.clone(), b"");
+        let (text, metadata) = file.extract(FlacParser.name());
+        assert!(text.contains("Lang sang"), "{text}");
+        assert_eq!(metadata["xmpDM:duration"], ["3600.0"]);
     }
 
     #[cfg(feature = "tika")]
     #[test]
     fn extracts_flac_and_opus_files_as_tikas_path_does() {
         let scratch = crate::formats::parity::Scratch::new("ogg");
-        let mut info = vec![0u8; 34];
-        info[10..18].copy_from_slice(&[0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x04, 0xEB, 0xA0]);
+        let info = stream_info(0x0004_EBA0);
         let tags = comments(
             b"",
             &[
@@ -544,10 +668,7 @@ mod tests {
         flac.extend(flac_block(4, &tags));
         flac.extend(flac_block(6, &picture(3, "front cover")));
         flac.extend(flac_block(0x86, &picture(4, "back cover")));
-        let mut head = b"OpusHead\x01\x02".to_vec();
-        head.extend_from_slice(&312u16.to_le_bytes());
-        head.extend_from_slice(&48000u32.to_le_bytes());
-        head.extend_from_slice(&[0, 0, 0]);
+        let head = opus_head();
         let opus_tags = comments(b"OpusTags", &["ALBUM=Album", "DATE=2024"]);
         let mut opus = page(2, 0, 0, &[&head]);
         opus.extend(page(0, 0, 1, &[&opus_tags]));
