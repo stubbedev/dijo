@@ -8,6 +8,8 @@ use super::*;
 #[cfg(feature = "tika")]
 use crate::compress::ar::tests::ar;
 #[cfg(feature = "tika")]
+use crate::compress::arj::tests::{arj, with_stray_bytes};
+#[cfg(feature = "tika")]
 use crate::compress::brotli::tests::brotli;
 #[cfg(feature = "tika")]
 use crate::compress::bzip2::tests::bzip2;
@@ -22,9 +24,11 @@ use crate::compress::lzw::tests::encode as compress;
 use crate::compress::seven_z::tests::seven_z;
 #[cfg(feature = "tika")]
 use crate::compress::snappy::tests::snappy;
-#[cfg(feature = "tika")]
-use crate::compress::tar_header::tests::pax;
 use crate::compress::tar_header::tests::tar;
+#[cfg(feature = "tika")]
+use crate::compress::tar_header::tests::{
+    ended, old_gnu_sparse, pax, records, sparse_1_0_filling_a_record,
+};
 #[cfg(feature = "tika")]
 use crate::compress::xz::tests::{lzma, xz};
 use crate::compress::zip::file::tests::zip;
@@ -499,6 +503,67 @@ fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
         &[],
     );
     assert_eq!(deferred, Vec::<String>::new());
+}
+
+/// TAR archives whose headers commons-compress applies again as its recursion unwinds, which
+/// throws on them, and the native parser applies once (#184): a global size again over an
+/// entry's own, which leaves the stream in the entry's data, and an old GNU sparse file's
+/// extension records read again from its data after a long name or a global header.
+#[cfg(feature = "tika")]
+#[test]
+fn reads_tar_archives_whose_headers_commons_compress_applies_again() {
+    let scratch = Scratch::new("archive-tar-headers-once");
+    let sized = tar(&[
+        (b"pax_global_header", b'g', &pax(&[("size", "0")])),
+        (b"././@PaxHeader", b'x', &pax(&[("size", "600")])),
+        (b"sized.txt", b'0', &[b'x'; 600]),
+    ]);
+    let structs = [(0, 1), (2, 1), (4, 1), (6, 1), (8, 1), (10, 0)];
+    let mut long_name = records(&[(b"././@LongLink", b'L', b"long-sparse.txt\0")]);
+    long_name.extend(old_gnu_sparse(b"cut", 10, &structs, b"abcde"));
+    let mut global = records(&[(b"pax_global_header", b'g', &pax(&[("comment", "a commit")]))]);
+    global.extend(old_gnu_sparse(b"sparse.txt", 10, &structs, b"abcde"));
+    let written = [
+        scratch.write("global-size.tar", &sized),
+        scratch.write("long-name-sparse.tar", &ended(long_name)),
+        scratch.write("global-sparse.tar", &ended(global)),
+    ];
+    let paths: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
+    crate::formats::parity::assert_read_where_tika_fails(&paths, "#184");
+}
+
+/// A TAR archive whose 1.0 sparse map fills its record, after which commons-compress skips the
+/// file's data, reads its data from the next header and that header from the next file's data,
+/// on which it throws, and the native parser reads the data that follows the map (#184).
+#[cfg(feature = "tika")]
+#[test]
+fn reads_a_tar_archive_whose_1_0_sparse_map_fills_its_record() {
+    let scratch = Scratch::new("archive-tar-filled-sparse-map");
+    let archive = ended(
+        [
+            sparse_1_0_filling_a_record("filled.txt", &[b'A'; 512]),
+            records(&[(b"after.txt", b'0', &[b'x'; 512])]),
+        ]
+        .concat(),
+    );
+    let written = scratch.write("filled-sparse-map.tar", &archive);
+    crate::formats::parity::assert_read_where_tika_fails(&[written.as_path()], "#184");
+}
+
+/// ARJ archives with a stray byte of the header magic before a local header, at which
+/// commons-compress stops its search and throws on the header size it reads after it, past the
+/// archive's end, where the native parser searches on for the whole magic (#184).
+#[cfg(feature = "tika")]
+#[test]
+fn reads_arj_archives_with_a_stray_byte_of_the_header_magic() {
+    let scratch = Scratch::new("archive-arj-stray-magic");
+    let archive = arj(&[(b"A.TXT", 0, 0, b"Stored text after a stray byte.")]);
+    let written = [
+        scratch.write("stray-first.arj", &with_stray_bytes(&archive, [0x60, 0])),
+        scratch.write("stray-second.arj", &with_stray_bytes(&archive, [0, 0xEA])),
+    ];
+    let paths: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
+    crate::formats::parity::assert_read_where_tika_fails(&paths, "#184");
 }
 
 #[cfg(feature = "tika")]
