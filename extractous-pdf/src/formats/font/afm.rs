@@ -1,7 +1,9 @@
 //! Adobe font metrics files as FontBox 3's `AFMParser` reads them in full: every key it knows,
 //! the character metrics, kerning data and composites, failing where it throws. What Tika's
-//! `AdobeFontMetricParser` reads of the result is kept.
+//! `AdobeFontMetricParser` reads of the result is kept, its comments handed on one at a time, so
+//! that a file of any size is read in bounded memory, its pages released as it is read.
 
+use crate::input::Paging;
 use crate::java;
 
 /// Why `AFMParser` fails, which fails the parse.
@@ -18,27 +20,47 @@ pub(super) struct FontMetrics {
     pub(super) font_version: Option<String>,
     pub(super) notice: Option<String>,
     pub(super) underline_thickness: f32,
-    pub(super) comments: Vec<String>,
-    /// The `WX` of each character metric, 0 where it has none.
-    widths: Vec<f32>,
+    widths: Widths,
+}
+
+/// The positive `WX` of the character metrics, summed in their order as
+/// `getAverageCharacterWidth` sums them, in `float` arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct Widths {
+    total: f32,
+    count: f32,
+}
+
+impl Widths {
+    fn add(&mut self, width: f32) {
+        if width > 0.0 {
+            self.total += width;
+            self.count += 1.0;
+        }
+    }
 }
 
 impl FontMetrics {
     /// `getAverageCharacterWidth`: the mean of the positive widths, in `float` arithmetic.
     pub(super) fn average_character_width(&self) -> f32 {
-        let mut total = 0f32;
-        let mut count = 0f32;
-        for &width in &self.widths {
-            if width > 0.0 {
-                total += width;
-                count += 1.0;
-            }
-        }
-        if total > 0.0 {
-            total / count
+        if self.widths.total > 0.0 {
+            self.widths.total / self.widths.count
         } else {
             0.0
         }
+    }
+}
+
+/// Why a parse ends early: `AFMParser` throws, or the receiver of the comments stops it.
+#[derive(Debug, PartialEq)]
+pub(super) enum Interrupted<E> {
+    Thrown(Thrown),
+    By(E),
+}
+
+impl<E> From<Thrown> for Interrupted<E> {
+    fn from(thrown: Thrown) -> Self {
+        Self::Thrown(thrown)
     }
 }
 
@@ -47,6 +69,7 @@ impl FontMetrics {
 struct Input<'a> {
     bytes: &'a [u8],
     at: usize,
+    paging: &'a Paging<'a>,
 }
 
 const END: char = '\u{FFFF}';
@@ -59,6 +82,7 @@ impl Input<'_> {
     fn read(&mut self) -> Option<char> {
         let byte = self.bytes.get(self.at)?;
         self.at += 1;
+        self.paging.read(1);
         Some(char::from(*byte))
     }
 
@@ -165,9 +189,18 @@ impl<'a> Tokens<'a> {
 const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\u{C}'];
 const COMPOSITE_DELIMITERS: &[char] = &[' ', ';'];
 
-/// `AFMParser.parse()`.
-pub(super) fn parse(bytes: &[u8]) -> Result<FontMetrics, Thrown> {
-    let mut input = Input { bytes, at: 0 };
+/// `AFMParser.parse()`, each comment handed to `comment` as it is read, which may stop the
+/// parse.
+pub(super) fn parse<'a, E>(
+    bytes: &'a [u8],
+    paging: &'a Paging<'a>,
+    mut comment: impl FnMut(String) -> Result<(), E>,
+) -> Result<FontMetrics, Interrupted<E>> {
+    let mut input = Input {
+        bytes,
+        at: 0,
+        paging,
+    };
     input.command("StartFontMetrics")?;
     let mut metrics = FontMetrics {
         afm_version: input.float()?,
@@ -206,11 +239,11 @@ pub(super) fn parse(bytes: &[u8]) -> Result<FontMetrics, Thrown> {
                 input.float()?;
             }
             "UnderlineThickness" => metrics.underline_thickness = input.float()?,
-            "Comment" => metrics.comments.push(input.line()),
+            "Comment" => comment(input.line()).map_err(Interrupted::By)?,
             "StartCharMetrics" => {
                 let count = input.int()?;
                 for _ in 0..count.max(0) {
-                    metrics.widths.push(char_metric(&input.line())?);
+                    metrics.widths.add(char_metric(&input.line())?);
                 }
                 input.command("EndCharMetrics")?;
             }
@@ -222,7 +255,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<FontMetrics, Thrown> {
                 }
                 input.command("EndComposites")?;
             }
-            _ => return Err(format!("Unknown AFM key '{command}'")),
+            _ => return Err(format!("Unknown AFM key '{command}'").into()),
         }
     }
 }
@@ -370,66 +403,83 @@ fn composite(line: &str) -> Result<(), Thrown> {
     Ok(())
 }
 
-/// `AdobeFontMetricParser.extractCreationDate`: the date of the first comment matching
-/// `.*Creation\sDate.*`, after its first colon and the character after it, and the comments
-/// without that one.
-pub(super) fn creation_date(comments: &[String]) -> Result<(Option<String>, Vec<String>), Thrown> {
-    let matches = |comment: &str| {
-        !comment.chars().any(java::is_line_terminator)
-            && comment.match_indices("Creation").any(|(at, _)| {
-                let rest = &comment[at + "Creation".len()..];
-                rest.chars().next().is_some_and(java::is_regex_space)
-                    && rest[1..].starts_with("Date")
-            })
-    };
-    let mut comments = comments.to_vec();
-    let Some(index) = comments.iter().position(|comment| matches(comment)) else {
-        return Ok((None, comments));
-    };
-    let characters: Vec<char> = comments.remove(index).chars().collect();
+/// `AdobeFontMetricParser.extractCreationDate` of `comment`, if it is the one it takes the date
+/// from, which the first comment matching `.*Creation\sDate.*` is: the date after its first colon
+/// and the character after it.
+pub(super) fn creation_date(comment: &str) -> Option<Result<String, Thrown>> {
+    let matches = !comment.chars().any(java::is_line_terminator)
+        && comment.match_indices("Creation").any(|(at, _)| {
+            let rest = &comment[at + "Creation".len()..];
+            rest.chars().next().is_some_and(java::is_regex_space) && rest[1..].starts_with("Date")
+        });
+    if !matches {
+        return None;
+    }
+    let characters: Vec<char> = comment.chars().collect();
     let start = characters
         .iter()
         .position(|&character| character == ':')
         .map_or(1, |colon| colon + 2);
-    let date: String = characters
-        .get(start..)
-        .ok_or_else(|| "StringIndexOutOfBoundsException".to_owned())?
-        .iter()
-        .collect();
-    Ok((Some(date), comments))
+    Some(
+        characters
+            .get(start..)
+            .map(|date| date.iter().collect())
+            .ok_or_else(|| "StringIndexOutOfBoundsException".to_owned()),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::input::Pages;
+
+    /// The metrics of `bytes` and their comments.
+    fn read(bytes: &[u8]) -> Result<(FontMetrics, Vec<String>), Interrupted<()>> {
+        let paging = Paging::new(Pages::IN_MEMORY);
+        let mut comments = Vec::new();
+        let metrics = parse(bytes, &paging, |comment| {
+            comments.push(comment);
+            Ok(())
+        })?;
+        Ok((metrics, comments))
+    }
+
     #[test]
     fn reads_metrics_as_fontbox_does() {
-        let metrics = parse(
+        let (metrics, comments) = read(
             b"StartFontMetrics 4.1\r\nComment One\r\nFullName  A B \r\nStartCharMetrics 2\r\n\
               C 1 ; WX 10.5 ; N a ;\r\nC 2 ; WX 0 ; N b ;\r\nEndCharMetrics\r\nEndFontMetrics",
         )
         .unwrap();
         assert_eq!(metrics.afm_version, 4.1);
         assert_eq!(metrics.full_name.as_deref(), Some("A B "));
-        assert_eq!(metrics.comments, ["One"]);
+        assert_eq!(comments, ["One"]);
         assert_eq!(metrics.average_character_width(), 10.5);
-        assert!(parse(b"StartFontMetrics 4.1\nC 1 ;\nEndFontMetrics").is_err());
-        assert!(parse(b"StartFontMetrics x").is_err());
-        assert!(parse(b"StartFontMetrics 1\nFontName x").is_err());
+        assert!(read(b"StartFontMetrics 4.1\nC 1 ;\nEndFontMetrics").is_err());
+        assert!(read(b"StartFontMetrics x").is_err());
+        assert!(read(b"StartFontMetrics 1\nFontName x").is_err());
+    }
+
+    #[test]
+    fn a_comment_receiver_stops_the_parse() {
+        let paging = Paging::new(Pages::IN_MEMORY);
+        let stopped = parse(
+            b"StartFontMetrics 2\nComment a\nBogus\nEndFontMetrics",
+            &paging,
+            |_| Err("stop"),
+        );
+        assert_eq!(stopped, Err(Interrupted::By("stop")));
     }
 
     #[test]
     fn finds_the_creation_date_as_tika_does() {
-        let comments = vec!["a".to_owned(), "Creation Date: Today".to_owned()];
+        assert_eq!(creation_date("a"), None);
         assert_eq!(
-            creation_date(&comments),
-            Ok((Some("Today".to_owned()), vec!["a".to_owned()]))
+            creation_date("Creation Date: Today"),
+            Some(Ok("Today".to_owned()))
         );
-        assert!(creation_date(&["Creation\tDate:".to_owned()]).is_err());
-        assert_eq!(
-            creation_date(&["CreationDate: x".to_owned()]),
-            Ok((None, vec!["CreationDate: x".to_owned()]))
-        );
+        assert!(matches!(creation_date("Creation\tDate:"), Some(Err(_))));
+        assert_eq!(creation_date("CreationDate: x"), None);
     }
 }

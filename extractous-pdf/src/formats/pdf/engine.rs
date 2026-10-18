@@ -76,10 +76,54 @@ pub(super) struct PageContent {
     pub(super) scopes: Vec<Identity>,
 }
 
+/// How many fonts the engine keeps past the page that last used them.
+const FONTS_KEPT: usize = 16;
+
+/// The fonts read, by font dictionary, as PDFBox's resource cache holds them: softly. Once a
+/// page ends with more than [`FONTS_KEPT`] held, those the most recent pages used are kept and
+/// the others let go, to be read again should a later page use them, so that a document of any
+/// number of fonts is read in bounded memory. Reading a font again gives the same font.
+#[derive(Default)]
+struct Fonts {
+    held: HashMap<Identity, Held>,
+    /// The pages ended so far.
+    page: u64,
+}
+
+/// A font, and the last page that used it.
+struct Held {
+    font: Rc<Font>,
+    used: u64,
+}
+
+impl Fonts {
+    fn get(&mut self, identity: Identity) -> Option<Rc<Font>> {
+        let held = self.held.get_mut(&identity)?;
+        held.used = self.page;
+        Some(Rc::clone(&held.font))
+    }
+
+    fn insert(&mut self, identity: Identity, font: Rc<Font>) {
+        let used = self.page;
+        self.held.insert(identity, Held { font, used });
+    }
+
+    /// Ends the page, letting go of the fonts of the pages longest past.
+    fn end_page(&mut self) {
+        self.page += 1;
+        if self.held.len() <= FONTS_KEPT {
+            return;
+        }
+        let mut used: Vec<u64> = self.held.values().map(|held| held.used).collect();
+        let (_, &mut kept_from, _) = used.select_nth_unstable_by(FONTS_KEPT - 1, |a, b| b.cmp(a));
+        self.held.retain(|_, held| held.used >= kept_from);
+    }
+}
+
 /// The text extraction engine of one document.
 pub(super) struct Engine<'p> {
     pdf: &'p Pdf<'p>,
-    fonts: HashMap<Identity, Rc<Font>>,
+    fonts: Fonts,
     default_font: Option<Rc<Font>>,
     unshared: usize,
     /// Whether glyphs are labelled with their marked content, as Tika's tagged writer does
@@ -125,7 +169,7 @@ impl<'p> Engine<'p> {
     pub(super) fn new(pdf: &'p Pdf, labels: bool) -> Self {
         Self {
             pdf,
-            fonts: HashMap::new(),
+            fonts: Fonts::default(),
             default_font: None,
             unshared: 0,
             labels,
@@ -173,14 +217,16 @@ impl<'p> Engine<'p> {
                 differ_past(pdf, "a page's content", unported);
             }
         }
-        run.content
+        let content = run.content;
+        self.fonts.end_page();
+        content
     }
 
     /// The font a resource names, created once per font dictionary as PDFBox's resource cache
     /// holds it.
     fn font(&mut self, identity: Identity, dict: &Dictionary) -> Result<Rc<Font>, Unported> {
-        if let Some(font) = self.fonts.get(&identity) {
-            return Ok(Rc::clone(font));
+        if let Some(font) = self.fonts.get(identity) {
+            return Ok(font);
         }
         let font = Rc::new(Font::load(self.pdf, identity, dict)?);
         self.fonts.insert(identity, Rc::clone(&font));
