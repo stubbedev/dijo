@@ -39,7 +39,7 @@ use crate::text::charset::{self, Charset, Detection};
 /// Where the text the parser writes departs from Tika's, for the parity tests of every parser
 /// that hands it HTML: the WHATWG algorithm makes each line break an LF, drops the white space
 /// before `head`, and puts the white space after `</body>` in the body (#84).
-#[cfg(feature = "tika")]
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
 pub const DEPARTURES: extractous_base::formats::parity::Departures =
     &[extractous_base::formats::parity::Departure::BlankLines(
         "#84",
