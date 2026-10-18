@@ -3,6 +3,12 @@
 //! after it, and what the workbook's metadata records of its sheets, rows, columns and
 //! comments.
 //!
+//! The records are listened to twice. The first time plans the workbook, as far as deciding
+//! whether it is read and how each sheet is written, and holds none of its text; the second
+//! writes it. Tika's listener holds a sheet's cells until the sheet ends, to write them in
+//! order; a sheet whose cells come in order is written as they come, the hyperlinks found later
+//! in the sheet applied as the plan found them, and only a sheet whose cells do not is held.
+//!
 //! Unlike Tika's listener (#107), it writes a formula's boolean or error result as such, where
 //! Tika writes 0; a linked cell once, in the table, where Tika writes it again outside it; a
 //! sheet with an embedded chart as one page, where Tika ends the page at the chart and takes
@@ -12,12 +18,14 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
-use super::records::{bof, sid, Cached, CellRef, Record, SharedString, Special};
+use super::records::{bof, sid, Cached, CellRef, Record, SharedStringReader, Special};
+use super::stream::RecordStream;
 use crate::formats::data_format::header_footer;
 use crate::formats::data_format::{
     builtin_format, default_number_format, error_text, DataFormatter, FormatError,
 };
-use crate::formats::poi::{Read, Thrown};
+use crate::formats::poi::Thrown;
+use crate::formats::xhtml::{Stop, Xhtml};
 use crate::java::is_blank;
 use crate::java::trim;
 
@@ -40,33 +48,75 @@ pub(super) enum Cell {
     Linked(Box<Cell>, String),
 }
 
-/// The XHTML the listener writes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Out {
-    Start(&'static str),
-    StartClass(&'static str, &'static str),
-    StartLink(String),
-    End(&'static str),
-    Text(String),
+/// Where the listener writes the XHTML of the sheets.
+pub(super) trait Out {
+    fn start(&mut self, name: &'static str) -> Result<(), Stop>;
+    fn start_class(&mut self, name: &'static str, class: &'static str) -> Result<(), Stop>;
+    fn start_link(&mut self, address: &str) -> Result<(), Stop>;
+    fn end(&mut self, name: &'static str) -> Result<(), Stop>;
+    fn text(&mut self, text: &str) -> Result<(), Stop>;
     /// `XHTMLContentHandler.element`: the element with its text, unless that is empty.
-    Element(&'static str, String),
+    fn element(&mut self, name: &'static str, text: &str) -> Result<(), Stop>;
 }
 
-/// A sheet as `processSheet` writes it: a page with its name and its cells in a table, then
-/// the text found outside the cells since the sheet before.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Page {
-    /// From the page's start to the table's end.
-    pub(super) table: Vec<Out>,
-    pub(super) outside: Vec<Cell>,
+impl Out for Xhtml<'_> {
+    fn start(&mut self, name: &'static str) -> Result<(), Stop> {
+        self.start_element(name)
+    }
+
+    fn start_class(&mut self, name: &'static str, class: &'static str) -> Result<(), Stop> {
+        self.start_element_with(name, &[("class", class)])
+    }
+
+    fn start_link(&mut self, address: &str) -> Result<(), Stop> {
+        self.start_element_with("a", &[("href", address)])
+    }
+
+    fn end(&mut self, name: &'static str) -> Result<(), Stop> {
+        self.end_element(name)
+    }
+
+    fn text(&mut self, text: &str) -> Result<(), Stop> {
+        self.characters(text)
+    }
+
+    fn element(&mut self, name: &'static str, text: &str) -> Result<(), Stop> {
+        Xhtml::element(self, name, text)
+    }
 }
 
-/// What the listener read of the workbook.
+/// How a sheet is written, as planning the workbook found.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SheetPlan {
+    /// Whether the sheet ends, so that Tika's listener writes it.
+    ends: bool,
+    /// Whether its cells come in the order they are written, each after the last.
+    ordered: bool,
+    /// The name its page is headed with, if any.
+    name: Option<String>,
+    /// The hyperlinks of an ordered sheet, by the cell they lead from: how many cells were in
+    /// the table when each came, and its address, in their order.
+    links: HashMap<(i32, i32), Vec<(u64, String)>>,
+}
+
+impl SheetPlan {
+    pub(super) fn is_streamed(&self) -> bool {
+        self.ends && self.ordered
+    }
+}
+
+/// What the listener does with the cells of the sheets.
+pub(super) enum Pass<'p> {
+    /// Plans the workbook: reads it as far as deciding whether it is read, and finds how each
+    /// sheet is written, holding none of the text.
+    Plan,
+    /// Writes the sheets as the plans say.
+    Write(&'p [SheetPlan]),
+}
+
+/// What the listener found of the workbook beyond its text.
 #[derive(Debug, Default)]
-pub(super) struct Extracted {
-    pub(super) pages: Vec<Page>,
-    /// The text found outside the cells after the last sheet.
-    pub(super) outside: Vec<Cell>,
+pub(super) struct Found {
     pub(super) hidden_sheets: Vec<String>,
     pub(super) very_hidden_sheets: Vec<String>,
     /// The authors of comments, by their UTF-16 units, as a `TreeSet` orders them.
@@ -78,27 +128,123 @@ pub(super) struct Extracted {
     pub(super) sheet_drawings: BTreeMap<i32, Vec<u8>>,
     /// The drawing groups, by their index among the workbook's.
     pub(super) drawing_groups: Vec<usize>,
+    /// How each sheet is written, in the order the sheets start.
+    pub(super) plans: Vec<SheetPlan>,
+}
+
+/// The cells of the sheet being read.
+enum Sheet {
+    /// Planned, by its plan among the workbook's: where its cells are placed, to find whether
+    /// they come in order.
+    Planned {
+        last: Option<(i32, i32)>,
+        placed: u64,
+        plan: usize,
+    },
+    /// Written as its cells come.
+    Streamed {
+        table: Table,
+        placed: u64,
+        plan: usize,
+    },
+    /// Held until it ends, as Tika's listener holds every sheet.
+    Held(BTreeMap<(i32, i32), Cell>),
+}
+
+/// A sheet's table being written: the row and column of the cell last written.
+struct Table {
+    row: i32,
+    column: i32,
+}
+
+impl Table {
+    /// Starts the page of a sheet, headed with its name, and its table.
+    fn start(name: Option<&str>, out: &mut dyn Out) -> Result<Table, Stop> {
+        out.start_class("div", "page")?;
+        if let Some(name) = name {
+            out.element("h1", name)?;
+        }
+        for name in ["table", "tbody", "tr", "td"] {
+            out.start(name)?;
+        }
+        Ok(Table { row: 0, column: 0 })
+    }
+
+    /// Writes the cell at `place`, which comes after the cells written before it.
+    fn cell(
+        &mut self,
+        (row, column): (i32, i32),
+        cell: &Cell,
+        missing_rows: bool,
+        out: &mut dyn Out,
+    ) -> Result<(), Stop> {
+        if self.row != row {
+            loop {
+                out.end("td")?;
+                out.end("tr")?;
+                out.start("tr")?;
+                out.start("td")?;
+                self.row += 1;
+                if !(missing_rows && self.row < row) {
+                    break;
+                }
+            }
+            self.row = row;
+            self.column = 0;
+        }
+        while self.column < column {
+            out.end("td")?;
+            out.start("td")?;
+            self.column += 1;
+        }
+        render(cell, out)
+    }
+
+    fn end(out: &mut dyn Out) -> Result<(), Stop> {
+        for name in ["td", "tr", "tbody", "table"] {
+            out.end(name)?;
+        }
+        Ok(())
+    }
 }
 
 /// The listener, as it goes through the records.
-pub(super) struct Listener {
+pub(super) struct Listener<'a, 'p> {
     settings: Settings,
+    pass: Pass<'p>,
     custom_formats: HashMap<i32, String>,
     extended_formats: Vec<i16>,
     formatter: DataFormatter,
-    shared_strings: Option<Vec<SharedString>>,
+    shared_strings: Option<SharedStringReader<'a>>,
     string_formula: Option<CellRef>,
     previous_sid: u16,
     sheet_names: Vec<String>,
     sheet_index: i16,
-    sheet: Option<BTreeMap<(i32, i32), Cell>>,
+    sheet: Option<Sheet>,
+    /// How many sheets have started.
+    sheets: usize,
     /// How many charts embedded in the sheet are open.
     charts: usize,
+    /// The text outside the cells since the last sheet ended, which only a write holds.
     extra: Vec<Cell>,
     in_drawing: bool,
     /// The exception a record raised, after which Tika's listener reads no more.
     stored: Option<Thrown>,
-    pub(super) read: Extracted,
+    found: Found,
+}
+
+/// Why the listener stopped on a record.
+pub(super) enum Interrupted {
+    /// POI or Tika threw.
+    Thrown(Thrown),
+    /// The output took no more.
+    Stopped(Stop),
+}
+
+impl From<Stop> for Interrupted {
+    fn from(stop: Stop) -> Self {
+        Interrupted::Stopped(stop)
+    }
 }
 
 /// Whether Tika's `HSSFRequest` hands records of this type to the listener.
@@ -133,10 +279,11 @@ pub(super) fn is_listened(record_sid: u16, settings: &Settings) -> bool {
     ) || (settings.headers_and_footers && matches!(record_sid, sid::HEADER | sid::FOOTER))
 }
 
-impl Listener {
-    pub(super) fn new(settings: Settings) -> Self {
+impl<'a, 'p> Listener<'a, 'p> {
+    pub(super) fn new(settings: Settings, pass: Pass<'p>) -> Self {
         Listener {
             settings,
+            pass,
             custom_formats: HashMap::new(),
             extended_formats: Vec::new(),
             formatter: DataFormatter::new(false),
@@ -146,18 +293,29 @@ impl Listener {
             sheet_names: Vec::new(),
             sheet_index: 0,
             sheet: None,
+            sheets: 0,
             charts: 0,
             extra: Vec::new(),
             in_drawing: false,
             stored: None,
-            read: Extracted::default(),
+            found: Found::default(),
         }
     }
 
+    fn plans(&self) -> bool {
+        matches!(self.pass, Pass::Plan)
+    }
+
     /// `FormatTrackingHSSFListener.processRecord`, then `TikaHSSFListener.processRecord` for a
-    /// record handed to them. A failure Tika's listener stores is kept until
-    /// [`Listener::finish`]; one it does not catch fails at once.
-    pub(super) fn process(&mut self, record_sid: u16, record: &Record) -> Read<()> {
+    /// record handed to them, read from `stream`, writing to `out`. A failure Tika's listener
+    /// stores is kept until [`Listener::finish`]; one it does not catch fails at once.
+    pub(super) fn process(
+        &mut self,
+        record_sid: u16,
+        record: &Record,
+        stream: &RecordStream<'a>,
+        out: &mut dyn Out,
+    ) -> Result<(), Interrupted> {
         match record {
             Record::Format { index, format } => {
                 self.custom_formats.insert(*index, format.clone());
@@ -168,12 +326,13 @@ impl Listener {
         if self.stored.is_some() {
             return Ok(());
         }
-        match self.process_record(record_sid, record) {
+        match self.process_record(record_sid, record, stream, out) {
             Err(Uncaught::Stored(thrown)) => {
                 self.stored = Some(thrown);
                 Ok(())
             }
-            Err(Uncaught::Thrown(thrown)) => Err(thrown),
+            Err(Uncaught::Thrown(thrown)) => Err(Interrupted::Thrown(thrown)),
+            Err(Uncaught::Stopped(stop)) => Err(Interrupted::Stopped(stop)),
             Ok(()) => Ok(()),
         }
     }
@@ -184,12 +343,18 @@ impl Listener {
             return;
         }
         self.in_drawing = false;
-        self.read.drawing_groups.push(index);
+        self.found.drawing_groups.push(index);
         self.previous_sid = sid::DRAWING_GROUP;
         self.string_formula = None;
     }
 
-    fn process_record(&mut self, record_sid: u16, record: &Record) -> Result<(), Uncaught> {
+    fn process_record(
+        &mut self,
+        record_sid: u16,
+        record: &Record,
+        stream: &RecordStream<'a>,
+        out: &mut dyn Out,
+    ) -> Result<(), Uncaught> {
         let was_in_drawing = std::mem::replace(&mut self.in_drawing, false);
         let mut keeps_string_formula = false;
         match record {
@@ -202,16 +367,16 @@ impl Listener {
                         // another chart, for a sheet of its own.
                         self.charts += 1;
                     } else if self.previous_sid == sid::EOF {
-                        self.new_sheet();
+                        self.new_sheet(out)?;
                     }
                 }
-                bof::WORKSHEET => self.new_sheet(),
+                bof::WORKSHEET => self.new_sheet(out)?,
                 _ => {}
             },
             Record::Eof if self.charts > 0 => self.charts -= 1,
             Record::Eof => {
                 if self.sheet.is_some() {
-                    self.process_sheet()?;
+                    self.process_sheet(out)?;
                 }
                 self.sheet = None;
             }
@@ -222,14 +387,16 @@ impl Listener {
                 very_hidden,
             } => {
                 if *hidden {
-                    self.read.hidden_sheets.push(name.clone());
+                    self.found.hidden_sheets.push(name.clone());
                 }
                 if *very_hidden {
-                    self.read.very_hidden_sheets.push(name.clone());
+                    self.found.very_hidden_sheets.push(name.clone());
                 }
                 self.sheet_names.push(name.clone());
             }
-            Record::Sst(strings) => self.shared_strings = Some(strings.clone()),
+            Record::Sst(strings) => {
+                self.shared_strings = Some(SharedStringReader::new(strings.clone(), stream));
+            }
             Record::Formula { cell, cached } => match cached {
                 Cached::Special(Special {
                     kind: Special::STRING,
@@ -240,7 +407,7 @@ impl Listener {
                 }
                 Cached::Number(value) => {
                     let text = self.format_number(*cell, *value)?;
-                    self.add_text_cell(Some(*cell), &text);
+                    self.add_text_cell(Some(*cell), &text, out)?;
                 }
                 // Tika formats a boolean, an error or an empty result as the number 0.
                 Cached::Special(Special {
@@ -248,78 +415,43 @@ impl Listener {
                     value,
                 }) => {
                     let text = if *value == 1 { "TRUE" } else { "FALSE" };
-                    self.add_text_cell(Some(*cell), text);
+                    self.add_text_cell(Some(*cell), text, out)?;
                 }
                 Cached::Special(Special {
                     kind: Special::ERROR,
                     value,
                 }) => {
                     if let Some(text) = error_text(*value) {
-                        self.add_text_cell(Some(*cell), text);
+                        self.add_text_cell(Some(*cell), text, out)?;
                     }
                 }
                 Cached::Special(_) => {}
             },
             Record::String(text) => {
                 if self.previous_sid == sid::FORMULA {
-                    self.add_text_cell(self.string_formula, text);
+                    self.add_text_cell(self.string_formula, text, out)?;
                 }
             }
-            Record::Label { cell, text } => self.add_text_cell(Some(*cell), text),
+            Record::Label { cell, text } => self.add_text_cell(Some(*cell), text, out)?,
             Record::LabelSst { cell, index } => {
-                let Some(strings) = &self.shared_strings else {
-                    return Err(Uncaught::Stored(Thrown(
-                        "sstRecord should have been initialized before a ref to the shared \
-                         string table"
-                            .to_owned(),
-                    )));
-                };
-                let string = usize::try_from(*index)
-                    .ok()
-                    .and_then(|index| strings.get(index))
-                    .ok_or_else(|| {
-                        Uncaught::Thrown(Thrown(format!(
-                            "the shared string {index} is beyond the table"
-                        )))
-                    })?;
-                let text = if self.settings.phonetic_runs {
-                    let phonetic = string
-                        .phonetic
-                        .as_deref()
-                        .filter(|phonetic| !is_blank(phonetic))
-                        .unwrap_or("");
-                    format!("{} {phonetic}", string.text)
-                } else {
-                    string.text.clone()
-                };
-                self.add_text_cell(Some(*cell), &text);
+                let text = self.shared_string(*index)?;
+                self.add_text_cell(Some(*cell), &text, out)?;
             }
             Record::Number { cell, value } => {
                 let text = self.format_number(*cell, *value)?;
-                self.add_text_cell(Some(*cell), &text);
+                self.add_text_cell(Some(*cell), &text, out)?;
             }
             Record::Hyperlink {
                 first_row,
                 first_column,
-                address,
-            } => {
-                // The cell is linked where it is. Tika writes it again, linked, outside the
-                // table.
-                let linked = self
-                    .sheet
-                    .as_mut()
-                    .and_then(|sheet| sheet.get_mut(&(*first_row, *first_column)));
-                if let (Some(cell), Some(address)) = (linked, address) {
-                    let text = std::mem::replace(cell, Cell::Text(String::new()));
-                    *cell = Cell::Linked(Box::new(text), address.clone());
-                }
-            }
+                address: Some(address),
+            } => self.link((*first_row, *first_column), address),
             Record::TextObject(text) => {
                 if self.settings.shape_based_content {
-                    self.add_text_cell(None, text);
+                    self.add_text_cell(None, text, out)?;
                 }
             }
-            Record::SeriesText(text) => self.add_text_cell(None, text),
+            Record::SeriesText(text) => self.add_text_cell(None, text, out)?,
             Record::Drawing(data) => {
                 if self.sheet_index >= 0 {
                     self.append_drawing(data);
@@ -335,18 +467,18 @@ impl Listener {
             Record::Header(text) | Record::Footer(text) => {
                 // Tika writes them with their codes.
                 if self.settings.headers_and_footers {
-                    self.add_text_cell(None, &header_footer::extract(text));
+                    self.add_text_cell(None, &header_footer::extract(text), out)?;
                 }
             }
-            Record::Protect(true) => self.read.protected_sheet = true,
-            Record::ColumnInfo { hidden: true } => self.read.hidden_column = true,
+            Record::Protect(true) => self.found.protected_sheet = true,
+            Record::ColumnInfo { hidden: true } => self.found.hidden_column = true,
             Record::Note { author } => {
                 if !is_blank(author) {
                     let units = author.encode_utf16().collect();
-                    self.read.comment_authors.insert(units, author.clone());
+                    self.found.comment_authors.insert(units, author.clone());
                 }
             }
-            Record::Row { zero_height: true } => self.read.hidden_row = true,
+            Record::Row { zero_height: true } => self.found.hidden_row = true,
             _ => {}
         }
         self.previous_sid = record_sid;
@@ -356,105 +488,215 @@ impl Listener {
         Ok(())
     }
 
-    /// The end of the records: the stored failure, else what the listener read, with the text
-    /// left outside any sheet.
-    pub(super) fn finish(mut self) -> Read<Extracted> {
+    /// The text of the shared string at `index`: when planning, only whether the table holds
+    /// it.
+    fn shared_string(&mut self, index: i32) -> Result<String, Uncaught> {
+        let plans = self.plans();
+        let Some(strings) = &mut self.shared_strings else {
+            return Err(Uncaught::Stored(Thrown(
+                "sstRecord should have been initialized before a ref to the shared string table"
+                    .to_owned(),
+            )));
+        };
+        let index = usize::try_from(index)
+            .ok()
+            .filter(|&index| index < strings.len())
+            .ok_or_else(|| {
+                Uncaught::Thrown(Thrown(format!(
+                    "the shared string {index} is beyond the table"
+                )))
+            })?;
+        if plans {
+            return Ok(String::new());
+        }
+        let string = strings.get(index).map_err(Uncaught::Thrown)?;
+        Ok(if self.settings.phonetic_runs {
+            let phonetic = string
+                .phonetic
+                .as_deref()
+                .filter(|phonetic| !is_blank(phonetic))
+                .unwrap_or("");
+            format!("{} {phonetic}", string.text)
+        } else {
+            string.text
+        })
+    }
+
+    /// A hyperlink from the cell at `place` of the sheet, which links that cell where it is
+    /// already in the table. Tika writes it again, linked, outside the table.
+    fn link(&mut self, place: (i32, i32), address: &str) {
+        match &mut self.sheet {
+            Some(Sheet::Planned { placed, plan, .. }) => {
+                let plan = &mut self.found.plans[*plan];
+                if plan.ordered {
+                    plan.links
+                        .entry(place)
+                        .or_default()
+                        .push((*placed, address.to_owned()));
+                }
+            }
+            Some(Sheet::Held(cells)) => {
+                if let Some(cell) = cells.get_mut(&place) {
+                    let text = std::mem::replace(cell, Cell::Text(String::new()));
+                    *cell = Cell::Linked(Box::new(text), address.to_owned());
+                }
+            }
+            Some(Sheet::Streamed { .. }) | None => {}
+        }
+    }
+
+    /// The end of the records: the stored failure, else what the listener found, and, of a
+    /// write, the text left outside any sheet.
+    pub(super) fn finish(self) -> Result<(Found, Vec<Cell>), Thrown> {
         if let Some(thrown) = self.stored {
             return Err(thrown);
         }
-        self.read.outside = std::mem::take(&mut self.extra);
-        Ok(self.read)
+        Ok((self.found, self.extra))
     }
 
     fn append_drawing(&mut self, data: &[u8]) {
-        self.read
+        if !self.plans() {
+            return;
+        }
+        self.found
             .sheet_drawings
             .entry(i32::from(self.sheet_index as u16))
             .or_default()
             .extend_from_slice(data);
     }
 
-    fn new_sheet(&mut self) {
+    fn new_sheet(&mut self, out: &mut dyn Out) -> Result<(), Uncaught> {
         self.sheet_index = self.sheet_index.wrapping_add(1);
-        self.sheet = Some(BTreeMap::new());
         self.charts = 0;
+        let started = self.sheets;
+        self.sheets += 1;
+        self.sheet = Some(match self.pass {
+            Pass::Plan => {
+                self.found.plans.push(SheetPlan {
+                    ordered: true,
+                    ..SheetPlan::default()
+                });
+                Sheet::Planned {
+                    last: None,
+                    placed: 0,
+                    plan: started,
+                }
+            }
+            Pass::Write(plans) if plans[started].is_streamed() => Sheet::Streamed {
+                table: Table::start(plans[started].name.as_deref(), out)?,
+                placed: 0,
+                plan: started,
+            },
+            Pass::Write(_) => Sheet::Held(BTreeMap::new()),
+        });
+        Ok(())
     }
 
     /// Adds a cell to the sheet's table, or, without a place or with a taken one, or in a chart
     /// embedded in the sheet, to the text outside the cells.
-    fn add_cell(&mut self, cell_ref: Option<CellRef>, cell: Cell) {
-        let cell_ref = cell_ref.filter(|_| self.charts == 0);
-        match (&mut self.sheet, cell_ref) {
-            (Some(sheet), Some(cell_ref)) => {
-                match sheet.entry((cell_ref.row, i32::from(cell_ref.column))) {
-                    Entry::Occupied(_) => self.extra.push(cell),
-                    Entry::Vacant(place) => {
-                        place.insert(cell);
+    fn add_cell(
+        &mut self,
+        cell_ref: Option<CellRef>,
+        cell: Cell,
+        out: &mut dyn Out,
+    ) -> Result<(), Stop> {
+        let place = cell_ref
+            .filter(|_| self.charts == 0)
+            .map(|cell_ref| (cell_ref.row, i32::from(cell_ref.column)));
+        let (Some(sheet), Some(place)) = (&mut self.sheet, place) else {
+            if !self.plans() {
+                self.extra.push(cell);
+            }
+            return Ok(());
+        };
+        match sheet {
+            Sheet::Planned { last, placed, plan } => {
+                if last.is_some_and(|last| place <= last) {
+                    self.found.plans[*plan].ordered = false;
+                }
+                *last = Some(place);
+                *placed += 1;
+            }
+            Sheet::Streamed {
+                table,
+                placed,
+                plan,
+            } => {
+                let Pass::Write(plans) = self.pass else {
+                    unreachable!("a sheet is streamed as it is written");
+                };
+                let mut cell = cell;
+                for (before, address) in plans[*plan].links.get(&place).into_iter().flatten() {
+                    if *before > *placed {
+                        cell = Cell::Linked(Box::new(cell), address.clone());
                     }
                 }
+                *placed += 1;
+                table.cell(place, &cell, self.settings.missing_rows, out)?;
             }
-            _ => self.extra.push(cell),
+            Sheet::Held(cells) => match cells.entry(place) {
+                Entry::Occupied(_) => self.extra.push(cell),
+                Entry::Vacant(vacant) => {
+                    vacant.insert(cell);
+                }
+            },
         }
+        Ok(())
     }
 
-    fn add_text_cell(&mut self, cell_ref: Option<CellRef>, text: &str) {
+    fn add_text_cell(
+        &mut self,
+        cell_ref: Option<CellRef>,
+        text: &str,
+        out: &mut dyn Out,
+    ) -> Result<(), Stop> {
         let text = trim(text);
-        if !text.is_empty() {
-            self.add_cell(cell_ref, Cell::Text(text.to_owned()));
+        if text.is_empty() {
+            return Ok(());
         }
+        self.add_cell(cell_ref, Cell::Text(text.to_owned()), out)
     }
 
-    fn process_sheet(&mut self) -> Result<(), Uncaught> {
-        let mut table = Vec::new();
-        let out = &mut table;
-        out.push(Out::StartClass("div", "page"));
-        if i32::from(self.sheet_index) < self.sheet_names.len() as i32 {
-            let name = usize::try_from(self.sheet_index)
-                .ok()
-                .and_then(|index| self.sheet_names.get(index))
-                .ok_or_else(|| {
-                    Uncaught::Thrown(Thrown(format!(
-                        "the sheet index {} is negative",
-                        self.sheet_index
-                    )))
-                })?;
-            out.push(Out::Element("h1", name.clone()));
+    /// The name the page of the sheet is headed with, if any, failing on a sheet before the
+    /// first.
+    fn sheet_name(&self) -> Result<Option<String>, Uncaught> {
+        if i32::from(self.sheet_index) >= self.sheet_names.len() as i32 {
+            return Ok(None);
         }
-        out.push(Out::Start("table"));
-        out.push(Out::Start("tbody"));
-        out.push(Out::Start("tr"));
-        out.push(Out::Start("td"));
-        let mut current_row = 0;
-        let mut current_column = 0;
-        let sheet = self.sheet.as_ref().expect("a sheet being read");
-        for (&(row, column), cell) in sheet {
-            if current_row != row {
-                loop {
-                    out.push(Out::End("td"));
-                    out.push(Out::End("tr"));
-                    out.push(Out::Start("tr"));
-                    out.push(Out::Start("td"));
-                    current_row += 1;
-                    if !(self.settings.missing_rows && current_row < row) {
-                        break;
-                    }
+        usize::try_from(self.sheet_index)
+            .ok()
+            .and_then(|index| self.sheet_names.get(index))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                Uncaught::Thrown(Thrown(format!(
+                    "the sheet index {} is negative",
+                    self.sheet_index
+                )))
+            })
+    }
+
+    /// `processSheet`: the page, then the text found outside the cells, each in a div.
+    fn process_sheet(&mut self, out: &mut dyn Out) -> Result<(), Uncaught> {
+        let name = self.sheet_name()?;
+        match self.sheet.take().expect("a sheet being read") {
+            Sheet::Planned { plan, .. } => {
+                let plan = &mut self.found.plans[plan];
+                plan.ends = true;
+                plan.name = name;
+                return Ok(());
+            }
+            Sheet::Streamed { .. } => Table::end(out)?,
+            Sheet::Held(cells) => {
+                let mut table = Table::start(name.as_deref(), out)?;
+                for (&place, cell) in &cells {
+                    table.cell(place, cell, self.settings.missing_rows, out)?;
                 }
-                current_row = row;
-                current_column = 0;
+                Table::end(out)?;
             }
-            while current_column < column {
-                out.push(Out::End("td"));
-                out.push(Out::Start("td"));
-                current_column += 1;
-            }
-            render(cell, out);
         }
-        out.push(Out::End("td"));
-        out.push(Out::End("tr"));
-        out.push(Out::End("tbody"));
-        out.push(Out::End("table"));
-        let outside = std::mem::take(&mut self.extra);
-        self.read.pages.push(Page { table, outside });
+        write_outside(&std::mem::take(&mut self.extra), out)?;
+        out.end("div")?;
         Ok(())
     }
 
@@ -502,20 +744,67 @@ impl Listener {
     }
 }
 
-/// A failure of a record: one Tika's listener stores, or one it lets through.
+/// A failure of a record: one Tika's listener stores, one it lets through, or the output
+/// taking no more.
 enum Uncaught {
     Stored(Thrown),
     Thrown(Thrown),
+    Stopped(Stop),
+}
+
+impl From<Stop> for Uncaught {
+    fn from(stop: Stop) -> Self {
+        Uncaught::Stopped(stop)
+    }
+}
+
+/// `processExtraText`.
+pub(super) fn write_outside(cells: &[Cell], out: &mut dyn Out) -> Result<(), Stop> {
+    for cell in cells {
+        out.start_class("div", "outside")?;
+        render(cell, out)?;
+        out.end("div")?;
+    }
+    Ok(())
 }
 
 /// `Cell.render`.
-pub(super) fn render(cell: &Cell, out: &mut Vec<Out>) {
+fn render(cell: &Cell, out: &mut dyn Out) -> Result<(), Stop> {
     match cell {
-        Cell::Text(text) => out.push(Out::Text(text.clone())),
+        Cell::Text(text) => out.text(text),
         Cell::Linked(cell, address) => {
-            out.push(Out::StartLink(address.clone()));
-            render(cell, out);
-            out.push(Out::End("a"));
+            out.start_link(address)?;
+            render(cell, out)?;
+            out.end("a")
         }
+    }
+}
+
+/// An output that takes nothing, which planning writes to.
+pub(super) struct Nowhere;
+
+impl Out for Nowhere {
+    fn start(&mut self, _: &'static str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_class(&mut self, _: &'static str, _: &'static str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn start_link(&mut self, _: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn end(&mut self, _: &'static str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn text(&mut self, _: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn element(&mut self, _: &'static str, _: &str) -> Result<(), Stop> {
+        Ok(())
     }
 }

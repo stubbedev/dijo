@@ -517,17 +517,25 @@ pub trait BlockKeys {
     }
 }
 
+impl<K: BlockKeys> BlockKeys for &K {
+    fn block(&self, block: u32) -> Rc4Key {
+        (*self).block(block)
+    }
+}
+
 /// The key stream `ChunkedCipherInputStream` decrypts a stream with, by position: each byte
-/// with the key of its chunk of `chunk` bytes, from the chunk's start.
-pub struct ChunkedKeyStream<'k, K: BlockKeys> {
-    keys: &'k K,
+/// with the key of its chunk of `chunk` bytes, from the chunk's start. It holds its keys, or
+/// borrows them.
+#[derive(Clone)]
+pub struct ChunkedKeyStream<K: BlockKeys> {
+    keys: K,
     chunk: usize,
     /// The number of the chunk last decrypted, and its key stream.
     current: Option<(usize, Vec<u8>)>,
 }
 
-impl<'k, K: BlockKeys> ChunkedKeyStream<'k, K> {
-    pub fn new(keys: &'k K, chunk: usize) -> Self {
+impl<K: BlockKeys> ChunkedKeyStream<K> {
+    pub fn new(keys: K, chunk: usize) -> Self {
         ChunkedKeyStream {
             keys,
             chunk,

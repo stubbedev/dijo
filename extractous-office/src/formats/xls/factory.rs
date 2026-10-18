@@ -7,16 +7,20 @@
 //! others are. POI hands them on as read: an RK record as such, and a MulRK record, which no
 //! listener takes, not at all (#107).
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::io::Write;
 
 use super::poi_throws;
 use super::records::{read_record, sid, CellRef, Record};
-use super::stream::RecordStream;
+use super::stream::{Mark, RecordStream};
 use crate::config::ParserConfigs;
+use crate::errors::Error;
 use crate::formats::crypt::xor::{ExcelXorKey, Xor};
 use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys, Unopened};
-use crate::formats::poi::{thrown, Read};
-use crate::formats::Decline;
+use crate::formats::poi::{thrown, Read, Thrown};
+use crate::formats::{Decline, Failure};
+use crate::ole2::Content;
 
 /// `Biff8DecryptingStream.RC4_REKEYING_INTERVAL`: the bytes each block key decrypts.
 const RC4_REKEYING_INTERVAL: usize = 1024;
@@ -57,8 +61,8 @@ pub(super) struct Records<'a> {
     last: Last,
     bof_depth: i32,
     last_was_eof_level_zero: bool,
-    /// The data of each drawing group, joined with what followed it.
-    pub(super) drawing_groups: Vec<Vec<u8>>,
+    /// Each drawing group, by where the records whose data it joins start.
+    drawing_groups: Vec<Vec<Mark>>,
     /// The data of the `FILEPASS` record the first records end with, after which the stream is
     /// encrypted.
     file_pass: Option<Vec<u8>>,
@@ -77,8 +81,8 @@ fn last_of(record: &Record) -> Last {
 impl<'a> Records<'a> {
     /// `new RecordFactoryInputStream(stream, false)` up to its decrypting stream: the first
     /// records read ahead, to find whether the workbook is encrypted.
-    pub(super) fn new(data: &'a [u8]) -> Read<Self> {
-        let mut stream = RecordStream::new(data);
+    pub(super) fn new(content: Content<'a>) -> Read<Self> {
+        let mut stream = RecordStream::of(content);
         let mut unread = VecDeque::new();
         stream.next_record()?;
         let first = read_record(&mut stream)?;
@@ -139,8 +143,13 @@ impl<'a> Records<'a> {
                  salt/verifier/verifierHash"
             ))))
         })?;
-        decrypt_records(&key, self.stream.data_mut(), start);
+        self.stream.decrypt_with(Decrypting::new(key, start));
         Ok(())
+    }
+
+    /// The stream the records are read from, as far as they are read.
+    pub(super) fn stream(&self) -> &RecordStream<'a> {
+        &self.stream
     }
 
     /// `nextRecord`: the next record handed to the listeners, `None` after the last.
@@ -164,12 +173,26 @@ impl<'a> Records<'a> {
 
     fn event(&mut self, sid: u16, record: Record) -> Event {
         match record {
-            Record::DrawingGroup(data) => {
-                self.drawing_groups.push(data);
+            Record::DrawingGroup(start) => {
+                self.drawing_groups.push(vec![start]);
                 Event::DrawingGroup(self.drawing_groups.len() - 1)
             }
             record => Event::Record { sid, record },
         }
+    }
+
+    /// Joins the data of the current record to the last drawing group.
+    fn join_drawing_group(&mut self) {
+        let start = self.stream.record_start();
+        self.drawing_groups
+            .last_mut()
+            .expect("a drawing group came before")
+            .push(start);
+    }
+
+    /// The drawing groups, each by where the records whose data it joins start.
+    pub(super) fn into_drawing_groups(self) -> Vec<Vec<Mark>> {
+        self.drawing_groups
     }
 
     /// `readNextRecord`: a record with its type.
@@ -196,21 +219,15 @@ impl<'a> Records<'a> {
                 self.unread.extend(numbers);
                 return Ok(first);
             }
-            Record::DrawingGroup(ref data) if self.last == Last::DrawingGroup => {
-                self.drawing_groups
-                    .last_mut()
-                    .expect("a drawing group came before")
-                    .extend_from_slice(data);
+            Record::DrawingGroup(_) if self.last == Last::DrawingGroup => {
+                self.join_drawing_group();
                 return Ok(None);
             }
-            Record::Continue(ref data) => {
+            Record::Continue(_) => {
                 return match self.last {
                     Last::ObjectOrText => Ok(None),
                     Last::DrawingGroup => {
-                        self.drawing_groups
-                            .last_mut()
-                            .expect("a drawing group came before")
-                            .extend_from_slice(data);
+                        self.join_drawing_group();
                         Ok(None)
                     }
                     Last::Drawing | Last::Unknown => Ok(Some((record_sid, record))),
@@ -311,34 +328,77 @@ fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Decline<'static>> {
     })
 }
 
-/// The records of `data` from `start` decrypted in place as `Biff8DecryptingStream` reads them:
-/// with RC4, each byte by its position in the stream; with XOR, each byte of a record by its
-/// position and the record's length.
-pub(super) fn decrypt_records(key: &WorkbookKey, data: &mut [u8], start: usize) {
-    enum Decrypting<'k> {
-        Rc4(ChunkedKeyStream<'k, Rc4Keys>),
-        Xor(&'k ExcelXorKey),
+/// The data of a drawing group whose records start at `starts`, joined, read from a copy of
+/// `stream` and written to `out`.
+pub(super) fn write_drawing_group(
+    stream: &RecordStream<'_>,
+    starts: &[Mark],
+    out: &mut dyn Write,
+) -> Result<(), Failure> {
+    let mut stream = stream.clone();
+    for &start in starts {
+        let data = stream
+            .seek(start)
+            .and_then(|()| stream.read_remainder())
+            .map_err(|Thrown(reason)| {
+                Failure::Malformed(format!(
+                    "a drawing group's record, read before, fails: {reason}"
+                ))
+            })?;
+        out.write_all(&data).map_err(|error| {
+            Failure::Extraction(Error::IoError(format!(
+                "Could not spool a drawing group of the workbook: {error}"
+            )))
+        })?;
     }
-    let mut decrypting = match key {
-        WorkbookKey::Rc4(keys) => {
-            Decrypting::Rc4(ChunkedKeyStream::new(keys, RC4_REKEYING_INTERVAL))
-        }
-        WorkbookKey::Xor(key) => Decrypting::Xor(key),
-    };
-    let mut at = start;
-    while at + 4 <= data.len() {
-        let sid = u16::from_le_bytes([data[at], data[at + 1]]);
-        let length = usize::from(u16::from_le_bytes([data[at + 2], data[at + 3]]));
-        let body = at + 4;
-        let end = (body + length).min(data.len());
-        if !NEVER_ENCRYPTED.contains(&sid) {
-            let record = &mut data[body..end];
-            match &mut decrypting {
-                Decrypting::Rc4(key_stream) => key_stream.decrypt(record, body),
-                Decrypting::Xor(key) => key.decrypt_record(record, body, length),
+    Ok(())
+}
+
+/// What decrypts the records of an encrypted workbook as `Biff8DecryptingStream` reads them,
+/// a record at a time from the first whose header is at `start`: with RC4, each byte by its
+/// position in the stream; with XOR, each byte of a record by its position and the record's
+/// length. The records `isNeverEncryptedRecord` names stay plain.
+#[derive(Clone)]
+pub(super) struct Decrypting {
+    start: usize,
+    key: KeyStream,
+}
+
+#[derive(Clone)]
+enum KeyStream {
+    Rc4(ChunkedKeyStream<Rc4Keys>),
+    Xor(ExcelXorKey),
+}
+
+impl Decrypting {
+    pub(super) fn new(key: WorkbookKey, start: usize) -> Self {
+        let key = match key {
+            WorkbookKey::Rc4(keys) => {
+                KeyStream::Rc4(ChunkedKeyStream::new(keys, RC4_REKEYING_INTERVAL))
             }
+            WorkbookKey::Xor(key) => KeyStream::Xor(key),
+        };
+        Decrypting { start, key }
+    }
+
+    /// Decrypts `data`, what the stream holds of the record of type `sid` and `length` whose
+    /// header is at `header`.
+    pub(super) fn decrypt(
+        &mut self,
+        sid: u16,
+        header: usize,
+        length: usize,
+        data: &mut Cow<'_, [u8]>,
+    ) {
+        if header < self.start || NEVER_ENCRYPTED.contains(&sid) {
+            return;
         }
-        at = body + length;
+        let body = header + 4;
+        let record = data.to_mut();
+        match &mut self.key {
+            KeyStream::Rc4(key_stream) => key_stream.decrypt(record, body),
+            KeyStream::Xor(key) => key.decrypt_record(record, body, length),
+        }
     }
 }
 
@@ -364,7 +424,7 @@ mod tests {
     }
 
     fn events(data: &[u8]) -> Read<Vec<Event>> {
-        let mut records = Records::new(data)?;
+        let mut records = Records::new(Content::from(data))?;
         let mut events = Vec::new();
         while let Some(event) = records.next()? {
             events.push(event);
@@ -443,7 +503,13 @@ mod tests {
     fn finds_encrypted_workbooks() {
         let mut data = bof_alone(0x05);
         data.extend(record(sid::FILE_PASS, &[0; 6]));
-        assert!(Records::new(&data).unwrap().file_pass.is_some());
-        assert!(Records::new(&bof(0x05)).unwrap().file_pass.is_none());
+        let file_pass = |data: &[u8]| {
+            Records::new(Content::from(data))
+                .unwrap()
+                .file_pass
+                .is_some()
+        };
+        assert!(file_pass(&data));
+        assert!(!file_pass(&bof(0x05)));
     }
 }

@@ -691,6 +691,15 @@ pub struct Content<'a> {
     length: usize,
 }
 
+/// Bytes in memory as a content of one run.
+impl<'a> From<&'a [u8]> for Content<'a> {
+    fn from(bytes: &'a [u8]) -> Self {
+        let mut runs = Runs::new(bytes.len());
+        runs.push(0, bytes.len(), 0);
+        runs.into_content(bytes)
+    }
+}
+
 impl<'a> Content<'a> {
     pub fn len(&self) -> usize {
         self.length
