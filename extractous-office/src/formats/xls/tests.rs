@@ -344,7 +344,7 @@ fn decrypts_from_where_the_encrypted_records_are() {
     let keys = EncryptionInfo::BinaryRc4(rc4)
         .verify(DEFAULT_PASSWORD)
         .unwrap();
-    factory::decrypt_records(&keys, &mut stream, encrypted);
+    factory::decrypt_records(&factory::WorkbookKey::Rc4(keys), &mut stream, encrypted);
     assert_eq!(read(&stream).unwrap().hidden_sheets, ["H"]);
 }
 

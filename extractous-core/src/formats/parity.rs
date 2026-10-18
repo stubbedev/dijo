@@ -2192,15 +2192,24 @@ pub fn assert_fails_as_tika_with(documents: &[&Path], configs: &ParserConfigs) {
 /// what it reads.
 #[cfg(feature = "tika")]
 pub fn assert_read_where_tika_fails(documents: &[&Path], issue: &str) {
-    let configs = ParserConfigs::default();
+    assert_read_where_tika_fails_with(documents, &ParserConfigs::default(), issue);
+}
+
+/// [`assert_read_where_tika_fails`] under the settings `configs`.
+#[cfg(feature = "tika")]
+pub fn assert_read_where_tika_fails_with(
+    documents: &[&Path],
+    configs: &ParserConfigs,
+    issue: &str,
+) {
     for document in documents {
-        let tika = tika_error(document, &configs);
+        let tika = tika_error(document, configs);
         let routed = routed(document.to_str().unwrap());
         if let Err(native) = formats::parse_to_string(
             routed.parser,
             &routed.input,
             &routed.detected,
-            &configs,
+            configs,
             SMALL_LIMIT,
             Output::Text,
         ) {

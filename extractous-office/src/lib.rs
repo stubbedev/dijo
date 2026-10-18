@@ -25,6 +25,8 @@ pub mod formats {
     pub mod compound;
     pub mod dgn;
     pub mod doc;
+    #[cfg(test)]
+    mod encrypted;
     pub mod escher;
     pub mod msg;
     pub mod ole2;

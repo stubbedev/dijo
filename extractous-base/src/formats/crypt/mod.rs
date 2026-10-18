@@ -2,9 +2,11 @@
 //! ([MS-OFFCRYPTO]): an `EncryptionInfo`, its verifier checked against a password, and the keys
 //! that decrypt the document: the RC4 keys of Office 97's binary RC4 and of CryptoAPI for the
 //! binary formats, and the AES keys of the standard and agile encryption of OOXML packages. The
-//! ciphers and hashes are RustCrypto's.
+//! ciphers and hashes are RustCrypto's. The XOR obfuscation of Word and Excel documents is
+//! [`xor`]'s.
 
 mod agile;
+pub mod xor;
 
 use aes::cipher::BlockCipherDecrypt;
 use md5::Md5;
@@ -217,8 +219,6 @@ impl Input<'_> {
 pub enum Mode {
     /// CryptoAPI wherever the version is CryptoAPI's or standard encryption's.
     CryptoApi,
-    /// XOR obfuscation, whose info has no version.
-    Xor,
     /// What the version and flags say.
     Unset,
 }
@@ -233,11 +233,6 @@ enum AnyEncryption {
 
 /// `new EncryptionInfo(input, mode)`.
 fn read_encryption(data: &[u8], mode: Mode) -> Result<AnyEncryption, Unopened> {
-    if mode == Mode::Xor {
-        return Err(Unopened::Unported(
-            "XOR obfuscation, which this port does not decrypt".to_owned(),
-        ));
-    }
     let mut input = Input { data, at: 0 };
     let major = input.u16()?;
     let minor = input.u16()?;
@@ -949,10 +944,6 @@ mod tests {
         assert!(matches!(
             EncryptionInfo::read(&[1, 0, 1, 0], Mode::Unset),
             Err(Unopened::Thrown(_))
-        ));
-        assert!(matches!(
-            EncryptionInfo::read(&[1, 0, 1, 0], Mode::Xor),
-            Err(Unopened::Unported(_))
         ));
         assert!(matches!(
             EncryptionInfo::read(&[9, 0, 9, 0], Mode::CryptoApi),

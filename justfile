@@ -290,6 +290,29 @@ ole2-reference:
     java -cp "$jars/mime/*" "$fixtures/SummaryReference.java" "$fixtures/summaries.tsv.gz" \
         documents=test_files/documents corpus="$CONFORMANCE_CORPUS"
 
+# Regenerate the encrypted Word documents and workbooks of extractous-office/tests/fixtures/crypt:
+# LibreOffice writes the plain ones, and encrypt.py encrypts them with XOR obfuscation and RC4
+# CryptoAPI, checked against what msoffcrypto-tool decrypts. Needs soffice and python3.
+crypt-fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v soffice >/dev/null || { echo "crypt-fixtures needs LibreOffice's soffice" >&2; exit 1; }
+    fixtures=extractous-office/tests/fixtures/crypt
+    work=target/crypt-fixtures
+    rm -rf "$work"
+    mkdir -p "$work/source"
+    python3 -m venv "$work/venv"
+    "$work/venv/bin/pip" install --quiet msoffcrypto-tool==6.0.0 olefile==0.47
+    printf 'Fortrolig tekst i et krypteret dokument.\nAndet afsnit med æøå.\n' > "$work/source/plain.txt"
+    printf 'Navn,Tal\nKrypteret,42\nÆble,7\n' > "$work/source/plain.csv"
+    profile="file://$(realpath "$work")/profile"
+    soffice -env:UserInstallation="$profile" --headless --convert-to 'doc:MS Word 97' \
+        --outdir "$fixtures" "$work/source/plain.txt"
+    soffice -env:UserInstallation="$profile" --headless \
+        --infilter='Text - txt - csv (StarCalc):44,34,76' --convert-to 'xls:MS Excel 97' \
+        --outdir "$fixtures" "$work/source/plain.csv"
+    "$work/venv/bin/python" -I "$fixtures/encrypt.py" "$fixtures/plain.doc" "$fixtures/plain.xls" "$fixtures"
+
 # Regenerate Apache Tika's own JunkDetector scores that the Rust port is tested against, after checking
 # that the embedded model is the one in the pinned Tika version's jar.
 [unix]
