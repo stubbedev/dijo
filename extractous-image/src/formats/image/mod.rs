@@ -58,7 +58,7 @@ const OCR_TYPES: [&str; 22] = [
     "image/webp",
     "image/x-portable-bitmap",
     "image/x-portable-graymap",
-    "image/x-portable-anymap",
+    PORTABLE_ANYMAP,
     "image/vnd.adobe.photoshop",
     "image/vnd.zbrush.pcx",
     "image/x-tga",
@@ -367,6 +367,9 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> 
 /// before the enricher.
 pub struct RecognizedImageParser;
 
+/// The supertype of the portable bitmap formats.
+const PORTABLE_ANYMAP: &str = "image/x-portable-anymap";
+
 /// The parser Tika has for a type `RecognizedImageParser` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Recognized {
@@ -401,13 +404,16 @@ impl Parser for RecognizedImageParser {
         &[
             "image/webp",
             "image/vnd.adobe.photoshop",
-            "image/x-portable-bitmap",
-            "image/x-portable-graymap",
-            "image/x-portable-anymap",
-            "image/x-portable-arbitrarymap",
+            PORTABLE_ANYMAP,
             "image/vnd.zbrush.pcx",
             "image/x-tga",
         ]
+    }
+
+    /// The portable bitmaps, graymaps, pixmaps and arbitrary maps, which Tika's composite
+    /// parser reads with the parser of their supertype.
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &[PORTABLE_ANYMAP]
     }
 
     fn prepare<'a>(
