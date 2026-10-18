@@ -321,25 +321,6 @@ pub(crate) fn describe_date(millis: i64, zone: &TimeZone) -> String {
     format!("{head} {}:{} {year}", &offset[..3], &offset[3..])
 }
 
-/// `Date.toString` as the native image writes it: `EEE MMM dd HH:mm:ss`, the zone named by its
-/// offset (`+02:00`), and the year.
-pub(crate) fn date_to_string(millis: i64, zone: &TimeZone) -> String {
-    let local = time::local_fields(millis, zone);
-    let text = SimpleDateFormat::new("EEE MMM dd HH:mm:ss Z")
-        .expect("the Date.toString pattern compiles")
-        .format(millis, zone)
-        .expect("the Date.toString pattern names no zone");
-    let (head, offset) = text
-        .rsplit_once(' ')
-        .expect("the pattern ends with an offset");
-    let year = if local.before_christ {
-        1 - local.year
-    } else {
-        local.year
-    };
-    format!("{head} {}:{} {year}", &offset[..3], &offset[3..])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,10 +359,6 @@ mod tests {
         let zone = TimeZone::fixed(7200);
         assert_eq!(
             describe_date(1_791_836_869_000, &zone),
-            "Mon Oct 12 22:27:49 +02:00 2026"
-        );
-        assert_eq!(
-            date_to_string(1_791_836_869_000, &zone),
             "Mon Oct 12 22:27:49 +02:00 2026"
         );
     }
