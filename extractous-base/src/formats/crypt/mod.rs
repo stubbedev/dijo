@@ -16,9 +16,10 @@ use sha2::{Sha256, Sha384, Sha512};
 
 use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
-use crate::formats::Unported;
+use crate::formats::{Decline, Unported};
+use crate::ole2::Content;
 
-use agile::{Agile, AgileKey};
+use agile::{Agile, AgileKey, SEGMENT};
 
 /// `Decryptor.DEFAULT_PASSWORD`, which Office encrypts a document with when it is only to be
 /// write protected.
@@ -338,35 +339,81 @@ pub enum PackageKey {
     Agile(AgileKey),
 }
 
+/// The length of the package the `EncryptedPackage` stream `stream` holds, which the stream
+/// starts with.
+pub fn package_length(stream: &Content<'_>) -> Result<usize, Unopened> {
+    let length = stream
+        .range(0, 8)
+        .map(|bytes| i64::from_le_bytes(bytes[..].try_into().expect("eight bytes")))
+        .ok_or_else(|| Unopened::Thrown("the encrypted package has no length".to_owned()))?;
+    usize::try_from(length)
+        .map_err(|_| Unopened::Unported("an encrypted package of a negative length".to_owned()))
+}
+
 impl PackageKey {
-    /// `Decryptor.getDataStream(directory)` read whole: the package the `EncryptedPackage`
-    /// stream holds, past the length it starts with.
-    pub fn decrypt(&self, stream: &[u8]) -> Result<Vec<u8>, Unopened> {
-        let length = stream
-            .get(..8)
-            .map(|bytes| i64::from_le_bytes(bytes.try_into().expect("eight bytes")))
-            .ok_or_else(|| Unopened::Thrown("the encrypted package has no length".to_owned()))?;
-        let length = usize::try_from(length).map_err(|_| {
-            Unopened::Unported("an encrypted package of a negative length".to_owned())
-        })?;
-        let encrypted = &stream[8..];
+    /// `Decryptor.getDataStream(directory)` read to its end: the package the `EncryptedPackage`
+    /// stream `stream` holds, past the length it starts with, handed to `write` as it is
+    /// decrypted, a chunk of at most 4096 bytes at a time. Fails, after the chunks before, where
+    /// Java's cipher stream fails or POI's reads short.
+    pub fn decrypt<E: From<Unopened>>(
+        &self,
+        stream: &Content<'_>,
+        mut write: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let length = package_length(stream)?;
+        let encrypted = stream.len() - 8;
+        let chunk_at = |offset: usize, length: usize| {
+            stream
+                .range(8 + offset, length)
+                .expect("a chunk lies within the stream")
+        };
         match self {
             PackageKey::Standard(key) => {
-                let needed = (length / 16 + 1) * 16;
-                let read = &encrypted[..needed.min(encrypted.len())];
-                if !read.len().is_multiple_of(16) || read.len() < length {
+                let read = ((length / 16 + 1) * 16).min(encrypted);
+                if !read.is_multiple_of(16) || read < length {
                     return Err(Unopened::Unported(
                         "an encrypted package shorter than its length, which Java's cipher \
                          stream fails on"
                             .to_owned(),
-                    ));
+                    )
+                    .into());
                 }
-                let mut plain = key.decrypt_ecb(read);
-                plain.truncate(length);
-                Ok(plain)
+                let mut offset = 0;
+                while offset < length {
+                    let chunk = SEGMENT.min(read - offset);
+                    let plain = key.decrypt_ecb(&chunk_at(offset, chunk));
+                    write(&plain[..chunk.min(length - offset)])?;
+                    offset += chunk;
+                }
             }
-            PackageKey::Agile(key) => key.decrypt(encrypted, length),
+            PackageKey::Agile(key) => {
+                let mut offset = 0;
+                for number in 0u32.. {
+                    if offset >= length {
+                        break;
+                    }
+                    if offset >= encrypted {
+                        return Err(Unopened::Unported(
+                            "an encrypted package that ends before its length, which POI reads \
+                             short"
+                                .to_owned(),
+                        )
+                        .into());
+                    }
+                    let chunk = chunk_at(offset, SEGMENT.min(encrypted - offset));
+                    let wanted = (length - offset).min(SEGMENT);
+                    write(&key.decrypt_segment(number, &chunk, wanted)?)?;
+                    offset += SEGMENT;
+                }
+            }
         }
+        Ok(())
+    }
+}
+
+impl From<Unopened> for Decline<'_> {
+    fn from(unopened: Unopened) -> Self {
+        unopened.unported().into()
     }
 }
 
@@ -761,27 +808,110 @@ impl Standard {
 
     /// `StandardDecryptor.verifyPassword`: the AES key, where the password opens it.
     fn verify(&self, password: &str) -> Result<Option<AesKey>, Unopened> {
-        let hashed = hash_password(
-            password,
-            Hash::Sha1,
-            &self.verifier.salt,
-            STANDARD_SPIN_COUNT,
-        );
-        let final_hash = generate_key(&hashed, Hash::Sha1, &0u32.to_le_bytes(), Hash::Sha1.size());
-        let fill_and_xor = |fill: u8| {
-            let mut buffer = [fill; 64];
-            for (byte, hashed) in buffer.iter_mut().zip(&final_hash) {
-                *byte ^= hashed;
-            }
-            Hash::Sha1.digest(&[&buffer])
-        };
-        let mut derived = fill_and_xor(0x36);
-        derived.extend(fill_and_xor(0x5C));
-        let key = AesKey::new(&block_of(&derived, self.key_bits as usize / 8))?;
+        let key = standard_key(password, &self.verifier.salt, self.key_bits)?;
         let verifier = key.decrypt_ecb_whole(&self.verifier.verifier)?;
         let verifier_hash = key.decrypt_ecb_whole(&self.verifier.verifier_hash)?;
         let opened = Hash::Sha1.digest(&[&verifier]) == verifier_hash[..Hash::Sha1.size()];
         Ok(opened.then_some(key))
+    }
+}
+
+/// `StandardDecryptor.generateSecretKey`: the AES key of `key_bits` bits of `password` with
+/// `salt`.
+fn standard_key(password: &str, salt: &[u8], key_bits: i32) -> Result<AesKey, Unopened> {
+    let hashed = hash_password(password, Hash::Sha1, salt, STANDARD_SPIN_COUNT);
+    let final_hash = generate_key(&hashed, Hash::Sha1, &0u32.to_le_bytes(), Hash::Sha1.size());
+    let fill_and_xor = |fill: u8| {
+        let mut buffer = [fill; 64];
+        for (byte, hashed) in buffer.iter_mut().zip(&final_hash) {
+            *byte ^= hashed;
+        }
+        Hash::Sha1.digest(&[&buffer])
+    };
+    let mut derived = fill_and_xor(0x36);
+    derived.extend(fill_and_xor(0x5C));
+    AesKey::new(&block_of(&derived, key_bits as usize / 8))
+}
+
+/// Standard encryption of an OOXML package as Office writes it, for the tests of what reads it.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::*;
+
+    /// The `EncryptionInfo` and `EncryptedPackage` streams of `package` encrypted with
+    /// `password`: version 3.2, AES-128, the key derived with SHA-1.
+    pub fn encrypted_package(password: &str, package: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        const AES_128: i32 = 0x660E;
+        const SHA_1: i32 = 0x8004;
+        const AES_PROVIDER: i32 = 0x18;
+        const FLAGS: i32 = 0x24;
+        let salt = [9u8; 16];
+        let key = standard_key(password, &salt, 128).expect("a 128-bit key");
+        let verifier = [4u8; 16];
+        let mut verifier_hash = Hash::Sha1.digest(&[&verifier]);
+        verifier_hash.resize(32, 0);
+        let mut info = vec![3, 0, 2, 0];
+        for field in [
+            FLAGS,
+            32,
+            FLAGS,
+            0,
+            AES_128,
+            SHA_1,
+            128,
+            AES_PROVIDER,
+            0,
+            0,
+            16,
+        ] {
+            info.extend(field.to_le_bytes());
+        }
+        info.extend(salt);
+        info.extend(key.encrypt_ecb(&verifier));
+        info.extend(20i32.to_le_bytes());
+        info.extend(key.encrypt_ecb(&verifier_hash));
+        let mut padded = package.to_vec();
+        padded.resize(package.len().next_multiple_of(16), 0);
+        let mut stream = (package.len() as u64).to_le_bytes().to_vec();
+        stream.extend(key.encrypt_ecb(&padded));
+        (info, stream)
+    }
+
+    impl AesKey {
+        /// AES/ECB/NoPadding encryption of `data`'s whole blocks.
+        fn encrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
+            use aes::cipher::BlockCipherEncrypt;
+            let mut out = data.to_vec();
+            for chunk in out.as_chunks_mut::<16>().0 {
+                let block: &mut aes::Block = chunk.into();
+                match self {
+                    AesKey::Aes128(cipher) => cipher.encrypt_block(block),
+                    AesKey::Aes192(cipher) => cipher.encrypt_block(block),
+                    AesKey::Aes256(cipher) => cipher.encrypt_block(block),
+                }
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn decrypts_what_standard_encryption_encrypts_a_chunk_at_a_time() {
+        let package: Vec<u8> = (0..10_000u32).map(|at| at as u8).collect();
+        let (info, stream) = encrypted_package("pw", &package);
+        let encryption = PackageEncryption::read(&info).unwrap();
+        assert!(encryption.verify("other").unwrap().is_none());
+        let key = encryption.verify("pw").unwrap().unwrap();
+        let mut decrypted = Vec::new();
+        let mut chunks = 0;
+        key.decrypt::<Unopened>(&Content::from(stream.as_slice()), |chunk| {
+            assert!(chunk.len() <= SEGMENT);
+            decrypted.extend_from_slice(chunk);
+            chunks += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(decrypted, package);
+        assert_eq!(chunks, 3);
     }
 }
 

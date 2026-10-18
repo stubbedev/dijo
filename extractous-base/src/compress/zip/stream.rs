@@ -43,6 +43,7 @@ pub enum Failure {
 }
 
 /// The local header of the entry the stream is in.
+#[derive(Debug, Clone)]
 struct Current {
     flags: u16,
     method: u16,
@@ -58,7 +59,9 @@ impl Current {
     }
 }
 
-/// A `ZipArchiveInputStream` over the whole input.
+/// A `ZipArchiveInputStream` over the whole input. A clone stays at the entry the stream is in,
+/// to read its data again once the stream has gone on.
+#[derive(Debug, Clone)]
 pub struct ZipStream<'a> {
     data: &'a [u8],
     position: usize,
@@ -267,8 +270,9 @@ impl<'a> ZipStream<'a> {
         self.content_into(pages, Decoding::spooled)
     }
 
-    /// [`ZipStream::spool`] keeping nothing, to tell whether the entry reads whole.
-    pub fn verify(&self) -> Result<Decoded<()>, Failure> {
+    /// [`ZipStream::spool`] keeping nothing but the length decoded, to tell whether the entry
+    /// reads whole.
+    pub fn verify(&self) -> Result<Decoded<u64>, Failure> {
         self.content_into(Pages::IN_MEMORY, |compressed, _| {
             Decoding::discarded(compressed)
         })

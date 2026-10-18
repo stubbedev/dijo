@@ -13,18 +13,28 @@ pub(crate) fn package(main: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
     package_with(&relationship("rId1", office_document, main), parts)
 }
 
-/// A package of `parts` whose own relationships are `package_relationships`.
-pub(crate) fn package_with(package_relationships: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
+/// The `[Content_Types].xml` of a package of `parts`, each a name and a content type.
+pub(crate) fn content_types<'p>(parts: impl IntoIterator<Item = (&'p str, &'p str)>) -> String {
     let mut types = String::from(
         "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
          <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>",
     );
-    for (name, content_type, _) in parts {
+    for (name, content_type) in parts {
         types.push_str(&format!(
             "<Override PartName=\"/{name}\" ContentType=\"{content_type}\"/>"
         ));
     }
     types.push_str("</Types>");
+    types
+}
+
+/// A package of `parts` whose own relationships are `package_relationships`.
+pub(crate) fn package_with(package_relationships: &str, parts: &[(&str, &str, &[u8])]) -> Vec<u8> {
+    let types = content_types(
+        parts
+            .iter()
+            .map(|&(name, content_type, _)| (name, content_type)),
+    );
     let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let mut add = |name: &str, content: &[u8]| {
