@@ -1,7 +1,8 @@
 //! Vorbis, Opus and FLAC streams as vorbis-java 0.8's `VorbisFile`, `OpusFile` and `FlacFile`
 //! read them for Tika: the stream's info header, its Vorbis-style comments, and for Vorbis and
 //! Opus the duration `OggAudioStatistics` gives from the last granule position of its audio
-//! packets. Where vorbis-java throws, so do these.
+//! packets. Where vorbis-java throws, so do these, but on a FLAC comment block flagged as the
+//! last metadata block, which these read as comments ([`BlockHeader`], #182).
 //!
 //! A packet is looked at by its first bytes, which hold every field these read of an audio
 //! packet or an identification header; only the comment headers, and FLAC's metadata blocks as
@@ -409,59 +410,88 @@ fn flac_info(data: &[u8], offset: usize) -> Result<FlacInfo, Thrown> {
     })
 }
 
-/// A FLAC metadata block, `FlacMetadataBlock.create`: its type byte and data.
-struct Block<'d> {
-    kind: u8,
-    data: &'d [u8],
+/// The type of a FLAC metadata block of stream info.
+const STREAM_INFO: u8 = 0;
+
+/// The type of a FLAC metadata block of Vorbis comments.
+const VORBIS_COMMENT: u8 = 4;
+
+/// The type of a FLAC metadata block of a picture.
+pub(super) const PICTURE: u8 = 6;
+
+/// The bit of a FLAC metadata block header's first byte that flags the last metadata block.
+const LAST_BLOCK: u8 = 0x80;
+
+/// The bytes of a FLAC metadata block's header: its type and length.
+pub(super) const BLOCK_HEADER: usize = 4;
+
+/// A FLAC metadata block's header: its type, apart from the flag of the last block, which
+/// vorbis-java's `FlacMetadataBlock.create` and `FlacTags` match the type with, so that Tika's
+/// path reads no stream info or comment block flagged as the last as one (#182).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BlockHeader {
+    pub(super) kind: u8,
+    pub(super) last: bool,
+    pub(super) length: usize,
 }
 
-impl Block<'_> {
-    fn is_last(&self) -> bool {
-        self.kind & 0x80 != 0
+impl BlockHeader {
+    /// The header `data` starts with, `None` where `data` is shorter than a header.
+    pub(super) fn read(data: &[u8]) -> Option<Self> {
+        let &[first, high, middle, low] = data.first_chunk::<BLOCK_HEADER>()?;
+        Some(Self {
+            kind: first & !LAST_BLOCK,
+            last: first & LAST_BLOCK != 0,
+            length: usize::from(high) << 16 | usize::from(middle) << 8 | usize::from(low),
+        })
+    }
+
+    /// The bytes of the block whose header `data` starts with, its header and as many as the
+    /// header gives, where `data` holds one.
+    fn block_length(data: &[u8]) -> usize {
+        BLOCK_HEADER + Self::read(data).map_or(0, |header| header.length)
     }
 }
 
-/// The bytes of a FLAC metadata block's header: its type and length.
-const BLOCK_HEADER: usize = 4;
-
-/// The length of the FLAC metadata block whose header `data` starts with, as far as it does.
-fn block_length(data: &[u8]) -> usize {
-    data.get(1..BLOCK_HEADER).map_or(0, |length| {
-        usize::from(length[0]) << 16 | usize::from(length[1]) << 8 | usize::from(length[2])
-    })
+/// A FLAC metadata block, `FlacMetadataBlock.create`: its header and data.
+struct Block<'d> {
+    header: BlockHeader,
+    data: &'d [u8],
 }
 
 /// `FlacMetadataBlock.create` reading from `data` at `at`.
 fn block<'d>(data: &'d [u8], at: &mut usize) -> Result<Block<'d>, Thrown> {
-    let kind = *data
-        .get(*at)
+    let rest = data
+        .get(*at..)
+        .filter(|rest| !rest.is_empty())
         .ok_or_else(|| "IllegalArgumentException".to_owned())?;
-    if data.len() < *at + BLOCK_HEADER {
-        return Err("EOFException".to_owned());
-    }
-    let length = block_length(&data[*at..]);
-    let body = data
-        .get(*at + BLOCK_HEADER..*at + BLOCK_HEADER + length)
+    let header = BlockHeader::read(rest).ok_or_else(|| "EOFException".to_owned())?;
+    let body = rest
+        .get(BLOCK_HEADER..BLOCK_HEADER + header.length)
         .ok_or_else(|| "EOFException".to_owned())?;
-    *at += BLOCK_HEADER + length;
-    Ok(Block { kind, data: body })
+    *at += BLOCK_HEADER + header.length;
+    Ok(Block { header, data: body })
 }
 
 /// `FlacTags.FlacTagsAsMetadata` of a comment block's data.
 fn flac_tags_block(data: &[u8]) -> Result<Comments, Thrown> {
-    let mut packet = vec![4, 0, 0, 0];
+    let mut packet = vec![VORBIS_COMMENT, 0, 0, 0];
     packet.extend_from_slice(data);
-    flac_tags(packet)
+    flac_tags(packet).map(|(comments, _)| comments)
 }
 
-/// `new FlacTags(packet)` of a packet's bytes.
-fn flac_tags(packet: Vec<u8>) -> Result<Comments, Thrown> {
-    let comments = Comments::read(packet, 4, false)?;
-    let kind = comments.data[0] as i8;
-    if kind != 4 {
-        return Err(format!("IllegalArgumentException: Invalid type {kind}"));
+/// `new FlacTags(packet)` of a packet's bytes, a comment block's header and data: the comments,
+/// and whether the block is the last metadata block.
+fn flac_tags(packet: Vec<u8>) -> Result<(Comments, bool), Thrown> {
+    let comments = Comments::read(packet, BLOCK_HEADER as i64, false)?;
+    let header = BlockHeader::read(&comments.data).ok_or_else(out_of_bounds)?;
+    if header.kind != VORBIS_COMMENT {
+        return Err(format!(
+            "IllegalArgumentException: Invalid type {}",
+            header.kind
+        ));
     }
-    Ok(comments)
+    Ok((comments, header.last))
 }
 
 /// A FLAC file as Tika reads it: native, or in Ogg with its mapping's version.
@@ -487,23 +517,22 @@ pub(super) fn flac<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Flac, Thrown
 fn flac_native(input: &[u8]) -> Result<Flac, Thrown> {
     let mut at = 4;
     let first = block(input, &mut at)?;
-    if first.kind != 0 {
+    if first.header.kind != STREAM_INFO {
         return Err("ClassCastException".to_owned());
     }
     let info = flac_info(first.data, 0)?;
     let mut comments = None;
-    loop {
+    let mut last = first.header.last;
+    while !last {
         let next = block(input, &mut at)?;
-        match next.kind {
-            0 => {
+        match next.header.kind {
+            STREAM_INFO => {
                 flac_info(next.data, 0)?;
             }
-            4 => comments = Some(flac_tags_block(next.data)?),
+            VORBIS_COMMENT => comments = Some(flac_tags_block(next.data)?),
             _ => {}
         }
-        if next.is_last() {
-            break;
-        }
+        last = next.header.last;
     }
     Ok(Flac {
         info,
@@ -536,23 +565,24 @@ fn flac_ogg<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Flac, Thrown> {
     let tags = reader
         .next_with_sid(first.sid)?
         .ok_or_else(|| "NullPointerException".to_owned())?;
-    let comments = flac_tags(tags.data().into_owned())?;
-    while let Some(packet) = reader.next_with_sid(first.sid)? {
-        let data = packet.prefix(BLOCK_HEADER + block_length(packet.head()));
+    let (comments, mut last) = flac_tags(tags.data().into_owned())?;
+    while !last {
+        let Some(packet) = reader.next_with_sid(first.sid)? else {
+            break;
+        };
+        let data = packet.prefix(BlockHeader::block_length(packet.head()));
         let mut at = 0;
         let next = block(&data, &mut at)?;
-        match next.kind {
-            0 => {
+        match next.header.kind {
+            STREAM_INFO => {
                 flac_info(next.data, 0)?;
             }
-            4 => {
+            VORBIS_COMMENT => {
                 flac_tags_block(next.data)?;
             }
             _ => {}
         }
-        if next.is_last() {
-            break;
-        }
+        last = next.header.last;
     }
     Ok(Flac {
         info,

@@ -10,7 +10,8 @@ use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::pdf::truetype::{Failure, TrueType};
 use crate::formats::thrown::{Exception, Thrown};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java::jfloat::float_to_string;
 use crate::java::time::format_instant;
 
@@ -49,6 +50,10 @@ impl Parser for TrueTypeParser {
         &["application/x-font-ttf"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -72,13 +77,14 @@ impl Parser for TrueTypeParser {
                 .into_error(self.tika_name()),
             })
         })?;
+        let TrueType { header, names, .. } = font;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "application/x-font-ttf");
-            metadata.set("dcterms:created", international_date(font.header.created));
-            metadata.set("dcterms:modified", international_date(font.header.modified));
-            metadata.set(DOC_VERSION, float_to_string(font.header.version));
-            for record in &font.names {
+            metadata.set("dcterms:created", international_date(header.created));
+            metadata.set("dcterms:modified", international_date(header.modified));
+            metadata.set(DOC_VERSION, float_to_string(header.version));
+            for record in &names {
                 let string = record.string.as_deref();
                 match record.name_id {
                     NAME_FONT_FAMILY_NAME => set_nullable(metadata, FONT_FAMILY_NAME, string),
@@ -114,20 +120,53 @@ impl Parser for AdobeFontMetricParser {
         &["application/x-font-adobe-metric"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the file twice, keeping none of its comments: once to read its metrics and find
+    /// the comment the creation date is taken from, and again as its comments are written.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let metrics =
-            afm::parse(input).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
-        let (created, comments) = afm::creation_date(&metrics.comments)
-            .map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
+        let fails = |thrown| Decline::Fails(Error::ParseError(thrown));
+        let mut comments = 0usize;
+        let mut dated = None;
+        let metrics = {
+            let paging = Paging::new(pages);
+            afm::parse(input, &paging, |comment| {
+                if dated.is_none() {
+                    dated = afm::creation_date(&comment).map(|date| (comments, date));
+                }
+                comments += 1;
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .map_err(|interrupted| match interrupted {
+                afm::Interrupted::Thrown(thrown) => fails(thrown),
+                afm::Interrupted::By(never) => match never {},
+            })?
+        };
+        let (dated, created) = match dated {
+            Some((index, date)) => (Some(index), Some(date.map_err(fails)?)),
+            None => (None, None),
+        };
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
-            if let Some(created) = &created {
-                metadata.set("dcterms:created", created.clone());
+            if let Some(created) = created {
+                metadata.set("dcterms:created", created);
             }
             metadata.set("Content-Type", "application/x-font-adobe-metric");
             set_nullable(metadata, "dc:title", metrics.full_name.as_deref());
@@ -153,16 +192,87 @@ impl Parser for AdobeFontMetricParser {
                 "FontUnderlineThickness",
                 float_to_string(metrics.underline_thickness),
             );
-            if !comments.is_empty() {
+            if comments > usize::from(dated.is_some()) {
                 xhtml.element("h1", "Comments")?;
                 xhtml.start_element_with("div", &[("class", "comments")])?;
-                for comment in &comments {
-                    xhtml.element("p", comment)?;
-                }
+                let paging = Paging::new(pages);
+                let mut index = 0;
+                afm::parse(input, &paging, |comment| {
+                    let written = Some(index) != dated;
+                    index += 1;
+                    match written {
+                        true => xhtml.element("p", &comment),
+                        false => Ok(()),
+                    }
+                })
+                .map_err(|interrupted| match interrupted {
+                    afm::Interrupted::By(stop) => stop,
+                    afm::Interrupted::Thrown(thrown) => {
+                        unreachable!("the metrics read once fail when read again: {thrown}")
+                    }
+                })?;
                 xhtml.end_element("div")?;
             }
             Ok(())
         }))
+    }
+}
+
+#[cfg(test)]
+mod large {
+    use extractous_core::large::{bodies_past_limit, LargeFile};
+
+    use super::*;
+    use crate::formats::pdf::truetype::programs::program;
+
+    /// A font whose last table, `glyf`, makes it too large to read whole is read by its other
+    /// tables alone.
+    #[test]
+    fn reads_fonts_too_large_to_read_whole_in_bounded_memory() {
+        let mut font = program(&[(b"glyf", vec![0; 4])]);
+        let chunk = vec![0u8; 1 << 20];
+        let count = bodies_past_limit(chunk.len());
+        let tables = usize::from(u16::from_be_bytes([font[4], font[5]]));
+        let length_at = 12 + 16 * (tables - 1) + 12;
+        let length = u32::try_from(4 + count * chunk.len() as u64).unwrap();
+        font[length_at..length_at + 4].copy_from_slice(&length.to_be_bytes());
+        let file = LargeFile::new("large.ttf", &font, count, |_| chunk.clone(), &[]);
+        let (_, metadata) = file.extract(TrueTypeParser.name());
+        assert_eq!(metadata["Content-Type"], ["application/x-font-ttf"]);
+        assert_eq!(metadata["dcterms:created"].len(), 1);
+    }
+
+    /// Metrics too large to read whole are read twice, keeping none of their comments.
+    #[test]
+    fn reads_metrics_too_large_to_read_whole_in_bounded_memory() {
+        let metric = b"C 65 ; WX 500 ; N A ; B 0 0 600 700 ;\n".to_vec();
+        let comment = b"Comment A comment written as it is read again\n".to_vec();
+        let count = bodies_past_limit(metric.len() + comment.len()) / 2;
+        let head = format!(
+            "StartFontMetrics 2.0\nComment Creation Date: Mon Jan  1 00:00:00 2024\n\
+             FontName Large\nStartCharMetrics {count}\n"
+        );
+        let mut tail = b"EndCharMetrics\n".to_vec();
+        for _ in 0..count {
+            tail.extend_from_slice(&comment);
+        }
+        tail.extend_from_slice(b"EndFontMetrics\n");
+        let file = LargeFile::new(
+            "large.afm",
+            head.as_bytes(),
+            count,
+            |_| metric.clone(),
+            &tail,
+        );
+        let (text, metadata) = file.extract(AdobeFontMetricParser.name());
+        assert_eq!(metadata["dcterms:created"], ["Mon Jan  1 00:00:00 2024"]);
+        assert_eq!(metadata["AvgCharacterWidth"], ["500.0"]);
+        assert_eq!(metadata[FONT_NAME], ["Large"]);
+        assert!(
+            text.contains("A comment written as it is read again"),
+            "{text}"
+        );
+        assert!(!text.contains("Creation Date"), "{text}");
     }
 }
 

@@ -1518,10 +1518,54 @@ pub(crate) mod programs {
 
     /// A format 4 subtable mapping A, B and C to glyphs 1, 2 and 3.
     fn format4() -> Vec<u8> {
-        let words: [u16; 15] = [
-            4, 32, 0, 4, 4, 1, 0, 0x43, 0xFFFF, 0, 0x41, 0xFFFF, 0xFFC0, 1, 0,
+        format4_range(0x41, 0x43)
+    }
+
+    /// A format 4 subtable mapping the codes `first` to `last` to the glyphs from 1 on.
+    fn format4_range(first: u16, last: u16) -> Vec<u8> {
+        let words: [u16; 16] = [
+            4,
+            32,
+            0,
+            4,
+            4,
+            1,
+            0,
+            last,
+            0xFFFF,
+            0,
+            first,
+            0xFFFF,
+            1u16.wrapping_sub(first),
+            1,
+            0,
+            0,
         ];
-        [words.iter().flat_map(|w| w.to_be_bytes()).collect(), be(0)].concat()
+        words.iter().flat_map(|w| w.to_be_bytes()).collect()
+    }
+
+    /// A program of `glyphs` glyphs, the codes from 32 on mapped to them in order, and a `glyf`
+    /// table of `glyf` bytes, the last of its tables.
+    pub(crate) fn of_glyphs(glyphs: u16, glyf: usize) -> Vec<u8> {
+        let count = usize::from(glyphs);
+        program(&[
+            (b"hhea", [vec![0; 34], be(glyphs)].concat()),
+            (b"maxp", [vec![0, 0, 0x50, 0], be(glyphs)].concat()),
+            (b"loca", vec![0; 2 * (count + 1)]),
+            (
+                b"hmtx",
+                [500u16, 0]
+                    .repeat(count)
+                    .iter()
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
+            ),
+            (
+                b"cmap",
+                cmap(&[(3, 1, format4_range(0x20, 0x20 + glyphs - 2))]),
+            ),
+            (b"glyf", vec![0; glyf]),
+        ])
     }
 
     /// A program whose `cmap` table has the one (3, 1) subtable `subtable`.
