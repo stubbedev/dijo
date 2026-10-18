@@ -59,7 +59,7 @@ use crate::formats::{
 use crate::input::{Pages, Paging};
 
 use cos::Pdf;
-use ocr::{OcrCheck, PageOcr};
+use ocr::{OcrCheck, PageOcr, RejectedThresholds};
 use recording::Recording;
 use security::{Access, Encryption, Opening, Refusal, WRONG_PASSWORD};
 use structure::StructureIndex;
@@ -176,10 +176,6 @@ fn prepare<'a>(
             let metadata = metadata.clone();
             let known = difference.is_some();
             Box::new(move |xhtml| {
-                let ocr_pages = match settings.ocr.dispatches_every_page() {
-                    true => loaded.pdf.pages().map_err(late)?.len(),
-                    false => 0,
-                };
                 let streamed = Streamed {
                     loaded: &loaded,
                     input,
@@ -187,7 +183,11 @@ fn prepare<'a>(
                     configs,
                     known,
                 };
-                let written = streamed.write(metadata, xhtml);
+                let (written, unrecognized) = streamed.write(metadata, xhtml);
+                let ocr_pages = match settings.ocr.dispatches_every_page() {
+                    true => loaded.pdf.pages().map_err(late)?.len(),
+                    false => unrecognized,
+                };
                 ended(xhtml, written, ocr_pages)
             })
         }
@@ -229,8 +229,8 @@ enum ImageExtraction {
 }
 
 impl Settings {
-    /// The settings `configs` set, or why the port leaves documents to Tika under them.
-    fn of(configs: &ParserConfigs) -> Result<Self, Unported> {
+    /// The settings `configs` set, or the thresholds our Java rejects.
+    fn of(configs: &ParserConfigs) -> Result<Self, RejectedThresholds> {
         let config = &configs.pdf;
         let ocr = OcrCheck::of(config, ocr_runs())?;
         let images = match config.extracts_inline_images() {
@@ -296,7 +296,8 @@ fn record<'a>(
     limit: usize,
 ) -> Result<(Recorded<'a>, Option<Difference>), Decline<'static>> {
     let deferred = |Unported(reason)| Decline::Deferred(reason);
-    let settings = Settings::of(configs).map_err(deferred)?;
+    let settings =
+        Settings::of(configs).map_err(|rejected| Decline::Fails(rejected.into_error()))?;
     let loaded = load(input, pages, configs)?;
     let mut recording = new_recording(metadata.clone(), configs);
     let mut large = |recording: &mut Recording| {
@@ -321,8 +322,8 @@ fn record<'a>(
     if let Err(failure @ Decline::Fails(_)) = recorded {
         return Err(failure);
     }
-    let difference = difference(&loaded.pdf);
     if recorded?.is_break() {
+        let difference = difference(&loaded.pdf);
         return Ok((Recorded::Large(Box::new(loaded), settings), difference));
     }
     let page_count = loaded.pdf.pages().map_err(deferred)?.len();
@@ -332,17 +333,18 @@ fn record<'a>(
         settings.ocr,
         input,
         configs,
-    )
-    .map_err(deferred)?;
+        &loaded.pdf,
+    );
+    let ocr_pages = match settings.ocr.dispatches_every_page() {
+        true => page_count,
+        false => recording.unrecognized_pages(),
+    };
     let whole = Recorded::Whole {
         recording: Box::new(recording),
         page_ocr,
-        ocr_pages: match settings.ocr.dispatches_every_page() {
-            true => page_count,
-            false => 0,
-        },
+        ocr_pages,
     };
-    Ok((whole, difference))
+    Ok((whole, difference(&loaded.pdf)))
 }
 
 /// The first detail in which the extraction of `pdf` so far read it otherwise than Tika's path:
@@ -400,22 +402,30 @@ struct Streamed<'s, 'a> {
 }
 
 impl Streamed<'_, '_> {
-    /// Extracts the document from `metadata` into `xhtml`.
-    fn write(&self, metadata: TikaMetadata, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    /// Extracts the document from `metadata` into `xhtml`, with the count of pages Tika's PDF
+    /// parser wants OCR for that no tesseract reads.
+    fn write(&self, metadata: TikaMetadata, xhtml: &mut Xhtml) -> (Result<(), Failure>, usize) {
+        let mut recording = new_recording(metadata, self.configs);
+        let written = self.write_recording(&mut recording, xhtml);
+        (written, recording.unrecognized_pages())
+    }
+
+    /// Extracts the document into `xhtml` through `recording`.
+    fn write_recording(&self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let page_count = self.loaded.pdf.pages().map_err(late)?.len();
         let pages = StreamedPages {
             input: self.input,
             page_count,
             check: self.settings.ocr,
             configs: self.configs,
+            pdf: &self.loaded.pdf,
         };
-        let mut recording = new_recording(metadata, self.configs);
         let mut flushed = Ok(());
         let written = extract(
             self.loaded,
             self.input,
             self.settings,
-            &mut recording,
+            recording,
             &mut |recording| {
                 flushed = pages.flush(recording, xhtml);
                 match flushed {
@@ -430,12 +440,11 @@ impl Streamed<'_, '_> {
             Err(WriteFailure::Stop(stop)) => return Err(Failure::Stopped(stop)),
             Err(WriteFailure::Unported(unported)) => return Err(late(unported)),
         }
-        if !self.known {
-            if let Some(difference) = difference(&self.loaded.pdf) {
-                late_difference(xhtml, difference)?;
-            }
+        pages.flush(recording, xhtml)?;
+        match difference(&self.loaded.pdf) {
+            Some(difference) if !self.known => late_difference(xhtml, difference),
+            _ => Ok(()),
         }
-        pages.flush(&mut recording, xhtml)
     }
 }
 
@@ -470,14 +479,21 @@ struct StreamedPages<'a> {
     page_count: usize,
     check: OcrCheck,
     configs: &'a ParserConfigs,
+    pdf: &'a Pdf<'a>,
 }
 
 impl StreamedPages<'_> {
     /// Writes what `recording` holds to `xhtml`, a page OCR reads read first.
     fn flush(&self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let pages = recording.pages_read();
-        let page_ocr = PageOcr::of(pages, self.page_count, self.check, self.input, self.configs)
-            .map_err(late)?;
+        let page_ocr = PageOcr::of(
+            pages,
+            self.page_count,
+            self.check,
+            self.input,
+            self.configs,
+            self.pdf,
+        );
         match page_ocr {
             None => recording.flush(xhtml, None),
             Some(page_ocr) => write_read(&page_ocr, recording, xhtml, self.configs),
@@ -2075,19 +2091,64 @@ mod tests {
         }
     }
 
+    /// Without tesseract, a page Tika's PDF parser wants OCR for keeps its text layer and is
+    /// counted among the pages OCR was asked for, as Tika's parser does finding no OCR engine,
+    /// the difference noted.
     #[test]
-    fn defers_under_the_settings_the_port_does_not_read() {
+    fn counts_the_pages_it_cannot_ocr_without_tesseract() {
+        let objects = page_objects("BT /F1 12 Tf 72 720 Td (Tre) Tj ET");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let configs = ParserConfigs::default();
+        let loaded = load(&input, Pages::IN_MEMORY, &configs).unwrap();
+        let mut settings = Settings::of(&configs).unwrap();
+        settings.ocr = OcrCheck::of(&configs.pdf, false).unwrap();
+        let mut recording = new_recording(TikaMetadata::new(), &configs);
+        let written = extract(&loaded, &input, settings, &mut recording, &mut |_| {
+            ControlFlow::Continue(())
+        });
+        assert!(matches!(written, Ok(ControlFlow::Continue(()))));
+        assert_eq!(recording.unrecognized_pages(), 1);
+        let Some(Difference(difference)) = difference(&loaded.pdf) else {
+            panic!("no difference");
+        };
+        assert!(
+            difference.starts_with("page 1 shows 3 glyphs"),
+            "{difference}"
+        );
+    }
+
+    /// A page of text under thresholds our Java's `PdfConfig` rejects.
+    fn under_rejected_thresholds() -> (Vec<u8>, ParserConfigs) {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
         let pdf = PdfParserConfig::new().set_ocr_strategy_auto("faster , 4");
-        let deferral = PdfParser
-            .defers(&input, &TikaMetadata::new(), &with_pdf(pdf))
-            .unwrap_or_default();
-        assert!(
-            deferral.starts_with("the automatic OCR thresholds \"faster , 4\""),
-            "{deferral}"
+        (input, with_pdf(pdf))
+    }
+
+    #[test]
+    fn fails_under_thresholds_our_java_rejects() {
+        let (input, configs) = under_rejected_thresholds();
+        let failure = PdfParser.prepare(&input, &TikaMetadata::new(), &configs);
+        let Err(Decline::Fails(error)) = failure else {
+            panic!("{:?}", failure.err());
+        };
+        assert_eq!(
+            error.to_string(),
+            "Java exception: java.lang.IllegalArgumentException: Automatic OCR thresholds are \
+             better, faster or unmapped[%][,characters]: faster , 4"
         );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_under_thresholds_our_java_rejects_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-rejected-thresholds");
+        let (input, configs) = under_rejected_thresholds();
+        let path = scratch.write("page.pdf", &input);
+        let (native, tika) = crate::formats::parity::errors(&path, &configs);
+        assert_eq!(native, tika);
     }
 
     /// Asserts that each encrypted document, named with the password that opens it, fails as

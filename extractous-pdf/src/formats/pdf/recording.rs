@@ -75,6 +75,8 @@ pub(super) struct Recording {
     read_pages: Vec<Vec<Event>>,
     text: String,
     spans: Vec<Span>,
+    /// The pages Tika's PDF parser wants OCR for that no tesseract reads, so far.
+    unrecognized: usize,
 }
 
 impl Recording {
@@ -88,6 +90,7 @@ impl Recording {
             read_pages: Vec::new(),
             text: String::new(),
             spans: Vec::new(),
+            unrecognized: 0,
         }
     }
 
@@ -273,6 +276,16 @@ impl Recording {
             held: self.read_pages.len(),
         });
         self.read_pages.push(held);
+    }
+
+    /// Counts a page Tika's PDF parser wants OCR for that no tesseract reads.
+    pub(super) fn count_unrecognized(&mut self) {
+        self.unrecognized += 1;
+    }
+
+    /// The pages Tika's PDF parser wants OCR for that no tesseract reads.
+    pub(super) fn unrecognized_pages(&self) -> usize {
+        self.unrecognized
     }
 
     /// Whether a page is read by OCR.

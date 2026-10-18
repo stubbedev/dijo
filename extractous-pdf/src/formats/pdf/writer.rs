@@ -272,7 +272,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             self.page
                 .out
                 .start_element_with("div", &[("class", "page")])?;
-            if self.renders(page)? {
+            if self.renders(page) {
                 self.page
                     .out
                     .release_read(self.page_number - 1, PageCheck::Recognize);
@@ -341,16 +341,22 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             (Some(_), true) => Layer::Embedding,
             (Some(text), false) => Layer::Text(text),
         };
-        let check = match self
-            .settings
-            .ocr
-            .page(self.page_number, glyphs, unmapped, layer)?
-        {
-            PageCheck::Recognize if !self.renders(page)? => PageCheck::Keep,
+        let check = match self.settings.ocr.page(glyphs, unmapped, layer) {
+            PageCheck::Recognize if !self.renders(page) => PageCheck::Keep,
             check => check,
         };
         match check {
             PageCheck::Keep => self.page.out.release(),
+            PageCheck::Unrecognized => {
+                self.pdf.differ(Difference(format!(
+                    "page {} shows {glyphs} glyphs, {unmapped} of them without characters, \
+                     which Tika's PDF parser wants OCR for, read without OCR as no tesseract \
+                     runs",
+                    self.page_number
+                )));
+                self.page.out.count_unrecognized();
+                self.page.out.release();
+            }
             check => self.page.out.release_read(self.page_number - 1, check),
         }
         self.page.out.end_element("div")?;
@@ -359,8 +365,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// Whether Tika's renderer renders `page` for the OCR parser: not a page too small to hold
     /// anything (`RenderSettings.belowMinimum`). A page above its limit of pixels, whose failure
-    /// Tika records, is left to Tika.
-    fn renders(&self, page: Page<'p>) -> Result<bool, Unported> {
+    /// Tika records, is read without OCR, the difference noted.
+    fn renders(&self, page: Page<'p>) -> bool {
         let [left, bottom, right, top] = page.crop_box(self.pdf);
         let (width, height) = (f64::from(right - left), f64::from(top - bottom));
         let (width, height) = match page.rotation(self.pdf) {
@@ -369,16 +375,17 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         };
         let pixels = |points: f64| (points / 72.0 * RENDER_DPI).ceil();
         if pixels(width) < MIN_RENDER_PIXELS || pixels(height) < MIN_RENDER_PIXELS {
-            return Ok(false);
+            return false;
         }
         if pixels(width) * pixels(height) > MAX_RENDER_PIXELS {
-            return Err(Unported(format!(
-                "page {} renders to more pixels than Tika's renderer allows, which Tika records \
-                 as a failure",
+            self.pdf.differ(Difference(format!(
+                "page {} renders to more pixels than Tika's renderer allows, whose failure Tika \
+                 records, read without OCR",
                 self.page_number
             )));
+            return false;
         }
-        Ok(true)
+        true
     }
 
     /// The annotations of a page, as `processPageAnnotation` writes and records them.
