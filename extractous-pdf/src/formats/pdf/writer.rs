@@ -43,7 +43,6 @@ const MAX_BOOKMARK_DEPTH: usize = 50;
 pub(super) enum WriteFailure {
     /// The recording outgrew the extraction's memory budget.
     Stop(Stop),
-    Unported(Unported),
     /// Tika's `PDFParser` throws this, which fails the document.
     Throws(Thrown),
 }
@@ -54,9 +53,39 @@ impl From<Stop> for WriteFailure {
     }
 }
 
-impl From<Unported> for WriteFailure {
+/// Why writing a part of a page stopped: the recording stopped, or the part is one the port
+/// does not read, which the writer goes past ([`gone_past`]).
+pub(super) enum PartFailure {
+    Stop(Stop),
+    Unported(Unported),
+}
+
+impl From<Stop> for PartFailure {
+    fn from(stop: Stop) -> Self {
+        Self::Stop(stop)
+    }
+}
+
+impl From<Unported> for PartFailure {
     fn from(unported: Unported) -> Self {
         Self::Unported(unported)
+    }
+}
+
+/// What writing the part `what` of a document left: where the port does not read it, it goes on
+/// past it, `pdf` noting the difference ([`differ_past`]).
+pub(super) fn gone_past(
+    pdf: &Pdf,
+    what: &str,
+    written: Result<(), PartFailure>,
+) -> Result<(), Stop> {
+    match written {
+        Ok(()) => Ok(()),
+        Err(PartFailure::Unported(unported)) => {
+            differ_past(pdf, what, unported);
+            Ok(())
+        }
+        Err(PartFailure::Stop(stop)) => Err(stop),
     }
 }
 
@@ -408,17 +437,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 ));
                 continue;
             };
-            match self.annotation(annotation) {
-                Err(WriteFailure::Unported(unported)) => {
-                    differ_past(pdf, "an annotation", unported);
-                }
-                annotated => annotated?,
-            }
+            let annotated = self.annotation(annotation);
+            gone_past(pdf, "an annotation", annotated)?;
         }
         Ok(())
     }
 
-    fn annotation(&mut self, annotation: &'p Dictionary) -> Result<(), WriteFailure> {
+    fn annotation(&mut self, annotation: &'p Dictionary) -> Result<(), PartFailure> {
         let pdf = self.pdf;
         let name = pdf.text(annotation, b"NM");
         if self.annotation_types.len() < MAX_ANNOTATION_TYPES {
@@ -620,7 +645,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         &mut self,
         source: &str,
         spec: Option<FileSpec<'p>>,
-    ) -> Result<(), WriteFailure> {
+    ) -> Result<(), PartFailure> {
         let Some(spec) = spec else {
             return Ok(());
         };

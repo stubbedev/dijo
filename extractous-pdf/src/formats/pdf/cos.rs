@@ -91,13 +91,9 @@ impl<'d> Pdf<'d> {
     /// The document `data`, whose cross-reference PDFBox reads as `resolution`, its pages
     /// released as it is read. The objects PDFBox read while it read the cross-reference stay
     /// as it read them, but dictionaries, which may be streams, are read as other objects are.
-    pub(super) fn new(
-        data: &'d [u8],
-        paging: Paging<'d>,
-        resolution: &Resolution,
-    ) -> Result<Self, Unported> {
+    pub(super) fn new(data: &'d [u8], paging: Paging<'d>, resolution: &Resolution) -> Self {
         let mut objects: HashMap<ObjectId, Slot> = resolution
-            .placements()?
+            .placements()
             .into_iter()
             .map(|(id, placement)| {
                 let slot = Slot {
@@ -107,7 +103,7 @@ impl<'d> Pdf<'d> {
                 (id, slot)
             })
             .collect();
-        for (id, placement, object) in resolution.pooled()? {
+        for (id, placement, object) in resolution.pooled() {
             if matches!(object, Object::Dictionary(_)) {
                 continue;
             }
@@ -136,7 +132,12 @@ impl<'d> Pdf<'d> {
             trailer_rebuilt: resolution.rebuilt(),
         };
         pdf.release_pages();
-        Ok(pdf)
+        if let Some(number) = resolution.unheld_object() {
+            pdf.differ(Difference(format!(
+                "the port leaves out object number {number}, which lopdf cannot hold"
+            )));
+        }
+        pdf
     }
 
     /// Releases the pages of the document read so far, after a search of all of it.

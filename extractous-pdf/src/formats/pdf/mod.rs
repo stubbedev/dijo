@@ -327,7 +327,6 @@ fn record<'a>(
     let recorded =
         extract(&loaded, input, settings, &mut recording, &mut large).map_err(|failure| {
             match failure {
-                WriteFailure::Unported(Unported(reason)) => Decline::Deferred(reason),
                 WriteFailure::Throws(thrown) => Decline::Fails(thrown.into_error(TIKA_PDF_PARSER)),
                 WriteFailure::Stop(Stop::MemoryLimit(limit)) => {
                     Decline::Fails(Error::MemoryLimit(limit))
@@ -456,7 +455,6 @@ impl Streamed<'_, '_> {
         match written {
             Ok(_) => {}
             Err(WriteFailure::Stop(stop)) => return Err(Failure::Stopped(stop)),
-            Err(WriteFailure::Unported(unported)) => return Err(late(unported)),
             Err(WriteFailure::Throws(thrown)) => {
                 return Err(Failure::Extraction(thrown.into_error(TIKA_PDF_PARSER)))
             }
@@ -473,7 +471,10 @@ impl Streamed<'_, '_> {
 /// first pages were written: a failure where Tika's path would have taken the document.
 #[cfg(feature = "tika")]
 fn late_difference(_: &mut Xhtml, Difference(reason): Difference) -> Result<(), Failure> {
-    Err(late(Unported(reason)))
+    Err(Failure::Extraction(Error::ParseError(format!(
+        "The PDF parser met {reason} after it had written the document's first pages, where \
+         Tika's path would have taken the whole document"
+    ))))
 }
 
 /// A detail in which a streamed document is read otherwise than Tika's path, met after its
@@ -484,14 +485,6 @@ fn late_difference(xhtml: &mut Xhtml, difference: Difference) -> Result<(), Fail
     let warning = difference.warning(PdfParser.name());
     crate::formats::embedded::record_exception(xhtml.metadata_mut(), &warning);
     Ok(())
-}
-
-/// The failure of a streamed document on what leaves a document to Tika.
-fn late(Unported(reason): Unported) -> Failure {
-    Failure::Extraction(Error::ParseError(format!(
-        "The PDF parser met {reason} after it had written the document's first pages, where \
-         Tika's path would have taken the whole document"
-    )))
 }
 
 /// What a streamed document's pages need to be written: what reads pages by OCR.
@@ -541,10 +534,18 @@ fn load<'a>(
 ) -> Result<Loaded<'a>, Decline<'static>> {
     let version = metadata::header_version(input).map_err(io_failure)?;
     let paging = Paging::new(pages);
-    let resolution = xref::resolve(input, &paging)?;
+    let resolved = xref::resolve(input, &paging).map_err(|reason| {
+        Decline::Fails(Error::ParseError(format!(
+            "{PDF_PARSER} could not find the document's objects: {reason}"
+        )))
+    })?;
+    let resolution = resolved.resolution;
     let password = configs.password.as_ref().map_or("", Password::expose);
-    let opening = Opening::of(resolution.encryption(input)?, password).map_err(refused)?;
-    let mut pdf = Pdf::new(input, paging, &resolution)?;
+    let opening = Opening::of(resolution.encryption(input), password).map_err(refused)?;
+    let mut pdf = Pdf::new(input, paging, &resolution);
+    if let Some(difference) = resolved.difference {
+        pdf.differ(difference);
+    }
     let Opening::Standard {
         document_id,
         encryption,
@@ -552,41 +553,88 @@ fn load<'a>(
     else {
         return loaded(pdf, Access::Unencrypted, version);
     };
-    let unread = || Unported("an encryption dictionary the port cannot read".to_owned());
-    let undecrypted = |error| Unported(format!("encryption lopdf does not decrypt: {error}"));
-    let (state, access) = match encryption {
+    match decryption(&pdf, &document_id, encryption, password) {
+        Decryption::Decrypted(state, access) => {
+            let id = match pdf.trailer().get(b"Encrypt") {
+                Ok(lopdf::Object::Reference(id)) => Some(*id),
+                _ => None,
+            };
+            pdf.decrypt_with(*state, id);
+            match resolution
+                .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))
+            {
+                Ok(found) => pdf.place(found),
+                Err(Unported(reason)) => pdf.differ(Difference(format!(
+                    "the port leaves out the object streams PDFBox's search finds: {reason}"
+                ))),
+            }
+            loaded(pdf, access, version)
+        }
+        Decryption::Refused(refusal) => Err(refused(refusal)),
+        Decryption::Undecrypted(why) => {
+            pdf.differ(Difference(format!(
+                "an encrypted document the port reads undecrypted, as the owner's: {why}"
+            )));
+            loaded(pdf, Access::Owner, version)
+        }
+    }
+}
+
+/// How the encryption of a document opens.
+enum Decryption {
+    /// With what decrypts it, granting what the password opens.
+    Decrypted(Box<EncryptionState>, Access),
+    /// It does not open with the password.
+    Refused(Refusal),
+    /// `lopdf` does not decrypt it, for this reason, where PDFBox does.
+    Undecrypted(String),
+}
+
+/// How the encryption `encryption` of `pdf`, of the document ID `document_id`, opens with
+/// `password`: an RC4 or AES-128 one, which PDFBox has opened, decrypted by `lopdf` with the
+/// user password; an AES-256 one checked and decrypted by `lopdf`, with the password as PDFBox
+/// encodes it.
+fn decryption(pdf: &Pdf, document_id: &[u8], encryption: Encryption, password: &str) -> Decryption {
+    let undecrypted = |error: lopdf::Error| Decryption::Undecrypted(error.to_string());
+    let unread =
+        || Decryption::Undecrypted("the encryption dictionary does not resolve to one".to_owned());
+    match encryption {
         Encryption::Rc4 {
             access,
             user_password,
             entries,
         } => {
-            let document = pdf
-                .encryption_document(&document_id, &entries)
-                .ok_or_else(unread)?;
-            let state = EncryptionState::decode(&document, &user_password).map_err(undecrypted)?;
-            (state, access)
+            let Some(document) = pdf.encryption_document(document_id, &entries) else {
+                return unread();
+            };
+            match EncryptionState::decode(&document, &user_password) {
+                Ok(state) => Decryption::Decrypted(Box::new(state), access),
+                Err(error) => undecrypted(error),
+            }
         }
         Encryption::Aes256(revision) => {
-            let document = pdf
-                .encryption_document(&document_id, &security::standard_entries())
-                .ok_or_else(unread)?;
-            let bytes =
-                security::aes256_password(&document, revision, password).map_err(refused)?;
-            let opener = security::aes256_opener(&document, &bytes).map_err(refused)?;
-            let state = EncryptionState::decode(&document, &bytes).map_err(undecrypted)?;
-            let access = opener.access(state.permissions().bits());
-            (state, access)
+            let Some(document) =
+                pdf.encryption_document(document_id, &security::standard_entries())
+            else {
+                return unread();
+            };
+            let bytes = match security::aes256_password(&document, revision, password) {
+                Ok(bytes) => bytes,
+                Err(why) => return Decryption::Undecrypted(why),
+            };
+            let opener = match security::aes256_opener(&document, &bytes) {
+                Ok(opener) => opener,
+                Err(refusal) => return Decryption::Refused(refusal),
+            };
+            match EncryptionState::decode(&document, &bytes) {
+                Ok(state) => {
+                    let access = opener.access(state.permissions().bits());
+                    Decryption::Decrypted(Box::new(state), access)
+                }
+                Err(error) => undecrypted(error),
+            }
         }
-    };
-    let id = match pdf.trailer().get(b"Encrypt") {
-        Ok(lopdf::Object::Reference(id)) => Some(*id),
-        _ => None,
-    };
-    pdf.decrypt_with(state, id);
-    let found = resolution
-        .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))?;
-    pdf.place(found);
-    loaded(pdf, access, version)
+    }
 }
 
 /// The loaded document of `pdf`, opened with `access`, its header of `version`, or how it
@@ -617,7 +665,6 @@ fn refused(refusal: Refusal) -> Decline<'static> {
             "java.io.IOException: No security handler for filter {filter}"
         )))),
         Refusal::Thrown(thrown) => Decline::Fails(thrown.into_error(TIKA_PDF_PARSER)),
-        Refusal::Unported(unported) => unported.into(),
     }
 }
 
@@ -835,7 +882,6 @@ mod tests {
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
     /// cross-reference stream listing them, and each object of `dangling` at offset 0.
-    #[cfg(feature = "tika")]
     fn stream_document(objects: &[&str], dangling: &[u32]) -> Vec<u8> {
         let mut out = b"%PDF-1.5\n".to_vec();
         let mut rows: Vec<(u32, u32)> = Vec::new();
@@ -2487,6 +2533,46 @@ mod tests {
         let input = document(&objects, b"", &[]);
         let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
         assert!(difference.contains("annotation"), "{difference}");
+        assert!(xhtml.contains("konge"), "{xhtml}");
+    }
+
+    /// A page of text whose trailer's encryption entry is no dictionary, which PDFBox takes
+    /// for unencrypted.
+    fn encryption_no_dictionary() -> Vec<u8> {
+        cataloged("<< /Type /Catalog /Pages 2 0 R >>", &[], "/Encrypt 42")
+    }
+
+    #[test]
+    fn reads_a_document_whose_encryption_entry_is_no_dictionary_unencrypted() {
+        let (difference, xhtml) =
+            prepared_reading(&encryption_no_dictionary(), &ParserConfigs::default());
+        assert_eq!(difference, None);
+        assert!(xhtml.contains("Metadata"), "{xhtml}");
+        assert!(
+            xhtml.contains("<meta name=\"pdf:encrypted\" content=\"false\" />"),
+            "{xhtml}"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_a_document_whose_encryption_entry_is_no_dictionary_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-encrypt-entry");
+        let path = scratch.write("encrypt.pdf", &encryption_no_dictionary());
+        assert_same_as_tika_delegating(&[&path], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn rebuilds_a_cross_reference_the_port_does_not_read_noting_the_difference() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = stream_document(&objects, &[]);
+        let input = replace(&input, b"/Type /XRef", b"/Type /XRef /Filter 99 0 R");
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert!(
+            difference.starts_with("the port rebuilds the trailer"),
+            "{difference}"
+        );
         assert!(xhtml.contains("konge"), "{xhtml}");
     }
 

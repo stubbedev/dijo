@@ -14,8 +14,9 @@ use super::super::cos::{as_dict, int_value, Identity, Pdf};
 use super::super::document::Page;
 use super::super::engine::differ_past;
 use super::super::font::Font;
-use super::super::writer::WriteFailure;
+use super::super::writer::{gone_past, PartFailure};
 use super::super::Unported;
+use crate::formats::xhtml::Stop;
 
 /// `DrawObject`'s limit on forms drawing forms.
 const MAX_FORM_LEVEL: i32 = 50;
@@ -37,7 +38,7 @@ pub(super) enum Drawn<'p> {
 }
 
 /// What `found` is handed each image the page draws with.
-pub(super) type Found<'f, 'p> = &'f mut dyn FnMut(Drawn<'p>) -> Result<(), WriteFailure>;
+pub(super) type Found<'f, 'p> = &'f mut dyn FnMut(Drawn<'p>) -> Result<(), PartFailure>;
 
 /// What a colour paints with, as far as the images it draws go: a colour, or a pattern of
 /// the `Pattern` colour space, named by the colour, in the resources current when the colour
@@ -101,11 +102,7 @@ struct Engine<'p, 'f> {
 
 /// `ImageGraphicsEngine.run`: the images `page` draws, handed to `found` in the order PDFBox
 /// draws them.
-pub(super) fn run<'p>(
-    pdf: &'p Pdf<'p>,
-    page: Page<'p>,
-    found: Found<'_, 'p>,
-) -> Result<(), WriteFailure> {
+pub(super) fn run<'p>(pdf: &'p Pdf<'p>, page: Page<'p>, found: Found<'_, 'p>) -> Result<(), Stop> {
     let mut engine = Engine {
         pdf,
         page,
@@ -150,22 +147,6 @@ pub(super) fn run<'p>(
     Ok(())
 }
 
-/// What `processed` of a page left: where the port did not read `what`, it goes on past it
-/// ([`differ_past`]).
-fn gone_past(
-    pdf: &Pdf,
-    what: &str,
-    processed: Result<(), WriteFailure>,
-) -> Result<(), WriteFailure> {
-    match processed {
-        Err(WriteFailure::Unported(unported)) => {
-            differ_past(pdf, what, unported);
-            Ok(())
-        }
-        processed => processed,
-    }
-}
-
 /// The stream of a form whose group is a transparency group, as `PDXObject.createXObject`
 /// makes a `PDTransparencyGroup` of it.
 fn transparency_group<'p>(pdf: &'p Pdf<'p>, object: &'p Object) -> Option<&'p Stream> {
@@ -201,7 +182,7 @@ impl<'p> Engine<'p, '_> {
         resources: Option<&'p Dictionary>,
         content: Content,
         state: Option<State<'p>>,
-    ) -> Result<(), WriteFailure> {
+    ) -> Result<(), PartFailure> {
         if self.nesting == MAX_NESTING {
             return Err(Unported(format!(
                 "content streams painting with content streams deeper than {MAX_NESTING}, \
@@ -231,12 +212,12 @@ impl<'p> Engine<'p, '_> {
         data: &[u8],
         resources: Option<&'p Dictionary>,
         content: Content,
-    ) -> Result<(), WriteFailure> {
+    ) -> Result<(), PartFailure> {
         self.process_with(data, resources, content, None)
     }
 
     /// `processTransparencyGroup`.
-    fn process_group(&mut self, group: &'p Stream) -> Result<(), WriteFailure> {
+    fn process_group(&mut self, group: &'p Stream) -> Result<(), PartFailure> {
         let data = self.pdf.decode(group)?;
         let resources = self.pdf.dict(&group.dict, b"Resources");
         self.process_stream(&data, resources, Content::Stream)
@@ -244,7 +225,7 @@ impl<'p> Engine<'p, '_> {
 
     /// The operators of a content stream, gone on past as the text engine goes on past them
     /// ([`differ_past`]).
-    fn process_operators(&mut self, data: &[u8]) -> Result<(), WriteFailure> {
+    fn process_operators(&mut self, data: &[u8]) -> Result<(), PartFailure> {
         let mut lexer = Lexer::new(data);
         let mut operands: Vec<Object> = Vec::new();
         loop {
@@ -275,7 +256,7 @@ impl<'p> Engine<'p, '_> {
         }
     }
 
-    fn operator(&mut self, name: &str, operands: &[Object]) -> Result<(), WriteFailure> {
+    fn operator(&mut self, name: &str, operands: &[Object]) -> Result<(), PartFailure> {
         match name {
             "q" => {
                 let top = self.state().clone();
@@ -391,7 +372,7 @@ impl<'p> Engine<'p, '_> {
 
     /// `ImageGraphicsEngine.processColor`: the images of the tiling pattern a colour paints
     /// with.
-    fn process_color(&mut self, paint: &Paint<'p>) -> Result<(), WriteFailure> {
+    fn process_color(&mut self, paint: &Paint<'p>) -> Result<(), PartFailure> {
         let Paint::Pattern { resources, name } = paint else {
             return Ok(());
         };
@@ -457,7 +438,7 @@ impl<'p> Engine<'p, '_> {
 
     /// `ImageGraphicsEngine.showGlyph` for each glyph a text operator shows: the patterns its
     /// colours paint with, filled then stroked, once a glyph.
-    fn show_text(&mut self, name: &str, operands: &[Object]) -> Result<(), WriteFailure> {
+    fn show_text(&mut self, name: &str, operands: &[Object]) -> Result<(), PartFailure> {
         let mode = self.state().rendering_mode;
         let mut paints = Vec::new();
         if matches!(mode, 0 | 2 | 4 | 6) {
@@ -518,12 +499,12 @@ impl<'p> Engine<'p, '_> {
     }
 
     /// Hands an image on.
-    fn found(&mut self, drawn: Drawn<'p>) -> Result<(), WriteFailure> {
+    fn found(&mut self, drawn: Drawn<'p>) -> Result<(), PartFailure> {
         (self.found)(drawn)
     }
 
     /// `DrawObject`.
-    fn draw_object(&mut self, operands: &[Object]) -> Result<(), WriteFailure> {
+    fn draw_object(&mut self, operands: &[Object]) -> Result<(), PartFailure> {
         let Some(Object::Name(name)) = operands.first() else {
             return Ok(());
         };
@@ -579,7 +560,7 @@ impl<'p> Engine<'p, '_> {
     }
 
     /// `BeginInlineImage`.
-    fn inline_image(&mut self, image: InlineImage) -> Result<(), WriteFailure> {
+    fn inline_image(&mut self, image: InlineImage) -> Result<(), PartFailure> {
         if image.data.as_ref().is_none_or(Vec::is_empty) {
             return Ok(());
         }

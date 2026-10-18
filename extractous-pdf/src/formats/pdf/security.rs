@@ -22,7 +22,6 @@ use md5::{Digest, Md5};
 use rc4::{KeyInit, Rc4, StreamCipher};
 
 use super::cos::{class_cast, name_string, text_string};
-use super::Unported;
 use crate::formats::thrown::{Exception, Thrown};
 
 /// What a document lets the one who opened it do, as PDFBox's `AccessPermission` holds it.
@@ -55,7 +54,6 @@ pub(super) enum Refusal {
     NoSecurityHandler(String),
     /// PDFBox throws this, which Tika's `PDFParser` throws on.
     Thrown(Thrown),
-    Unported(Unported),
 }
 
 /// The filter of the standard security handler.
@@ -104,12 +102,6 @@ fn runtime(exception: Exception) -> Refusal {
 
 fn io(exception: Exception) -> Refusal {
     Refusal::Thrown(Thrown::Io(exception))
-}
-
-impl From<Unported> for Refusal {
-    fn from(unported: Unported) -> Self {
-        Self::Unported(unported)
-    }
 }
 
 /// `InvalidPasswordException`'s message.
@@ -512,18 +504,19 @@ fn int(dictionary: &Dictionary, key: &[u8], default: i32) -> i32 {
 }
 
 /// The bytes PDFBox makes of `password` for the AES-256 encryption of revision `revision` of
-/// `doc`: its UTF-8 for revision 5, after SASLprep for revision 6.
+/// `doc`: its UTF-8 for revision 5, after SASLprep for revision 6; or why `lopdf` does not
+/// make them.
 pub(super) fn aes256_password(
     doc: &Document,
     revision: Aes256Revision,
     password: &str,
-) -> Result<Vec<u8>, Refusal> {
+) -> Result<Vec<u8>, String> {
     match revision {
         Aes256Revision::R5 => Ok(password.as_bytes().to_vec()),
         Aes256Revision::R6 => PasswordAlgorithm::try_from(doc)
-            .map_err(|error| Unported(format!("encryption lopdf cannot read: {error}")))?
+            .map_err(|error| format!("lopdf does not read the encryption dictionary: {error}"))?
             .sanitize_password(password)
-            .map_err(|error| Unported(format!("a password SASLprep rejects: {error}")).into()),
+            .map_err(|error| format!("SASLprep rejects the password: {error}")),
     }
 }
 

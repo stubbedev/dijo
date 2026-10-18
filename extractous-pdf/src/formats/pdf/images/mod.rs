@@ -26,13 +26,14 @@ use super::attachment::EmbeddedFile;
 use super::cos::{Identity, Pdf};
 use super::document::Page;
 use super::metadata::xmp_metadata;
-use super::writer::{PageWriter, WriteFailure};
+use super::writer::{PageWriter, PartFailure};
 use super::Unported;
 use crate::formats::embedded::{
     ResourceType, EMBEDDED_STREAM_EXCEPTION, EXCEPTION_WARNING, RESOURCE_NAME,
 };
 use crate::formats::metadata::TikaMetadata;
 pub(super) use crate::formats::thrown::Exception;
+use crate::formats::xhtml::Stop;
 
 use engine::Drawn;
 use image::{PdImage, Suffix, JB2, JP2, JPEG};
@@ -88,7 +89,7 @@ impl Images {
         page: Page,
         page_number: usize,
         writer: &mut PageWriter,
-    ) -> Result<(), WriteFailure> {
+    ) -> Result<(), Stop> {
         engine::run(pdf, page, &mut |drawn| {
             let (image, number) = match drawn {
                 Drawn::XObject {
@@ -129,7 +130,7 @@ impl Images {
         number: usize,
         page_number: usize,
         writer: &mut PageWriter,
-    ) -> Result<(), WriteFailure> {
+    ) -> Result<(), PartFailure> {
         let mut metadata = TikaMetadata::new();
         let (extension, content_type) = match image.suffix() {
             _ if image.has_masks() => ("png", "image/png"),
