@@ -1,6 +1,8 @@
-//! Files too large to read whole, which the tests write and extract under a memory budget far
-//! below their size, so that a parser that declares its memory bounded is held to it: to what
-//! it holds where the extraction checks its budget, and to the most it holds at any moment.
+//! Files too large to read whole, which the tests of the crates of the formats write and extract
+//! under a memory budget far below their size, so that a parser that declares its memory bounded
+//! is held to it: to what it holds where the extraction checks its budget, to the most the
+//! extraction's thread holds at any moment, and to the most its budget's large allocations and
+//! reservations hold on any thread.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
@@ -11,8 +13,8 @@ use std::path::PathBuf;
 use crate::input::MAX_READ_WHOLE;
 use crate::{memory, Extractor, Metadata};
 
-/// The memory an extraction of a large file may take: a fraction of the file.
-const BUDGET: u64 = 16 << 20;
+/// The memory an extraction of a large file may take by default: a fraction of the file.
+pub const BUDGET: u64 = 16 << 20;
 
 thread_local! {
     /// The bytes this thread holds of what it allocated.
@@ -23,7 +25,8 @@ thread_local! {
 
 /// An allocator that counts the bytes each thread holds, and the most it held, around the
 /// allocator `A` that allocates: the tests' measure of an extraction's peak, which a budget,
-/// checked only where the extraction checks it, does not see.
+/// checked only where the extraction checks it, does not see. A test crate installs it inside
+/// [`memory::CountingAllocator`] as its global allocator.
 pub struct Peak<A>(pub A);
 
 /// Adds `change` bytes, negative for a free, to what this thread holds.
@@ -71,7 +74,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Peak<A> {
 }
 
 /// What `work` returns, and the most this thread held while it ran beyond what it held before.
-fn peak_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
+pub fn peak_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
     let before = HELD.with(Cell::get);
     PEAK.with(|peak| peak.set(before));
     let result = work();
@@ -119,15 +122,41 @@ impl LargeFile {
         Self { dir, path }
     }
 
+    pub fn path(&self) -> &str {
+        self.path.to_str().unwrap()
+    }
+
     /// The file's text and metadata, extracted under [`BUDGET`] and never holding more, which
     /// `parser` must have read.
     pub fn extract(&self, parser: &str) -> (String, Metadata) {
-        let path = self.path.to_str().unwrap();
-        let (extracted, peak) =
-            peak_of(|| memory::within(BUDGET, || Extractor::new().extract_file_to_string(path)));
+        self.extract_with(&Extractor::new(), BUDGET, parser)
+    }
+
+    /// The file's text and metadata, extracted by `extractor` under `budget` and never holding
+    /// more, on its own thread or on any working for it, which `parser` must have read.
+    pub fn extract_with(
+        &self,
+        extractor: &Extractor,
+        budget: u64,
+        parser: &str,
+    ) -> (String, Metadata) {
+        let path = self.path();
+        let ((extracted, budget_peak), peak) = peak_of(|| {
+            memory::within(budget, || {
+                let extracted = extractor.extract_file_to_string(path);
+                (
+                    extracted,
+                    memory::peak().expect("the extraction has a budget"),
+                )
+            })
+        });
         let (text, metadata) = extracted
-            .unwrap_or_else(|error| panic!("{path} extracts under {BUDGET} bytes: {error}"));
-        assert!(peak <= BUDGET, "{path} held {peak} bytes at its peak");
+            .unwrap_or_else(|error| panic!("{path} extracts under {budget} bytes: {error}"));
+        assert!(peak <= budget, "{path} held {peak} bytes at its peak");
+        assert!(
+            budget_peak <= budget,
+            "{path} held {budget_peak} bytes in large allocations and reservations at their peak"
+        );
         assert_eq!(metadata["tk:parsed-by"].last().unwrap(), parser);
         (text, metadata)
     }

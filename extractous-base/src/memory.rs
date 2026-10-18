@@ -33,6 +33,8 @@ const LARGE: usize = 4096;
 struct Budget {
     limit: u64,
     held: AtomicU64,
+    /// The most `held` has been.
+    peak: AtomicU64,
 }
 
 /// What the budget holds besides allocations while its extraction runs.
@@ -41,7 +43,13 @@ const RUNNING: u64 = 1;
 impl Budget {
     /// Adds `bytes` to what the budget holds.
     fn charge(&self, bytes: u64) {
-        self.held.fetch_add(bytes, Ordering::Relaxed);
+        let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.peak.fetch_max(held, Ordering::Relaxed);
+    }
+
+    /// What the budget's large allocations and reservations hold, on any thread.
+    fn large(&self) -> u64 {
+        self.held.load(Ordering::Relaxed) - RUNNING
     }
 
     /// Takes `bytes` from what the budget at `budget` holds, and frees the budget when that was
@@ -126,6 +134,7 @@ pub fn within<R>(limit: u64, work: impl FnOnce() -> R) -> R {
     let budget = Box::into_raw(Box::new(Budget {
         limit,
         held: AtomicU64::new(RUNNING),
+        peak: AtomicU64::new(RUNNING),
     }));
     let (previous, previous_small) =
         CHARGED.with(|charged| (charged.budget.replace(budget), charged.small.replace(0)));
@@ -140,15 +149,108 @@ pub fn within<R>(limit: u64, work: impl FnOnce() -> R) -> R {
 
 /// The limit of the budget this thread's allocations are charged to, if it is overrun.
 pub(crate) fn overrun() -> Option<u64> {
+    beyond(0)
+}
+
+/// The limit of the budget this thread's allocations are charged to, if `more` bytes would
+/// overrun it.
+fn beyond(more: u64) -> Option<u64> {
     let budget = current();
     if budget.is_null() {
         return None;
     }
     let budget = unsafe { &*budget };
-    let large = budget.held.load(Ordering::Relaxed) - RUNNING;
     let small = CHARGED.with(|charged| charged.small.get());
-    let allocated = i128::from(large) + i128::from(small);
+    let allocated = i128::from(budget.large()) + i128::from(small) + i128::from(more);
     (allocated > i128::from(budget.limit)).then_some(budget.limit)
+}
+
+/// The most the large allocations and reservations of this thread's budget have held, on any
+/// thread, if it has a budget.
+pub fn peak() -> Option<u64> {
+    let budget = current();
+    (!budget.is_null()).then(|| unsafe { (*budget).peak.load(Ordering::Relaxed) } - RUNNING)
+}
+
+/// Memory a library of C, such as tesseract, takes beyond the counting allocator's sight,
+/// charged to the budget of the thread that reserved it until it is dropped.
+#[must_use = "the reservation is released when it is dropped"]
+pub struct Reserved {
+    budget: *const Budget,
+    bytes: u64,
+}
+
+/// Reserves `bytes` against this thread's budget, if it has one, for memory a library takes
+/// beyond the counting allocator's sight; fails with the budget's limit when they do not fit
+/// beside what it holds already.
+pub fn reserve(bytes: u64) -> Result<Reserved, u64> {
+    if let Some(limit) = beyond(bytes) {
+        return Err(limit);
+    }
+    let budget = current();
+    if !budget.is_null() {
+        unsafe { (*budget).charge(bytes) };
+    }
+    Ok(Reserved { budget, bytes })
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        if !self.budget.is_null() {
+            unsafe { Budget::credit(self.budget, self.bytes) };
+        }
+    }
+}
+
+/// The budget of a thread, which the threads it starts to work for its extraction charge their
+/// allocations to as well; kept alive while this lives.
+pub struct Shared(*const Budget);
+
+/// A budget is atomics alone, and a share keeps it alive.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+/// This thread's budget, to charge other threads' allocations to, if it has one.
+pub fn share() -> Option<Shared> {
+    let budget = current();
+    if budget.is_null() {
+        return None;
+    }
+    unsafe { (*budget).charge(RUNNING) };
+    Some(Shared(budget))
+}
+
+impl Shared {
+    /// Runs `work` with the allocations of this thread charged to the shared budget.
+    pub fn within<R>(&self, work: impl FnOnce() -> R) -> R {
+        struct Entered {
+            previous: *const Budget,
+            previous_small: i64,
+        }
+        impl Drop for Entered {
+            fn drop(&mut self) {
+                CHARGED.with(|charged| {
+                    charged.budget.set(self.previous);
+                    charged.small.set(self.previous_small);
+                });
+                BUDGETED.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        let (previous, previous_small) =
+            CHARGED.with(|charged| (charged.budget.replace(self.0), charged.small.replace(0)));
+        BUDGETED.fetch_add(1, Ordering::Relaxed);
+        let _entered = Entered {
+            previous,
+            previous_small,
+        };
+        work()
+    }
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        unsafe { Budget::credit(self.0, RUNNING) };
+    }
 }
 
 /// A global allocator that counts what each extraction allocates against its budget, around
@@ -454,15 +556,13 @@ mod tests {
 
     /// What the budget of this thread holds in allocations.
     fn allocated() -> i128 {
-        let budget = current();
-        let large = unsafe { (*budget).held.load(Ordering::Relaxed) - RUNNING };
-        i128::from(large) + i128::from(CHARGED.with(|charged| charged.small.get()))
+        i128::from(large()) + i128::from(CHARGED.with(|charged| charged.small.get()))
     }
 
     /// What the large allocations of this thread's budget hold, which spawning a thread leaves
     /// alone, unlike the small ones.
     fn large() -> u64 {
-        unsafe { (*current()).held.load(Ordering::Relaxed) - RUNNING }
+        unsafe { (*current()).large() }
     }
 
     fn layout(size: usize) -> Layout {
@@ -624,6 +724,42 @@ mod tests {
             within(u64::MAX, || assert_eq!(allocated(), 0));
             assert_eq!(allocated(), 32);
             allocator.dealloc(outer, layout(32));
+        });
+    }
+
+    #[test]
+    fn reserves_what_fits_the_budget_until_the_reservation_is_dropped() {
+        let limit = bytes(3 * LARGE);
+        within(limit, || {
+            let reserved = reserve(bytes(2 * LARGE)).unwrap();
+            assert_eq!(large(), 2 * LARGE as u64);
+            assert_eq!(reserve(bytes(2 * LARGE)).err(), Some(limit));
+            drop(reserved);
+            assert_eq!(large(), 0);
+            assert_eq!(peak(), Some(2 * LARGE as u64));
+        });
+        assert!(reserve(u64::MAX).is_ok());
+        assert_eq!(peak(), None);
+    }
+
+    #[test]
+    fn charges_the_threads_working_for_an_extraction_to_its_budget() {
+        let allocator = CountingAllocator(System);
+        within(u64::MAX, || {
+            let shared = share().unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    shared.within(|| unsafe {
+                        let memory = allocator.alloc(layout(4 * LARGE));
+                        assert_eq!(large(), 4 * LARGE as u64 + RUNNING);
+                        allocator.dealloc(memory, layout(4 * LARGE));
+                    });
+                    assert!(current().is_null());
+                });
+            });
+            drop(shared);
+            assert_eq!(large(), 0);
+            assert_eq!(peak(), Some(4 * LARGE as u64 + RUNNING));
         });
     }
 }

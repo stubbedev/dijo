@@ -9,8 +9,9 @@ use crate::errors::Error;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure, Unported};
+use crate::input::Pages;
 use crate::ocr::{
-    self, Decoded, Format, ImageRead, OcrSettings, Orientation, ReadPages, Undecoded,
+    self, Decoded, Format, ImageRead, OcrError, OcrSettings, Orientation, Stopped, Undecoded,
 };
 
 use super::{extractor, MIN_PIXELS, PREPARING_OCR_PARSER};
@@ -74,37 +75,47 @@ impl OcrReader {
             .auto()
             .then(|| context.assumed_ocr_script())
             .flatten();
-        let read = self
-            .tesseract
-            .clone()
-            .and_then(|tesseract| {
-                ocr::read_image(
-                    tesseract,
-                    &self.settings,
-                    decoded,
-                    file_size,
-                    orientation,
-                    assumed.as_deref(),
-                )
-            })
-            .map_err(|e| Failure::Extraction(Error::ParseError(e.to_string())))?;
-        if let Some(learned) = &read.learned {
-            context.learn_ocr_script(learned.clone());
+        let tesseract = self.tesseract.clone().map_err(ocr_failure)?;
+        let learned = ocr::read_image(
+            tesseract,
+            &self.settings,
+            decoded,
+            file_size,
+            orientation,
+            assumed.as_deref(),
+            |read| write(xhtml, read, page),
+        )
+        .map_err(|stopped| match stopped {
+            Stopped::Ocr(error) => ocr_failure(error),
+            Stopped::Writing(stop) => Failure::Stopped(stop),
+        })?;
+        if let Some(learned) = learned {
+            context.learn_ocr_script(learned);
         }
-        write(xhtml, &read, page)?;
         Ok(())
+    }
+}
+
+/// The failure of an extraction whose OCR failed: out of its memory budget, or with why
+/// tesseract read nothing.
+fn ocr_failure(error: OcrError) -> Failure {
+    match error {
+        OcrError::MemoryLimit { limit, .. } => Failure::Stopped(Stop::MemoryLimit(limit)),
+        error => Failure::Extraction(Error::ParseError(error.to_string())),
     }
 }
 
 impl<'a> Enricher<'a> {
     /// The enricher of an image of `content_type` Tika hands one, `enriched`, unless OCR is
-    /// skipped: the image decoded. An image the port cannot decode or read with tesseract is left
-    /// to Tika's path; one libheif cannot decode fails as the `IOException` Tika's path throws out
-    /// of the image parser `tika_name` (#173).
+    /// skipped: the image decoded, or of a TIFF of several pages, mapped to the pages of
+    /// `memory`, the pages found, to decode one at a time as they are read. An image the port
+    /// cannot decode or read with tesseract is left to Tika's path; one libheif cannot decode
+    /// fails as the `IOException` Tika's path throws out of the image parser `tika_name` (#173).
     pub(super) fn of(
         enriched: bool,
         content_type: &str,
         input: &'a [u8],
+        memory: Pages<'a>,
         configs: &ParserConfigs,
         tika_name: &str,
     ) -> Result<Self, Decline<'static>> {
@@ -118,19 +129,20 @@ impl<'a> Enricher<'a> {
             ))
         })?;
         let timeout = OcrSettings::of(&configs.ocr).timeout();
-        let decoded = ocr::decode(input, format, timeout).map_err(|undecoded| match undecoded {
-            #[cfg(not(feature = "static"))]
-            Undecoded::NoDecoder => Decline::from(Unported::new(format!(
+        let decoded =
+            ocr::decode(input, memory, format, timeout).map_err(|undecoded| match undecoded {
+                #[cfg(not(feature = "static"))]
+                Undecoded::NoDecoder => Decline::from(Unported::new(format!(
                 "an image of {base}, for which no decoder is bundled or installed: Tika's path \
                  reports it unread"
             ))),
-            Undecoded::Failed(reason) => Decline::from(Unported::new(format!(
-                "an image of {base} the port cannot decode for OCR: {reason}"
-            ))),
-            Undecoded::Rejected(message) => Decline::Fails(
-                Thrown::Io(Exception::new(IO_EXCEPTION, message)).into_error(tika_name),
-            ),
-        })?;
+                Undecoded::Failed(reason) => Decline::from(Unported::new(format!(
+                    "an image of {base} the port cannot decode for OCR: {reason}"
+                ))),
+                Undecoded::Rejected(message) => Decline::Fails(
+                    Thrown::Io(Exception::new(IO_EXCEPTION, message)).into_error(tika_name),
+                ),
+            })?;
         Ok(Self::Reading {
             reader: OcrReader::of(configs)?,
             decoded,
@@ -169,23 +181,19 @@ fn too_small(xhtml: &mut Xhtml) -> bool {
 /// `EmbeddedContentHandler` and `BodyContentHandler` into the image's document: each reading
 /// after its report, the pages of a TIFF each in a div of class `page`, with a warning for a
 /// page too large or damaged to read.
-fn write(xhtml: &mut Xhtml, read: &ImageRead, page: Option<u32>) -> Result<(), Stop> {
-    match &read.pages {
-        ReadPages::One(attempt) => emit(xhtml, attempt, page),
-        ReadPages::Many(pages) => {
-            for (index, attempt) in pages.iter().enumerate() {
-                let number = index as u32 + 1;
-                xhtml.start_element_with("div", &[("class", "page")])?;
-                match attempt {
-                    Some(attempt) => emit(xhtml, attempt, Some(number))?,
-                    None => xhtml.metadata_mut().add(
-                        WARNING,
-                        format!("Page {number} of the image is too large or damaged to OCR"),
-                    ),
-                }
-                end_block(xhtml)?;
+fn write(xhtml: &mut Xhtml, read: ImageRead<'_>, page: Option<u32>) -> Result<(), Stop> {
+    match read {
+        ImageRead::One(attempt) => emit(xhtml, attempt, page),
+        ImageRead::Page { number, attempt } => {
+            xhtml.start_element_with("div", &[("class", "page")])?;
+            match attempt {
+                Some(attempt) => emit(xhtml, attempt, Some(number))?,
+                None => xhtml.metadata_mut().add(
+                    WARNING,
+                    format!("Page {number} of the image is too large or damaged to OCR"),
+                ),
             }
-            Ok(())
+            end_block(xhtml)
         }
     }
 }

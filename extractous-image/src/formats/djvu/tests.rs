@@ -187,3 +187,34 @@ fn splits_text_layers_into_paragraphs_at_block_ends() {
     assert!(layer_text(&[0, 0]).is_err());
     assert_eq!(layer_text(&[]).unwrap(), "");
 }
+
+/// A page too large to read whole has its text layer read in place, the chunks after it skipped.
+#[test]
+fn extracts_djvu_documents_too_large_to_read_whole_in_bounded_memory() {
+    use extractous_core::large::{bodies_past_limit, LargeFile};
+    const PADDING: usize = 1 << 20;
+    let text = b"A large page";
+    let mut layer = vec![0, 0, text.len() as u8];
+    layer.extend(text);
+    layer.push(0);
+    let padding = u32::try_from(bodies_past_limit(PADDING) * PADDING as u64).unwrap();
+    let chunks = 4 + 8 + layer.len() as u32 + 8 + padding;
+    let mut head = b"AT&TFORM".to_vec();
+    head.extend(chunks.to_be_bytes());
+    head.extend(b"DJVU");
+    head.extend(b"TXTa");
+    head.extend((layer.len() as u32).to_be_bytes());
+    head.extend(&layer);
+    head.extend(b"Xpad");
+    head.extend(padding.to_be_bytes());
+    let file = LargeFile::new(
+        "page.djvu",
+        &head,
+        bodies_past_limit(PADDING),
+        |_| vec![0; PADDING],
+        &[],
+    );
+    let (extracted, metadata) = file.extract(DjvuParser.name());
+    assert_eq!(extracted.trim(), "A large page");
+    assert_eq!(metadata[PAGES], ["1"]);
+}
