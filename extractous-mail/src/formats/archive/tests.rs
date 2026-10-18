@@ -745,3 +745,22 @@ fn writes_a_7z_archive_up_to_the_entry_past_the_most_the_native_path_decodes() {
         other => panic!("not stopped at the limit: {other:?}"),
     }
 }
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn writes_an_entry_cut_short_as_far_as_it_decodes_and_goes_on() {
+    let mut archive = zip(&[
+        ("broken.txt", &[7u8; 5000]),
+        ("after.txt", b"After the broken entry."),
+    ]);
+    let start =
+        30 + "broken.txt".len() + usize::from(u16::from_le_bytes([archive[28], archive[29]]));
+    archive[start] = 0xFF;
+    let (text, ended) = extract(&archive);
+    assert!(text.contains("After the broken entry."), "{text}");
+    let recorded = ended.expect("the archive goes on past the entry").concat();
+    assert!(
+        recorded.contains("Can't read archive stream (broken.txt): Truncated ZIP file"),
+        "{recorded}"
+    );
+}
