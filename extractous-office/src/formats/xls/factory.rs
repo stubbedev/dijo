@@ -18,7 +18,9 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::crypt::xor::{ExcelXorKey, Xor};
 use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys, Unopened};
-use crate::formats::poi::{thrown, Read, Thrown};
+use crate::formats::poi::{
+    out_of_bounds, record_format, thrown, Halt, Read, Thrown, ILLEGAL_STATE,
+};
 use crate::formats::{Decline, Failure};
 use crate::ole2::Content;
 
@@ -99,7 +101,10 @@ impl<'a> Records<'a> {
                 unread.extend(cells(stream.sid(), last.clone())?);
             }
             if last == Record::Eof {
-                return thrown("Nothing between BOF and EOF");
+                return Err(Thrown::runtime(
+                    ILLEGAL_STATE,
+                    "Nothing between BOF and EOF",
+                ));
             }
         }
         let file_pass = match &last {
@@ -254,12 +259,12 @@ fn cells(record_sid: u16, record: Record) -> Read<Vec<(u16, Record)>> {
         } => {
             let columns = i32::from(last_column) - i32::from(first_column) + 1;
             if columns < 0 {
-                return thrown(format!(
+                return record_format(format!(
                     "Cannot create RKRecords with negative number of columns: {columns}"
                 ));
             }
-            if columns as usize > values.len() || columns == 0 {
-                return thrown("a MulRK record names more columns than it holds");
+            if columns as usize > values.len() {
+                return Err(out_of_bounds(values.len(), values.len()));
             }
             Ok(values
                 .iter()
@@ -334,21 +339,15 @@ pub(super) fn write_drawing_group(
     stream: &RecordStream<'_>,
     starts: &[Mark],
     out: &mut dyn Write,
-) -> Result<(), Failure> {
+) -> Result<(), Halt<Failure>> {
     let mut stream = stream.clone();
     for &start in starts {
-        let data = stream
-            .seek(start)
-            .and_then(|()| stream.read_remainder())
-            .map_err(|Thrown(reason)| {
-                Failure::Malformed(format!(
-                    "a drawing group's record, read before, fails: {reason}"
-                ))
-            })?;
+        stream.seek(start)?;
+        let data = stream.read_remainder()?;
         out.write_all(&data).map_err(|error| {
-            Failure::Extraction(Error::IoError(format!(
+            Halt::Written(Failure::Extraction(Error::IoError(format!(
                 "Could not spool a drawing group of the workbook: {error}"
-            )))
+            ))))
         })?;
     }
     Ok(())

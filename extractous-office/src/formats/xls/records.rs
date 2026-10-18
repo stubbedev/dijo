@@ -3,7 +3,9 @@
 //! well-formed records.
 
 use super::stream::{java_string, Mark, RecordStream, MAX_STRING_LENGTH};
-use crate::formats::poi::{thrown, Read};
+use crate::formats::poi::{
+    record_format, safely_allocate_check, thrown, Read, Thrown, ILLEGAL_ARGUMENT, ILLEGAL_STATE,
+};
 
 /// Record types, as POI's record classes name them.
 pub(super) mod sid {
@@ -367,7 +369,12 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
                     stream.read_u8()?;
                 }
                 0 => {}
-                other => return thrown(format!("Unusual record size remaining=({other})")),
+                other => {
+                    return Err(Thrown::runtime(
+                        ILLEGAL_ARGUMENT,
+                        format!("Unusual record size remaining=({other})"),
+                    ))
+                }
             }
             Record::ColumnInfo {
                 hidden: options & 1 != 0,
@@ -465,7 +472,7 @@ impl Cached {
         }
         let kind = bits as i8;
         if !(0..=3).contains(&kind) {
-            return thrown(format!("Bad special value code ({kind})"));
+            return record_format(format!("Bad special value code ({kind})"));
         }
         Ok(Cached::Special(Special {
             kind,
@@ -567,14 +574,13 @@ fn read_phonetic(stream: &mut RecordStream<'_>, expected: i32) -> Read<Option<St
         second = 0;
     }
     if first != second {
-        return thrown(format!(
-            "The two length fields of the Phonetic Text don't agree! {first} vs {second}"
+        return Err(Thrown::runtime(
+            ILLEGAL_STATE,
+            format!("The two length fields of the Phonetic Text don't agree! {first} vs {second}"),
         ));
     }
     let bytes = i64::from(first) * 2;
-    if !(0..=MAX_STRING_LENGTH).contains(&bytes) {
-        return thrown(format!("Tried to allocate an array of length {bytes}"));
-    }
+    safely_allocate_check(bytes, MAX_STRING_LENGTH)?;
     let raw = stream.read_fully(bytes as usize)?;
     let units: Vec<u16> = utf16_le(&raw);
     let phonetic = java_string(&units);
@@ -611,7 +617,10 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
     const STD_MONIKER: &str = "{79EAC9D0-BAF9-11CE-8C82-00AA004BA90B}";
     const TAIL_SIZE: i32 = 24;
     if stream.remaining() < 8 {
-        return thrown("Ran out of data reading CellRangeAddress");
+        return Err(Thrown::runtime(
+            ILLEGAL_ARGUMENT,
+            "Ran out of data reading CellRangeAddress",
+        ));
     }
     let first_row = i32::from(stream.read_u16()?);
     stream.read_u16()?;
@@ -620,7 +629,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
     stream.read_fully(16)?;
     let version = stream.read_i32()?;
     if version != 2 {
-        return thrown(format!("Stream Version must be 0x2 but found {version}"));
+        return record_format(format!("Stream Version must be 0x2 but found {version}"));
     }
     let options = stream.read_i32()?;
     if options & LINK_LABEL != 0 {
@@ -655,9 +664,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
             file_moniker = true;
             stream.read_i16()?;
             let length = stream.read_i32()?;
-            if !(0..=MAX_STRING_LENGTH).contains(&i64::from(length)) {
-                return thrown(format!("Tried to allocate an array of length {length}"));
-            }
+            safely_allocate_check(i64::from(length), MAX_STRING_LENGTH)?;
             let bytes = stream.read_fully(length as usize)?;
             short_file_name = Some(
                 bytes
@@ -671,9 +678,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
                 let characters = stream.read_i32()? / 2;
                 stream.read_u16()?;
                 let bytes = i64::from(characters) * 2;
-                if !(0..=MAX_STRING_LENGTH).contains(&bytes) {
-                    return thrown(format!("Tried to allocate an array of length {bytes}"));
-                }
+                safely_allocate_check(bytes, MAX_STRING_LENGTH)?;
                 let raw = stream.read_fully(bytes as usize)?;
                 let units: Vec<u16> = utf16_le(&raw);
                 address = Some(java_string(&units));
@@ -681,9 +686,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
         } else if moniker == STD_MONIKER {
             stream.read_i16()?;
             let length = stream.read_i32()?;
-            if !(0..=super::stream::MAX_RECORD_LENGTH).contains(&i64::from(length)) {
-                return thrown(format!("Tried to allocate an array of length {length}"));
-            }
+            safely_allocate_check(i64::from(length), super::stream::MAX_RECORD_LENGTH)?;
             let bytes = stream.read_fully(length as usize)?;
             address = Some(utf8(&bytes));
         }
@@ -740,9 +743,7 @@ fn read_text_object(stream: &mut RecordStream<'_>) -> Read<String> {
     let formatting = stream.read_u16()?;
     stream.read_i32()?;
     if stream.remaining() > 0 {
-        return thrown(
-            "a text object linked to a cell by a formula, which this port does not read",
-        );
+        read_link_formula(stream)?;
     }
     let text = if length > 0 {
         let flag = stream.read_u8()?;
@@ -756,7 +757,7 @@ fn read_text_object(stream: &mut RecordStream<'_>) -> Read<String> {
     };
     if formatting > 0 {
         if formatting % 8 != 0 {
-            return thrown(format!("Bad format run data length {formatting})"));
+            return record_format(format!("Bad format run data length {formatting})"));
         }
         let text_length = text.len() as i32;
         for _ in 0..formatting / 8 {
@@ -764,14 +765,185 @@ fn read_text_object(stream: &mut RecordStream<'_>) -> Read<String> {
             stream.read_i16()?;
             stream.read_i32()?;
             if index > text_length {
-                return thrown("Start index must be less than end index.");
+                return Err(Thrown::runtime(
+                    ILLEGAL_ARGUMENT,
+                    "Start index must be less than end index.",
+                ));
             }
             if index < 0 {
-                return thrown("Start and end index not in range.");
+                return Err(Thrown::runtime(
+                    ILLEGAL_ARGUMENT,
+                    "Start and end index not in range.",
+                ));
             }
         }
     }
     Ok(java_string(&text))
+}
+
+/// The formula `TextObjectRecord` reads where its record goes on past its fields, which links
+/// the text to a cell: tokens as `Ptg.readTokens` reads them, of which it takes exactly one
+/// operand, and a byte after them, where the record holds one.
+fn read_link_formula(stream: &mut RecordStream<'_>) -> Read<()> {
+    if stream.remaining() < 11 {
+        return record_format("Not enough remaining data for a link formula");
+    }
+    let size = i32::from(stream.read_u16()?);
+    stream.read_i32()?;
+    let mut position = 0;
+    let mut tokens = 0;
+    let mut first = None;
+    while position < size {
+        let token = Token::read(stream)?;
+        position += token.size;
+        tokens += 1;
+        first.get_or_insert(token);
+    }
+    if position != size {
+        return Err(Thrown::runtime(ILLEGAL_ARGUMENT, "Ptg array size mismatch"));
+    }
+    if tokens != 1 {
+        return record_format(format!("Read {tokens} tokens but expected exactly 1"));
+    }
+    let first = first.expect("the one token read");
+    if let Some(class) = first.non_operand {
+        return Err(Thrown::runtime(
+            ILLEGAL_ARGUMENT,
+            format!("Had unexpected type of ptg at index 0: class org.apache.poi.ss.formula.ptg.{class}"),
+        ));
+    }
+    if stream.remaining() > 0 {
+        stream.read_u8()?;
+    }
+    if stream.remaining() > 0 {
+        return record_format(format!(
+            "Unused {} bytes at end of record",
+            stream.remaining()
+        ));
+    }
+    Ok(())
+}
+
+/// The classes of the operator tokens, by their ids from `0x03`.
+const OPERATORS: [&str; 20] = [
+    "AddPtg",
+    "SubtractPtg",
+    "MultiplyPtg",
+    "DividePtg",
+    "PowerPtg",
+    "ConcatPtg",
+    "LessThanPtg",
+    "LessEqualPtg",
+    "EqualPtg",
+    "GreaterEqualPtg",
+    "GreaterThanPtg",
+    "NotEqualPtg",
+    "IntersectionPtg",
+    "UnionPtg",
+    "RangePtg",
+    "UnaryPlusPtg",
+    "UnaryMinusPtg",
+    "PercentPtg",
+    "ParenthesisPtg",
+    "MissingArgPtg",
+];
+const UNSUPPORTED_OPERATION: &str = "java.lang.UnsupportedOperationException";
+
+/// A formula token as `Ptg.createPtg` reads it: its size, and the class of a token that is no
+/// operand.
+struct Token {
+    size: i32,
+    non_operand: Option<&'static str>,
+}
+
+/// How a token's fields are read after its id: their widths in bytes.
+enum Fields {
+    Operand(&'static [usize]),
+    Other(&'static str, &'static [usize]),
+}
+
+impl Token {
+    /// `Ptg.createPtg`: the token's id, then its fields. A token whose size depends on what it
+    /// holds is no operand, so that `TextObjectRecord` throws on its link formula whatever
+    /// follows; the port tells that throw without reading the token.
+    fn read(stream: &mut RecordStream<'_>) -> Read<Token> {
+        let id = stream.read_u8()? as i8;
+        let fields = if id < 0x20 {
+            match id {
+                0x01 => Fields::Other("ExpPtg", &[2, 2]),
+                0x02 => Fields::Other("TblPtg", &[2, 2]),
+                0x03..=0x16 => Fields::Other(OPERATORS[id as usize - 0x03], &[]),
+                0x1C => Fields::Other("ErrPtg", &[1]),
+                0x1D => Fields::Other("BoolPtg", &[1]),
+                0x1E => Fields::Other("IntPtg", &[2]),
+                0x1F => Fields::Other("NumberPtg", &[8]),
+                0x00 | 0x17 | 0x19 => {
+                    return thrown(format!(
+                        "a link formula with the token {id:#04x}, which is no operand"
+                    ))
+                }
+                _ => {
+                    return Err(Thrown::runtime(
+                        ILLEGAL_ARGUMENT,
+                        format!("Unexpected base token id ({id})"),
+                    ))
+                }
+            }
+        } else {
+            match id & 0x1F | 0x20 {
+                0x23 => Fields::Operand(&[2, 2]),
+                0x24 | 0x2C => Fields::Operand(&[2, 2]),
+                0x25 | 0x2D => Fields::Operand(&[2, 2, 2, 2]),
+                0x26 | 0x27 => Fields::Operand(&[4, 2]),
+                0x29 => Fields::Operand(&[2]),
+                0x2A => Fields::Operand(&[4]),
+                0x2B => Fields::Operand(&[4, 4]),
+                0x39 => Fields::Operand(&[2, 2, 2]),
+                0x3A => Fields::Operand(&[2, 2, 2]),
+                0x3B => Fields::Operand(&[2, 2, 2, 2, 2]),
+                0x3C => Fields::Operand(&[2, 4]),
+                0x3D => Fields::Operand(&[2, 4, 4]),
+                0x20..=0x22 => {
+                    return thrown(format!(
+                        "a link formula with the token {id:#04x}, which is no operand"
+                    ))
+                }
+                _ => {
+                    return Err(Thrown::runtime(
+                        UNSUPPORTED_OPERATION,
+                        format!(
+                            " Unknown Ptg in Formula: 0x{:x} ({id})",
+                            i32::from(id) as u32
+                        ),
+                    ))
+                }
+            }
+        };
+        let (widths, non_operand) = match fields {
+            Fields::Operand(widths) => (widths, None),
+            Fields::Other(class, widths) => (widths, Some(class)),
+        };
+        for &width in widths {
+            match width {
+                1 => {
+                    stream.read_u8()?;
+                }
+                2 => {
+                    stream.read_u16()?;
+                }
+                4 => {
+                    stream.read_i32()?;
+                }
+                _ => {
+                    stream.read_i64()?;
+                }
+            }
+        }
+        Ok(Token {
+            size: 1 + widths.iter().sum::<usize>() as i32,
+            non_operand,
+        })
+    }
 }
 
 /// `FormatRecord`: the format string, of the length it gives as far as the record holds it.
@@ -812,9 +984,7 @@ fn read_note(stream: &mut RecordStream<'_>) -> Read<Record> {
     let length = stream.read_i16()?;
     let wide = stream.read_u8()? != 0;
     let bytes = i64::from(length) * if wide { 2 } else { 1 };
-    if !(0..=MAX_STRING_LENGTH).contains(&bytes) {
-        return thrown(format!("Tried to allocate an array of length {bytes}"));
-    }
+    safely_allocate_check(bytes, MAX_STRING_LENGTH)?;
     let raw = stream.read_fully(bytes as usize)?;
     let author = if wide {
         let units: Vec<u16> = utf16_le(&raw);

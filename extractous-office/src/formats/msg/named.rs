@@ -81,7 +81,7 @@ fn tags(chunks: &[Chunk]) -> Read<HashMap<i64, Vec<Tag>>> {
             let offset = name_offset as i32;
             if (strings.len() as i64) > i64::from(offset) {
                 let at = usize::try_from(offset).map_err(|_| {
-                    Thrown(format!(
+                    Thrown::new(format!(
                         "Index {offset} out of bounds for length {}",
                         strings.len()
                     ))
@@ -89,7 +89,7 @@ fn tags(chunks: &[Chunk]) -> Read<HashMap<i64, Vec<Tag>>> {
                 let length = u32::from_le_bytes(
                     strings
                         .get(at..at + 4)
-                        .ok_or_else(|| Thrown(format!("Index {at} out of bounds")))?
+                        .ok_or_else(|| Thrown::new(format!("Index {at} out of bounds")))?
                         .try_into()
                         .expect("four bytes"),
                 );

@@ -25,7 +25,7 @@ const ACTION_OLE: u8 = 5;
 const ACTION_MEDIA: u8 = 6;
 
 fn poi_throws(reason: &str) -> Unread {
-    Thrown(format!("reading the presentation's shapes: {reason}")).into()
+    Thrown::new(format!("reading the presentation's shapes: {reason}")).into()
 }
 
 /// What `HSLFShapeFactory` makes of a shape.

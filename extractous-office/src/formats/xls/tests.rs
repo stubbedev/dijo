@@ -592,3 +592,77 @@ fn extracts_workbooks_too_large_to_read_whole_in_bounded_memory() {
     );
     assert_eq!(metadata[excel::COMMENT_PERSONS], ["Last"]);
 }
+
+/// A text object linked to a cell by a formula of one reference is read past its formula, as
+/// `TextObjectRecord` reads it, its text written outside the cells.
+#[test]
+fn reads_a_text_object_linked_to_a_cell() {
+    let mut stream = globals(&["One"], &[]);
+    stream.extend(bof(0x10));
+    let mut text_object = vec![0; 10];
+    text_object.extend(6u16.to_le_bytes());
+    text_object.extend(0u16.to_le_bytes());
+    text_object.extend(0i32.to_le_bytes());
+    text_object.extend(5u16.to_le_bytes());
+    text_object.extend(0i32.to_le_bytes());
+    text_object.extend([0x24, 1, 0, 2, 0]);
+    text_object.push(0);
+    stream.extend(record(sid::TEXT_OBJECT, &text_object));
+    let mut text = vec![0];
+    text.extend(b"linked");
+    stream.extend(record(sid::CONTINUE, &text));
+    stream.extend(record(sid::EOF, &[]));
+    plan(&stream).unwrap();
+    assert!(xhtml(&stream).contains("linked"));
+}
+
+/// A text object whose link formula holds a token that is no operand throws as
+/// `TextObjectRecord` does.
+#[test]
+fn fails_on_a_link_formula_of_no_operand_as_poi_does() {
+    let mut stream = globals(&["One"], &[]);
+    stream.extend(bof(0x10));
+    let mut text_object = vec![0; 14];
+    text_object.extend(0i32.to_le_bytes());
+    text_object.extend(3u16.to_le_bytes());
+    text_object.extend(0i32.to_le_bytes());
+    text_object.extend([0x1E, 7, 0]);
+    text_object.extend([0, 0]);
+    stream.extend(record(sid::TEXT_OBJECT, &text_object));
+    stream.extend(record(sid::EOF, &[]));
+    let Err(Decline::Differs { difference, .. }) = plan(&stream) else {
+        panic!("a workbook POI throws on");
+    };
+    assert!(
+        difference.0.contains(
+            "java.lang.IllegalArgumentException: Had unexpected type of ptg at index 0: class \
+             org.apache.poi.ss.formula.ptg.IntPtg"
+        ),
+        "{difference:?}"
+    );
+}
+
+/// A workbook POI throws on fails in the build without Tika as Tika's path fails on it, with
+/// the exception POI throws, which `OfficeParser` lets through.
+#[cfg(not(feature = "tika"))]
+#[test]
+fn fails_a_workbook_poi_throws_on_with_tikas_wording() {
+    let mut stream = globals(&["One"], &[]);
+    stream.extend(bof(0x10));
+    let mut mul_rk = cell(0, 0, 0)[..4].to_vec();
+    mul_rk.extend(0u16.to_le_bytes());
+    mul_rk.extend(0i32.to_le_bytes());
+    mul_rk.extend(1u16.to_le_bytes());
+    stream.extend(record(sid::MUL_RK, &mul_rk));
+    stream.extend(record(sid::EOF, &[]));
+    let workbook = crate::ole2::tests::compound(&["Workbook"], &stream);
+    let error = crate::Extractor::new()
+        .extract_bytes_to_string(&workbook)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
+         RuntimeException from org.apache.tika.parser.microsoft.OfficeParser <- caused by \
+         java.lang.ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1"
+    );
+}

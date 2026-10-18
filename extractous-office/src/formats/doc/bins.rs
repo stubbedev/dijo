@@ -68,7 +68,9 @@ impl PropertyRun {
     /// starts at zero.
     fn new(start: i32, end: i32, sprms: Option<SprmBuffer>) -> Read<Self> {
         if start > end {
-            return Err(Thrown(format!("charStart ({start}) > charEnd ({end})")));
+            return Err(Thrown::new(format!(
+                "charStart ({start}) > charEnd ({end})"
+            )));
         }
         let clamped = start.max(0);
         Ok(PropertyRun {
@@ -219,7 +221,7 @@ fn huge(grpprl: Vec<u8>, data: &[u8]) -> Read<Vec<u8>> {
         return Ok(grpprl);
     }
     let size = usize::try_from(size)
-        .map_err(|_| Thrown(format!("a huge grpprl of negative size {size}")))?;
+        .map_err(|_| Thrown::new(format!("a huge grpprl of negative size {size}")))?;
     let start = index(offset.wrapping_add(2))?;
     let source = start
         .checked_add(size)

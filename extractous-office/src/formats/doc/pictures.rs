@@ -254,7 +254,7 @@ pub(super) fn has_picture(document: &Document, run: &CharacterRun) -> Read<bool>
 /// negative.
 fn at(offset: i32, past: i32) -> Read<usize> {
     usize::try_from(offset.wrapping_add(past))
-        .map_err(|_| Thrown(format!("Index {} out of bounds", offset.wrapping_add(past))))
+        .map_err(|_| Thrown::new(format!("Index {} out of bounds", offset.wrapping_add(past))))
 }
 
 /// `PicturesTable.getAllPictures`: the pictures the runs of the whole text place, then those

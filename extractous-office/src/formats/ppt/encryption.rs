@@ -22,7 +22,7 @@ const WRONG_PASSWORD: &str = "org.apache.poi.hslf.exceptions.EncryptedPowerPoint
                               via Biff8EncryptionKey.setCurrentUserPassword()";
 
 fn poi_throws(reason: &str) -> Unread {
-    Thrown(format!("decrypting the presentation: {reason}")).into()
+    Thrown::new(format!("decrypting the presentation: {reason}")).into()
 }
 
 /// The encryption of a presentation, opened.

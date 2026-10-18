@@ -49,7 +49,7 @@ use crate::formats::embedded::{ParseContext, Wrapping};
 use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{handed_on, Embedded, Handed};
-use crate::formats::thrown::{Exception as JavaException, Thrown as Rethrown};
+use crate::formats::thrown::{Exception as JavaException, Thrown as Rethrown, TIKA_EXCEPTION};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{
     html, java_file_name, mark_password_used, noted, unless_different, Decline, Difference,
@@ -59,7 +59,7 @@ use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::time::civil::civil_from_days;
 
 const TIKA_NAME: &str = "org.apache.tika.parser.microsoft.JackcessParser";
-const TIKA_EXCEPTION: &str = "org.apache.tika.exception.TikaException";
+
 const UNSUPPORTED_FORMAT: &str = "org.apache.tika.exception.UnsupportedFormatException";
 /// What Jackcess's messages `JackcessParser` rethrows otherwise hold or start with.
 const INCORRECT_PASSWORD: &str = "Incorrect password";

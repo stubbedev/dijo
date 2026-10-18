@@ -91,7 +91,7 @@ impl TextPiece {
         let bytes = safely_borrow(main, i64::from(fc), i64::from(length), max)?;
         let characters = encoding.characters(bytes.len());
         if characters as i64 != i64::from(end) - i64::from(start) {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Told we're for characters {start} -> {end}, but actually covers {characters} \
                  characters!"
             )));
@@ -159,7 +159,7 @@ impl Plex {
     pub(super) fn read(buf: &[u8], start: i32, size: i32, struct_size: i32) -> Read<Plex> {
         let count = size.wrapping_sub(4) / (4 + struct_size);
         if count < 0 || i64::from(count) > MAX_PROPERTIES {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Tried to allocate an array of length {count}"
             )));
         }
@@ -205,7 +205,7 @@ pub(super) fn read_clx(table: &[u8], offset: i32) -> Read<(Vec<Vec<u8>>, Vec<Des
     }
     let kind = u8_at(table, index(offset)?)?;
     if kind != 2 {
-        return Err(Thrown(format!(
+        return Err(Thrown::new(format!(
             "The text piece table is corrupted, expected byte value 2 but had {kind}"
         )));
     }
@@ -333,7 +333,7 @@ impl Text {
         for (piece_index, piece) in clx.pieces.iter().enumerate() {
             let start = index(piece.start)?;
             if start > length {
-                return Err(Thrown(format!(
+                return Err(Thrown::new(format!(
                     "a text piece starts at {start}, past the text of {length} characters"
                 )));
             }

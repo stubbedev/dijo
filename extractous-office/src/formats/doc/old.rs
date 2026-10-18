@@ -326,7 +326,7 @@ fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unrea
 fn font_character_sets(main: &[u8], offset: i32, length: i32) -> Read<Vec<u8>> {
     let byte = |at: i32| -> Read<u8> {
         main.get(index(at)?).copied().ok_or_else(|| {
-            Thrown(format!(
+            Thrown::new(format!(
                 "Index {at} out of bounds for length {}",
                 main.len()
             ))

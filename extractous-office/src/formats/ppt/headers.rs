@@ -21,7 +21,7 @@ const HEADER_PLACEHOLDER: i32 = 10;
 const FOOTER_PLACEHOLDER: i32 = 9;
 
 fn poi_throws(reason: &str) -> Unread {
-    Thrown(format!("reading the headers and footers: {reason}")).into()
+    Thrown::new(format!("reading the headers and footers: {reason}")).into()
 }
 
 /// Which headers and footers a sheet has: a slide's or notes'.

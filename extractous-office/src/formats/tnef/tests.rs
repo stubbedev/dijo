@@ -185,7 +185,7 @@ fn throws_where_poi_does() {
         ),
     ] {
         let thrown = Message::read(&input).unwrap_err();
-        assert!(thrown.0.contains(reason), "{thrown:?}");
+        assert!(thrown.to_string().contains(reason), "{thrown:?}");
     }
 }
 

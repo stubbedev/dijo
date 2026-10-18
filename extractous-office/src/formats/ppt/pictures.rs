@@ -23,7 +23,7 @@ const CHECKSUM: usize = 16;
 const BSTORE_CONTAINER: u16 = 0xF001;
 
 fn poi_throws(reason: &str) -> Unread {
-    Thrown(format!("reading the presentation's pictures: {reason}")).into()
+    Thrown::new(format!("reading the presentation's pictures: {reason}")).into()
 }
 
 pub(super) fn recorded(reason: &str) -> Unported {
@@ -685,7 +685,7 @@ fn inflated(data: &[u8]) -> Result<Cow<'static, [u8]>, UnreadData> {
         .map_err(|_| UnreadData::Recorded("a compressed object of a negative length"))?;
     inflate(&data[4..], Some(size))
         .map(Cow::Owned)
-        .map_err(|Thrown(exception)| UnreadData::Thrown(exception))
+        .map_err(|thrown| UnreadData::Thrown(thrown.to_string()))
 }
 
 /// `getEmbeddedObjects`: the storages of embedded objects among the stream's records.

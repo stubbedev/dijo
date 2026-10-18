@@ -18,7 +18,7 @@ use crate::formats::handlers::parse_inline;
 use crate::formats::mail::{decode_encoded_words, parse_date, MailDate};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{codepage_encoding, office_document, Embedded, Handed};
-use crate::formats::poi::{Read, Thrown};
+use crate::formats::poi::{Reading, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, noted, rtf, Difference, Failure, Prepared, Unported};
 use crate::java::is_blank;
@@ -149,12 +149,12 @@ pub(super) fn extract<'a>(
     file: &Ole2<'a>,
     mut message: Message<'a>,
     configs: &ParserConfigs,
-) -> Result<(Extracted<'a>, Option<Difference>), Unported> {
+) -> Reading<(Extracted<'a>, Option<Difference>)> {
     if message.has_7_bit_strings() {
-        guess_7_bit_encoding(&mut message).map_err(unported)?;
+        guess_7_bit_encoding(&mut message)?;
     }
     let mut scratch = TikaMetadata::new();
-    write_metadata(&message, &mut scratch).map_err(unported)?;
+    write_metadata(&message, &mut scratch)?;
     let (body, content_ids, read_otherwise) = body(&message)?;
     let attachments = attachments(file, &message, &content_ids, configs)?;
     Ok((
@@ -165,10 +165,6 @@ pub(super) fn extract<'a>(
         },
         read_otherwise,
     ))
-}
-
-fn unported(Thrown(reason): Thrown) -> Unported {
-    Unported(format!("POI or Tika throws on the message: {reason}"))
 }
 
 impl Extracted<'_> {
@@ -187,8 +183,11 @@ impl Extracted<'_> {
 
     /// Writes the message as `OutlookExtractor.parse` does.
     pub(super) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        write_metadata(&self.message, xhtml.metadata_mut())
-            .map_err(|Thrown(reason)| Failure::Malformed(reason))?;
+        write_metadata(&self.message, xhtml.metadata_mut()).map_err(|unread| {
+            Failure::Malformed(format!(
+                "the message reads otherwise the second time it is read: {unread:?}"
+            ))
+        })?;
         match self.body {
             Body::Html { prepared, from_rtf } => {
                 parse_inline(prepared, xhtml)?;
@@ -233,7 +232,7 @@ fn string<'m>(message: &'m Message<'_>, id: i32) -> Option<&'m str> {
 
 /// The metadata `_parse` sets before the body: `handleFromTo`, `handleMessageInfo`, the named
 /// properties, the recipients' addresses, the transport headers and `handleGeneralDates`.
-fn write_metadata(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
+fn write_metadata(message: &Message, metadata: &mut TikaMetadata) -> Reading<()> {
     let headers = normalize_headers(message.headers().as_deref().unwrap_or_default())?;
     from_to(message, metadata)?;
     message_info(message, metadata)?;
@@ -264,7 +263,7 @@ fn write_metadata(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
 /// The date of the first `Date` transport header, for a message without a date of its own.
 /// Tika looks for a header named `date:`, which no header's name is, so that it never falls back
 /// to it (#112).
-fn header_date(headers: &[(String, Vec<String>)]) -> Read<Option<String>> {
+fn header_date(headers: &[(String, Vec<String>)]) -> Reading<Option<String>> {
     let Some(value) = headers
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("date"))
@@ -273,12 +272,12 @@ fn header_date(headers: &[(String, Vec<String>)]) -> Read<Option<String>> {
         return Ok(None);
     };
     let date = parse_date(value)
-        .map_err(|_| Thrown::new("a Date header naming a time zone Tika looks up"))?;
+        .map_err(|_| Unported("a Date header naming a time zone Tika looks up".to_owned()))?;
     Ok(date.map(MailDate::format))
 }
 
 /// `handleFromTo`.
-fn from_to(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
+fn from_to(message: &Message, metadata: &mut TikaMetadata) -> Reading<()> {
     let from = string(message, property::SENDER_NAME);
     set(metadata, name::CREATOR, from);
     set(metadata, name::FROM, from);
@@ -350,7 +349,7 @@ fn chunk_string(chunk: &Chunk) -> String {
 }
 
 /// `handleMessageInfo`.
-fn message_info(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
+fn message_info(message: &Message, metadata: &mut TikaMetadata) -> Reading<()> {
     set(metadata, name::TITLE, string(message, property::SUBJECT));
     let topic = string(message, property::CONVERSATION_TOPIC);
     set(metadata, name::SUBJECT, topic);
@@ -387,15 +386,16 @@ fn message_info(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
                 None => {}
                 Some(Value::Time(millis)) => metadata.set(key, format_instant(*millis)),
                 Some(_) => {
-                    return Err(Thrown(format!(
+                    return Err(Thrown::new(format!(
                         "the time property {id} is of another type, which Tika casts"
-                    )))
+                    ))
+                    .into())
                 }
             }
         }
     }
     if let Some(submission) = submission(message) {
-        metadata.set(name::SUBMISSION_ID, submission.id.clone());
+        set(metadata, name::SUBMISSION_ID, submission.id.as_deref());
         set(
             metadata,
             name::SUBMISSION_ACCEPTED_AT_TIME,
@@ -418,12 +418,13 @@ fn submission<'m>(message: &'m Message<'_>) -> Option<&'m Submission> {
 }
 
 /// The date of a submission id, in Java's default time zone.
-fn submission_date(submission: &Submission) -> Read<Option<i64>> {
+fn submission_date(submission: &Submission) -> Reading<Option<i64>> {
     let Some([year, month, day, hour, minute, second]) = submission.date else {
         return Ok(None);
     };
-    let zone = TimeZone::java_default()
-        .map_err(|reason| Thrown(format!("Java's default time zone cannot be read: {reason}")))?;
+    let zone = TimeZone::java_default().map_err(|reason| {
+        Thrown::new(format!("Java's default time zone cannot be read: {reason}"))
+    })?;
     Ok(Some(
         CalendarFields {
             year,
@@ -440,7 +441,7 @@ fn submission_date(submission: &Submission) -> Read<Option<i64>> {
 
 /// `getMessageDate`: the submission's date where the message has a submission id, else the
 /// first of its client submit, last modification and creation times.
-fn message_date(message: &Message) -> Read<Option<i64>> {
+fn message_date(message: &Message) -> Reading<Option<i64>> {
     if let Some(submission) = submission(message) {
         return submission_date(submission);
     }
@@ -456,9 +457,10 @@ fn message_date(message: &Message) -> Read<Option<i64>> {
             None => {}
             Some(Value::Time(millis)) => return Ok(Some(*millis)),
             Some(_) => {
-                return Err(Thrown(format!(
+                return Err(Thrown::new(format!(
                     "the time property {id} is of another type, which POI casts"
-                )))
+                ))
+                .into())
             }
         }
     }
@@ -487,11 +489,12 @@ pub(in crate::formats) fn normalized_class(class: Option<&str>) -> &'static str 
 
 /// `normalizeHeaders`: each header line `key: value` and the lines continuing it, the values
 /// of a key in order, decoded of their encoded words.
-fn normalize_headers(rows: &[String]) -> Read<Vec<(String, Vec<String>)>> {
+fn normalize_headers(rows: &[String]) -> Reading<Vec<(String, Vec<String>)>> {
     let mut headers: Vec<(String, Vec<String>)> = Vec::new();
-    let mut add = |key: &str, value: &str| -> Read<()> {
-        let value = decode_encoded_words(value)
-            .map_err(|_| Thrown::new("a header in a charset the native decoders do not decode"))?;
+    let mut add = |key: &str, value: &str| -> Reading<()> {
+        let value = decode_encoded_words(value).map_err(|_| {
+            Unported("a header in a charset the native decoders do not decode".to_owned())
+        })?;
         match headers.iter_mut().find(|(known, _)| known == key) {
             Some((_, values)) => values.push(value),
             None => headers.push((key.to_owned(), vec![value])),
@@ -554,7 +557,7 @@ fn header_line(row: &str) -> Option<(&str, &str)> {
 /// `guess7BitEncoding`: Tika decodes the 7-bit strings with the charset it detects in the body,
 /// the declared one as a hint, where it is more than 35% sure of it, else with the one the
 /// message declares.
-fn guess_7_bit_encoding(message: &mut Message) -> Read<()> {
+fn guess_7_bit_encoding(message: &mut Message) -> Reading<()> {
     let declared = declared_charset(message)?;
     let body = message
         .main
@@ -589,7 +592,7 @@ fn guess_7_bit_encoding(message: &mut Message) -> Read<()> {
 
 /// `tryToSet7BitEncoding`: the 7-bit strings decoded with `charset`, unless it is UTF-8 or no
 /// charset Java supports; whether they were.
-fn try_to_set_7_bit_encoding(message: &mut Message, charset: &str) -> Read<bool> {
+fn try_to_set_7_bit_encoding(message: &mut Message, charset: &str) -> Reading<bool> {
     if equals_ignore_case(charset, "utf-8") || Charset::for_name(charset).is_none() {
         return Ok(false);
     }
@@ -599,7 +602,7 @@ fn try_to_set_7_bit_encoding(message: &mut Message, charset: &str) -> Read<bool>
 
 /// `declaredCharset`: the charset of the message's code page or internet code page, else of
 /// its `Content-Type` header.
-fn declared_charset(message: &Message) -> Read<Option<String>> {
+fn declared_charset(message: &Message) -> Reading<Option<String>> {
     if let Some(properties) = message.main.properties() {
         for id in [property::MESSAGE_CODEPAGE, property::INTERNET_CPID] {
             match properties.get(id) {
@@ -612,9 +615,10 @@ fn declared_charset(message: &Message) -> Read<Option<String>> {
                     }
                 }
                 Some(_) => {
-                    return Err(Thrown(format!(
+                    return Err(Thrown::new(format!(
                         "the code page property {id} is of another type, which Tika casts"
-                    )))
+                    ))
+                    .into())
                 }
             }
         }
@@ -636,7 +640,7 @@ fn declared_charset(message: &Message) -> Read<Option<String>> {
 
 /// `handleBodyChunks`'s reading: the body, the content ids of the pictures it shows, and where
 /// the HTML of the body is read differently from Tika's, if it is.
-fn body(message: &Message) -> Result<(Body, HashSet<String>, Option<Difference>), Unported> {
+fn body(message: &Message) -> Reading<(Body, HashSet<String>, Option<Difference>)> {
     let mut content_ids = HashSet::new();
     let html = message.main.last(property::BODY_HTML);
     if let Some(data) = html.and_then(|chunk| match (chunk.bytes(), chunk.text()) {
@@ -661,7 +665,7 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>, Option<Difference>)
             .bytes()
             .expect("the group checked the RTF body is binary");
         if !data.is_empty() {
-            let rtf = rtf::decompress(&data).map_err(unported)?;
+            let rtf = rtf::decompress(&data)?;
             if let Some(html) = rtf::decapsulate(&rtf)? {
                 let (prepared, difference) = html::prepare_string(&html);
                 image_content_ids(&String::from_utf16_lossy(&html), &mut content_ids);

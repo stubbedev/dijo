@@ -15,8 +15,9 @@
 //! `OldExcelExtractor` reads it for Tika's `OldExcelParser`: a paragraph per line of its text.
 //!
 //! An encrypted workbook is decrypted with the password, or failed as Tika's path fails it where
-//! the password does not open it. One POI throws on and macros extracted when asked to are left
-//! to Tika: see [`XlsParser::defers`].
+//! the password does not open it. One POI or Tika's listener throws on fails as Tika's path
+//! fails it. A cell of a format the port does not write and macros extracted when asked to are
+//! left to Tika.
 
 mod factory;
 mod listener;
@@ -41,7 +42,7 @@ use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::{office_document, Summaries};
-use crate::formats::poi::{Thrown, Unread};
+use crate::formats::poi::{written, Halt, Thrown, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported, PASSWORD_USED};
 use crate::input::{self, Pages, Paging, Spool};
@@ -144,8 +145,8 @@ impl Parser for XlsParser {
         Footprint::Bounded
     }
 
-    /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
-    /// throws on and macros extracted when asked to. A compound document typed a workbook that
+    /// Fails encrypted workbooks the password does not open and workbooks POI or Tika throws on,
+    /// and defers macros extracted when asked to. A compound document typed a workbook that
     /// POI's container detection names a kind of no content, such as an MS Graph chart, is read
     /// as `OfficeParser` reads it once it has detected that kind: its summary information only.
     fn prepare<'a>(
@@ -355,7 +356,7 @@ impl Biff8<'_> {
         if self.asks_password {
             xhtml.metadata_mut().set(PASSWORD_USED, "true");
         }
-        let thrown = |Thrown(reason)| unplanned(&reason);
+        let thrown = |thrown: Thrown| unplanned(&thrown.to_string());
         let mut records = Records::new(self.stream.clone()).map_err(thrown)?;
         records
             .decrypt(self.configs)
@@ -385,7 +386,8 @@ impl Biff8<'_> {
                     stopped = Some(stop);
                     break;
                 }
-                Err(Interrupted::Thrown(Thrown(reason))) => return Err(unplanned(&reason)),
+                Err(Interrupted::Thrown(thrown)) => return Err(unplanned(&thrown.to_string())),
+                Err(Interrupted::Unported(Unported(reason))) => return Err(unplanned(&reason)),
             }
         }
         if stopped.is_none() {
@@ -394,7 +396,10 @@ impl Biff8<'_> {
         }
         let mut stored = 0;
         for &index in &planned.found.drawing_groups {
-            let group = spool_drawing_group(records.stream(), &planned.drawing_groups[index])?;
+            let group = written(spool_drawing_group(
+                records.stream(),
+                &planned.drawing_groups[index],
+            ))?;
             let escher = escher::decode(&group).map_err(thrown)?;
             find_pictures(
                 &escher,
@@ -477,21 +482,21 @@ fn plan(
     pages: Pages<'_>,
     configs: &ParserConfigs,
 ) -> Result<Planned, Decline<'static>> {
-    let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
     let settings = settings(configs);
-    let mut records = Records::new(stream).map_err(throws)?;
+    let mut records = Records::new(stream)?;
     records.decrypt(configs)?;
     let mut listener = Listener::new(settings, Pass::Plan);
     let paging = Paging::new(pages);
     let mut read = 0;
-    while let Some(event) = records.next().map_err(throws)? {
+    while let Some(event) = records.next()? {
         count_read(&paging, &records, &mut read);
         match event {
             Event::Record { sid, record } => {
                 if is_listened(sid, &settings) {
                     match listener.process(sid, &record, records.stream(), &mut Nowhere) {
                         Ok(()) => {}
-                        Err(Interrupted::Thrown(thrown)) => return Err(throws(thrown).into()),
+                        Err(Interrupted::Thrown(thrown)) => return Err(thrown.into()),
+                        Err(Interrupted::Unported(unported)) => return Err(unported.into()),
                         Err(Interrupted::Stopped(stop)) => {
                             unreachable!("planning writes nowhere, which stops nothing: {stop:?}")
                         }
@@ -501,19 +506,20 @@ fn plan(
             Event::DrawingGroup(index) => listener.drawing_group(index),
         }
     }
-    let (found, _) = listener.finish().map_err(throws)?;
+    let (found, _) = listener.finish()?;
     let sheets_of_pictures = sheets_of_pictures(&found.sheet_drawings);
     let stream = records.stream().clone();
     let drawing_groups = records.into_drawing_groups();
     for &index in &found.drawing_groups {
         let group =
-            spool_drawing_group(&stream, &drawing_groups[index]).map_err(
-                |failure| match failure {
-                    Failure::Extraction(error) => Decline::Fails(error),
-                    failure => Unported(format!("{failure:?}")).into(),
-                },
-            )?;
-        escher::decode(&group).map_err(throws)?;
+            spool_drawing_group(&stream, &drawing_groups[index]).map_err(|halt| match halt {
+                Halt::Declined(declined) => declined,
+                Halt::Written(Failure::Extraction(error)) => Decline::Fails(error),
+                Halt::Written(failure) => {
+                    unreachable!("spooling a drawing group fails only to write: {failure:?}")
+                }
+            })?;
+        escher::decode(&group)?;
     }
     Ok(Planned {
         found,
@@ -527,11 +533,11 @@ fn plan(
 fn spool_drawing_group(
     stream: &RecordStream<'_>,
     starts: &[Mark],
-) -> Result<input::Input<'static>, Failure> {
+) -> Result<input::Input<'static>, Halt<Failure>> {
     let failed = |error: std::io::Error| {
-        Failure::Extraction(crate::Error::IoError(format!(
+        Halt::Written(Failure::Extraction(crate::Error::IoError(format!(
             "Could not spool a drawing group of the workbook: {error}"
-        )))
+        ))))
     };
     let mut spool = BufWriter::new(Spool::new(None));
     write_drawing_group(stream, starts, &mut spool)?;

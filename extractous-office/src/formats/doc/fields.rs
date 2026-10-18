@@ -85,7 +85,7 @@ impl Fields {
             if offset > 0 && size > 0 {
                 for (start, _, descriptor) in Plex::read(table, offset, size, FLD_SIZE)?.entries {
                     let [holder, kind, ..] = descriptor[..] else {
-                        return Err(Thrown(format!(
+                        return Err(Thrown::new(format!(
                             "Index {} out of bounds for length {}",
                             descriptor.len(),
                             descriptor.len()

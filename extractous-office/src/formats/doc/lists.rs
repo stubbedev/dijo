@@ -36,7 +36,7 @@ impl ListLevel {
         let number_format = u8_at(data, at + 4)? as i8;
         let info = u8_at(data, at + 5)?;
         if at + 6 > data.len() {
-            return Err(Thrown(format!("Index {} out of bounds", at + 6)));
+            return Err(Thrown::new(format!("Index {} out of bounds", at + 6)));
         }
         let mut placeholder_offsets = [0i8; 9];
         for (i, slot) in placeholder_offsets.iter_mut().enumerate() {
@@ -177,7 +177,7 @@ fn read_lfos(table: &[u8], offset: i32) -> Read<Vec<Lfo>> {
     let at = index(offset)?;
     let count = i64::from(i32_at(table, at)? as u32);
     if count > i64::from(i32::MAX) || count > MAX_LFO_COUNT {
-        return Err(Thrown(format!(
+        return Err(Thrown::new(format!(
             "Tried to allocate an array of length {count}"
         )));
     }
@@ -271,8 +271,8 @@ impl ListManager {
                 .get(&lsid)
                 .and_then(|list| override_tuples(lfo, &list.levels)),
         };
-        let level =
-            usize::try_from(ilvl).map_err(|_| Thrown(format!("Index {ilvl} out of bounds")))?;
+        let level = usize::try_from(ilvl)
+            .map_err(|_| Thrown::new(format!("Index {ilvl} out of bounds")))?;
         let formatted = counter.increment(level, overrides.as_deref());
         self.override_tuples.insert(ilfo, overrides);
         Ok(formatted)

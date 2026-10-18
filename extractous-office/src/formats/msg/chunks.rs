@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use super::properties::{read_properties, PropertySet, PROPERTIES};
 use super::types::{property, Type, MULTIVALUED_FLAG};
-use crate::formats::poi::{Read, Thrown};
+use crate::formats::poi::{Read, Reading, Thrown, ILLEGAL_ARGUMENT};
+use crate::formats::Unported;
 use crate::java::parse_hex_int;
 use crate::ole2::{Content, EntryId, EntryKind, Node, Ole2};
 use crate::text::charset::Charset;
@@ -17,6 +18,8 @@ const ATTACHMENT_PREFIX: &str = "__attach_version1.0_#";
 const RECIPIENT_PREFIX: &str = "__recip_version1.0_#";
 pub(super) const NAME_ID: &str = "__nameid_version1.0";
 const DEFAULT_ENCODING: &str = "CP1252";
+const UNSUPPORTED_CHARSET: &str = "java.nio.charset.UnsupportedCharsetException";
+const STRING_INDEX_OUT_OF_BOUNDS: &str = "java.lang.StringIndexOutOfBoundsException";
 
 /// A string chunk, `StringChunk`: its bytes, in place where they lie in one run, and its text
 /// as decoded.
@@ -27,7 +30,7 @@ pub(super) struct Text<'a> {
 }
 
 impl<'a> Text<'a> {
-    fn read(content: &Content<'a>, kind: Type) -> Read<Text<'a>> {
+    fn read(content: &Content<'a>, kind: Type) -> Reading<Text<'a>> {
         let raw = content.bytes();
         let value = decode(&raw, kind, DEFAULT_ENCODING)?;
         Ok(Text { raw, value })
@@ -41,7 +44,7 @@ impl<'a> Text<'a> {
     }
 
     /// `set7BitEncoding`: an ASCII string decoded again with the charset named.
-    fn set_encoding(&mut self, kind: Type, encoding: &str) -> Read<()> {
+    fn set_encoding(&mut self, kind: Type, encoding: &str) -> Reading<()> {
         if kind == Type::ASCII_STRING {
             self.value = decode(&self.raw, kind, encoding)?;
         }
@@ -51,7 +54,7 @@ impl<'a> Text<'a> {
 
 /// `parseString`: an ASCII string in the charset named, a Unicode one as UTF-16LE, without
 /// its NULs.
-fn decode(raw: &[u8], kind: Type, encoding: &str) -> Read<String> {
+fn decode(raw: &[u8], kind: Type, encoding: &str) -> Reading<String> {
     let text = if kind == Type::ASCII_STRING {
         let name = if encoding == "ansi" {
             DEFAULT_ENCODING
@@ -59,10 +62,12 @@ fn decode(raw: &[u8], kind: Type, encoding: &str) -> Read<String> {
             encoding
         };
         let charset =
-            Charset::for_name(name).ok_or_else(|| Thrown(format!("Unsupported charset {name}")))?;
-        charset
-            .decode(raw)
-            .ok_or_else(|| Thrown(format!("the charset {name} does not decode natively")))?
+            Charset::for_name(name).ok_or_else(|| Thrown::runtime(UNSUPPORTED_CHARSET, name))?;
+        charset.decode(raw).ok_or_else(|| {
+            Unported(format!(
+                "a string in the charset {name}, which does not decode natively"
+            ))
+        })?
     } else {
         Charset::named("UTF-16LE")
             .decode(raw)
@@ -84,10 +89,11 @@ pub(super) enum Value<'a> {
     Properties(PropertySet),
 }
 
-/// A message submission id, and the date in its `l=` part, as local calendar fields.
+/// A message submission id, and the date in its `l=` part, as local calendar fields: neither
+/// where POI leaves the chunk unread, as it does a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Submission {
-    pub(super) id: String,
+    pub(super) id: Option<String>,
     /// Year, month, day, hour, minute and second.
     pub(super) date: Option<[i32; 6]>,
 }
@@ -189,7 +195,7 @@ impl<'a> Group<'a> {
                 true
             };
             if !fits {
-                return Err(Thrown(format!(
+                return Err(Thrown::new(format!(
                     "Property and type of chunk did not match, had property {}",
                     chunk.id
                 )));
@@ -219,7 +225,7 @@ pub(super) struct Recipient<'a> {
 
 impl Recipient<'_> {
     /// `getRecipientEmailAddress`.
-    pub(super) fn email_address(&self) -> Read<Option<String>> {
+    pub(super) fn email_address(&self) -> Reading<Option<String>> {
         let group = &self.group;
         if let Some(smtp) = group.string(property::SMTP_ADDRESS) {
             return Ok(Some(smtp.value.clone()));
@@ -306,7 +312,11 @@ pub(super) struct Message<'a> {
 
 impl<'a> Message<'a> {
     /// `new MAPIMessage(directory)`.
-    pub(super) fn read(file: &Ole2<'a>, directory: EntryId, embedded: bool) -> Read<Message<'a>> {
+    pub(super) fn read(
+        file: &Ole2<'a>,
+        directory: EntryId,
+        embedded: bool,
+    ) -> Reading<Message<'a>> {
         let mut name_ids = None;
         let mut recipients = Vec::new();
         let mut attachments = Vec::new();
@@ -379,7 +389,7 @@ impl<'a> Message<'a> {
     }
 
     /// `set7BitEncoding(charset)`: every 7-bit string decoded with the charset.
-    pub(super) fn set_7_bit_encoding(&mut self, encoding: &str) -> Read<()> {
+    pub(super) fn set_7_bit_encoding(&mut self, encoding: &str) -> Reading<()> {
         let groups = std::iter::once(&mut self.main)
             .chain(self.name_ids.iter_mut())
             .chain(
@@ -437,7 +447,7 @@ enum GroupKind {
 
 /// `processChunks`: the chunks of a storage's streams and of its directories named as
 /// directory properties, each multi-valued property's values after the others.
-fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Read<Group<'a>> {
+fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Reading<Group<'a>> {
     let mut group = Group::default();
     let mut multi: BTreeMap<i32, BTreeMap<i32, Chunk>> = BTreeMap::new();
     for entry in file.children(directory) {
@@ -447,9 +457,6 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Read<
             continue;
         }
         if name == PROPERTIES {
-            if !is_document {
-                return Err(Thrown::new("a properties storage that is no stream"));
-            }
             let data = read(file, entry)?.bytes();
             let properties = match kind {
                 GroupKind::Message { embedded } => read_properties(&data, Some(embedded)),
@@ -471,12 +478,14 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Read<
             multi_index,
         } = primitive;
         if id == property::MESSAGE_SUBMISSION_ID {
-            if !is_document {
-                return Err(Thrown::new(
-                    "a message submission id that is no stream, which POI leaves unread",
-                ));
-            }
-            let value = Value::Submission(submission(&read(file, entry)?.bytes()));
+            let value = Value::Submission(if is_document {
+                submission(&read(file, entry)?.bytes())
+            } else {
+                Submission {
+                    id: None,
+                    date: None,
+                }
+            });
             if multi_index.is_none() {
                 group.chunks.push(Chunk { id, kind, value });
             }
@@ -497,10 +506,12 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Read<
                     continue;
                 }
                 if !is_document {
-                    return Err(Thrown::new(
+                    return Err(Unported(
                         "a directory named as a value of a multi-valued property, which POI \
-                         leaves unread",
-                    ));
+                         leaves unread"
+                            .to_owned(),
+                    )
+                    .into());
                 }
                 let data = read(file, entry)?;
                 let value = if is_text {
@@ -534,9 +545,9 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Read<
 }
 
 /// A stream, in place; POI swallows a failure to read one, which this port leaves to Tika.
-fn read<'a>(file: &Ole2<'a>, entry: EntryId) -> Read<Content<'a>> {
+fn read<'a>(file: &Ole2<'a>, entry: EntryId) -> Result<Content<'a>, Unported> {
     file.content(entry)
-        .map_err(|_| Thrown::new("a message stream POI cannot read"))
+        .map_err(|_| Unported("a message stream POI cannot read".to_owned()))
 }
 
 /// Where a multi-valued chunk goes.
@@ -568,10 +579,16 @@ fn read_primitive(name: &str) -> Read<Option<Primitive>> {
         return Ok(None);
     }
     if split + 8 > units.len() {
-        return Err(Thrown(format!("Invalid chunk name {name}")));
+        return Err(Thrown::runtime(
+            ILLEGAL_ARGUMENT,
+            format!("Invalid chunk name {name}"),
+        ));
     }
     if ids.len() < 8 {
-        return Err(Thrown(format!("begin 4, end 8, length {}", ids.len())));
+        return Err(Thrown::runtime(
+            STRING_INDEX_OUT_OF_BOUNDS,
+            format!("begin 4, end 8, length {}", ids.len()),
+        ));
     }
     let hex = |units: &[u16]| parse_hex_int(&String::from_utf16_lossy(units));
     let (Some(id), Some(type_id)) = (hex(&ids[..4]), hex(&ids[4..8])) else {
@@ -635,5 +652,5 @@ fn submission(data: &[u8]) -> Submission {
             ]);
         }
     }
-    Submission { id, date }
+    Submission { id: Some(id), date }
 }

@@ -228,7 +228,7 @@ pub(super) fn strip_fields(text: &[u16]) -> Read<Vec<u16>> {
         }
         if let Some(first14) = first14.filter(|&first14| next13.is_none_or(|next| first14 < next)) {
             if first14 + 1 > last15 {
-                return Err(Thrown(format!(
+                return Err(Thrown::new(format!(
                     "begin {}, end {last15}, length {}",
                     first14 + 1,
                     text.len()
@@ -544,7 +544,7 @@ impl<'d, E> Extractor<'_, 'd, E> {
             .iter()
             .map(|&index| {
                 let (start, end, _) = plex.entries.get(index).ok_or_else(|| {
-                    Thrown(format!(
+                    Thrown::new(format!(
                         "Index {index} out of bounds for length {}",
                         plex.entries.len()
                     ))

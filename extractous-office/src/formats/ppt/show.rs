@@ -44,7 +44,7 @@ fn unported(reason: impl Into<String>) -> Unread {
 }
 
 fn poi_throws(reason: impl Into<String>) -> Unread {
-    Thrown(reason.into()).into()
+    Thrown::new(reason.into()).into()
 }
 
 /// A record of the document stream at the top level, as the index keeps it.

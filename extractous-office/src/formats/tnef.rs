@@ -85,7 +85,7 @@ impl Parser for TnefParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let message = Message::read(input)
-            .map_err(|Thrown(reason)| Decline::Fails(Error::ParseError(reason)))?;
+            .map_err(|thrown| Decline::Fails(Error::ParseError(thrown.to_string())))?;
         Ok(Box::new(move |xhtml| message.write(xhtml)))
     }
 }

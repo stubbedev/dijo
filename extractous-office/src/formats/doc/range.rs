@@ -90,7 +90,7 @@ impl Document<'_> {
     }
 
     fn past_the_text(&self, span: Span) -> Thrown {
-        Thrown(format!(
+        Thrown::new(format!(
             "begin {}, end {}, length {}",
             span.start,
             span.end,
@@ -161,7 +161,7 @@ impl Document<'_> {
     pub(super) fn paragraph(&self, span: Span, index: usize) -> Read<Paragraph> {
         let (first, last) = self.paragraph_bounds(span)?;
         if first + index >= last {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Paragraph #{index} ({}) not in range [{first}; {last})",
                 first + index
             )));
@@ -240,7 +240,7 @@ impl Document<'_> {
     fn character_at(&self, span: Span, index: usize) -> Read<usize> {
         let (first, last) = self.character_bounds(span)?;
         if first + index >= last {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "CHPX #{index} ({}) not in range [{first}; {last})",
                 first + index
             )));
@@ -386,12 +386,12 @@ impl Document<'_> {
 /// end, parent)`, which also checks the range lies within the text.
 pub(super) fn subrange(start: i32, end: i32, text_length: Option<usize>) -> Read<Span> {
     if start < 0 {
-        return Err(Thrown(format!(
+        return Err(Thrown::new(format!(
             "Range start must not be negative. Given {start}"
         )));
     }
     if end < start {
-        return Err(Thrown(format!(
+        return Err(Thrown::new(format!(
             "The end ({end}) must not be before the start ({start})"
         )));
     }
@@ -463,7 +463,7 @@ fn binary_search_end(runs: &[PropertyRun], found_start: i64, end: i32) -> Read<i
         let at = usize::try_from(mid)
             .ok()
             .and_then(|mid| runs.get(mid))
-            .ok_or_else(|| Thrown(format!("Index {mid} out of bounds")))?
+            .ok_or_else(|| Thrown::new(format!("Index {mid} out of bounds")))?
             .end;
         if at < end {
             low = mid + 1;

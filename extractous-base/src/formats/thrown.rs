@@ -3,6 +3,9 @@
 
 use crate::errors::Error;
 
+/// Tika's `TikaException`.
+pub const TIKA_EXCEPTION: &str = "org.apache.tika.exception.TikaException";
+
 /// A Java exception: its class, its message, if it has one, and the exception it wraps, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exception {
@@ -83,6 +86,17 @@ pub enum Thrown {
     Runtime(Exception),
     /// A `TikaException`, which it passes on as it is.
     Tika(Exception),
+}
+
+impl std::fmt::Display for Thrown {
+    /// The exception's `Throwable.toString`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(exception) | Self::Runtime(exception) | Self::Tika(exception) => {
+                write!(f, "{exception}")
+            }
+        }
+    }
 }
 
 impl Thrown {

@@ -7,29 +7,106 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 
 use crate::errors::Error;
+use crate::formats::thrown::{Exception, Thrown as Rethrown, TIKA_EXCEPTION};
 use crate::formats::{Decline, Difference, Failure, Unported};
+
+/// The parser Tika reads most of POI's formats with, which lets what POI throws through.
+pub(crate) const OFFICE_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
+/// POI's `RecordFormatException`.
+pub(crate) const RECORD_FORMAT: &str = "org.apache.poi.util.RecordFormatException";
+pub(crate) const INDEX_OUT_OF_BOUNDS: &str = "java.lang.IndexOutOfBoundsException";
+pub(crate) const ARRAY_INDEX_OUT_OF_BOUNDS: &str = "java.lang.ArrayIndexOutOfBoundsException";
+pub(crate) const ILLEGAL_ARGUMENT: &str = "java.lang.IllegalArgumentException";
+pub(crate) const ILLEGAL_STATE: &str = "java.lang.IllegalStateException";
+
+const EOF: &str = "java.io.EOFException";
+const ZIP_EXCEPTION: &str = "java.util.zip.ZipException";
+const UNEXPECTED_ZLIB_END: &str = "Unexpected end of ZLIB input stream";
 
 /// A Java exception POI throws reading a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Thrown(pub String);
+pub enum Thrown {
+    /// As Java throws it, where the port reads the document as POI does up to the throw, which
+    /// Tika's parser lets through.
+    Java(Rethrown),
+    /// As the port tells it.
+    Told(String),
+}
 
 impl Thrown {
     pub(crate) fn new(reason: impl Into<String>) -> Self {
-        Thrown(reason.into())
+        Thrown::Told(reason.into())
+    }
+
+    /// A `RuntimeException` of `class`, with `message`.
+    pub(crate) fn runtime(class: &'static str, message: impl Into<String>) -> Self {
+        Thrown::Java(Rethrown::Runtime(Exception::new(class, message)))
+    }
+
+    /// An `IOException` of `class`, with `message`.
+    pub(crate) fn io(class: &'static str, message: impl Into<String>) -> Self {
+        Thrown::Java(Rethrown::Io(Exception::new(class, message)))
+    }
+
+    /// A `TikaException` with `message`, which Tika's parser throws over what POI reads.
+    pub(crate) fn tika(message: impl Into<String>) -> Self {
+        Thrown::Java(Rethrown::Tika(Exception::new(TIKA_EXCEPTION, message)))
+    }
+
+    /// POI's `RecordFormatException`, with `message`.
+    pub(crate) fn record_format(message: impl Into<String>) -> Self {
+        Thrown::runtime(RECORD_FORMAT, message)
+    }
+
+    /// The exception met reading `context`: as Java throws it, or told within its context.
+    pub(crate) fn within(self, context: &str) -> Self {
+        match self {
+            Thrown::Told(reason) => Thrown::Told(format!("{context}: {reason}")),
+            java @ Thrown::Java(_) => java,
+        }
+    }
+
+    /// What the parse fails with where POI throws this in Tika's parser `tika_name`: as Tika's
+    /// path fails, where the port knows the exception as Java throws it, else with the port's
+    /// account of it.
+    pub(crate) fn failure(self, tika_name: &str) -> Failure {
+        match self {
+            Thrown::Java(rethrown) => Failure::Extraction(rethrown.into_error(tika_name)),
+            Thrown::Told(reason) => {
+                Failure::Malformed(format!("POI throws reading the document: {reason}"))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Thrown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Thrown::Java(rethrown) => write!(f, "{rethrown}"),
+            Thrown::Told(reason) => f.write_str(reason),
+        }
     }
 }
 
 pub(crate) type Read<T> = Result<T, Thrown>;
 
+/// What a reader that may meet what the port does not read reads.
+pub(crate) type Reading<T> = Result<T, Unread>;
+
 pub(crate) fn thrown<T>(reason: impl Into<String>) -> Read<T> {
-    Err(Thrown(reason.into()))
+    Err(Thrown::new(reason))
+}
+
+/// [`thrown`] of POI's `RecordFormatException`.
+pub(crate) fn record_format<T>(message: impl Into<String>) -> Read<T> {
+    Err(Thrown::record_format(message))
 }
 
 /// Why a native parser of POI's formats does not read a document as Tika's parser does: POI
 /// throws on it, which fails Tika's parse, or it has what the port does not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unread {
-    /// POI throws reading the document, for this reason as the port tells it.
+    /// POI throws reading the document.
     Thrown(Thrown),
     Unported(Unported),
 }
@@ -59,22 +136,24 @@ impl From<Unread> for Decline<'_> {
 }
 
 impl Unread {
-    /// What a parser declines the document with: what the port does not read is left to Tika's
-    /// path, and a document POI throws on fails, as it fails Tika's parse, though with the
-    /// port's account of the exception where Tika's path names POI's: a reading that differs.
+    /// What [`OFFICE_PARSER`] declines the document with: see [`Unread::declined_by`].
     pub fn declined<'a>(self) -> Decline<'a> {
+        self.declined_by(OFFICE_PARSER)
+    }
+
+    /// What a parser declines a document with that Tika reads with its parser `tika_name`: what
+    /// the port does not read is left to Tika's path, and a document POI throws on fails, as it
+    /// fails Tika's parse: see [`Thrown::failure`]. The failure is a reading that may differ,
+    /// as the port may throw where POI does not.
+    pub fn declined_by<'a>(self, tika_name: &'static str) -> Decline<'a> {
         match self {
             Unread::Unported(unported) => unported.into(),
-            Unread::Thrown(Thrown(reason)) => Decline::Differs {
+            Unread::Thrown(thrown) => Decline::Differs {
                 difference: Difference(format!(
                     "POI throws on the document, which fails Tika's parse with POI's exception: \
-                     {reason}"
+                     {thrown}"
                 )),
-                reading: Box::new(move |_| {
-                    Err(Failure::Malformed(format!(
-                        "POI throws reading the document: {reason}"
-                    )))
-                }),
+                reading: Box::new(move |_| Err(thrown.failure(tika_name))),
             },
         }
     }
@@ -82,6 +161,7 @@ impl Unread {
 
 /// Why a parser reading a document as it hands its content on stops: it declines the
 /// document, or handing its content on failed.
+#[derive(Debug)]
 pub(crate) enum Halt<E> {
     Declined(Decline<'static>),
     Written(E),
@@ -139,15 +219,59 @@ pub(crate) fn narrowed<'a>(bytes: &Cow<'a, [u8]>, part: impl Fn(&[u8]) -> &[u8])
     }
 }
 
+/// `length` bytes from `at`, read one after the other as `LittleEndian` reads them: past the
+/// end, Java's array access throws on the first index outside the data.
 fn slice(data: &[u8], at: usize, length: usize) -> Read<&[u8]> {
     at.checked_add(length)
         .and_then(|end| data.get(at..end))
-        .ok_or_else(|| {
-            Thrown(format!(
-                "Index {at} out of bounds for length {}",
-                data.len()
-            ))
-        })
+        .ok_or_else(|| out_of_bounds(at.max(data.len()), data.len()))
+}
+
+/// Java's `ArrayIndexOutOfBoundsException` on `index` of an array of `length`.
+pub(crate) fn out_of_bounds(index: usize, length: usize) -> Thrown {
+    Thrown::runtime(
+        ARRAY_INDEX_OUT_OF_BOUNDS,
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// `IOUtils.safelyAllocateCheck(length, max)`: POI's limit on the arrays it allocates.
+pub(crate) fn safely_allocate_check(length: i64, max: i64) -> Read<()> {
+    if length < 0 {
+        return record_format(format!(
+            "Can't allocate an array of length < 0, but had {length} and {max}"
+        ));
+    }
+    if length > i64::from(i32::MAX) {
+        return record_format(format!("Can't allocate an array > {}", i32::MAX));
+    }
+    if length > max {
+        return record_format(format!(
+            "Tried to allocate an array of length {}, but the maximum length for this record \
+             type is {}.\nIf the file is not corrupt and not large, please open an issue on \
+             bugzilla to request \nincreasing the maximum allowable size for this record \
+             type.\nYou can set a higher override value with IOUtils.setByteArrayMaxOverride()",
+            grouped(length),
+            grouped(max)
+        ));
+    }
+    Ok(())
+}
+
+/// A number as Java's `%,d` writes it in the root locale: its thousands grouped with commas.
+fn grouped(number: i64) -> String {
+    let digits = number.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if number < 0 {
+        out.push('-');
+    }
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 pub(crate) fn u8_at(data: &[u8], at: usize) -> Read<u8> {
@@ -179,15 +303,14 @@ pub(crate) fn safely_clone(data: &[u8], offset: i64, length: i64, max: i64) -> R
 
 /// The bytes [`safely_clone`] copies, where they are.
 pub(crate) fn safely_borrow(data: &[u8], offset: i64, length: i64, max: i64) -> Read<&[u8]> {
-    if offset < 0 || length < 0 {
-        return thrown(format!(
-            "Invalid offset/length specified: offset: {offset}, length: {length}"
+    if offset < 0 || length < 0 || max < 0 {
+        return record_format(format!(
+            "Invalid offset/length specified: offset: {offset}, lenght: {length}, maxLength: \
+             {max}"
         ));
     }
     let real = (data.len() as i64 - offset).min(length);
-    if real < 0 || real > max {
-        return thrown(format!("Tried to allocate an array of length {real}"));
-    }
+    safely_allocate_check(real, max)?;
     let start = offset as usize;
     Ok(&data[start..start + real as usize])
 }
@@ -218,13 +341,13 @@ pub(crate) fn inflate(data: &[u8], limit: Option<usize>) -> Read<Vec<u8>> {
         match status {
             Ok(flate2::Status::StreamEnd) => return Ok(out),
             Ok(_) if inflater.total_in() as usize == data.len() && produced == 0 => {
-                return thrown("java.io.EOFException: Unexpected end of ZLIB input stream");
+                return Err(Thrown::io(EOF, UNEXPECTED_ZLIB_END));
             }
             Ok(_) => {}
             Err(error) => {
-                return thrown(format!(
-                    "java.util.zip.ZipException: {}",
-                    error.message().unwrap_or("Invalid ZLIB data format")
+                return Err(Thrown::io(
+                    ZIP_EXCEPTION,
+                    error.message().unwrap_or("Invalid ZLIB data format"),
                 ))
             }
         }
@@ -295,6 +418,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn throws_on_the_first_index_past_the_data_as_java_does() {
+        assert_eq!(i32_at(&[1, 2, 3], 1), Err(out_of_bounds(3, 3)),);
+        assert_eq!(
+            u16_at(&[1, 2, 3], 7).unwrap_err().to_string(),
+            "java.lang.ArrayIndexOutOfBoundsException: Index 7 out of bounds for length 3"
+        );
+    }
+
+    #[test]
+    fn refuses_allocations_as_ioutils_does() {
+        assert_eq!(safely_allocate_check(100, 100), Ok(()));
+        assert_eq!(
+            safely_allocate_check(1_234_567, 100_000)
+                .unwrap_err()
+                .to_string(),
+            "org.apache.poi.util.RecordFormatException: Tried to allocate an array of length \
+             1,234,567, but the maximum length for this record type is 100,000.\nIf the file is \
+             not corrupt and not large, please open an issue on bugzilla to request \
+             \nincreasing the maximum allowable size for this record type.\nYou can set a \
+             higher override value with IOUtils.setByteArrayMaxOverride()"
+        );
+        assert_eq!(
+            safely_allocate_check(-1, 10).unwrap_err().to_string(),
+            "org.apache.poi.util.RecordFormatException: Can't allocate an array of length < 0, \
+             but had -1 and 10"
+        );
+    }
+
+    #[test]
+    fn fails_with_tikas_wording_where_the_exception_is_javas() {
+        let failure = Thrown::record_format("Bad special value code (9)").failure(OFFICE_PARSER);
+        let Failure::Extraction(error) = failure else {
+            panic!("an extraction failure: {failure:?}");
+        };
+        assert_eq!(
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
+             RuntimeException from org.apache.tika.parser.microsoft.OfficeParser <- caused by \
+             org.apache.poi.util.RecordFormatException: Bad special value code (9)"
+        );
+        assert!(matches!(
+            Thrown::new("the port's account").failure(OFFICE_PARSER),
+            Failure::Malformed(reason) if reason.ends_with("the port's account")
+        ));
+    }
+
+    #[test]
     fn inflates_only_a_complete_stream_or_as_far_as_a_limit() {
         use std::io::Write;
         let mut encoder =
@@ -304,17 +474,17 @@ mod tests {
         assert_eq!(inflate(&compressed, None), Ok(b"metafile".to_vec()));
         assert_eq!(
             inflate(&compressed[..compressed.len() - 5], None),
-            thrown("java.io.EOFException: Unexpected end of ZLIB input stream")
+            Err(Thrown::io(EOF, UNEXPECTED_ZLIB_END))
         );
         assert_eq!(
             inflate(b"not zlib", None),
-            thrown("java.util.zip.ZipException: incorrect header check")
+            Err(Thrown::io(ZIP_EXCEPTION, "incorrect header check"))
         );
         let mut bad_check = compressed.clone();
         *bad_check.last_mut().unwrap() ^= 1;
         assert_eq!(
             inflate(&bad_check, None),
-            thrown("java.util.zip.ZipException: incorrect data check")
+            Err(Thrown::io(ZIP_EXCEPTION, "incorrect data check"))
         );
         assert_eq!(inflate(&bad_check, Some(4)), Ok(b"meta".to_vec()));
         assert_eq!(inflate(&compressed, Some(20)), Ok(b"metafile".to_vec()));

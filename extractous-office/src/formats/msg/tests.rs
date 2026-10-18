@@ -45,12 +45,10 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     documents
 }
 
-#[cfg(feature = "tika")]
 fn units(name: &str) -> Vec<u16> {
     name.encode_utf16().collect()
 }
 
-#[cfg(feature = "tika")]
 fn unicode(text: &str) -> Vec<u8> {
     text.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
@@ -255,4 +253,108 @@ fn extracts_messages_with_attachments_too_large_to_read_whole_in_bounded_memory(
     });
     assert!(first_seen && last_seen && end_seen);
     assert_eq!(metadata["dc:title"], ["Logbogen"]);
+}
+
+/// A message of a subject and an entry whose name POI cannot read as a chunk's.
+fn message_of_a_bad_chunk_name() -> crate::ole2::Storage<'static> {
+    use crate::ole2::{Node, Storage};
+    Storage {
+        class_id: [0; 16],
+        entries: vec![
+            (
+                units("__substg1.0_0037001F"),
+                Node::Owned(unicode("Minutes")),
+            ),
+            (units("__substg1.0_003700"), Node::Owned(vec![1])),
+            (units("__properties_version1.0"), Node::Owned(vec![0; 32])),
+        ],
+    }
+}
+
+/// A message POI throws on fails in the build without Tika as Tika's path fails on it.
+#[cfg(not(feature = "tika"))]
+#[test]
+fn fails_a_message_poi_throws_on_with_tikas_wording() {
+    let data = crate::ole2::write(&message_of_a_bad_chunk_name()).unwrap();
+    let error = crate::Extractor::new()
+        .extract_bytes_to_string(&data)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
+         RuntimeException from org.apache.tika.parser.microsoft.OfficeParser <- caused by \
+         java.lang.IllegalArgumentException: Invalid chunk name __substg1.0_003700"
+    );
+}
+
+/// A stored message POI throws on is read as far as its summary information, its failure
+/// written for the message storing it to record, as Tika's embedded document extractor
+/// records it, rather than leaving the message storing it to Tika.
+#[test]
+fn reads_a_stored_message_poi_throws_on_as_its_failure() {
+    use crate::ole2::{write, Node, Storage};
+    let data = write(&Storage {
+        class_id: [0; 16],
+        entries: vec![(
+            units("__attach_version1.0_#00000000"),
+            Node::Storage(Storage {
+                class_id: [0; 16],
+                entries: vec![(
+                    units("__substg1.0_3701000D"),
+                    Node::Storage(message_of_a_bad_chunk_name()),
+                )],
+            }),
+        )],
+    })
+    .unwrap();
+    let file = Ole2::open(&data).unwrap();
+    let attachment = file
+        .child(file.root(), "__attach_version1.0_#00000000")
+        .unwrap();
+    let stored = file.child(attachment, "__substg1.0_3701000D").unwrap();
+    let message = EmbeddedMessage::read(&file, stored, &ParserConfigs::default()).unwrap();
+    let Err(thrown) = &message.extracted else {
+        panic!("a message POI throws on");
+    };
+    assert_eq!(
+        thrown.to_string(),
+        "java.lang.IllegalArgumentException: Invalid chunk name __substg1.0_003700"
+    );
+}
+
+/// A message submission id stored as a directory, which POI records without reading it, gives
+/// no submission id and no date.
+#[test]
+fn reads_a_submission_id_poi_leaves_unread() {
+    use crate::ole2::{write, Node, Storage};
+    let mut message = message_of_a_bad_chunk_name();
+    message
+        .entries
+        .retain(|(name, _)| *name != units("__substg1.0_003700"));
+    message.entries.push((
+        units("__substg1.0_0047000D"),
+        Node::Storage(Storage {
+            class_id: [0; 16],
+            entries: Vec::new(),
+        }),
+    ));
+    let data = write(&message).unwrap();
+    let file = Ole2::open(&data).unwrap();
+    let read = chunks::Message::read(&file, file.root(), false).unwrap();
+    let submissions: Vec<_> = read
+        .main
+        .chunks
+        .iter()
+        .filter_map(|chunk| match &chunk.value {
+            chunks::Value::Submission(submission) => Some(submission.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        submissions,
+        [chunks::Submission {
+            id: None,
+            date: None
+        }]
+    );
 }

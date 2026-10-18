@@ -68,7 +68,7 @@ fn fails_where_poi_throws() {
     encrypted.extend(record(sid::FILE_PASS, &[0; 4]));
     assert!(matches!(
         text(&encrypted),
-        Err(Unread::Thrown(Thrown(reason))) if reason.contains("encrypted")
+        Err(Unread::Thrown(thrown)) if thrown.to_string().contains("encrypted")
     ));
 }
 

@@ -94,7 +94,7 @@ pub(super) fn decode(bytes: &[u8], codepage: i32) -> Result<String, Fault> {
 pub(crate) fn decode_text(bytes: &[u8], codepage: i32) -> Result<String, Unread> {
     decode(bytes, codepage).map_err(|fault| match fault {
         Fault::Unported(reason) => Unported(reason).into(),
-        _ => Thrown(format!(
+        _ => Thrown::new(format!(
             "java.io.UnsupportedEncodingException: code page {codepage}"
         ))
         .into(),

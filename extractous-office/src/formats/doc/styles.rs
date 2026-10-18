@@ -63,7 +63,7 @@ impl StyleSheet {
         let count = i32::from(i16_at(table, start + 2)?);
         let base_length = i32::from(i16_at(table, start + 4)?);
         if count < 0 {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Cannot create StyleSheet, invalid Cstd: {count}"
             )));
         }
@@ -109,14 +109,14 @@ impl StyleSheet {
             let base_style = self
                 .styles
                 .get(base_index)
-                .ok_or_else(|| Thrown(format!("Index {base} out of bounds")))?
+                .ok_or_else(|| Thrown::new(format!("Index {base} out of bounds")))?
                 .as_ref()
                 .ok_or_else(|| Thrown::new("Cannot create Pap, empty styleDescription"))?;
             parent = match &base_style.pap {
                 Some(pap) => pap.clone(),
                 None => {
                     if base_index == istd {
-                        return Err(Thrown(format!(
+                        return Err(Thrown::new(format!(
                             "Pap style {istd} claimed to have itself as its parent"
                         )));
                     }
@@ -156,7 +156,7 @@ impl StyleSheet {
             let base_style = self
                 .styles
                 .get(base_index)
-                .ok_or_else(|| Thrown(format!("Index {base} out of bounds")))?
+                .ok_or_else(|| Thrown::new(format!("Index {base} out of bounds")))?
                 .as_ref()
                 .ok_or_else(|| Thrown::new("Cannot create Chp, empty styleDescription"))?;
             parent = match &base_style.chp {
@@ -184,7 +184,7 @@ impl StyleSheet {
         Ok(usize::try_from(istd)
             .ok()
             .and_then(|istd| self.styles.get(istd))
-            .ok_or_else(|| Thrown(format!("Index {istd} out of bounds")))?
+            .ok_or_else(|| Thrown::new(format!("Index {istd} out of bounds")))?
             .as_ref())
     }
 
@@ -243,16 +243,16 @@ fn read_style(table: &[u8], base_length: i32, offset: i32) -> Read<Style> {
     let name_length = i32::from(i16_at(table, index(name_start)?)?);
     let name_at = name_start.wrapping_add(2);
     if name_length < 0 {
-        return Err(Thrown(format!("Illegal length {name_length}")));
+        return Err(Thrown::new(format!("Illegal length {name_length}")));
     }
     let name = if name_length == 0 {
         Vec::new()
     } else {
         if name_at as i64 >= table.len() as i64 {
-            return Err(Thrown(format!("Illegal offset {name_at}")));
+            return Err(Thrown::new(format!("Illegal offset {name_at}")));
         }
         utf16_units(table, index(name_at)?, name_length as usize)
-            .map_err(|_| Thrown(format!("Illegal length {name_length}")))?
+            .map_err(|_| Thrown::new(format!("Illegal length {name_length}")))?
     };
     let mut position = (name_length + 1).wrapping_mul(2).wrapping_add(name_at);
     let mut upxs = Vec::with_capacity(usize::from(upx_count));
