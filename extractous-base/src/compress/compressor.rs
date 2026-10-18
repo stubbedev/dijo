@@ -2,7 +2,7 @@
 //! `detect` recognizes by their first bytes, and Brotli, which has no signature and is decoded
 //! only as named.
 
-use super::{brotli, bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Undecoded};
+use super::{brotli, bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Limited, Undecoded};
 
 /// A compression format `CompressorStreamFactory` decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,17 +101,22 @@ impl Compressor {
             .find(|compressor| compressor.media_type() == media_type)
     }
 
-    /// The stream `data` decoded whole as commons-compress decodes it without
-    /// `decompressConcatenated`, or why it is not decoded natively.
-    pub fn decode(self, data: &[u8]) -> Result<Decoded, Undecoded> {
-        let content = |content| Decoded {
-            file_name: None,
-            content,
+    /// The stream `data` decoded whole, up to [`MAX_DECODED`](super::MAX_DECODED) bytes, as
+    /// commons-compress decodes it without `decompressConcatenated`, or why it is not decoded
+    /// natively.
+    pub fn decode(self, data: &[u8]) -> Result<Limited<Decoded>, Undecoded> {
+        let content = |content: Limited<Vec<u8>>| {
+            content.map(|content| Decoded {
+                file_name: None,
+                content,
+            })
         };
         match self {
-            Compressor::Gzip => gzip::decode(data).map(|member| Decoded {
-                file_name: member.file_name,
-                content: member.content,
+            Compressor::Gzip => gzip::decode(data).map(|member| {
+                member.map(|member| Decoded {
+                    file_name: member.file_name,
+                    content: member.content,
+                })
             }),
             Compressor::Bzip2 => bzip2::decode(data).map(content),
             Compressor::Zlib => zlib::decode(data).map(content),

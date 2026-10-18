@@ -17,13 +17,24 @@ pub use rar::RarParser;
 pub use seven_z::SevenZParser;
 pub use zip::ZipParser;
 
-use crate::compress::{ArchiveFile, Undecoded};
+use crate::compress::{ArchiveFile, Limited, Undecoded};
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure};
 use crate::java::time::format_instant;
 use crate::Error;
+
+/// For the parity tests: why the native path extracts the first segment of a split ZIP archive
+/// where Tika's path fails on it: Tika's stream fails the document at the entry the segment cuts
+/// short, the native parser records that entry as unreadable and keeps the entries before it.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+const SPLIT_SEGMENT: &str = "Tika fails the document at the entry the segment cuts short";
+
+/// For the parity tests: the first segment of a split ZIP archive among Tika's test documents,
+/// by file name, with why it is not compared ([`SPLIT_SEGMENT`]).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const TIKAS_SPLIT_SEGMENT: (&str, &str) = ("test-documents-spanned.z01", SPLIT_SEGMENT);
 
 /// The metadata of the ZIP integrity check.
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
@@ -98,28 +109,73 @@ fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
     );
 }
 
+/// Whether there is a Tika path to leave a document to.
+const DEFERS: bool = cfg!(feature = "tika");
+
 /// Why the native readers do not read `what`, for the reason `undecoded`: a stream beyond the
 /// memory limit fails at once, as Tika's path fails it.
 fn undecoded(what: &str, undecoded: Undecoded) -> Decline<'static> {
-    let reason = format!("{what}: {undecoded}");
     match undecoded {
-        Undecoded::TooLarge => too_large(reason),
-        Undecoded::MemoryLimit(_) => Decline::Fails(Error::LimitExceeded(reason)),
-        _ => Decline::Deferred(reason),
+        Undecoded::TooLarge => too_large(what),
+        Undecoded::MemoryLimit(_) => {
+            Decline::Fails(Error::LimitExceeded(format!("{what}: {undecoded}")))
+        }
+        _ => Decline::Deferred(format!("{what}: {undecoded}")),
     }
 }
 
-/// A document holding a stream that decodes into more than
-/// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, as `reason` says: Tika's path streams
-/// it, and takes the document where there is one. Without it, the document exceeds what the
-/// native path decodes.
-fn too_large(reason: String) -> Decline<'static> {
-    if cfg!(feature = "tika") {
-        Decline::Deferred(format!("{reason}, which Tika's path streams"))
+/// A document holding `what`, which decodes into more than
+/// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, where the native parser writes nothing
+/// of it: Tika's path streams it, and takes the document where there is one. Without it, the
+/// document exceeds what the native path decodes.
+fn too_large(what: &str) -> Decline<'static> {
+    if DEFERS {
+        Decline::Deferred(format!(
+            "{what}: {}, which Tika's path streams",
+            Undecoded::TooLarge
+        ))
     } else {
-        Decline::Fails(Error::LimitExceeded(format!(
-            "{reason}, the most the native parser decodes"
-        )))
+        Decline::Fails(past_the_limit(what))
+    }
+}
+
+/// The error of a document holding `what`, which decodes into more than
+/// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, the most the native path decodes.
+fn past_the_limit(what: &str) -> Error {
+    Error::LimitExceeded(format!(
+        "{what}: {}, the most the native parser decodes",
+        Undecoded::TooLarge
+    ))
+}
+
+/// Where the native parser stops writing a stream or archive cut at
+/// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes: after `what` it decodes into up to
+/// there.
+#[derive(Debug)]
+struct Cut(String);
+
+impl Cut {
+    /// How a document ends once it has written what it decoded: as it would, or, where it was
+    /// `cut`, failing, as does every document it is embedded in, with the text written so far.
+    fn end(cut: Option<Cut>) -> Result<(), Failure> {
+        cut.map_or(Ok(()), |Cut(what)| {
+            Err(Failure::Embedded(past_the_limit(&what)))
+        })
+    }
+}
+
+/// What the native parser writes of `what`, as `limited` holds it: all of it, or, in a build
+/// without Tika, what it decodes into up to [`MAX_DECODED`](crate::compress::MAX_DECODED)
+/// bytes, and where the document then stops. Tika's path streams it whole, and takes the
+/// document where there is one.
+fn within_limit<T>(
+    what: String,
+    limited: Limited<T>,
+) -> Result<(T, Option<Cut>), Decline<'static>> {
+    match limited {
+        Limited::Whole(decoded) => Ok((decoded, None)),
+        Limited::Cut(_) if DEFERS => Err(too_large(&what)),
+        Limited::Cut(decoded) => Ok((decoded, Some(Cut(what)))),
     }
 }
 

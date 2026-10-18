@@ -2,7 +2,7 @@
 //! without `decompressConcatenated`: the skippable frames before the first frame passed over,
 //! and that frame alone decoded, whatever follows it ignored.
 
-use super::{read_whole, throws, Undecoded};
+use super::{read_limited, throws, Limited, Undecoded};
 
 const MAGIC: [u8; 4] = [0x04, 0x22, 0x4D, 0x18];
 const BLOCK_CHECKSUM: u8 = 0x10;
@@ -11,8 +11,8 @@ const CONTENT_CHECKSUM: u8 = 0x04;
 const UNCOMPRESSED: u32 = 0x8000_0000;
 
 /// The content of the first LZ4 frame of `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
-    read_whole(lz4_flex::frame::FrameDecoder::new(first_frame(data)?))
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
+    read_limited(lz4_flex::frame::FrameDecoder::new(first_frame(data)?))
 }
 
 fn u32_at(data: &[u8], at: usize) -> Result<u32, Undecoded> {
@@ -84,7 +84,7 @@ pub mod tests {
         data.extend_from_slice(&lz4(content));
         data.extend_from_slice(&lz4(b"second frame"));
         data.extend_from_slice(b"garbage");
-        assert_eq!(decode(&data).unwrap(), content);
+        assert_eq!(decode(&data).and_then(Limited::whole).unwrap(), content);
         let one = lz4(content);
         assert!(decode(&one[..one.len() - 2]).is_err());
         let mut corrupt = one.clone();

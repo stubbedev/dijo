@@ -5,7 +5,7 @@
 //! type, but for GNU TAR (#101).
 
 use super::nesting::Scan;
-use super::{undecoded, write_files};
+use super::{undecoded, within_limit, write_files, Cut};
 use crate::compress::archiver::Archiver;
 use crate::compress::{ar, cpio, tar, ArchiveFile};
 use crate::config::ParserConfigs;
@@ -27,7 +27,10 @@ fn named(content_type: &str) -> Option<Archiver> {
 
 /// The format `content_type` names, else the one `ArchiveStreamFactory` recognizes in `input`,
 /// and the files its reader gives, or why the native readers do not read them.
-fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, Decline<'static>> {
+fn read(
+    input: &[u8],
+    content_type: Option<&str>,
+) -> Result<(Vec<ArchiveFile>, Option<Cut>), Decline<'static>> {
     let archiver = content_type
         .and_then(named)
         .or_else(|| Archiver::detect(input))
@@ -42,7 +45,11 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, De
             )))
         }
     };
-    files.map_err(|reason| undecoded(&format!("the {archiver:?} archive"), reason))
+    let what = format!("the {archiver:?} archive");
+    match files {
+        Ok(files) => within_limit(what, files),
+        Err(reason) => Err(undecoded(&what, reason)),
+    }
 }
 
 /// Tika's `PackageParser`.
@@ -71,12 +78,12 @@ impl Parser for PackageParser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        let files = read(input, metadata.get("Content-Type"))?;
+        let (files, cut) = read(input, metadata.get("Content-Type"))?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
             return Err(Decline::Deferred(reason));
         }
         Ok(Box::new(move |xhtml| {
-            let written = write_files(&files, xhtml);
+            let written = write_files(&files, xhtml).and_then(|()| Cut::end(cut));
             xhtml.end_document()?;
             written
         }))

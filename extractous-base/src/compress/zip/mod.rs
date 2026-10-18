@@ -29,7 +29,7 @@ pub(crate) const XZ: u16 = 95;
 pub struct Corrupt;
 
 /// An entry's content: all of it, what was read before the data failed, or the first
-/// [`MAX_DECODED`] bytes and more of an entry that inflates past them, which is not read on.
+/// [`MAX_DECODED`] bytes of an entry that inflates past them, which is not read on.
 /// A stored entry's is the archive's own bytes; an inflated entry's is its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Content<'a> {
@@ -94,7 +94,7 @@ pub(crate) fn inflate(raw: &[u8]) -> Content<'static> {
             std::cmp::Ordering::Greater => return Content::Truncated(Cow::Owned(out)),
         };
         match inflater.decompress_vec(input, &mut out, FlushDecompress::None) {
-            Ok(_) if out.len() > MAX_DECODED => return Content::Oversized(Cow::Owned(out)),
+            Ok(_) if out.len() > MAX_DECODED => return oversized(out),
             Ok(Status::StreamEnd) => return Content::Complete(Cow::Owned(out)),
             Err(_) => return Content::Truncated(Cow::Owned(out)),
             Ok(_) if inflater.total_in() == before_in && out.len() == before_out => {
@@ -103,6 +103,13 @@ pub(crate) fn inflate(raw: &[u8]) -> Content<'static> {
             Ok(_) => {}
         }
     }
+}
+
+/// The content of an entry that decodes past [`MAX_DECODED`] bytes, of which `decoded` holds
+/// more.
+fn oversized(mut decoded: Vec<u8>) -> Content<'static> {
+    decoded.truncate(MAX_DECODED);
+    Content::Oversized(Cow::Owned(decoded))
 }
 
 /// Data shrunk ([`UNSHRINKING`]) or imploded ([`IMPLODING`]) with the general purpose `flags`,
@@ -141,7 +148,7 @@ pub(crate) fn decode_legacy(method: u16, flags: u16, raw: &[u8], size: u64) -> C
         Ok(None) | Err(_) => false,
     };
     if out.len() > MAX_DECODED {
-        Content::Oversized(Cow::Owned(out))
+        oversized(out)
     } else if read && out.len() as u64 == size {
         Content::Complete(Cow::Owned(out))
     } else {

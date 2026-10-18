@@ -1168,6 +1168,7 @@ fn without_departures(
             | Departure::BlankLines(_)
             | Departure::Elements(_)
             | Departure::PngImages(_)
+            | Departure::PlaceableHeaders(_)
             | Departure::WholeContent(_)
             | Departure::Paragraphs(..) => None,
         })
@@ -2690,6 +2691,26 @@ fn with_png_images(spooled: Vec<Spooled>, png_images: bool) -> Vec<Spooled> {
         .collect()
 }
 
+/// The spooled files, where a [`Departure::PlaceableHeaders`] applies, with the placeable header
+/// of each WMF file given 72 units per inch, as POI writes it, and the checksum that goes with
+/// them: the XOR of the ten words before it.
+#[cfg(feature = "tika")]
+fn with_pois_placeable_headers(spooled: Vec<Spooled>, placeable_headers: bool) -> Vec<Spooled> {
+    use extractous_base::formats::wmf_placeable as placeable;
+    if !placeable_headers {
+        return spooled;
+    }
+    spooled
+        .into_iter()
+        .map(|mut file| {
+            if placeable::starts(&file.content) {
+                placeable::set_units_per_inch(&mut file.content, 72);
+            }
+            file
+        })
+        .collect()
+}
+
 /// The spooled files, where a [`Departure::LineBreaks`] applies, with each CRLF of the whole
 /// ones an LF, as their text is compared: the line breaks of a part the departure decodes
 /// otherwise are in its bytes too. Where the budget cuts the spool, the departure moves the cut,
@@ -2928,6 +2949,9 @@ fn spools_as_tika_under(
             let png_images = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::PngImages(_)));
+            let placeable_headers = departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::PlaceableHeaders(_)));
             let whole_content = departures
                 .iter()
                 .any(|departure| matches!(departure, Departure::WholeContent(_)));
@@ -2944,7 +2968,10 @@ fn spools_as_tika_under(
             let native_spooled = as_tika_spools(
                 with_png_images(
                     with_line_feeds(
-                        spooled(native_embedded, native_spool.directory()),
+                        with_pois_placeable_headers(
+                            spooled(native_embedded, native_spool.directory()),
+                            placeable_headers,
+                        ),
                         line_breaks,
                     ),
                     png_images,
@@ -3015,6 +3042,44 @@ fn spools_as_tika_under(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// POI's placeable header of a picture 100 units wide and 50 high, at 72 units per inch.
+    #[cfg(feature = "tika")]
+    const POIS_PLACEABLE_HEADER: [u8; 22] = [
+        0xD7, 0xCD, 0xC6, 0x9A, 0, 0, 0, 0, 0, 0, 100, 0, 50, 0, 72, 0, 0, 0, 0, 0, 0x0F, 0x57,
+    ];
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn compares_placeable_headers_with_pois_units_per_inch() {
+        let file = |content: Vec<u8>| Spooled {
+            name: "picture.wmf".to_owned(),
+            content_type: Some("image/wmf".to_owned()),
+            file: "0.wmf".to_owned(),
+            size: content.len() as u64,
+            truncated: false,
+            content,
+        };
+        let mut twips = POIS_PLACEABLE_HEADER.to_vec();
+        twips[14..16].copy_from_slice(&1440u16.to_le_bytes());
+        twips[20..22].copy_from_slice(&[0xE7, 0x52]);
+        twips.extend(b"records");
+        let mut pois = POIS_PLACEABLE_HEADER.to_vec();
+        pois.extend(b"records");
+        assert_eq!(
+            with_pois_placeable_headers(vec![file(twips.clone())], true),
+            [file(pois)]
+        );
+        assert_eq!(
+            with_pois_placeable_headers(vec![file(twips.clone())], false),
+            [file(twips)]
+        );
+        let png = b"\x89PNG\r\n\x1a\n and more than twenty-two bytes".to_vec();
+        assert_eq!(
+            with_pois_placeable_headers(vec![file(png.clone())], true),
+            [file(png)]
+        );
+    }
 
     #[test]
     fn compares_recognized_images_without_their_nested_document() {

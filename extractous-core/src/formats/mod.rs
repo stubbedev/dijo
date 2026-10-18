@@ -1080,14 +1080,6 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn spools_tikas_documents_as_tikas_path_does() {
-        const ACCESS_CELLS: &str = "its cells are written otherwise than Tika's path writes \
-                                    them on purpose (#122), which only the rewrite of \
-                                    extractous-office's tests makes alike (#153)";
-        const SPLIT_SEGMENT: &str = "Tika fails the document at the entry the segment cuts \
-                                     short, which only extractous-mail's tests declare (#153)";
-        const WMF_UNITS_PER_INCH: &str = "the placeable header of each WMF picture spooled \
-                                          gives its own units per inch, where POI writes 72, \
-                                          which no departure declares yet (#119)";
         let corpus = crate::formats::parity::conformance_corpus();
         let exceptions = [
             (
@@ -1291,26 +1283,11 @@ mod tests {
                 "its quoted-printable parts keep their own line ends (#73), which moves where a \
                  budget cuts the spool; mail::tests compares its spool unbudgeted",
             ),
-            ("testAccess2.accdb", ACCESS_CELLS),
-            ("testAccess2_2000.mdb", ACCESS_CELLS),
-            ("testAccess2_2002-2003.mdb", ACCESS_CELLS),
-            ("testAccess_V1997.mdb", ACCESS_CELLS),
-            ("test-documents-spanned.z01", SPLIT_SEGMENT),
-            ("pictures.ppt", WMF_UNITS_PER_INCH),
-            ("testPPT_embedded2.ppt", WMF_UNITS_PER_INCH),
-            ("testWPSAttachment.ppt", WMF_UNITS_PER_INCH),
+            archive::TIKAS_SPLIT_SEGMENT,
         ];
         let compared_otherwise = [
             crate::formats::html::TWO_TITLES,
             crate::formats::image::TIKAS_TEST_BMP,
-        ];
-        let html_messages = [
-            "single_mail.mbox",
-            "testEMLX_multipart_html.emlx",
-            "testEMLX_single_part_html.emlx",
-            "testEML_embedded_xhtml_and_img.eml",
-            "testRFC822-ARC",
-            "testRFC822_multipart_attachments.eml",
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;
@@ -1347,6 +1324,10 @@ mod tests {
                         crate::formats::dc_xml::without_unread_dublin_core,
                         Some(head),
                     )),
+                    "extractous::JackcessParser" => {
+                        let (rewrite, normalise) = access::as_tika_writes(&path);
+                        Some((rewrite, Some(normalise)))
+                    }
                     "extractous::EpubParser" => {
                         Some((crate::formats::epub::as_tika_writes_it, None))
                     }
@@ -1381,7 +1362,7 @@ mod tests {
                 let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
-                    | "extractous::MboxParser" => crate::formats::mail::DEPARTURES.to_vec(),
+                    | "extractous::MboxParser" => crate::formats::mail::departures_of(&path),
                     "extractous::OfficeParser" => [
                         crate::formats::msg::RECIPIENT_NAMES,
                         crate::formats::html::DEPARTURES,
@@ -1404,17 +1385,11 @@ mod tests {
                 if parser.name() == pdf::PdfParser.name() && name == pdf::MALFORMED_XFA {
                     departures.extend_from_slice(pdf::XFA_FAILURE);
                 }
-                if html_messages.contains(&name.as_ref()) {
-                    departures.extend_from_slice(crate::formats::html::DEPARTURES);
+                if parser.media_types() == ppt::PptParser.media_types() {
+                    departures.extend_from_slice(ppt::DEPARTURES);
                 }
                 if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
                     departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
-                }
-                if crate::formats::mail::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
-                    departures.push(crate::formats::parity::Departure::Values(
-                        "message:from-name",
-                        "#77",
-                    ));
                 }
                 for budget in [u64::MAX, 3000] {
                     match crate::formats::parity::spools_as_tika_rewriting(

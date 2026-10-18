@@ -3,7 +3,7 @@
 //! little-endian bit stream, realigned to a multiple of eight codes whenever the width changes,
 //! the stream ending at the first code the input cannot fill.
 
-use super::{throws, within_limit, Undecoded, MEMORY_LIMIT_KIB};
+use super::{limit, throws, Limited, Undecoded, MAX_DECODED, MEMORY_LIMIT_KIB};
 
 const MAGIC: [u8; 2] = [0x1F, 0x9D];
 const BLOCK_MODE: u8 = 0x80;
@@ -147,7 +147,7 @@ impl Decoder<'_> {
 }
 
 /// The content of the `.Z` file `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
     let (Some(magic), Some(&flags)) = (data.get(..2), data.get(2)) else {
         return Err(throws("Input is not in .Z format"));
     };
@@ -188,9 +188,11 @@ pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
     decoder.clear_entries();
     let mut out = Vec::with_capacity(data.len().saturating_mul(3));
     while decoder.next_symbol(&mut out)? {
-        within_limit(&out)?;
+        if out.len() > MAX_DECODED {
+            return Ok(limit(out));
+        }
     }
-    Ok(out)
+    Ok(Limited::Whole(out))
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -248,13 +250,16 @@ pub mod tests {
     #[test]
     fn decodes_codes_and_their_repeats() {
         let data = compressed(&[b'a'.into(), b'b'.into(), 257, 259]);
-        assert_eq!(decode(&data).unwrap(), b"abababa");
+        assert_eq!(decode(&data).and_then(Limited::whole).unwrap(), b"abababa");
     }
 
     #[test]
     fn decodes_what_compress_encodes() {
         let text = b"TOBEORNOTTOBEORTOBEORNOT#".repeat(4);
-        assert_eq!(decode(&encode(&text)).unwrap(), text);
+        assert_eq!(
+            decode(&encode(&text)).and_then(Limited::whole).unwrap(),
+            text
+        );
     }
 
     #[test]
