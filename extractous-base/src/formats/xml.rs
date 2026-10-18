@@ -120,13 +120,18 @@ pub fn parse_part(
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
-    parse_sax_paged(
-        input,
-        input.pages(),
-        DocumentTypes::Processed,
-        what,
-        handler,
-    )
+    parse_paged(input, input.pages(), what, handler)
+}
+
+/// [`parse_sax`] of `input`, whose `pages` are released as the parse goes on: a mapped file
+/// that a parser of bounded memory reads.
+pub fn parse_paged(
+    input: &[u8],
+    pages: Pages<'_>,
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
+    parse_sax_paged(input, pages, DocumentTypes::Processed, what, handler)
 }
 
 fn parse_sax_paged(
