@@ -12,10 +12,10 @@ const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
 #[cfg(feature = "tika")]
 const DEFERRED: [(&str, &str); 0] = [];
 
-/// The workbooks of Tika's own tests this port leaves to Tika, with why.
+/// The workbooks of Tika's own tests that Tika's path fails on: a Strict OOXML workbook, which
+/// POI's `XSSFReader` refuses.
 #[cfg(feature = "tika")]
-const DEFERRED_CONFORMANCE: [(&str, &str); 1] =
-    [("testEXCEL.strict.xlsx", "no transitional main document")];
+const FAILING_CONFORMANCE: [&str; 1] = ["testEXCEL.strict.xlsx"];
 
 #[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
@@ -129,12 +129,22 @@ fn extracts_what_tikas_path_extracts_from_many_shared_strings() {
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let documents = workbooks(&[&parity::conformance_corpus()]);
+    let (failing, documents): (Vec<PathBuf>, Vec<PathBuf>) =
+        workbooks(&[&parity::conformance_corpus()])
+            .into_iter()
+            .partition(|document| FAILING_CONFORMANCE.contains(&file_name(document).as_str()));
+    assert_eq!(failing.len(), FAILING_CONFORMANCE.len(), "{failing:?}");
     let defaults = ParserConfigs::default();
-    assert_same_as_tika(
-        &ported(&documents, &DEFERRED_CONFORMANCE, &defaults),
-        &defaults,
-    );
+    for document in &failing {
+        let input = std::fs::read(document).unwrap();
+        assert!(matches!(
+            XlsxParser.prepare(&input, &TikaMetadata::new(), &defaults),
+            Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED
+        ));
+    }
+    let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
+    parity::assert_fails_as_tika(&failing);
+    assert_same_as_tika(&ported(&documents, &[], &defaults), &defaults);
 }
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -928,4 +938,30 @@ fn records_a_sheet_whose_xml_fails_as_tikas_path_does() {
             )
         },
     );
+}
+
+/// A Strict OOXML workbook, whose main document only a Strict relationship leads to, fails
+/// natively as Tika's path fails it (#149).
+#[cfg(feature = "tika")]
+#[test]
+fn fails_a_strict_workbook_as_tikas_path_does() {
+    let scratch = parity::Scratch::new("xlsx-strict");
+    let strict = crate::formats::ooxml::testing::package_with(
+        &crate::formats::ooxml::testing::relationship(
+            "rId1",
+            kind::STRICT_OFFICE_DOCUMENT,
+            "xl/workbook.xml",
+        ),
+        &[(
+            "xl/workbook.xml",
+            WORKBOOK_TYPES[0],
+            b"<workbook xmlns=\"http://purl.oclc.org/ooxml/spreadsheetml/main\"><sheets/></workbook>",
+        )],
+    );
+    let document = scratch.write("strict.xlsx", &strict);
+    assert!(matches!(
+        XlsxParser.prepare(&strict, &TikaMetadata::new(), &ParserConfigs::default()),
+        Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED
+    ));
+    parity::assert_fails_as_tika(&[&document]);
 }
