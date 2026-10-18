@@ -6,12 +6,16 @@
 //! every part the visitor sees without throwing. A malformed one, which ASM reads only up to
 //! where it throws, after the visitor has written part of the document, stays on Tika's path;
 //! one of a version newer than ASM reads fails before anything is written, as in Tika's.
+//!
+//! The class file is read in place, its code and other attributes passed over. What the parser
+//! holds is the index of the constant pool and the declarations it writes, which the class file
+//! format bounds: at most 65,535 constants, fields and methods, each name at most 65,535 bytes.
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared, Unported};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported};
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 
 /// `Opcodes.V27`, the newest class file version ASM 9.10.1 reads.
@@ -779,6 +783,10 @@ impl Parser for ClassParser {
         &["application/java-vm"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -917,6 +925,25 @@ mod tests {
         bytes.extend(methods);
         bytes.extend(0u16.to_be_bytes());
         bytes
+    }
+
+    /// A class file too large to read whole, an attribute of the class past what is read whole
+    /// after its declarations: it is passed over in place, under a budget far below it.
+    #[test]
+    fn passes_over_the_attributes_of_class_files_too_large_to_read_whole() {
+        use extractous_core::large::{bodies_past_limit, LargeFile};
+
+        const CHUNK: usize = 1 << 20;
+        let mut head = class_file(0x0021, "Wave", &[], &[(0x0001, "rise", "()V")]);
+        head.truncate(head.len() - 2);
+        let count = bodies_past_limit(CHUNK);
+        head.extend(1u16.to_be_bytes());
+        head.extend(1u16.to_be_bytes());
+        head.extend(u32::try_from(count * CHUNK as u64).unwrap().to_be_bytes());
+        let file = LargeFile::new("Wave.class", &head, count, |_| vec![0; CHUNK], b"");
+        let (text, metadata) = file.extract(ClassParser.name());
+        assert_eq!(metadata["dc:title"], ["Wave"]);
+        assert!(text.contains("public void rise();"), "{text}");
     }
 
     #[test]
