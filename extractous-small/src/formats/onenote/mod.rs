@@ -139,7 +139,10 @@ fn set_header_metadata(metadata: &mut TikaMetadata, header: &Header) {
             "cbFreeSpaceInFreeChunkList",
             header.cb_free_space_in_free_chunk_list,
         ),
-        ("cbLegacyExpectedFileLength", 0),
+        (
+            "cbLegacyExpectedFileLength",
+            header.cb_legacy_expected_file_length,
+        ),
         (
             "cbLegacyFreeSpaceInFreeChunkList",
             header.cb_legacy_free_space_in_free_chunk_list,
@@ -185,18 +188,17 @@ fn set_found_metadata(metadata: &mut TikaMetadata, found: Found) {
             metadata.set_values(name, sorted(values));
         }
     }
-    metadata.set(
-        "onenote:creationTimestamp",
-        found.creation_timestamp.to_string(),
-    );
+    if let Some(created) = found.creation_timestamp {
+        metadata.set("onenote:creationTimestamp", created.to_string());
+    }
     if let Some(seconds) = found.last_modified_timestamp {
         metadata.set(
             "onenote:lastModifiedTimestamp",
             (seconds * 1000).to_string(),
         );
     }
-    if found.last_modified > i64::MIN {
-        metadata.set("dcterms:modified", found.last_modified.to_string());
+    if let Some(modified) = found.last_modified {
+        metadata.set("dcterms:modified", modified.to_string());
     }
 }
 
