@@ -98,6 +98,104 @@ fn scans_tokens_as_jhighlights_scanners_do() {
     assert_eq!(tabs_to_spaces("a\tbc\td"), "a   bc  d");
 }
 
+/// The code walked a chunk of lines at a time is the code walked whole: each line's markup,
+/// parsed inside the `code` element alone, is what it is inside all of them.
+#[test]
+fn walks_code_a_chunk_at_a_time_as_whole() {
+    let code = "/** Kode\u{0} med\t\"citat\" */\nint x = 1 < 2 & 3 > 4;\n\n/* uafsluttet\nkommentar */ ok\n"
+        .repeat(CHUNK / 16);
+    let mut renderer = Renderer::new(Language::Java);
+    let mut whole: Vec<u16> = Vec::new();
+    for line in auto_detect_reader::lines(&code) {
+        renderer.line(line, &mut whole);
+    }
+    let mut framed = frame("Kode.java");
+    framed.insert_str(
+        framed.find("<code>").unwrap() + "<code>".len(),
+        &text_of(whole),
+    );
+    let mut whole = Recorder::default();
+    walk_parsed(&framed, &mut whole).unwrap();
+    let mut chunked = Recorder::default();
+    let mut lines = auto_detect_reader::lines(&code).map(str::to_owned);
+    let code = Code {
+        renderer: Renderer::new(Language::Java),
+        lines: &mut lines,
+    };
+    walk_parsed(
+        &frame("Kode.java"),
+        &mut Framed {
+            walk: &mut chunked,
+            code: Some(code),
+        },
+    )
+    .unwrap();
+    assert!(whole.0.len() > 1000);
+    assert_eq!(chunked.0, whole.0);
+}
+
+/// The nodes a walk reports, adjacent text joined.
+#[derive(Default)]
+struct Recorder(Vec<String>);
+
+impl Visitor for Recorder {
+    type Stop = Failure;
+
+    fn start(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
+        let attributes = match node {
+            ParsedNode::Element { attributes, .. } => attributes
+                .iter()
+                .map(|attribute| format!(" {}={:?}", attribute.key, attribute.value))
+                .collect(),
+            _ => String::new(),
+        };
+        self.0.push(format!("<{}{attributes}>", node_name(node)));
+        Ok(())
+    }
+
+    fn text(&mut self, text: &str) -> Result<(), Failure> {
+        match self.0.last_mut() {
+            Some(last) if last.starts_with('"') => last.push_str(text),
+            _ => self.0.push(format!("\"{text}")),
+        }
+        Ok(())
+    }
+
+    fn end(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
+        self.0.push(format!("</{}>", node_name(node)));
+        Ok(())
+    }
+}
+
+/// Source code too large to read whole is read a line at a time, twice, and highlighted a chunk
+/// of lines at a time, under a budget far below it.
+#[test]
+fn highlights_source_code_too_large_to_read_whole_a_chunk_at_a_time() {
+    let line = |index: u64| format!("int x{index} = {index}; // Linje\n").into_bytes();
+    let count = extractous_core::large::bodies_past_limit(line(1_000_000).len());
+    let file = extractous_core::large::LargeFile::new(
+        "Large.java",
+        b"/** @author Ane */\n",
+        count,
+        line,
+        b"// the end\n",
+    );
+    let mut lines = 0u64;
+    let mut last = String::new();
+    let metadata = file.extract_lines(SourceCodeParser.name(), |text| {
+        if text.contains("Linje") {
+            lines += 1;
+        }
+        if !text.trim().is_empty() {
+            last = text.trim().to_owned();
+        }
+    });
+    assert_eq!(lines, count);
+    assert_eq!(last, "//\u{a0}the\u{a0}end");
+    assert_eq!(metadata["LoC"], [(count + 2).to_string()]);
+    assert_eq!(metadata["dc:creator"], ["Ane */"]);
+}
+
 #[cfg(feature = "tika")]
 #[test]
 fn extracts_source_code_as_tikas_path_does() {
