@@ -436,6 +436,44 @@ fn converts_the_colour_spaces_as_tikas_path_does() {
     assert_same(std::slice::from_ref(&path), &configs);
 }
 
+/// Images of an ICC colour space whose profile's colour space is XYZ, the JDK's own CIE XYZ
+/// profile, whose 8-bit samples LittleCMS takes as the 16-bit encoding of XYZ: one Java converts
+/// with `ColorConvertOp` (`Im0`) and a row it converts pixel by pixel (`Im1`).
+fn xyz_images() -> Vec<u8> {
+    let xyz = "/ColorSpace [/ICCBased 8 0 R] /BitsPerComponent 8";
+    let images = vec![
+        image(&format!("/Width 4 /Height 3 {xyz}"), "", &samples(36, 7)),
+        image(&format!("/Width 4 /Height 1 {xyz}"), "", &samples(12, 8)),
+        stream(
+            "/N 3",
+            "",
+            include_bytes!("../../../../models/pdf/jdk-ciexyz.icc"),
+        ),
+    ];
+    drawing(&draw_each(2), &xobjects(2), &images)
+}
+
+#[test]
+fn converts_images_of_an_xyz_profile() {
+    let configs = without_page_ocr(false);
+    let input = xyz_images();
+    assert_eq!(deferral(&input, &configs), None);
+    let (xml, _) = extracting(&input, &configs);
+    assert_eq!(
+        image_names(&xml),
+        ["image-0.png", "image-1.png", "image-0.png"],
+        "{xml}"
+    );
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn converts_images_of_an_xyz_profile_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-xyz-profile");
+    let path = scratch.write("xyz.pdf", &xyz_images());
+    assert_same(&[path], &without_page_ocr(false));
+}
+
 /// Tika's native image lacks the JDK's CIE XYZ profile, so that PDFBox's conversion of a CIE
 /// colour throws a `CMMException` Tika does not catch and the whole document fails; the
 /// native parser converts the colours as PDFBox does on the JVM (#125), which the colour

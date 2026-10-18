@@ -998,13 +998,6 @@ fn icc_based(pdf: &Pdf, array: &[Object], depth: usize) -> Result<ColorSpace, Un
     let Some(profiled) = Profiled::new(&profile, components) else {
         return falls_back(depth);
     };
-    if &profile[COLOR_SPACE] == b"XYZ " {
-        return Err(Unported(
-            "an ICC profile of the colour space XYZ, whose samples LittleCMS takes in 16 bits"
-                .to_owned(),
-        )
-        .into());
-    }
     Ok(ColorSpace::Icc(Box::new(Icc {
         components,
         conversion: IccConversion::Profile(Box::new(profiled)),
