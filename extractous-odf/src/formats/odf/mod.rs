@@ -12,7 +12,7 @@ pub use flat::FlatOpenDocumentParser;
 mod meta;
 
 use std::borrow::Cow;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 
 use crate::compress::zip::file::ZipEntry;
 use crate::config::ParserConfigs;
@@ -24,6 +24,7 @@ use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_package::{self, Opened, Undecoded, Unread, ZipPackage};
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages, Spool};
+use crate::java::CommonsBase64;
 use crate::mime::{self, Origin};
 
 const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
@@ -32,78 +33,45 @@ pub(crate) const META_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0
 /// The element in which an OpenDocument part embeds a file, base64-encoded.
 pub(crate) const BINARY_DATA_ELEMENT: &str = "binary-data";
 
-/// The bytes [`BinaryData`] decodes into before it hands them to its spool.
+/// The bytes [`BinaryData`] decodes before it hands them to its spool.
 const BINARY_DATA_BUFFER: usize = 64 * 1024;
 
-/// commons-codec's `Base64.decodeBase64` of the text of a `binary-data` element, as
-/// `OpenDocumentBodyHandler` decodes it, decoded piece by piece as the text comes into a spool:
-/// its UTF-8 bytes decoded with the standard and the URL-safe alphabets, every other byte
-/// skipped, up to the first pad; the bits left over make one or two bytes more, unless they are
-/// a single sextet.
+/// The text of a `binary-data` element decoded as `OpenDocumentBodyHandler` decodes it, with
+/// commons-codec's `Base64.decodeBase64`, but piece by piece as the text comes, into a spool.
 pub(crate) struct BinaryData {
-    out: BufWriter<Spool>,
-    bits: u32,
-    sextets: u8,
-    padded: bool,
+    decoder: CommonsBase64,
+    decoded: Vec<u8>,
+    spool: Spool,
 }
 
 impl BinaryData {
     pub(crate) fn new() -> Self {
         Self {
-            out: BufWriter::with_capacity(BINARY_DATA_BUFFER, Spool::new(None)),
-            bits: 0,
-            sextets: 0,
-            padded: false,
+            decoder: CommonsBase64::default(),
+            decoded: Vec::with_capacity(BINARY_DATA_BUFFER),
+            spool: Spool::new(None),
         }
     }
 
     /// Decodes `text`, the next piece of the element's text.
     pub(crate) fn push(&mut self, text: &str) -> io::Result<()> {
-        if self.padded {
+        self.decoder.push(text, &mut self.decoded);
+        if self.decoded.len() < BINARY_DATA_BUFFER {
             return Ok(());
         }
-        for byte in text.bytes() {
-            let value = match byte {
-                b'=' => {
-                    self.padded = true;
-                    return Ok(());
-                }
-                b'A'..=b'Z' => byte - b'A',
-                b'a'..=b'z' => byte - b'a' + 26,
-                b'0'..=b'9' => byte - b'0' + 52,
-                b'+' | b'-' => 62,
-                b'/' | b'_' => 63,
-                _ => continue,
-            };
-            self.bits = (self.bits << 6) | u32::from(value);
-            self.sextets += 1;
-            if self.sextets == 4 {
-                let bits = self.bits;
-                self.out
-                    .write_all(&[(bits >> 16) as u8, (bits >> 8) as u8, bits as u8])?;
-                self.bits = 0;
-                self.sextets = 0;
-            }
-        }
+        self.spool.write_all(&self.decoded)?;
+        self.decoded.clear();
         Ok(())
     }
 
     /// The bytes decoded, once the element's text has ended.
     pub(crate) fn finish(mut self) -> io::Result<Input<'static>> {
-        let bits = self.bits;
-        match self.sextets {
-            2 => self.out.write_all(&[(bits >> 4) as u8])?,
-            3 => self
-                .out
-                .write_all(&[(bits >> 10) as u8, (bits >> 2) as u8])?,
-            _ => {}
-        }
-        self.out
-            .into_inner()
-            .map_err(io::IntoInnerError::into_error)?
-            .finish()
+        self.decoder.finish(&mut self.decoded);
+        self.spool.write_all(&self.decoded)?;
+        self.spool.finish()
     }
 }
+
 const OLD_NS: &str = "http://openoffice.org/2000/";
 const NEW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:";
 const META_NAME: &str = "meta.xml";
@@ -621,13 +589,13 @@ mod tests {
     }
 
     #[test]
-    fn decodes_binary_data_as_commons_codec_does_whatever_its_pieces() {
-        assert_eq!(decoded(&["aGVsbG8="]), b"hello");
-        assert_eq!(decoded(&["aG", "V\nsb", "G8", "=IGlnbm9yZWQ="]), b"hello");
+    fn decodes_binary_data_in_pieces_as_whole_past_its_buffer() {
+        let text = "SGVq IGRp\n".repeat(BINARY_DATA_BUFFER / 4);
+        let pieces: Vec<&str> = text.split_inclusive('\n').collect();
+        let whole = crate::java::commons_base64_decode(&text);
+        assert!(whole.len() > BINARY_DATA_BUFFER);
+        assert_eq!(decoded(&pieces), whole);
         assert_eq!(decoded(&["aGVsbA"]), b"hell");
-        assert_eq!(decoded(&["aGVsb"]), b"hel");
-        assert_eq!(decoded(&["-_-_"]), [0xFB, 0xFF, 0xBF]);
-        assert_eq!(decoded(&["+/+/"]), [0xFB, 0xFF, 0xBF]);
         assert_eq!(decoded(&[]), b"");
     }
 

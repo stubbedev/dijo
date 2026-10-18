@@ -21,7 +21,7 @@ use crate::formats::odf::OFFICE_NS;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
-use crate::input::{Input, Pages};
+use crate::input::Pages;
 
 const WHAT: &str = "The flat OpenDocument XML";
 const DOCUMENT: &str = "document";
@@ -271,15 +271,18 @@ impl Parser for FlatOpenDocumentParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        Ok(Box::new(move |xhtml| {
-            write(&Input::Within(input, pages), configs, xhtml)
-        }))
+        Ok(Box::new(move |xhtml| write(input, pages, configs, xhtml)))
     }
 }
 
 /// Parses the document, releasing the pages of its input as it goes, and when the parse fails,
 /// ends the elements left open and the document.
-fn write(input: &Input, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
+fn write(
+    input: &[u8],
+    pages: Pages,
+    configs: &ParserConfigs,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     let mut flat = Flat {
         sections: Sections::new(),
         body: Body::new(xhtml, configs.office.includes_deleted_content()),
@@ -288,7 +291,7 @@ fn write(input: &Input, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<()
         before_common_styles: DefinedStyles::default(),
         common_styles: None,
     };
-    let mut failure = match xml::parse_part(input, WHAT, &mut flat) {
+    let mut failure = match xml::parse_paged(input, pages, WHAT, &mut flat) {
         Ok(()) => {
             if let Some(detected) = flat.detected {
                 flat.body.metadata_mut().set("Content-Type", detected);
