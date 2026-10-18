@@ -140,7 +140,8 @@ impl Parser for DocxParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Document::open(input, pages, &configs.office)
+        let package = Package::open(input, pages)?;
+        let read = Document::open(package, &configs.office)
             .and_then(Document::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -157,12 +158,7 @@ struct Document<'a> {
 }
 
 impl<'a> Document<'a> {
-    fn open(
-        input: &'a [u8],
-        pages: Pages<'a>,
-        config: &'a OfficeParserConfig,
-    ) -> Result<Self, Unported> {
-        let package = Package::open(input, pages)?;
+    fn open(package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Self, Unported> {
         let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()
             .find_map(|kind| Package::relationships_of(&package.relationships, kind).next())

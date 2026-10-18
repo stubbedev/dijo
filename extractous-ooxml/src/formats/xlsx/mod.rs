@@ -149,7 +149,8 @@ impl Parser for XlsxParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Workbook::open(input, pages, &configs.office)
+        let package = Package::open(input, pages)?;
+        let read = Workbook::open(package, &configs.office)
             .and_then(Workbook::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -175,12 +176,7 @@ struct Workbook<'a> {
 }
 
 impl<'a> Workbook<'a> {
-    fn open(
-        input: &'a [u8],
-        pages: Pages<'a>,
-        config: &'a OfficeParserConfig,
-    ) -> Result<Self, Unported> {
-        let package = Package::open(input, pages)?;
+    fn open(package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Self, Unported> {
         let Some(core) =
             Package::relationships_of(&package.relationships, kind::OFFICE_DOCUMENT).next()
         else {

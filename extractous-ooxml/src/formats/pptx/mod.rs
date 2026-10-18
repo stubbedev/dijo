@@ -149,7 +149,8 @@ impl Parser for PptxParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let read = Presentation::open(input, pages, &configs.office)
+        let package = Package::open(input, pages)?;
+        let read = Presentation::open(package, &configs.office)
             .and_then(Presentation::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
@@ -165,12 +166,7 @@ struct Presentation<'a> {
 }
 
 impl<'a> Presentation<'a> {
-    fn open(
-        input: &'a [u8],
-        pages: Pages<'a>,
-        config: &'a OfficeParserConfig,
-    ) -> Result<Self, Unported> {
-        let mut package = Package::open(input, pages)?;
+    fn open(mut package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Self, Unported> {
         package.order_relationships_numerically();
         let core = [kind::OFFICE_DOCUMENT, kind::STRICT_OFFICE_DOCUMENT]
             .iter()

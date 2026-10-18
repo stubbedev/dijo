@@ -45,7 +45,7 @@ impl Parser for XpsParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let package = Package::open(input, Pages::IN_MEMORY).map_err(|Unported(reason)| reason)?;
+        let package = Package::open(input, Pages::IN_MEMORY)?;
         let properties = Properties::read(&package).map_err(|Unported(reason)| reason)?;
         let document = read_document(&package);
         Ok(Box::new(move |xhtml| {
