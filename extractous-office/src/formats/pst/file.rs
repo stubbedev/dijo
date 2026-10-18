@@ -44,7 +44,7 @@ const PROPERTY_SETS: [&str; 15] = [
 const PS_PUBLIC_STRINGS: i64 = 0;
 const PS_MAPI: i64 = 12;
 /// java-libpst's `InternetCodepages.txt`: the charset named for each code page.
-const CODE_PAGES: [(i32, &str); 35] = [
+pub(super) const CODE_PAGES: [(i32, &str); 35] = [
     (28596, "iso-8859-6"),
     (1256, "windows-1256"),
     (28594, "iso-8859-4"),

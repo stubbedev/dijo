@@ -35,7 +35,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
 use crate::text::charset::{self, Charset, Detection};
 
 /// Where the text the parser writes departs from Tika's, for the parity tests of every parser
@@ -142,12 +142,12 @@ pub fn prepare(
 }
 
 /// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units: a
-/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it. It is
-/// [`Decline::Differs`] where the parser reads the HTML differently from Tika's.
-pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Decline<'static>> {
+/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it, and where the parser
+/// reads the HTML differently from Tika's, if anywhere: the parser reads any HTML.
+pub fn prepare_string(html: &[u16]) -> (Prepared<'static>, Option<Difference>) {
     let dom = tree_builder::parse(&String::from_utf16_lossy(html));
     let difference = handler::difference(&dom);
-    unless_different(
+    (
         Box::new(move |xhtml| write_dom(&dom, Base::Unknown, xhtml)),
         difference,
     )

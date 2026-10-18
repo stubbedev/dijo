@@ -30,10 +30,6 @@ const CONTENTS_TABLE: i64 = 12;
 /// `EPOCH_DIFF`: milliseconds from 1601 to 1970.
 const EPOCH_DIFF: i64 = 11_644_473_600_000;
 
-/// Text in a charset the port does not decode as the JDK does.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Undecodable(pub(super) String);
-
 /// `PSTObject`: a node's properties and its sub-nodes.
 pub(super) struct PstObject<'p, 'f> {
     file: &'p PstFile<'f>,
@@ -59,9 +55,9 @@ impl<'p, 'f> PstObject<'p, 'f> {
     }
 
     /// `getStringItem(identifier, 0, codepage)`, the code page the object's own where `None`.
-    fn string_with(&self, id: i32, code_page: Option<&'static str>) -> Result<String, Undecodable> {
+    fn string_with(&self, id: i32, code_page: Option<&'static str>) -> String {
         let Some(item) = self.items.get(&id) else {
-            return Ok(String::new());
+            return String::new();
         };
         let code_page =
             code_page.or_else(|| self.code_page([MESSAGE_CODE_PAGE, INTERNET_CODE_PAGE]));
@@ -73,15 +69,15 @@ impl<'p, 'f> PstObject<'p, 'f> {
             .as_ref()
             .and_then(|local| local.get(item.reference))
         else {
-            return Ok(String::new());
+            return String::new();
         };
         match sub_node.data(self.file) {
             Ok(data) => java_string(&data, item.value_type, code_page),
-            Err(_) => Ok(String::new()),
+            Err(_) => String::new(),
         }
     }
 
-    fn string(&self, id: i32) -> Result<String, Undecodable> {
+    fn string(&self, id: i32) -> String {
         self.string_with(id, None)
     }
 
@@ -100,7 +96,7 @@ impl<'p, 'f> PstObject<'p, 'f> {
     }
 
     /// `getDisplayName`.
-    pub(super) fn display_name(&self) -> Result<String, Undecodable> {
+    pub(super) fn display_name(&self) -> String {
         self.string(0x3001)
     }
 
@@ -111,26 +107,19 @@ impl<'p, 'f> PstObject<'p, 'f> {
 }
 
 /// `createJavaString`.
-fn java_string(
-    data: &[u8],
-    value_type: i32,
-    code_page: Option<&str>,
-) -> Result<String, Undecodable> {
+fn java_string(data: &[u8], value_type: i32, code_page: Option<&str>) -> String {
     if value_type == UNICODE {
-        return Ok(java::utf16le(data));
+        return java::utf16le(data);
     }
     let Some(code_page) = code_page else {
-        return Ok(java::utf8(data));
+        return java::utf8(data);
     };
     let Some(charset) = Charset::for_name(&code_page.to_ascii_uppercase()) else {
-        return Ok(String::new());
+        return String::new();
     };
-    charset.decode(data).ok_or_else(|| {
-        Undecodable(format!(
-            "a string in {}, which the port does not decode",
-            charset.name()
-        ))
-    })
+    charset
+        .decode(data)
+        .expect("the port decodes the charset of every code page java-libpst names")
 }
 
 /// A node `detectAndLoadPSTObject` loads.
@@ -216,7 +205,7 @@ impl<'p, 'f> Folder<'p, 'f> {
         Ok(Self::new(read_object(file, file.descriptor(290)?)?))
     }
 
-    pub(super) fn display_name(&self) -> Result<String, Undecodable> {
+    pub(super) fn display_name(&self) -> String {
         self.object.display_name()
     }
 
@@ -238,9 +227,7 @@ impl<'p, 'f> Folder<'p, 'f> {
 
     /// The `PSTException` java-libpst wraps a failure to read the subfolders in.
     fn subfolders_failed(&self, thrown: &Thrown) -> Thrown {
-        let name = self
-            .display_name()
-            .unwrap_or_else(|Undecodable(reason)| reason);
+        let name = self.display_name();
         Thrown::pst(format!(
             "Can't get child folders for folder {name}({}) child count: {} - {thrown}",
             self.object.descriptor_node_id(),
@@ -364,17 +351,17 @@ impl<'p, 'f> Message<'p, 'f> {
     }
 
     /// `getSubject`: without the two characters of a prefix marker.
-    pub(super) fn subject(&self) -> Result<String, Undecodable> {
-        let subject = self.object.string(0x0037)?;
+    pub(super) fn subject(&self) -> String {
+        let subject = self.object.string(0x0037);
         let units: Vec<u16> = subject.encode_utf16().collect();
         if units.len() >= 2 && units[0] == 0x01 {
-            return Ok(String::from_utf16_lossy(&units[2..]));
+            return String::from_utf16_lossy(&units[2..]);
         }
-        Ok(subject)
+        subject
     }
 
     /// `getBody`.
-    pub(super) fn body(&self) -> Result<String, Undecodable> {
+    pub(super) fn body(&self) -> String {
         let code_page = self
             .object
             .code_page([MESSAGE_CODE_PAGE, INTERNET_CODE_PAGE]);
@@ -382,7 +369,7 @@ impl<'p, 'f> Message<'p, 'f> {
     }
 
     /// `getBodyHTML`.
-    pub(super) fn body_html(&self) -> Result<String, Undecodable> {
+    pub(super) fn body_html(&self) -> String {
         let code_page = self
             .object
             .code_page([INTERNET_CODE_PAGE, MESSAGE_CODE_PAGE]);
@@ -408,7 +395,7 @@ impl<'p, 'f> Message<'p, 'f> {
         }
     }
 
-    pub(super) fn string(&self, id: i32) -> Result<String, Undecodable> {
+    pub(super) fn string(&self, id: i32) -> String {
         self.object.string(id)
     }
 
@@ -597,12 +584,12 @@ impl<'p, 'f> Attachment<'p, 'f> {
     }
 
     /// `getLongFilename`.
-    pub(super) fn long_filename(&self) -> Result<String, Undecodable> {
+    pub(super) fn long_filename(&self) -> String {
         self.object.string(0x3707)
     }
 
     /// `getFilename`.
-    pub(super) fn filename(&self) -> Result<String, Undecodable> {
+    pub(super) fn filename(&self) -> String {
         self.object.string(0x3704)
     }
 
