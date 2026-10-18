@@ -118,6 +118,33 @@ pub(crate) fn decompresses(method: u16) -> bool {
     [UNSHRINKING, IMPLODING, DEFLATE64, BZIP2, XZ].contains(&method) || ZSTD.contains(&method)
 }
 
+/// The name of the `ZipMethod` of `code`, as `ZipMethod.getMethodByCode` finds it.
+pub(crate) fn method_name(code: u16) -> Option<&'static str> {
+    Some(match code {
+        STORED => "STORED",
+        UNSHRINKING => "UNSHRINKING",
+        2 => "EXPANDING_LEVEL_1",
+        3 => "EXPANDING_LEVEL_2",
+        4 => "EXPANDING_LEVEL_3",
+        5 => "EXPANDING_LEVEL_4",
+        IMPLODING => "IMPLODING",
+        7 => "TOKENIZATION",
+        DEFLATED => "DEFLATED",
+        DEFLATE64 => "ENHANCED_DEFLATED",
+        10 => "PKWARE_IMPLODING",
+        BZIP2 => "BZIP2",
+        14 => "LZMA",
+        20 => "ZSTD_DEPRECATED",
+        93 => "ZSTD",
+        XZ => "XZ",
+        96 => "JPEG",
+        97 => "WAVPACK",
+        98 => "PPMD",
+        99 => "AES_ENCRYPTED",
+        _ => return None,
+    })
+}
+
 /// The data `raw` of an entry compressed with `method` and the general purpose `flags`, `size`
 /// bytes once decoded, as commons-compress's `ZipFile.getInputStream` decodes it, without
 /// checking its CRC: all of it, what was decoded before the data failed, or past
