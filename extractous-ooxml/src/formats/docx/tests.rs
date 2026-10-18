@@ -343,20 +343,52 @@ fn defers_macros_only_when_they_are_extracted() {
         .is_some());
 }
 
+/// A document whose main part's XML fails after a paragraph, with a header of `header`.
+fn failing_main_part(header: &[u8]) -> Vec<u8> {
+    document(
+        "<w:p><w:r><w:t>kept</w:t></w:r></w:p><w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>lost</w:p>",
+        &relationship("rId9", kind::HEADER, "header1.xml"),
+        &[(
+            "word/header1.xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+            header,
+        )],
+    )
+}
+
 #[test]
-fn defers_parts_whose_xml_tika_reports_failing_on() {
-    let input = document("<w:p><w:r><w:t>open</w:p>", "", &[]);
-    assert!(defers(&input).is_some_and(|reason| reason.contains("records a failure")));
+fn records_parts_whose_xml_fails_and_goes_on() {
+    let input = failing_main_part(b"<w:hdr><w:p><w:r><w:t>head</w:t></w:p>");
+    assert_eq!(defers(&input), None);
+    let (xml, metadata) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_bytes_to_string(&input)
+        .unwrap();
+    assert!(xml.contains("<p>kept</p>"), "{xml}");
+    assert!(xml.contains("</body>"), "{xml}");
+    let warnings = &metadata["tk:exception:warn"];
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings
+        .iter()
+        .all(|warning| warning.starts_with("org.xml.sax.SAXParseException: /word/")));
+    assert!(
+        !metadata.contains_key(name::HAS_HIDDEN_TEXT),
+        "{metadata:?}"
+    );
+}
+
+#[test]
+fn defers_parts_declaring_a_document_type() {
     let header = document(
         "<w:p/>",
         &relationship("rId9", kind::HEADER, "header1.xml"),
         &[(
             "word/header1.xml",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
-            b"<w:hdr><w:p/></w:hdr>",
+            b"<!DOCTYPE w:hdr><w:hdr><w:p/></w:hdr>",
         )],
     );
-    assert!(defers(&header).is_some_and(|reason| reason.contains("header1.xml")));
+    assert!(defers(&header).is_some_and(|reason| reason.contains("header1.xml declares")));
     let quietly_read = document(
         "<w:p/>",
         &relationship("rId9", kind::SETTINGS, "settings.xml"),
@@ -367,6 +399,32 @@ fn defers_parts_whose_xml_tika_reports_failing_on() {
         )],
     );
     assert!(defers(&quietly_read).is_some_and(|reason| reason.contains("document type")));
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn records_parts_whose_xml_fails_as_tikas_path_does() {
+    let scratch = parity::Scratch::new("docx-failing-part");
+    let documents = [
+        scratch.write(
+            "main.docx",
+            &failing_main_part(b"<w:hdr><w:p><w:r><w:t>head</w:t></w:r></w:p></w:hdr>"),
+        ),
+        scratch.write(
+            "header.docx",
+            &failing_main_part(b"<w:hdr><w:p><w:r><w:t>head</w:t></w:p>"),
+        ),
+    ];
+    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+    parity::assert_same_as_tika_departing(
+        &documents,
+        TIKA_PARSER,
+        &[parity::Departure::Values(
+            embedded::EXCEPTION_WARNING,
+            "the first line of Xerces' SAXParseException, which the native XML reader words \
+             otherwise (#96)",
+        )],
+    );
 }
 
 #[test]

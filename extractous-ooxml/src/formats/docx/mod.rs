@@ -23,9 +23,10 @@ use styles::Styles;
 use text::{TextHandler, TextOptions};
 
 use crate::config::{OfficeParserConfig, ParserConfigs};
+use crate::formats::embedded;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::metafile;
-use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts, Ignore};
+use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
@@ -122,8 +123,8 @@ impl Parser for DocxParser {
     }
 
     /// Defers documents with macros Tika extracts when asked to, an OLE object it fails to read,
-    /// an EMF picture that embeds documents, parts whose XML Tika reports failing on, and
-    /// packages POI does not open as this port does.
+    /// an EMF picture that embeds documents, parts read whole whose XML Tika reports failing on,
+    /// parts declaring a document type, and packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -231,10 +232,11 @@ impl<'a> Document<'a> {
     }
 
     /// Finds what this port leaves to Tika in a package it could open (embedded documents,
-    /// macros to extract, parts whose XML Tika fails on, properties it does not read), and reads
-    /// what Tika reads whole before it writes anything of a main document: the properties, each
-    /// story's numbering, styles, notes and comments, and the first story's features and
-    /// settings. The parts written as they are read are only checked here.
+    /// macros to extract, parts read whole whose XML Tika fails on, document types, properties
+    /// it does not read), and reads what Tika reads whole before it writes anything of a main
+    /// document: the properties, each story's numbering, styles, notes and comments, and the
+    /// first story's settings. The parts written as they are read are read into memory here and
+    /// parsed once, as they are written.
     fn prepare(self) -> Result<Read<'a>, Unported> {
         for &source in &self.main_parts() {
             for relationship in self.relationships(source) {
@@ -324,23 +326,20 @@ impl<'a> Document<'a> {
         }
     }
 
-    /// Reads what writing `story` takes and checks the parts it writes; the security features
-    /// and settings too for the `first` story.
-    fn read_story(&self, story: usize, first: bool) -> Result<StoryParts, Unported> {
+    /// Reads what writing `story` takes, and the parts it writes, which are parsed as they are
+    /// written; the settings too for the `first` story.
+    fn read_story(&self, story: usize, first: bool) -> Result<StoryParts<'a>, Unported> {
         let relationships = self.relationships(story);
         let styles = match Package::first_related(relationships, kind::STYLES) {
             Some(part) => Some(self.read_whole(part, Styles::default())?),
             None => None,
         };
         let inline = self.inline_parts(story)?;
-        let mut security = None;
-        for part in self.streamed_parts(story) {
-            if first && part == story {
-                security = Some(self.read_whole(part, Features::default())?);
-            } else {
-                self.read_whole(part, Ignore)?;
-            }
-        }
+        let streamed = self
+            .streamed_parts(story)
+            .into_iter()
+            .map(|part| Ok((part, self.read_streamed(part)?)))
+            .collect::<Result<_, Unported>>()?;
         let numbering = match Package::first_related(relationships, kind::NUMBERING) {
             Some(part) => ooxml::read_quietly(&self.package, part, Numbering::default())?,
             None => None,
@@ -358,12 +357,22 @@ impl<'a> Document<'a> {
             numbering,
             styles,
             inline,
-            security: security.map(|features| Security {
-                features,
-                settings,
-                web,
-            }),
+            streamed,
+            settings: first.then_some(StorySettings { settings, web }),
         })
+    }
+
+    /// The bytes of `part`, which is parsed as it is written. One declaring a document type,
+    /// whose declarations Java reads and this port skips, is [`Unported`].
+    fn read_streamed(&self, part: usize) -> Result<Input<'a>, Unported> {
+        let name = self.package.name(part);
+        let bytes = self
+            .read(part)
+            .map_err(|_| Unported(format!("the part {name} cannot be read")))?;
+        if xml::has_document_type(&bytes) {
+            return Err(Unported(format!("{name} declares a document type")));
+        }
+        Ok(bytes)
     }
 
     /// Reads `part` into `handler`, as a part whose failure Tika records, which this port leaves
@@ -383,7 +392,8 @@ impl<'a> Document<'a> {
         metadata.add(name::PARSED_BY, WORD_EXTRACTOR);
     }
 
-    /// `handleDocumentPart`.
+    /// `handleDocumentPart`, and of the first story the features `detectSecurityFeatures`
+    /// reads of it, gathered as the story is written.
     fn write_document_part(
         &self,
         parts: StoryParts,
@@ -396,50 +406,60 @@ impl<'a> Document<'a> {
             numbering,
             styles,
             inline,
-            security,
+            streamed,
+            settings,
         } = parts;
-        let relationships = self.relationships(story);
         let mut lists = ListManager::new(numbering);
         let no_notes = InlineParts::default();
-        let footers_too = self.config.includes_headers_and_footers();
-        let mut write_part = |part: usize, lists: &mut ListManager, inline: &InlineParts| {
-            let (emitted, references) =
-                self.write_part(part, styles.as_ref(), lists, inline, xhtml)?;
-            self.describe(part, references, icons, described);
-            Ok::<_, Failure>(emitted)
-        };
-        if footers_too {
-            for header in Package::related(relationships, kind::HEADER) {
-                write_part(header, &mut lists, &no_notes)?;
+        let mut emitted = HashSet::new();
+        let mut features = None;
+        for (part, bytes) in streamed {
+            let is_story = part == story;
+            let written = self.write_part(
+                part,
+                &bytes,
+                PartContext {
+                    styles: styles.as_ref(),
+                    lists: &mut lists,
+                    inline: if is_story { &inline } else { &no_notes },
+                    features: (is_story && settings.is_some()).then(Features::default),
+                },
+                xhtml,
+            )?;
+            self.describe(part, written.references, icons, described);
+            if is_story {
+                emitted = written.emitted;
+                features = written.features;
             }
-        }
-        let emitted = write_part(story, &mut lists, &inline)?;
-        let mut trailing = Package::related(relationships, kind::DIAGRAM_DATA);
-        trailing.extend(Package::related(relationships, kind::CHART));
-        if footers_too {
-            trailing.extend(Package::related(relationships, kind::FOOTER));
-        }
-        for part in trailing {
-            write_part(part, &mut lists, &no_notes)?;
         }
         for (id, events) in inline.comments.iter() {
             if !emitted.contains(id) {
                 unreferenced_comment(xhtml, &inline, events)?;
             }
         }
-        Ok(security)
+        Ok(settings.map(|StorySettings { settings, web }| Security {
+            features,
+            settings,
+            web,
+        }))
     }
 
-    /// `handlePart`: writes a part with the text handler; returns the comments it inlined and
-    /// what it says of the OLE objects it embeds.
+    /// `handlePart`: writes the part `part` of `bytes` with the text handler, and feeds the
+    /// features asked for the same events. XML that fails is recorded as Tika records it, as a
+    /// warning, after which the elements left open are closed and the document goes on.
     fn write_part(
         &self,
         part: usize,
-        styles: Option<&Styles>,
-        lists: &mut ListManager,
-        inline: &InlineParts,
+        bytes: &Input,
+        context: PartContext,
         xhtml: &mut Xhtml,
-    ) -> Result<(HashSet<String>, OleReferences), Failure> {
+    ) -> Result<WrittenPart, Failure> {
+        let PartContext {
+            styles,
+            lists,
+            inline,
+            mut features,
+        } = context;
         let relationships = self.linked_relationships(part);
         let body = Body::new(
             xhtml,
@@ -458,9 +478,41 @@ impl<'a> Document<'a> {
             prefer_alternate_content_choice: true,
         };
         let mut handler = TextHandler::new(body, &relationships, options);
-        let bytes = self.read(part)?;
-        xml::parse_part(&bytes, self.package.name(part), &mut handler)?;
-        Ok(handler.into_body().finish())
+        let name = self.package.name(part);
+        let parsed = match features.as_mut() {
+            Some(features) => xml::parse_part(
+                bytes,
+                name,
+                &mut WithFeatures {
+                    text: &mut handler,
+                    features,
+                },
+            ),
+            None => xml::parse_part(bytes, name, &mut handler),
+        };
+        let mut body = handler.into_body();
+        let unparsed = match parsed {
+            Ok(()) => None,
+            Err(Failure::Malformed(reason)) => Some(reason),
+            Err(Failure::Extraction(error)) => Some(error.to_string()),
+            Err(failure @ (Failure::Stopped(_) | Failure::Embedded(_))) => return Err(failure),
+        };
+        if unparsed.is_some() {
+            body.close_any_pending()?;
+        }
+        let (emitted, references) = body.finish();
+        if let Some(reason) = unparsed {
+            embedded::record_exception(
+                xhtml.metadata_mut(),
+                &format!("org.xml.sax.SAXParseException: {reason}"),
+            );
+            features = None;
+        }
+        Ok(WrittenPart {
+            emitted,
+            references,
+            features,
+        })
     }
 
     /// `loadLinkedRelationships`: the targets of a part's links by id, and the file names of
@@ -505,7 +557,9 @@ impl<'a> Document<'a> {
         security: Security,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        security.features.write(xhtml.metadata_mut());
+        if let Some(features) = &security.features {
+            features.write(xhtml.metadata_mut());
+        }
         let relationships = self.relationships(story);
         for (kind, flag, class) in [
             (
@@ -536,21 +590,74 @@ impl<'a> Document<'a> {
     }
 }
 
-/// What writing a story takes that Tika reads whole before it writes the story: its numbering,
-/// styles, notes and comments, and for the first story its security features and settings.
-struct StoryParts {
+/// What writing a story takes: what Tika reads whole before it writes the story (its numbering,
+/// styles, notes and comments, and for the first story its settings), and the parts it writes,
+/// in order, with their bytes.
+struct StoryParts<'a> {
     story: usize,
     numbering: Option<Numbering>,
     styles: Option<Styles>,
     inline: InlineParts,
-    security: Option<Security>,
+    streamed: Vec<(usize, Input<'a>)>,
+    settings: Option<StorySettings>,
 }
 
-/// What `detectSecurityFeatures` reads of the first story.
-struct Security {
-    features: Features,
+/// The settings `detectSecurityFeatures` reads of the first story.
+struct StorySettings {
     settings: Option<Settings>,
     web: Option<WebSettings>,
+}
+
+/// What `detectSecurityFeatures` reads of the first story: its features, none where its XML
+/// fails, which `XWPFFeatureExtractor` swallows, and its settings.
+struct Security {
+    features: Option<Features>,
+    settings: Option<Settings>,
+    web: Option<WebSettings>,
+}
+
+/// What writing a part of a story takes besides the part.
+struct PartContext<'s, 'l> {
+    styles: Option<&'s Styles>,
+    lists: &'l mut ListManager,
+    inline: &'s InlineParts,
+    /// The features to gather of the part as it is written, if they are asked for.
+    features: Option<Features>,
+}
+
+/// What writing a part found: the comments it inlined, what it says of the OLE objects it
+/// embeds, and its features, if they were asked for and its XML did not fail.
+struct WrittenPart {
+    emitted: HashSet<String>,
+    references: OleReferences,
+    features: Option<Features>,
+}
+
+/// The text handler of a part, with its events fed to its features too.
+struct WithFeatures<'t, 'f, T> {
+    text: &'t mut T,
+    features: &'f mut Features,
+}
+
+impl<T: SaxHandler> SaxHandler for WithFeatures<'_, '_, T> {
+    fn start_element(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        attributes: &[Attribute],
+    ) -> Result<(), Failure> {
+        self.features
+            .start_element(namespace, local_name, attributes)?;
+        self.text.start_element(namespace, local_name, attributes)
+    }
+
+    fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
+        self.text.end_element(namespace, local_name)
+    }
+
+    fn characters(&mut self, text: &str) -> Result<(), Failure> {
+        self.text.characters(text)
+    }
 }
 
 /// The name of the file each EMF picture of a document shows as the icon of an OLE object, if
@@ -562,7 +669,7 @@ struct Read<'a> {
     document: Document<'a>,
     properties: Properties,
     /// The parts of each story, then of each glossary.
-    stories: Vec<StoryParts>,
+    stories: Vec<StoryParts<'a>>,
     icons: IconNames,
 }
 
