@@ -2,7 +2,7 @@
 //! `Paragraph.newParagraph` makes them, character runs with theirs, and tables of rows of cells
 //! as `Range.getTable`, `Table` and `TableRow` find them, with POI's quirks.
 
-use super::bins::PropertyRun;
+use super::bins::{Paragraphs, PropertyRun};
 use super::document::Document;
 use super::props::{run_chp, table_cell_count, uncompress_pap, Chp, Pap};
 use crate::formats::poi::{Read, Thrown};
@@ -173,25 +173,27 @@ impl Document<'_> {
     /// own; where it is in a list whose level has properties, those, then the style's and its
     /// own again.
     fn new_paragraph(&self, parent: Span, papx: usize) -> Read<Paragraph> {
-        let run = &self.paragraphs[papx];
-        let istd = run.istd()?;
+        let istd = self.paragraphs.istd(papx)?;
         let style = self.styles.papx(i32::from(istd))?;
         let mut pap = Pap {
             istd: i32::from(istd),
             ..Pap::default()
         };
         pap = uncompress_pap(&pap, &style, 2)?;
-        pap = uncompress_pap(&pap, run.grpprl(), 2)?;
+        pap = uncompress_pap(&pap, self.paragraphs.grpprl(papx), 2)?;
         if pap.ilfo != 0 {
             if let Some(lists) = &self.lists {
                 if let Some(level) = lists.level(pap.ilfo, i32::from(pap.ilvl))? {
                     pap = uncompress_pap(&pap, &level.grpprl_papx, 0)?;
                     pap = uncompress_pap(&pap, &style, 2)?;
-                    pap = uncompress_pap(&pap, run.grpprl(), 2)?;
+                    pap = uncompress_pap(&pap, self.paragraphs.grpprl(papx), 2)?;
                 }
             }
         }
-        let span = self.subrange(parent.start.max(run.start), parent.end.min(run.end))?;
+        let span = self.subrange(
+            parent.start.max(self.paragraphs.start(papx)),
+            parent.end.min(self.paragraphs.end(papx)),
+        )?;
         Ok(Paragraph {
             span,
             papx,
@@ -202,7 +204,7 @@ impl Document<'_> {
 
     /// `initCharacterRuns`.
     fn character_bounds(&self, span: Span) -> Read<(usize, usize)> {
-        find_range(&self.characters, span)
+        find_range(self.characters.as_slice(), span)
     }
 
     /// `numCharacterRuns`.
@@ -233,7 +235,7 @@ impl Document<'_> {
         if first.max(paragraph_start) >= self.paragraphs.len() {
             return Ok(None);
         }
-        let istd = self.paragraphs[first].istd()?;
+        let istd = self.paragraphs.istd(first)?;
         self.character_run(span, chpx, istd).map(Some)
     }
 
@@ -291,7 +293,7 @@ impl Document<'_> {
         }
         self.paragraph_bounds(range)?;
         self.character_bounds(range)?;
-        let span = self.subrange(paragraph.span.start, self.paragraphs[end_index].end)?;
+        let span = self.subrange(paragraph.span.start, self.paragraphs.end(end_index))?;
         let rows = self.rows(span, level)?;
         Ok(Table { span, rows })
     }
@@ -342,7 +344,7 @@ impl Document<'_> {
     fn cells(&self, row: Span, level: i32) -> Read<Vec<Span>> {
         let count = self.paragraph_count(row)?;
         let last = self.paragraph(row, count - 1)?;
-        let sprms = self.paragraphs[last.papx].sprms.as_ref().ok_or_else(|| {
+        let sprms = self.paragraphs.sprms(last.papx).ok_or_else(|| {
             Thrown::new("Cannot process TableProperties with an empty SprmBuffer")
         })?;
         let expected = i64::from(table_cell_count(sprms.bytes())?);
@@ -404,22 +406,58 @@ pub(super) fn subrange(start: i32, end: i32, text_length: Option<usize>) -> Read
     Ok(Span { start, end })
 }
 
+/// Runs over ranges of characters, in order, as `Range` searches them.
+pub(super) trait Runs {
+    fn count(&self) -> usize;
+    fn start_of(&self, index: usize) -> i32;
+    fn end_of(&self, index: usize) -> i32;
+}
+
+impl Runs for [PropertyRun] {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn start_of(&self, index: usize) -> i32 {
+        self[index].start
+    }
+
+    fn end_of(&self, index: usize) -> i32 {
+        self[index].end
+    }
+}
+
+impl Runs for Paragraphs {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn start_of(&self, index: usize) -> i32 {
+        self.start(index)
+    }
+
+    fn end_of(&self, index: usize) -> i32 {
+        self.end(index)
+    }
+}
+
 /// `Range.findRange(rpl, start, end)`: the runs a range covers, `[first, last)`.
-pub(super) fn find_range(runs: &[PropertyRun], span: Span) -> Read<(usize, usize)> {
+pub(super) fn find_range<R: Runs + ?Sized>(runs: &R, span: Span) -> Read<(usize, usize)> {
+    let count = runs.count() as i64;
     let start_index = binary_search_start(runs, span.start);
     let mut start_index = start_index;
-    while start_index > 0 && runs[(start_index - 1) as usize].start >= span.start {
+    while start_index > 0 && runs.start_of((start_index - 1) as usize) >= span.start {
         start_index -= 1;
     }
     let mut end_index = binary_search_end(runs, start_index, span.end)?;
-    while end_index < runs.len() as i64 - 1 && runs[(end_index + 1) as usize].end <= span.end {
+    while end_index < count - 1 && runs.end_of((end_index + 1) as usize) <= span.end {
         end_index += 1;
     }
     if start_index < 0
-        || start_index >= runs.len() as i64
+        || start_index >= count
         || start_index > end_index
         || end_index < 0
-        || end_index >= runs.len() as i64
+        || end_index >= count
     {
         return Err(Thrown::new("problem finding range"));
     }
@@ -427,17 +465,17 @@ pub(super) fn find_range(runs: &[PropertyRun], span: Span) -> Read<(usize, usize
 }
 
 /// `Range.binarySearchStart`.
-fn binary_search_start(runs: &[PropertyRun], start: i32) -> i64 {
-    if runs.is_empty() {
+fn binary_search_start<R: Runs + ?Sized>(runs: &R, start: i32) -> i64 {
+    if runs.count() == 0 {
         return -1;
     }
-    if runs[0].start >= start {
+    if runs.start_of(0) >= start {
         return 0;
     }
-    let (mut low, mut high) = (0i64, runs.len() as i64 - 1);
+    let (mut low, mut high) = (0i64, runs.count() as i64 - 1);
     while low <= high {
         let mid = (low + high) >> 1;
-        let at = runs[mid as usize].start;
+        let at = runs.start_of(mid as usize);
         if at < start {
             low = mid + 1;
         } else if at > start {
@@ -450,21 +488,22 @@ fn binary_search_start(runs: &[PropertyRun], start: i32) -> i64 {
 }
 
 /// `Range.binarySearchEnd`, failing where POI indexes out of the runs.
-fn binary_search_end(runs: &[PropertyRun], found_start: i64, end: i32) -> Read<i64> {
-    let Some(last) = runs.last() else {
+fn binary_search_end<R: Runs + ?Sized>(runs: &R, found_start: i64, end: i32) -> Read<i64> {
+    let count = runs.count();
+    if count == 0 {
         return Err(Thrown::new("Index -1 out of bounds for length 0"));
-    };
-    if last.end <= end {
-        return Ok(runs.len() as i64 - 1);
     }
-    let (mut low, mut high) = (found_start, runs.len() as i64 - 1);
+    if runs.end_of(count - 1) <= end {
+        return Ok(count as i64 - 1);
+    }
+    let (mut low, mut high) = (found_start, count as i64 - 1);
     while low <= high {
         let mid = (low + high) >> 1;
         let at = usize::try_from(mid)
             .ok()
-            .and_then(|mid| runs.get(mid))
-            .ok_or_else(|| Thrown::new(format!("Index {mid} out of bounds")))?
-            .end;
+            .filter(|&mid| mid < count)
+            .map(|mid| runs.end_of(mid))
+            .ok_or_else(|| Thrown::new(format!("Index {mid} out of bounds")))?;
         if at < end {
             low = mid + 1;
         } else if at > end {

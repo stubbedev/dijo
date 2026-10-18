@@ -3,7 +3,7 @@
 //! pieces, joined with the properties the pieces' modifiers add, and rebuilt as POI rebuilds
 //! them: runs split at every boundary and paragraphs at every paragraph, cell and page mark.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use super::bytes::{index, safely_clone};
 use super::sprm::{has_kind, SprmOperation, TYPE_CHP, TYPE_PAP};
@@ -17,7 +17,7 @@ pub(super) const PARAGRAPH_MARKS: [u8; 3] = [13, 7, 12];
 
 /// POI's `SprmBuffer`: bytes a grpprl is written to, with the room past its end that POI's
 /// buffers keep, which its comparisons and readers see.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct SprmBuffer {
     buf: Vec<u8>,
     offset: usize,
@@ -84,16 +84,15 @@ impl PropertyRun {
     pub(super) fn grpprl(&self) -> &[u8] {
         self.sprms.as_ref().map_or(&[], SprmBuffer::bytes)
     }
+}
 
-    /// `PAPX.getIstd`.
-    pub(super) fn istd(&self) -> Read<i16> {
-        let grpprl = self.grpprl();
-        Ok(match grpprl.len() {
-            0 => 0,
-            1 => i16::from(grpprl[0]),
-            _ => i16_at(grpprl, 0)?,
-        })
-    }
+/// `PAPX.getIstd` of a grpprl: its first short.
+fn istd_of(grpprl: &[u8]) -> Read<i16> {
+    Ok(match grpprl.len() {
+        0 => 0,
+        1 => i16::from(grpprl[0]),
+        _ => i16_at(grpprl, 0)?,
+    })
 }
 
 /// How a bin table names its formatted disk pages: by an int, or by an unsigned short in the
@@ -160,16 +159,18 @@ pub(super) fn character_runs(
     Ok(runs)
 }
 
-/// `new PAPBinTable(...)`: the paragraph runs of every page, mapped to characters, with the
-/// huge grpprls the data stream holds.
-pub(super) fn paragraph_runs(
+/// `new PAPBinTable(...)`: each paragraph run of every page, mapped to characters, with the
+/// huge grpprls the data stream holds, handed to `visit` in the order they are read; one empty
+/// run where the pages hold none.
+fn visit_paragraph_runs(
     main: &[u8],
     data: &[u8],
     pages: &[i32],
     clx: &ComplexFileTable,
-) -> Read<Vec<PropertyRun>> {
+    visit: &mut dyn FnMut(PropertyRun) -> Read<()>,
+) -> Read<()> {
     const BX_SIZE: i32 = 13;
-    let mut runs = Vec::new();
+    let mut visited = false;
     for &page in pages {
         let at = PAGE_SIZE.wrapping_mul(page);
         let count = i32::from(u8_at(main, index(at.wrapping_add(511))?)?);
@@ -188,18 +189,19 @@ pub(super) fn paragraph_runs(
             let grpprl = safely_clone(main, at + papx_at + 1, length, 512)?;
             let grpprl = huge(grpprl, data)?;
             for (first, last) in clx.char_ranges(start, end) {
-                runs.push(PropertyRun::new(
+                visited = true;
+                visit(PropertyRun::new(
                     first,
                     last,
                     Some(SprmBuffer::from_bytes(grpprl.clone())),
-                )?);
+                )?)?;
             }
         }
     }
-    if runs.is_empty() {
-        runs.push(PropertyRun::new(0, 0, Some(SprmBuffer::empty(2)))?);
+    if !visited {
+        visit(PropertyRun::new(0, 0, Some(SprmBuffer::empty(2)))?)?;
     }
-    Ok(runs)
+    Ok(())
 }
 
 /// `PAPX.findHuge`: the grpprl a `sprmPHugePapx` points to in the data stream, else the one
@@ -344,14 +346,168 @@ fn binary_search_start(runs: &[PropertyRun], by_start: &[usize], start: i32) -> 
     -(low + 1)
 }
 
-/// `PAPBinTable.rebuild`: the runs of the pieces' modifiers added, then a paragraph for each
-/// paragraph, cell or page mark of the text, at the positions `marks` gives in order, with the
-/// grpprls of the runs ending in it joined in the order they were read.
-pub(super) fn rebuild_paragraph_runs(
-    mut runs: Vec<PropertyRun>,
-    marks: &[i32],
+/// The paragraphs `PAPBinTable.rebuild` makes, one for each paragraph, cell or page mark of the
+/// text, partitioning it from its start, in about four bytes each: where each ends, one past
+/// its mark, and its grpprl, each kept once, by the paragraphs from which on it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Paragraphs {
+    ends: Vec<i32>,
+    /// From which paragraph on each grpprl holds, ascending: an index into `grpprls`, `None`
+    /// for a paragraph whose merged runs held no properties, as POI leaves it.
+    changes: Vec<(usize, Option<u32>)>,
+    grpprls: Vec<SprmBuffer>,
+}
+
+impl Paragraphs {
+    pub(super) fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    pub(super) fn start(&self, index: usize) -> i32 {
+        match index {
+            0 => 0,
+            _ => self.ends[index - 1],
+        }
+    }
+
+    pub(super) fn end(&self, index: usize) -> i32 {
+        self.ends[index]
+    }
+
+    /// The paragraph's grpprl, `None` where its merged runs held no properties.
+    pub(super) fn sprms(&self, index: usize) -> Option<&SprmBuffer> {
+        let change = self
+            .changes
+            .partition_point(|&(first, _)| first <= index)
+            .checked_sub(1)
+            .expect("a grpprl from the first paragraph on");
+        self.changes[change]
+            .1
+            .map(|grpprl| &self.grpprls[grpprl as usize])
+    }
+
+    /// `getGrpprl`.
+    pub(super) fn grpprl(&self, index: usize) -> &[u8] {
+        self.sprms(index).map_or(&[], SprmBuffer::bytes)
+    }
+
+    /// `PAPX.getIstd`.
+    pub(super) fn istd(&self, index: usize) -> Read<i16> {
+        istd_of(self.grpprl(index))
+    }
+}
+
+/// The paragraphs as they are made, a grpprl at a time.
+struct ParagraphsBuilder {
+    paragraphs: Paragraphs,
+    made: usize,
+    known: HashMap<SprmBuffer, u32>,
+}
+
+impl ParagraphsBuilder {
+    fn new(marks: Vec<i32>) -> Self {
+        let mut ends = marks;
+        for end in &mut ends {
+            *end += 1;
+        }
+        ParagraphsBuilder {
+            paragraphs: Paragraphs {
+                ends,
+                changes: Vec::new(),
+                grpprls: Vec::new(),
+            },
+            made: 0,
+            known: HashMap::new(),
+        }
+    }
+
+    /// The next paragraph's grpprl.
+    fn push(&mut self, sprms: Option<SprmBuffer>) {
+        let id = sprms.map(|sprms| match self.known.get(&sprms) {
+            Some(&id) => id,
+            None => {
+                let id = u32::try_from(self.paragraphs.grpprls.len())
+                    .expect("fewer grpprls than paragraphs");
+                self.paragraphs.grpprls.push(sprms.clone());
+                self.known.insert(sprms, id);
+                id
+            }
+        });
+        if self.paragraphs.changes.last().map(|&(_, last)| last) != Some(id) {
+            self.paragraphs.changes.push((self.made, id));
+        }
+        self.made += 1;
+    }
+
+    fn finish(self) -> Paragraphs {
+        debug_assert_eq!(self.made, self.paragraphs.ends.len());
+        self.paragraphs
+    }
+}
+
+/// The grpprl `PAPBinTable.rebuild` gives the paragraph `[start, end)` of the runs `ending` in
+/// it, in the order they were read: the one run that is the paragraph as it is, the runs'
+/// grpprls joined, or none where none has properties; an empty one where no run ends in it.
+fn rebuilt_sprms(start: i32, end: i32, ending: &[&PropertyRun]) -> Option<SprmBuffer> {
+    match ending {
+        [] => return Some(SprmBuffer::empty(2)),
+        [only] if only.start == start && only.end == end => return only.sprms.clone(),
+        _ => {}
+    }
+    let mut sprms: Option<SprmBuffer> = None;
+    for run in ending {
+        let grpprl = run.grpprl();
+        if grpprl.len() <= 2 {
+            continue;
+        }
+        match &mut sprms {
+            None => sprms = run.sprms.clone(),
+            Some(buffer) => buffer.append(grpprl, 2),
+        }
+    }
+    sprms
+}
+
+/// `new PAPBinTable(...)` and `PAPBinTable.rebuild`: the paragraphs of the text, one for each
+/// of its paragraph, cell and page marks, at the positions `marks` gives in order.
+///
+/// Where the pieces add no paragraph properties and the runs of the pages end in the order
+/// they are read, as they do but in a document of reordered pieces, the runs are read from the
+/// pages as the marks are walked, so that only the paragraphs are held; otherwise all the runs
+/// are read first, as POI reads them.
+pub(super) fn read_paragraphs(
+    main: &[u8],
+    data: &[u8],
+    pages: &[i32],
+    marks: Vec<i32>,
     clx: &ComplexFileTable,
-) -> Read<Vec<PropertyRun>> {
+) -> Read<Paragraphs> {
+    let modifiers = paragraph_modifiers(clx)?;
+    let mut in_order = modifiers.is_empty();
+    if in_order {
+        let mut last_end = i32::MIN;
+        visit_paragraph_runs(main, data, pages, clx, &mut |run| {
+            in_order &= run.end >= last_end;
+            last_end = run.end;
+            Ok(())
+        })?;
+    }
+    if in_order {
+        rebuild_paragraphs_in_order(main, data, pages, marks, clx)
+    } else {
+        let mut runs = Vec::new();
+        visit_paragraph_runs(main, data, pages, clx, &mut |run| {
+            runs.push(run);
+            Ok(())
+        })?;
+        runs.extend(modifiers);
+        Ok(rebuild_paragraphs(runs, marks))
+    }
+}
+
+/// The runs of the pieces' modifiers of paragraph properties.
+fn paragraph_modifiers(clx: &ComplexFileTable) -> Read<Vec<PropertyRun>> {
+    let mut runs = Vec::new();
     for piece in &clx.pieces {
         if !piece.prm_is_complex() {
             continue;
@@ -368,14 +524,66 @@ pub(super) fn rebuild_paragraph_runs(
             runs.push(PropertyRun::new(piece.start, piece.end, Some(sprms))?);
         }
     }
+    Ok(runs)
+}
+
+/// `PAPBinTable.rebuild` of runs read in the order they end: each mark takes the runs that
+/// end in it as they are read. Once the runs are all taken, each later mark takes the last
+/// again, as POI's index stays at the last run.
+fn rebuild_paragraphs_in_order(
+    main: &[u8],
+    data: &[u8],
+    pages: &[i32],
+    marks: Vec<i32>,
+    clx: &ComplexFileTable,
+) -> Read<Paragraphs> {
+    let mut builder = ParagraphsBuilder::new(marks);
+    let mut mark = 0;
+    let mut ending: Vec<PropertyRun> = Vec::new();
+    let mut last: Option<PropertyRun> = None;
+    visit_paragraph_runs(main, data, pages, clx, &mut |run| {
+        while mark < builder.paragraphs.len() && run.end > builder.paragraphs.end(mark) {
+            let start = builder.paragraphs.start(mark);
+            let end = builder.paragraphs.end(mark);
+            let sprms = rebuilt_sprms(start, end, &ending.iter().collect::<Vec<_>>());
+            builder.push(sprms);
+            ending.clear();
+            mark += 1;
+        }
+        if mark < builder.paragraphs.len() {
+            ending.push(run.clone());
+        }
+        last = Some(run);
+        Ok(())
+    })?;
+    let last = last.expect("at least one run, empty where the pages hold none");
+    while mark < builder.paragraphs.len() {
+        let start = builder.paragraphs.start(mark);
+        let end = builder.paragraphs.end(mark);
+        let sprms = if ending.is_empty() {
+            rebuilt_sprms(start, end, &[&last])
+        } else {
+            rebuilt_sprms(start, end, &ending.iter().collect::<Vec<_>>())
+        };
+        builder.push(sprms);
+        ending.clear();
+        mark += 1;
+    }
+    Ok(builder.finish())
+}
+
+/// `PAPBinTable.rebuild`: a paragraph for each paragraph, cell or page mark of the text, at the
+/// positions `marks` gives in order, with the grpprls of the runs ending in it joined in the
+/// order they were read.
+fn rebuild_paragraphs(runs: Vec<PropertyRun>, marks: Vec<i32>) -> Paragraphs {
     let mut by_end: Vec<usize> = (0..runs.len()).collect();
     by_end.sort_by_key(|&i| runs[i].end);
-    let mut rebuilt = Vec::new();
-    let mut last_start = 0;
+    let mut builder = ParagraphsBuilder::new(marks);
     let mut last_index = 0;
-    for &char_index in marks {
-        let start_inclusive = last_start;
-        let end_exclusive = char_index + 1;
+    for mark in 0..builder.paragraphs.len() {
+        let start_inclusive = builder.paragraphs.start(mark);
+        let end_exclusive = builder.paragraphs.end(mark);
+        let char_index = end_exclusive - 1;
         let mut broken = false;
         let mut ending: Vec<usize> = Vec::new();
         for (position, &i) in by_end.iter().enumerate().skip(last_index) {
@@ -390,37 +598,9 @@ pub(super) fn rebuild_paragraph_runs(
         if !broken {
             last_index = by_end.len().saturating_sub(1);
         }
-        if ending.is_empty() {
-            rebuilt.push(PropertyRun::new(
-                start_inclusive,
-                end_exclusive,
-                Some(SprmBuffer::empty(2)),
-            )?);
-            last_start = end_exclusive;
-            continue;
-        }
-        if let [only] = ending[..] {
-            let existing = &runs[only];
-            if existing.start == start_inclusive && existing.end == end_exclusive {
-                rebuilt.push(existing.clone());
-                last_start = end_exclusive;
-                continue;
-            }
-        }
         ending.sort_unstable();
-        let mut sprms: Option<SprmBuffer> = None;
-        for &i in &ending {
-            let grpprl = runs[i].grpprl();
-            if grpprl.len() <= 2 {
-                continue;
-            }
-            match &mut sprms {
-                None => sprms = runs[i].sprms.clone(),
-                Some(buffer) => buffer.append(grpprl, 2),
-            }
-        }
-        rebuilt.push(PropertyRun::new(start_inclusive, end_exclusive, sprms)?);
-        last_start = end_exclusive;
+        let ending: Vec<&PropertyRun> = ending.iter().map(|&i| &runs[i]).collect();
+        builder.push(rebuilt_sprms(start_inclusive, end_exclusive, &ending));
     }
-    Ok(rebuilt)
+    builder.finish()
 }

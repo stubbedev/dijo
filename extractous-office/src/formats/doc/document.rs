@@ -10,8 +10,8 @@
 use std::borrow::Cow;
 
 use super::bins::{
-    bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
-    PageNumber, PropertyRun, PARAGRAPH_MARKS,
+    bin_pages, character_runs, read_paragraphs, rebuild_character_runs, PageNumber, Paragraphs,
+    PropertyRun, PARAGRAPH_MARKS,
 };
 use super::bytes::{index, safely_clone, utf16_units};
 use super::fib::{
@@ -97,7 +97,7 @@ pub(super) struct Document<'d> {
     /// The text, which the pieces of the main stream give, as POI indexes it.
     pub(super) text: Text,
     pub(super) characters: Vec<PropertyRun>,
-    pub(super) paragraphs: Vec<PropertyRun>,
+    pub(super) paragraphs: Paragraphs,
     /// The character ranges of the sections, in the order of their starts.
     pub(super) sections: Vec<(i32, i32)>,
     pub(super) styles: StyleSheet,
@@ -195,11 +195,15 @@ impl<'d> Document<'d> {
             fib.size(field::PLCFBTEPAPX)?,
             PageNumber::Int,
         )?;
-        let paragraphs = paragraph_runs(main, data, &paragraph_pages, &clx)?;
         let text = Text::of(&clx)?;
+        let paragraphs = read_paragraphs(
+            main,
+            data,
+            &paragraph_pages,
+            text.positions_of(main, &PARAGRAPH_MARKS),
+            &clx,
+        )?;
         let characters = rebuild_character_runs(characters, &clx)?;
-        let paragraphs =
-            rebuild_paragraph_runs(paragraphs, &text.positions_of(main, &PARAGRAPH_MARKS), &clx)?;
         for part in [field::PLCSPAHDR, field::PLCSPAMOM] {
             Plex::read(table, fib.offset(part)?, fib.size(part)?, FSPA_SIZE)?;
         }

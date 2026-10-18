@@ -66,8 +66,10 @@ impl Parser for DocParser {
     /// runs, the style sheet and the other tables POI reads as indexes, and reads the text of
     /// a paragraph or a run from the main stream where it is written; the pictures are handed
     /// on from the data stream and the objects from their storages, as they come. What grows is
-    /// what POI's model holds that Tika's output needs: the runs, which a document has about as
-    /// many of as paragraphs; the text of the footnotes, comments, endnotes and text boxes,
+    /// what POI's model holds that Tika's output needs: the paragraphs, in about four bytes
+    /// each, their properties kept once where they are alike, and the character runs, which a
+    /// document has about as many of as changes of formatting; the text of the footnotes,
+    /// comments, endnotes and text boxes,
     /// which Tika's extractor gives a paragraph at a time; an encrypted document's streams,
     /// decrypted whole as POI decrypts them, and a stream whose blocks are scattered, copied
     /// together; and a document before Word 97, read whole as `HWPFOldDocument` reads it.
