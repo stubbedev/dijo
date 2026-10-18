@@ -19,7 +19,7 @@ use crate::formats::embedded::{self, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
-use crate::formats::zip_package::{self, Opened, Undecoded, Unread, ZipPackage};
+use crate::formats::zip_package::{Opened, Undecoded, Unread, ZipPackage};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages};
 use crate::java;
@@ -135,15 +135,30 @@ impl<'p> Book<'p> {
 
     /// The data of `entry`, which Tika's parser reads `opened` so.
     fn read(&mut self, entry: &ZipEntry, opened: Opened) -> Result<Input<'p>, Failure> {
-        match zip_package::read(&self.zip, entry) {
-            Ok(bytes) => Ok(self.package.input(bytes)),
-            Err(unread) => {
-                if let (None, Unread::Undecoded(undecoded)) = (&self.undecoded, &unread) {
-                    self.undecoded = Some((entry.name.clone(), *undecoded));
-                }
-                Err(unread.failure(&entry.name, opened, TIKA_NAME))
+        let read = self.package.spool(&self.zip, entry);
+        self.noted(read, entry, opened)
+    }
+
+    /// Reads `entry`, which Tika's parser reads `opened` so, ahead of its writing.
+    fn read_ahead(&mut self, entry: &ZipEntry, opened: Opened) -> Result<(), Failure> {
+        let read = self.package.read_ahead(&self.zip, entry);
+        self.noted(read, entry, opened)
+    }
+
+    /// What reading `entry`, `opened` so, gave, noting the first entry the port does not
+    /// decode as Tika does.
+    fn noted<T>(
+        &mut self,
+        read: Result<T, Unread>,
+        entry: &ZipEntry,
+        opened: Opened,
+    ) -> Result<T, Failure> {
+        read.map_err(|unread| {
+            if let (None, Unread::Undecoded(undecoded)) = (&self.undecoded, &unread) {
+                self.undecoded = Some((entry.name.clone(), *undecoded));
             }
-        }
+            unread.failure(&entry.name, opened, TIKA_NAME)
+        })
     }
 
     /// `getRoot`: the package document `container.xml` names, or without one, the first entry
@@ -190,12 +205,12 @@ impl<'p> Book<'p> {
     /// where Tika can read it.
     fn extract_metadata(&mut self, metadata: &mut TikaMetadata) -> Result<(), Failure> {
         if let Some(mimetype) = self.readable(MIMETYPE) {
-            let bytes = self.read(&mimetype, Opened::Directly)?;
-            metadata.set("Content-Type", java::trim(&String::from_utf8_lossy(&bytes)));
+            let input = self.read(&mimetype, Opened::Directly)?;
+            metadata.set("Content-Type", java::trim(&String::from_utf8_lossy(&input)));
         }
         if let Some(entry) = self.readable(METADATA) {
-            let bytes = self.read(&entry, Opened::Tagged)?;
-            package::read_metadata(&bytes, METADATA, MetadataParser::DublinCore, metadata)?;
+            let input = self.read(&entry, Opened::Tagged)?;
+            package::read_metadata(&input, METADATA, MetadataParser::DublinCore, metadata)?;
         }
         Ok(())
     }
@@ -253,9 +268,9 @@ fn write_content_document(
     entry: &ZipEntry,
     xhtml: &mut Xhtml,
 ) -> Result<Option<Failure>, Thrown> {
-    let bytes = book.read(entry, Opened::Tagged).map_err(Thrown::Ending)?;
+    let input = book.read(entry, Opened::Tagged).map_err(Thrown::Ending)?;
     let mut document = ContentDocument::new(xhtml);
-    match xml::parse_part(&bytes, &entry.name, &mut document) {
+    match xml::parse_part(&input, &entry.name, &mut document) {
         Ok(()) => Ok(None),
         Err(failure @ Failure::Stopped(_)) => Err(failure.into()),
         Err(failure) => {
@@ -326,7 +341,7 @@ fn write_embedded(
     let Some((entry, metadata)) = embedded_entry(book, relative, item, cover) else {
         return Ok(());
     };
-    let bytes = book.read(&entry, Opened::Tagged).map_err(Thrown::Ending)?;
+    let input = book.read(&entry, Opened::Tagged).map_err(Thrown::Ending)?;
     // Tika tests the `href` for `fonts` in its case only (#88).
     let font = item
         .media_type
@@ -337,8 +352,8 @@ fn write_embedded(
             .get(..5)
             .is_some_and(|start| start.eq_ignore_ascii_case("fonts"));
     xhtml.start_element_with("div", &[("class", "embedded")])?;
-    xhtml.parse_embedded(
-        &bytes,
+    xhtml.parse_embedded_input(
+        &input,
         &metadata,
         if font {
             Wrapping::Bare
@@ -449,10 +464,10 @@ fn check(book: &mut Book, reading: &Reading) {
     match reading {
         Reading::Fallback(_) => {
             for document in book.fallback_documents() {
-                if let Err(Unread::Undecoded(Undecoded::Oversized)) =
-                    zip_package::read(&book.zip, &document)
+                if let Err(Unread::Undecoded(oversized @ Undecoded::Oversized { .. })) =
+                    book.package.read_ahead(&book.zip, &document)
                 {
-                    book.undecoded = Some((document.name.clone(), Undecoded::Oversized));
+                    book.undecoded = Some((document.name.clone(), oversized));
                     return;
                 }
             }
@@ -468,14 +483,14 @@ fn check(book: &mut Book, reading: &Reading) {
             for (id, _, entry) in spine_documents(book, relative, contents) {
                 if let Some(entry) = entry {
                     processed.insert(id);
-                    if book.read(&entry, Opened::Tagged).is_err() {
+                    if book.read_ahead(&entry, Opened::Tagged).is_err() {
                         return;
                     }
                 }
             }
             for (item, cover) in embedded_items(contents, relative, &processed, &encrypted_items) {
                 if let Some((entry, _)) = embedded_entry(book, relative, item, cover) {
-                    if book.read(&entry, Opened::Tagged).is_err() {
+                    if book.read_ahead(&entry, Opened::Tagged).is_err() {
                         return;
                     }
                 }
@@ -488,7 +503,8 @@ fn check(book: &mut Book, reading: &Reading) {
 /// written: the archive Tika reads of it, how it is read, along its package document, with the
 /// metadata that adds, and the first entry its writing reads that the port does not decode as
 /// Tika does, which makes the writing a reading that differs from Tika's. Each entry is read
-/// again as it is written, so that no more than one is held at a time.
+/// again as it is written, so that no more than one is held in memory at a time, but for those
+/// the check spooled to files, which the writing takes as they are.
 fn prepare<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
@@ -502,6 +518,7 @@ fn prepare<'a>(
     }
     let undecoded = book.undecoded.take();
     drop(book);
+    package.release();
     let prepared: Prepared<'a> = Box::new(move |xhtml| {
         *xhtml.metadata_mut() = metadata;
         write(&mut Book::new(&package), reading, xhtml)
@@ -1019,7 +1036,9 @@ mod tests {
                 r#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>{rootfiles}</rootfiles></container>"#
             )
         };
-        let root = |rootfiles: &str| package::root(container(rootfiles).as_bytes()).unwrap();
+        let root = |rootfiles: &str| {
+            package::root(&Input::Borrowed(container(rootfiles).as_bytes())).unwrap()
+        };
         assert_eq!(
             root(r#"<rootfile/><rootfile full-path="a.opf"/><rootfile full-path="b.opf"/>"#),
             Some("a.opf".to_owned())

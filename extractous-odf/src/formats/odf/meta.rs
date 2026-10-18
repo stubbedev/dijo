@@ -16,6 +16,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{normalized_attributes, normalized_namespace, META_NS, OFFICE_NS};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::input::Input;
 use crate::java;
 use crate::java::utf16_length;
 use crate::unicode::is_whitespace;
@@ -338,13 +339,13 @@ pub(super) fn merge_subjects(metadata: &mut TikaMetadata) {
     }
 }
 
-/// Reads the metadata of `meta.xml`, given as its bytes, into `metadata`.
-pub(super) fn read_meta(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), Failure> {
+/// Reads the metadata of `meta.xml`, `input`, into `metadata`.
+pub(super) fn read_meta(input: &Input, metadata: &mut TikaMetadata) -> Result<(), Failure> {
     let mut file = MetaFile {
         metadata,
         handlers: MetaHandlers::new(),
     };
-    xml::parse_sax(input, "meta.xml", &mut file)?;
+    xml::parse_part(input, "meta.xml", &mut file)?;
     merge_subjects(file.metadata);
     Ok(())
 }
@@ -355,7 +356,7 @@ mod tests {
 
     fn meta(xml: &str) -> TikaMetadata {
         let mut metadata = TikaMetadata::new();
-        read_meta(xml.as_bytes(), &mut metadata).unwrap();
+        read_meta(&Input::Borrowed(xml.as_bytes()), &mut metadata).unwrap();
         metadata
     }
 
@@ -418,6 +419,6 @@ mod tests {
     #[test]
     fn fails_on_malformed_xml() {
         let mut metadata = TikaMetadata::new();
-        assert!(read_meta(b"<office:document-meta>", &mut metadata).is_err());
+        assert!(read_meta(&Input::Borrowed(b"<office:document-meta>"), &mut metadata).is_err());
     }
 }

@@ -12,7 +12,7 @@ pub use flat::FlatOpenDocumentParser;
 mod meta;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::io::{self, BufWriter, Write};
 
 use crate::compress::zip::file::ZipEntry;
 use crate::config::ParserConfigs;
@@ -23,7 +23,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_package::{self, Opened, Undecoded, Unread, ZipPackage};
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
-use crate::input::{Input, Pages, Paging};
+use crate::input::{Input, Pages, Spool};
 use crate::mime::{self, Origin};
 
 const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
@@ -32,38 +32,77 @@ pub(crate) const META_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0
 /// The element in which an OpenDocument part embeds a file, base64-encoded.
 pub(crate) const BINARY_DATA_ELEMENT: &str = "binary-data";
 
-/// commons-codec's `Base64.decodeBase64` of `text`, as `OpenDocumentBodyHandler` decodes binary
-/// data: its UTF-8 bytes decoded with the standard and the URL-safe alphabets, every other
-/// byte skipped, up to the first pad; the bits left over make one or two bytes more, unless
-/// they are a single sextet.
-pub(crate) fn decode_base64(text: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let mut bits = 0u32;
-    let mut sextets = 0;
-    for byte in text.bytes() {
-        let value = match byte {
-            b'=' => break,
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => continue,
-        };
-        bits = (bits << 6) | u32::from(value);
-        sextets += 1;
-        if sextets == 4 {
-            out.extend_from_slice(&[(bits >> 16) as u8, (bits >> 8) as u8, bits as u8]);
-            bits = 0;
-            sextets = 0;
+/// The bytes [`BinaryData`] decodes into before it hands them to its spool.
+const BINARY_DATA_BUFFER: usize = 64 * 1024;
+
+/// commons-codec's `Base64.decodeBase64` of the text of a `binary-data` element, as
+/// `OpenDocumentBodyHandler` decodes it, decoded piece by piece as the text comes into a spool:
+/// its UTF-8 bytes decoded with the standard and the URL-safe alphabets, every other byte
+/// skipped, up to the first pad; the bits left over make one or two bytes more, unless they are
+/// a single sextet.
+pub(crate) struct BinaryData {
+    out: BufWriter<Spool>,
+    bits: u32,
+    sextets: u8,
+    padded: bool,
+}
+
+impl BinaryData {
+    pub(crate) fn new() -> Self {
+        Self {
+            out: BufWriter::with_capacity(BINARY_DATA_BUFFER, Spool::new(None)),
+            bits: 0,
+            sextets: 0,
+            padded: false,
         }
     }
-    match sextets {
-        2 => out.push((bits >> 4) as u8),
-        3 => out.extend_from_slice(&[(bits >> 10) as u8, (bits >> 2) as u8]),
-        _ => {}
+
+    /// Decodes `text`, the next piece of the element's text.
+    pub(crate) fn push(&mut self, text: &str) -> io::Result<()> {
+        if self.padded {
+            return Ok(());
+        }
+        for byte in text.bytes() {
+            let value = match byte {
+                b'=' => {
+                    self.padded = true;
+                    return Ok(());
+                }
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'+' | b'-' => 62,
+                b'/' | b'_' => 63,
+                _ => continue,
+            };
+            self.bits = (self.bits << 6) | u32::from(value);
+            self.sextets += 1;
+            if self.sextets == 4 {
+                let bits = self.bits;
+                self.out
+                    .write_all(&[(bits >> 16) as u8, (bits >> 8) as u8, bits as u8])?;
+                self.bits = 0;
+                self.sextets = 0;
+            }
+        }
+        Ok(())
     }
-    out
+
+    /// The bytes decoded, once the element's text has ended.
+    pub(crate) fn finish(mut self) -> io::Result<Input<'static>> {
+        let bits = self.bits;
+        match self.sextets {
+            2 => self.out.write_all(&[(bits >> 4) as u8])?,
+            3 => self
+                .out
+                .write_all(&[(bits >> 10) as u8, (bits >> 2) as u8])?,
+            _ => {}
+        }
+        self.out
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .finish()
+    }
 }
 const OLD_NS: &str = "http://openoffice.org/2000/";
 const NEW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:";
@@ -189,12 +228,6 @@ impl EntryKind {
             Self::Directory | Self::Thumbnail | Self::Ignored => false,
         }
     }
-
-    /// Whether the preparation holds on to the data it decompresses of an entry of this kind,
-    /// for the writing to parse.
-    fn is_read_ahead(self) -> bool {
-        matches!(self, Self::Mimetype | Self::Meta | Self::Body)
-    }
 }
 
 /// An entry of the archive, in the order of its central directory.
@@ -210,13 +243,10 @@ impl Entry {
     }
 }
 
-/// A document's ZIP archive, its entries, and the parts read ahead to check them.
+/// A document's ZIP archive and its entries.
 struct Archive<'a> {
     package: ZipPackage<'a>,
     entries: Vec<Entry>,
-    /// The parts read ahead whose data their reading decompressed, by their index among the
-    /// entries, for their writing.
-    read_ahead: HashMap<usize, Vec<u8>>,
 }
 
 impl<'a> Archive<'a> {
@@ -230,11 +260,7 @@ impl<'a> Archive<'a> {
                 entry: entry.clone(),
             })
             .collect();
-        Self {
-            package,
-            entries,
-            read_ahead: HashMap::new(),
-        }
+        Self { package, entries }
     }
 
     /// The indexes of the entries whose data `handleZipFile` reads, in its order: the first
@@ -255,8 +281,8 @@ impl<'a> Archive<'a> {
             .collect()
     }
 
-    /// Reads the data of each entry `handleZipFile` reads, in its order, for `each` to handle,
-    /// failing where that reading throws.
+    /// Reads the data of each entry `handleZipFile` reads, in its order, one at a time, for
+    /// `each` to handle, failing where that reading throws.
     fn read_each(
         &self,
         mut each: impl FnMut(&Entry, &Input) -> Result<(), Failure>,
@@ -264,12 +290,11 @@ impl<'a> Archive<'a> {
         let zip = self.package.zip();
         for index in self.handled() {
             let entry = &self.entries[index];
-            let bytes = match self.read_ahead.get(&index) {
-                Some(bytes) => Cow::Borrowed(bytes.as_slice()),
-                None => zip_package::read(&zip, &entry.entry)
-                    .map_err(|unread| unread.failure(entry.name(), Opened::Tagged, TIKA_NAME))?,
-            };
-            each(entry, &self.package.input(bytes))?;
+            let input = self
+                .package
+                .spool(&zip, &entry.entry)
+                .map_err(|unread| unread.failure(entry.name(), Opened::Tagged, TIKA_NAME))?;
+            each(entry, &input)?;
         }
         Ok(())
     }
@@ -285,12 +310,12 @@ struct ElementFinder {
 impl ElementFinder {
     /// Whether `input` has an element named `local_name`, in any namespace, before the first
     /// point where Java's SAX parser would fail. The finder stops the parse where it finds one.
-    fn finds(local_name: &'static str, input: &[u8], what: &str) -> bool {
+    fn finds(local_name: &'static str, input: &Input, what: &str) -> bool {
         let mut finder = Self {
             local_name,
             found: false,
         };
-        let stopped = xml::parse_sax(input, what, &mut finder).is_err();
+        let stopped = xml::parse_part(input, what, &mut finder).is_err();
         stopped && finder.found
     }
 }
@@ -341,9 +366,9 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
 
 /// Reads the document in `input`, whose detection left `metadata`, as far as deciding how it is
 /// written: each entry Tika reads is read in its order up to the first one that fails Tika's
-/// parser, the decompressed parts it parses held on to. A manifest's `encryption-data` fails
-/// the document at once with the `EncryptedDocumentException` that Tika's
-/// `OpenDocumentManifestHandler` throws.
+/// parser, those that spool to files held on to for the writing. A manifest's
+/// `encryption-data` fails the document at once with the `EncryptedDocumentException` that
+/// Tika's `OpenDocumentManifestHandler` throws.
 ///
 /// Without a `content.xml` or `styles.xml`, nothing ends the document Tika starts: without
 /// pictures either, Tika writes nothing of it, and leaves the metadata it read.
@@ -353,10 +378,9 @@ fn prepare<'a>(
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Decline<'a>> {
-    let mut archive = Archive::new(ZipPackage::open(input, pages, metadata, TIKA_NAME)?);
-    let paging = Paging::new(pages);
-    let checked = check(&mut archive, &paging);
-    paging.release();
+    let archive = Archive::new(ZipPackage::open(input, pages, metadata, TIKA_NAME)?);
+    let checked = check(&archive);
+    archive.package.release();
     let has = |kind| archive.entries.iter().any(|entry| entry.kind == kind);
     let (bodies, pictures) = (has(EntryKind::Body), has(EntryKind::Embedded));
     if let (Ok(()), false, false) = (&checked, bodies, pictures) {
@@ -377,6 +401,7 @@ fn prepare<'a>(
         }),
         Err(Checked::Encrypted) => Err(Decline::Fails(crypt::encrypted(None))),
         Err(Checked::Undecoded(name, undecoded)) => Err(undecoded.decline(&name, reading)),
+        Err(Checked::Unspooled(error)) => Err(Decline::Fails(error)),
     }
 }
 
@@ -385,46 +410,56 @@ enum Checked {
     Encrypted,
     /// The entry of the name is not decoded as Tika decodes it.
     Undecoded(String, Undecoded),
+    /// Spooling an entry fails, with this error.
+    Unspooled(crate::errors::Error),
 }
 
 /// Reads each entry of `archive` that Tika reads, in its order, checking each manifest for
 /// `encryption-data`, up to the first entry that cannot be read. An unsupported entry fails the
 /// writing where it fails Tika's parser, so the check ends there without a reason.
-fn check(archive: &mut Archive, paging: &Paging) -> Result<(), Checked> {
+fn check(archive: &Archive) -> Result<(), Checked> {
     let zip = archive.package.zip();
     for index in archive.handled() {
         let entry = &archive.entries[index];
-        let bytes = match zip_package::read(&zip, &entry.entry) {
-            Ok(bytes) => bytes,
+        let read = match entry.kind {
+            EntryKind::Manifest => archive
+                .package
+                .spool(&zip, &entry.entry)
+                .map(|manifest| ElementFinder::finds("encryption-data", &manifest, entry.name())),
+            _ => archive
+                .package
+                .read_ahead(&zip, &entry.entry)
+                .map(|()| false),
+        };
+        match read {
+            Ok(false) => {}
+            Ok(true) => return Err(Checked::Encrypted),
             Err(Unread::Unsupported(_)) => return Ok(()),
             Err(Unread::Undecoded(undecoded)) => {
                 return Err(Checked::Undecoded(entry.name().to_owned(), undecoded))
             }
-        };
-        paging.read(bytes.len());
-        if entry.kind == EntryKind::Manifest
-            && ElementFinder::finds("encryption-data", &bytes, entry.name())
-        {
-            return Err(Checked::Encrypted);
-        }
-        if let (true, Cow::Owned(bytes)) = (entry.kind.is_read_ahead(), bytes) {
-            archive.read_ahead.insert(index, bytes);
+            Err(Unread::Unspooled(reason)) => {
+                return Err(Checked::Unspooled(zip_package::unspooled(
+                    entry.name(),
+                    &reason,
+                )))
+            }
         }
     }
     Ok(())
 }
 
-/// Sets what the data `bytes` of an entry of `kind` says of the document in `metadata`: a
+/// Sets what the data `input` of an entry of `kind` says of the document in `metadata`: a
 /// `meta.xml` its metadata, a `mimetype` its type.
 fn read_metadata(
     kind: EntryKind,
-    bytes: &[u8],
+    input: &Input,
     metadata: &mut TikaMetadata,
 ) -> Result<(), Failure> {
     match kind {
-        EntryKind::Meta => meta::read_meta(bytes, metadata),
+        EntryKind::Meta => meta::read_meta(input, metadata),
         EntryKind::Mimetype => {
-            metadata.set("Content-Type", String::from_utf8_lossy(bytes));
+            metadata.set("Content-Type", String::from_utf8_lossy(input));
             Ok(())
         }
         EntryKind::Manifest
@@ -476,16 +511,16 @@ impl Parser for OpenDocumentParser {
 
 /// Writes the document in `archive` as `OpenDocumentParser.handleZipFile` does.
 fn write(archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    archive.read_each(|entry, bytes| {
-        read_metadata(entry.kind, bytes, xhtml.metadata_mut())?;
+    archive.read_each(|entry, input| {
+        read_metadata(entry.kind, input, xhtml.metadata_mut())?;
         match entry.kind {
             EntryKind::Body => {
                 let mut body = body::Body::new(xhtml, configs.office.includes_deleted_content());
-                xml::parse_part(bytes, entry.name(), &mut body)
+                xml::parse_part(input, entry.name(), &mut body)
             }
             EntryKind::Embedded => {
-                let metadata = embedded_metadata(entry.name(), bytes)?;
-                Ok(xhtml.parse_embedded(bytes, &metadata, Wrapping::Bare)?)
+                let metadata = embedded_metadata(entry.name(), input)?;
+                Ok(xhtml.parse_embedded_input(input, &metadata, Wrapping::Bare)?)
             }
             EntryKind::Meta
             | EntryKind::Mimetype
@@ -575,6 +610,25 @@ mod tests {
     #[cfg(feature = "tika")]
     fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
         assert_same_as_tika_adjusting(documents, tika_name, &ParserConfigs::default(), DEPARTURES);
+    }
+
+    fn decoded(pieces: &[&str]) -> Vec<u8> {
+        let mut data = BinaryData::new();
+        for piece in pieces {
+            data.push(piece).unwrap();
+        }
+        data.finish().unwrap().to_vec()
+    }
+
+    #[test]
+    fn decodes_binary_data_as_commons_codec_does_whatever_its_pieces() {
+        assert_eq!(decoded(&["aGVsbG8="]), b"hello");
+        assert_eq!(decoded(&["aG", "V\nsb", "G8", "=IGlnbm9yZWQ="]), b"hello");
+        assert_eq!(decoded(&["aGVsbA"]), b"hell");
+        assert_eq!(decoded(&["aGVsb"]), b"hel");
+        assert_eq!(decoded(&["-_-_"]), [0xFB, 0xFF, 0xBF]);
+        assert_eq!(decoded(&["+/+/"]), [0xFB, 0xFF, 0xBF]);
+        assert_eq!(decoded(&[]), b"");
     }
 
     #[test]

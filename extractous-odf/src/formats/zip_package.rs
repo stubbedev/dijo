@@ -2,20 +2,22 @@
 //! `ZipFile` Tika's ZIP detector opened on the document, or, where `ZipFile` cannot open it, on
 //! the archive `ZipSalvager` rebuilt from it, as the detection's `zip:salvaged` records. Without
 //! either, the parser opens the document itself with `ZipFileHelper.open`, which throws. Its
-//! entries are read as `ZipFile.getInputStream` reads them, duplicates and all.
+//! entries are read as `ZipFile.getInputStream` reads them, duplicates and all: an entry stored
+//! in place, a compressed one decoded to a spool, which keeps as much in memory as a file read
+//! whole and the rest in a mapped temporary file.
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::cell::RefCell;
 
+use crate::compress::decode_limit;
 use crate::compress::zip::file::{self, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
-use crate::compress::zip::Content;
-use crate::compress::MAX_DECODED;
+use crate::compress::zip::Decoded;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Difference, Failure, Prepared};
-use crate::input::{Input, Pages};
+use crate::input::{Input, Pages, Paging};
 use crate::mime::Key;
 
 /// The exception the `TikaInputStream` over an entry wraps what its reading throws in.
@@ -26,11 +28,19 @@ const UNSUPPORTED_ZIP_FEATURE: &str =
 /// Whether there is a Tika path to leave a document to.
 const DEFERS: bool = cfg!(feature = "tika");
 
-/// The bytes of the archive a parser reads: the document's own, or those salvaged from it.
+/// The bytes of the archive a parser reads, the document's own or those salvaged from it, and
+/// the entries read ahead that spooled to files of their own, for their writing to take.
 pub(crate) struct ZipPackage<'a> {
     data: Cow<'a, [u8]>,
-    /// The pages of the document's bytes, for a reading of them to release.
+    /// The pages of the document's bytes, which an entry stored in place keeps for its reading
+    /// to release.
     pages: Pages<'a>,
+    /// The same pages, released as the compressed data of the entries is decoded.
+    paging: Paging<'a>,
+    /// The entries read ahead whose data spooled to a file, with that data: it holds no
+    /// memory, and is not decoded a second time. They are the entries too large to keep in
+    /// memory, so few.
+    spooled: RefCell<Vec<(ZipEntry, Input<'static>)>>,
 }
 
 impl<'a> ZipPackage<'a> {
@@ -43,19 +53,11 @@ impl<'a> ZipPackage<'a> {
         tika_name: &str,
     ) -> Result<Self, Decline<'static>> {
         if ZipFile::open(input).is_ok() {
-            return Ok(Self {
-                data: Cow::Borrowed(input),
-                pages,
-            });
+            return Ok(Self::of(Cow::Borrowed(input), pages));
         }
         if metadata.get(Key::Salvaged.name()) == Some("true") {
             match salvage(input) {
-                Ok(salvaged) => {
-                    return Ok(Self {
-                        data: Cow::Owned(salvaged),
-                        pages: Pages::IN_MEMORY,
-                    })
-                }
+                Ok(salvaged) => return Ok(Self::of(Cow::Owned(salvaged), Pages::IN_MEMORY)),
                 Err(Unsalvaged::Unported(reason)) => {
                     return Err(Decline::Deferred(format!(
                         "Tika's ZIP detector salvaged its archive, which the port does not \
@@ -81,20 +83,73 @@ impl<'a> ZipPackage<'a> {
         ))
     }
 
+    fn of(data: Cow<'a, [u8]>, pages: Pages<'a>) -> Self {
+        Self {
+            data,
+            pages,
+            paging: Paging::new(pages),
+            spooled: RefCell::new(Vec::new()),
+        }
+    }
+
     /// The archive opened, as it opened when the package was.
     pub(crate) fn zip(&self) -> ZipFile<'_> {
         ZipFile::open(&self.data).expect("an archive that opened opens again")
     }
 
-    /// `bytes` read from the archive, as an input: the archive's own, whose reading releases the
-    /// pages of the document's bytes, or decompressed.
-    pub(crate) fn input<'b>(&self, bytes: Cow<'b, [u8]>) -> Input<'b>
-    where
-        'a: 'b,
-    {
-        match bytes {
-            Cow::Borrowed(bytes) => Input::Within(bytes, self.pages),
-            Cow::Owned(bytes) => Input::Read(Arc::new(bytes)),
+    /// The data of `entry` of `zip`, this package's archive, as `ZipFile.getInputStream` reads
+    /// it to its end: a stored entry's in place, whose reading releases the pages of the
+    /// document's bytes, a compressed entry's spooled, or what was read ahead of it.
+    pub(crate) fn spool<'b>(
+        &'b self,
+        zip: &ZipFile<'b>,
+        entry: &ZipEntry,
+    ) -> Result<Input<'b>, Unread> {
+        let mut spooled = self.spooled.borrow_mut();
+        match spooled.iter().position(|(read, _)| read == entry) {
+            Some(index) => Ok(spooled.swap_remove(index).1),
+            None => {
+                drop(spooled);
+                self.decode(zip, entry)
+            }
+        }
+    }
+
+    /// Reads `entry` of `zip` ahead of its writing, as [`ZipPackage::spool`] reads it, keeping
+    /// it for that writing where it spooled to a file, which holds no memory.
+    pub(crate) fn read_ahead(&self, zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<(), Unread> {
+        if self.spooled.borrow().iter().any(|(read, _)| read == entry) {
+            return Ok(());
+        }
+        if let Input::Mapped(map) = self.decode(zip, entry)? {
+            self.spooled
+                .borrow_mut()
+                .push((entry.clone(), Input::Mapped(map)));
+        }
+        Ok(())
+    }
+
+    /// Lets go of the pages of the document's bytes read so far.
+    pub(crate) fn release(&self) {
+        self.paging.release();
+    }
+
+    fn decode<'b>(&'b self, zip: &ZipFile<'b>, entry: &ZipEntry) -> Result<Input<'b>, Unread> {
+        if let Some(message) = entry.unsupported_feature() {
+            return Err(Unread::Unsupported(message));
+        }
+        let compressed = usize::try_from(entry.compressed_size).unwrap_or(usize::MAX);
+        let spooled = zip
+            .spool(entry, self.pages)
+            .expect("ZipFile reads an entry commons-compress supports")
+            .map_err(|undecoded| Unread::Unspooled(undecoded.to_string()))?;
+        self.paging.read(compressed);
+        match spooled {
+            Decoded::Complete(input) => Ok(input),
+            Decoded::Truncated(_) => Err(Unread::Undecoded(Undecoded::CutShort)),
+            Decoded::Oversized(_) => Err(Unread::Undecoded(Undecoded::Oversized {
+                limit: decode_limit(compressed),
+            })),
         }
     }
 }
@@ -107,6 +162,8 @@ pub(crate) enum Unread {
     Unsupported(String),
     /// The port does not decode it as commons-compress does.
     Undecoded(Undecoded),
+    /// Spooling what it decodes to a temporary file fails, as this says.
+    Unspooled(String),
 }
 
 /// Why the port does not decode the data of an entry as commons-compress does.
@@ -115,8 +172,9 @@ pub(crate) enum Undecoded {
     /// Its data is cut short or corrupt: commons-compress throws an `EOFException` or a
     /// `ZipException` with zlib's message, which the port does not tell apart.
     CutShort,
-    /// It decodes into more than [`MAX_DECODED`] bytes, which Tika streams.
-    Oversized,
+    /// It decodes into more than `limit` bytes, the most the port decodes of its compressed
+    /// data, which Tika streams.
+    Oversized { limit: u64 },
 }
 
 /// How Tika's parser reads an entry.
@@ -147,11 +205,17 @@ impl Unread {
             Self::Undecoded(Undecoded::CutShort) => Failure::Malformed(format!(
                 "the data of the entry {name} is cut short or corrupt"
             )),
-            Self::Undecoded(Undecoded::Oversized) => {
-                Failure::Extraction(Error::LimitExceeded(past_the_limit(name)))
+            Self::Undecoded(Undecoded::Oversized { limit }) => {
+                Failure::Extraction(Error::LimitExceeded(past_the_limit(name, limit)))
             }
+            Self::Unspooled(reason) => Failure::Extraction(unspooled(name, &reason)),
         }
     }
+}
+
+/// The error of a reading of the entry `name` whose spooling failed, as `reason` says.
+pub(crate) fn unspooled(name: &str, reason: &str) -> Error {
+    Error::IoError(format!("reading the entry {name} fails: {reason}"))
 }
 
 impl Undecoded {
@@ -167,35 +231,22 @@ impl Undecoded {
                      exception its inflater throws"
                 )),
             },
-            Self::Oversized if DEFERS => Decline::Deferred(format!(
+            Self::Oversized { limit } if DEFERS => Decline::Deferred(format!(
                 "{}, which Tika's path streams",
-                past_the_limit(name)
+                past_the_limit(name, limit)
             )),
-            Self::Oversized => Decline::Fails(Error::LimitExceeded(past_the_limit(name))),
+            Self::Oversized { limit } => {
+                Decline::Fails(Error::LimitExceeded(past_the_limit(name, limit)))
+            }
         }
     }
 }
 
-fn past_the_limit(name: &str) -> String {
+fn past_the_limit(name: &str, limit: u64) -> String {
     format!(
-        "the entry {name} decodes into more than {MAX_DECODED} bytes, the most the native parser \
-         decodes"
+        "the entry {name} decodes into more than {limit} bytes, the most the native parser \
+         decodes of its compressed data"
     )
-}
-
-/// The data of `entry` of `zip`, as `ZipFile.getInputStream` reads it to its end.
-pub(crate) fn read<'d>(zip: &ZipFile<'d>, entry: &ZipEntry) -> Result<Cow<'d, [u8]>, Unread> {
-    if let Some(message) = entry.unsupported_feature() {
-        return Err(Unread::Unsupported(message));
-    }
-    match zip
-        .read(entry)
-        .expect("ZipFile reads an entry commons-compress supports")
-    {
-        Content::Complete(bytes) => Ok(bytes),
-        Content::Truncated(_) => Err(Unread::Undecoded(Undecoded::CutShort)),
-        Content::Oversized(_) => Err(Unread::Undecoded(Undecoded::Oversized)),
-    }
 }
 
 #[cfg(test)]
