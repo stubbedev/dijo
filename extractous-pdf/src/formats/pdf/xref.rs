@@ -11,7 +11,9 @@ use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 use super::content::{is_digit, is_end_of_name, is_whitespace, Lexer};
 use super::cos::OBJECT_READ;
+use super::security::DocumentId;
 use super::Unported;
+use crate::formats::Difference;
 use crate::input::Paging;
 
 /// `COSParser.DEFAULT_TRAIL_BYTECOUNT`: the bytes at the end searched for `startxref`.
@@ -111,6 +113,9 @@ pub(super) struct Resolution {
     /// For an encrypted document whose objects PDFBox searched for, those it found: it searches
     /// their object streams once it can decrypt them ([`Resolution::object_stream_placements`]).
     encrypted_search: Option<HashMap<Key, Location>>,
+    /// Whether PDFBox rebuilt the trailer from a search of the document's objects
+    /// (`trailerWasRebuild`).
+    rebuilt: bool,
     /// The objects PDFBox read while it read the cross-reference, where it found them, which
     /// its pool keeps for the rest of the document.
     pooled: HashMap<Key, (Location, Object)>,
@@ -120,41 +125,69 @@ pub(super) struct Resolution {
 /// dictionary given, as `SecurityHandler.decryptStream` does.
 pub(super) type Decrypt<'d> = dyn Fn(ObjectId, &Dictionary, &[u8]) -> Read<Vec<u8>> + 'd;
 
+/// What reading a document's cross-reference gave: what PDFBox reads of it, and where the port
+/// reads it otherwise, if anywhere.
+pub(super) struct CrossReference {
+    pub(super) resolution: Resolution,
+    pub(super) difference: Option<Difference>,
+}
+
 /// Reads the cross-reference of `data` as PDFBox's lenient `COSParser.retrieveTrailer` does,
-/// or says why the port leaves the document to Tika.
-pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unported> {
+/// or says why the objects cannot be found. Where the port does not read the cross-reference as
+/// PDFBox does, it rebuilds the trailer from a search of the objects, as PDFBox does where its
+/// reading fails, and notes the difference; object streams a search finds that the port does
+/// not read are left out, the difference noted.
+pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<CrossReference, String> {
     let mut parser = Parser::new(data, paging);
-    let trailer = match parser.retrieve() {
-        Ok(trailer) => trailer,
-        Err(Thrown::Io) => None,
-        Err(Thrown::Unported(unported)) => return Err(unported),
+    let (trailer, difference) = match parser.retrieve() {
+        Ok(trailer) => (trailer, None),
+        Err(Thrown::Io) => (None, None),
+        Err(Thrown::Unported(Unported(reason))) => (
+            None,
+            Some(Difference(format!(
+                "the port rebuilds the trailer from a search of the objects, where PDFBox reads \
+                 the cross-reference: {reason}"
+            ))),
+        ),
     };
     let pooled = parser.lookup.pooled();
     let Some(trailer) = trailer.filter(|trailer| trailer.has(b"Root")) else {
-        return rebuild(data, pooled).map_err(|thrown| match thrown {
-            Thrown::Io => Unported(
-                "a document whose objects PDFBox fails to search for, as it rebuilds its trailer"
-                    .to_owned(),
-            ),
-            Thrown::Unported(unported) => unported,
+        let resolution = rebuild(data, pooled).map_err(|thrown| match thrown {
+            Thrown::Io => "PDFBox's search for the objects fails".to_owned(),
+            Thrown::Unported(Unported(reason)) => reason,
+        })?;
+        return Ok(CrossReference {
+            resolution,
+            difference,
         });
     };
     let mut table = parser.resolved.table;
     let mut encrypted_search = None;
+    let mut difference = None;
     if let Some(mut objects) = parser.lookup.brute.objects.take() {
         match trailer.has(b"Encrypt") {
             true => encrypted_search = Some(objects),
             false => {
                 let placed = placed(&objects, &table);
-                brute_force_object_streams(data, None, &placed, &mut objects, &mut table)?;
+                let searched =
+                    brute_force_object_streams(data, None, &placed, &mut objects, &mut table);
+                if let Err(Unported(reason)) = searched {
+                    difference = Some(Difference(format!(
+                        "the port leaves out object streams PDFBox's search finds: {reason}"
+                    )));
+                }
             }
         }
     }
-    Ok(Resolution {
-        table,
-        trailer,
-        encrypted_search,
-        pooled,
+    Ok(CrossReference {
+        resolution: Resolution {
+            table,
+            trailer,
+            encrypted_search,
+            rebuilt: false,
+            pooled,
+        },
+        difference,
     })
 }
 
@@ -195,6 +228,7 @@ fn rebuild(data: &[u8], pooled: HashMap<Key, (Location, Object)>) -> Read<Resolu
         table,
         trailer,
         encrypted_search: None,
+        rebuilt: true,
         pooled,
     })
 }
@@ -422,47 +456,76 @@ fn compressed_object(stream: &Dictionary, decoded: &[u8], number: i64) -> Option
 }
 
 impl Resolution {
-    /// The encryption dictionary the trailer names, as PDFBox reads it from `data`, and the
-    /// first string of the trailer's `ID`, empty where it has none; `None` for a document the
-    /// trailer names no encryption of.
-    pub(super) fn encryption(
-        &self,
-        data: &[u8],
-    ) -> Result<Option<(Dictionary, Vec<u8>)>, Unported> {
-        let dictionary = match self.trailer.get(b"Encrypt") {
-            Err(_) => return Ok(None),
-            Ok(Object::Dictionary(dictionary)) => dictionary.clone(),
-            Ok(Object::Reference(id)) => dereference(data, &self.table, Key::from_id(*id))
-                .ok_or_else(|| {
-                    Unported(format!(
-                        "an encryption dictionary, object {} {}, the port cannot read",
-                        id.0, id.1
-                    ))
-                })?,
-            Ok(_) => {
-                return Err(Unported(
-                    "an encryption entry that is no dictionary".to_owned(),
-                ))
-            }
+    /// The encryption dictionary the trailer names, as PDFBox reads it from `data`, each
+    /// reference among its entries and those of the dictionaries in it resolved once, as
+    /// `getDictionaryObject` resolves it, and the first entry of the trailer's `ID`; `None` for
+    /// a document whose trailer names no dictionary for its encryption, which PDFBox takes for
+    /// unencrypted (`getCOSDictionary`).
+    pub(super) fn encryption(&self, data: &[u8]) -> Option<(Dictionary, DocumentId)> {
+        let dictionary = match self.trailer.get(b"Encrypt").ok()? {
+            Object::Dictionary(dictionary) => dictionary.clone(),
+            Object::Reference(id) => dereference(data, &self.table, Key::from_id(*id))?,
+            _ => return None,
         };
-        let id = match self.trailer.get(b"ID") {
-            Ok(Object::Array(items)) => match items.first() {
-                None => Vec::new(),
-                Some(Object::String(bytes, _)) => bytes.clone(),
-                Some(_) => {
-                    return Err(Unported(
-                        "a document ID that is no string, which PDFBox fails on".to_owned(),
-                    ))
-                }
+        let resolved = |object: &Object| self.resolved_once(data, object);
+        let id = match self.trailer.get(b"ID").ok().and_then(resolved) {
+            Some(Object::Array(items)) => match items.first() {
+                None => DocumentId::Bytes(Vec::new()),
+                Some(first) => match resolved(first) {
+                    Some(Object::String(bytes, _)) => DocumentId::Bytes(bytes),
+                    Some(other) => DocumentId::NotAString(other),
+                    None => DocumentId::Null,
+                },
             },
-            _ => Vec::new(),
+            _ => DocumentId::Bytes(Vec::new()),
         };
-        Ok(Some((dictionary, id)))
+        Some((self.resolved_entries(data, &dictionary, 0), id))
+    }
+
+    /// `COSObject.getObject` of `object` where it is a reference, as PDFBox resolves it once:
+    /// `None` for `null` or an object it does not find; a reference read where the reference
+    /// leads stays a reference.
+    fn resolved_once(&self, data: &[u8], object: &Object) -> Option<Object> {
+        let object = match object {
+            Object::Reference(id) => {
+                referenced(data, &self.table, Key::from_id(*id), &mut Vec::new())?
+            }
+            object => object.clone(),
+        };
+        (!matches!(object, Object::Null)).then_some(object)
+    }
+
+    /// A copy of `dictionary` with each entry resolved once, and the entries of the
+    /// dictionaries among them, `depth` levels down, likewise.
+    fn resolved_entries(&self, data: &[u8], dictionary: &Dictionary, depth: usize) -> Dictionary {
+        const MAX_DEPTH: usize = 2;
+        let mut resolved = Dictionary::new();
+        for (key, value) in dictionary.iter() {
+            match self.resolved_once(data, value) {
+                Some(Object::Dictionary(inner)) if depth < MAX_DEPTH => resolved.set(
+                    key.clone(),
+                    Object::Dictionary(self.resolved_entries(data, &inner, depth + 1)),
+                ),
+                Some(object) => resolved.set(key.clone(), object),
+                None => {}
+            }
+        }
+        resolved
     }
 
     /// Where each object the table lists is read from, by its key as `lopdf` names it.
-    pub(super) fn placements(&self) -> Result<HashMap<ObjectId, Placement>, Unported> {
+    pub(super) fn placements(&self) -> HashMap<ObjectId, Placement> {
         placements(&self.table)
+    }
+
+    /// The number of an object the table lists or PDFBox's pool holds whose number `lopdf`
+    /// cannot hold, which the port leaves out, if any.
+    pub(super) fn unheld_object(&self) -> Option<i64> {
+        self.table
+            .keys()
+            .chain(self.pooled.keys())
+            .find(|key| key.id().is_none())
+            .map(|key| key.number)
     }
 
     /// `bfSearchForObjStreams` of an encrypted document whose objects PDFBox searched for, which
@@ -480,40 +543,49 @@ impl Resolution {
         let mut objects = objects.clone();
         let mut table = HashMap::new();
         brute_force_object_streams(data, Some(decrypt), &placed, &mut objects, &mut table)?;
-        placements(&table)
+        if let Some(key) = table.keys().find(|key| key.id().is_none()) {
+            return Err(Unported(format!(
+                "object number {}, which lopdf cannot hold",
+                key.number
+            )));
+        }
+        Ok(placements(&table))
     }
 
     /// The objects PDFBox read while it read the cross-reference, which its pool keeps: where
     /// each was found, and what it read there.
-    pub(super) fn pooled(&self) -> Result<Vec<(ObjectId, Placement, &Object)>, Unported> {
+    pub(super) fn pooled(&self) -> Vec<(ObjectId, Placement, &Object)> {
         let locations: HashMap<Key, Location> = self
             .pooled
             .iter()
             .map(|(key, (location, _))| (*key, *location))
             .collect();
-        Ok(placements(&locations)?
+        placements(&locations)
             .into_iter()
             .map(|(id, placement)| (id, placement, &self.pooled[&Key::from_id(id)].1))
-            .collect())
+            .collect()
     }
 
     /// The trailer, as PDFBox merges it.
     pub(super) fn trailer(&self) -> &Dictionary {
         &self.trailer
     }
+
+    /// Whether PDFBox rebuilt the trailer from a search of the document's objects.
+    pub(super) fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
 }
 
 /// Where each object of `table` is read from, by its key as `lopdf` names it: from the file at
-/// a positive offset, else from the object stream whose number the value negates.
-fn placements(table: &HashMap<Key, Location>) -> Result<HashMap<ObjectId, Placement>, Unported> {
+/// a positive offset, else from the object stream whose number the value negates. An object
+/// whose number `lopdf` cannot hold is left out ([`Resolution::unheld_object`]).
+fn placements(table: &HashMap<Key, Location>) -> HashMap<ObjectId, Placement> {
     let mut placements = HashMap::with_capacity(table.len());
     for (key, location) in table {
-        let id = key.id().ok_or_else(|| {
-            Unported(format!(
-                "object number {}, which lopdf cannot hold",
-                key.number
-            ))
-        })?;
+        let Some(id) = key.id() else {
+            continue;
+        };
         let value = location.value();
         let placement = match usize::try_from(value) {
             Ok(offset) if offset > 0 => Placement::File(offset),
@@ -524,7 +596,7 @@ fn placements(table: &HashMap<Key, Location>) -> Result<HashMap<ObjectId, Placem
         };
         placements.insert(id, placement);
     }
-    Ok(placements)
+    placements
 }
 
 /// The first of the objects `ids`, which the table does not list, that PDFBox finds by

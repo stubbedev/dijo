@@ -9,8 +9,8 @@
 //! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
 //! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
 //! Tika's path fails it where that password does not open it. Documents with a page Tika would
-//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms with a
-//! document type declaration and fonts it cannot measure, among others), are left to Tika.
+//! OCR with no tesseract to run, and documents with what the port does not do (fonts it cannot
+//! measure, among others), are left to Tika.
 
 mod afm;
 mod attachment;
@@ -51,14 +51,19 @@ use lopdf::EncryptionState;
 use crate::config::{MarkedContentStrategy, ParserConfigs, Password};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{crypt, Decline, Failure, Footprint, Parser, Prepared, PASSWORD_USED};
+use crate::formats::{
+    crypt, unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared,
+    PASSWORD_USED,
+};
 use crate::input::{Pages, Paging};
 
 use cos::Pdf;
-use ocr::{OcrCheck, PageOcr};
+use engine::differ_past;
+use ocr::{OcrCheck, PageOcr, RejectedThresholds};
 use recording::Recording;
-use security::{Access, Opening, Refusal, WRONG_PASSWORD};
+use security::{Access, Encryption, Opening, Refusal, WRONG_PASSWORD};
 use structure::StructureIndex;
 use tagged::Tagged;
 use writer::{DocumentWriter, WriteFailure};
@@ -84,7 +89,7 @@ pub(super) use crate::formats::Unported;
 use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
 
 /// For the parity tests: the failure of an XFA form's XML, which Tika records as the stack trace
-/// of Woodstox's exception and the native parser as the failure its own XML parser reports
+/// of the JDK StAX reader's exception and the native parser as the failure its own XML parser reports
 /// (#125).
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 pub const XFA_FAILURE: crate::formats::parity::Departures =
@@ -156,39 +161,65 @@ fn prepare<'a>(
     configs: &'a ParserConfigs,
     limit: usize,
 ) -> Result<Prepared<'a>, Decline<'a>> {
-    match record(input, pages, metadata, configs, limit)? {
+    let (recorded, difference) = record(input, pages, metadata, configs, limit)?;
+    let reading: Prepared<'a> = match recorded {
         Recorded::Whole {
             mut recording,
             page_ocr,
             ocr_pages,
-        } => Ok(Box::new(move |xhtml| {
+        } => Box::new(move |xhtml| {
             let written = match page_ocr {
                 None => recording.flush(xhtml, None),
                 Some(page_ocr) => write_read(&page_ocr, &mut recording, xhtml, configs),
             };
-            ended(xhtml, written, ocr_pages)
-        })),
+            ended(xhtml, written, ocr_pages, recording.caught())
+        }),
         Recorded::Large(loaded, settings) => {
             let metadata = metadata.clone();
-            Ok(Box::new(move |xhtml| {
-                let ocr_pages = match settings.ocr.dispatches_every_page() {
-                    true => loaded.pdf.pages().map_err(late)?.len(),
-                    false => 0,
+            let known = difference.is_some();
+            Box::new(move |xhtml| {
+                let streamed = Streamed {
+                    loaded: &loaded,
+                    input,
+                    settings,
+                    configs,
+                    known,
                 };
-                let written = stream(&loaded, input, settings, metadata, configs, xhtml);
-                ended(xhtml, written, ocr_pages)
-            }))
+                let (written, recording) = streamed.write(metadata, xhtml);
+                let ocr_pages = match settings.ocr.dispatches_every_page() {
+                    true => loaded.pdf.pages().len(),
+                    false => recording.unrecognized_pages(),
+                };
+                ended(xhtml, written, ocr_pages, recording.caught())
+            })
         }
-    }
+    };
+    unless_different(reading, difference)
 }
 
 /// The document `written` to `xhtml`, with the count of pages Tika's `PDFParser` handed its OCR
-/// parser, `ocr_pages`: none where our `TextLayerCheckingPdfParser` reads them.
-fn ended(xhtml: &mut Xhtml, written: Result<(), Failure>, ocr_pages: usize) -> Result<(), Failure> {
+/// parser, `ocr_pages`: none where our `TextLayerCheckingPdfParser` reads them. A document
+/// whose writer `caught` an `IOException` fails with the first, as `PDF2XHTML.process` throws
+/// it once the document is written.
+fn ended(
+    xhtml: &mut Xhtml,
+    written: Result<(), Failure>,
+    ocr_pages: usize,
+    caught: Option<&Exception>,
+) -> Result<(), Failure> {
     xhtml
         .metadata_mut()
         .set("pdf:ocr-page-count", ocr_pages.to_string());
-    written
+    written?;
+    let Some(cause) = caught else {
+        return Ok(());
+    };
+    let unable = Exception::new(
+        "org.apache.tika.exception.TikaException",
+        "Unable to extract PDF content",
+    );
+    let thrown = Thrown::Tika(unable.caused_by(cause.clone()));
+    Err(Failure::Extraction(thrown.into_error(TIKA_PDF_PARSER)))
 }
 
 /// The PDF settings the port reads, as Tika's `PDFParser` and our `TextLayerCheckingPdfParser`
@@ -216,8 +247,8 @@ enum ImageExtraction {
 }
 
 impl Settings {
-    /// The settings `configs` set, or why the port leaves documents to Tika under them.
-    fn of(configs: &ParserConfigs) -> Result<Self, Unported> {
+    /// The settings `configs` set, or the thresholds our Java rejects.
+    fn of(configs: &ParserConfigs) -> Result<Self, RejectedThresholds> {
         let config = &configs.pdf;
         let ocr = OcrCheck::of(config, ocr_runs())?;
         let images = match config.extracts_inline_images() {
@@ -269,21 +300,21 @@ fn new_recording(metadata: TikaMetadata, configs: &ParserConfigs) -> Recording {
 }
 
 /// The document's extraction, recorded from `metadata`, and the OCR of the pages our
-/// `TextLayerCheckingPdfParser` reads, unless the document is left to Tika: for a setting the
-/// port does not read, something in the document it does not do, or a page Tika would OCR whose
-/// OCR the port does not run. The document is read once, into the recording, which holds no
-/// more of it than its output and the files it embeds. A recording that grows past `limit`
-/// bytes while no page is read by OCR ends there, what it saw decided as a whole
-/// recording's is, and the document is streamed.
+/// `TextLayerCheckingPdfParser` reads, with the first detail it reads otherwise than Tika's
+/// path, unless the document is left to Tika: for a setting the port does not read, something
+/// in the document it does not do, or a page Tika would OCR whose OCR the port does not run.
+/// The document is read once, into the recording, which holds no more of it than its output
+/// and the files it embeds. A recording that grows past `limit` bytes while no page is read by
+/// OCR ends there, what it saw decided as a whole recording's is, and the document is streamed.
 fn record<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     metadata: &TikaMetadata,
     configs: &ParserConfigs,
     limit: usize,
-) -> Result<Recorded<'a>, Decline<'static>> {
-    let deferred = |Unported(reason)| Decline::Deferred(reason);
-    let settings = Settings::of(configs).map_err(deferred)?;
+) -> Result<(Recorded<'a>, Option<Difference>), Decline<'static>> {
+    let settings =
+        Settings::of(configs).map_err(|rejected| Decline::Fails(rejected.into_error()))?;
     let loaded = load(input, pages, configs)?;
     let mut recording = new_recording(metadata.clone(), configs);
     let mut large = |recording: &mut Recording| {
@@ -296,7 +327,7 @@ fn record<'a>(
     let recorded =
         extract(&loaded, input, settings, &mut recording, &mut large).map_err(|failure| {
             match failure {
-                WriteFailure::Unported(Unported(reason)) => Decline::Deferred(reason),
+                WriteFailure::Throws(thrown) => Decline::Fails(thrown.into_error(TIKA_PDF_PARSER)),
                 WriteFailure::Stop(Stop::MemoryLimit(limit)) => {
                     Decline::Fails(Error::MemoryLimit(limit))
                 }
@@ -308,46 +339,52 @@ fn record<'a>(
     if let Err(failure @ Decline::Fails(_)) = recorded {
         return Err(failure);
     }
-    if let Some(reason) = unread_objects(&loaded).map_err(deferred)? {
-        return Err(Decline::Deferred(reason));
-    }
     if recorded?.is_break() {
-        return Ok(Recorded::Large(Box::new(loaded), settings));
+        let difference = difference(&loaded.pdf);
+        return Ok((Recorded::Large(Box::new(loaded), settings), difference));
     }
-    let page_count = loaded.pdf.pages().map_err(deferred)?.len();
+    let page_count = loaded.pdf.pages().len();
     let page_ocr = PageOcr::of(
         recording.pages_read(),
         page_count,
         settings.ocr,
         input,
         configs,
-    )
-    .map_err(deferred)?;
-    Ok(Recorded::Whole {
+        &loaded.pdf,
+    );
+    let ocr_pages = match settings.ocr.dispatches_every_page() {
+        true => page_count,
+        false => recording.unrecognized_pages(),
+    };
+    let whole = Recorded::Whole {
         recording: Box::new(recording),
         page_ocr,
-        ocr_pages: match settings.ocr.dispatches_every_page() {
-            true => page_count,
-            false => 0,
-        },
-    })
+        ocr_pages,
+    };
+    Ok((whole, difference(&loaded.pdf)))
 }
 
-/// An object the extraction needed that the port could not read, or that the cross-reference
-/// table does not list and PDFBox finds, if any.
-fn unread_objects(loaded: &Loaded) -> Result<Option<String>, Unported> {
-    if let Some(((number, generation), Unported(reason))) = loaded.pdf.unread_object_needed() {
-        return Ok(Some(format!(
-            "object {number} {generation}, which the port cannot read: {reason}"
+/// The first detail in which the extraction of `pdf` so far read it otherwise than Tika's path:
+/// one it noted, else an object it needed and could not read, or that the cross-reference table
+/// does not list and PDFBox finds, which it took for `null`.
+fn difference(pdf: &Pdf) -> Option<Difference> {
+    if let Some(difference) = pdf.difference() {
+        return Some(difference);
+    }
+    if let Some(((number, generation), Unported(reason))) = pdf.unread_object_needed() {
+        return Some(Difference(format!(
+            "object {number} {generation}, which the port cannot read and takes for null: \
+             {reason}"
         )));
     }
-    let unlisted = loaded.pdf.unlisted_objects_needed();
-    Ok(loaded.pdf.first_found(&unlisted)?.map(|(number, _)| {
-        format!(
+    match pdf.first_found(&pdf.unlisted_objects_needed()) {
+        Ok(None) => None,
+        Ok(Some((number, _))) => Some(Difference(format!(
             "object {number}, which the cross-reference table does not list and PDFBox finds \
-             by searching the document"
-        )
-    }))
+             by searching the document, taken for null"
+        ))),
+        Err(Unported(reason)) => Some(Difference(reason)),
+    }
 }
 
 /// Writes `recording` to `xhtml`, with the pages `page_ocr` reads read side by side, the script
@@ -369,52 +406,85 @@ fn write_read(
     written
 }
 
-/// Extracts a document too large to record into `xhtml` page by page, as it is read from its
-/// start once more. What would leave the document to Tika is decided for its first pages,
-/// which the recording held; met on a later page, it fails the extraction, the pages before it
-/// written.
-fn stream(
-    loaded: &Loaded,
-    input: &[u8],
+/// A document too large to record, extracted page by page as it is read from its start once
+/// more. What would leave the document to Tika is decided for its first pages, which the
+/// recording held; met on a later page, it fails the extraction, the pages before it written.
+struct Streamed<'s, 'a> {
+    loaded: &'s Loaded<'a>,
+    input: &'a [u8],
     settings: Settings,
-    metadata: TikaMetadata,
-    configs: &ParserConfigs,
-    xhtml: &mut Xhtml,
-) -> Result<(), Failure> {
-    let page_count = loaded.pdf.pages().map_err(late)?.len();
-    let pages = StreamedPages {
-        input,
-        page_count,
-        check: settings.ocr,
-        configs,
-    };
-    let mut recording = new_recording(metadata, configs);
-    let mut flushed = Ok(());
-    let written = extract(loaded, input, settings, &mut recording, &mut |recording| {
-        flushed = pages.flush(recording, xhtml);
-        match flushed {
-            Ok(()) => ControlFlow::Continue(()),
-            Err(_) => ControlFlow::Break(()),
-        }
-    });
-    flushed?;
-    match written {
-        Ok(_) => {}
-        Err(WriteFailure::Stop(stop)) => return Err(Failure::Stopped(stop)),
-        Err(WriteFailure::Unported(unported)) => return Err(late(unported)),
-    }
-    if let Some(reason) = unread_objects(loaded).map_err(late)? {
-        return Err(late(Unported(reason)));
-    }
-    pages.flush(&mut recording, xhtml)
+    configs: &'a ParserConfigs,
+    /// Whether the recording of its first pages read it otherwise than Tika's path.
+    known: bool,
 }
 
-/// The failure of a streamed document on what leaves a document to Tika.
-fn late(Unported(reason): Unported) -> Failure {
-    Failure::Extraction(Error::ParseError(format!(
+impl Streamed<'_, '_> {
+    /// Extracts the document from `metadata` into `xhtml`, with the recording it went through,
+    /// which counts what the writing met.
+    fn write(&self, metadata: TikaMetadata, xhtml: &mut Xhtml) -> (Result<(), Failure>, Recording) {
+        let mut recording = new_recording(metadata, self.configs);
+        let written = self.write_recording(&mut recording, xhtml);
+        (written, recording)
+    }
+
+    /// Extracts the document into `xhtml` through `recording`.
+    fn write_recording(&self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let page_count = self.loaded.pdf.pages().len();
+        let pages = StreamedPages {
+            input: self.input,
+            page_count,
+            check: self.settings.ocr,
+            configs: self.configs,
+            pdf: &self.loaded.pdf,
+        };
+        let mut flushed = Ok(());
+        let written = extract(
+            self.loaded,
+            self.input,
+            self.settings,
+            recording,
+            &mut |recording| {
+                flushed = pages.flush(recording, xhtml);
+                match flushed {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(_) => ControlFlow::Break(()),
+                }
+            },
+        );
+        flushed?;
+        match written {
+            Ok(_) => {}
+            Err(WriteFailure::Stop(stop)) => return Err(Failure::Stopped(stop)),
+            Err(WriteFailure::Throws(thrown)) => {
+                return Err(Failure::Extraction(thrown.into_error(TIKA_PDF_PARSER)))
+            }
+        }
+        pages.flush(recording, xhtml)?;
+        match difference(&self.loaded.pdf) {
+            Some(difference) if !self.known => late_difference(xhtml, difference),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A detail in which a streamed document is read otherwise than Tika's path, met after its
+/// first pages were written: a failure where Tika's path would have taken the document.
+#[cfg(feature = "tika")]
+fn late_difference(_: &mut Xhtml, Difference(reason): Difference) -> Result<(), Failure> {
+    Err(Failure::Extraction(Error::ParseError(format!(
         "The PDF parser met {reason} after it had written the document's first pages, where \
          Tika's path would have taken the whole document"
-    )))
+    ))))
+}
+
+/// A detail in which a streamed document is read otherwise than Tika's path, met after its
+/// first pages were written: recorded as the difference of a document read so from the start
+/// is, where there is no Tika.
+#[cfg(not(feature = "tika"))]
+fn late_difference(xhtml: &mut Xhtml, difference: Difference) -> Result<(), Failure> {
+    let warning = difference.warning(PdfParser.name());
+    crate::formats::embedded::record_exception(xhtml.metadata_mut(), &warning);
+    Ok(())
 }
 
 /// What a streamed document's pages need to be written: what reads pages by OCR.
@@ -423,14 +493,21 @@ struct StreamedPages<'a> {
     page_count: usize,
     check: OcrCheck,
     configs: &'a ParserConfigs,
+    pdf: &'a Pdf<'a>,
 }
 
 impl StreamedPages<'_> {
     /// Writes what `recording` holds to `xhtml`, a page OCR reads read first.
     fn flush(&self, recording: &mut Recording, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let pages = recording.pages_read();
-        let page_ocr = PageOcr::of(pages, self.page_count, self.check, self.input, self.configs)
-            .map_err(late)?;
+        let page_ocr = PageOcr::of(
+            pages,
+            self.page_count,
+            self.check,
+            self.input,
+            self.configs,
+            self.pdf,
+        );
         match page_ocr {
             None => recording.flush(xhtml, None),
             Some(page_ocr) => write_read(&page_ocr, recording, xhtml, self.configs),
@@ -438,10 +515,11 @@ impl StreamedPages<'_> {
     }
 }
 
-/// A document's objects, and what the password opens it with.
+/// A document's objects, what the password opens it with, and the version of its header.
 struct Loaded<'a> {
     pdf: Pdf<'a>,
     access: Access,
+    version: f32,
 }
 
 /// The document's objects where PDFBox finds them, decrypted with the password Tika's
@@ -454,54 +532,126 @@ fn load<'a>(
     pages: Pages<'a>,
     configs: &ParserConfigs,
 ) -> Result<Loaded<'a>, Decline<'static>> {
+    let version = metadata::header_version(input).map_err(io_failure)?;
     let paging = Paging::new(pages);
-    let resolution = xref::resolve(input, &paging)?;
+    let resolved = xref::resolve(input, &paging).map_err(|reason| {
+        Decline::Fails(Error::ParseError(format!(
+            "{PDF_PARSER} could not find the document's objects: {reason}"
+        )))
+    })?;
+    let resolution = resolved.resolution;
     let password = configs.password.as_ref().map_or("", Password::expose);
-    let opening = Opening::of(resolution.encryption(input)?, password).map_err(refused)?;
-    let mut pdf = Pdf::new(input, paging, &resolution)?;
-    let (decryption_password, access) = match &opening {
-        Opening::Unencrypted => {
-            return Ok(Loaded {
-                pdf,
-                access: Access::Unencrypted,
-            })
+    let opening = Opening::of(resolution.encryption(input), password).map_err(refused)?;
+    let mut pdf = Pdf::new(input, paging, &resolution);
+    if let Some(difference) = resolved.difference {
+        pdf.differ(difference);
+    }
+    let Opening::Standard {
+        document_id,
+        encryption,
+    } = opening
+    else {
+        return loaded(pdf, Access::Unencrypted, version);
+    };
+    match decryption(&pdf, &document_id, encryption, password) {
+        Decryption::Decrypted(state, access) => {
+            let id = match pdf.trailer().get(b"Encrypt") {
+                Ok(lopdf::Object::Reference(id)) => Some(*id),
+                _ => None,
+            };
+            pdf.decrypt_with(*state, id);
+            match resolution
+                .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))
+            {
+                Ok(found) => pdf.place(found),
+                Err(Unported(reason)) => pdf.differ(Difference(format!(
+                    "the port leaves out the object streams PDFBox's search finds: {reason}"
+                ))),
+            }
+            loaded(pdf, access, version)
         }
-        Opening::Rc4 {
+        Decryption::Refused(refusal) => Err(refused(refusal)),
+        Decryption::Undecrypted(why) => {
+            pdf.differ(Difference(format!(
+                "an encrypted document the port reads undecrypted, as the owner's: {why}"
+            )));
+            loaded(pdf, Access::Owner, version)
+        }
+    }
+}
+
+/// How the encryption of a document opens.
+enum Decryption {
+    /// With what decrypts it, granting what the password opens.
+    Decrypted(Box<EncryptionState>, Access),
+    /// It does not open with the password.
+    Refused(Refusal),
+    /// `lopdf` does not decrypt it, for this reason, where PDFBox does.
+    Undecrypted(String),
+}
+
+/// How the encryption `encryption` of `pdf`, of the document ID `document_id`, opens with
+/// `password`: an RC4 or AES-128 one, which PDFBox has opened, decrypted by `lopdf` with the
+/// user password; an AES-256 one checked and decrypted by `lopdf`, with the password as PDFBox
+/// encodes it.
+fn decryption(pdf: &Pdf, document_id: &[u8], encryption: Encryption, password: &str) -> Decryption {
+    let undecrypted = |error: lopdf::Error| Decryption::Undecrypted(error.to_string());
+    let unread =
+        || Decryption::Undecrypted("the encryption dictionary does not resolve to one".to_owned());
+    match encryption {
+        Encryption::Rc4 {
             access,
             user_password,
-        } => (user_password.as_str(), Some(*access)),
-        Opening::Aes256 => (password, None),
-    };
-    let mut encryption = pdf
-        .encryption_document()
-        .ok_or_else(|| Unported("an encryption dictionary the port cannot read".to_owned()))?;
-    if encryption
-        .authenticate_password(decryption_password)
-        .is_err()
-    {
-        return Err(match opening {
-            Opening::Aes256 => refused(security::aes256_rejection(password)),
-            _ => Unported("encryption lopdf does not decrypt".to_owned()).into(),
-        });
-    }
-    let state = EncryptionState::decode(&encryption, decryption_password)
-        .map_err(|error| Unported(format!("encryption lopdf does not decrypt: {error}")))?;
-    let access = match access {
-        Some(access) => access,
-        None => {
-            encryption.encryption_state = Some(state.clone());
-            security::aes256_access(&mut encryption, password).map_err(refused)?
+            entries,
+        } => {
+            let Some(document) = pdf.encryption_document(document_id, &entries) else {
+                return unread();
+            };
+            match EncryptionState::decode(&document, &user_password) {
+                Ok(state) => Decryption::Decrypted(Box::new(state), access),
+                Err(error) => undecrypted(error),
+            }
         }
-    };
-    let id = match pdf.trailer().get(b"Encrypt") {
-        Ok(lopdf::Object::Reference(id)) => Some(*id),
-        _ => None,
-    };
-    pdf.decrypt_with(state, id);
-    let found = resolution
-        .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))?;
-    pdf.place(found);
-    Ok(Loaded { pdf, access })
+        Encryption::Aes256(revision) => {
+            let Some(document) =
+                pdf.encryption_document(document_id, &security::standard_entries())
+            else {
+                return unread();
+            };
+            let bytes = match security::aes256_password(&document, revision, password) {
+                Ok(bytes) => bytes,
+                Err(why) => return Decryption::Undecrypted(why),
+            };
+            let opener = match security::aes256_opener(&document, &bytes) {
+                Ok(opener) => opener,
+                Err(refusal) => return Decryption::Refused(refusal),
+            };
+            match EncryptionState::decode(&document, &bytes) {
+                Ok(state) => {
+                    let access = opener.access(state.permissions().bits());
+                    Decryption::Decrypted(Box::new(state), access)
+                }
+                Err(error) => undecrypted(error),
+            }
+        }
+    }
+}
+
+/// The loaded document of `pdf`, opened with `access`, its header of `version`, or how it
+/// fails where it lacks the catalog or page tree root `PDFParser.initialParse` checks it for.
+fn loaded(pdf: Pdf<'_>, access: Access, version: f32) -> Result<Loaded<'_>, Decline<'static>> {
+    pdf.check_catalog()
+        .map_err(|message| io_failure(Exception::new("java.io.IOException", message)))?;
+    Ok(Loaded {
+        pdf,
+        access,
+        version,
+    })
+}
+
+/// How a document fails where PDFBox throws the `IOException` `exception` loading it.
+fn io_failure(exception: Exception) -> Decline<'static> {
+    Decline::Fails(Thrown::Io(exception).into_error(TIKA_PDF_PARSER))
 }
 
 /// How a document the password does not open declines: as Tika's path fails it, where PDFBox
@@ -514,7 +664,7 @@ fn refused(refusal: Refusal) -> Decline<'static> {
         Refusal::NoSecurityHandler(filter) => Decline::Fails(crypt::encrypted(Some(&format!(
             "java.io.IOException: No security handler for filter {filter}"
         )))),
-        Refusal::Unported(unported) => unported.into(),
+        Refusal::Thrown(thrown) => Decline::Fails(thrown.into_error(TIKA_PDF_PARSER)),
     }
 }
 
@@ -540,9 +690,7 @@ fn extract(
     let updates = (startxrefs - 1).max(0).to_string();
     out.set("pdf:incremental-update-count", updates.clone());
     out.set("tk:version-count", updates);
-    let catalog = pdf.catalog().ok_or_else(|| {
-        Unported("a document without a catalog, which PDFBox fails on".to_owned())
-    })?;
+    let catalog = pdf.catalog().expect("a loaded document has a catalog");
     out.set("pdf:has-collection", catalog.has(b"Collection").to_string());
     let acro_form = pdf.dict(catalog, b"AcroForm");
     let has_xfa = acro_form.is_some_and(|form| form.has(b"XFA"));
@@ -564,11 +712,15 @@ fn extract(
     }
     let encrypted = loaded.access != Access::Unencrypted;
     out.set("pdf:encrypted", encrypted.to_string());
-    let has_fields = form::has_fields(pdf)?;
-    let version = metadata::header_version(input)?;
-    metadata::document(pdf, out, version, has_fields)?;
-    form::signatures(pdf, out)?;
-    if is_illustrator(pdf)? {
+    let has_fields = form::has_fields(pdf).unwrap_or_else(|unported| {
+        differ_past(pdf, "the form's fields", unported);
+        false
+    });
+    metadata::document(pdf, out, loaded.version, has_fields)?;
+    if let Err(unported) = form::signatures(pdf, out) {
+        differ_past(pdf, "the form's signatures", unported);
+    }
+    if is_illustrator(pdf) {
         out.set("Content-Type", "application/illustrator");
     }
     let tagged = match settings.marked_content {
@@ -581,16 +733,15 @@ fn extract(
 }
 
 /// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data.
-fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
-    let pages = pdf.pages()?;
+fn is_illustrator(pdf: &Pdf) -> bool {
+    let pages = pdf.pages();
     let Some(page) = pages.first() else {
-        return Ok(false);
+        return false;
     };
-    Ok(pdf
-        .dict(page.dict, b"PieceInfo")
+    pdf.dict(page.dict, b"PieceInfo")
         .and_then(|piece_info| pdf.dict(piece_info, b"Illustrator"))
         .and_then(|illustrator| pdf.dict(illustrator, b"Private"))
-        .is_some())
+        .is_some()
 }
 
 #[cfg(test)]
@@ -693,14 +844,20 @@ mod tests {
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
     /// cross-reference table whose entries `shift` moves off their objects.
-    pub(super) fn document(objects: &[&str], prefix: &[u8], shift: &[(usize, usize)]) -> Vec<u8> {
+    pub(super) fn document<O: AsRef<[u8]>>(
+        objects: &[O],
+        prefix: &[u8],
+        shift: &[(usize, usize)],
+    ) -> Vec<u8> {
         let mut out = prefix.to_vec();
         let start = out.len();
         out.extend_from_slice(b"%PDF-1.4\n");
         let mut offsets = Vec::with_capacity(objects.len());
         for (index, object) in objects.iter().enumerate() {
             offsets.push(out.len() - start);
-            out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+            out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            out.extend_from_slice(object.as_ref());
+            out.extend_from_slice(b"\nendobj\n");
         }
         let xref = out.len() - start;
         out.extend_from_slice(
@@ -725,7 +882,6 @@ mod tests {
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
     /// cross-reference stream listing them, and each object of `dangling` at offset 0.
-    #[cfg(feature = "tika")]
     fn stream_document(objects: &[&str], dangling: &[u32]) -> Vec<u8> {
         let mut out = b"%PDF-1.5\n".to_vec();
         let mut rows: Vec<(u32, u32)> = Vec::new();
@@ -774,7 +930,7 @@ mod tests {
     }
 
     /// `haystack` with the first `needle` replaced by `replacement`.
-    fn replace(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    pub(super) fn replace(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
         let at = find(haystack, needle);
         [&haystack[..at], replacement, &haystack[at + needle.len()..]].concat()
     }
@@ -810,7 +966,71 @@ mod tests {
             .unwrap()
     }
 
-    const TEXT: &str =
+    /// Where the native parser reads a document otherwise than Tika's path, and the XHTML of
+    /// its reading, which a build without Tika takes.
+    pub(super) fn differing_reading(input: &[u8], configs: &ParserConfigs) -> (Difference, String) {
+        match prepared_reading(input, configs) {
+            (Some(difference), xhtml) => (difference, xhtml),
+            (None, _) => panic!("the document is read as Tika's path reads it"),
+        }
+    }
+
+    /// The XHTML of the native parser's reading of a document, and where it reads it otherwise
+    /// than Tika's path, if anywhere.
+    pub(super) fn prepared_reading(
+        input: &[u8],
+        configs: &ParserConfigs,
+    ) -> (Option<Difference>, String) {
+        let (reading, difference) = match PdfParser.prepare(input, &TikaMetadata::new(), configs) {
+            Ok(reading) => (reading, None),
+            Err(Decline::Differs {
+                reading,
+                difference,
+            }) => (reading, Some(difference)),
+            Err(declined) => panic!("the document is declined: {declined:?}"),
+        };
+        let mut out = crate::formats::StringOut::default();
+        let chain = crate::formats::Chain::Stream {
+            output: crate::formats::Output::Xml,
+            encoding: "UTF-8",
+        };
+        let (_, _, written) = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &crate::formats::embedded::ParseContext::new(configs),
+                reading,
+            )
+        });
+        if let Err(failure) = written {
+            panic!("the reading fails: {failure:?}");
+        }
+        (difference, out.0)
+    }
+
+    #[test]
+    fn reads_past_an_operator_pdfbox_throws_on_noting_the_difference() {
+        let content = "BT /F1 12 Tf 72 720 Td (Before the state) Tj /GS1 gs \
+                       0 -14 Td (After the state) Tj ET";
+        let mut objects = page_objects(content);
+        objects[2] = objects[2].replace(
+            "/Resources << /Font << /F1 5 0 R >> >>",
+            "/Resources << /Font << /F1 5 0 R >> /ExtGState << /GS1 << /Font [5 0 R 6 0 R] >> >> >>",
+        );
+        objects.push("12".to_owned());
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert_eq!(
+            difference,
+            "the port leaves out the operator gs: a graphics state font without a direct size, \
+             which PDFBox fails on"
+        );
+        assert!(xhtml.contains("Before the state"), "{xhtml}");
+        assert!(xhtml.contains("After the state"), "{xhtml}");
+    }
+
+    pub(super) const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
 
@@ -879,10 +1099,13 @@ mod tests {
             assert!(
                 matches!(
                     recorded,
-                    Ok(Recorded::Whole {
-                        page_ocr: Some(_),
-                        ..
-                    })
+                    Ok((
+                        Recorded::Whole {
+                            page_ocr: Some(_),
+                            ..
+                        },
+                        _
+                    ))
                 ),
                 "the scan is not read by OCR with {language}"
             );
@@ -931,7 +1154,7 @@ mod tests {
             let routed = crate::formats::parity::route_file(path).unwrap();
             let input = &routed.input;
             let recorded = record(input, input.pages(), &TikaMetadata::new(), &configs, 0);
-            streamed += usize::from(matches!(recorded, Ok(Recorded::Large(..))));
+            streamed += usize::from(matches!(recorded, Ok((Recorded::Large(..), _))));
             for output in [crate::formats::Output::Text, crate::formats::Output::Xml] {
                 for limit in [200, usize::MAX >> 1] {
                     let extract = |parser: &dyn Parser| {
@@ -1027,6 +1250,15 @@ mod tests {
     /// embedded, is of the character collection `ordering` of `kind`.
     #[cfg(feature = "tika")]
     fn composite(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<u8> {
+        document(
+            &composite_objects(encoding, ordering, kind, codes),
+            b"",
+            &[],
+        )
+    }
+
+    /// The objects of [`composite`].
+    fn composite_objects(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<String> {
         let content = format!("BT /F1 12 Tf 72 720 Td <{codes}> Tj ET");
         let mut objects = page_objects(&content);
         objects[4] = format!(
@@ -1043,8 +1275,75 @@ mod tests {
              /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>"
                 .to_owned(),
         ]);
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        objects
+    }
+
+    /// A page showing `codes` in an Identity-H composite font whose TrueType descendant embeds
+    /// `program`, without a ToUnicode map, so that the text comes of the program's cmap.
+    fn embedded_composite(program: &[u8], codes: &str) -> Vec<u8> {
+        let mut objects: Vec<Vec<u8>> =
+            composite_objects("Identity-H", "Identity", "CIDFontType2", codes)
+                .into_iter()
+                .map(String::into_bytes)
+                .collect();
+        objects[6] = replace(&objects[6], b"/StemV 80", b"/StemV 80 /FontFile2 8 0 R");
+        objects.push(
+            [
+                format!("<< /Length {} >>\nstream\n", program.len()).as_bytes(),
+                program,
+                b"\nendstream",
+            ]
+            .concat(),
+        );
         document(&objects, b"", &[])
+    }
+
+    /// Embedded programs FontBox reads, of each cmap format, the text read of their cmaps, where
+    /// format 13 maps A to C to one glyph, and one of PostScript outlines that `TTFParser` fails,
+    /// which makes the font damaged.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_embedded_true_type_programs_as_tikas_path_does() {
+        use truetype::programs::{format2, format8, long_subtable, program, with_cmap};
+        let scratch = Scratch::new("pdf-true-type-programs");
+        let programs = [
+            ("format4.pdf", program(&[])),
+            ("format2.pdf", with_cmap(format2())),
+            ("format8.pdf", with_cmap(format8())),
+            (
+                "format13.pdf",
+                with_cmap(long_subtable(13, &[1, 0x41, 0x43, 2])),
+            ),
+            ("cff.pdf", program(&[(b"CFF ", vec![1, 0, 4, 1])])),
+        ];
+        let configs = with_pdf(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR));
+        let paths: Vec<PathBuf> = programs
+            .iter()
+            .map(|(name, program)| {
+                let input = embedded_composite(program, "000100020003");
+                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
+                assert_eq!(deferral, None, "{name}");
+                let (_, xhtml) = prepared_reading(&input, &configs);
+                let whole = !matches!(*name, "format13.pdf" | "cff.pdf");
+                assert_eq!(xhtml.contains("ABC"), whole, "{name}: {xhtml}");
+                scratch.write(name, &input)
+            })
+            .collect();
+        assert_same_as_tika_delegating_with(&as_paths(&paths), tika_name(), &DELEGATES, &configs);
+    }
+
+    /// An OpenType program, which PDFBox reads with `OTFParser`, and a cmap mapping a code to the
+    /// glyph past the last, where FontBox throws, are read with the font damaged.
+    #[test]
+    fn reads_an_open_type_or_overflowing_program_noting_the_difference() {
+        use truetype::programs::{long_subtable, program, with_cmap, GLYPHS};
+        let open_type = [b"OTTO".as_slice(), &program(&[])[4..]].concat();
+        let past = with_cmap(long_subtable(13, &[1, 0x41, 0x41, u32::from(GLYPHS)]));
+        for (program, why) in [(open_type, "OTFParser"), (past, "ArrayIndexOutOfBounds")] {
+            let input = embedded_composite(&program, "0001");
+            let (difference, _) = differing_reading(&input, &ParserConfigs::default());
+            assert!(difference.0.contains(why), "{difference:?}");
+        }
     }
 
     #[cfg(feature = "tika")]
@@ -1353,6 +1652,103 @@ mod tests {
         );
     }
 
+    /// Documents of an XFA form of one stream that declares its document type, with a text
+    /// and a field whose text `text` and value `value` follow the declaration `doctype`.
+    fn xfa_document_types() -> Vec<(&'static str, Vec<u8>)> {
+        let form = |doctype: &str, text: &str, value: &str| {
+            let xml = format!(
+                "{doctype}\n<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">\n\
+                 <template xmlns=\"http://www.xfa.org/schema/xfa-template/3.0/\">\n\
+                 <subform><draw><value><text>Ans&#248;gning {text}</text></value></draw>\n\
+                 <field name=\"navn\"><assist><toolTip>Dit navn</toolTip></assist></field>\
+                 </subform>\n</template>\n\
+                 <xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">\n\
+                 <xfa:data><form1><navn>Kari {value}</navn></form1></xfa:data></xfa:datasets>\n\
+                 </xdp:xdp>"
+            );
+            let mut objects = page_objects(TEXT);
+            objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
+            objects.push("<< /Fields [] /XFA 7 0 R >>".to_owned());
+            objects.push(format!(
+                "<< /Length {} >>\nstream\n{xml}\nendstream",
+                xml.len()
+            ));
+            document(&objects, b"", &[])
+        };
+        let entity = "<!DOCTYPE xdp:xdp [ <!ENTITY e \"Entitet\"> ]>";
+        vec![
+            ("bare.pdf", form("<!DOCTYPE xdp:xdp>", "om", "Nordmann")),
+            (
+                "system.pdf",
+                form(
+                    "<!DOCTYPE xdp:xdp SYSTEM \"http://example.invalid/xfa.dtd\">",
+                    "om",
+                    "Nordmann",
+                ),
+            ),
+            ("entity-unused.pdf", form(entity, "om", "Nordmann")),
+            (
+                "attribute-default.pdf",
+                form(
+                    "<!DOCTYPE xdp:xdp [ <!ATTLIST draw name CDATA \"tegning\"> ]>",
+                    "om",
+                    "Nordmann",
+                ),
+            ),
+            (
+                "malformed-subset.pdf",
+                form("<!DOCTYPE xdp:xdp [ <!ENTITY e > ]>", "om", "Nordmann"),
+            ),
+            ("entity-in-text.pdf", form(entity, "&e;", "Nordmann")),
+            ("entity-in-data.pdf", form(entity, "om", "&e;")),
+            (
+                "undeclared-entity.pdf",
+                form("<!DOCTYPE xdp:xdp>", "om &amp; &e;", "Nordmann"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn reads_an_xfa_form_past_its_document_type_declaration_without_its_entities() {
+        let configs = ParserConfigs {
+            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+            ..ParserConfigs::default()
+        };
+        for (name, input) in xfa_document_types() {
+            assert_eq!(
+                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                None,
+                "{name}"
+            );
+            let (xml, metadata) = native_xml(&input);
+            let failed = name.contains("entity-in") || name.starts_with("undeclared");
+            assert_eq!(
+                xml.contains("<li fieldName=\"navn\">Dit navn: Kari Nordmann</li>"),
+                !failed,
+                "{name}: {xml}"
+            );
+            assert!(!xml.contains("Entitet"), "{name}: {xml}");
+            assert_eq!(metadata.contains_key(EXCEPTION_WARNING), failed, "{name}");
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_an_xfa_form_past_its_document_type_declaration_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-xfa-document-types");
+        let paths: Vec<PathBuf> = xfa_document_types()
+            .into_iter()
+            .map(|(name, input)| scratch.write(name, &input))
+            .collect();
+        assert_same_as_tika_delegating_departing_with(
+            &as_paths(&paths),
+            tika_name(),
+            &DELEGATES,
+            XFA_FAILURE,
+            &ParserConfigs::default(),
+        );
+    }
+
     #[test]
     fn records_why_an_xfa_form_fails_and_reads_its_acroform() {
         let (xml, metadata) = native_xml(&xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
@@ -1646,20 +2042,23 @@ mod tests {
     }
 
     #[test]
-    fn defers_a_needed_object_the_port_cannot_read() {
+    fn takes_a_needed_object_the_port_cannot_read_for_null_noting_the_difference() {
         let mut objects = page_objects(TEXT);
         objects[3] = format!("<< /Length 5 /X 4294967296 0 R >>\nstream\n{TEXT}\nendstream");
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
+        let configs = ParserConfigs {
+            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+            ..ParserConfigs::default()
+        };
+        let (Difference(difference), xhtml) = differing_reading(&input, &configs);
         assert_eq!(
-            PdfParser
-                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(
-                "object 4 0, which the port cannot read: a reference to object 4294967296 0, \
-                 which lopdf cannot hold"
-            )
+            difference,
+            "object 4 0, which the port cannot read and takes for null: a reference to object \
+             4294967296 0, which lopdf cannot hold"
         );
+        assert!(xhtml.contains("<div class=\"page\">"), "{xhtml}");
+        assert!(!xhtml.contains("konge"), "{xhtml}");
     }
 
     #[cfg(feature = "tika")]
@@ -1690,21 +2089,18 @@ mod tests {
     }
 
     #[test]
-    fn defers_a_needed_object_the_table_does_not_list_but_pdfbox_finds() {
+    fn takes_a_needed_object_the_table_does_not_list_but_pdfbox_finds_for_null() {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
         let font = find(&input, b"5 0 obj");
         let entry = format!("{font:010} 00000 n \n");
         let input = replace(&input, entry.as_bytes(), b"0000000000 65535 f \n");
+        let (Difference(difference), _) = differing_reading(&input, &ParserConfigs::default());
         assert_eq!(
-            PdfParser
-                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(
-                "object 5, which the cross-reference table does not list and PDFBox finds by \
-                 searching the document"
-            )
+            difference,
+            "object 5, which the cross-reference table does not list and PDFBox finds by \
+             searching the document, taken for null"
         );
     }
 
@@ -1867,19 +2263,426 @@ mod tests {
         }
     }
 
+    /// Without tesseract, a page Tika's PDF parser wants OCR for keeps its text layer and is
+    /// counted among the pages OCR was asked for, as Tika's parser does finding no OCR engine,
+    /// the difference noted.
     #[test]
-    fn defers_under_the_settings_the_port_does_not_read() {
+    fn counts_the_pages_it_cannot_ocr_without_tesseract() {
+        let objects = page_objects("BT /F1 12 Tf 72 720 Td (Tre) Tj ET");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let configs = ParserConfigs::default();
+        let loaded = load(&input, Pages::IN_MEMORY, &configs).unwrap();
+        let mut settings = Settings::of(&configs).unwrap();
+        settings.ocr = OcrCheck::of(&configs.pdf, false).unwrap();
+        let mut recording = new_recording(TikaMetadata::new(), &configs);
+        let written = extract(&loaded, &input, settings, &mut recording, &mut |_| {
+            ControlFlow::Continue(())
+        });
+        assert!(matches!(written, Ok(ControlFlow::Continue(()))));
+        assert_eq!(recording.unrecognized_pages(), 1);
+        let Some(Difference(difference)) = difference(&loaded.pdf) else {
+            panic!("no difference");
+        };
+        assert!(
+            difference.starts_with("page 1 shows 3 glyphs"),
+            "{difference}"
+        );
+    }
+
+    /// Documents whose catalog names no page tree root, or one that is no dictionary, which
+    /// PDFBox's `checkPages` throws on, and one whose page tree has a kid that reads as `null`,
+    /// for which `PDPageTree` reads an empty page.
+    fn page_trees() -> [(&'static str, Vec<u8>); 3] {
+        let with = |catalog: &str, pages: &str| {
+            let mut objects = page_objects("BT /F1 12 Tf 72 720 Td (Tre sider) Tj ET");
+            objects[0] = catalog.to_owned();
+            objects.push(pages.to_owned());
+            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+            document(&objects, b"", &[])
+        };
+        [
+            (
+                "pages-missing.pdf",
+                with(
+                    "<< /Type /Catalog >>",
+                    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                ),
+            ),
+            (
+                "pages-array.pdf",
+                with("<< /Type /Catalog /Pages 6 0 R >>", "[2 0 R]"),
+            ),
+            (
+                "kid-missing.pdf",
+                with(
+                    "<< /Type /Catalog /Pages 6 0 R >>",
+                    "<< /Type /Pages /Kids [3 0 R 99 0 R] /Count 2 >>",
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn reads_page_trees_as_pdfbox_does() {
+        let configs = ParserConfigs {
+            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+            ..ParserConfigs::default()
+        };
+        let [missing, array, kid] = page_trees();
+        for (name, input) in [missing, array] {
+            let failure = PdfParser.prepare(&input, &TikaMetadata::new(), &configs);
+            let Err(Decline::Fails(error)) = failure else {
+                panic!("{name}: {:?}", failure.err());
+            };
+            assert_eq!(
+                error.to_string(),
+                "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: \
+                 Illegal IOException from org.apache.tika.parser.pdf.PDFParser <- caused by \
+                 java.io.IOException: Page tree root must be a dictionary",
+                "{name}"
+            );
+        }
+        let (name, input) = kid;
+        assert_eq!(
+            PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+            None,
+            "{name}"
+        );
+        let (xml, metadata) = native_xml(&input);
+        assert_eq!(xml.matches("<div class=\"page\">").count(), 2, "{xml}");
+        assert_eq!(
+            metadata.get("pdf:chars-per-page").map(Vec::len),
+            Some(2),
+            "{metadata:?}"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_page_trees_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-page-trees");
+        let [missing, array, kid] = page_trees();
+        for (name, input) in [missing, array] {
+            let path = scratch.write(name, &input);
+            let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
+            let tika = tika.replacen("PDFParser@", "PDFParser", 1);
+            let hash: String = tika
+                .split("PDFParser")
+                .nth(1)
+                .unwrap_or_default()
+                .chars()
+                .take_while(char::is_ascii_hexdigit)
+                .collect();
+            assert_eq!(
+                native,
+                tika.replacen(&format!("PDFParser{hash}"), "PDFParser", 1)
+            );
+        }
+        let path = scratch.write(kid.0, &kid.1);
+        let configs = ParserConfigs {
+            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+            ..ParserConfigs::default()
+        };
+        assert_same_as_tika_delegating_with(&[&path], tika_name(), &DELEGATES, &configs);
+    }
+
+    /// A page of text whose catalog is `catalog`, with the objects `extra` numbered from 6 and
+    /// the trailer's further entries `trailer`.
+    fn cataloged(catalog: &str, extra: &[&str], trailer: &str) -> Vec<u8> {
+        let mut objects = page_objects("BT /F1 12 Tf 72 720 Td (Metadata) Tj ET");
+        objects[0] = catalog.to_owned();
+        objects.extend(extra.iter().map(|object| (*object).to_owned()));
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        replace(
+            &document(&objects, b"", &[]),
+            b"/Root 1 0 R >>",
+            format!("/Root 1 0 R {trailer} >>").as_bytes(),
+        )
+    }
+
+    #[test]
+    fn fails_extensions_that_are_no_dictionary_as_tika_on_the_jvm_does() {
+        for extensions in ["[1]", "<< /ADBE [1] >>"] {
+            let input = cataloged(
+                &format!("<< /Type /Catalog /Pages 2 0 R /Extensions {extensions} >>"),
+                &[],
+                "",
+            );
+            let configs = ParserConfigs::default();
+            let failure = PdfParser.prepare(&input, &TikaMetadata::new(), &configs);
+            let Err(Decline::Fails(error)) = failure else {
+                panic!("{extensions}: {:?}", failure.err());
+            };
+            assert_eq!(
+                error.to_string(),
+                "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
+                 RuntimeException from org.apache.tika.parser.pdf.PDFParser <- caused by \
+                 java.lang.ClassCastException: class org.apache.pdfbox.cos.COSArray cannot be \
+                 cast to class org.apache.pdfbox.cos.COSDictionary \
+                 (org.apache.pdfbox.cos.COSArray and org.apache.pdfbox.cos.COSDictionary are in \
+                 unnamed module of loader 'app')",
+                "{extensions}"
+            );
+        }
+    }
+
+    /// Documents whose metadata the port reads as PDFBox does: an XMP stream of a filter PDFBox
+    /// does not have, whose exception Tika records, custom information values of a reference
+    /// and a string, and a document whose header PDFBox's lenient search does not find, which
+    /// Tika's detection takes for no PDF.
+    fn read_metadata() -> Vec<(&'static str, Vec<u8>)> {
+        let header = cataloged("<< /Type /Catalog /Pages 2 0 R >>", &[], "");
+        let headless = [b"x\n1 2 3\n".as_slice(), &header["%PDF-1.4\n".len()..]].concat();
+        vec![
+            (
+                "xmp-filter.pdf",
+                cataloged(
+                    "<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R >>",
+                    &[
+                        "<< /Type /Metadata /Subtype /XML /Filter /Bogus /Length 5 >>\nstream\n\
+                       abcde\nendstream",
+                    ],
+                    "",
+                ),
+            ),
+            (
+                "info-custom.pdf",
+                cataloged(
+                    "<< /Type /Catalog /Pages 2 0 R >>",
+                    &["<< /Title (T) /Kind [(a) 7 0 R] /Seven 7 0 R >>", "(syv)"],
+                    "/Info 6 0 R",
+                ),
+            ),
+            ("headless.pdf", headless),
+        ]
+    }
+
+    #[test]
+    fn reads_metadata_as_pdfbox_does() {
+        let configs = ParserConfigs::default();
+        for (name, input) in read_metadata() {
+            assert_eq!(
+                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                None,
+                "{name}"
+            );
+        }
+        let [xmp, info, headless] = &read_metadata()[..] else {
+            unreachable!("three documents")
+        };
+        let (_, metadata) = native_xml(&xmp.1);
+        assert_eq!(
+            metadata.get("tk:exception:embedded-stream-exception"),
+            Some(&vec![
+                "java.io.IOException: Invalid filter: COSName{Bogus}\n".to_owned()
+            ])
+        );
+        let (_, metadata) = native_xml(&info.1);
+        assert_eq!(
+            metadata.get("pdf:docinfo:custom:Kind"),
+            Some(&vec!["a".to_owned(), "COSObject{7 0 R}".to_owned()])
+        );
+        let (difference, xhtml) = prepared_reading(&headless.1, &configs);
+        assert_eq!(difference, None);
+        assert!(
+            xhtml.contains("<meta name=\"pdf:pdf-version\" content=\"1.4\" />"),
+            "{xhtml}"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_metadata_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-metadata");
+        let paths: Vec<PathBuf> = read_metadata()
+            .into_iter()
+            .filter(|(name, _)| *name != "headless.pdf")
+            .map(|(name, input)| scratch.write(name, &input))
+            .collect();
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn reads_custom_information_numbers_as_java_prints_them_noting_the_difference() {
+        let input = cataloged(
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            &["<< /Ratio 1.50 >>"],
+            "/Info 6 0 R",
+        );
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert!(difference.contains("Ratio"), "{difference}");
+        assert!(xhtml.contains("content=\"COSFloat{1.5}\""), "{xhtml}");
+    }
+
+    #[test]
+    fn fails_where_the_search_for_a_header_runs_past_the_end() {
+        let configs = ParserConfigs::default();
+        let failure = PdfParser.prepare(b"no header", &TikaMetadata::new(), &configs);
+        let Err(Decline::Fails(error)) = failure else {
+            panic!("{:?}", failure.err());
+        };
+        assert_eq!(
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+             IOException from org.apache.tika.parser.pdf.PDFParser <- caused by \
+             java.io.IOException: Error: End-of-File, expected line at offset 9"
+        );
+    }
+
+    /// A page of text whose tree of embedded files nests `depth` nodes below its root, the last
+    /// naming a file.
+    fn nested_embedded_files(depth: usize) -> Vec<u8> {
+        let first = 7;
+        let mut extra = vec![format!("<< /Kids [{first} 0 R] >>")];
+        for level in 0..depth {
+            let number = first + level;
+            extra.push(match level + 1 == depth {
+                true => format!(
+                    "<< /Names [(fil.txt) {}] >>",
+                    "<< /Type /Filespec /F (fil.txt) >>"
+                ),
+                false => format!("<< /Kids [{} 0 R] >>", number + 1),
+            });
+        }
+        let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+        cataloged(
+            "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 6 0 R >> >>",
+            &extra,
+            "",
+        )
+    }
+
+    #[test]
+    fn fails_a_tree_of_embedded_files_deeper_than_tika_follows_once_written() {
+        let configs = ParserConfigs::default();
+        let shallow = nested_embedded_files(MAX_RECURSION_DEPTH);
+        assert!(PdfParser
+            .prepare(&shallow, &TikaMetadata::new(), &configs)
+            .is_ok());
+        let deep = nested_embedded_files(MAX_RECURSION_DEPTH + 1);
+        let reading = PdfParser
+            .prepare(&deep, &TikaMetadata::new(), &configs)
+            .unwrap_or_else(|declined| panic!("{declined:?}"));
+        let mut out = crate::formats::StringOut::default();
+        let chain = crate::formats::Chain::Stream {
+            output: crate::formats::Output::Text,
+            encoding: "UTF-8",
+        };
+        let (metadata, _, written) = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &crate::formats::embedded::ParseContext::new(&configs),
+                reading,
+            )
+        });
+        assert!(out.0.contains("Metadata"), "{}", out.0);
+        assert_eq!(
+            metadata.values(EXCEPTION_WARNING),
+            ["java.io.IOException: Hit max recursion depth\n"]
+        );
+        let Err(Failure::Extraction(error)) = written else {
+            panic!("{written:?}");
+        };
+        assert_eq!(
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unable to extract \
+             PDF content <- caused by java.io.IOException: Hit max recursion depth"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_a_tree_of_embedded_files_deeper_than_tika_follows_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-embedded-depth");
+        let path = scratch.write("deep.pdf", &nested_embedded_files(MAX_RECURSION_DEPTH + 1));
+        let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
+        assert_eq!(native, tika);
+    }
+
+    #[test]
+    fn reads_past_an_annotation_that_is_no_dictionary_noting_the_difference() {
+        let mut objects = page_objects(TEXT);
+        objects[2] = objects[2].replace("/Contents 4 0 R", "/Contents 4 0 R /Annots [42]");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert!(difference.contains("annotation"), "{difference}");
+        assert!(xhtml.contains("konge"), "{xhtml}");
+    }
+
+    /// A page of text whose trailer's encryption entry is no dictionary, which PDFBox takes
+    /// for unencrypted.
+    fn encryption_no_dictionary() -> Vec<u8> {
+        cataloged("<< /Type /Catalog /Pages 2 0 R >>", &[], "/Encrypt 42")
+    }
+
+    #[test]
+    fn reads_a_document_whose_encryption_entry_is_no_dictionary_unencrypted() {
+        let (difference, xhtml) =
+            prepared_reading(&encryption_no_dictionary(), &ParserConfigs::default());
+        assert_eq!(difference, None);
+        assert!(xhtml.contains("Metadata"), "{xhtml}");
+        assert!(
+            xhtml.contains("<meta name=\"pdf:encrypted\" content=\"false\" />"),
+            "{xhtml}"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_a_document_whose_encryption_entry_is_no_dictionary_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-encrypt-entry");
+        let path = scratch.write("encrypt.pdf", &encryption_no_dictionary());
+        assert_same_as_tika_delegating(&[&path], tika_name(), &DELEGATES);
+    }
+
+    #[test]
+    fn rebuilds_a_cross_reference_the_port_does_not_read_noting_the_difference() {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = stream_document(&objects, &[]);
+        let input = replace(&input, b"/Type /XRef", b"/Type /XRef /Filter 99 0 R");
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert!(
+            difference.starts_with("the port rebuilds the trailer"),
+            "{difference}"
+        );
+        assert!(xhtml.contains("konge"), "{xhtml}");
+    }
+
+    /// A page of text under thresholds our Java's `PdfConfig` rejects.
+    fn under_rejected_thresholds() -> (Vec<u8>, ParserConfigs) {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
         let pdf = PdfParserConfig::new().set_ocr_strategy_auto("faster , 4");
-        let deferral = PdfParser
-            .defers(&input, &TikaMetadata::new(), &with_pdf(pdf))
-            .unwrap_or_default();
-        assert!(
-            deferral.starts_with("the automatic OCR thresholds \"faster , 4\""),
-            "{deferral}"
+        (input, with_pdf(pdf))
+    }
+
+    #[test]
+    fn fails_under_thresholds_our_java_rejects() {
+        let (input, configs) = under_rejected_thresholds();
+        let failure = PdfParser.prepare(&input, &TikaMetadata::new(), &configs);
+        let Err(Decline::Fails(error)) = failure else {
+            panic!("{:?}", failure.err());
+        };
+        assert_eq!(
+            error.to_string(),
+            "Java exception: java.lang.IllegalArgumentException: Automatic OCR thresholds are \
+             better, faster or unmapped[%][,characters]: faster , 4"
         );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_under_thresholds_our_java_rejects_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-rejected-thresholds");
+        let (input, configs) = under_rejected_thresholds();
+        let path = scratch.write("page.pdf", &input);
+        let (native, tika) = crate::formats::parity::errors(&path, &configs);
+        assert_eq!(native, tika);
     }
 
     /// Asserts that each encrypted document, named with the password that opens it, fails as

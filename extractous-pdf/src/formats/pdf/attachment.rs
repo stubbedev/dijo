@@ -11,6 +11,7 @@ use super::cos::{as_dict, text_string, Pdf};
 use super::{Unported, MAX_RECURSION_DEPTH};
 use crate::formats::embedded::{ResourceType, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::Exception;
 use crate::java;
 use crate::java::is_blank;
 
@@ -271,9 +272,15 @@ fn find<'p>(
 
 /// The file specifications `extractEmbeddedDocuments` processes, each with the name it is
 /// processed under: those among the document's objects, then those its tree of embedded
-/// files names that are not among them.
-pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> Result<Vec<(String, &'p Dictionary)>, Unported> {
-    let mut specs: Vec<(String, &Dictionary)> = file_spec_objects(pdf)?
+/// files names that are not among them, and the `IOException` it throws where that tree is
+/// deeper than Tika follows, before it processes the specifications the tree names.
+pub(super) struct DocumentSpecs<'p> {
+    pub(super) specs: Vec<(String, &'p Dictionary)>,
+    pub(super) thrown: Option<Exception>,
+}
+
+pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> DocumentSpecs<'p> {
+    let mut specs: Vec<(String, &Dictionary)> = file_spec_objects(pdf)
         .into_iter()
         .map(|dict| (String::new(), dict))
         .collect();
@@ -283,16 +290,27 @@ pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> Result<Vec<(String, &'p Dictio
         .and_then(|catalog| pdf.dict(catalog, b"Names"))
         .and_then(|names| pdf.dict(names, b"EmbeddedFiles"))
     else {
-        return Ok(specs);
+        return DocumentSpecs {
+            specs,
+            thrown: None,
+        };
     };
     let mut named = Vec::new();
-    name_tree(pdf, Some(tree), 0, &mut named)?;
+    if let Err(thrown) = name_tree(pdf, Some(tree), 0, &mut named) {
+        return DocumentSpecs {
+            specs,
+            thrown: Some(thrown),
+        };
+    }
     for (name, spec) in named {
         if seen.insert(identity(spec)) {
             specs.push((name, spec));
         }
     }
-    Ok(specs)
+    DocumentSpecs {
+        specs,
+        thrown: None,
+    }
 }
 
 /// `COSDocument.getObjectsByType(COSName.FILESPEC)`: the file specifications among the
@@ -303,16 +321,16 @@ pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> Result<Vec<(String, &'p Dictio
 ///
 /// PDFBox reads every object for it. A document whose bytes do not spell `Filespec` and whose
 /// table puts no object in an object stream holds none, and its objects are left unread.
-fn file_spec_objects<'p>(pdf: &'p Pdf) -> Result<Vec<&'p Dictionary>, Unported> {
+fn file_spec_objects<'p>(pdf: &'p Pdf) -> Vec<&'p Dictionary> {
     let listed = pdf.listed();
     if !pdf.spells_filespec && !listed.iter().any(|&id| pdf.is_compressed(id)) {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    Ok(listed
+    listed
         .into_iter()
         .filter_map(|id| pdf.indirect(id).and_then(as_dict))
         .filter(|dict| pdf.name(dict, b"Type") == Some(FILESPEC))
-        .collect())
+        .collect()
 }
 
 /// `extractFilesfromEFTree`: the names and specifications of a node of the tree of embedded
@@ -322,11 +340,11 @@ fn name_tree<'p>(
     node: Option<&'p Dictionary>,
     depth: usize,
     named: &mut Vec<(String, &'p Dictionary)>,
-) -> Result<(), Unported> {
+) -> Result<(), Exception> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(Unported(
-            "a tree of embedded files deeper than Tika follows, which it records as an exception"
-                .to_owned(),
+        return Err(Exception::new(
+            "java.io.IOException",
+            "Hit max recursion depth",
         ));
     }
     let Some(node) = node else {

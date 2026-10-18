@@ -10,7 +10,7 @@ use super::super::cos::float_value;
 use super::super::Unported;
 use super::colorspace::ColorSpace;
 use super::image::PdImage;
-use super::{Thrown, Unwritten};
+use super::{Exception, Unwritten};
 use crate::ocr::bitmap::{luma, Bitmap};
 
 const IO_EXCEPTION: &str = "java.io.IOException";
@@ -236,7 +236,7 @@ impl Bits<'_> {
         let mut value = 0u32;
         for _ in 0..count {
             let Some(&byte) = self.data.get(self.at / 8) else {
-                return Err(Unwritten::Stream(Thrown::bare("java.io.EOFException")));
+                return Err(Unwritten::Stream(Exception::bare("java.io.EOFException")));
             };
             let bit = (byte >> (7 - self.at % 8)) & 1;
             value = (value << 1) | u32::from(bit);
@@ -345,5 +345,5 @@ fn mul8(a: u8, b: u8) -> u8 {
 }
 
 fn thrown(message: &str) -> Unwritten {
-    Unwritten::Stream(Thrown::new(IO_EXCEPTION, message.to_owned()))
+    Unwritten::Stream(Exception::new(IO_EXCEPTION, message.to_owned()))
 }

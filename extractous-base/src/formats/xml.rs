@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use crate::errors::Error;
 use crate::formats::Failure;
 use crate::input::{Input, Pages, Paging};
-use crate::xml::{self, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
+use crate::xml::{self, DocumentTypes, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
 
 pub use crate::xml::{Attribute, XMLNS};
 
@@ -84,7 +84,30 @@ pub struct StartTag<'t> {
 /// section, or what a reference stands for. `what` names the document in errors. Fails where that
 /// parser fails, after the events it would have reported before.
 pub fn parse_sax(input: &[u8], what: &str, handler: &mut impl SaxHandler) -> Result<(), Failure> {
-    parse_sax_paged(input, Pages::IN_MEMORY, what, handler)
+    parse_sax_paged(
+        input,
+        Pages::IN_MEMORY,
+        DocumentTypes::Processed,
+        what,
+        handler,
+    )
+}
+
+/// [`parse_sax`] as the JDK's StAX reader reads a document without DTD support, as Tika's
+/// `XMLReaderUtils.getXMLInputFactory` makes it: a document type declaration is read past and
+/// nothing of it applies, so an entity reference other than the predefined ones fails.
+pub fn parse_without_dtd(
+    input: &[u8],
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
+    parse_sax_paged(
+        input,
+        Pages::IN_MEMORY,
+        DocumentTypes::Skipped,
+        what,
+        handler,
+    )
 }
 
 /// How many events a parse reports between releases of the pages of its input.
@@ -97,19 +120,26 @@ pub fn parse_part(
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
-    parse_sax_paged(input, input.pages(), what, handler)
+    parse_sax_paged(
+        input,
+        input.pages(),
+        DocumentTypes::Processed,
+        what,
+        handler,
+    )
 }
 
 fn parse_sax_paged(
     input: &[u8],
     pages: Pages<'_>,
+    document_types: DocumentTypes,
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
     let mut failure = None;
     let mut events = 0usize;
     let paging = Paging::new(pages);
-    let result = xml::parse_paged(input, &paging, &mut |event| {
+    let result = xml::parse_paged(input, &paging, document_types, &mut |event| {
         events += 1;
         if events.is_multiple_of(RELEASE_EVERY_EVENTS) {
             paging.release();

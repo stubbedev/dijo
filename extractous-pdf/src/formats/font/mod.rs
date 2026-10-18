@@ -8,7 +8,8 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::pdf::truetype::{Read, TrueType};
+use crate::formats::pdf::truetype::{Failure, TrueType};
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Parser, Prepared};
 use crate::java::jfloat::float_to_string;
 use crate::java::time::format_instant;
@@ -54,15 +55,23 @@ impl Parser for TrueTypeParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let font = match TrueType::read_file(input) {
-            Read::Font(font) => font,
-            Read::Damaged(_) => {
-                return Err(Decline::Fails(Error::ParseError(
-                    "FontBox fails to read the TrueType font".to_owned(),
-                )))
-            }
-            Read::Unported(reason) => return Err(Decline::Deferred(reason)),
-        };
+        let font = TrueType::read_file(input).map_err(|failure| {
+            Decline::Fails(match failure {
+                Failure::Damaged(_) => {
+                    Error::ParseError("FontBox fails to read the TrueType font".to_owned())
+                }
+                Failure::PostScript => Thrown::Io(Exception::new(
+                    "java.io.IOException",
+                    "True Type fonts using CFF outlines are not supported",
+                ))
+                .into_error(self.tika_name()),
+                Failure::GlyphOutOfBounds { glyph } => Thrown::Runtime(Exception::new(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!("Index {glyph} out of bounds for length {glyph}"),
+                ))
+                .into_error(self.tika_name()),
+            })
+        })?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "application/x-font-ttf");
@@ -165,6 +174,9 @@ mod tests {
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
+    use crate::formats::pdf::truetype::programs::{
+        format2, format8, long_subtable, program, with_cmap, GLYPHS,
+    };
 
     #[test]
     fn extracts_font_metrics_as_tikas_path_does() {
@@ -217,6 +229,60 @@ mod tests {
         assert_eq!((whole.len(), cut.len()), (6, 8), "{metrics:?}");
         assert_same_as_tika(&whole, "org.apache.tika.parser.font.AdobeFontMetricParser");
         assert_fails_as_tika(&cut);
+    }
+
+    /// Programs of every cmap format FontBox reads, and of what `TTFParser` throws on: a `CFF `
+    /// table, a format 13 subtable mapping a code past the last glyph, and a collection.
+    #[test]
+    fn extracts_fonts_of_each_cmap_format_as_tikas_path_does() {
+        let scratch = Scratch::new("ttf-cmaps");
+        let read = [
+            scratch.write("format2.ttf", &with_cmap(format2())),
+            scratch.write("format8.ttf", &with_cmap(format8())),
+            scratch.write("format10.ttf", &with_cmap(long_subtable(10, &[0x41, 3]))),
+            scratch.write(
+                "format13.ttf",
+                &with_cmap(long_subtable(13, &[1, 0x41, 0x43, 2])),
+            ),
+        ];
+        let past = u32::from(GLYPHS);
+        let failing = [
+            scratch.write("cff.ttf", &program(&[(b"CFF ", vec![1, 0, 4, 1])])),
+            scratch.write(
+                "past.ttf",
+                &with_cmap(long_subtable(13, &[1, 0x41, 0x41, past])),
+            ),
+            scratch.write(
+                "collection.ttf",
+                &[b"ttcf".as_slice(), &[0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 16]].concat(),
+            ),
+        ];
+        let (parsed, deferred) = documents(&TrueTypeParser, &[scratch.directory()]);
+        assert!(deferred.is_empty(), "{deferred:?}");
+        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
+        assert_same_as_tika(
+            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
+            "org.apache.tika.parser.font.TrueTypeParser",
+        );
+        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        let configs = ParserConfigs::default();
+        let errors: Vec<String> = failing[..2]
+            .iter()
+            .map(|path| {
+                let input = std::fs::read(path).unwrap();
+                let error = match TrueTypeParser.prepare(&input, &TikaMetadata::new(), &configs) {
+                    Err(Decline::Fails(error)) => error.to_string(),
+                    _ => panic!("{} does not fail", path.display()),
+                };
+                error
+            })
+            .collect();
+        for (error, cause) in errors.iter().zip([
+            "java.io.IOException: True Type fonts using CFF outlines are not supported",
+            "java.lang.ArrayIndexOutOfBoundsException: Index 4 out of bounds for length 4",
+        ]) {
+            assert!(error.contains(cause), "{error}");
+        }
     }
 
     #[test]

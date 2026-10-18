@@ -14,6 +14,8 @@ use lopdf::{Dictionary, Document, EncryptionState, Object, ObjectId, Stream};
 use super::content::Lexer;
 use super::xref::{self, java_trim, Placement, Read, Resolution, Source, Thrown};
 use super::Unported;
+use crate::formats::thrown::Exception;
+use crate::formats::Difference;
 use crate::input::Paging;
 use crate::text::charset::Charset;
 
@@ -36,7 +38,7 @@ pub(super) enum Identity {
 }
 
 impl Identity {
-    fn of_direct(object: &Object) -> Self {
+    pub(super) fn of_direct(object: &Object) -> Self {
         Self::Direct(std::ptr::from_ref(object) as usize)
     }
 }
@@ -75,22 +77,23 @@ pub(super) struct Pdf<'d> {
     unread: RefCell<Option<(ObjectId, Unported)>>,
     /// The objects the extraction asked for that the table does not list.
     unlisted_needed: RefCell<BTreeSet<ObjectId>>,
+    /// The first detail in which the extraction read the document otherwise than Tika's path.
+    difference: RefCell<Option<Difference>>,
     /// Whether the document's bytes spell `Filespec`, as a file specification outside an
     /// object stream must.
     pub(super) spells_filespec: bool,
+    /// Whether PDFBox rebuilt the trailer from a search of the objects, after which it drops
+    /// the kids of the page tree it cannot read.
+    pub(super) trailer_rebuilt: bool,
 }
 
 impl<'d> Pdf<'d> {
     /// The document `data`, whose cross-reference PDFBox reads as `resolution`, its pages
     /// released as it is read. The objects PDFBox read while it read the cross-reference stay
     /// as it read them, but dictionaries, which may be streams, are read as other objects are.
-    pub(super) fn new(
-        data: &'d [u8],
-        paging: Paging<'d>,
-        resolution: &Resolution,
-    ) -> Result<Self, Unported> {
+    pub(super) fn new(data: &'d [u8], paging: Paging<'d>, resolution: &Resolution) -> Self {
         let mut objects: HashMap<ObjectId, Slot> = resolution
-            .placements()?
+            .placements()
             .into_iter()
             .map(|(id, placement)| {
                 let slot = Slot {
@@ -100,7 +103,7 @@ impl<'d> Pdf<'d> {
                 (id, slot)
             })
             .collect();
-        for (id, placement, object) in resolution.pooled()? {
+        for (id, placement, object) in resolution.pooled() {
             if matches!(object, Object::Dictionary(_)) {
                 continue;
             }
@@ -124,10 +127,17 @@ impl<'d> Pdf<'d> {
             loading: RefCell::new(HashSet::new()),
             unread: RefCell::new(None),
             unlisted_needed: RefCell::new(BTreeSet::new()),
+            difference: RefCell::new(None),
             spells_filespec,
+            trailer_rebuilt: resolution.rebuilt(),
         };
         pdf.release_pages();
-        Ok(pdf)
+        if let Some(number) = resolution.unheld_object() {
+            pdf.differ(Difference(format!(
+                "the port leaves out object number {number}, which lopdf cannot hold"
+            )));
+        }
+        pdf
     }
 
     /// Releases the pages of the document read so far, after a search of all of it.
@@ -146,8 +156,13 @@ impl<'d> Pdf<'d> {
     }
 
     /// The document's encryption dictionary, as `lopdf` reads it to open the document: in a
-    /// document of its own, whose trailer is this one's.
-    pub(super) fn encryption_document(&self) -> Option<Document> {
+    /// document of its own, whose trailer is this one's with the document ID `document_id`, as
+    /// PDFBox reads it, and whose dictionary has `entries` in place of its own.
+    pub(super) fn encryption_document(
+        &self,
+        document_id: &[u8],
+        entries: &Dictionary,
+    ) -> Option<Document> {
         let encrypt = self.trailer.get(b"Encrypt").ok()?;
         let dict = self.resolve(encrypt).and_then(as_dict)?;
         let id = match encrypt {
@@ -157,8 +172,14 @@ impl<'d> Pdf<'d> {
         let mut doc = Document::new();
         doc.trailer = self.trailer.clone();
         doc.trailer.set("Encrypt", Object::Reference(id));
-        doc.objects
-            .insert(id, Object::Dictionary(self.inlined(dict, 0)));
+        let document_id = Object::string_literal(document_id.to_vec());
+        doc.trailer
+            .set("ID", Object::Array(vec![document_id.clone(), document_id]));
+        let mut dict = self.inlined(dict, 0);
+        for (key, value) in entries.iter() {
+            dict.set(key.clone(), value.clone());
+        }
+        doc.objects.insert(id, Object::Dictionary(dict));
         Some(doc)
     }
 
@@ -190,6 +211,17 @@ impl<'d> Pdf<'d> {
     /// PDFBox makes of it is not known.
     pub(super) fn unread_object_needed(&self) -> Option<(ObjectId, Unported)> {
         self.unread.borrow().clone()
+    }
+
+    /// Notes that the extraction reads the document otherwise than Tika's path, in
+    /// `difference`, the first one noted kept.
+    pub(super) fn differ(&self, difference: Difference) {
+        self.difference.borrow_mut().get_or_insert(difference);
+    }
+
+    /// The first detail in which the extraction read the document otherwise than Tika's path.
+    pub(super) fn difference(&self) -> Option<Difference> {
+        self.difference.borrow().clone()
     }
 
     /// The objects the extraction asked for that the table does not list, which PDFBox
@@ -570,30 +602,20 @@ impl<'d> Pdf<'d> {
     ) -> Result<Vec<u8>, Unported> {
         let filters = self.get(&stream.dict, b"Filter");
         let parameters = self.get(&stream.dict, b"DecodeParms");
-        self.decode_data(self.raw(stream)?, filters, parameters, stop)
+        self.decode_data(self.raw(stream)?, &stream.dict, filters, parameters, stop)
     }
 
-    /// `content` with the filters `filters` names applied in order up to the first that `stop`
-    /// names, each with its own parameters of `parameters`.
+    /// `content` of the stream of `dictionary` with the filters `filters` names applied in
+    /// order up to the first that `stop` names, each with its own parameters of `parameters`.
     pub(super) fn decode_data(
         &self,
         content: Cow<'_, [u8]>,
+        dictionary: &Dictionary,
         filters: Option<&Object>,
         parameters: Option<&Object>,
         stop: &[&[u8]],
     ) -> Result<Vec<u8>, Unported> {
-        let filters: Vec<&[u8]> = match filters {
-            None => return Ok(content.into_owned()),
-            Some(Object::Name(name)) => vec![name.as_slice()],
-            Some(Object::Array(names)) => names
-                .iter()
-                .filter_map(|name| match self.resolve(name) {
-                    Some(Object::Name(name)) => Some(name.as_slice()),
-                    _ => None,
-                })
-                .collect(),
-            Some(_) => return Ok(content.into_owned()),
-        };
+        let filters = self.filter_names(filters);
         let mut data = content.into_owned();
         for (index, filter) in filters.iter().enumerate() {
             if stop.contains(filter) {
@@ -607,9 +629,46 @@ impl<'d> Pdf<'d> {
                 Some(other) => (index == 0).then(|| as_dict(other)).flatten(),
                 None => None,
             };
+            if *filter == b"Crypt" {
+                if let Some(name) = self.unsupported_crypt_filter(dictionary) {
+                    return Err(Unported(format!(
+                        "a stream through the crypt filter {}, which PDFBox does not support",
+                        name_string(name)
+                    )));
+                }
+                continue;
+            }
             data = decode_filter(filter, params, data)?;
         }
         Ok(data)
+    }
+
+    /// `COSStream.getFilters` of the `Filter` entry `value`: its name, or the names in its
+    /// array.
+    pub(super) fn filter_names<'a>(&'a self, value: Option<&'a Object>) -> Vec<&'a [u8]> {
+        match value {
+            Some(Object::Name(name)) => vec![name.as_slice()],
+            Some(Object::Array(items)) => items
+                .iter()
+                .filter_map(|item| match self.resolve(item) {
+                    Some(Object::Name(name)) => Some(name.as_slice()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The crypt filter `CryptFilter.decode` fails on for the stream of `dictionary`, if any:
+    /// it passes data through by the identity crypt filter, the only one it has, and takes the
+    /// crypt filter's name from the stream's own dictionary, where PDFBox hands it that
+    /// dictionary rather than its decode parameters.
+    pub(super) fn unsupported_crypt_filter<'a>(
+        &'a self,
+        dictionary: &'a Dictionary,
+    ) -> Option<&'a [u8]> {
+        self.name(dictionary, b"Name")
+            .filter(|name| *name != b"Identity")
     }
 
     /// Searches the document for the first of the objects `ids` the table does not list that
@@ -722,6 +781,67 @@ fn decode_filter(
     Stream::new(dict, data)
         .decompressed_content()
         .map_err(|e| Unported(format!("a stream's {name} data does not decode: {e}")))
+}
+
+/// The filters `FilterFactory` has, by their names and abbreviations.
+const FILTERS: [&[u8]; 17] = [
+    b"FlateDecode",
+    b"Fl",
+    b"DCTDecode",
+    b"DCT",
+    b"CCITTFaxDecode",
+    b"CCF",
+    b"LZWDecode",
+    b"LZW",
+    b"ASCIIHexDecode",
+    b"AHx",
+    b"ASCII85Decode",
+    b"A85",
+    b"RunLengthDecode",
+    b"RL",
+    b"Crypt",
+    b"JPXDecode",
+    b"JBIG2Decode",
+];
+
+/// The `IOException` `FilterFactory.getFilter` throws on the first of `filters` it has no filter
+/// of, which `COSStream.getFilterList` meets before it decodes anything, if any.
+pub(super) fn invalid_filter(filters: &[&[u8]]) -> Option<Exception> {
+    let invalid = filters.iter().find(|filter| !FILTERS.contains(filter))?;
+    Some(Exception::new(
+        "java.io.IOException",
+        format!("Invalid filter: COSName{{{}}}", name_string(invalid)),
+    ))
+}
+
+/// The class of PDFBox's COS layer that reads `object`, a reference left unresolved read as
+/// the `COSObject` that stands for it.
+fn cos_class(object: &Object) -> &'static str {
+    match object {
+        Object::Null => "COSNull",
+        Object::Boolean(_) => "COSBoolean",
+        Object::Integer(_) => "COSInteger",
+        Object::Real(_) => "COSFloat",
+        Object::Name(_) => "COSName",
+        Object::String(..) => "COSString",
+        Object::Array(_) => "COSArray",
+        Object::Dictionary(_) => "COSDictionary",
+        Object::Stream(_) => "COSStream",
+        Object::Reference(_) => "COSObject",
+    }
+}
+
+/// The `ClassCastException` the JVM throws where PDFBox casts `object` to the COS class `to`.
+pub(super) fn class_cast(object: &Object, to: &str) -> Exception {
+    let from = format!("org.apache.pdfbox.cos.{}", cos_class(object));
+    let to = format!("org.apache.pdfbox.cos.{to}");
+    Exception::new(
+        "java.lang.ClassCastException",
+        format!(
+            "class {from} cannot be cast to class {to} ({from} and {to} are in unnamed module of \
+             loader 'app')"
+        ),
+    )
 }
 
 /// The dictionary of a dictionary or a stream, which PDFBox's `COSStream` extends.

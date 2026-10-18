@@ -151,8 +151,8 @@ text-reference:
 # glyph lists, the Unicode mirroring pairs, the fallback font it measures fonts it finds no program for with, the
 # standard 14 fonts' metrics without their kerning pairs, the built-in simple font encodings, FontBox's
 # predefined CFF strings, charsets and encodings, the codes FontBox gives the texts of a CMap that uses one
-# of its bundled maps, the CMYK profile PDFBox converts DeviceCMYK with, the JDK's CIE XYZ profile, and the
-# colours PDFBox's CIE-based colour spaces give on the JVM.
+# of its bundled maps, the CMYK profile PDFBox converts DeviceCMYK with, the JDK's CIE XYZ profile, the
+# colours PDFBox's CIE-based colour spaces give on the JVM, and the rasters its JBIG2 plugin reads.
 [unix]
 pdf-resources:
     #!/usr/bin/env bash
@@ -182,6 +182,9 @@ pdf-resources:
         extractous-pdf/tests/fixtures/pdf/used-cmap-codes.tsv
     java -Djava.awt.headless=true -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/CieColours.java \
         extractous-pdf/tests/fixtures/pdf/cie-colours.tsv
+    java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/Jbig2Rasters.java \
+        extractous-pdf/tests/fixtures/pdf/jbig2-rasters.tsv extractous-pdf/tests/fixtures/pdf/jbig2-text.jb2 \
+        quality/corpus/prose-scan.jb2
 
 # Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
 # html5lib's tree construction tests, the trees jsoup builds for them, and the trees html5lib's tests expect,

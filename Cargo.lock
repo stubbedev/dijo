@@ -972,6 +972,7 @@ dependencies = [
  "extractous-image",
  "flate2",
  "hayro-ccitt",
+ "hayro-jbig2",
  "image",
  "lopdf",
  "lzma-rust2",
