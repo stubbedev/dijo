@@ -16,6 +16,8 @@ pub mod hash;
 pub mod input;
 pub mod isolate;
 pub mod java;
+#[cfg(any(test, feature = "testing"))]
+pub mod large;
 pub mod memory;
 pub mod ole2;
 pub mod text;

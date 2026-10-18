@@ -1,27 +1,44 @@
 //! The bytes of an RTF document as `TextExtractor` reads them: through a
 //! `PushbackInputStream` that takes back two bytes. Pushing back the end of the input, as
 //! `TextExtractor` does when a control word ends the document, pushes back the byte 0xFF, which
-//! is then read like any other.
+//! is then read like any other. What is read is counted, so that the pages of a mapped document
+//! are released as it is read on.
 
 use crate::formats::Failure;
+use crate::input::{Pages, Paging};
 
 const PUSHBACK: usize = 2;
 const END_PUSHED_BACK: u8 = 0xFF;
+/// How many bytes are read between counts of what was read.
+const COUNT_EVERY: usize = 1 << 20;
 
 pub(super) struct Input<'a> {
     bytes: &'a [u8],
     at: usize,
     pushed_back: [u8; PUSHBACK],
     pushed: usize,
+    paging: Paging<'a>,
+    /// How far what was read has been counted.
+    counted: usize,
 }
 
 impl<'a> Input<'a> {
-    pub(super) fn new(bytes: &'a [u8]) -> Self {
+    pub(super) fn new(bytes: &'a [u8], pages: Pages<'a>) -> Self {
         Self {
             bytes,
             at: 0,
             pushed_back: [0; PUSHBACK],
             pushed: 0,
+            paging: Paging::new(pages),
+            counted: 0,
+        }
+    }
+
+    /// Counts what was read since the last count, once enough was.
+    fn count(&mut self) {
+        if self.at - self.counted >= COUNT_EVERY {
+            self.paging.read(self.at - self.counted);
+            self.counted = self.at;
         }
     }
 
@@ -33,6 +50,7 @@ impl<'a> Input<'a> {
         }
         let byte = self.bytes.get(self.at).copied();
         self.at += usize::from(byte.is_some());
+        self.count();
         byte
     }
 
@@ -65,6 +83,7 @@ impl<'a> Input<'a> {
         let rest = length - taken.len();
         taken.extend_from_slice(&self.bytes[self.at..self.at + rest]);
         self.at += rest;
+        self.count();
         Ok(taken)
     }
 
@@ -81,6 +100,7 @@ impl<'a> Input<'a> {
         let from_pushed = length.min(self.pushed);
         self.pushed -= from_pushed;
         self.at += length - from_pushed;
+        self.count();
         Ok(())
     }
 }
@@ -91,7 +111,7 @@ mod tests {
 
     #[test]
     fn reads_pushed_back_bytes_last_in_first_out() {
-        let mut input = Input::new(b"ab");
+        let mut input = Input::new(b"ab", Pages::IN_MEMORY);
         assert_eq!(input.read(), Some(b'a'));
         input.unread(Some(b'x')).unwrap();
         input.unread(Some(b'y')).unwrap();
@@ -107,7 +127,7 @@ mod tests {
 
     #[test]
     fn takes_and_skips_through_pushed_back_bytes() {
-        let mut input = Input::new(b"abcdef");
+        let mut input = Input::new(b"abcdef", Pages::IN_MEMORY);
         input.read();
         input.unread(Some(b'a')).unwrap();
         assert_eq!(input.take(3), Ok(b"abc".to_vec()));
@@ -116,7 +136,7 @@ mod tests {
         assert_eq!(input.read(), Some(b'e'));
         assert!(input.skip(2).is_err());
         assert_eq!(input.read(), None);
-        let mut input = Input::new(b"abc");
+        let mut input = Input::new(b"abc", Pages::IN_MEMORY);
         input.read();
         input.unread(Some(b'a')).unwrap();
         assert_eq!(input.take(4), Err(3));

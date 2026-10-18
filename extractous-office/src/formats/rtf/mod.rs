@@ -16,7 +16,8 @@ pub(crate) use html::decapsulate;
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use extractor::Interrupt;
 
 const MEDIA_TYPE: &str = "application/rtf";
@@ -35,13 +36,31 @@ impl Parser for RtfParser {
         &[MEDIA_TYPE]
     }
 
+    /// It reads the document once, writing its text as it goes and releasing what it has read.
+    /// It holds the state of the groups it is in, the text Tika's `TextExtractor` holds until a
+    /// control word or group writes it, and the picture or object being read, spooled to a file
+    /// past what is read whole.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        Ok(Box::new(move |xhtml| write(input, xhtml)))
+        Ok(Box::new(move |xhtml| write(input, pages, xhtml)))
     }
 }
 
@@ -52,9 +71,9 @@ pub(crate) fn write_inline(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failur
 }
 
 /// Parses as `RTFParser.parse`, which ends the document even when the parse fails.
-fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+fn write<'a>(input: &'a [u8], pages: Pages<'a>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-    let Err(interrupt) = extractor::extract(input, xhtml) else {
+    let Err(interrupt) = extractor::extract(input, pages, xhtml) else {
         return Ok(());
     };
     xhtml.end_document()?;
@@ -306,6 +325,30 @@ mod tests {
         ];
         let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika(&documents, TIKA_PARSER);
+    }
+
+    /// A document too large to read whole is read once, in place, its text written as it goes
+    /// and what it has read released, in memory that does not grow with it.
+    #[test]
+    fn extracts_documents_too_large_to_read_whole_in_bounded_memory() {
+        use crate::large::{bodies_past_limit, LargeFile};
+        let filler = "0123456789abcdef".repeat(4096);
+        let body = |index: u64| {
+            format!("{{\\*\\datastore {filler}}}\\pard Linje {index} i logbogen\\par\n")
+                .into_bytes()
+        };
+        let count = bodies_past_limit(body(0).len());
+        let file = LargeFile::new("large.rtf", br"{\rtf1\ansi ", count, body, b"}");
+        let (text, _) = file.extract("extractous::RTFParser", |path| {
+            crate::Extractor::new().extract_file_to_string(path)
+        });
+        assert!(text.contains("Linje 0 i logbogen\n"), "{text}");
+        let last = format!("Linje {} i logbogen", count - 1);
+        assert!(
+            text.trim_end().ends_with(&last),
+            "{}",
+            &text[text.len() - 200..]
+        );
     }
 
     #[test]
