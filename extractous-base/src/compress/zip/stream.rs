@@ -38,10 +38,6 @@ pub enum Failure {
     /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`,
     /// as it refuses an archive that starts as a split one goes on.
     Unsupported,
-    /// An entry with a data descriptor compressed with this method, whose end the port does not
-    /// find. The stream no longer fails so: it decodes data of every method commons-compress
-    /// takes before a data descriptor to its end.
-    Method(u16),
     /// Anything else the stream throws.
     Io,
 }

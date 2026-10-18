@@ -272,12 +272,9 @@ impl<'a> Archive<'a> {
 }
 
 /// Why the stream POI falls back to stops on an archive: what commons-compress throws, which
-/// fails the package, but for a compression method this port does not decompress.
+/// fails the package.
 fn unstreamed(failure: stream::Failure) -> Unopened {
     match failure {
-        stream::Failure::Method(method) => Unopened::Unported(Unported(format!(
-            "an entry is compressed with method {method}, which the port does not decompress"
-        ))),
         stream::Failure::DataDescriptor | stream::Failure::Unsupported => Unopened::Corrupt(
             "the archive has no central directory, and an entry uses a ZIP feature its stream \
              does not read"

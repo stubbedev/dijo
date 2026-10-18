@@ -81,16 +81,8 @@ fn read(input: &[u8], pages: Pages<'_>) -> Result<Package, Decline<'static>> {
     let mut zip = ZipStream::new(input, false);
     let mut entries = Vec::new();
     let mut at = 0;
-    let failed = |failure: stream::Failure| -> Result<String, Unported> {
-        match failure {
-            stream::Failure::Method(method) => Err(Unported::new(format!(
-                "an iWork package entry compressed with method {method}, which the port does \
-                 not decompress"
-            ))),
-            other => Ok(format!(
-                "the iWork package's ZIP stream could not be read past an entry: {other:?}"
-            )),
-        }
+    let failed = |failure: stream::Failure| {
+        format!("the iWork package's ZIP stream could not be read past an entry: {failure:?}")
     };
     loop {
         let entry = match zip.next_entry() {
@@ -99,7 +91,7 @@ fn read(input: &[u8], pages: Pages<'_>) -> Result<Package, Decline<'static>> {
             Err(failure) => {
                 return Ok(Package {
                     entries,
-                    failure: Some(failed(failure)?),
+                    failure: Some(failed(failure)),
                 })
             }
         };
@@ -129,7 +121,7 @@ fn read(input: &[u8], pages: Pages<'_>) -> Result<Package, Decline<'static>> {
             Err(failure) => {
                 return Ok(Package {
                     entries,
-                    failure: Some(failed(failure)?),
+                    failure: Some(failed(failure)),
                 })
             }
         };

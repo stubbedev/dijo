@@ -60,7 +60,6 @@ fn copy(data: &[u8], allow_stored_data_descriptor: bool) -> Result<Pass, Unsalva
             Ok(Some(entry)) => entry,
             Ok(None) => break,
             Err(stream::Failure::DataDescriptor) => return Ok(Pass::DataDescriptor),
-            Err(stream::Failure::Method(method)) => return Err(unported(method)),
             Err(stream::Failure::Unsupported) if first => return Err(Unsalvaged::Thrown),
             Err(stream::Failure::Unsupported | stream::Failure::Io) => break,
         };
@@ -87,7 +86,6 @@ fn copy(data: &[u8], allow_stored_data_descriptor: bool) -> Result<Pass, Unsalva
                 )))
             }
             Err(stream::Failure::Unsupported | stream::Failure::DataDescriptor) => {}
-            Err(stream::Failure::Method(method)) => return Err(unported(method)),
             Err(stream::Failure::Io) => {
                 return Err(Unsalvaged::Unported(format!(
                     "the entry {} the stream cannot read, which commons-compress copies as far \
@@ -98,12 +96,6 @@ fn copy(data: &[u8], allow_stored_data_descriptor: bool) -> Result<Pass, Unsalva
         }
     }
     archive.finish().map(Pass::Copied)
-}
-
-fn unported(method: u16) -> Unsalvaged {
-    Unsalvaged::Unported(format!(
-        "an entry compressed with method {method}, which the port does not decompress"
-    ))
 }
 
 /// A salvaged archive too large for the fields of an archive without ZIP64 records, which
