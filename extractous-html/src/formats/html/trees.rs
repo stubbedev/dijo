@@ -150,31 +150,50 @@ const IMPLICITLY_CLOSED_SELECTED_OPTIONS: [&str; 4] = [
     "html5lib/webkit02.dat#48",
 ];
 
-#[test]
-fn builds_the_trees_html5lib_expects() {
+/// The tests of html5lib's reference, each its name, its input and the tree it expects.
+fn html5lib_tests() -> Vec<(String, String, String)> {
     let mut reference = String::new();
     GzDecoder::new(TREES)
         .read_to_string(&mut reference)
         .expect("the tree reference decompresses");
+    reference
+        .lines()
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            (
+                fields[0].to_owned(),
+                String::from_utf8(base64(fields[1])).expect("the input is UTF-8"),
+                String::from_utf8(base64(fields[2])).expect("the tree is UTF-8"),
+            )
+        })
+        .collect()
+}
+
+/// The inputs of html5lib's tree construction tests, each by its name.
+pub(super) fn html5lib_inputs() -> Vec<(String, String)> {
+    html5lib_tests()
+        .into_iter()
+        .map(|(name, input, _)| (name, input))
+        .collect()
+}
+
+#[test]
+fn builds_the_trees_html5lib_expects() {
     let mut mismatches = Vec::new();
     let mut unmet = Vec::new();
     let mut count = 0;
-    for line in reference.lines() {
-        let fields: Vec<&str> = line.split('\t').collect();
-        let input = String::from_utf8(base64(fields[1])).expect("the input is UTF-8");
-        let expected = String::from_utf8(base64(fields[2])).expect("the tree is UTF-8");
+    for (name, input, expected) in html5lib_tests() {
         let actual = html5lib(&parse(&input));
         count += 1;
         if actual == expected {
             continue;
         }
-        if IMPLICITLY_CLOSED_SELECTED_OPTIONS.contains(&fields[0]) {
-            unmet.push(fields[0]);
+        if IMPLICITLY_CLOSED_SELECTED_OPTIONS.contains(&name.as_str()) {
+            unmet.push(name);
             continue;
         }
         mismatches.push(format!(
-            "{} {input:?}\nexpected\n{expected}\nactual\n{actual}",
-            fields[0]
+            "{name} {input:?}\nexpected\n{expected}\nactual\n{actual}"
         ));
     }
     assert_eq!(unmet, IMPLICITLY_CLOSED_SELECTED_OPTIONS);

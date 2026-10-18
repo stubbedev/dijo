@@ -4,7 +4,7 @@
 //! which Tika reads the picture with, parses every record and fails the picture on many it
 //! cannot read, EMF+ records and bitmaps among them, none of which give text (#127).
 
-use super::{slice, u32_at, Picture, Rect};
+use super::{slice, u32_at, Broken, Rect};
 
 /// `EMR_HEADER`.
 const HEADER: u32 = 0x01;
@@ -79,14 +79,17 @@ pub(super) struct TextOut<'a> {
     pub(super) raw: &'a [u8],
 }
 
-/// The records of the EMF picture `data` up to its end-of-file record or its end.
-pub(super) fn records(data: &[u8]) -> Picture<Record<'_>> {
-    let mut picture = Picture::default();
+/// Hands `each` the records of the EMF picture `data` in turn, read in place, up to its
+/// end-of-file record or its end: why reading them stopped short of the picture's end, if it
+/// did, unless `each` stopped it first.
+pub(super) fn records<'a, E>(
+    data: &'a [u8],
+    mut each: impl FnMut(Record<'a>) -> Result<(), E>,
+) -> Result<Broken, E> {
     if u32_at(data, 0, "the header record's type") != Ok(HEADER)
         || u32_at(data, SIGNATURE_AT, "the header's signature") != Ok(SIGNATURE)
     {
-        picture.broken = Some("the data starts with no EMF header record".to_owned());
-        return picture;
+        return Ok(Some("the data starts with no EMF header record".to_owned()));
     }
     let mut at = 0;
     while at < data.len() {
@@ -100,19 +103,18 @@ pub(super) fn records(data: &[u8]) -> Picture<Record<'_>> {
         });
         match read {
             Ok((kind, size, record)) => {
-                picture.records.extend(record);
+                if let Some(record) = record {
+                    each(record)?;
+                }
                 if kind == EOF {
                     break;
                 }
                 at += size;
             }
-            Err(reason) => {
-                picture.broken = Some(format!("the EMF record at {at:#x}: {reason}"));
-                break;
-            }
+            Err(reason) => return Ok(Some(format!("the EMF record at {at:#x}: {reason}"))),
         }
     }
-    picture
+    Ok(None)
 }
 
 /// What Tika reads of the record of type `kind`, whose bytes are `whole`, `body` without its type
@@ -209,6 +211,25 @@ fn comment(body: &[u8]) -> Result<Comment<'_>, String> {
 mod tests {
     use super::super::testing::{emf, emf_record, emf_text, int};
     use super::*;
+
+    /// The records of a picture, and why reading them stopped short of its end, if it did.
+    struct Picture<'a> {
+        records: Vec<Record<'a>>,
+        broken: Option<String>,
+    }
+
+    fn records(data: &[u8]) -> Picture<'_> {
+        let mut read = Vec::new();
+        let broken = super::records(data, |record| {
+            read.push(record);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|never| match never {});
+        Picture {
+            records: read,
+            broken,
+        }
+    }
 
     #[test]
     fn reads_records_up_to_the_end_of_file_record_and_skips_the_rest() {

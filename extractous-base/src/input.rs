@@ -127,7 +127,7 @@ impl Pages<'_> {
     /// The map is a read-only shared map of a file, so `MADV_DONTNEED` loses none of its bytes.
     /// Elsewhere than on Unix the operating system trims the pages of a map no longer read by
     /// itself, and nothing is asked of it.
-    pub(crate) fn release(self) {
+    pub fn release(self) {
         #[cfg(unix)]
         if let Some(map) = self.0 {
             unsafe { map.unchecked_advise(memmap2::UncheckedAdvice::DontNeed) }

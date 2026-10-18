@@ -434,7 +434,8 @@ fn described(failure: &OcrError) -> String {
         OcrError::Failed { .. }
         | OcrError::Model { .. }
         | OcrError::Models { .. }
-        | OcrError::Unavailable { .. } => "org.apache.tika.exception.TikaException",
+        | OcrError::Unavailable { .. }
+        | OcrError::MemoryLimit { .. } => "org.apache.tika.exception.TikaException",
     };
     format!("{class}: {failure}")
 }

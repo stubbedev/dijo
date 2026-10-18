@@ -82,7 +82,9 @@ fn decodes_a_gzipped_entry_past_the_memory_limit_to_a_spool() {
         tar_of_large_entry(&mut gzip, LARGE)?;
         gzip.finish()?.flush()
     });
-    let (text, metadata) = file.extract_within("extractous::CompressorParser", SPOOLING_BUDGET);
+    let extractor = extractous_core::Extractor::new();
+    let (text, metadata) =
+        file.extract_with(&extractor, SPOOLING_BUDGET, "extractous::CompressorParser");
     assert!(text.contains(END), "{text}");
     assert!(metadata["tk:parsed-by"]
         .iter()

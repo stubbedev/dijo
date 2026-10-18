@@ -276,7 +276,7 @@ enum Upright {
     /// It is upright as it is.
     AsItIs,
     /// It was turned or made flat into this.
-    Made(Bitmap),
+    Made(Arc<Bitmap>),
 }
 
 impl Oriented {
@@ -295,7 +295,9 @@ impl Oriented {
         Self {
             exif_orientation: upright.as_ref().and(image.orientation),
             flattened: flat.is_some(),
-            image: flat.or(upright).map_or(Upright::AsItIs, Upright::Made),
+            image: flat
+                .or(upright)
+                .map_or(Upright::AsItIs, |made| Upright::Made(Arc::new(made))),
         }
     }
 }
@@ -326,7 +328,20 @@ impl<'t> Recognizer<'t> {
     ///
     /// `assumed` is the script to read it in first with the automatic language: the one
     /// detection last found in this extraction, or none for Latin, the most common kind.
+    ///
+    /// The images prepared to read it are freed once it is read: what was read keeps none.
     pub fn recognize(
+        &self,
+        image: &Image<'_>,
+        assumed: Option<&str>,
+    ) -> Result<Recognized, OcrError> {
+        let mut recognized = self.recognize_preparing(image, assumed)?;
+        recognized.read.prepared.image = None;
+        Ok(recognized)
+    }
+
+    /// [`Recognizer::recognize`], the reading kept with the image it was prepared into.
+    fn recognize_preparing(
         &self,
         image: &Image<'_>,
         assumed: Option<&str>,
@@ -470,7 +485,14 @@ impl<'t> Recognizer<'t> {
 fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
     match (&prepared.image, image.file) {
         (Some(prepared), _) => prepared.pixels(),
-        (None, Some(file)) => Pixels::Encoded(file.into()),
+        (None, Some(file)) => {
+            let (width, height) = image.bitmap.dimensions();
+            Pixels::Encoded {
+                data: file.into(),
+                width,
+                height,
+            }
+        }
         (None, None) => image.bitmap.pixels(),
     }
 }
@@ -510,6 +532,11 @@ fn prepare_again(
     finish(image, oriented, script, model, quarter_turns)
 }
 
+/// The image as preparing it has made it so far, or the `original` while it has made none.
+fn prepared<'b>(made: &'b Option<Arc<Bitmap>>, original: &'b Bitmap) -> &'b Bitmap {
+    made.as_deref().unwrap_or(original)
+}
+
 /// Turns an oriented image by the quarter turns detection found, inverts light text on a dark
 /// ground, clears specks, whitens faint marks unless the lighting is uneven, corrects its skew
 /// and scales its text to a readable size.
@@ -520,45 +547,50 @@ fn finish(
     model: String,
     quarter_turns: u8,
 ) -> Prepared {
-    let (oriented_image, mut changed) = match &oriented.image {
+    let mut made = match &oriented.image {
         Upright::Unprepared => return Prepared::unprepared(script, model),
-        Upright::AsItIs => (image.bitmap, false),
-        Upright::Made(upright) => (upright, true),
+        Upright::AsItIs => None,
+        Upright::Made(upright) => Some(Arc::clone(upright)),
     };
-    let mut prepared = match oriented_image.turned_clockwise(quarter_turns) {
-        Some(turned) => {
-            changed = true;
-            turned
-        }
-        None => oriented_image.clone(),
-    };
-    let inverted = prepare::inverted(&prepared);
+    let original = image.bitmap;
+    if let Some(turned) = prepared(&made, original).turned_clockwise(quarter_turns) {
+        made = Some(Arc::new(turned));
+    }
+    let inverted = prepare::inverted(prepared(&made, original));
     if inverted {
-        prepared = Bitmap::Gray(prepare::invert(&prepared));
-        changed = true;
+        made = Some(Arc::new(Bitmap::Gray(prepare::invert(prepared(
+            &made, original,
+        )))));
     }
-    let despeckled = prepare::speckled(&prepared);
+    let despeckled = prepare::speckled(prepared(&made, original));
     if despeckled {
-        prepared = Bitmap::Gray(prepare::despeckle(&prepared));
-        changed = true;
+        made = Some(Arc::new(Bitmap::Gray(prepare::despeckle(prepared(
+            &made, original,
+        )))));
     }
-    let uneven_lighting = prepare::uneven_lighting(&prepared);
+    let uneven_lighting = prepare::uneven_lighting(prepared(&made, original));
     if !uneven_lighting {
-        prepared = Bitmap::Gray(prepare::whiten_faint_marks(&prepared));
-        changed = true;
+        made = Some(Arc::new(Bitmap::Gray(prepare::whiten_faint_marks(
+            prepared(&made, original),
+        ))));
     }
-    let skew_degrees = prepare::skew_degrees(&prepared);
+    let skew_degrees = prepare::skew_degrees(prepared(&made, original));
     if skew_degrees != 0.0 {
-        prepared = prepared.rotated(skew_degrees);
-        changed = true;
+        made = Some(Arc::new(prepared(&made, original).rotated(skew_degrees)));
     }
-    let scale = prepare::scale_factor(&prepared, MAX_PIXELS, reducible(script.as_deref()));
+    let scale = prepare::scale_factor(
+        prepared(&made, original),
+        MAX_PIXELS,
+        reducible(script.as_deref()),
+    );
     if scale != 1.0 {
-        prepared = Bitmap::Gray(prepare::scale(&prepared, scale));
-        changed = true;
+        made = Some(Arc::new(Bitmap::Gray(prepare::scale(
+            prepared(&made, original),
+            scale,
+        ))));
     }
     Prepared {
-        image: changed.then(|| Arc::new(prepared)),
+        image: made,
         model,
         uneven_lighting,
         script,
