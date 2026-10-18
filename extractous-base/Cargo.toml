@@ -15,12 +15,14 @@ default = ["tika"]
 tika = ["dep:jni"]
 # What the tests of the crates built on this one share with its own: helpers and the vocabulary of
 # the parity comparisons.
-testing = ["lzma-rust2/encoder", "sevenz-rust2/compress"]
+testing = ["dep:brotli", "lzma-rust2/encoder", "sevenz-rust2/compress"]
 
 [dependencies]
 jni = { version = "0.22.4", optional = true }
 aes = "0.9.3"
 ar = "0.9.0"
+brotli = { version = "8.0.4", optional = true }
+brotli-decompressor = "5.0.3"
 bzip2 = "0.6.1"
 cpio = "0.4.1"
 encoding_rs = "0.8.42"
@@ -46,11 +48,12 @@ thiserror = { version = "2.0.17" }
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 unicode-script = "0.5.8"
-zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs", "legacy-zip"] }
 
 [target.'cfg(windows)'.dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
 [dev-dependencies]
+brotli = "8.0.4"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
 sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["bzip2", "deflate", "compress"] }

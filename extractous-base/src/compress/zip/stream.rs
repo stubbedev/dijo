@@ -2,8 +2,8 @@
 //! `ZipArchiveInputStream` reads them, for the archives `ZipFile` cannot open.
 //!
 //! A stored entry with a data descriptor is found by scanning for the next signature, as
-//! `readStoredEntry` does, without its 512-byte buffering. Entries are read stored or deflated
-//! only, as by [`super::file`]. Names come from the Unicode path extra field where its CRC
+//! `readStoredEntry` does, without its 512-byte buffering. Entries are read stored, deflated,
+//! shrunk or imploded only, as by [`super::file`]. Names come from the Unicode path extra field where its CRC
 //! matches, as `useUnicodeExtraFields` asks.
 
 use std::borrow::Cow;
@@ -11,19 +11,16 @@ use std::ops::Range;
 
 use super::extra::{self, ExtraFields, Times};
 use super::file::{entry_name, unicode_text, NameSource, ZipEntry};
-use super::{decode_name, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATED, LFH_SIG, STORED};
+use super::{
+    decode_legacy, decode_name, inflate, u16_at, u32_at, Content, BZIP2, CFH_SIG, DEFLATE64,
+    DEFLATED, IMPLODING, LFH_SIG, STORED, UNSHRINKING, XZ, ZSTD,
+};
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
 const DD_SIG: [u8; 4] = *b"PK\x07\x08";
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const AED_SIG: [u8; 4] = *b"PK\x06\x08";
 const PREAMBLE_GARBAGE_MAX_SIZE: usize = 4096;
-const DEFLATE64: u16 = 9;
-const XZ: u16 = 95;
-const ZSTD: [u16; 2] = [93, 20];
-const UNSHRINKING: u16 = 1;
-const IMPLODING: u16 = 6;
-const BZIP2: u16 = 12;
 /// Where an entry whose data the input cuts short ends: nowhere a next entry can start.
 const TRUNCATED: usize = usize::MAX;
 
@@ -282,6 +279,17 @@ impl<'a> ZipStream<'a> {
                 }
                 Ok(content)
             }
+            UNSHRINKING | IMPLODING => {
+                let raw = self.data.get(current.data_start..).unwrap_or_default();
+                let length = usize::try_from(current.compressed_size).map_err(|_| Failure::Io)?;
+                let size = u64::try_from(current.size).map_err(|_| Failure::Io)?;
+                Ok(decode_legacy(
+                    current.method,
+                    current.flags,
+                    &raw[..length.min(raw.len())],
+                    size,
+                ))
+            }
             method => Err(unread(method)),
         }
     }
@@ -294,8 +302,13 @@ impl<'a> ZipStream<'a> {
             STORED if current.has_data_descriptor() => self
                 .read_stored_with_descriptor(current)
                 .map(|(_, end)| end),
-            STORED => {
-                let size = usize::try_from(current.size).map_err(|_| Failure::Io)?;
+            STORED | UNSHRINKING | IMPLODING => {
+                let size = usize::try_from(if current.method == STORED {
+                    current.size
+                } else {
+                    current.compressed_size
+                })
+                .map_err(|_| Failure::Io)?;
                 Ok(match self.bytes(current.data_start, size) {
                     Ok(_) => current.data_start + size,
                     Err(_) => TRUNCATED,

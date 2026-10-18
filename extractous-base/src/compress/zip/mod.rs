@@ -7,6 +7,7 @@ pub mod salvage;
 pub mod stream;
 
 use std::borrow::Cow;
+use std::io::Read;
 
 use flate2::{Decompress, FlushDecompress, Status};
 
@@ -15,7 +16,13 @@ use super::MAX_DECODED;
 pub(crate) const LFH_SIG: [u8; 4] = *b"PK\x03\x04";
 pub(crate) const CFH_SIG: [u8; 4] = *b"PK\x01\x02";
 pub(crate) const STORED: u16 = 0;
+pub(crate) const UNSHRINKING: u16 = 1;
+pub(crate) const IMPLODING: u16 = 6;
 pub(crate) const DEFLATED: u16 = 8;
+pub(crate) const DEFLATE64: u16 = 9;
+pub(crate) const BZIP2: u16 = 12;
+pub(crate) const ZSTD: [u16; 2] = [93, 20];
+pub(crate) const XZ: u16 = 95;
 
 /// Why `ZipFile` cannot open an archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +105,50 @@ pub(crate) fn inflate(raw: &[u8]) -> Content<'static> {
     }
 }
 
+/// Data shrunk ([`UNSHRINKING`]) or imploded ([`IMPLODING`]) with the general purpose `flags`,
+/// `size` bytes once decoded, as `UnshrinkingInputStream` and `ExplodingInputStream` decode it,
+/// without checking its CRC: all of it, what was decoded before the data failed, or past
+/// [`MAX_DECODED`] bytes. The `zip` crate decodes it, read from a local header written for it,
+/// the only way the crate takes data of these methods.
+pub(crate) fn decode_legacy(method: u16, flags: u16, raw: &[u8], size: u64) -> Content<'static> {
+    const DATA_DESCRIPTOR: u16 = 0x0008;
+    const IMPLODE_OPTIONS: u16 = 0x0006;
+    const DOS_EPOCH_DATE: u16 = 0x0021;
+    let mut stream = Vec::with_capacity(30 + raw.len());
+    stream.extend_from_slice(&LFH_SIG);
+    for field in [
+        10,
+        flags & IMPLODE_OPTIONS | DATA_DESCRIPTOR,
+        method,
+        0,
+        DOS_EPOCH_DATE,
+    ] {
+        stream.extend_from_slice(&field.to_le_bytes());
+    }
+    stream.extend_from_slice(&[0; 16]);
+    stream.extend_from_slice(raw);
+    let options = zip::read::ZipReadOptions::new()
+        .ignore_crc32(true)
+        .override_compressed_size(raw.len() as u64)
+        .override_uncompressed_size(size);
+    let mut out = Vec::new();
+    let mut input = stream.as_slice();
+    let read = match zip::read::read_zipfile_from_stream_with_options(&mut input, options) {
+        Ok(Some(entry)) => entry
+            .take(MAX_DECODED as u64 + 1)
+            .read_to_end(&mut out)
+            .is_ok(),
+        Ok(None) | Err(_) => false,
+    };
+    if out.len() > MAX_DECODED {
+        Content::Oversized(Cow::Owned(out))
+    } else if read && out.len() as u64 == size {
+        Content::Complete(Cow::Owned(out))
+    } else {
+        Content::Truncated(Cow::Owned(out))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +157,51 @@ mod tests {
     fn decodes_names_as_commons_compress_does() {
         assert_eq!(decode_name(b"caf\xC3\xA9"), "caf\u{E9}");
         assert_eq!(decode_name(b"caf\xE9"), "caf?");
+    }
+
+    /// Two entries of Tika's `moby.zip`, one imploded and one shrunk.
+    const LEGACY: &[u8] = include_bytes!("../../../tests/fixtures/zip/legacy.zip");
+
+    fn assert_decoded(entry: &file::ZipEntry, content: Content) {
+        let Content::Complete(bytes) = content else {
+            panic!("{} is not decoded whole: {content:?}", entry.name);
+        };
+        assert_eq!(bytes.len() as i64, entry.size, "{}", entry.name);
+        assert_eq!(
+            i64::from(super::super::crc32(&bytes)),
+            entry.crc,
+            "{}",
+            entry.name
+        );
+    }
+
+    #[test]
+    fn decodes_imploded_and_shrunk_entries() {
+        let zip = file::ZipFile::open(LEGACY).unwrap();
+        let methods: Vec<u16> = zip.entries().iter().map(|entry| entry.method).collect();
+        assert_eq!(methods, [IMPLODING, UNSHRINKING]);
+        for entry in zip.entries() {
+            assert_decoded(entry, zip.read(entry).unwrap());
+        }
+        let mut stream = stream::ZipStream::new(LEGACY, false);
+        let mut read = 0;
+        while let Some(entry) = stream.next_entry().unwrap() {
+            assert_decoded(&entry, stream.content().unwrap());
+            read += 1;
+        }
+        assert_eq!(read, 2);
+    }
+
+    #[test]
+    fn keeps_what_it_decoded_of_data_cut_short() {
+        let zip = file::ZipFile::open(LEGACY).unwrap();
+        let entry = &zip.entries()[0];
+        let start = usize::try_from(entry.data_offset).unwrap();
+        let raw = &LEGACY[start..start + 300];
+        let size = u64::try_from(entry.size).unwrap();
+        let Content::Truncated(bytes) = decode_legacy(IMPLODING, entry.flags, raw, size) else {
+            panic!("data cut short is decoded whole");
+        };
+        assert!(bytes.len() < 1078);
     }
 }

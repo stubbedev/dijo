@@ -13,7 +13,7 @@ use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::is_blank;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
-const NATIVE: [Compressor; 9] = [
+const NATIVE: [Compressor; 10] = [
     Compressor::Gzip,
     Compressor::Bzip2,
     Compressor::Zlib,
@@ -23,6 +23,7 @@ const NATIVE: [Compressor; 9] = [
     Compressor::Xz,
     Compressor::Lzma,
     Compressor::Zstd,
+    Compressor::Brotli,
 ];
 
 const MEDIA_TYPES: [&str; NATIVE.len()] = [
@@ -35,6 +36,7 @@ const MEDIA_TYPES: [&str; NATIVE.len()] = [
     NATIVE[6].media_type(),
     NATIVE[7].media_type(),
     NATIVE[8].media_type(),
+    NATIVE[9].media_type(),
 ];
 
 /// Tika's `CompressorParser`.
@@ -177,6 +179,18 @@ mod tests {
         let reason = defers(&data[..data.len() - 3], "application/gzip", None).unwrap();
         assert!(reason.contains("reading it fails"), "{reason}");
         assert_eq!(defers(&data, "application/gzip", Some("\u{130}.Z")), None);
+    }
+
+    #[test]
+    fn fails_streams_needing_more_memory_than_allowed_as_tika_does() {
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", "application/x-compress");
+        let configs = ParserConfigs::default();
+        let declined = CompressorParser.prepare(&[0x1F, 0x9D, 0x99, 0, 0], &metadata, &configs);
+        let Err(Declined::Fails(crate::Error::LimitExceeded(reason))) = declined else {
+            panic!("a stream beyond the memory limit is not failed as a limit");
+        };
+        assert!(reason.contains("KiB of memory"), "{reason}");
     }
 
     #[cfg(feature = "tika")]

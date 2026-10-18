@@ -3,11 +3,13 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "tika")]
-use super::super::tests::{as_paths, tika_name, CORPORA, XFA_FAILURE};
+use super::super::tests::{as_paths, tika_name, CORPORA};
 use super::super::tests::{document, page_objects};
 use super::super::PdfParser;
 #[cfg(feature = "tika")]
 use super::super::DELEGATES;
+#[cfg(feature = "tika")]
+use super::super::{MALFORMED_XFA, XFA_FAILURE};
 #[cfg(feature = "tika")]
 use crate::config::TesseractOcrConfig;
 use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig};
@@ -1100,7 +1102,7 @@ fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {
         assert_fails_as_tika_with(&as_paths(&locked), &configs);
         let (malformed, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
             .into_iter()
-            .partition(|path| path.ends_with("testPDF_malformedXFA.pdf"));
+            .partition(|path| path.ends_with(MALFORMED_XFA));
         assert_eq!(malformed.len(), 1, "{malformed:?}");
         assert_same_departing(&malformed, &configs, XFA_FAILURE);
         // Tika extracts the Mac, DOS and Unix copies of one file as files of their own (#109).

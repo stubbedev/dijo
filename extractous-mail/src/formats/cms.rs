@@ -11,7 +11,8 @@
 //! content info, its OCTET STRING primitive or constructed. Content no native parser takes,
 //! signed data typed `application/pkcs7-mime` without content (whose kind Bouncy Castle tells
 //! by its signers and certificates), and encodings the port does not read as Bouncy Castle
-//! does stay on Tika's path.
+//! does stay on Tika's path. Data Bouncy Castle fails to read as signed data, such as digested
+//! data or PEM text typed as a signature, fails as it fails on Tika's path.
 
 use crate::compress::zlib;
 use crate::config::ParserConfigs;
@@ -257,30 +258,77 @@ fn classify(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
         .ok_or("CMS data the port does not read as Bouncy Castle does")
 }
 
-/// The content of signed data, as `CMSSignedDataParser.getSignedContent` reads it: the content
-/// info, the version and digest algorithms of the signed data, then its encapsulated content
-/// info; `None` where the port does not read it as Bouncy Castle does.
-fn signed_content(input: &[u8]) -> Option<Option<Vec<u8>>> {
+/// What `CMSSignedDataParser` makes of data it is given as signed data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Signed {
+    /// The encapsulated content, if there is any.
+    Read(Option<Vec<u8>>),
+    /// Bouncy Castle fails on it, with this exception.
+    Fails(String),
+}
+
+/// The exception `ASN1StreamParser.readObject` throws on the first element of `input` when it is
+/// of a constructed universal type the parser has no parser for, as on text read as BER: none
+/// for any other element.
+fn unknown_object(input: &[u8]) -> Option<String> {
+    const PARSED: [u8; 5] = [0x03, 0x04, 0x08, 0x10, 0x11];
+    let (&tag, &length) = (input.first()?, input.get(1)?);
+    let number = tag & 0x1F;
+    if tag & 0xE0 != 0x20 || number == 0x1F || PARSED.contains(&number) {
+        return None;
+    }
+    let encoding = match length {
+        0x80 => "BER",
+        0x00..=0x7F => "DL",
+        _ => return None,
+    };
+    Some(format!(
+        "org.bouncycastle.asn1.ASN1Exception: unknown {encoding} object encountered: 0x{number:x}"
+    ))
+}
+
+/// Data read as signed data, as `CMSSignedDataParser.getSignedContent` reads it whatever its
+/// content type: the content info, the version and digest algorithms of the signed data, then
+/// its encapsulated content info; `None` where the port does not read it as Bouncy Castle does.
+fn signed_content(input: &[u8]) -> Option<Signed> {
+    if let Some(exception) = unknown_object(input) {
+        return Some(Signed::Fails(exception));
+    }
     let mut ber = Ber {
         bytes: input,
         at: 0,
     };
     ber.expect(SEQUENCE)?;
-    if ber.object_identifier()? != SIGNED_DATA {
-        return None;
-    }
+    ber.object_identifier()?;
     ber.expect(EXPLICIT_0)?;
     ber.expect(SEQUENCE)?;
     let Length::Definite(length) = ber.expect(INTEGER)? else {
         return None;
     };
     ber.take(length);
-    let algorithms = ber.expect(SET)?;
+    let algorithms = match ber.header()? {
+        (SET, algorithms) => algorithms,
+        (SEQUENCE, _) => {
+            return Some(Signed::Fails(
+                "java.lang.ClassCastException: the digest algorithms of the signed data are a \
+                 SEQUENCE, where an ASN1SetParser is expected"
+                    .to_owned(),
+            ))
+        }
+        _ => return None,
+    };
     let start = ber.at;
     while ber.has_more(start, algorithms) {
         ber.algorithm_identifier()?;
     }
-    ber.encapsulated_content()
+    ber.encapsulated_content().map(Signed::Read)
+}
+
+/// The failure of a document Bouncy Castle fails to read as signed data with `exception`.
+fn unreadable_signed_data(exception: String) -> Declined {
+    Declined::Fails(Error::ParseError(format!(
+        "Unable to read the CMS signed data: {exception}"
+    )))
 }
 
 /// The content of compressed data, inflated as `CMSCompressedDataParser.getContent` with a
@@ -318,29 +366,34 @@ fn typed_as_signature(metadata: &TikaMetadata) -> bool {
 }
 
 /// What `CmsParser`, and the `Pkcs7Parser` it hands what it does not report itself, write for
-/// `input`, typed by `metadata`, when it is not encrypted, or why Tika's path is left to read it.
+/// `input`, typed by `metadata`, when it is not encrypted; how it fails, as Tika's path fails it;
+/// or why Tika's path is left to read it.
 fn prepare_unencrypted<'a>(
     input: &[u8],
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Deferral> {
+) -> Result<Prepared<'a>, Declined> {
     let unread = || "CMS data the port does not read as Bouncy Castle does".to_owned();
     if typed_as_signature(metadata) {
         return match signed_content(input).ok_or_else(unread)? {
-            None => Ok(empty(None)),
-            Some(signed) => with_content(SIGNED, signed, configs),
+            Signed::Read(None) => Ok(empty(None)),
+            Signed::Read(Some(signed)) => Ok(with_content(SIGNED, signed, configs)?),
+            Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         };
     }
     match classify(input).map_err(str::to_owned)? {
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
-            Some(signed) => with_content(SIGNED, signed, configs),
-            None => Err("signed data whose kind Bouncy Castle tells by its signers".to_owned()),
+            Signed::Read(Some(signed)) => Ok(with_content(SIGNED, signed, configs)?),
+            Signed::Read(None) => Err(Declined::Deferred(
+                "signed data whose kind Bouncy Castle tells by its signers".to_owned(),
+            )),
+            Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         },
-        Some(COMPRESSED_DATA) => with_content(
+        Some(COMPRESSED_DATA) => Ok(with_content(
             COMPRESSED,
             compressed_content(input).ok_or_else(unread)?,
             configs,
-        ),
+        )?),
         Some(DIGESTED_DATA) => Ok(empty(Some(DIGESTED))),
         _ => Ok(empty(None)),
     }
@@ -419,7 +472,7 @@ impl Parser for CmsParser {
                 "S/MIME (CMS {name}) data; decrypting it needs the recipient's private key"
             ))));
         }
-        Ok(prepare_unencrypted(input, metadata, configs)?)
+        prepare_unencrypted(input, metadata, configs)
     }
 }
 
@@ -710,34 +763,63 @@ mod tests {
         assert_same_as_tika_reading(&paths);
     }
 
-    /// Tika's CMS test documents the native path leaves to Tika's: digested data typed as a
-    /// signature, which Bouncy Castle fails to read as signed data, and signed data in PEM,
-    /// which it cannot read at all.
+    #[test]
+    fn fails_what_bouncy_castle_fails_to_read_as_signed_data() {
+        let Some(Signed::Fails(pem)) = signed_content(b"-----BEGIN PKCS7-----\nMIIG") else {
+            panic!("PEM is read as signed data");
+        };
+        assert!(pem.contains("unknown DL object encountered: 0xd"), "{pem}");
+        let mut digested = vec![SEQUENCE, 0x1C, OBJECT_IDENTIFIER, 0x09];
+        digested.extend_from_slice(DIGESTED_DATA);
+        digested.extend_from_slice(&[EXPLICIT_0, 0x0F, SEQUENCE, 0x0D, INTEGER, 0x01, 0x00]);
+        digested.extend_from_slice(&[SEQUENCE, 0x08, OBJECT_IDENTIFIER, 0x06]);
+        digested.extend_from_slice(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03]);
+        let Some(Signed::Fails(cast)) = signed_content(&digested) else {
+            panic!("digested data is read as signed data");
+        };
+        assert!(cast.contains("ClassCastException"), "{cast}");
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", SIGNATURE);
+        let configs = ParserConfigs::default();
+        assert!(matches!(
+            CmsParser.prepare(&digested, &metadata, &configs),
+            Err(Declined::Fails(Error::ParseError(_)))
+        ));
+    }
+
+    /// Tika's CMS test documents Bouncy Castle fails to read as signed data: digested data
+    /// typed as a signature, and signed data in PEM.
     #[cfg(feature = "tika")]
-    const LEFT_TO_TIKA: [&str; 2] = ["testPKCS7_digested.p7", "testPKCS7_signed_data_def.pem"];
+    const UNREADABLE: [&str; 2] = ["testPKCS7_digested.p7", "testPKCS7_signed_data_def.pem"];
 
     #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn reads_tikas_test_documents_as_tikas_path_does() {
         let (parsed, deferred) = documents(&CmsParser, &[&conformance_corpus()]);
-        let mut left: Vec<String> = deferred
-            .iter()
-            .filter_map(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, LEFT_TO_TIKA);
+        assert!(deferred.is_empty(), "{deferred:?}");
+        let failing = |names: &[&str], path: &Path| names.iter().any(|name| path.ends_with(name));
         let (enveloped, rest): (Vec<&Path>, Vec<&Path>) = parsed
             .iter()
             .map(PathBuf::as_path)
-            .partition(|path| ENVELOPED.iter().any(|name| path.ends_with(name)));
+            .partition(|path| failing(&ENVELOPED, path));
+        let (unreadable, rest): (Vec<&Path>, Vec<&Path>) = rest
+            .into_iter()
+            .partition(|path| failing(&UNREADABLE, path));
         assert_eq!(enveloped.len(), ENVELOPED.len());
+        assert_eq!(unreadable.len(), UNREADABLE.len());
         assert!(DETACHED
             .iter()
             .all(|name| rest.iter().any(|path| path.ends_with(name))));
         assert_same_as_tika_reading(&rest);
         assert_fails_as_tika(&enveloped);
+        assert_fails_as_tika(&unreadable);
+        for path in unreadable {
+            let error = crate::Extractor::new()
+                .extract_file_to_string(path.to_str().unwrap())
+                .unwrap_err();
+            assert!(matches!(error, Error::ParseError(_)), "{error:?}");
+        }
         let error = crate::Extractor::new()
             .extract_file_to_string(enveloped[0].to_str().unwrap())
             .unwrap_err();

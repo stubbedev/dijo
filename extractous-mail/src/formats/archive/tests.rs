@@ -8,6 +8,8 @@ use super::*;
 #[cfg(feature = "tika")]
 use crate::compress::ar::tests::ar;
 #[cfg(feature = "tika")]
+use crate::compress::brotli::tests::brotli;
+#[cfg(feature = "tika")]
 use crate::compress::bzip2::tests::bzip2;
 #[cfg(feature = "tika")]
 use crate::compress::cpio::tests::cpio;
@@ -284,7 +286,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
         ],
         Some(as_tika_checks_zips),
     );
-    assert_eq!(deferred, ["droste.zip", "moby.zip"]);
+    assert_eq!(deferred, ["droste.zip"]);
 }
 
 #[cfg(feature = "tika")]
@@ -321,6 +323,7 @@ fn extracts_compressed_files_as_tikas_path_does() {
             ("notes.lz4", lz4(text)),
             ("notes.txt.xz", xz(text)),
             ("notes.lzma", lzma(text)),
+            ("notes.txt.br", brotli(text)),
         ],
     );
 }
@@ -352,10 +355,7 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[("testZSTD.zst", ZSTD_WITHOUT_ZSTD_JNI)],
     );
-    assert_eq!(
-        deferred,
-        ["TIKA-216.tgz", "quine.gz", "testLZMA_oom", "testZ_oom.Z"]
-    );
+    assert_eq!(deferred, ["TIKA-216.tgz", "quine.gz"]);
 }
 
 #[cfg(feature = "tika")]
@@ -416,11 +416,7 @@ fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[],
     );
-    assert_eq!(
-        deferred,
-        ["test-documents.cpio"],
-        "an old binary cpio archive"
-    );
+    assert_eq!(deferred, Vec::<String>::new());
 }
 
 #[cfg(feature = "tika")]

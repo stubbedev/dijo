@@ -41,6 +41,11 @@ impl Thrown {
     }
 }
 
+/// Where the parser's output departs from Tika's, for the parity tests: the pages it hands the
+/// HTML parser, which builds their trees by the WHATWG algorithm (#84).
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub const DEPARTURES: crate::formats::parity::Departures = html::TREE_DEPARTURES;
+
 /// Tika's `ChmParser`.
 pub struct ChmParser;
 

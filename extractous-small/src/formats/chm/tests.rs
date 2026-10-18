@@ -163,11 +163,7 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
         .partition(|path| path.ends_with("testChm_oom.chm"));
     assert_eq!(parsed.len(), 12, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(
-        &paths,
-        ChmParser.tika_name(),
-        crate::formats::html::TREE_DEPARTURES,
-    );
+    assert_same_as_tika_departing(&paths, ChmParser.tika_name(), DEPARTURES);
     let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
     assert_fails_as_tika(&failing);
 }

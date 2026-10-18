@@ -660,10 +660,10 @@ mod tests {
     fn defers_methods_it_does_not_decompress() {
         let mut data = zip(&[("a", b"hej")]);
         let cd = central_record(&data);
-        data[8..10].copy_from_slice(&6u16.to_le_bytes());
-        data[cd + 10..cd + 12].copy_from_slice(&6u16.to_le_bytes());
+        data[8..10].copy_from_slice(&12u16.to_le_bytes());
+        data[cd + 10..cd + 12].copy_from_slice(&12u16.to_le_bytes());
         let reason = defers(&data).unwrap();
-        assert!(reason.contains("method 6"), "{reason}");
+        assert!(reason.contains("method 12"), "{reason}");
     }
 
     #[cfg(feature = "tika")]

@@ -235,6 +235,12 @@ fn content(input: &[u8]) -> Option<Vec<u8>> {
     read().ok().flatten()
 }
 
+/// For the parity tests: the content of a cut envelope, which the parser spools whole where
+/// Tika's copy loses its end (#132).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const DEPARTURES: crate::formats::parity::Departures =
+    &[crate::formats::parity::Departure::WholeContent("#132")];
+
 /// Tika's `TSDParser`.
 pub struct TsdParser;
 
@@ -273,7 +279,9 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
+    };
 
     /// A time-stamped data envelope of `content`, every length indefinite, with no time stamps.
     fn envelope(content: &[u8]) -> Vec<u8> {
@@ -328,6 +336,6 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 7, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TsdParser.tika_name());
+        assert_same_as_tika_departing(&paths, TsdParser.tika_name(), DEPARTURES);
     }
 }

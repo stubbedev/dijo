@@ -127,7 +127,7 @@ fn extracts_source_code_as_tikas_path_does() {
     assert_same_as_tika_departing(
         &[java.as_path(), groovy.as_path(), cpp.as_path()],
         SourceCodeParser.tika_name(),
-        crate::formats::html::DEPARTURES,
+        DEPARTURES,
     );
 }
 
@@ -139,9 +139,5 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 2, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(
-        &paths,
-        SourceCodeParser.tika_name(),
-        crate::formats::html::DEPARTURES,
-    );
+    assert_same_as_tika_departing(&paths, SourceCodeParser.tika_name(), DEPARTURES);
 }

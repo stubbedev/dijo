@@ -543,7 +543,7 @@ fn assert_read_as_the_jdk_does(name: &str, input: &[u8], expected: &JdkRead) {
 fn reads_bmps_and_wbmps_as_the_jdks_readers_do() {
     let mut read = 0;
     for (name, expected) in jdk_reads() {
-        if name == "testBMP.bmp" {
+        if name == TIKAS_TEST_BMP {
             continue;
         }
         let input = std::fs::read(format!(
@@ -562,10 +562,12 @@ fn reads_bmps_and_wbmps_as_the_jdks_readers_do() {
 fn reads_tikas_test_bmp_as_the_jdks_reader_does() {
     let (_, expected) = jdk_reads()
         .into_iter()
-        .find(|(name, _)| name == "testBMP.bmp")
+        .find(|(name, _)| name == TIKAS_TEST_BMP)
         .expect("the reference reads testBMP.bmp");
-    let path = conformance_roots()[0].join("src/test/resources/test-documents/testBMP.bmp");
-    assert_read_as_the_jdk_does("testBMP.bmp", &std::fs::read(path).unwrap(), &expected);
+    let path = conformance_roots()[0]
+        .join("src/test/resources/test-documents")
+        .join(TIKAS_TEST_BMP);
+    assert_read_as_the_jdk_does(TIKAS_TEST_BMP, &std::fs::read(path).unwrap(), &expected);
 }
 
 #[cfg(feature = "tika")]
@@ -985,18 +987,6 @@ fn describes_an_image_read_from_memory_by_its_size_alone() {
     );
 }
 
-/// Tika's result of a JPEG XL image, from the native one: no document, and only the metadata
-/// Tika's scan for an XMP packet finds, without what the header and the boxes add (#132).
-#[cfg(feature = "tika")]
-fn as_tika_writes_no_jpeg_xl_document(
-    text: &mut String,
-    metadata: &mut crate::formats::parity::ComparedMetadata,
-    tika: &crate::formats::parity::ComparedMetadata,
-) {
-    text.clear();
-    metadata.retain(|(name, _)| tika.iter().any(|(tika_name, _)| tika_name == name));
-}
-
 /// Tika's `JXLParser` writes no document of a JPEG XL image, only the XMP it finds; the native
 /// parser writes the image's document, with the XMP Tika finds, the same (#132).
 #[cfg(feature = "tika")]
@@ -1132,7 +1122,7 @@ fn reads_tikas_test_bpg_images_as_tika_does_but_for_the_header_it_misreads() {
     crate::formats::parity::assert_same_as_tika_rewriting(
         &paths,
         BpgParser.tika_name(),
-        bpg::as_tika_misreads_the_header,
+        as_tika_misreads_the_header,
     );
 }
 

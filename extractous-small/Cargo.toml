@@ -14,7 +14,7 @@ default = ["tika"]
 # documents no native parser reads.
 tika = ["extractous-base/tika", "extractous-core/tika", "extractous-html/tika", "extractous-mime/tika"]
 # What the tests of the crates built on this one share with its own.
-testing = ["extractous-base/testing", "dep:md-5"]
+testing = ["extractous-base/testing", "extractous-html/testing", "dep:md-5"]
 
 [dependencies]
 extractous-base = { path = "../extractous-base", default-features = false }

@@ -32,6 +32,10 @@ pub enum Departure<'a> {
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
     PngImages(&'a str),
+    /// Whole content: the embedded documents a spool holds, where the native parser keeps every
+    /// byte of a document cut short that Tika's path loses the end of. Each of Tika's files is
+    /// compared with as much of the start of the native one, which must not be shorter.
+    WholeContent(&'a str),
     /// Paragraph order: the text is compared as the set of its lines, each of Tika's one that the
     /// native text has too, but for the paragraphs the second field names, which Tika's path
     /// writes from earlier revisions of the document. The native parser writes each paragraph
@@ -39,7 +43,9 @@ pub enum Departure<'a> {
     /// length limit cuts holds other paragraphs, so its text is not compared, nor the metadata
     /// only one of the two has where the limit stopped one before the end of the document. What
     /// OCR read of the embedded images is compared in any order too: each read of the native
-    /// parser is one of Tika's path's, which also reads the images of earlier revisions.
+    /// parser is one of Tika's path's, which also reads the images of earlier revisions. So are
+    /// the files a spool holds: each of the native parser's, by its content, one of Tika's
+    /// path's, but for those a budget cut, which hold the start of other files.
     Paragraphs(&'a str, &'a [&'a str]),
 }
 

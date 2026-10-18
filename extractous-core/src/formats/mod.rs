@@ -1014,6 +1014,14 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn spools_tikas_documents_as_tikas_path_does() {
+        const ACCESS_CELLS: &str = "its cells are written otherwise than Tika's path writes \
+                                    them on purpose (#122), which only the rewrite of \
+                                    extractous-office's tests makes alike (#153)";
+        const SPLIT_SEGMENT: &str = "Tika fails the document at the entry the segment cuts \
+                                     short, which only extractous-mail's tests declare (#153)";
+        const WMF_UNITS_PER_INCH: &str = "the placeable header of each WMF picture spooled \
+                                          gives its own units per inch, where POI writes 72, \
+                                          which no departure declares yet (#119)";
         let corpus = crate::formats::parity::conformance_corpus();
         let exceptions = [
             (
@@ -1023,10 +1031,6 @@ mod tests {
             (
                 "testPSD_xmp.psd",
                 crate::formats::parity::PSD_PROFILE_AWT_REJECTS,
-            ),
-            (
-                "testHTML_metadata_two_titles.html",
-                "a meta title after the title element is a further dc:title (#86)",
             ),
             (
                 "testZipEncrypted.zip",
@@ -1221,6 +1225,26 @@ mod tests {
                 "its quoted-printable parts keep their own line ends (#73), which moves where a \
                  budget cuts the spool; mail::tests compares its spool unbudgeted",
             ),
+            ("testAccess2.accdb", ACCESS_CELLS),
+            ("testAccess2_2000.mdb", ACCESS_CELLS),
+            ("testAccess2_2002-2003.mdb", ACCESS_CELLS),
+            ("testAccess_V1997.mdb", ACCESS_CELLS),
+            ("test-documents-spanned.z01", SPLIT_SEGMENT),
+            ("pictures.ppt", WMF_UNITS_PER_INCH),
+            ("testPPT_embedded2.ppt", WMF_UNITS_PER_INCH),
+            ("testWPSAttachment.ppt", WMF_UNITS_PER_INCH),
+        ];
+        let compared_otherwise = [
+            crate::formats::html::TWO_TITLES,
+            crate::formats::image::TIKAS_TEST_BMP,
+        ];
+        let html_messages = [
+            "single_mail.mbox",
+            "testEMLX_multipart_html.emlx",
+            "testEMLX_single_part_html.emlx",
+            "testEML_embedded_xhtml_and_img.eml",
+            "testRFC822-ARC",
+            "testRFC822_multipart_attachments.eml",
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;
@@ -1234,9 +1258,14 @@ mod tests {
             let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
             for path in parsed {
                 let name = path.file_name().unwrap().to_string_lossy();
-                if exceptions.iter().any(|(exception, _)| *exception == name) {
+                if exceptions.iter().any(|(exception, _)| *exception == name)
+                    || compared_otherwise.contains(&name.as_ref())
+                {
                     continue;
                 }
+                let walked = (parser.name() == onenote::OneNoteParser.name())
+                    .then(|| onenote::walked(&name))
+                    .flatten();
                 // The fixes of #89, #99, #105, #118, #129 and #132 depart from Tika's path
                 // systematically.
                 let head: crate::formats::parity::Normalisation =
@@ -1244,6 +1273,7 @@ mod tests {
                 let departure: Option<(crate::formats::parity::NativeRewrite, _)> = match parser
                     .name()
                 {
+                    _ if walked.is_some() => None,
                     "extractous::ZipParser" | "extractous::CmsParser" => {
                         Some((crate::formats::archive::as_tika_checks_zips, None))
                     }
@@ -1269,6 +1299,13 @@ mod tests {
                         crate::formats::class_file::as_written,
                         Some(crate::formats::class_file::without_misread_access),
                     )),
+                    "extractous::BPGParser" => {
+                        Some((crate::formats::image::as_tika_misreads_the_header, None))
+                    }
+                    "extractous::JXLParser" => Some((
+                        crate::formats::image::as_tika_writes_no_jpeg_xl_document,
+                        None,
+                    )),
                     _ => None,
                 };
                 // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, that of
@@ -1279,15 +1316,31 @@ mod tests {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
                     | "extractous::MboxParser" => crate::formats::mail::DEPARTURES.to_vec(),
-                    "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
+                    "extractous::OfficeParser" => [
+                        crate::formats::msg::RECIPIENT_NAMES,
+                        crate::formats::html::DEPARTURES,
+                    ]
+                    .concat(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
                         crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }
                     "extractous::IDMLParser" => {
                         crate::formats::idml::ACCUMULATED_PAGE_COUNTS.to_vec()
                     }
-                    _ => Vec::new(),
+                    "extractous::JSoupParser" => crate::formats::html::DEPARTURES.to_vec(),
+                    "extractous::ChmParser" => crate::formats::chm::DEPARTURES.to_vec(),
+                    "extractous::SourceCodeParser" => {
+                        crate::formats::source_code::DEPARTURES.to_vec()
+                    }
+                    "extractous::TSDParser" => crate::formats::tsd::DEPARTURES.to_vec(),
+                    _ => walked.unwrap_or_default().to_vec(),
                 };
+                if parser.name() == pdf::PdfParser.name() && name == pdf::MALFORMED_XFA {
+                    departures.extend_from_slice(pdf::XFA_FAILURE);
+                }
+                if html_messages.contains(&name.as_ref()) {
+                    departures.extend_from_slice(crate::formats::html::DEPARTURES);
+                }
                 if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
                     departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
                 }

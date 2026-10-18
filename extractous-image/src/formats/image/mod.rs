@@ -20,6 +20,18 @@ mod raw;
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub use bpg::as_tika_misreads_the_header;
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub use jxl::as_tika_writes_no_jpeg_xl_document;
+
+/// For the parity tests: the BMP image of Tika's tests, which Tika's path reads with the JDK's
+/// reader or jai-imageio's, whichever its registry lists first in an order nothing defines
+/// (#114). It is compared with what the JDK's reader reads, as `just bmp-reference` records it,
+/// instead of with Tika's path.
+#[cfg(any(test, feature = "testing"))]
+pub const TIKAS_TEST_BMP: &str = "testBMP.bmp";
+
 use std::fs;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
