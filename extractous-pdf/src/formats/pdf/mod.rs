@@ -1250,6 +1250,15 @@ mod tests {
     /// embedded, is of the character collection `ordering` of `kind`.
     #[cfg(feature = "tika")]
     fn composite(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<u8> {
+        document(
+            &composite_objects(encoding, ordering, kind, codes),
+            b"",
+            &[],
+        )
+    }
+
+    /// The objects of [`composite`].
+    fn composite_objects(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<String> {
         let content = format!("BT /F1 12 Tf 72 720 Td <{codes}> Tj ET");
         let mut objects = page_objects(&content);
         objects[4] = format!(
@@ -1266,8 +1275,75 @@ mod tests {
              /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>"
                 .to_owned(),
         ]);
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        objects
+    }
+
+    /// A page showing `codes` in an Identity-H composite font whose TrueType descendant embeds
+    /// `program`, without a ToUnicode map, so that the text comes of the program's cmap.
+    fn embedded_composite(program: &[u8], codes: &str) -> Vec<u8> {
+        let mut objects: Vec<Vec<u8>> =
+            composite_objects("Identity-H", "Identity", "CIDFontType2", codes)
+                .into_iter()
+                .map(String::into_bytes)
+                .collect();
+        objects[6] = replace(&objects[6], b"/StemV 80", b"/StemV 80 /FontFile2 8 0 R");
+        objects.push(
+            [
+                format!("<< /Length {} >>\nstream\n", program.len()).as_bytes(),
+                program,
+                b"\nendstream",
+            ]
+            .concat(),
+        );
         document(&objects, b"", &[])
+    }
+
+    /// Embedded programs FontBox reads, of each cmap format, the text read of their cmaps, where
+    /// format 13 maps A to C to one glyph, and one of PostScript outlines that `TTFParser` fails,
+    /// which makes the font damaged.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_embedded_true_type_programs_as_tikas_path_does() {
+        use truetype::programs::{format2, format8, long_subtable, program, with_cmap};
+        let scratch = Scratch::new("pdf-true-type-programs");
+        let programs = [
+            ("format4.pdf", program(&[])),
+            ("format2.pdf", with_cmap(format2())),
+            ("format8.pdf", with_cmap(format8())),
+            (
+                "format13.pdf",
+                with_cmap(long_subtable(13, &[1, 0x41, 0x43, 2])),
+            ),
+            ("cff.pdf", program(&[(b"CFF ", vec![1, 0, 4, 1])])),
+        ];
+        let configs = with_pdf(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR));
+        let paths: Vec<PathBuf> = programs
+            .iter()
+            .map(|(name, program)| {
+                let input = embedded_composite(program, "000100020003");
+                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
+                assert_eq!(deferral, None, "{name}");
+                let (_, xhtml) = prepared_reading(&input, &configs);
+                let whole = !matches!(*name, "format13.pdf" | "cff.pdf");
+                assert_eq!(xhtml.contains("ABC"), whole, "{name}: {xhtml}");
+                scratch.write(name, &input)
+            })
+            .collect();
+        assert_same_as_tika_delegating_with(&as_paths(&paths), tika_name(), &DELEGATES, &configs);
+    }
+
+    /// An OpenType program, which PDFBox reads with `OTFParser`, and a cmap mapping a code to the
+    /// glyph past the last, where FontBox throws, are read with the font damaged.
+    #[test]
+    fn reads_an_open_type_or_overflowing_program_noting_the_difference() {
+        use truetype::programs::{long_subtable, program, with_cmap, GLYPHS};
+        let open_type = [b"OTTO".as_slice(), &program(&[])[4..]].concat();
+        let past = with_cmap(long_subtable(13, &[1, 0x41, 0x41, u32::from(GLYPHS)]));
+        for (program, why) in [(open_type, "OTFParser"), (past, "ArrayIndexOutOfBounds")] {
+            let input = embedded_composite(&program, "0001");
+            let (difference, _) = differing_reading(&input, &ParserConfigs::default());
+            assert!(difference.0.contains(why), "{difference:?}");
+        }
     }
 
     #[cfg(feature = "tika")]

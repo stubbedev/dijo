@@ -285,16 +285,26 @@ pub(super) const ENCODING_WIN_UNICODE_BMP: u16 = 1;
 pub(super) const ENCODING_WIN_UNICODE_FULL: u16 = 10;
 
 /// Why FontBox fails to read a font program, which makes the font damaged to PDFBox.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Damaged;
 
-/// What reading a font program gives: the font, the font damaged as FontBox finds it, or a font
-/// FontBox reads in a way the port does not follow.
-#[derive(Debug)]
-pub(crate) enum Read {
-    Font(TrueType),
+/// Why FontBox's `TTFParser` fails to read a font program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Failure {
+    /// An `IOException` reading or checking its tables.
     Damaged(Damaged),
-    Unported(String),
+    /// `parseTables`' `IOException` for a `CFF ` table, "True Type fonts using CFF outlines are
+    /// not supported".
+    PostScript,
+    /// The `ArrayIndexOutOfBoundsException` of a format 8 or 13 cmap subtable that maps a code to
+    /// the glyph one past the last, which `glyphIdToCharacterCode` has no room for.
+    GlyphOutOfBounds { glyph: u32 },
+}
+
+impl From<Damaged> for Failure {
+    fn from(damaged: Damaged) -> Self {
+        Self::Damaged(damaged)
+    }
 }
 
 /// Where a font program comes from: a document, which FontBox reads leniently, or PDFBox's own
@@ -343,6 +353,18 @@ impl CmapSubtable {
         }
     }
 
+    /// Maps `code` to `glyph` and `glyph` back to `code` alone, as the formats that write
+    /// `glyphIdToCharacterCode` directly do.
+    fn map(&mut self, code: u32, glyph: u32) -> Result<(), Failure> {
+        let slot = self
+            .glyph_to_code
+            .get_mut(glyph as usize)
+            .ok_or(Failure::GlyphOutOfBounds { glyph })?;
+        *slot = GlyphCode::One(code);
+        self.code_to_glyph.insert(code, glyph);
+        Ok(())
+    }
+
     /// `buildGlyphIdToCharacterCodeLookup`: each glyph's codes from the code to glyph map.
     fn build_reverse(&mut self, max_glyph: u32) {
         self.glyph_to_code = vec![GlyphCode::None; max_glyph as usize + 1];
@@ -389,7 +411,7 @@ pub(crate) struct TrueType {
     bbox: [i16; 4],
     pub(super) num_glyphs: u16,
     advance_widths: Vec<u16>,
-    post_names: Option<Vec<String>>,
+    post_names: Option<Vec<Option<String>>>,
     names_to_glyphs: FastMap<String, u32>,
     cmaps: Option<Vec<CmapSubtable>>,
 }
@@ -459,38 +481,13 @@ struct Table {
 
 impl TrueType {
     /// `new TTFParser(true).parse`: a program embedded in a document.
-    pub(super) fn read(bytes: &[u8]) -> Read {
-        if bytes.starts_with(b"ttcf") {
-            return Read::Unported(
-                "a TrueType collection as a font program, which the port does not read".to_owned(),
-            );
-        }
-        if bytes.starts_with(b"OTTO") {
-            return Read::Unported(
-                "an OpenType font program with PostScript outlines, which the port does not read"
-                    .to_owned(),
-            );
-        }
-        match Self::parse(bytes, Source::Embedded) {
-            Ok(font) => Read::Font(font),
-            Err(Parsing::Damaged(damaged)) => Read::Damaged(damaged),
-            Err(Parsing::Unported(reason)) => Read::Unported(reason),
-        }
+    pub(super) fn read(bytes: &[u8]) -> Result<Self, Failure> {
+        Self::parse(bytes, Source::Embedded)
     }
 
     /// `new TTFParser().parse` of a font file, as Tika's `TrueTypeParser` reads one.
-    pub(crate) fn read_file(bytes: &[u8]) -> Read {
-        if bytes.starts_with(b"ttcf") || bytes.starts_with(b"OTTO") {
-            return Read::Unported(
-                "a TrueType collection or PostScript-outlined font, which the port does not read"
-                    .to_owned(),
-            );
-        }
-        match Self::parse(bytes, Source::Bundled) {
-            Ok(font) => Read::Font(font),
-            Err(Parsing::Damaged(damaged)) => Read::Damaged(damaged),
-            Err(Parsing::Unported(reason)) => Read::Unported(reason),
-        }
+    pub(crate) fn read_file(bytes: &[u8]) -> Result<Self, Failure> {
+        Self::parse(bytes, Source::Bundled)
     }
 
     /// `new TTFParser().parse` of a font PDFBox bundles, whose tables FontBox is known to read.
@@ -499,7 +496,7 @@ impl TrueType {
             .map_err(|_| Unported("a font PDFBox bundles that the port fails to read".to_owned()))
     }
 
-    fn parse(bytes: &[u8], source: Source) -> Result<Self, Parsing> {
+    fn parse(bytes: &[u8], source: Source) -> Result<Self, Failure> {
         let embedded = source == Source::Embedded;
         let mut data = Data { bytes, pos: 0 };
         data.u32()?;
@@ -518,14 +515,14 @@ impl TrueType {
                 tables.insert(tag, Table { offset, length });
             }
         }
-        if tables.contains_key(b"CFF ") || tables.contains_key(b"CFF2") {
-            return Err(Parsing::Unported(
-                "a TrueType font program with PostScript outlines, which the port does not read"
-                    .to_owned(),
-            ));
-        }
+        let postscript = tables.contains_key(b"CFF ");
         let table = |tag: &[u8; 4]| tables.get(tag).copied();
-        let head = table(b"head").ok_or(Parsing::Damaged(Damaged))?;
+        let mandatory = |tag: &[u8; 4]| match table(tag) {
+            Some(table) => Ok(table),
+            None if postscript => Err(Failure::PostScript),
+            None => Err(Failure::Damaged(Damaged)),
+        };
+        let head = table(b"head").ok_or(Failure::Damaged(Damaged))?;
         data.seek(head.offset);
         let version = data.fixed()?;
         data.take(14)?;
@@ -538,11 +535,11 @@ impl TrueType {
         let bbox = [data.i16()?, data.i16()?, data.i16()?, data.i16()?];
         data.take(6)?;
         let index_to_loc_format = data.i16()?;
-        let hhea = table(b"hhea").ok_or(Parsing::Damaged(Damaged))?;
+        let hhea = table(b"hhea").ok_or(Failure::Damaged(Damaged))?;
         data.seek(hhea.offset);
         data.take(34)?;
         let number_of_h_metrics = data.u16()?;
-        let maxp = table(b"maxp").ok_or(Parsing::Damaged(Damaged))?;
+        let maxp = table(b"maxp").ok_or(Failure::Damaged(Damaged))?;
         data.seek(maxp.offset);
         let maxp_version = data.fixed()?;
         let num_glyphs = data.u16()?;
@@ -563,7 +560,7 @@ impl TrueType {
         if let Some(post) = table(b"post") {
             font.post_names = read_post(&mut data, &post, num_glyphs)?;
         } else if !embedded {
-            return Err(Parsing::Damaged(Damaged));
+            return Err(Failure::Damaged(Damaged));
         }
         if let Some(loca) = table(b"loca") {
             data.seek(loca.offset);
@@ -572,22 +569,20 @@ impl TrueType {
                 offsets.push(match index_to_loc_format {
                     0 => u32::from(data.u16()?) * 2,
                     1 => data.u32()?,
-                    _ => return Err(Parsing::Damaged(Damaged)),
+                    _ => return Err(Failure::Damaged(Damaged)),
                 });
             }
             if num_glyphs == 1 && offsets[0] == 0 && offsets[1] == 0 {
-                return Err(Parsing::Damaged(Damaged));
+                return Err(Failure::Damaged(Damaged));
             }
         } else {
-            return Err(Parsing::Damaged(Damaged));
+            mandatory(b"loca")?;
         }
-        if table(b"glyf").is_none() {
-            return Err(Parsing::Damaged(Damaged));
+        mandatory(b"glyf")?;
+        if !embedded {
+            mandatory(b"name")?;
         }
-        if table(b"name").is_none() && !embedded {
-            return Err(Parsing::Damaged(Damaged));
-        }
-        let hmtx = table(b"hmtx").ok_or(Parsing::Damaged(Damaged))?;
+        let hmtx = mandatory(b"hmtx")?;
         data.seek(hmtx.offset);
         for _ in 0..number_of_h_metrics {
             font.advance_widths.push(data.u16()?);
@@ -596,11 +591,13 @@ impl TrueType {
         if let Some(cmap) = table(b"cmap") {
             font.cmaps = Some(read_cmap(&mut data, &cmap, num_glyphs)?);
         } else if !embedded {
-            return Err(Parsing::Damaged(Damaged));
+            mandatory(b"cmap")?;
         }
         if let Some(names) = &font.post_names {
             for (index, name) in names.iter().enumerate() {
-                font.names_to_glyphs.insert(name.clone(), index as u32);
+                if let Some(name) = name {
+                    font.names_to_glyphs.insert(name.clone(), index as u32);
+                }
             }
         }
         if let Some(name) = table(b"name") {
@@ -617,7 +614,7 @@ impl TrueType {
             None => None,
         };
         if let Some(vmtx) = table(b"vmtx") {
-            let count = vertical_metrics.ok_or(Parsing::Damaged(Damaged))?;
+            let count = vertical_metrics.ok_or(Failure::Damaged(Damaged))?;
             read_vmtx(&mut data, vmtx, count, num_glyphs)?;
         }
         if let Some(vorg) = table(b"VORG") {
@@ -628,6 +625,9 @@ impl TrueType {
         }
         if let Some(gsub) = table(b"GSUB") {
             gsub::read(&mut data, gsub.offset)?;
+        }
+        if postscript {
+            return Err(Failure::PostScript);
         }
         Ok(font)
     }
@@ -654,8 +654,7 @@ impl TrueType {
     pub(super) fn post_name(&self, glyph: u32) -> Option<&str> {
         self.post_names
             .as_ref()
-            .and_then(|names| names.get(glyph as usize))
-            .map(String::as_str)
+            .and_then(|names| names.get(glyph as usize)?.as_deref())
     }
 
     /// `CmapTable.getSubtable`: the first subtable of the platform and encoding.
@@ -717,17 +716,6 @@ fn parse_uni_name(name: &str) -> Option<u32> {
         return None;
     }
     Some(code)
-}
-
-enum Parsing {
-    Damaged(Damaged),
-    Unported(String),
-}
-
-impl From<Damaged> for Parsing {
-    fn from(damaged: Damaged) -> Self {
-        Self::Damaged(damaged)
-    }
 }
 
 /// `NamingTable.read`: the name records, and their strings within the table, each decoded with
@@ -1120,7 +1108,7 @@ fn read_post(
     data: &mut Data,
     post: &Table,
     num_glyphs: u16,
-) -> Result<Option<Vec<String>>, Parsing> {
+) -> Result<Option<Vec<Option<String>>>, Failure> {
     data.seek(post.offset);
     let format = data.fixed()?;
     data.take(28)?;
@@ -1129,7 +1117,10 @@ fn read_post(
     }
     if format == 1.0 {
         return Ok(Some(
-            MAC_GLYPH_NAMES.iter().map(|&n| n.to_owned()).collect(),
+            MAC_GLYPH_NAMES
+                .iter()
+                .map(|&n| Some(n.to_owned()))
+                .collect(),
         ));
     }
     if format == 2.0 {
@@ -1162,13 +1153,13 @@ fn read_post(
         let names = indices
             .iter()
             .map(|&index| {
-                if index < 258 {
+                Some(if index < 258 {
                     MAC_GLYPH_NAMES[usize::from(index)].to_owned()
                 } else if let (true, Some(extra)) = (index <= 32767, &extra) {
                     extra[usize::from(index) - 258].clone()
                 } else {
                     ".undefined".to_owned()
-                }
+                })
             })
             .collect();
         return Ok(Some(names));
@@ -1178,12 +1169,12 @@ fn read_post(
         for glyph in 0..i32::from(num_glyphs) {
             let offset = i32::from(data.u8()? as i8);
             let index = glyph + 1 + offset;
-            if !(0..258).contains(&index) {
-                return Err(Parsing::Unported(
-                    "a 'post' table of format 2.5 with a name index out of range".to_owned(),
-                ));
-            }
-            names.push(MAC_GLYPH_NAMES[index as usize].to_owned());
+            names.push(
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| MAC_GLYPH_NAMES.get(index))
+                    .map(|&name| name.to_owned()),
+            );
         }
         return Ok(Some(names));
     }
@@ -1191,7 +1182,7 @@ fn read_post(
 }
 
 /// `CmapTable.read`: every subtable, each read as FontBox reads its format.
-fn read_cmap(data: &mut Data, cmap: &Table, num_glyphs: u16) -> Result<Vec<CmapSubtable>, Parsing> {
+fn read_cmap(data: &mut Data, cmap: &Table, num_glyphs: u16) -> Result<Vec<CmapSubtable>, Failure> {
     data.seek(cmap.offset);
     data.u16()?;
     let count = data.u16()?;
@@ -1222,10 +1213,10 @@ fn read_cmap(data: &mut Data, cmap: &Table, num_glyphs: u16) -> Result<Vec<CmapS
                 let mapping = data.take(256)?.to_vec();
                 subtable.glyph_to_code = vec![GlyphCode::None; 256];
                 for (code, &glyph) in mapping.iter().enumerate() {
-                    subtable.glyph_to_code[usize::from(glyph)] = GlyphCode::One(code as u32);
-                    subtable.code_to_glyph.insert(code as u32, u32::from(glyph));
+                    subtable.map(code as u32, u32::from(glyph))?;
                 }
             }
+            2 => read_format2(data, &mut subtable, num_glyphs)?,
             4 => read_format4(data, &mut subtable)?,
             6 => {
                 let first = u32::from(data.u16()?);
@@ -1252,7 +1243,7 @@ fn read_cmap(data: &mut Data, cmap: &Table, num_glyphs: u16) -> Result<Vec<CmapS
                         let invalid =
                             |code: u32| code > 0x10FFFF || (0xD800..=0xDFFF).contains(&code);
                         if invalid(first) || (end > 0 && end < first) || invalid(end) {
-                            return Err(Parsing::Damaged(Damaged));
+                            return Err(Failure::Damaged(Damaged));
                         }
                         let last = if end >= first {
                             Some(end - first)
@@ -1271,20 +1262,145 @@ fn read_cmap(data: &mut Data, cmap: &Table, num_glyphs: u16) -> Result<Vec<CmapS
                     subtable.build_reverse(max_glyph);
                 }
             }
-            14 => {}
-            other => {
-                return Err(Parsing::Unported(format!(
-                    "a cmap subtable of format {other}, which the port does not read"
-                )))
+            8 => read_format8(data, &mut subtable, num_glyphs)?,
+            10 => {
+                let start = u64::from(data.u32()?);
+                let count = u64::from(data.u32()?);
+                let end = start + count;
+                if count > i32::MAX as u64 || end > 0x10FFFF || (0xD800..=0xDFFF).contains(&end) {
+                    return Err(Failure::Damaged(Damaged));
+                }
             }
+            13 => read_format13(data, &mut subtable, num_glyphs)?,
+            14 => {}
+            _ => return Err(Failure::Damaged(Damaged)),
         }
         subtables.push(subtable);
     }
     Ok(subtables)
 }
 
+/// `CmapSubtable.processSubtype2`: a high byte's subheader, then the low bytes' glyphs.
+fn read_format2(
+    data: &mut Data,
+    subtable: &mut CmapSubtable,
+    num_glyphs: u32,
+) -> Result<(), Failure> {
+    let mut keys = Vec::with_capacity(256);
+    for _ in 0..256 {
+        keys.push(data.u16()?);
+    }
+    let last = keys
+        .iter()
+        .map(|&key| usize::from(key / 8))
+        .max()
+        .unwrap_or(0);
+    let mut headers = Vec::with_capacity(last + 1);
+    for index in 0..=last {
+        let first = u32::from(data.u16()?);
+        let count = data.u16()?;
+        let delta = i64::from(data.i16()?);
+        let range_offset = i64::from(data.u16()?) - (last - index) as i64 * 8 - 2;
+        headers.push((first, count, delta, range_offset));
+    }
+    let glyphs = data.pos as i64;
+    subtable.glyph_to_code = vec![GlyphCode::None; num_glyphs as usize];
+    if num_glyphs == 0 {
+        return Ok(());
+    }
+    for (high, (first, count, delta, range_offset)) in (0u32..).zip(headers) {
+        let position = usize::try_from(glyphs + range_offset).map_err(|_| Damaged)?;
+        data.seek(position);
+        for low in 0..u32::from(count) {
+            let code = (high << 8) + first + low;
+            let glyph = match i64::from(data.u16()?) {
+                0 => 0,
+                glyph => (glyph + delta).rem_euclid(65536) as u32,
+            };
+            if glyph < num_glyphs {
+                subtable.map(code, glyph)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `CmapSubtable.processSubtype8`: groups of mixed 16-bit and 32-bit codes.
+fn read_format8(
+    data: &mut Data,
+    subtable: &mut CmapSubtable,
+    num_glyphs: u32,
+) -> Result<(), Failure> {
+    let is32 = data.take(8192)?.to_vec();
+    let groups = data.u32()?;
+    if groups > 65536 {
+        return Err(Failure::Damaged(Damaged));
+    }
+    subtable.glyph_to_code = vec![GlyphCode::None; num_glyphs as usize];
+    if num_glyphs == 0 {
+        return Ok(());
+    }
+    for _ in 0..groups {
+        let first = u64::from(data.u32()?);
+        let end = u64::from(data.u32()?);
+        let start_glyph = u64::from(data.u32()?);
+        if first > end {
+            return Err(Failure::Damaged(Damaged));
+        }
+        for index in first..=end {
+            let byte = match usize::try_from(index) {
+                Ok(index) if index <= i32::MAX as usize => is32.get(index / 8),
+                _ => None,
+            }
+            .ok_or(Damaged)?;
+            let code = if byte & (1 << (index % 8)) == 0 {
+                index
+            } else {
+                let lead = 0xD7C0 + (index >> 10);
+                let trail = 0xDC00 + (index & 0x3FF);
+                (lead << 10) + trail - 0x35FDC00
+            };
+            let glyph = start_glyph + (index - first);
+            if code > i32::MAX as u64 || glyph > u64::from(num_glyphs) {
+                return Err(Failure::Damaged(Damaged));
+            }
+            subtable.map(code as u32, glyph as u32)?;
+        }
+    }
+    Ok(())
+}
+
+/// `CmapSubtable.processSubtype13`: ranges of codes that each map to one glyph.
+fn read_format13(
+    data: &mut Data,
+    subtable: &mut CmapSubtable,
+    num_glyphs: u32,
+) -> Result<(), Failure> {
+    let groups = data.u32()?;
+    subtable.glyph_to_code = vec![GlyphCode::None; num_glyphs as usize];
+    if num_glyphs == 0 {
+        return Ok(());
+    }
+    let invalid = |code: u32| code > 0x10FFFF || (0xD800..=0xDFFF).contains(&code);
+    for _ in 0..groups {
+        let first = data.u32()?;
+        let end = data.u32()?;
+        let glyph = data.u32()?;
+        if glyph > num_glyphs {
+            break;
+        }
+        if invalid(first) || (end > 0 && end < first) || invalid(end) {
+            return Err(Failure::Damaged(Damaged));
+        }
+        for code in first..=end {
+            subtable.map(code, glyph)?;
+        }
+    }
+    Ok(())
+}
+
 /// `CmapSubtable.processSubtype4`.
-fn read_format4(data: &mut Data, subtable: &mut CmapSubtable) -> Result<(), Parsing> {
+fn read_format4(data: &mut Data, subtable: &mut CmapSubtable) -> Result<(), Failure> {
     let seg_count = usize::from(data.u16()? / 2);
     data.take(6)?;
     let mut ends = Vec::with_capacity(seg_count);
@@ -1336,9 +1452,237 @@ fn read_format4(data: &mut Data, subtable: &mut CmapSubtable) -> Result<(), Pars
     Ok(())
 }
 
+/// Font programs of four glyphs, each table as small as FontBox reads it, for tests.
+#[cfg(test)]
+pub(crate) mod programs {
+    /// The number of glyphs of each program.
+    pub(crate) const GLYPHS: u16 = 4;
+
+    /// A program of the mandatory tables, `replaced` replacing or adding tables and an empty
+    /// table dropping one.
+    pub(crate) fn program(replaced: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut tables: Vec<([u8; 4], Vec<u8>)> = vec![
+            (*b"head", head()),
+            (*b"hhea", [vec![0; 34], be(GLYPHS)].concat()),
+            (*b"maxp", [vec![0, 0, 0x50, 0], be(GLYPHS)].concat()),
+            (*b"post", [vec![0, 3, 0, 0], vec![0; 28]].concat()),
+            (*b"loca", vec![0; 2 * (usize::from(GLYPHS) + 1)]),
+            (*b"glyf", vec![0; 4]),
+            (*b"name", vec![0, 0, 0, 0, 0, 6]),
+            (
+                *b"hmtx",
+                [500u16, 0]
+                    .repeat(usize::from(GLYPHS))
+                    .iter()
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
+            ),
+            (*b"cmap", cmap(&[(3, 1, format4())])),
+        ];
+        for (tag, bytes) in replaced {
+            tables.retain(|(kept, _)| kept != *tag);
+            if !bytes.is_empty() {
+                tables.push((**tag, bytes.clone()));
+            }
+        }
+        let count = tables.len() as u16;
+        let mut out = [vec![0, 1, 0, 0], be(count), vec![0; 6]].concat();
+        let mut offset = out.len() + 16 * tables.len();
+        let mut data = Vec::new();
+        for (tag, bytes) in &tables {
+            out.extend_from_slice(tag);
+            out.extend_from_slice(&[0; 4]);
+            out.extend_from_slice(&(offset as u32).to_be_bytes());
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            data.extend_from_slice(bytes);
+            offset += bytes.len();
+        }
+        out.extend(data);
+        out
+    }
+
+    /// A `cmap` table of the subtables of the given platforms and encodings.
+    fn cmap(subtables: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
+        let mut out = [be(0), be(subtables.len() as u16)].concat();
+        let mut offset = 4 + 8 * subtables.len();
+        for (platform, encoding, subtable) in subtables {
+            out.extend([be(*platform), be(*encoding)].concat());
+            out.extend_from_slice(&(offset as u32).to_be_bytes());
+            offset += subtable.len();
+        }
+        for (_, _, subtable) in subtables {
+            out.extend_from_slice(subtable);
+        }
+        out
+    }
+
+    /// A format 4 subtable mapping A, B and C to glyphs 1, 2 and 3.
+    fn format4() -> Vec<u8> {
+        let words: [u16; 15] = [
+            4, 32, 0, 4, 4, 1, 0, 0x43, 0xFFFF, 0, 0x41, 0xFFFF, 0xFFC0, 1, 0,
+        ];
+        [words.iter().flat_map(|w| w.to_be_bytes()).collect(), be(0)].concat()
+    }
+
+    /// A program whose `cmap` table has the one (3, 1) subtable `subtable`.
+    pub(crate) fn with_cmap(subtable: Vec<u8>) -> Vec<u8> {
+        program(&[(b"cmap", cmap(&[(3, 1, subtable)]))])
+    }
+
+    /// A format 2 subtable of one subheader, whose `idRangeOffset` counts from itself, mapping
+    /// A, B and C to glyphs 1, 2 and 3.
+    pub(crate) fn format2() -> Vec<u8> {
+        let words = [0x41u16, 3, 0, 2, 1, 2, 3];
+        [
+            be(2),
+            be(0),
+            be(0),
+            vec![0; 512],
+            words.iter().flat_map(|w| w.to_be_bytes()).collect(),
+        ]
+        .concat()
+    }
+
+    /// A format 8 subtable of 16-bit codes, mapping A, B and C to glyphs 1, 2 and 3.
+    pub(crate) fn format8() -> Vec<u8> {
+        let groups = [1u32, 0x41, 0x43, 1];
+        [
+            long_subtable(8, &[]),
+            vec![0; 8192],
+            groups.iter().flat_map(|v| v.to_be_bytes()).collect(),
+        ]
+        .concat()
+    }
+
+    /// A subtable of `format` 8 or more, whose header has a 32-bit length and language.
+    pub(crate) fn long_subtable(format: u16, body: &[u32]) -> Vec<u8> {
+        let mut out = [be(format), be(0), vec![0; 8]].concat();
+        out.extend(body.iter().flat_map(|value| value.to_be_bytes()));
+        out
+    }
+
+    fn be(value: u16) -> Vec<u8> {
+        value.to_be_bytes().to_vec()
+    }
+
+    fn head() -> Vec<u8> {
+        let mut out = vec![
+            0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x5F, 0x0F, 0x3C, 0xF5, 0, 0,
+        ];
+        out.extend(be(1000));
+        out.extend([0; 16]);
+        out.extend([0, 0, 0, 0, 3, 0xE8, 3, 0xE8]);
+        out.extend([0; 10]);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::programs::{format2, format8, long_subtable, program, with_cmap, GLYPHS};
     use super::*;
+
+    fn subtable(format: Vec<u8>) -> Result<CmapSubtable, Failure> {
+        let mut font = TrueType::read_file(&with_cmap(format))?;
+        Ok(font.cmaps.take().unwrap().remove(0))
+    }
+
+    #[test]
+    fn reads_a_format_2_subtable() {
+        let format = format2();
+        let cmap = subtable(format).unwrap();
+        assert_eq!(
+            (cmap.glyph(0x41), cmap.glyph(0x43), cmap.glyph(0x44)),
+            (1, 3, 0)
+        );
+        assert_eq!(cmap.codes(2), Some(vec![0x42]));
+    }
+
+    #[test]
+    fn reads_a_format_8_subtable() {
+        let format = format8();
+        let cmap = subtable(format).unwrap();
+        assert_eq!((cmap.glyph(0x41), cmap.glyph(0x43)), (1, 3));
+        assert_eq!(cmap.codes(3), Some(vec![0x43]));
+    }
+
+    /// Format 10 is checked and its glyphs left unread, as FontBox leaves them.
+    #[test]
+    fn checks_a_format_10_subtable() {
+        let cmap = subtable(long_subtable(10, &[0x41, 3])).unwrap();
+        assert_eq!((cmap.glyph(0x41), cmap.codes(1)), (0, None));
+        assert_eq!(
+            subtable(long_subtable(10, &[0xD7FE, 3])).unwrap_err(),
+            Failure::Damaged(Damaged)
+        );
+    }
+
+    /// Format 13 maps a range to one glyph, which keeps the range's last code; a glyph one past
+    /// the last is FontBox's `ArrayIndexOutOfBoundsException`, one further ends the groups.
+    #[test]
+    fn reads_a_format_13_subtable() {
+        let cmap = subtable(long_subtable(13, &[1, 0x41, 0x43, 2])).unwrap();
+        assert_eq!((cmap.glyph(0x41), cmap.glyph(0x43)), (2, 2));
+        assert_eq!(cmap.codes(2), Some(vec![0x43]));
+        let past = u32::from(GLYPHS);
+        assert_eq!(
+            subtable(long_subtable(13, &[1, 0x41, 0x41, past])).unwrap_err(),
+            Failure::GlyphOutOfBounds { glyph: past }
+        );
+        let ended = subtable(long_subtable(13, &[2, 0x41, 0x41, past + 1, 0x42, 0x42, 1])).unwrap();
+        assert_eq!(ended.glyph(0x42), 0);
+    }
+
+    #[test]
+    fn an_unknown_cmap_format_is_damaged() {
+        assert_eq!(
+            subtable(vec![0, 7, 0, 0, 0, 0]).unwrap_err(),
+            Failure::Damaged(Damaged)
+        );
+    }
+
+    /// A `CFF ` table fails the program once `head`, `hhea`, `maxp` and `post` are there,
+    /// whatever else is missing; `CFF2` alone does not.
+    #[test]
+    fn a_program_of_postscript_outlines_fails() {
+        let cff = (b"CFF ", vec![1, 0, 4, 1]);
+        for dropped in [b"loca", b"glyf", b"name", b"hmtx", b"cmap", b"OS/2"] {
+            let bytes = program(&[cff.clone(), (dropped, Vec::new())]);
+            assert_eq!(
+                TrueType::read_file(&bytes).unwrap_err(),
+                Failure::PostScript
+            );
+            assert_eq!(TrueType::read(&bytes).unwrap_err(), Failure::PostScript);
+        }
+        let headless = program(&[cff, (b"post", Vec::new())]);
+        assert_eq!(
+            TrueType::read_file(&headless).unwrap_err(),
+            Failure::Damaged(Damaged)
+        );
+        assert!(TrueType::read_file(&program(&[(b"CFF2", vec![2, 0, 5, 0, 0])])).is_ok());
+    }
+
+    /// A `post` table of format 2.5, which `read32Fixed` reads from 0x00028000 rather than the
+    /// specification's 0x00025000, names a glyph whose index falls outside the standard names
+    /// with null.
+    #[test]
+    fn reads_post_format_2_5() {
+        let post = [vec![0, 2, 0x80, 0], vec![0; 28], vec![0, 0xF6, 120, 127]].concat();
+        let font = TrueType::read(&program(&[(b"post", post)])).unwrap();
+        assert_eq!(font.post_name(0), Some(MAC_GLYPH_NAMES[1]));
+        assert_eq!(font.post_name(1), None);
+        assert_eq!(font.post_name(2), Some(MAC_GLYPH_NAMES[123]));
+    }
+
+    /// A TrueType collection is read as `TTFParser` reads any program, from its first bytes.
+    #[test]
+    fn a_collection_is_read_as_a_program() {
+        let collection = [b"ttcf".to_vec(), vec![0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 16]].concat();
+        assert_eq!(
+            TrueType::read_file(&collection).unwrap_err(),
+            Failure::Damaged(Damaged)
+        );
+    }
 
     /// The fallback font has every table FontBox reads, the substitutions of `GSUB` and the
     /// pairs of `kern` among them.
@@ -1365,7 +1709,13 @@ mod tests {
     #[test]
     fn a_program_without_tables_is_damaged() {
         let bytes = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        assert!(matches!(TrueType::read(&bytes), Read::Damaged(_)));
-        assert!(matches!(TrueType::read(&bytes[..4]), Read::Damaged(_)));
+        assert_eq!(
+            TrueType::read(&bytes).unwrap_err(),
+            Failure::Damaged(Damaged)
+        );
+        assert_eq!(
+            TrueType::read(&bytes[..4]).unwrap_err(),
+            Failure::Damaged(Damaged)
+        );
     }
 }
