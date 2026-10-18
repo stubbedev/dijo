@@ -15,7 +15,7 @@ use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::java::dtoa::java_double_to_string;
 
@@ -389,8 +389,8 @@ impl Parser for Mp3Parser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let read = read(input).map_err(|thrown| Declined::Fails(Error::ParseError(thrown)))?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let read = read(input).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         Ok(Box::new(move |xhtml| write(&read, xhtml)))
     }
 }

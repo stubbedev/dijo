@@ -9,7 +9,7 @@ use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Properties, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 
 /// `VISIO_DOCUMENT_REL`.
@@ -50,7 +50,7 @@ impl Parser for VsdxParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
         let drawing = Drawing::open(package).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| drawing.write(xhtml)))

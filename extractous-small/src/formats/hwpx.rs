@@ -16,7 +16,7 @@ use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::is_blank;
 use crate::java::strip;
 
@@ -339,10 +339,10 @@ impl Parser for HwpxParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = package(input).map_err(|refusal| match refusal {
-            Refusal::Unread(why) => Declined::Deferred(why.to_owned()),
-            Refusal::Failed(reason) => Declined::Fails(Error::ParseError(reason)),
+            Refusal::Unread(why) => Decline::Deferred(why.to_owned()),
+            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
         })?;
         let sections = package
             .spine
@@ -353,7 +353,7 @@ impl Parser for HwpxParser {
             Err(Refusal::Unread(why)) => Some((*why).to_owned()),
             _ => None,
         }) {
-            return Err(Declined::Deferred(why));
+            return Err(Decline::Deferred(why));
         }
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();

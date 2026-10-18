@@ -4,7 +4,7 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 
 /// Our Java `OpenPgpParser`.
 pub struct OpenPgpParser;
@@ -26,8 +26,8 @@ impl Parser for OpenPgpParser {
         _input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        Err(Declined::Fails(Error::Encrypted(
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        Err(Decline::Fails(Error::Encrypted(
             "OpenPGP-encrypted data; decrypting it needs the recipient's private key".to_owned(),
         )))
     }

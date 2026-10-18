@@ -8,7 +8,7 @@ use crate::formats::element_metadata::ElementHandlers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 
 /// The XML types Tika's registry hands `DcXMLParser`, having no parser of their own.
 const MEDIA_TYPES: [&str; 8] = [
@@ -46,7 +46,7 @@ impl Parser for DcXmlParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         Ok(Box::new(move |xhtml| {
             let mut metadata = DublinCoreReader {
                 metadata: xhtml.metadata_mut(),

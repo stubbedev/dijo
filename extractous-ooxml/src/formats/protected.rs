@@ -14,10 +14,14 @@ use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, PackageEncryption, ENCRYPTED_PACKAGE, ENCRYPTION_INFO};
 use crate::formats::docx::DocxParser;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office, Summaries};
+use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::Summaries;
 use crate::formats::pptx::PptxParser;
 use crate::formats::xlsx::XlsxParser;
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USED};
+use crate::formats::{
+    self, decision, unless_different, Decline, Declined, Difference, Failure, Parser, Prepared,
+    Unported, PASSWORD_USED,
+};
 use crate::mime::{self, Origin};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
@@ -50,12 +54,13 @@ impl Parser for ProtectedParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let Package {
             summaries,
             package,
             media_type,
             parser,
+            difference,
         } = Package::read(input, configs)?;
         let mut prepared_metadata = metadata.clone();
         let asks_password = configs.password.is_some();
@@ -65,15 +70,20 @@ impl Parser for ProtectedParser {
             asks_password,
             &media_type,
         );
-        drop(parser.prepare(&package, &prepared_metadata, configs)?);
-        Ok(Box::new(move |xhtml| {
+        let decided = decision(parser.prepare(&package, &prepared_metadata, configs))?;
+        let difference = difference.or(decided);
+        let reading: Prepared<'a> = Box::new(move |xhtml| {
             write_metadata(xhtml.metadata_mut(), &summaries, asks_password, &media_type);
             let metadata = xhtml.metadata_mut().clone();
-            let prepared = parser.prepare(&package, &metadata, configs).map_err(|_| {
-                Failure::Malformed("the decrypted package no longer prepares as it did".to_owned())
-            })?;
+            let prepared =
+                formats::reading(parser.prepare(&package, &metadata, configs)).map_err(|_| {
+                    Failure::Malformed(
+                        "the decrypted package no longer prepares as it did".to_owned(),
+                    )
+                })?;
             prepared(xhtml)
-        }))
+        });
+        unless_different(reading, difference)
     }
 }
 
@@ -103,11 +113,14 @@ struct Package {
     /// The type of the package, as `OOXMLExtractorFactory` sets it before it extracts it.
     media_type: String,
     parser: &'static dyn Parser,
+    /// Where POI reads the compound document differently from a stream, if it does.
+    difference: Option<Difference>,
 }
 
 impl Package {
     fn read(input: &[u8], configs: &ParserConfigs) -> Result<Package, Declined> {
-        let file = office::open(input, configs, MEDIA_TYPE, "protected package")?;
+        let Opened { file, difference } =
+            office::open(input, configs, MEDIA_TYPE, "protected package")?;
         let root = file.root();
         let summaries = Summaries::read(&file, root)?;
         let info = stream(&file, root, ENCRYPTION_INFO)?;
@@ -115,7 +128,7 @@ impl Package {
         let key = encryption
             .verify(crypt::password(configs))
             .map_err(|unopened| unopened.unported())?
-            .ok_or_else(|| Declined::Fails(crypt::encrypted(None)))?;
+            .ok_or_else(|| Decline::Fails(crypt::encrypted(None)))?;
         let encrypted = stream(&file, root, ENCRYPTED_PACKAGE)?;
         let package = key
             .decrypt(&encrypted)
@@ -138,6 +151,7 @@ impl Package {
             package,
             media_type,
             parser,
+            difference,
         })
     }
 }

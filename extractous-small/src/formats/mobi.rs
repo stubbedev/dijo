@@ -13,7 +13,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::html;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{noted, unless_different, Decline, Failure, Parser, Prepared};
 use crate::java::strip;
 use crate::text::charset::Charset;
 
@@ -337,20 +337,23 @@ impl Parser for MobiParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let markup = read(input).map_err(Declined::Fails)?;
-        let html = html::prepare(&markup.html, &markup.metadata())
-            .map_err(|reason| Declined::Deferred(format!("the book's HTML defers: {reason}")))?;
-        Ok(Box::new(move |xhtml| {
-            book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)?;
-            // The HTML parser writes into a copy, so what it reads from the HTML stays out of
-            // the book's metadata, as in Tika's path.
-            let book = xhtml.metadata_mut().clone();
-            xhtml.with_metadata(book, |xhtml| {
-                html(xhtml)?;
-                xhtml.end_document().map_err(Failure::from)
-            })
-        }))
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let markup = read(input).map_err(Decline::Fails)?;
+        let (html, difference) = noted(html::prepare(&markup.html, &markup.metadata()))
+            .map_err(|reason| Decline::Deferred(format!("the book's HTML defers: {reason}")))?;
+        unless_different(
+            Box::new(move |xhtml| {
+                book_metadata(&markup, xhtml.metadata_mut()).map_err(Failure::Extraction)?;
+                // The HTML parser writes into a copy, so what it reads from the HTML stays out of
+                // the book's metadata, as in Tika's path.
+                let book = xhtml.metadata_mut().clone();
+                xhtml.with_metadata(book, |xhtml| {
+                    html(xhtml)?;
+                    xhtml.end_document().map_err(Failure::from)
+                })
+            }),
+            difference,
+        )
     }
 }
 

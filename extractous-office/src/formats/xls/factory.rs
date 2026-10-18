@@ -14,7 +14,7 @@ use super::stream::RecordStream;
 use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys};
 use crate::formats::poi::{thrown, Read};
-use crate::formats::{Declined, Unported};
+use crate::formats::{Decline, Declined, Unported};
 
 /// `Biff8DecryptingStream.RC4_REKEYING_INTERVAL`: the bytes each block key decrypts.
 const RC4_REKEYING_INTERVAL: usize = 1024;
@@ -132,7 +132,7 @@ impl<'a> Records<'a> {
             } else {
                 "Supplied"
             };
-            Declined::Fails(crypt::encrypted(Some(&format!(
+            Decline::Fails(crypt::encrypted(Some(&format!(
                 "org.apache.poi.EncryptedDocumentException: {given} password is invalid for \
                  salt/verifier/verifierHash"
             ))))

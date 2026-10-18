@@ -17,7 +17,7 @@ use crate::formats::embedded::RESOURCE_NAME;
 use crate::formats::html::{ParsedDocument, ParsedNode};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::mime::MediaType;
 
@@ -65,16 +65,16 @@ impl Parser for SourceCodeParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if let Some(reason) = AutoDetectReader::defers(input) {
-            return Err(Declined::Deferred(reason.to_owned()));
+            return Err(Decline::Deferred(reason.to_owned()));
         }
         let reader = AutoDetectReader::read(input, metadata.get("Content-Type"))
-            .map_err(|_| Declined::Deferred("the text cannot be decoded natively".to_owned()))?;
+            .map_err(|_| Decline::Deferred("the text cannot be decoded natively".to_owned()))?;
         let name = metadata.get(RESOURCE_NAME).unwrap_or_default().to_owned();
         let unicode = reader.detection.decode_as.name().starts_with("UTF-");
         if !unicode && name.chars().any(|c| !c.is_ascii() && !is_entity(c)) {
-            return Err(Declined::Deferred(
+            return Err(Decline::Deferred(
                 "a resource name the renderer writes in the document's charset, which may not \
                  hold it"
                     .to_owned(),

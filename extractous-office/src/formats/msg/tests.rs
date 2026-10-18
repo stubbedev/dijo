@@ -191,3 +191,21 @@ fn names_recipients_by_their_display_names() {
     assert_eq!(get("message:to-name"), ["tika-dev@lucene.apache.org"]);
     assert_eq!(get("message:to-display-name"), [""]);
 }
+
+/// A message whose compound document POI reads short from a stream, and whose 7-bit strings
+/// Tika may decode otherwise, is read natively, whole and in the charset the message gives, as
+/// a build without Tika takes it (#144).
+#[test]
+#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+fn reads_natively_a_message_poi_reads_short_from_a_stream() {
+    let path = corpus(&[&parity::conformance_corpus()])
+        .into_iter()
+        .find(|path| path.ends_with("testMSG_chinese.msg"))
+        .expect("Tika's test message");
+    let (crate::formats::Difference(reason), text) = parity::differing_reading(&MsgParser, &path);
+    assert!(reason.contains("partial block"), "{reason}");
+    assert!(
+        text.contains("Alfresco MSG format testing ( MSG 格式測試 ) 中文測試"),
+        "{text}"
+    );
+}

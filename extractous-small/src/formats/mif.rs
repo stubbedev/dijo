@@ -11,7 +11,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 
 /// `MIFParser.SUPPORTED_TYPES`.
@@ -41,9 +41,9 @@ impl Parser for MifParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if let Some(reason) = AutoDetectReader::defers(input) {
-            return Err(Declined::Deferred(reason.to_owned()));
+            return Err(Decline::Deferred(reason.to_owned()));
         }
         Ok(Box::new(move |xhtml| write(input, xhtml)))
     }

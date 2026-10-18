@@ -30,7 +30,10 @@ use crate::formats::handlers::parse_inline_with;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::extractor::normalized_class;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{html, Declined, Deferral, Failure, Footprint, Opened, Parser, Prepared};
+use crate::formats::{
+    html, noted, reading, unless_different, Decline, Declined, Deferral, Difference, Failure,
+    Footprint, Opened, Parser, Prepared,
+};
 use crate::java;
 use crate::java::time::format_instant;
 
@@ -131,34 +134,35 @@ impl Parser for OutlookPstParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let file = PstFile::open(input).map_err(fails)?;
         if file.format() == Format::Unicode2013 {
-            return Err(Declined::Fails(Error::ParseError(OST_2013.to_owned())));
+            return Err(Decline::Fails(Error::ParseError(OST_2013.to_owned())));
         }
         let root = Folder::root(&file).map_err(fails)?;
-        if let Some(reason) = scan_folder(&root) {
-            return Err(Declined::Deferred(reason));
-        }
+        let difference = scan_folder(&root).map_err(Decline::Deferred)?;
         drop(root);
-        Ok(Box::new(move |xhtml| {
-            let metadata = xhtml.metadata_mut();
-            metadata.set(name::CONTENT_TYPE, PST);
-            metadata.set(name::CONTENT_LENGTH, file.data().len().to_string());
-            metadata.set(name::IS_VALID, "true");
-            let root = Folder::root(&file).map_err(malformed)?;
-            write_folder(&root, "/", xhtml).map_err(|failure| match failure {
-                Failure::Stopped(Stop::LimitReached) => {
-                    Failure::Malformed(LIMIT_RETHROWN.to_owned())
-                }
-                failure => failure,
-            })
-        }))
+        unless_different(
+            Box::new(move |xhtml| {
+                let metadata = xhtml.metadata_mut();
+                metadata.set(name::CONTENT_TYPE, PST);
+                metadata.set(name::CONTENT_LENGTH, file.data().len().to_string());
+                metadata.set(name::IS_VALID, "true");
+                let root = Folder::root(&file).map_err(malformed)?;
+                write_folder(&root, "/", xhtml).map_err(|failure| match failure {
+                    Failure::Stopped(Stop::LimitReached) => {
+                        Failure::Malformed(LIMIT_RETHROWN.to_owned())
+                    }
+                    failure => failure,
+                })
+            }),
+            difference,
+        )
     }
 }
 
 fn fails(thrown: Thrown) -> Declined {
-    Declined::Fails(Error::ParseError(thrown.to_string()))
+    Decline::Fails(Error::ParseError(thrown.to_string()))
 }
 
 fn malformed(thrown: Thrown) -> Failure {
@@ -199,50 +203,55 @@ impl From<Unread> for Failure {
     }
 }
 
-/// Why the native port leaves a file to Tika, found as the extraction will walk it: a message
-/// whose HTML body the native HTML parser does not read, or text it cannot decode. A failure
-/// ends the walk, as it ends the extraction.
-fn scan_folder(folder: &Folder) -> Option<Deferral> {
+/// What the native port makes of a file, found as the extraction will walk it: why it leaves the
+/// file to Tika, text it cannot decode, or else the first message whose HTML body the native
+/// HTML parser reads differently from Tika's, if any. A failure ends the walk, as it ends the
+/// extraction.
+fn scan_folder(folder: &Folder) -> Result<Option<Difference>, Deferral> {
+    let mut difference = None;
     if folder.content_count() > 0 {
         let mut index = 0;
         while let Ok(Some(message)) = folder.child(index) {
-            if let Some(reason) = scan_message(&message) {
-                return Some(reason);
-            }
+            let found = scan_message(&message)?;
+            difference = difference.or(found);
             index += 1;
         }
     }
     if let Err(Undecodable(reason)) = folder.display_name() {
-        return Some(reason);
+        return Err(reason);
     }
     if folder.has_subfolders() {
-        for subfolder in folder.subfolders().ok()? {
-            if let Some(reason) = scan_folder(&subfolder) {
-                return Some(reason);
-            }
+        let Ok(subfolders) = folder.subfolders() else {
+            return Ok(difference);
+        };
+        for subfolder in subfolders {
+            let found = scan_folder(&subfolder)?;
+            difference = difference.or(found);
         }
     }
-    None
+    Ok(difference)
 }
 
 /// [`scan_folder`] of a message and the messages attached to it.
-fn scan_message(message: &Message) -> Option<Deferral> {
+fn scan_message(message: &Message) -> Result<Option<Difference>, Deferral> {
     let read = match read_message(message) {
         Ok(read) => read,
-        Err(Unread::Undecodable(Undecodable(reason))) => return Some(reason),
-        Err(Unread::Thrown(_)) => return None,
+        Err(Unread::Undecodable(Undecodable(reason))) => return Err(reason),
+        Err(Unread::Thrown(_)) => return Ok(None),
     };
     if let Err(Unread::Undecodable(Undecodable(reason))) =
         write_metadata(message, &read, &mut TikaMetadata::new())
     {
-        return Some(reason);
+        return Err(reason);
     }
+    let mut difference = None;
     let html = read.html;
     if !java::is_blank(&html) {
         let units: Vec<u16> = html.encode_utf16().collect();
-        if let Err(reason) = html::prepare_string(&units) {
-            return Some(format!("a message's HTML body: {reason}"));
-        }
+        let (_, read_otherwise) = noted(html::prepare_string(&units))
+            .map_err(|declined| format!("a message's HTML body: {declined}"))?;
+        difference = read_otherwise
+            .map(|Difference(reason)| Difference(format!("a message's HTML body: {reason}")));
     }
     for index in 0..message.attachment_count() {
         let Ok(mut attachment) = message.attachment(index) else {
@@ -250,21 +259,20 @@ fn scan_message(message: &Message) -> Option<Deferral> {
         };
         match attachment.embedded_message() {
             Ok(Some(embedded)) => {
-                if let Some(reason) = scan_message(&embedded) {
-                    return Some(reason);
-                }
+                let found = scan_message(&embedded)?;
+                difference = difference.or(found);
             }
             Ok(None) => {
                 for name in [attachment.long_filename(), attachment.filename()] {
                     if let Err(Undecodable(reason)) = name {
-                        return Some(reason);
+                        return Err(reason);
                     }
                 }
             }
             Err(_) => {}
         }
     }
-    None
+    Ok(difference)
 }
 
 /// What `PSTMailItemParser` reads of a message's text.
@@ -362,7 +370,7 @@ fn write_message(message: &Message, xhtml: &mut Xhtml) -> Result<(), Failure> {
         xhtml.end_element("p")?;
     } else {
         let units: Vec<u16> = read.html.encode_utf16().collect();
-        let prepared = html::prepare_string(&units).map_err(|reason| {
+        let prepared = reading(html::prepare_string(&units)).map_err(|reason| {
             Failure::Malformed(format!(
                 "a message's HTML body: {reason}, which the scan before the extraction missed"
             ))

@@ -6,7 +6,7 @@
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::dtoa::java_double_to_string;
 use crate::java::{self, JavaHashMap};
 
@@ -308,10 +308,10 @@ impl Parser for FlvParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let flv = read(input).map_err(|stop| match stop {
-            Stop::Thrown(thrown) => Declined::Fails(Error::ParseError(thrown)),
-            Stop::Unported(what) => Declined::Deferred(format!(
+            Stop::Thrown(thrown) => Decline::Fails(Error::ParseError(thrown)),
+            Stop::Unported(what) => Decline::Deferred(format!(
                 "{what}, which Java writes with its default time zone's name"
             )),
         })?;

@@ -19,7 +19,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{codepage_encoding, office_document, Embedded, Handed};
 use crate::formats::poi::{Read, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{html, rtf, Failure, Prepared, Unported};
+use crate::formats::{html, noted, rtf, Difference, Failure, Prepared, Unported};
 use crate::java::is_blank;
 use crate::java::time::{format_instant, CalendarFields, TimeZone};
 use crate::java::{equals_ignore_case, trim};
@@ -140,24 +140,31 @@ pub(super) struct Extracted {
     attachments: Vec<Handed>,
 }
 
-/// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses.
+/// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses, and
+/// where the native reading differs from Tika's, if it does: the first of the 7-bit strings
+/// Tika may decode otherwise and an HTML body read differently.
 pub(super) fn extract(
     file: &Ole2<'_>,
     mut message: Message,
     configs: &ParserConfigs,
-) -> Result<Extracted, Unported> {
-    if message.has_7_bit_strings() {
-        guess_7_bit_encoding(&mut message).map_err(unported)?;
-    }
+) -> Result<(Extracted, Option<Difference>), Unported> {
+    let guessed = if message.has_7_bit_strings() {
+        guess_7_bit_encoding(&mut message).map_err(unported)?
+    } else {
+        None
+    };
     let mut scratch = TikaMetadata::new();
     write_metadata(&message, &mut scratch).map_err(unported)?;
-    let (body, content_ids) = body(&message)?;
+    let (body, content_ids, read_otherwise) = body(&message)?;
     let attachments = attachments(file, &message, &content_ids, configs)?;
-    Ok(Extracted {
-        message,
-        body,
-        attachments,
-    })
+    Ok((
+        Extracted {
+            message,
+            body,
+            attachments,
+        },
+        guessed.or(read_otherwise),
+    ))
 }
 
 fn unported(Thrown(reason): Thrown) -> Unported {
@@ -534,8 +541,8 @@ fn header_line(row: &str) -> Option<(&str, &str)> {
 /// `guess7BitEncoding`: Tika decodes the 7-bit strings with the charset it detects in the body,
 /// where it is sure enough of it, else with the one the message declares. Where the strings
 /// read the same in every charset it may pick, this port reads them in any; where they do not,
-/// the message is left to Tika.
-fn guess_7_bit_encoding(message: &mut Message) -> Read<()> {
+/// it reads them as the message gives them, which differs from Tika's reading.
+fn guess_7_bit_encoding(message: &mut Message) -> Read<Option<Difference>> {
     let declared = declared_charset(message)?;
     let body = message
         .main
@@ -579,12 +586,12 @@ fn guess_7_bit_encoding(message: &mut Message) -> Read<()> {
         let mut decoded = message.clone();
         decoded.set_7_bit_encoding(&candidate)?;
         if read(&decoded) != default {
-            return Err(Thrown(format!(
+            return Ok(Some(Difference(format!(
                 "7-bit strings that read otherwise in {candidate}, which Tika may guess"
-            )));
+            ))));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// `declaredCharset`: the charset of the message's code page or internet code page, else of
@@ -624,8 +631,9 @@ fn declared_charset(message: &Message) -> Read<Option<String>> {
     Ok(None)
 }
 
-/// `handleBodyChunks`'s reading: the body and the content ids of the pictures it shows.
-fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
+/// `handleBodyChunks`'s reading: the body, the content ids of the pictures it shows, and where
+/// the HTML of the body is read differently from Tika's, if it is.
+fn body(message: &Message) -> Result<(Body, HashSet<String>, Option<Difference>), Unported> {
     let mut content_ids = HashSet::new();
     let html = message.main.last(property::BODY_HTML);
     if let Some(data) = html.and_then(|chunk| match (chunk.bytes(), chunk.text()) {
@@ -633,7 +641,7 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
         (None, Some(text)) => Some(text.raw.clone()),
         _ => None,
     }) {
-        let prepared = html::prepare(&data, &TikaMetadata::new())
+        let (prepared, difference) = noted(html::prepare(&data, &TikaMetadata::new()))
             .map_err(|reason| Unported(format!("the HTML body defers: {reason}")))?;
         image_content_ids(&String::from_utf8_lossy(&data), &mut content_ids);
         return Ok((
@@ -642,6 +650,7 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
                 from_rtf: false,
             },
             content_ids,
+            difference,
         ));
     }
     if let Some(chunk) = message.main.last(property::RTF_COMPRESSED) {
@@ -651,11 +660,12 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
         if !data.is_empty() {
             let rtf = rtf::decompress(data).map_err(unported)?;
             if let Some(html) = rtf::decapsulate(&rtf)? {
-                let prepared = html::prepare_string(&html).map_err(|reason| {
-                    Unported(format!(
-                        "the HTML the RTF body encapsulates defers: {reason}"
-                    ))
-                })?;
+                let (prepared, difference) =
+                    noted(html::prepare_string(&html)).map_err(|reason| {
+                        Unported(format!(
+                            "the HTML the RTF body encapsulates defers: {reason}"
+                        ))
+                    })?;
                 image_content_ids(&String::from_utf16_lossy(&html), &mut content_ids);
                 return Ok((
                     Body::Html {
@@ -663,10 +673,11 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
                         from_rtf: true,
                     },
                     content_ids,
+                    difference,
                 ));
             }
             image_content_ids(&String::from_utf8_lossy(&rtf), &mut content_ids);
-            return Ok((Body::Rtf(rtf), content_ids));
+            return Ok((Body::Rtf(rtf), content_ids, None));
         }
     }
     if let Some(chunk) = message.main.last(property::BODY) {
@@ -681,9 +692,9 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
         for captures in pattern.captures_iter(&text) {
             content_ids.insert(captures[1].to_owned());
         }
-        return Ok((Body::Text(text), content_ids));
+        return Ok((Body::Text(text), content_ids, None));
     }
-    Ok((Body::None, content_ids))
+    Ok((Body::None, content_ids, None))
 }
 
 /// `extractContentIdNames`: the content ids of each `<img>`'s `src="cid:..."`.
@@ -981,7 +992,8 @@ mod tests {
             metadata.get("mapi:msg-client-submit-time"),
             Some("2020-01-01T00:00:00Z")
         );
-        let (body, _) = body(&read).unwrap();
+        let (body, _, difference) = body(&read).unwrap();
+        assert_eq!(difference, None);
         assert!(matches!(body, Body::Text(text) if text == "Hi Bob"));
     }
 

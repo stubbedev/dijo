@@ -95,6 +95,26 @@ fn opens_the_repositorys_protected_package_as_tikas_path_does() {
     );
 }
 
+/// The packages whose compound document POI reads short from a stream are read natively, whole,
+/// as a build without Tika takes them (#144).
+#[test]
+#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+fn reads_natively_the_packages_poi_reads_short_from_a_stream() {
+    let documents = corpus(&[&parity::conformance_corpus()]);
+    for name in ["protect.xlsx", "protectedFile.xlsx"] {
+        let path = documents
+            .iter()
+            .find(|path| path.ends_with(name))
+            .unwrap_or_else(|| panic!("Tika's test document {name}"));
+        let (Difference(reason), text) = parity::differing_reading(&ProtectedParser, path);
+        assert!(reason.contains("partial block"), "{name}: {reason}");
+        assert!(
+            text.contains("При запуске пробной версии Office 2007"),
+            "{name}: {text}"
+        );
+    }
+}
+
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {

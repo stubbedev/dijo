@@ -17,7 +17,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
 use crate::formats::jdk_zip::{self, failed, Refusal};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::is_blank;
 use crate::java::strip;
 use crate::java::{is_line_terminator, JavaString};
@@ -471,8 +471,8 @@ impl Parser for IworkArchiveParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let extraction = extract(input).map_err(|why| Declined::Deferred(why.to_owned()))?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let extraction = extract(input).map_err(|why| Decline::Deferred(why.to_owned()))?;
         Ok(Box::new(move |xhtml| {
             for paragraph in &extraction.paragraphs {
                 xhtml.element("p", paragraph)?;

@@ -64,7 +64,7 @@ fn defers_macros_when_they_are_extracted() {
         ..ParserConfigs::default()
     };
     assert!(
-        matches!(read(b"", &configs), Err(Declined::Deferred(reason)) if reason.contains("macros"))
+        matches!(read(b"", &configs), Err(Decline::Deferred(reason)) if reason.contains("macros"))
     );
 }
 
@@ -73,7 +73,7 @@ fn defers_what_is_no_presentation() {
     let compound = crate::ole2::tests::compound(&["WordDocument"], b"");
     assert!(matches!(
         read(&compound, &ParserConfigs::default()),
-        Err(Declined::Deferred(reason)) if reason.contains("no presentation")
+        Err(Decline::Deferred(reason)) if reason.contains("no presentation")
     ));
 }
 
@@ -93,4 +93,25 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
     assert_eq!(ported.len(), 21);
     assert_same_as_tika_with_passwords(&ported, TIKA_PARSER, &ENCRYPTED);
+}
+
+/// A presentation with an embedded object whose data does not inflate, which Tika records before
+/// it goes on, is read natively without the object, as a build without Tika takes it (#144).
+#[cfg(feature = "tika")]
+#[test]
+#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+fn reads_natively_a_presentation_with_an_object_poi_fails_on() {
+    let path = corpus(&[&parity::conformance_corpus()])
+        .into_iter()
+        .find(|path| path.ends_with("testPPT_skipBadCompressedObject.ppt"))
+        .expect("Tika's test presentation");
+    let (crate::formats::Difference(reason), text) = parity::differing_reading(&PptParser, &path);
+    assert!(
+        reason.ends_with("an embedded object whose compressed data does not inflate"),
+        "{reason}"
+    );
+    assert!(
+        text.contains("An Evaluation of CDTI Dynamic Predictor Display Technology"),
+        "{text}"
+    );
 }

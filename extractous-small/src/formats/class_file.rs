@@ -11,7 +11,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
+use crate::formats::{Decline, Failure, Parser, Prepared, Unported};
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 
 /// `Opcodes.V27`, the newest class file version ASM 9.10.1 reads.
@@ -784,9 +784,9 @@ impl Parser for ClassParser {
         input: &'a [u8],
         _: &TikaMetadata,
         _: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let class = read(input).map_err(|unread| match unread {
-            Unread::Thrown(cause) => Declined::Fails(Error::ParseError(format!(
+            Unread::Thrown(cause) => Decline::Fails(Error::ParseError(format!(
                 "Failed to parse a Java class: {cause}"
             ))),
             Unread::Malformed(what) => Unported::new(format!(

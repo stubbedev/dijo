@@ -15,6 +15,8 @@ use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
+#[cfg(not(feature = "tika"))]
+use crate::formats::Difference;
 use crate::formats::{Failure, InputFile};
 use crate::input::Pages;
 
@@ -376,15 +378,44 @@ pub(crate) fn error_reason(error: &crate::Error) -> String {
 /// embedded document by its resource name or internal path, and the `reason`, on one line.
 /// Tika records the stack trace of the exception its parser throws there (#68).
 pub(crate) fn describe_failure(parser: &str, metadata: &TikaMetadata, reason: &str) -> String {
-    let document = [RESOURCE_NAME, INTERNAL_PATH]
+    format!(
+        "{parser} could not parse {}: {}",
+        embedded_document(metadata),
+        one_line(reason)
+    )
+}
+
+/// How the native parser named `parser` reading a document embedded with `metadata` differently
+/// from Tika's parser, in the way `difference` says, is recorded in the document embedding it,
+/// as [`describe_failure`] records a failure, in a build without Tika, which keeps the native
+/// reading.
+#[cfg(not(feature = "tika"))]
+pub(crate) fn describe_difference(
+    parser: &str,
+    metadata: &TikaMetadata,
+    difference: &Difference,
+) -> String {
+    format!(
+        "{parser} read {} differently from Tika: {}",
+        embedded_document(metadata),
+        one_line(&difference.0)
+    )
+}
+
+/// An embedded document by its resource name or internal path.
+fn embedded_document(metadata: &TikaMetadata) -> String {
+    [RESOURCE_NAME, INTERNAL_PATH]
         .iter()
         .find_map(|name| metadata.get(name).filter(|value| !value.is_empty()))
         .map_or_else(
             || "an embedded document without a name".to_owned(),
             |name| format!("the embedded document \"{name}\""),
-        );
-    let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("{parser} could not parse {document}: {reason}")
+        )
+}
+
+/// `reason` on one line, its runs of white space each a space.
+fn one_line(reason: &str) -> String {
+    reason.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The name a `package-entry` div is headed with, if the document has one.

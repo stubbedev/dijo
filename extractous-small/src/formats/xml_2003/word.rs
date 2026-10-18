@@ -10,7 +10,7 @@ use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute, Attribute};
-use crate::formats::{Declined, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Failure, Opened, Parser, Prepared};
 use crate::java;
 
 const MEDIA_TYPE: &str = "application/vnd.ms-wordml";
@@ -39,7 +39,7 @@ impl Parser for WordMlParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         super::prepare(input, MEDIA_TYPE, Word::default())
     }
 }

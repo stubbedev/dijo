@@ -33,6 +33,31 @@ fn recorded(reason: &str) -> Unported {
     ))
 }
 
+/// Why the data of a picture or an object is not read as POI reads it.
+#[derive(Debug)]
+pub(super) enum Unread {
+    /// POI throws for this reason, which Tika records before it goes on past the picture or
+    /// object.
+    Recorded(&'static str),
+    /// What this port does not read as POI does.
+    Unported(Unported),
+}
+
+impl From<Unported> for Unread {
+    fn from(unported: Unported) -> Self {
+        Self::Unported(unported)
+    }
+}
+
+impl From<Unread> for Unported {
+    fn from(unread: Unread) -> Self {
+        match unread {
+            Unread::Recorded(reason) => recorded(reason),
+            Unread::Unported(unported) => unported,
+        }
+    }
+}
+
 /// The picture types POI builds (`PictureType`), by their native ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PictureType {
@@ -385,13 +410,13 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
 
 impl Picture {
     /// `getData`: the picture's data as its type gives it, or why POI fails, which Tika records.
-    pub(super) fn data(&self) -> Result<Vec<u8>, Unported> {
+    pub(super) fn data(&self) -> Result<Vec<u8>, Unread> {
         let raw = &self.raw;
         match self.kind {
             PictureType::Jpeg | PictureType::Png | PictureType::Dib => {
                 let prefix = CHECKSUM * self.checksums + 1;
                 if raw.len() < prefix {
-                    return Err(recorded("a bitmap shorter than its header"));
+                    return Err(Unread::Recorded("a bitmap shorter than its header"));
                 }
                 let data = &raw[prefix..];
                 Ok(match self.kind {
@@ -404,7 +429,7 @@ impl Picture {
                 let header = MetafileHeader::read(raw, CHECKSUM)?;
                 let _ = header;
                 inflate(raw.get(CHECKSUM + 34..).unwrap_or_default(), None)
-                    .ok_or_else(|| recorded("an EMF picture that does not inflate"))
+                    .ok_or(Unread::Recorded("an EMF picture that does not inflate"))
             }
             PictureType::Wmf => {
                 let at = CHECKSUM * self.checksums;
@@ -412,7 +437,7 @@ impl Picture {
                 let mut data = header.placeable()?;
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
-                        .ok_or_else(|| recorded("a WMF picture that does not inflate"))?,
+                        .ok_or(Unread::Recorded("a WMF picture that does not inflate"))?,
                 );
                 Ok(data)
             }
@@ -422,7 +447,7 @@ impl Picture {
                 let mut data = vec![0; 512];
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
-                        .ok_or_else(|| recorded("a PICT picture that does not inflate"))?,
+                        .ok_or(Unread::Recorded("a PICT picture that does not inflate"))?,
                 );
                 Ok(data)
             }
@@ -431,9 +456,9 @@ impl Picture {
 }
 
 /// `DIB.addBMPHeader`: the file header of a bitmap before its data.
-fn bmp(data: &[u8]) -> Result<Vec<u8>, Unported> {
+fn bmp(data: &[u8]) -> Result<Vec<u8>, Unread> {
     let image_size =
-        i32_at(data, 0x22 - 14).map_err(|_| recorded("a DIB shorter than its header"))?;
+        i32_at(data, 0x22 - 14).map_err(|_| Unread::Recorded("a DIB shorter than its header"))?;
     let file_size = (data.len() as i32).wrapping_add(14);
     let offset = file_size.wrapping_sub(image_size);
     let mut out = Vec::with_capacity(data.len() + 14);
@@ -461,9 +486,11 @@ struct MetafileHeader {
 const EMUS_PER_INCH: i64 = 914_400;
 
 impl MetafileHeader {
-    fn read(raw: &[u8], at: usize) -> Result<MetafileHeader, Unported> {
+    fn read(raw: &[u8], at: usize) -> Result<MetafileHeader, Unread> {
         if raw.len() < at + 34 {
-            return Err(recorded("a metafile picture shorter than its header"));
+            return Err(Unread::Recorded(
+                "a metafile picture shorter than its header",
+            ));
         }
         let int = |offset: usize| i32_at(raw, at + offset).expect("the header's bytes");
         Ok(MetafileHeader {
@@ -533,17 +560,18 @@ pub(super) struct Object<'a> {
 impl Object<'_> {
     /// `ExOleObjStg.getData` read whole: a compressed object inflated to the length it gives, or
     /// why Java's stream fails reading it.
-    pub(super) fn data(&self) -> Result<Vec<u8>, Unported> {
+    pub(super) fn data(&self) -> Result<Vec<u8>, Unread> {
         let data = self.record.data();
         if self.record.options == 0 {
             return Ok(data.to_vec());
         }
-        let size =
-            i32_at(data, 0).map_err(|_| recorded("a compressed object without its length"))?;
+        let size = i32_at(data, 0)
+            .map_err(|_| Unread::Recorded("a compressed object without its length"))?;
         let size = usize::try_from(size)
-            .map_err(|_| recorded("a compressed object of a negative length"))?;
-        inflate(&data[4..], Some(size))
-            .ok_or_else(|| recorded("an embedded object whose compressed data does not inflate"))
+            .map_err(|_| Unread::Recorded("a compressed object of a negative length"))?;
+        inflate(&data[4..], Some(size)).ok_or(Unread::Recorded(
+            "an embedded object whose compressed data does not inflate",
+        ))
     }
 }
 

@@ -9,7 +9,7 @@ mod rome;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::java;
 
 pub struct FeedParser;
@@ -31,9 +31,9 @@ impl Parser for FeedParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let feed = rome::read(input).map_err(|thrown| {
-            Declined::Fails(Error::ParseError(format!("RSS parse error: {thrown}")))
+            Decline::Fails(Error::ParseError(format!("RSS parse error: {thrown}")))
         })?;
         Ok(Box::new(move |xhtml| {
             let title = strip_tags(feed.title.as_deref());

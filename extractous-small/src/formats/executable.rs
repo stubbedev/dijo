@@ -6,7 +6,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::time::format_instant;
 
 const PLATFORM: &str = "machine:platform";
@@ -156,7 +156,7 @@ impl Parser for ExecutableParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let header = header(input);
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
@@ -376,7 +376,7 @@ impl Parser for UniversalExecutableParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let (architectures, thrown) = architectures(input);
         Ok(Box::new(move |xhtml: &mut Xhtml| {
             for architecture in &architectures {

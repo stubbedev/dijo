@@ -21,7 +21,7 @@ use crate::compress::zip::Content;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::{self, central_directory_records};
 pub(crate) use crate::formats::Unported;
-use crate::formats::{Declined, Failure};
+use crate::formats::{Decline, Failure};
 use crate::input::{Input, Pages};
 use crate::java;
 use crate::Error;
@@ -112,11 +112,11 @@ impl From<Unported> for Unopened {
     }
 }
 
-impl From<Unopened> for Declined {
+impl From<Unopened> for Decline<'_> {
     fn from(unopened: Unopened) -> Self {
         match unopened {
             Unopened::Unported(unported) => unported.into(),
-            Unopened::Corrupt(reason) => Declined::Fails(Error::ParseError(format!(
+            Unopened::Corrupt(reason) => Decline::Fails(Error::ParseError(format!(
                 "Error opening OOXML file: {reason}"
             ))),
         }

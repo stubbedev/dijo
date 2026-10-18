@@ -108,7 +108,7 @@ fn extracts_rar_archives_as_tikas_path_does() {
     let encrypted = std::fs::read("../test_files/documents/rar/encrypted-headers.rar").unwrap();
     assert!(matches!(
         RarParser.prepare(&encrypted, &TikaMetadata::new(), &ParserConfigs::default()),
-        Err(Declined::Fails(Error::Encrypted(_)))
+        Err(crate::formats::Decline::Fails(Error::Encrypted(_)))
     ));
 }
 

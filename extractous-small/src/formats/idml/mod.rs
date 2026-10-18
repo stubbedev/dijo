@@ -14,7 +14,7 @@ use crate::formats::jdk_zip::{self, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{xmp, Declined, Failure, Parser, Prepared};
+use crate::formats::{xmp, Decline, Failure, Parser, Prepared};
 use crate::java;
 
 /// `META_NAME`, the package's XMP, which Tika reads before the other entries.
@@ -43,10 +43,10 @@ impl Parser for IdmlParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let entries = entries(input).map_err(|refusal| match refusal {
-            Refusal::Unread(reason) => Declined::Deferred(reason.to_owned()),
-            Refusal::Failed(reason) => Declined::Fails(Error::ParseError(reason)),
+            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
+            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
         })?;
         Ok(Box::new(move |xhtml| write(&entries, xhtml)))
     }

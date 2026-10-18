@@ -42,7 +42,7 @@ use crate::formats::ooxml::{
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
-use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 
 /// The SpreadsheetML namespace.
@@ -139,7 +139,7 @@ impl Parser for XlsxParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -149,7 +149,7 @@ impl Parser for XlsxParser {
         pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, pages)?;
         let read = Workbook::open(package, &configs.office)
             .and_then(Workbook::prepare)

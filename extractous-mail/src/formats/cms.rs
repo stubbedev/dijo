@@ -783,7 +783,7 @@ mod tests {
         let configs = ParserConfigs::default();
         assert!(matches!(
             CmsParser.prepare(&digested, &metadata, &configs),
-            Err(Declined::Fails(Error::ParseError(_)))
+            Err(crate::formats::Decline::Fails(Error::ParseError(_)))
         ));
     }
 

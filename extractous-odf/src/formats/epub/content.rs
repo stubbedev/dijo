@@ -114,15 +114,15 @@ impl SaxHandler for ContentDocument<'_, '_> {
             namespace,
             local_name,
         );
-        self.open.push((place, local_name.to_owned()));
-        if place != Place::Inside {
-            return Ok(());
-        }
-        if !is_xhtml(namespace) {
+        if place == Place::Inside && !is_xhtml(namespace) {
             return Err(Failure::Malformed(format!(
                 "The content document has the element {local_name} in {namespace:?}, outside \
                  XHTML, which only Tika's path writes"
             )));
+        }
+        self.open.push((place, local_name.to_owned()));
+        if place != Place::Inside {
+            return Ok(());
         }
         self.xhtml
             .start_element_with(local_name, &normalized(attributes))?;

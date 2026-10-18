@@ -12,7 +12,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::types::{property, Type, MULTIVALUED_FLAG};
 use crate::formats::poi::{thrown, Read, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{rtf, Declined, Failure, Opened, Parser, Prepared};
+use crate::formats::{rtf, Decline, Failure, Opened, Parser, Prepared};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -76,9 +76,9 @@ impl Parser for TnefParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let message = Message::read(input)
-            .map_err(|Thrown(reason)| Declined::Fails(Error::ParseError(reason)))?;
+            .map_err(|Thrown(reason)| Decline::Fails(Error::ParseError(reason)))?;
         Ok(Box::new(move |xhtml| message.write(xhtml)))
     }
 }

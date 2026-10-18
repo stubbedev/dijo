@@ -18,7 +18,9 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::handlers::parse_inline;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{html, Declined, Failure, Parser, Prepared};
+use crate::formats::{
+    decision, html, reading, unless_different, Decline, Difference, Failure, Parser, Prepared,
+};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-htmlhelp";
 
@@ -71,34 +73,39 @@ impl Parser for ChmParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let extractor = Extractor::new(input)
-            .map_err(|thrown| Declined::Fails(Error::ParseError(thrown.reason().to_owned())))?;
+            .map_err(|thrown| Decline::Fails(Error::ParseError(thrown.reason().to_owned())))?;
+        let mut difference = None;
         for page in extractor.pages() {
             let Ok((name, data)) = page else {
                 break;
             };
-            drop(
-                html::prepare(&data, &TikaMetadata::new()).map_err(|reason| {
-                    Declined::Deferred(format!("the page {name} defers: {reason}"))
-                })?,
-            );
+            let read_otherwise = decision(html::prepare(&data, &TikaMetadata::new()))
+                .map_err(|reason| Decline::Deferred(format!("the page {name} defers: {reason}")))?
+                .map(|Difference(reason)| Difference(format!("the page {name}: {reason}")));
+            difference = difference.or(read_otherwise);
         }
-        Ok(Box::new(move |xhtml| {
-            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            for page in extractor.pages() {
-                let (name, data) = page.map_err(|thrown| {
-                    Failure::Malformed(format!("TikaException: {}", thrown.reason()))
-                })?;
-                let prepared = html::prepare(&data, &TikaMetadata::new()).map_err(|reason| {
-                    Failure::Malformed(format!(
-                        "the page {name} defers, which it did not as it was prepared: {reason}"
-                    ))
-                })?;
-                parse_inline(prepared, xhtml)?;
-            }
-            Ok(())
-        }))
+        unless_different(
+            Box::new(move |xhtml| {
+                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                for page in extractor.pages() {
+                    let (name, data) = page.map_err(|thrown| {
+                        Failure::Malformed(format!("TikaException: {}", thrown.reason()))
+                    })?;
+                    let prepared =
+                        reading(html::prepare(&data, &TikaMetadata::new())).map_err(|reason| {
+                            Failure::Malformed(format!(
+                                "the page {name} defers, which it did not as it was prepared: \
+                                 {reason}"
+                            ))
+                        })?;
+                    parse_inline(prepared, xhtml)?;
+                }
+                Ok(())
+            }),
+            difference,
+        )
     }
 }
 
