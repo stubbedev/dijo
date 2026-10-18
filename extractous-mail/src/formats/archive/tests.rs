@@ -758,9 +758,18 @@ fn writes_an_entry_cut_short_as_far_as_it_decodes_and_goes_on() {
     archive[start] = 0xFF;
     let (text, ended) = extract(&archive);
     assert!(text.contains("After the broken entry."), "{text}");
-    let recorded = ended.expect("the archive goes on past the entry").concat();
+    let recorded = ended.expect("the archive goes on past the entry");
+    let (unreadable, rest): (Vec<&String>, Vec<&String>) = recorded
+        .iter()
+        .partition(|recorded| recorded.contains("Can't read archive stream"));
+    assert_eq!(unreadable.len(), 1, "{recorded:?}");
     assert!(
-        recorded.contains("Can't read archive stream (broken.txt): Truncated ZIP file"),
-        "{recorded}"
+        unreadable[0].contains("(broken.txt): Truncated ZIP file"),
+        "{recorded:?}"
+    );
+    assert!(
+        rest.iter()
+            .all(|recorded| recorded.contains("read the document differently from Tika")),
+        "{recorded:?}"
     );
 }

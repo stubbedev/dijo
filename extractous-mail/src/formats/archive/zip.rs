@@ -330,12 +330,13 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
             Some(Content::Complete(content)) => (content, None),
             Some(Content::Oversized(content)) if !DEFERS => (content, Some(Cut(the_entry(&name)))),
             Some(Content::Oversized(_)) => return Err(undeferred(&name)),
-            Some(Content::Truncated(content)) => {
+            Some(Content::Truncated(content)) if !content.is_empty() => {
                 write_entry(xhtml, &metadata, &name, &content, None)?;
                 record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
                 continue;
             }
-            None => {
+            Some(Content::Truncated(_)) | None => {
+                write_entry_div(xhtml, &name)?;
                 record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
                 continue;
             }
