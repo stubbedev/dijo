@@ -527,4 +527,48 @@ mod tests {
         assert_eq!(with_extension("a", ".pdf"), "a.pdf");
         assert_eq!(with_extension("a", ""), "a");
     }
+
+    /// An embedded document left to Tika is opened with the extraction's password, as Tika's
+    /// path opens every document embedded in one it was given the password for (#119). The
+    /// workbook goes to Tika because macros are extracted, which no port does.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn hands_the_password_on_with_a_document_left_to_tika() {
+        use crate::config::{OfficeParserConfig, Password};
+        use crate::formats::embedded::ParseContext;
+        use crate::formats::handlers::{Body, ToText};
+        use crate::formats::StringOut;
+
+        crate::formats::parity::install_routes();
+        let workbook = std::fs::read("../test_files/documents/encrypted/tika-password.xls")
+            .expect("the encrypted workbook");
+        let mut entry = TikaMetadata::new();
+        entry.set(RESOURCE_NAME, "tika-password.xls");
+        let text = |password: Option<&Password>| {
+            let configs = ParserConfigs {
+                office: OfficeParserConfig::new().set_extract_macros(true),
+                ..ParserConfigs::default()
+            }
+            .with_password(password);
+            let context = ParseContext::new(&configs);
+            let mut out = StringOut::default();
+            let mut handler = Body::new(ToText::new(&mut out));
+            let (_, _, result) =
+                Xhtml::write(&mut handler, TikaMetadata::new(), &context, |xhtml| {
+                    xhtml.parse_embedded(&workbook, &entry, Wrapping::PackageEntry)
+                });
+            result.expect("the embedding document");
+            out.0
+        };
+        let locked = text(None);
+        let opened = text(Some(&Password::new("tika")));
+        assert!(
+            !locked.contains("This is an Encrypted Excel spreadsheet."),
+            "{locked}"
+        );
+        assert!(
+            opened.contains("This is an Encrypted Excel spreadsheet."),
+            "{opened}"
+        );
+    }
 }
