@@ -16,17 +16,15 @@
 //! path's own `SecureContentHandler` stops the document, as a zip bomb, where Tika's top-level
 //! handler does.
 
-use super::rar;
+use super::{rar, DEFERS};
 use crate::compress::archiver::Archiver;
 use crate::compress::compressor::Compressor;
 use crate::compress::zip::file::ZipFile;
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
-use crate::compress::{ar, cpio, seven_z, tar, ArchiveFile};
+use crate::compress::{ar, cpio, seven_z, tar, ArchiveFile, Limited};
 use crate::formats::secure::{MAXIMUM_PACKAGE_ENTRY_DEPTH, MAXIMUM_RATIO, OUTPUT_THRESHOLD};
 
-/// Whether there is a Tika path to leave a document to.
-const DEFERS: bool = cfg!(feature = "tika");
 /// The nesting below an entry at which Tika's count reaches its limit of package entries.
 const TOO_DEEP: usize = MAXIMUM_PACKAGE_ENTRY_DEPTH - 1;
 /// The most bytes the scan of one document decodes, past which it counts the document as
@@ -112,7 +110,7 @@ impl Scan {
             return 0;
         }
         if let Some(compressor) = Compressor::detect(data) {
-            return match compressor.decode(data) {
+            return match compressor.decode(data).and_then(Limited::whole) {
                 Ok(decoded) if self.spend(decoded.content.len()) => {
                     1 + self.depth(&decoded.content, limit - 1)
                 }
@@ -122,9 +120,9 @@ impl Scan {
         }
         let files = match Archiver::detect(data) {
             Some(Archiver::Zip) => return (1 + self.zip_depth(data, limit - 1)).min(limit),
-            Some(Archiver::Tar) => tar::files(data).ok(),
-            Some(Archiver::Ar) => ar::files(data).ok(),
-            Some(Archiver::Cpio) => cpio::files(data).ok(),
+            Some(Archiver::Tar) => tar::files(data).and_then(Limited::whole).ok(),
+            Some(Archiver::Ar) => ar::files(data).and_then(Limited::whole).ok(),
+            Some(Archiver::Cpio) => cpio::files(data).and_then(Limited::whole).ok(),
             Some(Archiver::SevenZ) => seven_z::files(data, None).ok(),
             Some(Archiver::Arj | Archiver::Dump) | None if rar::is_rar(data) => {
                 rar::archive_files(data)

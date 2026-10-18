@@ -14,7 +14,7 @@
 //! does stay on Tika's path. Data Bouncy Castle fails to read as signed data, such as digested
 //! data or PEM text typed as a signature, fails as it fails on Tika's path.
 
-use crate::compress::zlib;
+use crate::compress::{zlib, Limited};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
@@ -353,6 +353,7 @@ fn compressed_content(input: &[u8]) -> Option<Vec<u8>> {
     ber.algorithm_identifier()?;
     let compressed = ber.encapsulated_content()??;
     zlib::decode(&compressed)
+        .and_then(Limited::whole)
         .ok()
         .filter(|inflated| inflated.len() <= MAX_DECOMPRESSED)
 }

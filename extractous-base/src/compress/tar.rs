@@ -9,7 +9,7 @@ use std::io::Read;
 
 use super::tar_header::normalize;
 use super::zip::decode_name;
-use super::{throws, ArchiveFile, Undecoded, MAX_DECODED};
+use super::{limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED};
 
 /// The global PAX header key that commons-compress keeps without applying it.
 const COMMENT: &str = "comment";
@@ -21,7 +21,7 @@ fn fail(error: std::io::Error) -> Undecoded {
 }
 
 /// The files of the TAR archive `data`, or why they are not read natively.
-pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
+pub fn files(data: &[u8]) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
     let mut archive = tar::Archive::new(data);
     let mut files = Vec::new();
     for entry in archive.entries().map_err(fail)? {
@@ -59,14 +59,14 @@ pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
                 .take(MAX_DECODED as u64 + 1)
                 .read_to_end(&mut content)
                 .map_err(fail)?;
-            if content.len() > MAX_DECODED {
-                return Err(Undecoded::TooLarge);
-            }
-            if content.len() as u64 != entry.size() {
-                return Err(throws("Truncated TAR archive"));
-            }
         }
-        files.push(ArchiveFile {
+        let content = limit(content);
+        if !directory
+            && matches!(&content, Limited::Whole(content) if content.len() as u64 != entry.size())
+        {
+            return Err(throws("Truncated TAR archive"));
+        }
+        let file = content.map(|content| ArchiveFile {
             name,
             size,
             modified_millis: Some(
@@ -78,8 +78,11 @@ pub fn files(data: &[u8]) -> Result<Vec<ArchiveFile>, Undecoded> {
             directory,
             content,
         });
+        if let Some(cut) = file.add_to(&mut files) {
+            return Ok(cut);
+        }
     }
-    Ok(files)
+    Ok(Limited::Whole(files))
 }
 
 #[cfg(test)]
@@ -89,6 +92,7 @@ mod tests {
 
     fn names_and_contents(data: &[u8]) -> Vec<(String, bool, Vec<u8>)> {
         files(data)
+            .and_then(Limited::whole)
             .unwrap()
             .into_iter()
             .map(|file| (file.name, file.directory, file.content))
@@ -124,7 +128,12 @@ mod tests {
         let mut data = header(b"dir/", b'5', 512);
         data.extend_from_slice(&header(b"inside.txt", b'0', 0));
         data.extend_from_slice(&tar(&[(b"after.txt", b'0', b"after")]));
-        let names: Vec<String> = files(&data).unwrap().into_iter().map(|f| f.name).collect();
+        let names: Vec<String> = files(&data)
+            .and_then(Limited::whole)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert_eq!(names, ["dir/", "after.txt"]);
     }
 

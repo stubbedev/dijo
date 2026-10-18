@@ -62,7 +62,7 @@ pub fn open(input: &[u8]) -> Result<ZipFile<'_>, Refusal> {
 }
 
 /// `zip.getInputStream(entry)` read to its end: all of it, or its first [`MAX_DECODED`] bytes
-/// and more of an entry that inflates past them.
+/// of an entry that inflates past them.
 pub fn read<'a>(zip: &ZipFile<'a>, entry: &ZipEntry) -> Result<Content<'a>, Refusal> {
     match zip.read(entry) {
         Some(content @ (Content::Complete(_) | Content::Oversized(_))) => Ok(content),

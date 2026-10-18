@@ -8,7 +8,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::secure::ZipBomb;
+use crate::formats::secure::{Secure, ZipBomb, ZIP_BOMB_DETECTED};
 use crate::formats::{self, Bridged, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::memory;
 #[cfg(feature = "tika")]
@@ -760,8 +760,14 @@ impl<'h> Xhtml<'h> {
         }
         let mut open = Vec::new();
         let target = Target::of(wrapping);
-        let (parsed, result) =
-            self.write_natively(metadata.clone(), parser, write, &mut open, target);
+        let (parsed, result) = self.write_natively(
+            spooled.len(),
+            metadata.clone(),
+            parser,
+            write,
+            &mut open,
+            target,
+        );
         let ended = match result {
             Ok(()) => {
                 self.embedding.absorb_failures(&parsed, None);
@@ -833,7 +839,7 @@ impl<'h> Xhtml<'h> {
     ) -> Ended {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, metadata, opened, configs) {
-            Ok(route) => self.parse_natively(route, metadata, open, target),
+            Ok(route) => self.parse_natively(data.len(), route, metadata, open, target),
             Err(Bridged::Unrouted(Unrouted::Empty)) => {
                 self.embedding.record_zero_bytes();
                 Ended::Recorded
@@ -960,15 +966,16 @@ impl<'h> Xhtml<'h> {
         .map_err(Failure::Embedded)
     }
 
-    /// Parses an embedded document with the native `parser`, from the metadata `start` it
-    /// starts from, its events passed on to this document as they come. Where the parser fails
-    /// on the document, as Tika's would throw, the failure is recorded in this document's
-    /// metadata, which goes on: what failed, on which document and why, where Tika records the
-    /// stack trace of the exception its own parser throws (#68). Where the parser reads the
-    /// document differently from Tika's parser, in a build without Tika, the difference is
-    /// recorded first, as a failure of the embedded document.
+    /// Parses an embedded document of `bytes` bytes with the native `parser`, from the metadata
+    /// `start` it starts from, its events passed on to this document as they come. Where the
+    /// parser fails on the document, as Tika's would throw, the failure is recorded in this
+    /// document's metadata, which goes on: what failed, on which document and why, where Tika
+    /// records the stack trace of the exception its own parser throws (#68). Where the parser
+    /// reads the document differently from Tika's parser, in a build without Tika, the
+    /// difference is recorded first, as a failure of the embedded document.
     fn parse_natively(
         &mut self,
+        bytes: usize,
         route: EmbeddedRoute<'_>,
         metadata: &TikaMetadata,
         open: &mut Vec<String>,
@@ -981,7 +988,8 @@ impl<'h> Xhtml<'h> {
             #[cfg(not(feature = "tika"))]
             difference,
         } = route;
-        let (parsed, result) = self.write_natively(start, parser.name(), prepared, open, target);
+        let (parsed, result) =
+            self.write_natively(bytes, start, parser.name(), prepared, open, target);
         #[cfg(not(feature = "tika"))]
         if let Some(difference) = difference {
             let recorded = embedded::describe_difference(parser.name(), metadata, &difference);
@@ -1003,12 +1011,16 @@ impl<'h> Xhtml<'h> {
         Ended::Recorded
     }
 
-    /// Writes an embedded document with the native parser named `parser`, which `write` runs,
-    /// from the metadata `start` it starts from, its events passed on to this document as they
-    /// come: the metadata it ends with, which this document takes its parsers from, and how it
-    /// ended.
+    /// Writes an embedded document of `bytes` bytes with the native parser named `parser`, which
+    /// `write` runs, from the metadata `start` it starts from, its events passed on to this
+    /// document as they come, through the `SecureContentHandler` Tika's `AutoDetectParser` puts
+    /// in front of every document it parses: the metadata it ends with, which this document
+    /// takes its parsers from, and how it ended. Where that guard takes the embedded document
+    /// for a zip bomb, it fails as Tika's `AutoDetectParser` throws, for this document to record
+    /// and go on; a stop of a guard further out stops this document too.
     fn write_natively(
         &mut self,
+        bytes: usize,
         start: TikaMetadata,
         parser: &str,
         write: impl FnOnce(&mut Xhtml) -> Result<(), Failure>,
@@ -1023,7 +1035,13 @@ impl<'h> Xhtml<'h> {
                 target,
             };
             let mut body = Body::new(&mut forward);
-            Xhtml::write(&mut body, start, context, write)
+            let mut secure = Secure::new(&mut body, bytes);
+            let (parsed, record, result) = Xhtml::write(&mut secure, start, context, write);
+            let result = match secure.tripped() {
+                Some(bomb) => Err(Failure::Malformed(format!("{ZIP_BOMB_DETECTED} {bomb}"))),
+                None => result,
+            };
+            (parsed, record, result)
         };
         record.finish(&mut parsed, parser);
         let parsed = parsed.to_map();

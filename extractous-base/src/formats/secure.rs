@@ -2,6 +2,11 @@
 //! `XHTMLContentHandler` and the handler the output goes to: it stops a parse whose elements
 //! nest a hundred deep, whose `package-entry` divs nest ten deep, or whose output passes a
 //! million characters and a hundred per byte of the document, as a suspected zip bomb.
+//!
+//! `AutoDetectParser` puts one in front of every document it parses, embedded ones included, so
+//! a guard sees the events of the documents embedded in its own, and passes on the stop of a
+//! guard further out. A guard tells its own stop from those by [`Secure::tripped`], as
+//! `throwIfCauseOf` does.
 
 use std::fmt;
 
@@ -10,6 +15,8 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{ContentHandler, Stop};
 use crate::java::utf16_length;
 
+/// The message of the `TikaException` `throwIfCauseOf` throws for a zip bomb its guard found.
+pub const ZIP_BOMB_DETECTED: &str = "Zip bomb detected!";
 /// `OutputLimits`' default zip bomb threshold: the characters a document may write whatever its
 /// size.
 pub const OUTPUT_THRESHOLD: u64 = 1_000_000;
@@ -59,6 +66,7 @@ pub struct Secure<H> {
     depth: usize,
     /// The element depth of each `package-entry` div open, the innermost last.
     package_entries: Vec<usize>,
+    tripped: Option<ZipBomb>,
 }
 
 impl<H: ContentHandler> Secure<H> {
@@ -69,7 +77,20 @@ impl<H: ContentHandler> Secure<H> {
             characters: 0,
             depth: 0,
             package_entries: Vec::new(),
+            tripped: None,
         }
+    }
+
+    /// The zip bomb this guard stopped the parse for, if it did; not one a guard further out
+    /// stopped it for.
+    pub fn tripped(&self) -> Option<ZipBomb> {
+        self.tripped
+    }
+
+    /// Stops the parse as the zip bomb `bomb`.
+    fn trip(&mut self, bomb: ZipBomb) -> Stop {
+        self.tripped = Some(bomb);
+        Stop::ZipBomb(bomb)
     }
 
     /// `advance`: counts `text`, stopping the parse once the output passes the threshold and
@@ -79,7 +100,7 @@ impl<H: ContentHandler> Secure<H> {
         if self.characters > OUTPUT_THRESHOLD
             && self.characters > self.bytes.saturating_mul(MAXIMUM_RATIO)
         {
-            return Err(Stop::ZipBomb(ZipBomb::Ratio {
+            return Err(self.trip(ZipBomb::Ratio {
                 bytes: self.bytes,
                 characters: self.characters,
             }));
@@ -100,7 +121,7 @@ impl<H: ContentHandler> ContentHandler for Secure<H> {
     fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
         self.depth += 1;
         if self.depth >= MAXIMUM_DEPTH {
-            return Err(Stop::ZipBomb(ZipBomb::ElementNesting(self.depth)));
+            return Err(self.trip(ZipBomb::ElementNesting(self.depth)));
         }
         let package_entry = name == "div"
             && attributes
@@ -109,9 +130,7 @@ impl<H: ContentHandler> ContentHandler for Secure<H> {
         if package_entry {
             self.package_entries.push(self.depth);
             if self.package_entries.len() >= MAXIMUM_PACKAGE_ENTRY_DEPTH {
-                return Err(Stop::ZipBomb(ZipBomb::PackageEntryNesting(
-                    self.package_entries.len(),
-                )));
+                return Err(self.trip(ZipBomb::PackageEntryNesting(self.package_entries.len())));
             }
         }
         self.next.start_element(name, attributes)
@@ -154,11 +173,39 @@ mod tests {
     use super::*;
     use crate::formats::xhtml::Held;
 
-    fn open_entries(secure: &mut Secure<Held>, count: usize) -> Result<(), Stop> {
+    fn open_entries(secure: &mut impl ContentHandler, count: usize) -> Result<(), Stop> {
         for _ in 0..count {
             secure.start_element("div", &[("class", PACKAGE_ENTRY)])?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn tells_its_own_stop_from_that_of_a_guard_further_out() {
+        let mut outer = Secure::new(Held::default(), 100);
+        open_entries(&mut outer, 8).unwrap();
+        let mut inner = Secure::new(&mut outer, 100);
+        assert_eq!(
+            open_entries(&mut inner, 2),
+            Err(Stop::ZipBomb(ZipBomb::PackageEntryNesting(10)))
+        );
+        assert_eq!(inner.tripped(), None);
+        assert_eq!(outer.tripped(), Some(ZipBomb::PackageEntryNesting(10)));
+        let mut outer = Secure::new(Held::default(), 1_000_000);
+        let mut inner = Secure::new(&mut outer, 100);
+        let bomb = Err(Stop::ZipBomb(ZipBomb::Ratio {
+            bytes: 100,
+            characters: 1_000_001,
+        }));
+        assert_eq!(inner.characters(&"a".repeat(1_000_001)), bomb);
+        assert_eq!(
+            inner.tripped(),
+            Some(ZipBomb::Ratio {
+                bytes: 100,
+                characters: 1_000_001,
+            })
+        );
+        assert_eq!(outer.tripped(), None);
     }
 
     #[test]

@@ -13,13 +13,12 @@
 use std::collections::HashSet;
 
 use super::nesting::Scan;
-use super::{record_unreadable, too_large, write_entry_div};
+use super::{record_unreadable, too_large, write_entry_div, Cut, DEFERS};
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::salvage;
 use crate::compress::zip::stream::{self, ZipStream};
 use crate::compress::zip::Content;
-use crate::compress::MAX_DECODED;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{
     record_exception, record_stream_exception, Wrapping, ENCRYPTED_DOCUMENT, INTERNAL_PATH,
@@ -232,12 +231,10 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
                     entry.name
                 )))
             }
-            Some(Content::Oversized(_)) => {
-                return Err(too_large(format!(
-                    "the entry {} inflates into more than {MAX_DECODED} bytes",
-                    entry.name
-                )))
+            Some(Content::Oversized(_)) if DEFERS => {
+                return Err(too_large(&the_entry(&entry.name)))
             }
+            Some(Content::Oversized(_)) => break,
             None => {
                 return Err(Decline::Deferred(format!(
                     "the entry {} is compressed with method {}, which the port does not \
@@ -297,20 +294,42 @@ fn write_entries(zip: &ZipFile, xhtml: &mut Xhtml, paging: &Paging) -> Result<()
             );
             continue;
         }
-        let content = match zip.read(entry) {
-            Some(Content::Complete(content)) => content,
-            _ => {
-                return Err(Failure::Malformed(format!(
-                    "the entry {name} was not deferred, but its data cannot be read"
-                )))
-            }
+        let (content, cut) = match zip.read(entry) {
+            Some(Content::Complete(content)) => (content, None),
+            Some(Content::Oversized(content)) if !DEFERS => (content, Some(Cut(the_entry(&name)))),
+            _ => return Err(undeferred(&name)),
         };
-        let metadata = entry_metadata(entry, &name);
-        write_entry_div(xhtml, &name)?;
-        xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;
+        write_entry(xhtml, &entry_metadata(entry, &name), &name, &content, cut)?;
         paging.read(content.len());
     }
     Ok(())
+}
+
+/// Writes the entry of `name` and `metadata` holding `content`: all of its data, or, as `cut`
+/// says, what it inflates into up to the most the native path decodes, where the document stops.
+fn write_entry(
+    xhtml: &mut Xhtml,
+    metadata: &TikaMetadata,
+    name: &str,
+    content: &[u8],
+    cut: Option<Cut>,
+) -> Result<(), Failure> {
+    write_entry_div(xhtml, name)?;
+    xhtml.parse_embedded(content, metadata, Wrapping::PackageEntry)?;
+    Cut::end(cut)
+}
+
+/// The entry of `name`, as a failure names it.
+fn the_entry(name: &str) -> String {
+    format!("the entry {name}")
+}
+
+/// The failure of a document whose entry of `name` was read in full when it was prepared, but
+/// not when it is written.
+fn undeferred(name: &str) -> Failure {
+    Failure::Malformed(format!(
+        "the entry {name} was not deferred, but its data cannot be read"
+    ))
 }
 
 /// The central directory's entry names, each once, in order: the `LinkedHashSet` the
@@ -398,12 +417,10 @@ impl Streamed {
                         return Err(Decline::Deferred(reason));
                     }
                 }
-                Ok(Content::Oversized(_)) => {
-                    return Err(too_large(format!(
-                        "the entry {} inflates into more than {MAX_DECODED} bytes",
-                        entry.name
-                    )))
+                Ok(Content::Oversized(_)) if DEFERS => {
+                    return Err(too_large(&the_entry(&entry.name)))
                 }
+                Ok(Content::Oversized(_)) => break,
                 Err(stream::Failure::Method(method)) => {
                     return Err(Decline::Deferred(format!(
                         "the entry {} is compressed with method {method}, which the port does \
@@ -468,11 +485,19 @@ impl Streamed {
                 );
                 continue;
             }
+            let metadata = entry_metadata(&entry, &name);
             match stream.content() {
                 Ok(Content::Complete(content)) => {
-                    let metadata = entry_metadata(&entry, &name);
-                    write_entry_div(xhtml, &name)?;
-                    xhtml.parse_embedded(&content, &metadata, Wrapping::PackageEntry)?;
+                    write_entry(xhtml, &metadata, &name, &content, None)?;
+                }
+                Ok(Content::Oversized(content)) if !DEFERS => {
+                    write_entry(
+                        xhtml,
+                        &metadata,
+                        &name,
+                        &content,
+                        Some(Cut(the_entry(&name))),
+                    )?;
                 }
                 Ok(Content::Truncated(_)) => {
                     record_unreadable(
@@ -490,11 +515,7 @@ impl Streamed {
                          ({name})"
                     ),
                 ),
-                Ok(Content::Oversized(_)) => {
-                    return Err(Failure::Malformed(format!(
-                        "the entry {name} was not deferred, but its data cannot be read"
-                    )))
-                }
+                Ok(Content::Oversized(_)) => return Err(undeferred(&name)),
             }
         }
     }
