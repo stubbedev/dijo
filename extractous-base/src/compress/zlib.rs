@@ -1,11 +1,11 @@
 //! zlib streams, which flate2 decodes, read as `DeflateCompressorInputStream` reads them: the
 //! header, the deflate data and the Adler-32 checksum, whatever follows ignored.
 
-use super::{read_whole, Undecoded};
+use super::{read_limited, read_whole, Limited, Undecoded};
 
 /// The content of the zlib stream `data`, or why it is not decoded natively.
-pub fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
-    read_whole(flate2::bufread::ZlibDecoder::new(data))
+pub fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
+    read_limited(flate2::bufread::ZlibDecoder::new(data))
 }
 
 /// The content of the zlib stream `data` starts with, as [`decode`] gives it, and how many bytes
@@ -34,7 +34,10 @@ pub mod tests {
     fn decodes_to_the_checksum() {
         let mut data = zlib(b"Test d'indexation de Txt");
         data.extend_from_slice(b"after");
-        assert_eq!(decode(&data).unwrap(), b"Test d'indexation de Txt");
+        assert_eq!(
+            decode(&data).and_then(Limited::whole).unwrap(),
+            b"Test d'indexation de Txt"
+        );
         assert!(decode(&data[..data.len() - 6]).is_err());
         let mut corrupt = data.clone();
         let checksum = corrupt.len() - 6;

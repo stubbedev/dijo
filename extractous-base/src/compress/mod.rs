@@ -2,8 +2,8 @@
 //! files with, failing and recovering where commons-compress does.
 //!
 //! A compressed stream is decoded whole, as the native parsers hand its content on, so each
-//! decoder answers with all of it or with why commons-compress would not give all of it:
-//! [`Undecoded`].
+//! decoder answers with all of it, or the first [`MAX_DECODED`] bytes of it ([`Limited`]), or
+//! with why commons-compress would not give all of it: [`Undecoded`].
 
 pub mod ar;
 pub mod archiver;
@@ -137,25 +137,75 @@ pub fn dos_millis(dos: i64) -> Option<i64> {
     Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
 }
 
-/// Fails once `decoded` holds more than [`MAX_DECODED`] bytes.
-fn within_limit(decoded: &[u8]) -> Result<(), Undecoded> {
-    if decoded.len() > MAX_DECODED {
-        Err(Undecoded::TooLarge)
-    } else {
-        Ok(())
+/// What a stream or an archive decodes into, within [`MAX_DECODED`] bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Limited<T> {
+    /// All of it.
+    Whole(T),
+    /// What it decodes into up to [`MAX_DECODED`] bytes, where it decodes into more: an
+    /// archive's files up to the one that passes the limit, which is cut there.
+    Cut(T),
+}
+
+impl<T> Limited<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Limited<U> {
+        match self {
+            Limited::Whole(decoded) => Limited::Whole(f(decoded)),
+            Limited::Cut(decoded) => Limited::Cut(f(decoded)),
+        }
+    }
+
+    /// All of it, or [`Undecoded::TooLarge`] where it is cut.
+    pub fn whole(self) -> Result<T, Undecoded> {
+        match self {
+            Limited::Whole(decoded) => Ok(decoded),
+            Limited::Cut(_) => Err(Undecoded::TooLarge),
+        }
     }
 }
 
-/// What `reader`, a crate's decoder, gives up to its end, failing where it fails or past
-/// [`MAX_DECODED`] bytes.
-fn read_whole(reader: impl Read) -> Result<Vec<u8>, Undecoded> {
+impl Limited<ArchiveFile> {
+    /// Adds the file to the `files` of an archive read before it: all of them, cut, where it is
+    /// cut, which ends the reading of the archive.
+    fn add_to(self, files: &mut Vec<ArchiveFile>) -> Option<Limited<Vec<ArchiveFile>>> {
+        match self {
+            Limited::Whole(file) => {
+                files.push(file);
+                None
+            }
+            Limited::Cut(file) => {
+                files.push(file);
+                Some(Limited::Cut(std::mem::take(files)))
+            }
+        }
+    }
+}
+
+/// `decoded`, cut at [`MAX_DECODED`] bytes where it holds more.
+fn limit(mut decoded: Vec<u8>) -> Limited<Vec<u8>> {
+    if decoded.len() > MAX_DECODED {
+        decoded.truncate(MAX_DECODED);
+        Limited::Cut(decoded)
+    } else {
+        Limited::Whole(decoded)
+    }
+}
+
+/// What `reader`, a crate's decoder, gives up to its end or [`MAX_DECODED`] bytes, failing
+/// where it fails.
+fn read_limited(reader: impl Read) -> Result<Limited<Vec<u8>>, Undecoded> {
     let mut out = Vec::new();
     reader
         .take(MAX_DECODED as u64 + 1)
         .read_to_end(&mut out)
         .map_err(decoder_failure)?;
-    within_limit(&out)?;
-    Ok(out)
+    Ok(limit(out))
+}
+
+/// What `reader`, a crate's decoder, gives up to its end, failing where it fails or past
+/// [`MAX_DECODED`] bytes.
+fn read_whole(reader: impl Read) -> Result<Vec<u8>, Undecoded> {
+    read_limited(reader)?.whole()
 }
 
 /// Why a crate's decoder failed: its memory limit, which the decoders given one report as
@@ -239,10 +289,40 @@ pub(crate) mod tests {
     #[test]
     fn stops_decoding_past_the_limit() {
         let small = deflated_zeros(3);
-        let inflate = |data| read_whole(flate2::bufread::DeflateDecoder::new(data));
-        assert_eq!(inflate(&small[..]).unwrap(), vec![0; 775]);
+        let inflate = |data| read_limited(flate2::bufread::DeflateDecoder::new(data));
+        assert_eq!(inflate(&small[..]), Ok(Limited::Whole(vec![0; 775])));
         let bomb = deflated_zeros(MAX_DECODED / 258 + 1);
-        assert_eq!(inflate(&bomb[..]), Err(Undecoded::TooLarge));
-        assert!(matches!(zip::inflate(&bomb), zip::Content::Oversized(_)));
+        assert_eq!(inflate(&bomb[..]), Ok(Limited::Cut(vec![0; MAX_DECODED])));
+        assert_eq!(
+            read_whole(flate2::bufread::DeflateDecoder::new(&bomb[..])),
+            Err(Undecoded::TooLarge)
+        );
+        assert_eq!(
+            zip::inflate(&bomb),
+            zip::Content::Oversized(vec![0; MAX_DECODED].into())
+        );
+    }
+
+    #[test]
+    fn reads_archives_up_to_the_file_cut_at_the_limit() {
+        let large = vec![b'x'; MAX_DECODED + 1];
+        let entries: [(&str, &[u8]); 3] = [("a.txt", b"first"), ("large", &large), ("c.txt", b"")];
+        let tar_entries = entries.map(|(name, content)| (name.as_bytes(), b'0', content));
+        for (format, files) in [
+            ("tar", tar::files(&tar_header::tests::tar(&tar_entries))),
+            ("ar", ar::files(&ar::tests::ar(&entries))),
+            ("cpio", cpio::files(&cpio::tests::cpio(&entries))),
+        ] {
+            let files = match files {
+                Ok(Limited::Cut(files)) => files,
+                Ok(Limited::Whole(_)) => panic!("{format} is read whole"),
+                Err(undecoded) => panic!("{format} is not read: {undecoded}"),
+            };
+            let read: Vec<(&str, usize)> = files
+                .iter()
+                .map(|file| (file.name.as_str(), file.content.len()))
+                .collect();
+            assert_eq!(read, [("a.txt", 5), ("large", MAX_DECODED)], "{format}");
+        }
     }
 }

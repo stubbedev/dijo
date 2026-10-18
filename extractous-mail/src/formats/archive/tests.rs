@@ -13,7 +13,6 @@ use crate::compress::brotli::tests::brotli;
 use crate::compress::bzip2::tests::bzip2;
 #[cfg(feature = "tika")]
 use crate::compress::cpio::tests::cpio;
-#[cfg(feature = "tika")]
 use crate::compress::gzip::tests::gzip;
 #[cfg(feature = "tika")]
 use crate::compress::lz4::tests::lz4;
@@ -578,8 +577,8 @@ fn extract(archive: &[u8]) -> (String, Result<Vec<String>, crate::Error>) {
 
 /// Asserts that the extraction `ended` at the zip bomb limit of Tika's `SecureContentHandler`
 /// for `cause`. The native path fails with [`Error::LimitExceeded`]. Tika's path, which takes a
-/// zip bomb in a build that has it, fails with its exception where the limit is reached in an
-/// entry of the archive, and records it where it is reached deeper.
+/// zip bomb in a build that has it, fails with its exception or records it, as its wrapping of
+/// the guard's exception has it.
 fn assert_zip_bomb(ended: Result<Vec<String>, crate::Error>, cause: &str) {
     let message = match ended {
         Err(Error::LimitExceeded(message)) => message,
@@ -635,4 +634,92 @@ fn stops_an_entry_that_inflates_a_hundredfold_past_a_million_characters() {
     assert!(text.len() > 1_000_000, "{}", text.len());
     assert!(text.len() < line.len() * 700_000);
     assert_zip_bomb(ended, "output characters");
+}
+
+/// `length` bytes no compressor shrinks, the same each time.
+fn incompressible(length: usize) -> Vec<u8> {
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    (0..length)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+#[test]
+fn records_a_bomb_in_an_entry_and_goes_on_with_the_entries_after_it() {
+    let line = "All work and no play makes Jack a dull boy.\n";
+    let bomb = gzip(line.repeat(70_000).as_bytes(), Some("bomb.txt"));
+    let archive = zip(&[
+        ("before.txt", b"Before the bomb."),
+        ("padding.bin", &incompressible(50_000)),
+        ("bomb.txt.gz", &bomb),
+        ("after.txt", b"After the bomb."),
+    ]);
+    assert!(bomb.len() * 100 < line.len() * 70_000, "{}", bomb.len());
+    assert!(
+        archive.len() * 100 > line.len() * 70_000,
+        "{}",
+        archive.len()
+    );
+    let (text, ended) = extract(&archive);
+    assert!(text.contains("Before the bomb."), "{}", &text[..100]);
+    assert!(text.contains(line), "{}", &text[..100]);
+    if cfg!(feature = "tika") {
+        assert_zip_bomb(ended, "output characters");
+        return;
+    }
+    assert!(
+        text.len().abs_diff(bomb.len() * 100) < 10_000,
+        "{} characters of {} bytes",
+        text.len(),
+        bomb.len()
+    );
+    assert!(
+        text.contains("After the bomb."),
+        "{}",
+        &text[text.len() - 100..]
+    );
+    let recorded = ended.expect("the archive goes on past the bomb").concat();
+    assert!(
+        recorded.contains("could not parse the embedded document \"bomb.txt.gz\""),
+        "{recorded}"
+    );
+    assert!(recorded.contains("Zip bomb detected!"), "{recorded}");
+    assert!(recorded.contains("output characters"), "{recorded}");
+}
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn writes_an_entry_up_to_the_most_the_native_path_decodes_and_stops_there() {
+    let line = "All work and no play makes Jack a dull boy.\n";
+    let lines = crate::compress::MAX_DECODED / line.len() + 1000;
+    let archive = zip(&[
+        ("before.txt", b"Before the large entry."),
+        ("padding.bin", &incompressible(3_000_000)),
+        ("large.txt", line.repeat(lines).as_bytes()),
+        ("after.txt", b"After the large entry."),
+    ]);
+    let (text, ended) = extract(&archive);
+    assert!(text.contains("Before the large entry."), "{}", &text[..100]);
+    assert!(text.contains(line), "{}", &text[..100]);
+    assert!(
+        text.len().abs_diff(crate::compress::MAX_DECODED) < 1000,
+        "{}",
+        text.len()
+    );
+    assert!(!text.contains("After the large entry."));
+    match ended {
+        Err(Error::LimitExceeded(message)) => {
+            assert!(message.starts_with("the entry large.txt: "), "{message}");
+            assert!(
+                message.contains("the most the native parser decodes"),
+                "{message}"
+            );
+        }
+        other => panic!("not stopped at the limit: {other:?}"),
+    }
 }
