@@ -5,7 +5,9 @@
 # with the compiler and linker flags for them in extractous/, the licenses of the libraries
 # linked beyond tesseract's in extractous/licenses (extractous/decoder-licenses for the
 # executable without Tika, which links no AWT), and what
-# sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh).
+# sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh). Its passthru holds what
+# ci/static-native.nix builds the executable without Tika with: the musl package set, tesseract,
+# the library flag files EXTRACTOUS_STATIC_LIBS lists and the decoder licenses.
 { nixpkgs, system }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -32,14 +34,14 @@ let
     static.dav1d
   ];
   pkgConfigPath = lib.makeSearchPathOutput "dev" "lib/pkgconfig";
-  licenses =
-    pkgs.runCommand "extractous-static-licenses" { }
-      (lib.concatMapStrings (import ./licenses.nix "$out/extractous/licenses") (
-        awtLibraries ++ decoderLibraries
-      ));
-  decoderLicenses =
-    pkgs.runCommand "extractous-decoder-licenses" { }
-      (lib.concatMapStrings (import ./licenses.nix "$out/extractous/decoder-licenses") decoderLibraries);
+  licenses = pkgs.runCommand "extractous-static-licenses" { } (
+    lib.concatMapStrings (import ./licenses.nix "$out/extractous/licenses") (
+      awtLibraries ++ decoderLibraries
+    )
+  );
+  decoderLicenses = pkgs.runCommand "extractous-decoder-licenses" { } (
+    lib.concatMapStrings (import ./licenses.nix "$out/extractous/decoder-licenses") decoderLibraries
+  );
   decoderFlags =
     pkgs.runCommand "extractous-image-decoder-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
       ''
@@ -79,4 +81,12 @@ pkgs.symlinkJoin {
     pkgs.unzip
     pkgs.zip
   ];
+  passthru = {
+    inherit cross tesseract;
+    staticLibs = [
+      "${tesseractFlags}/extractous/tesseract-libs"
+      "${decoderFlags}/extractous/images-libs"
+    ];
+    decoderLicenses = "${decoderLicenses}/extractous/decoder-licenses";
+  };
 }
