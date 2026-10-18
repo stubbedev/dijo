@@ -6,7 +6,7 @@
 use super::records::{decode_rk, read_cell, read_formula, sid, Cached};
 use super::stream::RecordStream;
 use crate::formats::ole2::decode_codepage;
-use crate::formats::poi::{thrown, Read, Thrown};
+use crate::formats::poi::{thrown, Read, Thrown, Unread};
 use crate::formats::Unported;
 use crate::java::dtoa::java_double_to_string;
 
@@ -36,69 +36,61 @@ enum Biff {
     Five,
 }
 
-/// Why the workbook is left to Tika where POI or its decoding throws.
-fn throws(Thrown(reason): Thrown) -> Unported {
-    Unported(format!(
-        "POI throws reading the old workbook, which fails Tika's parse: {reason}"
-    ))
-}
-
 /// `OldExcelExtractor.getText` of a workbook stream, from its first record.
-pub(super) fn text(stream: &[u8]) -> Result<String, Unported> {
+pub(super) fn text(stream: &[u8]) -> Result<String, Unread> {
     let mut stream = RecordStream::new(stream);
-    let biff = prepare(&mut stream).map_err(throws)?;
+    let biff = prepare(&mut stream)?;
     let mut text = String::new();
     let mut codepage = DEFAULT_CODEPAGE;
-    while stream.has_next_record().map_err(throws)? {
-        stream.next_record().map_err(throws)?;
+    while stream.has_next_record()? {
+        stream.next_record()?;
         let line = match stream.sid() {
             sid::FILE_PASS => {
-                return Err(Unported(
-                    "an encrypted old workbook, which POI refuses and Tika fails on".to_owned(),
-                ))
+                return Err(Thrown(
+                    "Encryption not supported for Old Excel files: an encrypted old workbook"
+                        .to_owned(),
+                )
+                .into())
             }
             old_sid::SHEET => {
-                let name = read_sheet_name(&mut stream).map_err(throws)?;
+                let name = read_sheet_name(&mut stream)?;
                 Some(format!("Sheet: {}", decode_codepage(&name, codepage)?))
             }
             kind @ (old_sid::LABEL_BIFF2 | old_sid::LABEL) => {
                 let biff2 = kind == old_sid::LABEL_BIFF2;
-                read_old_cell(&mut stream, biff2).map_err(throws)?;
-                let bytes = read_string(&mut stream, biff2).map_err(throws)?;
+                read_old_cell(&mut stream, biff2)?;
+                let bytes = read_string(&mut stream, biff2)?;
                 Some(decode_codepage(&bytes, codepage)?)
             }
             kind @ (old_sid::STRING_BIFF2 | old_sid::STRING) => {
-                let bytes =
-                    read_string(&mut stream, kind == old_sid::STRING_BIFF2).map_err(throws)?;
+                let bytes = read_string(&mut stream, kind == old_sid::STRING_BIFF2)?;
                 Some(decode_codepage(&bytes, codepage)?)
             }
             kind @ (sid::FORMULA | old_sid::FORMULA_BIFF3 | old_sid::FORMULA_BIFF4) => {
                 let number = if biff == Biff::Five {
-                    match read_formula(&mut stream).map_err(throws)? {
+                    match read_formula(&mut stream)? {
                         (_, Cached::Number(value)) => Some(value),
                         (_, Cached::Special(_)) => None,
                     }
                 } else {
-                    read_old_formula(&mut stream, kind == sid::FORMULA).map_err(throws)?
+                    read_old_formula(&mut stream, kind == sid::FORMULA)?
                 };
                 number.map(java_double_to_string)
             }
             sid::NUMBER => {
-                read_cell(&mut stream).map_err(throws)?;
-                Some(java_double_to_string(stream.read_f64().map_err(throws)?))
+                read_cell(&mut stream)?;
+                Some(java_double_to_string(stream.read_f64()?))
             }
             sid::RK => {
-                read_cell(&mut stream).map_err(throws)?;
-                Some(java_double_to_string(decode_rk(
-                    stream.read_i32().map_err(throws)?,
-                )))
+                read_cell(&mut stream)?;
+                Some(java_double_to_string(decode_rk(stream.read_i32()?)))
             }
             old_sid::CODEPAGE => {
-                codepage = i32::from(stream.read_i16().map_err(throws)? as u16);
+                codepage = i32::from(stream.read_i16()? as u16);
                 None
             }
             _ => {
-                stream.read_remainder().map_err(throws)?;
+                stream.read_remainder()?;
                 None
             }
         };
@@ -138,15 +130,22 @@ fn prepare(stream: &mut RecordStream<'_>) -> Read<Biff> {
 
 /// `OldSheetRecord`'s name: its bytes past a leading zero byte, as many of the length it gives
 /// as the record holds. POI fills the rest with zeros (#119).
-fn read_sheet_name(stream: &mut RecordStream<'_>) -> Read<Vec<u8>> {
+fn read_sheet_name(stream: &mut RecordStream<'_>) -> Result<Vec<u8>, Unread> {
     stream.read_i32()?;
     stream.read_u8()?;
     stream.read_u8()?;
     let length = usize::from(stream.read_u8()?);
+    if length > 0 && stream.remaining() < 1 {
+        return Err(Unported(
+            "a sheet name whose record ends before it, which POI reads on into the next record"
+                .to_owned(),
+        )
+        .into());
+    }
     if length > 0 && stream.peek_u8()? == 0 {
         stream.read_u8()?;
     }
-    stream.read_up_to(length)
+    Ok(stream.read_up_to(length)?)
 }
 
 /// `OldCellRecord`: the row, column and attributes or style of a cell.

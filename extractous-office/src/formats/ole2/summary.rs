@@ -15,7 +15,7 @@ use super::property_set::{self, Fault, PropertySet, Section, Value, FILETIME_EPO
 use crate::formats::metadata::{TikaMetadata, USER_DEFINED_PREFIX};
 use crate::formats::Unported;
 use crate::java;
-use crate::java::dtoa::java_double_to_string;
+use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::is_blank;
 use crate::java::time::format_instant;
 use crate::ole2::{EntryId, EntryKind, Ole2};
@@ -255,10 +255,11 @@ fn string(section: &Section, id: u32) -> Result<Option<String>, Fault> {
         Value::BigInteger(big) => big.to_string(),
         Value::Boolean(boolean) => boolean.to_string(),
         Value::Double(double) => java_double_to_string(*double),
-        Value::Float(_) | Value::Date(_) => {
+        Value::Float(float) => java_float_to_string(*float),
+        Value::Date(_) => {
             return Err(Fault::Unported(format!(
-                "property {id} is a {value:?}, which Java writes with Float.toString or \
-                 Date.toString"
+                "property {id} is a date, which Java writes with Date.toString in the machine's \
+                 time zone"
             )))
         }
     }))

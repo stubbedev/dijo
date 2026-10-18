@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 
 use crate::formats::escher::{kind as escher_kind, Content};
+use crate::formats::poi::{Thrown, Unread};
 use crate::formats::Unported;
 
 use super::drawing::{textbox_records, Node, SPGR_CONTAINER};
@@ -23,10 +24,8 @@ pub(super) const PICTURE_ID: u16 = 0x010B;
 const ACTION_OLE: u8 = 5;
 const ACTION_MEDIA: u8 = 6;
 
-fn poi_throws(reason: &str) -> Unported {
-    Unported(format!(
-        "POI throws reading the presentation's shapes, which fails Tika's parse: {reason}"
-    ))
+fn poi_throws(reason: &str) -> Unread {
+    Thrown(format!("reading the presentation's shapes: {reason}")).into()
 }
 
 /// What `HSLFShapeFactory` makes of a shape.
@@ -102,7 +101,7 @@ impl<'a> Shape<'a> {
     }
 
     /// `HSLFTextShape.getText`: the raw text of its paragraphs as `toExternalString` gives it.
-    pub(super) fn text(&self, sheet: &Sheet<'a>) -> Result<Vec<u16>, Unported> {
+    pub(super) fn text(&self, sheet: &Sheet<'a>) -> Result<Vec<u16>, Unread> {
         let run_type = match &self.text {
             Some((_, Some(run_type))) => *run_type,
             Some((_, None)) => {
@@ -118,7 +117,7 @@ impl<'a> Shape<'a> {
 
     /// An integer property of its options, as `getEscherProperty(type)` reads it: 0 where it
     /// has none, failing where it is complex.
-    pub(super) fn property(&self, number: u16) -> Result<i32, Unported> {
+    pub(super) fn property(&self, number: u16) -> Result<i32, Unread> {
         let Some(property) = self
             .node
             .options()
@@ -134,7 +133,7 @@ impl<'a> Shape<'a> {
 }
 
 /// `HSLFSheet.getShapes`: the shapes of a sheet's first group, after its own shape.
-pub(super) fn sheet_shapes<'a>(sheet: &Sheet<'a>) -> Result<Vec<Shape<'a>>, Unported> {
+pub(super) fn sheet_shapes<'a>(sheet: &Sheet<'a>) -> Result<Vec<Shape<'a>>, Unread> {
     let Some((_, group)) = sheet.drawing.first_group() else {
         return Err(poi_throws("spgr not found"));
     };
@@ -155,7 +154,7 @@ pub(super) fn sheet_shapes<'a>(sheet: &Sheet<'a>) -> Result<Vec<Shape<'a>>, Unpo
 }
 
 /// `HSLFShapeFactory.createShape`, then `setSheet`.
-fn create<'a>(node: &'a Node, in_table: bool, sheet: &Sheet<'a>) -> Result<Shape<'a>, Unported> {
+fn create<'a>(node: &'a Node, in_table: bool, sheet: &Sheet<'a>) -> Result<Shape<'a>, Unread> {
     if node.record_id == SPGR_CONTAINER {
         return group(node, sheet);
     }
@@ -208,7 +207,7 @@ fn frame(node: &Node) -> Kind {
 
 /// `createShapeGroup`: a table where its group shape's tertiary options say so, else a group,
 /// with its shapes.
-fn group<'a>(node: &'a Node, sheet: &Sheet<'a>) -> Result<Shape<'a>, Unported> {
+fn group<'a>(node: &'a Node, sheet: &Sheet<'a>) -> Result<Shape<'a>, Unread> {
     let first = node
         .children
         .first()
@@ -246,7 +245,7 @@ fn group_shapes<'a>(
     node: &'a Node,
     is_table: bool,
     sheet: &Sheet<'a>,
-) -> Result<Vec<Shape<'a>>, Unported> {
+) -> Result<Vec<Shape<'a>>, Unread> {
     node.children
         .iter()
         .skip(1)
@@ -256,7 +255,7 @@ fn group_shapes<'a>(
 }
 
 /// `HSLFShape.getAnchor`'s left and top, in points as `Units.masterToPoints` gives them.
-fn anchor_origin(node: &Node) -> Result<(f64, f64), Unported> {
+fn anchor_origin(node: &Node) -> Result<(f64, f64), Unread> {
     let flags = node.shape().map_or(0, |shape| shape.flags);
     let child = node.child(escher_kind::CHILD_ANCHOR);
     let (x, y) = match child.map(|child| &child.content) {
@@ -293,7 +292,7 @@ fn key(value: f64) -> i64 {
 }
 
 /// `HSLFTable.cellListToArray`: the cells by the distinct tops and lefts of their anchors.
-fn cells(children: &[Shape]) -> Result<Vec<Vec<Option<usize>>>, Unported> {
+fn cells(children: &[Shape]) -> Result<Vec<Vec<Option<usize>>>, Unread> {
     let mut anchored = Vec::new();
     for (index, child) in children.iter().enumerate() {
         if child.kind == Kind::TableCell {
@@ -333,10 +332,10 @@ fn cells(children: &[Shape]) -> Result<Vec<Vec<Option<usize>>>, Unported> {
 
 /// `HSLFTextShape.getTextParagraphs` of a shape on `sheet`, then `getRunType`, `None` where it
 /// throws.
-fn text_of<'a>(node: &'a Node, sheet: &Sheet<'a>) -> Result<(Text<'a>, Option<i32>), Unported> {
+fn text_of<'a>(node: &'a Node, sheet: &Sheet<'a>) -> Result<(Text<'a>, Option<i32>), Unread> {
     let records = match textbox_records(node) {
         Some(Ok(records)) => Some(records),
-        Some(Err(fault)) => return Err(fault.unported()),
+        Some(Err(unread)) => return Err(unread),
         None => None,
     };
     let found = match records {
@@ -369,14 +368,17 @@ fn text_of<'a>(node: &'a Node, sheet: &Sheet<'a>) -> Result<(Text<'a>, Option<i3
 
 /// `createEmptyParagraph`: one paragraph of the text of the text box's first text atom, or of
 /// none.
-fn empty_paragraph<'a>(records: &'a [Record]) -> Result<Paragraph<'a>, Unported> {
+fn empty_paragraph<'a>(records: &'a [Record]) -> Result<Paragraph<'a>, Unread> {
     if records
         .iter()
         .any(|record| record.kind == kind::STYLE_TEXT_PROP_ATOM)
     {
-        return Err(poi_throws(
-            "an empty paragraph made with a style atom POI has not read",
-        ));
+        return Err(Unported(
+            "an empty paragraph made with a style atom POI has not read, which this port does \
+             not read"
+                .to_owned(),
+        )
+        .into());
     }
     let bytes = records
         .iter()

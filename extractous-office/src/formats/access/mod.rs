@@ -3,10 +3,12 @@
 //! its columns and rows, binary values and OLE objects handed on as embedded documents, and each
 //! query as the SQL Jackcess writes for it.
 //!
-//! The port reads the whole database while it prepares, so that whatever Jackcess would throw
-//! leaves the database to Tika before anything is written. A database under Office encryption
-//! fails as encrypted without a password and is left to Tika with one. The port also leaves to
-//! Tika an MSISAM database.
+//! The port reads the whole database while it prepares, so that what Jackcess would throw is
+//! known before anything is written. A database under Office encryption is decrypted with the
+//! password given, and fails as encrypted without the right one. A damaged database fails as
+//! Tika's path fails on it, rethrown as `JackcessParser` rethrows what Jackcess throws; where
+//! Jackcess throws reading pages past the first, the failure is a reading that may differ from
+//! Tika's. The port leaves to Tika an MSISAM database.
 //!
 //! Where Tika is wrong, the port departs from it (#122): it keeps the database password out of
 //! the metadata, decodes Jet 3 text in the database's code page, writes every table with each
@@ -17,6 +19,7 @@
 mod as_tika;
 mod buffer;
 mod column;
+mod crypt;
 mod database;
 mod format;
 mod ole;
@@ -31,31 +34,39 @@ mod tests;
 
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 pub use as_tika::as_tika_writes;
-use buffer::Thrown;
+use buffer::{Exception, Kind, Thrown, CLASS_CAST};
 use column::{DataType, Decimal, Value};
 use database::Database;
 use ole::Ole;
+use pages::Pages;
 use properties::{PropertyMap, PropertyMaps};
 use query::Sql;
 
-use crate::config::ParserConfigs;
-use crate::formats::crypt;
+use crate::config::{ParserConfigs, Password};
+use crate::errors::Error;
+use crate::formats::crypt as office_crypt;
 use crate::formats::embedded::{ParseContext, Wrapping};
 use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{Embedded, Handed};
+use crate::formats::thrown::{Exception as JavaException, Thrown as Rethrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{
-    html, noted, unless_different, Decline, Deferral, Difference, Failure, Opened, Parser,
-    Prepared, StringOut,
+    html, java_file_name, mark_password_used, noted, unless_different, Decline, Difference,
+    Failure, InputFile, Opened, Parser, Prepared, StringOut,
 };
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::time::civil::civil_from_days;
 
-/// What Jackcess throws opening a database under Office encryption without its password.
-const INCORRECT_PASSWORD: &str =
-    "com.healthmarketscience.jackcess.crypt.InvalidCredentialsException: Incorrect password \
-     provided";
+const TIKA_NAME: &str = "org.apache.tika.parser.microsoft.JackcessParser";
+const TIKA_EXCEPTION: &str = "org.apache.tika.exception.TikaException";
+const UNSUPPORTED_FORMAT: &str = "org.apache.tika.exception.UnsupportedFormatException";
+/// What Jackcess's messages `JackcessParser` rethrows otherwise hold or start with.
+const INCORRECT_PASSWORD: &str = "Incorrect password";
+const INVALID_PAGE_NUMBER: &str = "invalid page number ";
+const OLD_MAP_TYPE: &str = "Unrecognized map type: 75";
+/// The name Jackcess gives a database without a file.
+const UNKNOWN_DATABASE: &str = "<UNKNOWN.DB>";
 const SUMMARY_PREFIX: &str = "mdb-summary-prop:";
 const PROPERTY_PREFIX: &str = "mdb-prop:";
 const USER_PROPERTY_PREFIX: &str = "mdb-user-prop:";
@@ -81,7 +92,7 @@ impl Parser for JackcessParser {
         "extractous::JackcessParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.JackcessParser"
+        TIKA_NAME
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -94,8 +105,7 @@ impl Parser for JackcessParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (extraction, difference) = extract(input, configs)?;
-        unless_different(Box::new(move |xhtml| extraction.write(xhtml)), difference)
+        prepare(input, configs)
     }
 }
 
@@ -198,9 +208,10 @@ fn text(value: Option<&Value>, data_type: DataType) -> Result<String, Thrown> {
         return Ok(String::new());
     };
     let mismatch = || {
-        Err(Thrown::other(format!(
-            "java.lang.ClassCastException: {value:?} as {data_type:?}"
-        )))
+        Err(Thrown::runtime(
+            CLASS_CAST,
+            format!("{value:?} as {data_type:?}"),
+        ))
     };
     Ok(match (data_type, value) {
         (DataType::Long, Value::Long(v)) => v.to_string(),
@@ -277,20 +288,109 @@ fn date(bits: i64) -> String {
     text
 }
 
-/// Reads the database as `JackcessExtractor.parse` does. A database under Office encryption
-/// fails as encrypted where no password is given, as Tika's path fails on it, and is left to
-/// Tika where one is.
-fn extract(
-    input: &[u8],
-    configs: &ParserConfigs,
-) -> Result<(Extraction, Option<Difference>), Decline<'static>> {
-    let thrown = Thrown::reason;
-    let database = Database::open(input).map_err(|thrown| match thrown {
-        Thrown::Encrypted if configs.password.is_none() => {
-            Decline::Fails(crypt::encrypted(Some(INCORRECT_PASSWORD)))
+/// Why the port leaves a database to Tika: what of it the port does not read.
+fn deferred(what: String) -> Decline<'static> {
+    Decline::Deferred(format!("{what}, which the port does not read"))
+}
+
+/// What Tika's path fails with where Jackcess, or Tika's extractor over it, throws `exception`
+/// reading the database Jackcess names `database`: what `JackcessParser.parse` rethrows it as,
+/// wrapped as `CompositeParser` wraps it.
+fn failure(exception: &Exception, database: &str) -> Error {
+    let message = exception.message(database);
+    let cause = exception.java(database);
+    let corrupt = || {
+        Rethrown::Tika(
+            JavaException::new(
+                TIKA_EXCEPTION,
+                format!(
+                    "Corrupt Access database: {}",
+                    message.as_deref().unwrap_or("null")
+                ),
+            )
+            .caused_by(cause.clone()),
+        )
+    };
+    let has = |text: &str| {
+        message
+            .as_deref()
+            .is_some_and(|message| message.contains(text))
+    };
+    let rethrown = match exception.kind {
+        Kind::Io if has(OLD_MAP_TYPE) => Rethrown::Tika(JavaException::new(
+            UNSUPPORTED_FORMAT,
+            "Jackcess doesn't process mdb versions before v97",
+        )),
+        Kind::Io => Rethrown::Io(cause),
+        Kind::IndexOutOfBounds => corrupt(),
+        Kind::IllegalState if has(INCORRECT_PASSWORD) => {
+            return office_crypt::encrypted(Some(&cause.to_string()))
         }
-        thrown => Decline::Deferred(thrown.reason()),
+        Kind::IllegalState
+            if message
+                .as_deref()
+                .is_some_and(|message| message.starts_with(INVALID_PAGE_NUMBER)) =>
+        {
+            corrupt()
+        }
+        Kind::IllegalState | Kind::Runtime => Rethrown::Runtime(cause),
+    };
+    rethrown.into_error(TIKA_NAME)
+}
+
+/// The name Jackcess gives a database: its file's, where Tika holds it in the file it was read
+/// from, else that of a database without a file, as the port reads one from memory where Tika
+/// spools it to a temporary file of its own.
+fn database_name(file: &InputFile) -> &str {
+    match file {
+        InputFile::Original(path) => java_file_name(path),
+        InputFile::Spooled => UNKNOWN_DATABASE,
+    }
+}
+
+/// Reads the database as `JackcessParser.parse` does, under the password `configs` gives, if
+/// any. What Jackcess throws opening the file, before it reads a page past the first, the
+/// parse fails with as Tika's path does. What it throws reading the database the port reads it
+/// to fail with, but Jackcess may throw on a damaged database elsewhere and otherwise: Tika's
+/// path extracts such a database in a build with Tika.
+fn prepare<'a>(input: &[u8], configs: &'a ParserConfigs) -> Result<Prepared<'a>, Decline<'a>> {
+    let password = configs.password.as_ref().map_or("", Password::expose);
+    let pages = Database::pages(input, password).map_err(|thrown| match thrown {
+        Thrown::Exception(exception) => Decline::Fails(failure(&exception, UNKNOWN_DATABASE)),
+        Thrown::Unported(what) => deferred(what),
     })?;
+    let refused = pages.refused();
+    match extract(pages, configs) {
+        Ok((extraction, difference)) => unless_different(
+            Box::new(move |xhtml| {
+                mark_password_used(xhtml.metadata_mut(), configs);
+                extraction.write(xhtml)
+            }),
+            refused.or(difference),
+        ),
+        Err(Thrown::Unported(what)) => Err(deferred(what)),
+        Err(Thrown::Exception(exception)) => Err(Decline::Differs {
+            difference: refused.unwrap_or_else(|| {
+                Difference(format!(
+                    "a damaged database, which Jackcess may throw on elsewhere and otherwise than \
+                 the port: {}",
+                    exception.java(UNKNOWN_DATABASE)
+                ))
+            }),
+            reading: Box::new(move |xhtml| {
+                let database = database_name(xhtml.context().input_file());
+                Err(Failure::Extraction(failure(&exception, database)))
+            }),
+        }),
+    }
+}
+
+/// Reads the database of `pages` as `JackcessExtractor.parse` does.
+fn extract(
+    pages: Pages<'_>,
+    configs: &ParserConfigs,
+) -> Result<(Extraction, Option<Difference>), Thrown> {
+    let database = Database::open(pages)?;
     let mut metadata = Vec::new();
     let add_all = |maps: PropertyMaps, prefix: &'static str, metadata: &mut Vec<Entry>| {
         for property in maps.default_map().iter() {
@@ -300,33 +400,27 @@ fn extract(
         Ok::<_, Thrown>(())
     };
     add_all(
-        database.database_properties().map_err(thrown)?,
+        database.database_properties()?,
         PROPERTY_PREFIX,
         &mut metadata,
-    )
-    .map_err(thrown)?;
+    )?;
     add_all(
-        database.user_defined_properties().map_err(thrown)?,
+        database.user_defined_properties()?,
         USER_PROPERTY_PREFIX,
         &mut metadata,
-    )
-    .map_err(thrown)?;
-    summary(
-        &database.summary_properties().map_err(thrown)?.default_map(),
-        &mut metadata,
-    )
-    .map_err(thrown)?;
+    )?;
+    summary(&database.summary_properties()?.default_map(), &mut metadata)?;
     let mut tables = Vec::new();
     let mut difference = None;
-    for info in database.tables().map_err(thrown)? {
-        let table = database.load_table(&info).map_err(thrown)?;
+    for info in database.tables()? {
+        let table = database.load_table(&info)?;
         let (content, read_otherwise) = table_content(&database, &table, info.page, configs)?;
         difference = difference.or(read_otherwise);
         tables.push(content);
     }
     let mut queries = Vec::new();
-    for definition in database.queries().map_err(thrown)? {
-        queries.push(match query::sql(&definition).map_err(thrown)? {
+    for definition in database.queries()? {
+        queries.push(match query::sql(&definition)? {
             Sql::Text(text) => text,
             Sql::Unsupported => "unsupported query type".to_owned(),
         });
@@ -389,17 +483,16 @@ fn table_content(
     table: &table::Table,
     page: i32,
     configs: &ParserConfigs,
-) -> Result<(TableContent, Option<Difference>), Deferral> {
-    let thrown = Thrown::reason;
+) -> Result<(TableContent, Option<Difference>), Thrown> {
     let mut difference = None;
     let columns = &table.columns;
     let mut rich: Option<Vec<bool>> = None;
     let mut rows = Vec::new();
     for row in table.rows(&database.pages, vec![true; columns.len()]) {
-        let row = row.map_err(thrown)?;
+        let row = row?;
         let rich = match &rich {
             Some(rich) => rich,
-            None => rich.insert(rich_text_columns(database, table, page).map_err(thrown)?),
+            None => rich.insert(rich_text_columns(database, table, page)?),
         };
         let mut cells = Vec::with_capacity(columns.len());
         for (index, column) in columns.iter().enumerate() {
@@ -412,12 +505,10 @@ fn table_content(
                         Ok(Ole::Link(path)) => Cell::Text(path),
                         Ok(Ole::Resource(document)) => Cell::Resource(document),
                         Ok(Ole::Storage(document)) => Cell::Storage(document),
-                        Err(unread) => return Err(unread.reason()),
+                        Err(thrown) => return Err(thrown),
                     },
                     Some(other) => {
-                        return Err(thrown(Thrown::other(format!(
-                            "java.lang.ClassCastException: {other:?} as byte[]"
-                        ))))
+                        return Err(Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")))
                     }
                 },
                 DataType::Binary => match value {
@@ -427,13 +518,11 @@ fn table_content(
                         metadata: TikaMetadata::new(),
                     }),
                     Some(other) => {
-                        return Err(thrown(Thrown::other(format!(
-                            "java.lang.ClassCastException: {other:?} as byte[]"
-                        ))))
+                        return Err(Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")))
                     }
                 },
                 data_type => {
-                    let text = text(value, data_type).map_err(thrown)?;
+                    let text = text(value, data_type)?;
                     if rich[index] {
                         let (text, read_otherwise) = rich_text(&text, configs)?;
                         difference = difference.or(read_otherwise);
@@ -495,19 +584,20 @@ fn rich_text_columns(
 /// What `JSoupParser` writes of rich text, as text, all of it: Tika writes it through a
 /// `BodyContentHandler` whose write limit of 100,000 characters fails the parse (#122). Where
 /// the HTML parser reads the rich text differently from Tika's, it says how.
-fn rich_text(
-    html: &str,
-    configs: &ParserConfigs,
-) -> Result<(String, Option<Difference>), Deferral> {
+fn rich_text(html: &str, configs: &ParserConfigs) -> Result<(String, Option<Difference>), Thrown> {
     let mut metadata = TikaMetadata::new();
     metadata.set("Content-Type", "text/html; charset=UTF-8");
-    let (prepared, difference) = noted(html::prepare(html.as_bytes(), &metadata))
-        .map_err(|reason| format!("rich text in an Access table that defers: {reason}"))?;
+    let (prepared, difference) =
+        noted(html::prepare(html.as_bytes(), &metadata)).map_err(|reason| {
+            Thrown::unported(format!("rich text the HTML parser defers: {reason}"))
+        })?;
     let context = ParseContext::new(configs);
     let mut out = StringOut::default();
     let mut handler = Body::new(ToText::new(&mut out));
     let (_, _, result) = Xhtml::write(&mut handler, metadata, &context, prepared);
-    result.map_err(|failure| format!("rich text in an Access table that fails: {failure:?}"))?;
+    result.map_err(|failure| {
+        Thrown::unported(format!("rich text the HTML parser fails on: {failure:?}"))
+    })?;
     let difference = difference
         .map(|Difference(reason)| Difference(format!("rich text in an Access table: {reason}")));
     Ok((out.0, difference))

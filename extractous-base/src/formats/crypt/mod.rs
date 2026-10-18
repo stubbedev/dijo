@@ -63,7 +63,7 @@ pub fn encrypted_document(message: &str) -> Error {
 
 /// The hash algorithms the encryptions use (`HashAlgorithm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hash {
+pub enum Hash {
     Md5,
     Sha1,
     Sha256,
@@ -73,7 +73,7 @@ enum Hash {
 
 impl Hash {
     /// The hash of the parts, one after the other.
-    fn digest(self, parts: &[&[u8]]) -> Vec<u8> {
+    pub fn digest(self, parts: &[&[u8]]) -> Vec<u8> {
         fn run<D: Digest>(parts: &[&[u8]]) -> Vec<u8> {
             let mut digest = D::new();
             for part in parts {
@@ -91,7 +91,7 @@ impl Hash {
     }
 
     /// `hashSize`.
-    fn size(self) -> usize {
+    pub fn size(self) -> usize {
         match self {
             Hash::Md5 => 16,
             Hash::Sha1 => 20,
@@ -793,7 +793,7 @@ impl std::fmt::Debug for AesKey {
 
 impl AesKey {
     /// The key of `key`'s bytes, failing as Java's cipher does on a length AES does not take.
-    fn new(key: &[u8]) -> Result<AesKey, Unopened> {
+    pub fn new(key: &[u8]) -> Result<AesKey, Unopened> {
         use aes::cipher::KeyInit as _;
         let invalid = |_| Unopened::Thrown("Invalid AES key length".to_owned());
         Ok(match key.len() {
@@ -818,7 +818,7 @@ impl AesKey {
     }
 
     /// AES/ECB/NoPadding of `data`'s whole blocks.
-    fn decrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
+    pub fn decrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
         for chunk in out.as_chunks_mut::<16>().0 {
             self.decrypt_block(chunk);
@@ -834,7 +834,7 @@ impl AesKey {
     }
 
     /// AES/CBC/NoPadding of `data`'s whole blocks with the IV.
-    fn decrypt_cbc(&self, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    pub fn decrypt_cbc(&self, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
         let mut previous = *iv;
         for chunk in out.as_chunks_mut::<16>().0 {

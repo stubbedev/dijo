@@ -13,8 +13,8 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::poi::{i32_at, safely_clone, thrown, u16_at, u8_at, Read, Thrown};
-use crate::formats::{Decline, Parser, Prepared, Unported};
+use crate::formats::poi::{i32_at, safely_clone, thrown, u16_at, u8_at, Read, Thrown, Unread};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const MEDIA_TYPE: &str = "application/x-mspublisher";
@@ -47,14 +47,14 @@ impl Parser for PublisherParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers documents POI throws on and macros extracted when asked to.
+    /// Defers macros extracted when asked to, and fails documents POI throws on.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, text) = read(input, configs)?;
+        let (summaries, text) = read(input, configs).map_err(Unread::declined)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
@@ -69,12 +69,11 @@ impl Parser for PublisherParser {
 }
 
 /// The summary information and the text `PublisherTextExtractor` gives of the document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<u16>), Unported> {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<u16>), Unread> {
     let file = office::open(input, configs, MEDIA_TYPE, "Publisher document")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
-    let text = text(&file, root)
-        .map_err(|Thrown(reason)| Unported(format!("POI throws reading the document: {reason}")))?;
+    let text = text(&file, root)?;
     Ok((summaries, text))
 }
 

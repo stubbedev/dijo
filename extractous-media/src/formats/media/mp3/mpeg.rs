@@ -2,21 +2,25 @@
 //! tags are looked for at the start and MPEG audio frames are then found by their sync byte and
 //! header, and skipped by the length their header gives.
 
+use crate::input::{Pages, Paging};
+
 /// `PushbackInputStream` over the input: bytes pushed back are read again first, the first of
 /// a pushed array first. A byte Java pushes back for the end of the stream, `-1`, comes back as
-/// `0xFF`.
+/// `0xFF`. The pages of the input are released as it is read.
 pub(super) struct Stream<'a> {
     data: &'a [u8],
     position: usize,
     pushed: Vec<u8>,
+    paging: Paging<'a>,
 }
 
 impl<'a> Stream<'a> {
-    pub(super) fn new(data: &'a [u8]) -> Self {
+    pub(super) fn new(data: &'a [u8], pages: Pages<'a>) -> Self {
         Self {
             data,
             position: 0,
             pushed: Vec::new(),
+            paging: Paging::new(pages),
         }
     }
 
@@ -28,6 +32,7 @@ impl<'a> Stream<'a> {
         let byte = self.data.get(self.position).copied();
         if byte.is_some() {
             self.position += 1;
+            self.paging.read(1);
         }
         byte
     }
@@ -55,6 +60,7 @@ impl<'a> Stream<'a> {
         self.pushed.truncate(self.pushed.len() - from_pushed);
         let from_data = (count - from_pushed).min(self.data.len() - self.position);
         self.position += from_data;
+        self.paging.read(from_data);
         from_pushed + from_data
     }
 }
@@ -262,7 +268,7 @@ mod tests {
 
     #[test]
     fn pushes_bytes_back_in_order() {
-        let mut stream = Stream::new(b"abc");
+        let mut stream = Stream::new(b"abc", Pages::IN_MEMORY);
         let read = stream.read_up_to(2);
         stream.unread(&read);
         assert_eq!(stream.read_up_to(5), b"abc");

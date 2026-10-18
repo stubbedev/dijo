@@ -18,7 +18,7 @@ use super::bytes::{index, safely_clone};
 use super::extractor::{clean, strip_fields};
 use super::range::{find_range, subrange};
 use super::text::{read_clx, ComplexFileTable, Plex, TextPiece, MAX_PIECE_LENGTH};
-use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown};
+use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown, Unread};
 use crate::formats::Unported;
 use crate::text::charset::Charset;
 
@@ -30,12 +30,6 @@ const COMPLEX: u16 = 0x0004;
 const SED_SIZE: i32 = 12;
 /// What POI's text-piece fallback writes a carriage return as.
 const LINE_END: [u16; 2] = [0x0D, 0x0A];
-
-fn throws(Thrown(reason): Thrown) -> Unported {
-    Unported(format!(
-        "POI throws reading the Word 6 or 95 document: {reason}"
-    ))
-}
 
 /// A Word 6 or 95 document, read.
 pub(super) struct OldDocument {
@@ -50,8 +44,8 @@ pub(super) struct OldDocument {
 
 impl OldDocument {
     /// `new HWPFOldDocument(directory)` past the FIB, from the main stream.
-    pub(super) fn read(main: &[u8]) -> Result<OldDocument, Unported> {
-        let int = |at: usize| i32_at(main, at).map_err(throws);
+    pub(super) fn read(main: &[u8]) -> Result<OldDocument, Unread> {
+        let int = |at: usize| i32_at(main, at);
         let sed_offset = int(0x88)?;
         let sed_size = int(0x8C)?;
         let chp_offset = int(0xB8)?;
@@ -64,7 +58,7 @@ impl OldDocument {
         let complex_offset = int(0x160)?;
         let fc_min = int(0x18)?;
         let fc_mac = int(0x1C)?;
-        let complex = u16_at(main, 0xA).map_err(throws)? & COMPLEX != 0;
+        let complex = u16_at(main, 0xA)? & COMPLEX != 0;
         let pieces = if complex {
             complex_pieces(main, complex_offset, charset)?
         } else {
@@ -76,8 +70,7 @@ impl OldDocument {
             (chp_offset, chp_size),
             (pap_offset, pap_size),
             (sed_offset, sed_size),
-        )
-        .map_err(throws)?;
+        )?;
         Ok(OldDocument {
             charset,
             pieces,
@@ -179,12 +172,8 @@ fn read_sections(main: &[u8], offset: i32, size: i32) -> Read<()> {
 
 /// The text pieces of a complex document, each as its bytes in `charset`, at the file positions
 /// the piece descriptors give as they are.
-fn complex_pieces(
-    main: &[u8],
-    offset: i32,
-    charset: Charset,
-) -> Result<ComplexFileTable, Unported> {
-    let (grpprls, descriptors) = read_clx(main, offset).map_err(throws)?;
+fn complex_pieces(main: &[u8], offset: i32, charset: Charset) -> Result<ComplexFileTable, Unread> {
+    let (grpprls, descriptors) = read_clx(main, offset)?;
     let mut pieces = Vec::with_capacity(descriptors.len());
     for descriptor in descriptors {
         let bytes = safely_clone(
@@ -192,20 +181,16 @@ fn complex_pieces(
             descriptor.fc,
             descriptor.end.wrapping_sub(descriptor.start),
             MAX_PIECE_LENGTH,
-        )
-        .map_err(throws)?;
+        )?;
         let text = undecoded(charset, &bytes)?;
-        pieces.push(
-            TextPiece::new(
-                descriptor.start,
-                descriptor.end,
-                descriptor.fc,
-                false,
-                descriptor.prm,
-                text,
-            )
-            .map_err(throws)?,
-        );
+        pieces.push(TextPiece::new(
+            descriptor.start,
+            descriptor.end,
+            descriptor.fc,
+            false,
+            descriptor.prm,
+            text,
+        )?);
     }
     Ok(ComplexFileTable::new(grpprls, pieces))
 }
@@ -216,18 +201,17 @@ fn whole_text(
     fc_min: i32,
     fc_mac: i32,
     charset: Charset,
-) -> Result<ComplexFileTable, Unported> {
-    let bytes = safely_clone(main, fc_min, fc_mac.wrapping_sub(fc_min), MAX_RECORD_LENGTH)
-        .map_err(throws)?;
+) -> Result<ComplexFileTable, Unread> {
+    let bytes = safely_clone(main, fc_min, fc_mac.wrapping_sub(fc_min), MAX_RECORD_LENGTH)?;
     let length = i32::try_from(bytes.len()).expect("a record of at most ten million bytes");
     let text = undecoded(charset, &bytes)?;
-    let piece = TextPiece::new(0, length, fc_min, false, 0, text).map_err(throws)?;
+    let piece = TextPiece::new(0, length, fc_min, false, 0, text)?;
     Ok(ComplexFileTable::new(Vec::new(), vec![piece]))
 }
 
 /// The bytes of text in `charset`, one unit each, once they are known to decode as
 /// `new String(bytes, charset)` decodes them.
-fn undecoded(charset: Charset, bytes: &[u8]) -> Result<Vec<u16>, Unported> {
+fn undecoded(charset: Charset, bytes: &[u8]) -> Result<Vec<u16>, Unread> {
     charset.decode_exactly(bytes).ok_or_else(|| {
         Unported(format!(
             "text in {}, which this port does not decode as Java does",
@@ -291,8 +275,8 @@ fn font_charset(chs: u8) -> Option<&'static str> {
 
 /// `guessCodePage(new OldFontTable(...))`: the charset of the first font whose character set
 /// is named and is no ANSI, default or symbol set, else code page 1252.
-fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unported> {
-    let character_sets = font_character_sets(main, offset, length).map_err(throws)?;
+fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unread> {
+    let character_sets = font_character_sets(main, offset, length)?;
     let named = character_sets
         .into_iter()
         .filter(|chs| !matches!(chs, 0x00..=0x02))
@@ -302,12 +286,14 @@ fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unpor
         return Err(Unported(
             "a Word 6 document in Big5, which POI reads with its own code page 950 reader"
                 .to_owned(),
-        ));
+        )
+        .into());
     }
     Charset::for_name(name).ok_or_else(|| {
         Unported(format!(
             "a Word 6 document in {name}, a charset this port does not have"
         ))
+        .into()
     })
 }
 

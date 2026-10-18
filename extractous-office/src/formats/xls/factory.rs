@@ -9,13 +9,14 @@
 
 use std::collections::VecDeque;
 
+use super::poi_throws;
 use super::records::{read_record, sid, CellRef, Record};
 use super::stream::RecordStream;
 use crate::config::ParserConfigs;
 use crate::formats::crypt::xor::{ExcelXorKey, Xor};
 use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys, Unopened};
 use crate::formats::poi::{thrown, Read};
-use crate::formats::{Decline, Unported};
+use crate::formats::Decline;
 
 /// `Biff8DecryptingStream.RC4_REKEYING_INTERVAL`: the bytes each block key decrypts.
 const RC4_REKEYING_INTERVAL: usize = 1024;
@@ -292,21 +293,20 @@ fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Decline<'static>> {
     let kind = data
         .get(..2)
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-        .ok_or_else(|| Unported("POI throws on a FILEPASS record without its type".to_owned()))?;
+        .ok_or_else(|| poi_throws("a FILEPASS record without its type"))?;
     let info = &data[2..];
     match kind {
         XOR_OBFUSCATION => Xor::read(info).map(Encryption::Xor),
         RC4_ENCRYPTION => EncryptionInfo::read(info, Mode::CryptoApi).map(Encryption::Rc4),
         _ => {
-            return Err(Unported(
-                "a FILEPASS record of an encryption type POI throws on, which fails Tika's parse"
-                    .to_owned(),
-            )
-            .into())
+            return Err(poi_throws(&format!(
+                "a FILEPASS record of the encryption type {kind}"
+            )))
         }
     }
     .map_err(|unopened| match unopened {
         Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(None)),
+        Unopened::Thrown(reason) => poi_throws(&format!("reading the encryption: {reason}")),
         unopened => unopened.unported().into(),
     })
 }

@@ -8,14 +8,15 @@ use super::format::Detected;
 #[cfg(feature = "tika")]
 use super::pages::rc4;
 use super::*;
-#[cfg(feature = "tika")]
 use crate::config::Password;
+use crate::formats::crypt::Hash;
+use crate::formats::parity::Scratch;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_same_as_tika, assert_same_as_tika_departing, assert_same_as_tika_normalising,
-    conformance_corpus, documents, errors, spools_as_tika_rewriting, Departure, Departures,
+    assert_same_as_tika_normalising_with, conformance_corpus, deferral, documents, errors,
+    spools_as_tika_rewriting, Departure, Departures,
 };
-use crate::formats::parity::{deferral, Scratch};
 
 const FIXTURES: &str = "../test_files/documents/access";
 
@@ -49,7 +50,7 @@ fn extracts_access_databases_as_tikas_path_does() {
     let (encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
         .into_iter()
         .partition(|path| path.ends_with("tika-password.accdb"));
-    assert_fails_as_encrypted(&encrypted);
+    assert_opens_with_its_password(&encrypted);
     assert_eq!(
         names(&parsed),
         [
@@ -79,44 +80,290 @@ fn assert_same_as_tika_formatting_cells(databases: &[PathBuf]) {
     }
 }
 
-/// Asserts that each of `encrypted`, one database, fails without a password as encrypted, with
-/// the error Tika's path fails with, and is left to Tika with one.
+/// A database under agile encryption, and its password.
+const ENCRYPTED: &str = "../test_files/documents/encrypted/tika-password.accdb";
+const PASSWORD: &str = "tika";
+
+/// The parser settings with `password`.
 #[cfg(feature = "tika")]
-fn assert_fails_as_encrypted(encrypted: &[PathBuf]) {
+fn given(password: &str) -> ParserConfigs {
+    ParserConfigs::default().with_password(Some(&Password::new(password)))
+}
+
+/// Asserts that each of `encrypted`, one database encrypted with [`PASSWORD`], fails as
+/// encrypted without a password and with a wrong one, with the error Tika's path fails with,
+/// and is read with its password as Tika's path reads it.
+#[cfg(feature = "tika")]
+fn assert_opens_with_its_password(encrypted: &[PathBuf]) {
     assert_eq!(encrypted.len(), 1);
     let path = &encrypted[0];
-    let (native, tika) = errors(path, &ParserConfigs::default());
-    assert_eq!(native, tika);
-    assert!(native.starts_with("Encrypted("), "{native}");
-    let configs = ParserConfigs::default().with_password(Some(&Password::new("tika")));
-    let input = std::fs::read(path).unwrap();
-    assert_eq!(
-        JackcessParser
-            .defers(&input, &TikaMetadata::new(), &configs)
-            .as_deref(),
-        Some("an encrypted database, which the port does not decrypt")
+    for configs in [ParserConfigs::default(), given("wrong")] {
+        let (native, tika) = errors(path, &configs);
+        assert_eq!(native, tika);
+        assert!(native.starts_with("Encrypted("), "{native}");
+    }
+    let (rewrite, normalise) = as_tika_writes(path);
+    assert_same_as_tika_normalising_with(
+        &[path],
+        JackcessParser.tika_name(),
+        &given(PASSWORD),
+        DEPARTURES,
+        rewrite,
+        normalise,
+    );
+}
+
+/// An encryption provider of Office's, as Access writes its description and encrypts pages.
+#[derive(Debug, Clone, Copy)]
+enum Provider {
+    BinaryRc4,
+    CryptoApi,
+    /// Standard encryption, its verifier encrypted with the key of this block: 0, as Office
+    /// encrypts it, or the number of the last hashing round, as Jackcess checks it.
+    Standard(u32),
+}
+
+/// The block of the key Jackcess checks a password against standard encryption with.
+const JACKCESS_VERIFIER_BLOCK: u32 = 49_999;
+
+/// What makes the key of a block of a database's encryption.
+type PageKey = Box<dyn Fn(&[u8]) -> Vec<u8>>;
+
+/// `file`, an ACE database, encrypted as Access encrypts it with `provider` and `password`:
+/// the provider described on the header page, its verifier encrypted, and each later page
+/// encrypted under the provider's key of the encoding key XORed with the page's number.
+fn encrypted(mut file: Vec<u8>, provider: Provider, password: &str) -> Vec<u8> {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit};
+    use rc4::{Rc4, StreamCipher};
+    let Ok(format::Detected::Format(format)) = format::detect(&file) else {
+        panic!("an ACE database");
+    };
+    let encoding_key = [0x5A, 0x17, 0xC3, 0x08];
+    let password: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let salt = [0x42; 16];
+    let verifier = [0x24; 16];
+    let block = |number: u32| -> [u8; 4] {
+        std::array::from_fn(|i| number.to_le_bytes()[i] ^ encoding_key[i])
+    };
+    let rc4 = |key: &[u8], parts: &mut [&mut [u8]]| {
+        let mut cipher = Rc4::new_from_slice(key).unwrap();
+        for part in parts {
+            cipher.apply_keystream(part);
+        }
+    };
+    let aes = |key: &[u8], data: &mut [u8]| {
+        let cipher = aes::Aes128::new_from_slice(key).unwrap();
+        for chunk in data.chunks_mut(16) {
+            let mut block = aes::Block::try_from(&*chunk).unwrap();
+            cipher.encrypt_block(&mut block);
+            chunk.copy_from_slice(&block);
+        }
+    };
+    let sha1 = |parts: &[&[u8]]| Hash::Sha1.digest(parts);
+    let md5 = |parts: &[&[u8]]| Hash::Md5.digest(parts);
+    let header = |flags: i32, algorithm: i32, csp: &str| {
+        let mut header = Vec::new();
+        for field in [flags, 0, algorithm, 0x8004, 128, 0x18, 0, 0] {
+            header.extend_from_slice(&i32::to_le_bytes(field));
+        }
+        header.extend(csp.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+        let mut described = (header.len() as i32).to_le_bytes().to_vec();
+        described.extend(header);
+        described
+    };
+    let mut info = Vec::new();
+    let page_key: PageKey = match provider {
+        Provider::BinaryRc4 => {
+            let mut filled = md5(&[&password])[..5].to_vec();
+            filled.extend_from_slice(&salt);
+            let repeated: Vec<u8> = filled.iter().copied().cycle().take(336).collect();
+            let base = md5(&[&repeated])[..5].to_vec();
+            let key = move |block: &[u8]| md5(&[&base, block]);
+            let mut sealed = verifier;
+            let mut sealed_hash = md5(&[&verifier]);
+            rc4(
+                &key(&0i32.to_le_bytes()),
+                &mut [&mut sealed, &mut sealed_hash],
+            );
+            info.extend([1, 0, 1, 0]);
+            info.extend(salt);
+            info.extend(sealed);
+            info.extend(sealed_hash);
+            Box::new(key)
+        }
+        Provider::CryptoApi => {
+            let base = sha1(&[&salt, &password]);
+            let key = move |block: &[u8]| sha1(&[&base, block])[..16].to_vec();
+            let mut sealed = verifier;
+            let mut sealed_hash = sha1(&[&verifier]);
+            rc4(
+                &key(&0i32.to_le_bytes()),
+                &mut [&mut sealed, &mut sealed_hash],
+            );
+            info.extend([4, 0, 2, 0]);
+            info.extend(0x04i32.to_le_bytes());
+            info.extend(header(
+                0x04,
+                0x6801,
+                "Microsoft Enhanced Cryptographic Provider v1.0",
+            ));
+            info.extend(16i32.to_le_bytes());
+            info.extend(salt);
+            info.extend(sealed);
+            info.extend(20i32.to_le_bytes());
+            info.extend(sealed_hash);
+            Box::new(key)
+        }
+        Provider::Standard(verifier_block) => {
+            let iterated = (0..50_000u32).fold(sha1(&[&salt, &password]), |hashed, i| {
+                sha1(&[&i.to_le_bytes(), &hashed])
+            });
+            let key = move |block: &[u8]| {
+                let final_hash = sha1(&[&iterated, block]);
+                let x = |fill: u8| {
+                    let mut buffer = [fill; 64];
+                    for (byte, hashed) in buffer.iter_mut().zip(&final_hash) {
+                        *byte ^= hashed;
+                    }
+                    sha1(&[&buffer])
+                };
+                let mut derived = x(0x36);
+                derived.extend(x(0x5C));
+                derived[..16].to_vec()
+            };
+            let key0 = key(&verifier_block.to_le_bytes());
+            let mut sealed = verifier;
+            aes(&key0, &mut sealed);
+            let mut sealed_hash = sha1(&[&verifier]);
+            sealed_hash.resize(32, 0);
+            aes(&key0, &mut sealed_hash);
+            info.extend([4, 0, 2, 0]);
+            info.extend(0x24i32.to_le_bytes());
+            info.extend(header(
+                0x24,
+                0x660E,
+                "Microsoft Enhanced RSA and AES Cryptographic Provider",
+            ));
+            info.extend(16i32.to_le_bytes());
+            info.extend(salt);
+            info.extend(sealed);
+            info.extend(20i32.to_le_bytes());
+            info.extend(sealed_hash);
+            Box::new(key)
+        }
+    };
+    let at = 0x299;
+    file[at..at + 2].copy_from_slice(&(info.len() as i16).to_le_bytes());
+    file[at + 2..at + 2 + info.len()].copy_from_slice(&info);
+    let start = format.offset_encoding_key;
+    let mask = &format.header_mask[start - format.offset_masked_header..];
+    for (i, byte) in encoding_key.into_iter().enumerate() {
+        file[start + i] = byte ^ mask[i];
+    }
+    for (number, page) in file.chunks_mut(format.page_size).enumerate().skip(1) {
+        let key = page_key(&block(number as u32));
+        match provider {
+            Provider::BinaryRc4 | Provider::CryptoApi => rc4(&key, &mut [page]),
+            Provider::Standard(_) => aes(&key, page),
+        }
+    }
+    file
+}
+
+#[cfg(not(feature = "tika"))]
+#[test]
+fn reads_databases_under_each_office_encryption() {
+    let scratch = Scratch::new("access-office-encryption");
+    let original = fixture("ace-complex.accdb");
+    let (plain, _) = crate::Extractor::new()
+        .extract_file_to_string(&format!("{FIXTURES}/ace-complex.accdb"))
+        .unwrap();
+    for provider in [
+        Provider::BinaryRc4,
+        Provider::CryptoApi,
+        Provider::Standard(0),
+        Provider::Standard(JACKCESS_VERIFIER_BLOCK),
+    ] {
+        let path = scratch.write(
+            &format!("{provider:?}.accdb"),
+            &encrypted(original.clone(), provider, "hemmelig"),
+        );
+        let path = path.to_str().unwrap();
+        let (text, _) = crate::Extractor::new()
+            .set_passwords([Password::new("hemmelig")])
+            .extract_file_to_string(path)
+            .unwrap();
+        assert_eq!(text, plain, "{provider:?}");
+        let error = crate::Extractor::new()
+            .set_passwords([Password::new("forkert")])
+            .extract_file_to_string(path)
+            .unwrap_err();
+        assert!(matches!(error, crate::Error::Encrypted(_)), "{error:?}");
+    }
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn reads_databases_under_each_office_encryption_as_tikas_path_does() {
+    let scratch = Scratch::new("access-office-encryption-tika");
+    let original = fixture("ace-complex.accdb");
+    for provider in [
+        Provider::BinaryRc4,
+        Provider::CryptoApi,
+        Provider::Standard(JACKCESS_VERIFIER_BLOCK),
+    ] {
+        let path = scratch.write(
+            &format!("{provider:?}.accdb"),
+            &encrypted(original.clone(), provider, "hemmelig"),
+        );
+        for configs in [ParserConfigs::default(), given("forkert")] {
+            let (native, tika) = errors(&path, &configs);
+            assert_eq!(native, tika, "{provider:?}");
+        }
+        let (rewrite, normalise) = as_tika_writes(&path);
+        assert_same_as_tika_normalising_with(
+            &[&path],
+            JackcessParser.tika_name(),
+            &given("hemmelig"),
+            DEPARTURES,
+            rewrite,
+            normalise,
+        );
+    }
+    let office = scratch.write(
+        "office-standard.accdb",
+        &encrypted(original, Provider::Standard(0), "hemmelig"),
+    );
+    let configs = given("hemmelig");
+    let tika = tika_error(&office, Some("hemmelig"));
+    assert!(
+        tika.starts_with("Encrypted(") && tika.contains("Incorrect password provided"),
+        "{tika}"
+    );
+    let input = std::fs::read(&office).unwrap();
+    let deferral = JackcessParser.defers(&input, &TikaMetadata::new(), &configs);
+    assert!(
+        deferral
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Jackcess checks with a key")),
+        "{deferral:?}"
     );
 }
 
 #[test]
-fn fails_on_encrypted_databases_as_encrypted() {
-    let mut header = fixture("ace-complex.accdb");
-    let Ok(format::Detected::Format(format)) = format::detect(&header) else {
-        panic!("an ACE database");
-    };
-    let start = format.offset_encoding_key;
-    header[start] ^= 1;
-    let scratch = Scratch::new("access-encrypted");
-    let path = scratch.write("encrypted.accdb", &header);
-    for path in [
-        path.as_path(),
-        Path::new("../test_files/documents/encrypted/tika-password.accdb"),
+fn reads_encrypted_databases_with_their_password() {
+    for extractor in [
+        crate::Extractor::new(),
+        crate::Extractor::new().set_passwords([Password::new("wrong")]),
     ] {
-        let error = crate::Extractor::new()
-            .extract_file_to_string(path.to_str().unwrap())
-            .unwrap_err();
+        let error = extractor.extract_file_to_string(ENCRYPTED).unwrap_err();
         assert!(matches!(error, crate::Error::Encrypted(_)), "{error:?}");
     }
+    let (text, _) = crate::Extractor::new()
+        .set_passwords([Password::new(PASSWORD)])
+        .extract_file_to_string(ENCRYPTED)
+        .unwrap();
+    assert!(!text.trim().is_empty(), "{text}");
 }
 
 #[cfg(feature = "tika")]
@@ -220,17 +467,104 @@ fn keeps_the_database_password_out_of_the_metadata() {
 }
 
 #[test]
-fn leaves_databases_jackcess_throws_reading_to_tika() {
-    let scratch = Scratch::new("access-unreadable");
+fn fails_on_damaged_databases_as_jackcess_throws() {
+    let scratch = Scratch::new("access-damaged");
     let original = fixture("jet4-turkish.mdb");
-    let truncated = scratch.write("truncated.mdb", &original[..3 * 4096]);
+    let short = scratch.write("short.mdb", &original[..2000]);
+    let error = crate::Extractor::new()
+        .extract_file_to_string(short.to_str().unwrap())
+        .unwrap_err();
     assert_eq!(
-        deferral(&JackcessParser, &truncated).as_deref(),
-        Some(
-            "an Access database Jackcess throws reading: java.lang.IllegalStateException: \
-             invalid page number 6"
-        )
+        error.to_string(),
+        "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+         IOException from org.apache.tika.parser.microsoft.JackcessParser <- caused by \
+         java.io.IOException: Failed attempting to read 4096 bytes from page 0, only read 2000"
     );
+    let truncated = scratch.write("truncated.mdb", &original[..3 * 4096]);
+    let (difference, failure) = failing_reading(&truncated);
+    assert_eq!(
+        difference.0,
+        "a damaged database, which Jackcess may throw on elsewhere and otherwise than the port: \
+         java.lang.IllegalStateException: invalid page number 6"
+    );
+    let corrupt = "Parse error occurred : org.apache.tika.exception.TikaException: Corrupt Access \
+                   database: invalid page number 6 <- caused by \
+                   java.lang.IllegalStateException: invalid page number 6";
+    assert_eq!(failure, format!("ParseError({corrupt:?})"));
+    #[cfg(not(feature = "tika"))]
+    {
+        let error = crate::Extractor::new()
+            .extract_file_to_string(truncated.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(error.to_string(), corrupt);
+    }
+}
+
+/// Where the native parser's reading of the database at `path` may differ from Tika's, a
+/// damaged database's, and the error the reading fails with, which a build without Tika takes.
+fn failing_reading(path: &Path) -> (Difference, String) {
+    let input = std::fs::read(path).unwrap();
+    let configs = ParserConfigs::default();
+    let Err(Decline::Differs {
+        reading,
+        difference,
+    }) = JackcessParser.prepare(&input, &TikaMetadata::new(), &configs)
+    else {
+        panic!("{}: no reading that differs", path.display());
+    };
+    let context =
+        ParseContext::new(&configs).reading(InputFile::Original(path.to_str().unwrap().to_owned()));
+    let mut out = StringOut::default();
+    let mut handler = Body::new(ToText::new(&mut out));
+    let (_, _, result) = Xhtml::write(&mut handler, TikaMetadata::new(), &context, reading);
+    let Err(Failure::Extraction(error)) = result else {
+        panic!("{}: the reading does not fail: {result:?}", path.display());
+    };
+    (difference, format!("{error:?}"))
+}
+
+/// The error the extraction of the database at `path`, given `password`, fails with in a build
+/// with Tika, which extracts on Tika's path a database the port reads differently.
+#[cfg(feature = "tika")]
+fn tika_error(path: &Path, password: Option<&str>) -> String {
+    let extractor = crate::Extractor::new().set_passwords(password.map(Password::new));
+    let failed = extractor.extract_file_to_string(path.to_str().unwrap());
+    format!("{:?}", failed.unwrap_err())
+}
+
+/// Tika's error `tika` as the native path reports it: the parser `CompositeParser` names, the
+/// decorator around `JackcessParser`, `MimeFilteringDecorator@<hash>`, which differs on each
+/// run, named as `JackcessParser`; and the message of a `NullPointerException` the JVM throws,
+/// which GraalVM's native image makes of its stack trace, left out.
+#[cfg(feature = "tika")]
+fn as_native_reports(tika: &str) -> String {
+    let decorator = regex::Regex::new(
+        r"org\.apache\.tika\.parser\.ParserDecorator\$MimeFilteringDecorator@[0-9a-f]+",
+    )
+    .unwrap();
+    decorator
+        .replace_all(tika, JackcessParser.tika_name())
+        .replace(
+            "java.lang.NullPointerException: Stack trace is imprecise, the top frames are \
+             missing and/or have wrong line numbers. To get precise stack traces, build the \
+             image with option -H:-ReduceImplicitExceptionStackTraceInformation",
+            "java.lang.NullPointerException",
+        )
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn fails_on_damaged_databases_as_tikas_path_does() {
+    let scratch = Scratch::new("access-damaged-tika");
+    let original = fixture("jet4-turkish.mdb");
+    for (name, cut) in [("empty.mdb", 20), ("short.mdb", 2000)] {
+        let path = scratch.write(name, &original[..cut]);
+        let (native, tika) = errors(&path, &ParserConfigs::default());
+        assert_eq!(native, as_native_reports(&tika), "{name}");
+    }
+    let truncated = scratch.write("truncated.mdb", &original[..3 * 4096]);
+    let (_, failure) = failing_reading(&truncated);
+    assert_eq!(failure, as_native_reports(&tika_error(&truncated, None)));
 }
 
 /// `bytes` with each `from` replaced by `to`, of the same length.
@@ -293,7 +627,7 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     let (encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
         .into_iter()
         .partition(|path| path.ends_with("testAccess2_encrypted.accdb"));
-    assert_fails_as_encrypted(&encrypted);
+    assert_opens_with_its_password(&encrypted);
     assert_eq!(
         names(&parsed),
         [
@@ -359,7 +693,7 @@ const JET4_FREE_SPACE_PAGES: usize = 59;
 #[test]
 fn reads_tables_whose_unused_usage_maps_are_broken() {
     let original = fixture("jet4-turkish.mdb");
-    let database = Database::open(&original).unwrap();
+    let database = Database::open(Database::pages(&original, "").unwrap()).unwrap();
     let page_size = database.pages.format.page_size;
     let pages: Vec<i32> = database
         .tables()

@@ -3,9 +3,9 @@
 //! of its groups, whose paragraphs are the sheet's.
 
 use crate::formats::escher::{self, kind as escher_kind, Content, Escher, Factory};
-use crate::formats::poi::{i32_at, Thrown};
+use crate::formats::poi::{i32_at, Thrown, Unread};
 
-use super::records::{build_at, children_at, Built, Depth, Fault, Record};
+use super::records::{build_at, children_at, Built, Depth, Record};
 
 const DG_CONTAINER: u16 = 0xF002;
 pub(super) const SPGR_CONTAINER: u16 = 0xF003;
@@ -135,7 +135,7 @@ impl Drawing {
     /// `new PPDrawing(source, start, length)`.
     pub(super) fn read(source: &[u8], start: i64, depth: Depth) -> Built<Drawing> {
         let at = usize::try_from(start + 8)
-            .map_err(|_| Fault::Thrown(Thrown::new("a drawing starts before its data")))?;
+            .map_err(|_| Unread::Thrown(Thrown::new("a drawing starts before its data")))?;
         let (escher, _) = escher::container_made_at(source, at, Factory::Slides)?;
         if escher.record_id != DG_CONTAINER {
             return Err(Thrown::new(format!(
@@ -186,7 +186,7 @@ impl Drawing {
 }
 
 /// The records of the text box of a shape container, as its wrapper holds them.
-pub(super) fn textbox_records(shape: &Node) -> Option<Result<&[Record], Fault>> {
+pub(super) fn textbox_records(shape: &Node) -> Option<Result<&[Record], Unread>> {
     let textbox = shape.child(escher_kind::CLIENT_TEXTBOX)?;
     match textbox.textbox.as_ref()? {
         Ok(records) => Some(Ok(records)),

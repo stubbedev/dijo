@@ -4,7 +4,8 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::Summaries;
-use crate::formats::{Decline, Parser, Prepared, Unported};
+use crate::formats::poi::{Thrown, Unread};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::ole2::{Ole2, Unreadable};
 
 /// Tika's `DGN8Parser`.
@@ -22,7 +23,7 @@ impl Parser for Dgn8Parser {
         &["image/vnd.dgn; version=8"]
     }
 
-    /// Defers a drawing POI does not open as this port does.
+    /// Fails a drawing POI does not open.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -30,7 +31,10 @@ impl Parser for Dgn8Parser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-            Unported(format!("POI cannot open the compound document: {reason}"))
+            Unread::from(Thrown(format!(
+                "POIFSFileSystem cannot open the compound document: {reason}"
+            )))
+            .declined()
         })?;
         let summaries = Summaries::read(&file, file.root())?;
         Ok(Box::new(move |xhtml| {

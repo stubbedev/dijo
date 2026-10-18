@@ -57,8 +57,8 @@ impl Parser for DocParser {
         &[MEDIA_TYPE]
     }
 
-    /// Fails encrypted documents the password does not open, and defers documents POI or Tika
-    /// throws on and macros extracted when asked to.
+    /// Fails encrypted documents the password does not open and documents POI or Tika throws
+    /// on, and defers macros extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],

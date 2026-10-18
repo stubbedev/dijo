@@ -315,12 +315,12 @@ fn records_comment_authors_and_hidden_sheets() {
 }
 
 #[test]
-fn leaves_xor_obfuscated_workbooks_to_tika() {
+fn fails_on_xor_obfuscated_workbooks_the_password_does_not_open() {
     let mut stream = bof(0x05);
     stream.extend(record(sid::FILE_PASS, &[0; 6]));
     assert!(matches!(
         read(&stream),
-        Err(Decline::Deferred(reason)) if reason.contains("XOR obfuscation")
+        Err(Decline::Fails(crate::Error::Encrypted(reason))) if reason.contains("Default password is invalid")
     ));
 }
 

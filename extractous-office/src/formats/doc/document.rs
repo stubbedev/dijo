@@ -21,8 +21,8 @@ use crate::config::ParserConfigs;
 use crate::formats::crypt::xor::{WordXorKey, Xor};
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys, Unopened};
 use crate::formats::escher::{self, Escher};
-use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown};
-use crate::formats::{Decline, Unported};
+use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown, Unread};
+use crate::formats::Decline;
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 const WORD_DOCUMENT: &str = "WordDocument";
@@ -90,11 +90,6 @@ pub(super) struct Document {
     table: Vec<u8>,
 }
 
-/// Why the document is left to Tika rather than read.
-pub(super) fn unported(Thrown(reason): Thrown) -> Unported {
-    Unported(format!("POI throws reading the Word document: {reason}"))
-}
-
 impl Document {
     /// `new HWPFDocument(directory)`: the document, decrypted with the password where it is
     /// encrypted, or, for one before Word 97, on which it throws `OldWordFileFormatException`,
@@ -110,13 +105,10 @@ impl Document {
         if let Some(key) = &encryption {
             key.decrypt(&mut main, FIB_BASE);
         }
-        let fib = Fib::read(&main).map_err(unported)?;
+        let fib = Fib::read(&main)?;
         if let Some(pool) = file.child_ignoring_case(root, OBJECT_POOL) {
             if file.kind(pool) == EntryKind::Document {
-                return Err(Unported(
-                    "the document's object pool is no directory, which POI throws on".to_owned(),
-                )
-                .into());
+                return Err(Unread::from(Thrown::new("the object pool is no directory")).into());
             }
         }
         if fib.n_fib < WORD_97 {
@@ -128,9 +120,9 @@ impl Document {
             TABLE_ZERO
         };
         if file.child_ignoring_case(root, table_name).is_none() {
-            return Err(Unported(format!(
-                "the document has no table stream {table_name}, which POI throws on"
-            ))
+            return Err(Unread::from(Thrown(format!(
+                "the document has no table stream {table_name}"
+            )))
             .into());
         }
         let mut table = document_bytes(file, root, table_name)?;
@@ -141,19 +133,17 @@ impl Document {
         if let Some(key) = &encryption {
             let header = key.plain_table();
             if table.len() < header {
-                return Err(Unported(
-                    "the table stream is shorter than its plain encryption header, which POI \
-                     throws on"
-                        .to_owned(),
-                )
+                return Err(Unread::from(Thrown::new(
+                    "the table stream is shorter than its plain encryption header",
+                ))
                 .into());
             }
             key.decrypt(&mut table, header);
             key.decrypt(&mut data, 0);
         }
-        Ok(Word::Modern(Box::new(
-            Self::from_streams(fib, main, table, data).map_err(unported)?,
-        )))
+        Ok(Word::Modern(Box::new(Self::from_streams(
+            fib, main, table, data,
+        )?)))
     }
 
     fn from_streams(fib: Fib, main: Vec<u8>, table: Vec<u8>, data: Vec<u8>) -> Read<Document> {
@@ -340,14 +330,14 @@ fn encryption(
     main: &[u8],
     configs: &ParserConfigs,
 ) -> Result<Option<DocumentKey>, Decline<'static>> {
-    if !is_encrypted(main).map_err(unported)? {
+    if !is_encrypted(main)? {
         return Ok(None);
     }
-    let flags = u16_at(main, 0xA).map_err(unported)?;
+    let flags = u16_at(main, 0xA)?;
     let password = crypt::password(configs);
     let wrong_password = || Decline::Fails(crypt::encrypted(Some(WRONG_PASSWORD)));
     if flags & OBFUSCATED != 0 {
-        let verifier = i32_at(main, ENCRYPTION_KEY_LENGTH).map_err(unported)? as u32;
+        let verifier = i32_at(main, ENCRYPTION_KEY_LENGTH)? as u32;
         return Xor::of_word_verifier(verifier)
             .verify_word(password)
             .map(|key| Some(DocumentKey::Xor(key)))
@@ -363,6 +353,7 @@ fn encryption(
     let header = &table[..header_length.min(table.len())];
     let info = EncryptionInfo::read(header, Mode::Unset).map_err(|unopened| match unopened {
         Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(Some(UNCHUNKED_DECRYPTOR))),
+        Unopened::Thrown(reason) => Unread::from(Thrown(reason)).into(),
         unopened => unopened.unported().into(),
     })?;
     info.verify(password)
@@ -377,27 +368,23 @@ fn encryption(
 
 /// `lKey` of the FIB's base: the length of the encryption header at the table stream's start,
 /// which stays plain.
-fn encryption_header_length(main: &[u8]) -> Result<usize, Unported> {
-    let length = i32_at(main, ENCRYPTION_KEY_LENGTH).map_err(unported)?;
-    usize::try_from(length).map_err(|_| {
-        Unported("a negative encryption header length, which POI throws on".to_owned())
-    })
+fn encryption_header_length(main: &[u8]) -> Result<usize, Unread> {
+    let length = i32_at(main, ENCRYPTION_KEY_LENGTH)?;
+    usize::try_from(length)
+        .map_err(|_| Thrown(format!("a negative encryption header length {length}")).into())
 }
 
 /// `getDocumentEntryBytes`: the stream named in any case, read whole.
-fn document_bytes(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unported> {
+fn document_bytes(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unread> {
     let entry = file
         .child_ignoring_case(root, name)
         .filter(|&entry| file.kind(entry) == EntryKind::Document)
-        .ok_or_else(|| {
-            Unported(format!(
-                "the document has no stream {name}, which POI throws on"
-            ))
-        })?;
+        .ok_or_else(|| Thrown(format!("the document has no stream {name}")))?;
     file.read(entry).map_err(|Unreadable(reason)| {
-        Unported(format!(
-            "POI cannot read the document's stream {name}: {reason}"
+        Thrown(format!(
+            "cannot read the document's stream {name}: {reason}"
         ))
+        .into()
     })
 }
 

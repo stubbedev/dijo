@@ -1945,11 +1945,39 @@ pub fn assert_same_as_tika_normalising(
     rewrite: NativeRewrite,
     normalise: Normalisation,
 ) {
-    assert_same_as_tika_departing_rewriting(
+    assert_same_as_tika_normalising_with(
         documents,
         tika_name,
+        &ParserConfigs::default(),
         &[],
+        rewrite,
+        normalise,
+    );
+}
+
+/// [`assert_same_as_tika_normalising`] under the settings `configs`, but for the values of the
+/// metadata `departures` names, which the native parser gives on purpose otherwise than Tika's
+/// path.
+#[cfg(feature = "tika")]
+pub fn assert_same_as_tika_normalising_with(
+    documents: &[&Path],
+    tika_name: &str,
+    configs: &ParserConfigs,
+    departures: Departures,
+    rewrite: NativeRewrite,
+    normalise: Normalisation,
+) {
+    let expected = Expected::Same(Naming {
+        tika_name,
+        delegates: &[],
+        departures,
+    });
+    compare(
+        documents,
+        configs,
+        expected,
         Some((rewrite, Some(normalise))),
+        Adjustments::default(),
     );
 }
 

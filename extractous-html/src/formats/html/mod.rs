@@ -200,11 +200,11 @@ fn prepared<'a>(
 }
 
 /// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units: a
-/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it. It is
-/// [`Decline::Differs`] where the parser reads the HTML differently from Tika's.
-pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Decline<'static>> {
+/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it, and where the parser
+/// reads the HTML differently from Tika's, if anywhere: the parser reads any HTML.
+pub fn prepare_string(html: &[u16]) -> (Prepared<'static>, Option<Difference>) {
     let (mut dom, difference) = build(&String::from_utf16_lossy(html));
-    unless_different(
+    (
         Box::new(move |xhtml| {
             let mut handler = HtmlHandler::new(Base::Unknown, xhtml);
             let written = walk_whole(&mut dom, &mut handler);

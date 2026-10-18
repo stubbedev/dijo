@@ -38,7 +38,7 @@ use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::{office_document, Handed, Summaries};
-use crate::formats::poi::Thrown;
+use crate::formats::poi::{Thrown, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure, Parser, Prepared, Unported, PASSWORD_USED};
 use crate::ole2::{EntryKind, Unreadable};
@@ -91,7 +91,7 @@ impl Parser for OldExcelParser {
         ]
     }
 
-    /// Defers workbooks POI throws on and encrypted ones, which POI refuses.
+    /// Fails workbooks POI throws on, encrypted ones among them, which POI refuses.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -105,7 +105,7 @@ impl Parser for OldExcelParser {
             )
             .into());
         }
-        let text = old::text(input)?;
+        let text = old::text(input).map_err(Unread::declined)?;
         Ok(Box::new(move |xhtml| {
             write_old(&text, xhtml).map_err(Failure::from)
         }))
@@ -140,6 +140,11 @@ impl Parser for XlsParser {
         let workbook = Workbook::read(input, configs)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
+}
+
+/// How the parser declines a workbook POI throws on for `reason`.
+pub(super) fn poi_throws(reason: &str) -> Decline<'static> {
+    Unread::from(Thrown::new(reason)).declined()
 }
 
 /// A workbook read: the summary information, the type `OfficeParser` sets, and its content.
@@ -177,7 +182,8 @@ struct Picture {
 
 impl Workbook {
     fn read(input: &[u8], configs: &ParserConfigs) -> Result<Self, Decline<'static>> {
-        let (file, media_type) = office::open_as(input, configs, &MEDIA_TYPES, "workbook")?;
+        let (file, media_type) =
+            office::open_as(input, configs, &MEDIA_TYPES, "workbook").map_err(Unread::declined)?;
         let root = file.root();
         let summaries = Summaries::read(&file, root)?;
         let Some(name) = WORKBOOK_ENTRY_NAMES
@@ -185,34 +191,29 @@ impl Workbook {
             .find(|&name| file.child(root, name).is_some())
         else {
             if file.child(root, OLD_BOOK_ENTRY).is_none() {
-                return Err(Unported(
-                    "the compound document has no workbook entry, which Tika fails on".to_owned(),
-                )
-                .into());
+                return Err(poi_throws("the compound document has no workbook entry"));
             }
             let book = file
                 .child_ignoring_case(root, OLD_BOOK_ENTRY)
                 .filter(|&entry| file.kind(entry) == EntryKind::Document)
-                .ok_or_else(|| {
-                    Unported("the old workbook entry is no stream, which POI throws on".to_owned())
-                })?;
+                .ok_or_else(|| poi_throws("the old workbook entry is no stream"))?;
             let stream = file.read(book).map_err(|Unreadable(reason)| {
-                Unported(format!("POI cannot read the old workbook stream: {reason}"))
+                poi_throws(&format!("cannot read the old workbook stream: {reason}"))
             })?;
             return Ok(Workbook {
                 summaries,
                 media_type,
-                content: WorkbookContent::Old(old::text(&stream)?),
+                content: WorkbookContent::Old(old::text(&stream).map_err(Unread::declined)?),
             });
         };
         let entry = file
             .child_ignoring_case(root, name)
             .expect("the workbook entry the root has");
         if file.kind(entry) != EntryKind::Document {
-            return Err(Unported("the workbook entry is a directory".to_owned()).into());
+            return Err(poi_throws("the workbook entry is a directory"));
         }
         let stream = file.read(entry).map_err(|Unreadable(reason)| {
-            Unported(format!("POI cannot read the workbook stream: {reason}"))
+            poi_throws(&format!("cannot read the workbook stream: {reason}"))
         })?;
         let (read, pictures) = read_records(&stream, configs)?;
         let mut storages = Vec::new();

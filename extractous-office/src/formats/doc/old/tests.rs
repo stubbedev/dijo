@@ -63,6 +63,6 @@ fn leaves_what_poi_throws_on_to_tika() {
     assert!(OldDocument::read(&[0; 0x80]).is_err());
     assert!(matches!(
         OldDocument::read(&word6(b"x", 0x88)),
-        Err(Unported(reason)) if reason.contains("Big5")
+        Err(Unread::Unported(Unported(reason))) if reason.contains("Big5")
     ));
 }

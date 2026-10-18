@@ -31,9 +31,7 @@ pub(super) enum Ole {
 }
 
 fn string_index(message: String) -> Thrown {
-    Thrown::other(format!(
-        "java.lang.StringIndexOutOfBoundsException: {message}"
-    ))
+    Thrown::index_out_of_bounds("java.lang.StringIndexOutOfBoundsException", Some(message))
 }
 
 /// `readStr`: `length` bytes from `offset` of the whole value decoded, the buffer then after

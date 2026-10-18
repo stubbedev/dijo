@@ -1,7 +1,7 @@
 //! Jackcess's `QueryImpl` and its subclasses: a query's SQL as `toSQLString` writes it from the
 //! query's rows of `MSysQueries`.
 
-use super::buffer::Thrown;
+use super::buffer::{Context, Thrown};
 use super::database::{QueryDefinition, QueryRow};
 use crate::java::{equals_ignore_case, LINE_SEPARATOR as NEWLINE};
 
@@ -67,17 +67,15 @@ pub(super) enum Sql {
     Unsupported,
 }
 
-fn illegal_state(message: impl Into<String>) -> Thrown {
-    Thrown::illegal_state(message)
-}
-
-fn null_pointer(what: &str) -> Thrown {
-    Thrown::other(format!("java.lang.NullPointerException: {what}"))
+/// An `IllegalStateException` `QueryImpl` throws with the name of the query it is about.
+fn illegal_state(query: &str, message: impl Into<String>) -> Thrown {
+    Thrown::illegal_state(message).in_context(Context::Query(query.to_owned()))
 }
 
 /// `QueryImpl.create` and `toSQLString`.
 pub(super) fn sql(definition: &QueryDefinition) -> Result<Sql, Thrown> {
     let query = Query {
+        name: &definition.name,
         rows: &definition.rows,
         kind: kind(definition),
     };
@@ -106,6 +104,7 @@ fn kind(definition: &QueryDefinition) -> Option<Type> {
 
 /// A query's rows and its type.
 struct Query<'r> {
+    name: &'r str,
     rows: &'r [QueryRow],
     kind: Option<Type>,
 }
@@ -127,7 +126,7 @@ enum TableSource {
 impl TableSource {
     /// `new SimpleTable(tableName)`.
     fn named(name: Option<&str>) -> Result<Self, Thrown> {
-        let name = name.ok_or_else(|| null_pointer("a join of a table without a name"))?;
+        let name = name.ok_or_else(Thrown::null_pointer)?;
         Ok(TableSource::Simple {
             name: Some(name.to_owned()),
             expression: optional_quoted(name, true),
@@ -138,16 +137,14 @@ impl TableSource {
     fn contains(&self, table: Option<&str>) -> Result<bool, Thrown> {
         match self {
             TableSource::Simple { name, .. } => {
-                let name = name
-                    .as_deref()
-                    .ok_or_else(|| null_pointer("a table source without a name"))?;
+                let name = name.as_deref().ok_or_else(Thrown::null_pointer)?;
                 Ok(table.is_some_and(|table| equals_ignore_case(name, table)))
             }
             TableSource::Join { from, to, .. } => Ok(from.contains(table)? || to.contains(table)?),
         }
     }
 
-    fn write(&self, text: &mut String, top_level: bool) -> Result<(), Thrown> {
+    fn write(&self, text: &mut String, top_level: bool, query: &str) -> Result<(), Thrown> {
         match self {
             TableSource::Simple { expression, .. } => text.push_str(expression),
             TableSource::Join {
@@ -160,14 +157,16 @@ impl TableSource {
                     1 => " INNER JOIN ",
                     2 => " LEFT JOIN ",
                     3 => " RIGHT JOIN ",
-                    other => return Err(illegal_state(format!("Unknown join type {other}"))),
+                    other => {
+                        return Err(illegal_state(query, format!("Unknown join type {other}")))
+                    }
                 };
                 if !top_level {
                     text.push('(');
                 }
-                from.write(text, false)?;
+                from.write(text, false, query)?;
                 text.push_str(join);
-                to.write(text, false)?;
+                to.write(text, false, query)?;
                 text.push_str(" ON ");
                 let multiple = on.len() > 1;
                 if multiple {
@@ -175,10 +174,7 @@ impl TableSource {
                 }
                 let on = on
                     .iter()
-                    .map(|on| {
-                        on.as_deref()
-                            .ok_or_else(|| null_pointer("a join without a condition"))
-                    })
+                    .map(|on| on.as_deref().ok_or_else(Thrown::null_pointer))
                     .collect::<Result<Vec<_>, _>>()?;
                 text.push_str(&on.join(") AND ("));
                 if multiple {
@@ -227,7 +223,7 @@ fn optional_quoted_value(expression: &Option<String>, identifier: bool) -> Resul
     expression
         .as_deref()
         .map(|expression| optional_quoted(expression, identifier))
-        .ok_or_else(|| null_pointer("an identifier that is null"))
+        .ok_or_else(Thrown::null_pointer)
 }
 
 /// `toQuotedExpr`: in brackets unless it is already.
@@ -282,7 +278,7 @@ impl<'r> Query<'r> {
         match rows.as_slice() {
             [] => Ok(QueryRow::default()),
             [row] => Ok((*row).clone()),
-            _ => Err(illegal_state("Unexpected number of rows")),
+            _ => Err(illegal_state(self.name, "Unexpected number of rows")),
         }
     }
 
@@ -373,10 +369,13 @@ impl<'r> Query<'r> {
                     Some(11) => "LongBinary",
                     Some(15) => "Guid",
                     other => {
-                        return Err(illegal_state(format!(
-                            "Unknown param type {}",
-                            other.map_or("null".to_owned(), |flag| flag.to_string())
-                        )))
+                        return Err(illegal_state(
+                            self.name,
+                            format!(
+                                "Unknown param type {}",
+                                other.map_or("null".to_owned(), |flag| flag.to_string())
+                            ),
+                        ))
                     }
                 };
                 let mut text = format!("{} {type_name}", or_null(&row.name1));
@@ -548,10 +547,7 @@ impl<'r> Query<'r> {
                     i += 1;
                 }
             }
-            let join_type = |join: &QueryRow| {
-                join.flag
-                    .ok_or_else(|| null_pointer("a join without a type"))
-            };
+            let join_type = |join: &QueryRow| join.flag.ok_or_else(Thrown::null_pointer);
             if let Some(index) = shared {
                 let join_type = join_type(join)?;
                 match &mut sources[index] {
@@ -564,11 +560,14 @@ impl<'r> Query<'r> {
                         continue;
                     }
                     _ => {
-                        return Err(illegal_state(format!(
-                            "Inconsistent join types for {} and {}",
-                            or_null(&join.name1),
-                            or_null(&join.name2)
-                        )))
+                        return Err(illegal_state(
+                            self.name,
+                            format!(
+                                "Inconsistent join types for {} and {}",
+                                or_null(&join.name1),
+                                or_null(&join.name2)
+                            ),
+                        ))
                     }
                 }
             }
@@ -592,7 +591,7 @@ impl<'r> Query<'r> {
             .iter()
             .map(|source| {
                 let mut text = String::new();
-                source.write(&mut text, true)?;
+                source.write(&mut text, true, self.name)?;
                 Ok(text)
             })
             .collect()
@@ -695,11 +694,10 @@ impl<'r> Query<'r> {
                 .rows_by(TABLE_ATTRIBUTE)
                 .into_iter()
                 .find(|row| row.name2.as_deref() == Some(id))
-                .ok_or_else(|| illegal_state(format!("Could not find union query with id {id}")))?;
-            let expression = row
-                .expression
-                .as_deref()
-                .ok_or_else(|| null_pointer("a union part without an expression"))?;
+                .ok_or_else(|| {
+                    Thrown::illegal_state(format!("Could not find union query with id {id}"))
+                })?;
+            let expression = row.expression.as_deref().ok_or_else(Thrown::null_pointer)?;
             Ok(clean_union(expression))
         };
         text.push_str(&part(UNION_PART1)?);

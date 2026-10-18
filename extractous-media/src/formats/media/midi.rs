@@ -7,7 +7,9 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::xhtml::Xhtml;
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 
 const MTHD: i32 = 0x4d54_6864;
 const MTRK: i32 = 0x4d54_726b;
@@ -133,15 +135,76 @@ impl Division {
     }
 }
 
-/// What `MidiParser` reads of a sequence: its division and the text events of each track.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Sequence {
+/// What `MidiParser` reads of a sequence: its division and its tracks, each read for its text
+/// events again as it is written.
+pub(super) struct Sequence<'a> {
     division: Division,
-    tracks: Vec<Vec<String>>,
+    tracks: Vec<Track<'a>>,
+    pages: Pages<'a>,
 }
 
-/// `StandardMidiFileReader.getSequence` from a stream that skips with `skipping`.
-pub(super) fn sequence(bytes: &[u8], skipping: Skipping) -> Result<Sequence, Unread> {
+impl Sequence<'_> {
+    /// Writes each track as a paragraph of its text events, releasing the pages read as it goes.
+    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let paging = Paging::new(self.pages);
+        for track in &self.tracks {
+            xhtml.start_element("p")?;
+            for text in track.texts() {
+                xhtml.characters(&text)?;
+            }
+            xhtml.end_element("p")?;
+            paging.read(track.data.len());
+        }
+        Ok(())
+    }
+}
+
+/// A track's data, which reads to its end, and the order of its text events.
+struct Track<'a> {
+    data: &'a [u8],
+    order: Order,
+}
+
+/// The order in which `Track.add` keeps a track's text events, by tick, each after those of
+/// the same tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// The order of the data: the tick of no text event is less than that of one before it.
+    AsRead,
+    /// Sorted: a text event has a tick less than one before it, which only a delta of more than
+    /// 63 bits, wrapping, gives.
+    ByTick,
+}
+
+impl Track<'_> {
+    /// The text of its text events, in the order `Track.add` keeps them.
+    fn texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        let texts = Texts::of(self.data)
+            .map(|text| text.expect("the track read to its end when the sequence was read"));
+        match self.order {
+            Order::AsRead => Box::new(texts.map(|text| text.characters())),
+            Order::ByTick => {
+                let mut sorted: Vec<Text> = Vec::new();
+                for text in texts {
+                    let at = sorted
+                        .iter()
+                        .rposition(|earlier| earlier.tick <= text.tick)
+                        .map_or(0, |index| index + 1);
+                    sorted.insert(at, text);
+                }
+                Box::new(sorted.into_iter().map(|text| text.characters()))
+            }
+        }
+    }
+}
+
+/// `StandardMidiFileReader.getSequence` from a stream that skips with `skipping`, each track
+/// read to its end, keeping none of its events, and the `pages` of `bytes` released as they are.
+pub(super) fn sequence<'a>(
+    bytes: &'a [u8],
+    pages: Pages<'a>,
+    skipping: Skipping,
+) -> Result<Sequence<'a>, Unread> {
     let mut data = Data { bytes, at: 0 };
     if data.int()? != MTHD {
         return Err(Unread::Invalid);
@@ -168,16 +231,23 @@ pub(super) fn sequence(bytes: &[u8], skipping: Skipping) -> Result<Sequence, Unr
     if kind != 0 && kind != 1 {
         return Err(Unread::Invalid);
     }
+    let paging = Paging::new(pages);
     let mut read = Vec::new();
     for _ in 0..tracks.max(0) {
+        let start = data.at;
         let Some(track) = next_track(&mut data, skipping)? else {
             break;
         };
-        read.push(read_track(track)?);
+        read.push(Track {
+            data: track,
+            order: order(track)?,
+        });
+        paging.read(data.at - start);
     }
     Ok(Sequence {
         division,
         tracks: read,
+        pages,
     })
 }
 
@@ -250,69 +320,121 @@ impl<'a> TrackData<'a> {
     }
 }
 
-/// `SMFParser.readTrack`: the text meta events of a track in the order `Track.add` keeps
-/// them, by tick, an event after those of the same tick.
-fn read_track(bytes: &[u8]) -> Result<Vec<String>, Unread> {
-    let mut track = TrackData { bytes, at: 0 };
-    let mut events: Vec<(i64, Option<String>)> = Vec::new();
-    let mut tick: i64 = 0;
-    let mut running_status = 0u8;
-    while !track.finished() {
-        tick = tick.wrapping_add(track.var_int()?);
-        let first = track.unsigned()?;
-        let (status, has_data1) = if first >= 0x80 {
-            if first & 0xF0 != 0xF0 {
-                running_status = first;
-            }
-            (first, false)
-        } else {
-            (running_status, true)
-        };
-        let text = match status & 0xF0 {
-            0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => {
-                if !has_data1 {
-                    track.unsigned()?;
-                }
-                track.unsigned()?;
-                None
-            }
-            0xC0 | 0xD0 => {
-                if !has_data1 {
-                    track.unsigned()?;
-                }
-                None
-            }
-            0xF0 => match status {
-                0xF0 | 0xF7 => {
-                    let length = track.var_int()?;
-                    track.message(length)?;
-                    None
-                }
-                0xFF => {
-                    let kind = track.unsigned()?;
-                    let length = track.var_int()?;
-                    let data = track.message(length)?;
-                    if kind >= 128 {
-                        return Err(Unread::Invalid);
-                    }
-                    if kind == END_OF_TRACK {
-                        break;
-                    }
-                    (1..=15)
-                        .contains(&kind)
-                        .then(|| data.iter().map(|&byte| char::from(byte)).collect())
-                }
-                _ => return Err(Unread::Invalid),
-            },
-            _ => return Err(Unread::Invalid),
-        };
-        let at = events
-            .iter()
-            .rposition(|(earlier, _)| *earlier <= tick)
-            .map_or(0, |index| index + 1);
-        events.insert(at, (tick, text));
+/// A text meta event of a track: its tick and its text's bytes.
+struct Text<'a> {
+    tick: i64,
+    bytes: &'a [u8],
+}
+
+impl Text<'_> {
+    /// The text, each byte a character, as `MidiParser` makes it.
+    fn characters(&self) -> String {
+        self.bytes.iter().map(|&byte| char::from(byte)).collect()
     }
-    Ok(events.into_iter().filter_map(|(_, text)| text).collect())
+}
+
+/// The text meta events of a track's data as `SMFParser.readTrack` reads its events, up to the
+/// end of the data or the end-of-track event; or why the track does not read, which ends them.
+struct Texts<'a> {
+    track: TrackData<'a>,
+    tick: i64,
+    running_status: u8,
+    ended: bool,
+}
+
+impl<'a> Texts<'a> {
+    fn of(bytes: &'a [u8]) -> Self {
+        Self {
+            track: TrackData { bytes, at: 0 },
+            tick: 0,
+            running_status: 0,
+            ended: false,
+        }
+    }
+
+    /// The next text event, `None` at the end of the track.
+    fn next_text(&mut self) -> Result<Option<Text<'a>>, Unread> {
+        let track = &mut self.track;
+        while !track.finished() {
+            self.tick = self.tick.wrapping_add(track.var_int()?);
+            let first = track.unsigned()?;
+            let (status, has_data1) = if first >= 0x80 {
+                if first & 0xF0 != 0xF0 {
+                    self.running_status = first;
+                }
+                (first, false)
+            } else {
+                (self.running_status, true)
+            };
+            match status & 0xF0 {
+                0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => {
+                    if !has_data1 {
+                        track.unsigned()?;
+                    }
+                    track.unsigned()?;
+                }
+                0xC0 | 0xD0 => {
+                    if !has_data1 {
+                        track.unsigned()?;
+                    }
+                }
+                0xF0 => match status {
+                    0xF0 | 0xF7 => {
+                        let length = track.var_int()?;
+                        track.message(length)?;
+                    }
+                    0xFF => {
+                        let kind = track.unsigned()?;
+                        let length = track.var_int()?;
+                        let bytes = track.message(length)?;
+                        if kind >= 128 {
+                            return Err(Unread::Invalid);
+                        }
+                        if kind == END_OF_TRACK {
+                            return Ok(None);
+                        }
+                        if (1..=15).contains(&kind) {
+                            return Ok(Some(Text {
+                                tick: self.tick,
+                                bytes,
+                            }));
+                        }
+                    }
+                    _ => return Err(Unread::Invalid),
+                },
+                _ => return Err(Unread::Invalid),
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl<'a> Iterator for Texts<'a> {
+    type Item = Result<Text<'a>, Unread>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+        let text = self.next_text();
+        self.ended = !matches!(text, Ok(Some(_)));
+        text.transpose()
+    }
+}
+
+/// `SMFParser.readTrack` of a track's data, keeping none of its events: the order of its text
+/// events, or why it does not read.
+fn order(bytes: &[u8]) -> Result<Order, Unread> {
+    let mut order = Order::AsRead;
+    let mut last = i64::MIN;
+    for text in Texts::of(bytes) {
+        let tick = text?.tick;
+        if tick < last {
+            order = Order::ByTick;
+        }
+        last = tick;
+    }
+    Ok(order)
 }
 
 pub struct MidiParser;
@@ -329,13 +451,27 @@ impl Parser for MidiParser {
         &["application/x-midi", "audio/midi"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let sequence = match sequence(input, Skipping::Available) {
+        let sequence = match sequence(input, pages, Skipping::Available) {
             Ok(sequence) => Some(sequence),
             Err(unread) => match unread.thrown() {
                 None => None,
@@ -351,23 +487,19 @@ impl Parser for MidiParser {
             metadata.set("midi:tracks", sequence.tracks.len().to_string());
             metadata.set("midi:patches", "0");
             metadata.set("midi:division-type", sequence.division.name());
-            for track in &sequence.tracks {
-                xhtml.start_element("p")?;
-                for text in track {
-                    xhtml.characters(text)?;
-                }
-                xhtml.end_element("p")?;
-            }
-            Ok(())
+            sequence.write(xhtml)
         }))
     }
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::formats::media::large::{bodies_past_limit, LargeFile};
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
@@ -384,6 +516,49 @@ mod tests {
         file
     }
 
+    /// Text events come in the order of their ticks, as `Track.add` keeps them, also where a
+    /// delta wraps the tick back.
+    #[test]
+    fn orders_text_events_by_tick() {
+        let back_one = [[0xFF; 9].as_slice(), &[0x7F]].concat();
+        let data = [
+            b"\x05\xFF\x01\x01a\x00\xFF\x01\x01b".as_slice(),
+            &back_one,
+            b"\xFF\x01\x01c\x00\xFF\x2F\x00",
+        ]
+        .concat();
+        let track = Track {
+            order: order(&data).unwrap(),
+            data: &data,
+        };
+        assert_eq!(track.order, Order::ByTick);
+        assert_eq!(track.texts().collect::<Vec<_>>(), ["c", "a", "b"]);
+        let in_order = b"\x00\xFF\x01\x01a\x05\x90\x3C\x40\x00\xFF\x01\x01b";
+        assert_eq!(order(in_order).unwrap(), Order::AsRead);
+    }
+
+    /// A file too large to read whole is read a track at a time, in place, its pages released
+    /// as they are read, keeping none of its events: its text is read again as it is written.
+    #[test]
+    fn extracts_midi_files_too_large_to_read_whole_in_bounded_memory() {
+        let mut events = b"\x00\xFF\x05\x04vers".to_vec();
+        for _ in 0..1000 {
+            events.extend_from_slice(b"\x00\x90\x3C\x40");
+        }
+        let end = b"\x00\xFF\x2F\x00";
+        let count = bodies_past_limit(events.len());
+        let length = u32::try_from(count * events.len() as u64 + end.len() as u64).unwrap();
+        let mut head = midi([0x01, 0xE0], &[]);
+        head[11] = 1;
+        head.extend_from_slice(b"MTrk");
+        head.extend_from_slice(&length.to_be_bytes());
+        let file = LargeFile::new("long.mid", &head, count, |_| events.clone(), end);
+        let (text, metadata) = file.extract(MidiParser.name());
+        assert_eq!(metadata["midi:tracks"], ["1"]);
+        assert_eq!(text.trim(), "vers".repeat(usize::try_from(count).unwrap()));
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_midi_files_as_tikas_path_does() {
         let scratch = Scratch::new("midi");
@@ -417,6 +592,7 @@ mod tests {
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_midi_files_as_tikas_path_does() {
