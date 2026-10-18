@@ -2,7 +2,9 @@
 //! and named properties as metadata, its body from its HTML, its compressed RTF, which may
 //! encapsulate HTML, or its text, and its attachments as embedded documents.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
+
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -135,20 +137,20 @@ enum Body {
 }
 
 /// A message read as far as writing it: the metadata Tika sets before the body, the body, and
-/// the attachments.
-pub(super) struct Extracted {
-    message: Message,
+/// the attachments, their streams in place.
+pub(super) struct Extracted<'a> {
+    message: Message<'a>,
     body: Body,
-    attachments: Vec<Handed>,
+    attachments: Vec<Handed<'a>>,
 }
 
 /// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses, and
 /// where the native reading differs from Tika's, if it does: an HTML body read differently.
-pub(super) fn extract(
-    file: &Ole2<'_>,
-    mut message: Message,
+pub(super) fn extract<'a>(
+    file: &Ole2<'a>,
+    mut message: Message<'a>,
     configs: &ParserConfigs,
-) -> Result<(Extracted, Option<Difference>), Unported> {
+) -> Result<(Extracted<'a>, Option<Difference>), Unported> {
     if message.has_7_bit_strings() {
         guess_7_bit_encoding(&mut message).map_err(unported)?;
     }
@@ -170,7 +172,20 @@ fn unported(Thrown(reason): Thrown) -> Unported {
     Unported(format!("POI or Tika throws on the message: {reason}"))
 }
 
-impl Extracted {
+impl Extracted<'_> {
+    /// The same, owning the streams it read in place.
+    pub(super) fn into_owned(self) -> Extracted<'static> {
+        Extracted {
+            message: self.message.into_owned(),
+            body: self.body,
+            attachments: self
+                .attachments
+                .into_iter()
+                .map(Handed::into_owned)
+                .collect(),
+        }
+    }
+
     /// Writes the message as `OutlookExtractor.parse` does.
     pub(super) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         write_metadata(&self.message, xhtml.metadata_mut())
@@ -213,7 +228,7 @@ fn set(metadata: &mut TikaMetadata, name: &str, value: Option<&str>) {
     }
 }
 
-fn string(message: &Message, id: i32) -> Option<&str> {
+fn string<'m>(message: &'m Message<'_>, id: i32) -> Option<&'m str> {
     message.main.string(id).map(|text| text.value.as_str())
 }
 
@@ -330,7 +345,7 @@ fn from_to(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
 fn chunk_string(chunk: &Chunk) -> String {
     match (chunk.text(), chunk.bytes()) {
         (Some(text), _) => text.value.clone(),
-        (None, Some(bytes)) => named::debug_string(bytes),
+        (None, Some(bytes)) => named::debug_string(&bytes),
         _ => String::new(),
     }
 }
@@ -391,7 +406,7 @@ fn message_info(message: &Message, metadata: &mut TikaMetadata) -> Read<()> {
     Ok(())
 }
 
-fn submission(message: &Message) -> Option<&Submission> {
+fn submission<'m>(message: &'m Message<'_>) -> Option<&'m Submission> {
     message
         .main
         .chunks
@@ -547,12 +562,12 @@ fn guess_7_bit_encoding(message: &mut Message) -> Read<()> {
         .all(property::BODY_HTML)
         .filter_map(Chunk::bytes)
         .last()
-        .map(<[u8]>::to_vec)
+        .map(Cow::into_owned)
         .or_else(|| {
             message
                 .main
                 .string(property::BODY)
-                .map(|text| text.raw.clone())
+                .map(|text| text.raw.to_vec())
         });
     if let Some(body) = body.filter(|body| !body.is_empty()) {
         let detection = match &declared {
@@ -626,8 +641,8 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>, Option<Difference>)
     let mut content_ids = HashSet::new();
     let html = message.main.last(property::BODY_HTML);
     if let Some(data) = html.and_then(|chunk| match (chunk.bytes(), chunk.text()) {
-        (Some(bytes), _) => Some(bytes.to_vec()),
-        (None, Some(text)) => Some(text.raw.clone()),
+        (Some(bytes), _) => Some(bytes),
+        (None, Some(text)) => Some(Cow::Borrowed(&*text.raw)),
         _ => None,
     }) {
         let (prepared, difference) = noted(html::prepare(&data, &TikaMetadata::new()))
@@ -647,7 +662,7 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>, Option<Difference>)
             .bytes()
             .expect("the group checked the RTF body is binary");
         if !data.is_empty() {
-            let rtf = rtf::decompress(data).map_err(unported)?;
+            let rtf = rtf::decompress(&data).map_err(unported)?;
             if let Some(html) = rtf::decapsulate(&rtf)? {
                 let (prepared, difference) = html::prepare_string(&html);
                 image_content_ids(&String::from_utf16_lossy(&html), &mut content_ids);
@@ -699,12 +714,12 @@ fn image_content_ids(html: &str, content_ids: &mut HashSet<String>) {
 
 /// The attachments as `_parse` hands them on: each one's data, then its storage of an embedded
 /// object.
-fn attachments(
-    file: &Ole2<'_>,
-    message: &Message,
+fn attachments<'a>(
+    file: &Ole2<'a>,
+    message: &Message<'a>,
     content_ids: &HashSet<String>,
     configs: &ParserConfigs,
-) -> Result<Vec<Handed>, Unported> {
+) -> Result<Vec<Handed<'a>>, Unported> {
     let mut embedded = Vec::new();
     for attachment in &message.attachments {
         let mut metadata = attachment_metadata(file, attachment, content_ids);
@@ -720,7 +735,7 @@ fn attachments(
         let mime = metadata.get(name::ATTACH_MIME).map(str::to_owned);
         if let Some(data) = group
             .all(property::ATTACH_DATA)
-            .filter_map(Chunk::bytes)
+            .filter_map(Chunk::stream)
             .last()
         {
             if let Some(filename) = &filename {
@@ -730,7 +745,7 @@ fn attachments(
                 metadata.set("Content-Type", mime.clone());
             }
             embedded.push(Handed::Document(Embedded {
-                data: data.to_vec(),
+                data: data.clone(),
                 metadata: metadata.clone(),
             }));
         }
@@ -925,7 +940,7 @@ mod tests {
     /// A message from Ann to Bob, sent on 1 January 2020, with a text body.
     fn message() -> Vec<u8> {
         use crate::ole2::{write, Node, Storage};
-        let document = |name: &str, data: Vec<u8>| (units(name), Node::Document(data));
+        let document = |name: &str, data: Vec<u8>| (units(name), Node::Owned(data));
         let mut properties = vec![0; 32];
         let sent = (1_577_836_800_000i64 + 11_644_473_600_000) * 10_000;
         properties.extend(property(0x0040, 0x0039, &sent.to_le_bytes()));
@@ -984,7 +999,7 @@ mod tests {
     #[test]
     fn falls_back_to_the_date_header() {
         use crate::ole2::{write, Node, Storage};
-        let document = |name: &str, data: Vec<u8>| (units(name), Node::Document(data));
+        let document = |name: &str, data: Vec<u8>| (units(name), Node::Owned(data));
         let data = write(&Storage {
             class_id: [0; 16],
             entries: vec![

@@ -333,17 +333,17 @@ mod tests {
                 entries,
             })
         };
-        let mut escher = vec![(units("EscherStm"), Node::Document(Vec::new()))];
+        let mut escher = vec![(units("EscherStm"), Node::Owned(Vec::new()))];
         if delay {
-            escher.push((units("EscherDelayStm"), Node::Document(Vec::new())));
+            escher.push((units("EscherDelayStm"), Node::Owned(Vec::new())));
         }
         let Node::Storage(root) = storage(vec![
-            (units("Contents"), Node::Document(vec![0; 64])),
+            (units("Contents"), Node::Owned(vec![0; 64])),
             (
                 units("Quill"),
                 storage(vec![(
                     units("QuillSub"),
-                    storage(vec![(units("CONTENTS"), Node::Document(quill))]),
+                    storage(vec![(units("CONTENTS"), Node::Owned(quill))]),
                 )]),
             ),
             (units("Escher"), storage(escher)),

@@ -47,7 +47,7 @@ pub(super) enum Out {
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Handed, Wrapping),
+    Embedded(Handed<'static>, Wrapping),
 }
 
 /// The output of a document and the metadata of its features.
@@ -856,7 +856,7 @@ impl Extractor<'_> {
             metadata.set(RESOURCE_NAME, filename);
             metadata.set("Content-Type", kind.media_type());
             self.out.push(Out::Embedded(
-                Handed::Document(Embedded { data, metadata }),
+                Handed::Document(Embedded::owned(data, metadata)),
                 Wrapping::Bare,
             ));
         }
@@ -886,7 +886,7 @@ impl Extractor<'_> {
                 office_document(self.file, entry, TikaMetadata::new(), None, self.configs)?
             {
                 self.out
-                    .push(Out::Embedded(embedded, Wrapping::PackageEntry));
+                    .push(Out::Embedded(embedded.into_owned(), Wrapping::PackageEntry));
             }
         }
         Ok(())

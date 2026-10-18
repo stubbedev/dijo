@@ -207,10 +207,12 @@ impl Drop for Paging<'_> {
 
 /// Collects a stream of a document's bytes, as Tika's `CachingSource` caches a stream: in memory
 /// up to [`MAX_READ_WHOLE`], and beyond it in a temporary file of its own, mapped once complete,
-/// which is deleted once its map is dropped.
+/// which is deleted once its map is dropped. A stream known to be larger goes to the file from
+/// its first byte.
 pub struct Spool {
     memory: Vec<u8>,
     file: Option<File>,
+    larger_than_read_whole: bool,
 }
 
 impl Spool {
@@ -222,6 +224,7 @@ impl Spool {
         Self {
             memory: Vec::with_capacity(usize::try_from(capacity).expect("at most MAX_READ_WHOLE")),
             file: None,
+            larger_than_read_whole: expected.is_some_and(|length| length > MAX_READ_WHOLE),
         }
     }
 
@@ -252,7 +255,10 @@ impl Spool {
 
 impl Write for Spool {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.file.is_none() && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE {
+        if self.file.is_none()
+            && !self.larger_than_read_whole
+            && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE
+        {
             self.memory.extend_from_slice(bytes);
             return Ok(bytes.len());
         }
@@ -350,5 +356,15 @@ mod tests {
         assert!(large.is_mapped());
         assert_eq!(large.len() as u64, MAX_READ_WHOLE + (1 << 20) + 3);
         assert!(large.ends_with(b"\x07end"));
+    }
+
+    #[test]
+    fn spools_a_stream_known_to_be_past_the_limit_to_a_file_from_its_first_byte() {
+        let mut large = Spool::new(Some(MAX_READ_WHOLE + 1));
+        large.write_all(b"abc").unwrap();
+        assert!(large.memory.is_empty());
+        let large = large.finish().unwrap();
+        assert!(large.is_mapped());
+        assert_eq!(&*large, b"abc");
     }
 }

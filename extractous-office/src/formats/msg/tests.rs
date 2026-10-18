@@ -72,7 +72,7 @@ fn property(kind: u16, id: u16, value: &[u8]) -> Vec<u8> {
 #[cfg(feature = "tika")]
 fn message_with_a_stored_message() -> Vec<u8> {
     use crate::ole2::{write, Node, Storage};
-    let document = |name: &str, data: Vec<u8>| (units(name), Node::Document(data));
+    let document = |name: &str, data: Vec<u8>| (units(name), Node::Owned(data));
     let stored = Storage {
         class_id: [0; 16],
         entries: vec![
@@ -141,7 +141,7 @@ fn spools_a_stored_message_as_a_message_of_its_own() {
         .child(file.root(), "__attach_version1.0_#00000000")
         .unwrap();
     let stored = file.child(attachment, "__substg1.0_3701000D").unwrap();
-    let data = standalone(&file, stored).unwrap();
+    let data = crate::ole2::write(&standalone(&file, stored).unwrap()).unwrap();
     let message = Ole2::open(&data).unwrap();
     let properties = message.child(message.root(), PROPERTIES).unwrap();
     assert_eq!(message.read(properties).unwrap().len(), MESSAGE_HEADER);
@@ -189,4 +189,70 @@ fn names_recipients_by_their_display_names() {
     let get = |name: &str| metadata.get(name).cloned().unwrap_or_default();
     assert_eq!(get("message:to-name"), ["tika-dev@lucene.apache.org"]);
     assert_eq!(get("message:to-display-name"), [""]);
+}
+
+/// A message whose attachment is too large to read whole is read in place, the attachment
+/// handed on where it lies and the attachments after it written, in memory that does not grow
+/// with it.
+#[test]
+fn extracts_messages_with_attachments_too_large_to_read_whole_in_bounded_memory() {
+    use crate::input::MAX_READ_WHOLE;
+    use crate::ole2::{write, Node, Storage};
+    use extractous_core::large::LargeFile;
+    use std::fmt::Write as _;
+
+    let units = |name: &str| name.encode_utf16().collect::<Vec<u16>>();
+    let unicode = |text: &str| {
+        text.encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<u8>>()
+    };
+    let document = |name: &str, data: Vec<u8>| (units(name), Node::Owned(data));
+    let attachment = |name: &str, data: Vec<u8>| {
+        Node::Storage(Storage {
+            class_id: [0; 16],
+            entries: vec![
+                document("__substg1.0_3707001F", unicode(name)),
+                document("__substg1.0_370E001F", unicode("text/plain")),
+                document("__substg1.0_37010102", data),
+                document("__properties_version1.0", vec![0; 8]),
+            ],
+        })
+    };
+    let mut log = String::new();
+    let mut lines = 0u64;
+    while log.len() as u64 <= MAX_READ_WHOLE {
+        writeln!(log, "Linje {lines} i logbogen").unwrap();
+        lines += 1;
+    }
+    let message = write(&Storage {
+        class_id: [0; 16],
+        entries: vec![
+            document("__substg1.0_0037001F", unicode("Logbogen")),
+            document("__substg1.0_1000001F", unicode("Her er logbogen")),
+            document("__substg1.0_001A001F", unicode("IPM.Note")),
+            document("__properties_version1.0", vec![0; 32]),
+            (
+                units("__attach_version1.0_#00000000"),
+                attachment("logbog.txt", log.into_bytes()),
+            ),
+            (
+                units("__attach_version1.0_#00000001"),
+                attachment("slut.txt", b"Slut paa logbogen\n".to_vec()),
+            ),
+        ],
+    })
+    .unwrap();
+    let file = LargeFile::new("large.msg", &message, 0, |_| Vec::new(), b"");
+    drop(message);
+    let last = format!("Linje {} i logbogen", lines - 1);
+    let (mut first_seen, mut last_seen, mut end_seen) = (false, false, false);
+    let metadata = file.extract_lines("extractous::OfficeParser", |line| match line.trim() {
+        "Linje 0 i logbogen" => first_seen = true,
+        "Slut paa logbogen" => end_seen = last_seen,
+        line if line == last => last_seen = first_seen,
+        _ => {}
+    });
+    assert!(first_seen && last_seen && end_seen);
+    assert_eq!(metadata["dc:title"], ["Logbogen"]);
 }

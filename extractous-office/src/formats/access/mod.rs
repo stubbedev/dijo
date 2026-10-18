@@ -48,7 +48,8 @@ use crate::formats::crypt as office_crypt;
 use crate::formats::embedded::{ParseContext, Wrapping};
 use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{Embedded, Handed};
+use crate::formats::ole2::{handed_on, Embedded, Handed};
+
 use crate::formats::thrown::{Exception as JavaException, Thrown as Rethrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{
@@ -133,10 +134,10 @@ struct TableContent {
 enum Cell {
     Text(String),
     /// A binary column's bytes, or the document an OLE object holds, handed on bare.
-    Resource(Embedded),
+    Resource(Embedded<'static>),
     /// What `handleEmbeddedOfficeDoc` hands on of the compound document an OLE object holds,
     /// in a package entry.
-    Storage(Handed),
+    Storage(Handed<'static>),
 }
 
 impl Extraction {
@@ -172,7 +173,7 @@ impl Extraction {
                     match cell {
                         Cell::Text(text) => xhtml.characters(&text)?,
                         Cell::Resource(document) => xhtml.parse_embedded_opened(
-                            &document.data,
+                            &handed_on(document.data)?,
                             &document.metadata,
                             Wrapping::Bare,
                             Opened::Alone,
@@ -513,10 +514,9 @@ fn table_content(
                 },
                 DataType::Binary => match value {
                     None => Cell::Text(String::new()),
-                    Some(Value::Binary(bytes)) => Cell::Resource(Embedded {
-                        data: bytes.clone(),
-                        metadata: TikaMetadata::new(),
-                    }),
+                    Some(Value::Binary(bytes)) => {
+                        Cell::Resource(Embedded::owned(bytes.clone(), TikaMetadata::new()))
+                    }
                     Some(other) => {
                         return Err(Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")))
                     }

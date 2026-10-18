@@ -622,7 +622,7 @@ mod tests {
             class_id: [0; 16],
             entries: vec![(
                 DOCUMENT_STREAM.encode_utf16().collect(),
-                Node::Document(document),
+                Node::Owned(document),
             )],
         })
         .unwrap()

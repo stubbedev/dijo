@@ -45,10 +45,10 @@ pub(super) enum Out {
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Handed, Wrapping),
+    Embedded(Handed<'static>, Wrapping),
     /// An object of a shape, handed on bare by `handleDataStream`, which catches what its parse
     /// throws and records it.
-    Object(Handed),
+    Object(Handed<'static>),
     /// A value added to the presentation's metadata.
     Add(&'static str, String),
     /// A value set in the presentation's metadata.
@@ -564,8 +564,9 @@ impl<'s, 'a> Extractor<'s, 'a> {
         metadata.set(RESOURCE_NAME, id);
         metadata.set(RELATIONSHIP_ID, id);
         metadata.set(CONTENT_TYPE, media_type.to_string());
-        self.out
-            .push(Out::Object(Handed::Document(Embedded { data, metadata })));
+        self.out.push(Out::Object(Handed::Document(Embedded::owned(
+            data, metadata,
+        ))));
         Ok(())
     }
 
@@ -596,7 +597,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
             metadata.set(RESOURCE_NAME, name);
             metadata.set(CONTENT_TYPE, media_type);
             self.out.push(Out::Embedded(
-                Handed::Document(Embedded { data, metadata }),
+                Handed::Document(Embedded::owned(data, metadata)),
                 Wrapping::Bare,
             ));
         }
@@ -664,7 +665,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
             } else if !data.is_empty() {
                 metadata.set(RESOURCE_NAME, name);
                 self.out.push(Out::Embedded(
-                    Handed::Document(Embedded { data, metadata }),
+                    Handed::Document(Embedded::owned(data, metadata)),
                     Wrapping::PackageEntry,
                 ));
             }
@@ -681,19 +682,13 @@ fn embedded_office_document(
     metadata: TikaMetadata,
     name: &str,
     configs: &ParserConfigs,
-) -> Result<Option<Handed>, Unread> {
+) -> Result<Option<Handed<'static>>, Unread> {
     let file = Ole2::open_stream(data).map_err(|Unreadable(reason)| {
         recorded(&format!(
             "POI cannot open an embedded compound document: {reason}"
         ))
     })?;
-    Ok(office_document(
-        &file,
-        file.root(),
-        metadata,
-        Some(name),
-        configs,
-    )?)
+    Ok(office_document(&file, file.root(), metadata, Some(name), configs)?.map(Handed::into_owned))
 }
 
 /// The blip store picture shapes look their pictures up in, or none where the document has no

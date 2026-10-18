@@ -481,7 +481,7 @@ enum OleObject {
     /// The stream of an OLE 2.0 object that holds its document.
     Entry(Vec<u8>),
     /// The record of an OLE 1.0 object.
-    Native(Ole10Native),
+    Native(Ole10Native<'static>),
     /// Any other compound document, parsed whole.
     Whole,
 }
@@ -517,7 +517,7 @@ fn read_ole_object(package: &Package, part: usize) -> Result<OleObject, Unported
         )));
     }
     match Ole10Native::parse(&record) {
-        Ok(native) => Ok(OleObject::Native(native)),
+        Ok(native) => Ok(OleObject::Native(native.into_owned())),
         Err(Unread::Invalid) => Ok(OleObject::Skipped),
         Err(Unread::Failed(message)) => Err(fails(message)),
     }
@@ -570,7 +570,7 @@ fn write_ole_object(
             for name in [native.command, native.file_name].into_iter().flatten() {
                 metadata.add(name::ORIGINAL_RESOURCE_NAME, name);
             }
-            native.data
+            native.data.into_owned()
         }
     };
     xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)
@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(native.label.as_deref(), Some("a.txt"));
         assert_eq!(native.file_name.as_deref(), Some("C:\\a.txt"));
         assert_eq!(native.command.as_deref(), Some(""));
-        assert_eq!(native.data, b"x");
+        assert_eq!(&*native.data, b"x");
     }
 
     #[test]

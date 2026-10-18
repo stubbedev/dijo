@@ -10,5 +10,5 @@ mod reader;
 mod summary;
 
 pub(crate) use codepage::{decode_text as decode_codepage, encoding as codepage_encoding};
-pub(crate) use embedded::{document_type, office_document, Embedded, Handed};
+pub(crate) use embedded::{document_type, handed_on, office_document, Embedded, Handed};
 pub use summary::{add_multi, Summaries};
