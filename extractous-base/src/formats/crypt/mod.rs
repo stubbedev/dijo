@@ -46,12 +46,19 @@ pub fn password(configs: &ParserConfigs) -> &str {
 /// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`,
 /// wrapping the exception `cause` POI throws where there is one, as our Java reports it.
 pub fn encrypted(cause: Option<&str>) -> Error {
-    let thrown = "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: \
-                  Unable to process: document is encrypted";
-    Error::Encrypted(match cause {
-        Some(cause) => format!("{thrown} <- caused by {cause}"),
-        None => thrown.to_owned(),
+    let message = "Unable to process: document is encrypted";
+    encrypted_document(&match cause {
+        Some(cause) => format!("{message} <- caused by {cause}"),
+        None => message.to_owned(),
     })
+}
+
+/// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`
+/// with `message`, as our Java reports it.
+pub fn encrypted_document(message: &str) -> Error {
+    Error::Encrypted(format!(
+        "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: {message}"
+    ))
 }
 
 /// The hash algorithms the encryptions use (`HashAlgorithm`).
