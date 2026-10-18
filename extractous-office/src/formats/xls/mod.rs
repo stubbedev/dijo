@@ -42,7 +42,7 @@ use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::{office_document, Summaries};
-use crate::formats::poi::{written, Halt, Thrown, Unread};
+use crate::formats::poi::{written, Halt, Thrown, Unread, OFFICE_PARSER};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported, PASSWORD_USED};
 use crate::input::{self, Pages, Paging, Spool};
@@ -55,6 +55,8 @@ const WORKS_SPREADSHEET: &str = "application/x-tika-msworks-spreadsheet";
 const MEDIA_TYPES: [&str; 2] = [MEDIA_TYPE, WORKS_SPREADSHEET];
 /// `InternalWorkbook.WORKBOOK_DIR_ENTRY_NAMES`, in the order POI looks for them.
 const WORKBOOK_ENTRY_NAMES: [&str; 4] = ["Workbook", "WORKBOOK", "BOOK", "WorkBook"];
+/// Tika's parser of the workbooks of Excel 2 to 4 stored bare.
+const OLD_EXCEL_PARSER: &str = "org.apache.tika.parser.microsoft.OldExcelParser";
 /// The entry of a workbook before BIFF8, which Tika reads with its `OldExcelExtractor`.
 const OLD_BOOK_ENTRY: &str = "Book";
 /// The start of the names of the storages documents are embedded in.
@@ -83,7 +85,7 @@ impl Parser for OldExcelParser {
         "extractous::OldExcelParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OldExcelParser"
+        OLD_EXCEL_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -117,7 +119,7 @@ impl Parser for OldExcelParser {
             )
             .into());
         }
-        plan_old(input)?;
+        plan_old(input, OLD_EXCEL_PARSER)?;
         Ok(Box::new(move |xhtml| write_old(input, xhtml)))
     }
 }
@@ -127,7 +129,7 @@ impl Parser for XlsParser {
         "extractous::OfficeParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        OFFICE_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -262,7 +264,7 @@ impl<'a> Workbook<'a> {
                     poi_throws(&format!("cannot read the old workbook stream: {reason}"))
                 })?
                 .bytes();
-            plan_old(&stream)?;
+            plan_old(&stream, OFFICE_PARSER)?;
             return Ok(Workbook {
                 summaries,
                 media_type,
@@ -315,9 +317,10 @@ impl<'a> Workbook<'a> {
 
 /// `OldExcelExtractor.getText` of an old workbook stream read as far as its end, its text let
 /// go, as reading it decides whether it is extracted.
-fn plan_old(stream: &[u8]) -> Result<(), Decline<'static>> {
-    let mut texts = old::Texts::new(stream).map_err(Unread::declined)?;
-    while texts.next().map_err(Unread::declined)?.is_some() {}
+fn plan_old(stream: &[u8], tika_name: &'static str) -> Result<(), Decline<'static>> {
+    let declined = |unread: Unread| unread.declined_by(tika_name);
+    let mut texts = old::Texts::new(stream).map_err(declined)?;
+    while texts.next().map_err(declined)?.is_some() {}
     Ok(())
 }
 
