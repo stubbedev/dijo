@@ -284,7 +284,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
         ],
         Some(as_tika_checks_zips),
     );
-    assert_eq!(deferred, ["droste.zip", "moby.zip"]);
+    assert_eq!(deferred, ["droste.zip"]);
 }
 
 #[cfg(feature = "tika")]

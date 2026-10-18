@@ -7,8 +7,8 @@ use std::borrow::Cow;
 
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
-    decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG, DEFLATED, LFH_SIG,
-    STORED,
+    decode_legacy, decode_name, inflate, u16_at, u32_at, u64_at, Content, Corrupt, BZIP2, CFH_SIG,
+    DEFLATE64, DEFLATED, IMPLODING, LFH_SIG, STORED, UNSHRINKING, XZ, ZSTD,
 };
 use crate::compress::crc32;
 
@@ -19,12 +19,6 @@ const MIN_EOCD_SIZE: usize = 22;
 const MAX_EOCD_SIZE: usize = MIN_EOCD_SIZE + 0xFFFF;
 const ZIP64_MAGIC: i64 = 0xFFFF_FFFF;
 const ZIP64_MAGIC_SHORT: i64 = 0xFFFF;
-const UNSHRINKING: u16 = 1;
-const IMPLODING: u16 = 6;
-const ENHANCED_DEFLATED: u16 = 9;
-const BZIP2: u16 = 12;
-const ZSTD: [u16; 2] = [93, 20];
-const XZ: u16 = 95;
 const PLATFORM_FAT: u16 = 0;
 const PLATFORM_UNIX: u16 = 3;
 /// The hosts of "version made by" whose file systems separate paths with `\`: MS-DOS and OS/2
@@ -79,7 +73,7 @@ impl ZipEntry {
         !self.uses_encryption()
             && (matches!(
                 self.method,
-                STORED | UNSHRINKING | IMPLODING | DEFLATED | ENHANCED_DEFLATED | BZIP2 | XZ
+                STORED | UNSHRINKING | IMPLODING | DEFLATED | DEFLATE64 | BZIP2 | XZ
             ) || ZSTD.contains(&self.method))
     }
 
@@ -373,6 +367,12 @@ impl<'a> ZipFile<'a> {
                 Content::Truncated(Cow::Borrowed(raw))
             }),
             DEFLATED => Some(inflate(raw)),
+            UNSHRINKING | IMPLODING => Some(decode_legacy(
+                entry.method,
+                entry.flags,
+                raw,
+                u64::try_from(entry.size).ok()?,
+            )),
             _ => None,
         }
     }
