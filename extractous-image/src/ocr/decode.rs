@@ -252,11 +252,25 @@ fn jpeg2000(input: &[u8]) -> Page {
 
 /// A JPEG XL image's first frame, CMYK printed as sRGB, its pixels laid out as stored: the
 /// image is turned as its orientation says where it is read, as every image is, so the turn
-/// jxl-oxide renders it with is undone.
+/// jxl-oxide renders it with is undone. jxl-oxide is given the codestream alone, read in place,
+/// so that the file's other boxes are not read.
 fn jxl(input: &[u8]) -> Page {
-    let mut image = jxl_oxide::JxlImage::builder()
-        .read(input)
-        .map_err(|e| format!("cannot read the JPEG XL image: {e}"))?;
+    let unreadable = |e: String| format!("cannot read the JPEG XL image: {e}");
+    let container = crate::jxl::Container::read(input).map_err(unreadable)?;
+    let image = jxl_oxide::JxlImage::builder()
+        .read(container.codestream())
+        .map_err(|e| unreadable(e.to_string()))?;
+    let orientation = Orientation::of(image.image_header().metadata.orientation);
+    let upright = jxl_rendered(image)?;
+    Ok(match orientation {
+        Some(orientation) => upright.oriented(orientation.undone()),
+        None => upright,
+    })
+}
+
+/// The first frame of the JPEG XL `image` as jxl-oxide renders it, the image and its rendering
+/// freed once its samples are taken.
+fn jxl_rendered(mut image: jxl_oxide::JxlImage) -> Page {
     decodable(image.width(), image.height())?;
     if image.pixel_format().has_black() {
         image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
@@ -271,31 +285,26 @@ fn jxl(input: &[u8]) -> Page {
     let mut samples = vec![0u8; width as usize * height as usize * stream.channels() as usize];
     stream.write_to_buffer(&mut samples);
     let short = || "the JPEG XL image holds fewer samples than its size needs".to_owned();
-    let upright = match image.pixel_format() {
+    let format = image.pixel_format();
+    drop(render);
+    drop(image);
+    match format {
         jxl_oxide::PixelFormat::Gray => GrayImage::from_raw(width, height, samples)
             .map(Bitmap::Gray)
-            .ok_or_else(short)?,
-        jxl_oxide::PixelFormat::Graya => {
-            let gray_alpha =
-                image::GrayAlphaImage::from_raw(width, height, samples).ok_or_else(short)?;
-            bitmap(DynamicImage::ImageLumaA8(gray_alpha))
-        }
+            .ok_or_else(short),
+        jxl_oxide::PixelFormat::Graya => image::GrayAlphaImage::from_raw(width, height, samples)
+            .map(|gray_alpha| bitmap(DynamicImage::ImageLumaA8(gray_alpha)))
+            .ok_or_else(short),
         jxl_oxide::PixelFormat::Rgb => RgbImage::from_raw(width, height, samples)
             .map(Bitmap::Rgb)
-            .ok_or_else(short)?,
+            .ok_or_else(short),
         jxl_oxide::PixelFormat::Rgba => RgbaImage::from_raw(width, height, samples)
             .map(Bitmap::Rgba)
-            .ok_or_else(short)?,
+            .ok_or_else(short),
         other @ (jxl_oxide::PixelFormat::Cmyk | jxl_oxide::PixelFormat::Cmyka) => {
-            return Err(format!("the JPEG XL image renders as {other:?}, not sRGB"))
+            Err(format!("the JPEG XL image renders as {other:?}, not sRGB"))
         }
-    };
-    Ok(
-        match Orientation::of(image.image_header().metadata.orientation) {
-            Some(orientation) => upright.oriented(orientation.undone()),
-            None => upright,
-        },
-    )
+    }
 }
 
 /// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds. CMYK,

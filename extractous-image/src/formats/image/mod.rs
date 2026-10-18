@@ -272,6 +272,10 @@ impl Parser for JxlParser {
         &["image/jxl"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
