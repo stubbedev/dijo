@@ -139,7 +139,7 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
         let input = std::fs::read(document).unwrap();
         assert!(matches!(
             XlsxParser.prepare(&input, &TikaMetadata::new(), &defaults),
-            Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED
+            Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED_BY_TIKA
         ));
     }
     let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
@@ -961,7 +961,14 @@ fn fails_a_strict_workbook_as_tikas_path_does() {
     let document = scratch.write("strict.xlsx", &strict);
     assert!(matches!(
         XlsxParser.prepare(&strict, &TikaMetadata::new(), &ParserConfigs::default()),
-        Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED
+        Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED_BY_TIKA
     ));
     parity::assert_fails_as_tika(&[&document]);
 }
+
+/// The message Tika's path fails a Strict OOXML workbook with.
+#[cfg(feature = "tika")]
+const STRICT_UNSUPPORTED_BY_TIKA: &str = "TIKA-198: Illegal IOException from \
+    org.apache.tika.parser.microsoft.ooxml.OOXMLParser <- caused by java.io.IOException: \
+    org.apache.poi.ooxml.POIXMLException: Strict OOXML isn't currently supported, please see \
+    bug #57699";

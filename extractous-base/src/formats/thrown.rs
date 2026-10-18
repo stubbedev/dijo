@@ -5,20 +5,20 @@ use crate::errors::Error;
 
 /// A Java exception: its class and its message, if it has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Exception {
+pub struct Exception {
     class: &'static str,
     message: Option<String>,
 }
 
 impl Exception {
-    pub(crate) fn new(class: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(class: &'static str, message: impl Into<String>) -> Self {
         Self {
             class,
             message: Some(message.into()),
         }
     }
 
-    pub(crate) fn bare(class: &'static str) -> Self {
+    pub fn bare(class: &'static str) -> Self {
         Self {
             class,
             message: None,
@@ -36,7 +36,7 @@ impl Exception {
 
 /// What a Tika parser throws out of its `parse`, which `CompositeParser` wraps.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Thrown {
+pub enum Thrown {
     /// An `IOException`, which it wraps as `TIKA-198`.
     Io(Exception),
     /// A `RuntimeException`.
@@ -45,7 +45,7 @@ pub(crate) enum Thrown {
 
 impl Thrown {
     /// The error Tika's path fails with when the parser `tika_name` throws this.
-    pub(crate) fn into_error(self, tika_name: &str) -> Error {
+    pub fn into_error(self, tika_name: &str) -> Error {
         let (wrapped, cause) = match self {
             Self::Io(cause) => (
                 format!("TIKA-198: Illegal IOException from {tika_name}"),
