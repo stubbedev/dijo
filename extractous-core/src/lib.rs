@@ -50,6 +50,10 @@ mod formats;
 /// crates of the formats.
 #[cfg(any(test, feature = "parity"))]
 pub use formats::parity;
+/// Files too large to read whole, for the tests of the crates of the formats to hold their
+/// parsers to a memory budget.
+#[cfg(any(test, feature = "parity"))]
+pub mod large;
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]
 #[global_allocator]

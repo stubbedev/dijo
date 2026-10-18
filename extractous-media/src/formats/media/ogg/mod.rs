@@ -506,9 +506,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    use extractous_core::large::{bodies_past_limit, LargeFile};
 
     /// Vorbis comments with a vendor, after `header`.
     fn comments(header: &[u8], entries: &[&str]) -> Vec<u8> {
