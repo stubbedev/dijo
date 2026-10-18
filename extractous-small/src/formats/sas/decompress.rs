@@ -1,6 +1,6 @@
-//! parso's decompressors of the rows of a compressed SAS7BDAT file: `CharDecompressor`, the run
-//! length encoding `SASYZCRL` names, and `BinDecompressor`, the Ross Data Compression `SASYZCR2`
-//! names, failing where their array accesses throw.
+//! The decompressors of the rows of a compressed SAS7BDAT file: the run-length encoding
+//! `SASYZCRL` names, as ReadStat reads it, and parso's `BinDecompressor`, the Ross Data
+//! Compression `SASYZCR2` names, failing where their array accesses throw.
 
 use crate::formats::thrown::{Exception, Thrown};
 
@@ -101,77 +101,77 @@ impl Row {
     }
 }
 
-/// `CharDecompressor.decompressRow`, its copies of literal runs short of the bytes they take, as
-/// parso's are.
+/// The run-length decompression of `SASYZCRL`, by the commands ReadStat reads, where parso's
+/// `CharDecompressor` misreads the lengths of two of them (#155): a copy of 96 or more literal
+/// bytes, which it reads as a copy of a length in the next byte, and an insertion of 18 or more
+/// of a byte, whose high length bits it counts sixteen rather than 256. A command that runs past
+/// the compressed row or the row, or that no SAS file holds, fails it.
 fn char_row(page: &[u8], offset: i64, length: i64, row: &mut Row) -> Result<(), Thrown> {
-    let mut index = 0i64;
+    let end = offset + length;
+    let mut read = offset;
     let mut written = 0i64;
-    while index < length {
-        let first = at(page, offset + index)?;
-        let control = first & 0xF0;
-        let low = i64::from(first & 0x0F);
-        match control {
-            0x00..=0x30 => {
-                if index != length - 1 {
-                    let count = i64::from(at(page, offset + index + 1)?)
-                        + 64
-                        + i64::from(first.cast_signed()) * 256;
-                    let source = range(offset + index + 2, count, page.len())?;
-                    let target = range(written, count, row.bytes.len())?;
-                    row.bytes[target].copy_from_slice(&page[source]);
-                    index += count + 1;
-                    written += count;
-                }
+    while read < end {
+        let control = at(page, read)?;
+        read += 1;
+        let low = i64::from(control & 0x0F);
+        let mut next = || -> Result<u8, Thrown> {
+            if read >= end {
+                return Err(run_past_row(control));
             }
-            0x40 => {
-                let count = low * 16 + i64::from(at(page, offset + index + 1)?) + 18;
-                for _ in 0..count {
-                    let value = at(page, offset + index + 2)?;
-                    row.set(written, value)?;
-                    written += 1;
-                }
-                index += 2;
+            let byte = at(page, read)?;
+            read += 1;
+            Ok(byte)
+        };
+        let (copied, inserted) = match control >> 4 {
+            0x0 => (i64::from(next()?) + 64 + low * 256, None),
+            0x1 => (i64::from(next()?) + 64 + low * 256 + 4096, None),
+            0x2 => (low + 96, None),
+            0x4 => {
+                let count = i64::from(next()?) + 18 + low * 256;
+                (0, Some((count, next()?)))
             }
-            0x50 | 0x60 | 0x70 => {
-                let count = low * 256 + i64::from(at(page, offset + index + 1)?) + 17;
-                let value = match control {
-                    0x50 => 0x40,
-                    0x60 => 0x20,
-                    _ => 0x00,
-                };
-                row.fill(written, count, value)?;
-                written += count;
-                index += 1;
-            }
-            0x80..=0xB0 => {
-                let count = (low + 1 + i64::from(control - 0x80)).min(length - (index + 1));
-                let source = range(offset + index + 1, count, page.len())?;
-                let target = range(written, count, row.bytes.len())?;
-                row.bytes[target].copy_from_slice(&page[source]);
-                index += count;
-                written += count;
-            }
-            0xC0 => {
-                for _ in 0..low + 3 {
-                    let value = at(page, offset + index + 1)?;
-                    row.set(written, value)?;
-                    written += 1;
-                }
-                index += 1;
-            }
+            0x5 => (0, Some((i64::from(next()?) + 17 + low * 256, b'@'))),
+            0x6 => (0, Some((i64::from(next()?) + 17 + low * 256, b' '))),
+            0x7 => (0, Some((i64::from(next()?) + 17 + low * 256, 0))),
+            0x8 => (low + 1, None),
+            0x9 => (low + 17, None),
+            0xA => (low + 33, None),
+            0xB => (low + 49, None),
+            0xC => (0, Some((low + 3, next()?))),
+            0xD => (0, Some((low + 2, b'@'))),
+            0xE => (0, Some((low + 2, b' '))),
+            0xF => (0, Some((low + 2, 0))),
             _ => {
-                let value = match control {
-                    0xD0 => 0x40,
-                    0xE0 => 0x20,
-                    _ => 0x00,
-                };
-                row.fill(written, low + 2, value)?;
-                written += low + 2;
+                return Err(Thrown::Io(Exception::new(
+                    "java.io.IOException",
+                    format!("Unknown run-length command {control:#04x} in a compressed row"),
+                )))
             }
+        };
+        if copied > 0 {
+            if read + copied > end {
+                return Err(run_past_row(control));
+            }
+            let source = range(read, copied, page.len())?;
+            let target = range(written, copied, row.bytes.len())?;
+            row.bytes[target].copy_from_slice(&page[source]);
+            read += copied;
+            written += copied;
         }
-        index += 1;
+        if let Some((count, value)) = inserted {
+            row.fill(written, count, value)?;
+            written += count;
+        }
     }
     Ok(())
+}
+
+/// The failure of a run-length command `control` that reads past the compressed row.
+fn run_past_row(control: u8) -> Thrown {
+    Thrown::Io(Exception::new(
+        "java.io.IOException",
+        format!("The run-length command {control:#04x} runs past the end of its compressed row"),
+    ))
 }
 
 /// `BinDecompressor.decompressRow`: the `length` bytes from `offset` of `page`, zeros past its
@@ -258,13 +258,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decompresses_runs_as_parso_does() {
+    fn decompresses_runs() {
         let page = [0x82, b'a', b'b', b'c', 0xC1, b'x', 0xD0, 0xF1];
         let row = Compression::Char.decompress(&page, 0, 8, 12).unwrap();
         assert_eq!(row, b"abcxxxx@@\0\0\0");
         let page = [0x00, 0x00, b'h', b'e', b'j'];
         assert!(Compression::Char.decompress(&page, 0, 5, 64).is_err());
         assert!(Compression::Char.decompress(&page, 0, 5, -1).is_err());
+        assert!(Compression::Char
+            .decompress(&[0x83, b'a'], 0, 2, 4)
+            .is_err());
+        assert!(Compression::Char.decompress(&[0x30], 0, 1, 4).is_err());
+    }
+
+    #[test]
+    fn decompresses_the_runs_parso_miscounts() {
+        let mut page = vec![0x21];
+        page.extend((0..97u8).map(|byte| byte % 26 + b'a'));
+        page.extend([0x41, 0x02, b'z']);
+        let length = i32::try_from(page.len()).unwrap();
+        let row = Compression::Char
+            .decompress(&page, 0, length, 97 + 276)
+            .unwrap();
+        assert_eq!(row[..97], page[1..98]);
+        assert!(row[97..].iter().all(|&byte| byte == b'z'));
     }
 
     #[test]

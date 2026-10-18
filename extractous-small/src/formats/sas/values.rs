@@ -1,5 +1,9 @@
 //! The values of a SAS7BDAT file's cells as parso reads them, and as its `DataWriterUtil` writes
 //! them: numbers, dates by their SAS formats, times, percentages and text.
+//!
+//! Dates and percentages are written in one fixed locale, US English: English month and day
+//! names, `.` the decimal point and `%` the percent sign, whatever the machine's locale, where
+//! parso formats them in the JVM's default locale (#155).
 
 use std::collections::hash_map::{Entry, HashMap};
 
@@ -239,14 +243,10 @@ pub(super) fn number(number: f64) -> Option<Value> {
 }
 
 impl Value {
-    /// Whether `String.valueOf` writes it with "Infinity" in it, as `DataWriterUtil` asks: an
-    /// infinite number, or text that holds the word. A date's `toString` never does.
-    fn shows_infinity(&self) -> bool {
-        match self {
-            Self::Double(value) => value.is_infinite(),
-            Self::Text(text) => text.contains("Infinity"),
-            Self::Short(_) | Self::Long(_) | Self::Date(_) => false,
-        }
+    /// Whether it is an infinite number, which `DataWriterUtil` writes as missing. Text that
+    /// holds the word "Infinity", which parso writes as missing too, is written whole (#155).
+    fn is_infinite(&self) -> bool {
+        matches!(self, Self::Double(value) if value.is_infinite())
     }
 
     fn class(&self) -> &'static str {
@@ -297,7 +297,7 @@ impl Writer {
         let Some(value) = value else {
             return Ok(String::new());
         };
-        if value.shows_infinity() {
+        if value.is_infinite() {
             return Ok(String::new());
         }
         if let Value::Date(millis) = value {
@@ -307,23 +307,16 @@ impl Writer {
                     "class java.text.DecimalFormat cannot be cast to class java.text.SimpleDateFormat",
                 )));
             };
-            if *millis == 0 {
-                return Ok(String::new());
-            }
             return Ok(dates
                 .format(*millis, &TimeZone::fixed(0))
                 .expect("the date patterns of SAS formats name no time zone"));
         }
         if WRITTEN_TIME_FORMATS.contains(&format.name) {
-            let Value::Long(seconds) = value else {
-                return Err(class_cast(value, "java.lang.Long"));
+            return match value {
+                Value::Long(seconds) => Ok(clock(*seconds)),
+                Value::Double(seconds) => Ok(fractional_clock(*seconds)),
+                other => Err(class_cast(other, "java.lang.Long")),
             };
-            return Ok(format!(
-                "{:02}:{:02}:{:02}",
-                seconds / 60 / 60,
-                seconds / 60 % 60,
-                seconds % 60
-            ));
         }
         if format.name == "PERCENT" {
             let number = match value {
@@ -394,8 +387,27 @@ impl Writer {
     }
 }
 
+/// `DataWriterUtil`'s time of whole `seconds`: hours, minutes and seconds of two digits.
+fn clock(seconds: i64) -> String {
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 60 / 60,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+/// The time of `seconds` with a fraction, which parso throws on (#155): the [`clock`] of its
+/// whole seconds, then its fraction's shortest decimal digits.
+fn fractional_clock(seconds: f64) -> String {
+    let decimal = seconds.to_string();
+    let fraction = decimal.split_once('.').map_or("", |(_, fraction)| fraction);
+    format!("{}.{fraction}", clock(seconds.trunc() as i64))
+}
+
 /// `convertDoubleElementToString`: `Double.toString`, a long one rounded to `ACCURACY` digits
-/// around its point first, without the zeros it ends with, nor then a point.
+/// around its point first, without the zeros its decimal ends with, nor then a point. A number
+/// in scientific notation is written whole, where parso strips the zeros of its exponent (#155).
 fn double_text(value: f64) -> String {
     let mut text = java::dtoa::java_double_to_string(value);
     if text.len() > ROUNDING_LENGTH {
@@ -408,7 +420,7 @@ fn double_text(value: f64) -> String {
             );
         text = java::dtoa::java_double_to_string(rounded.to_f64());
     }
-    if text.contains('.') {
+    if text.contains('.') && !text.contains('E') {
         let trimmed = text.trim_end_matches('0');
         trimmed.strip_suffix('.').unwrap_or(trimmed).to_owned()
     } else {
@@ -432,14 +444,23 @@ mod tests {
     #[test]
     fn writes_values_as_data_writer_util_does() {
         assert_eq!(text("", 0, Value::Double(0.1 + 0.2)).unwrap(), "0.3");
-        assert_eq!(text("", 0, Value::Double(1e10)).unwrap(), "1.0E1");
+        assert_eq!(text("", 0, Value::Double(1e10)).unwrap(), "1.0E10");
+        assert_eq!(text("", 0, Value::Double(1.5e-7)).unwrap(), "1.5E-7");
         assert_eq!(text("", 0, Value::Double(2.5)).unwrap(), "2.5");
         assert_eq!(text("", 0, Value::Double(f64::INFINITY)).unwrap(), "");
-        assert_eq!(text("", 0, Value::Text("-Infinity!".into())).unwrap(), "");
+        assert_eq!(
+            text("", 0, Value::Text("-Infinity!".into())).unwrap(),
+            "-Infinity!"
+        );
         assert_eq!(text("PERCENT", 1, Value::Double(0.5)).unwrap(), "50.0%");
         assert_eq!(text("PERCENT", 0, Value::Long(1)).unwrap(), "100%");
         assert_eq!(text("TIME", 0, Value::Long(3723)).unwrap(), "01:02:03");
-        assert!(text("TIME", 0, Value::Double(1.5)).is_err());
+        assert_eq!(
+            text("TIME", 0, Value::Double(3723.25)).unwrap(),
+            "01:02:03.25"
+        );
+        assert_eq!(text("HHMM", 0, Value::Double(0.1)).unwrap(), "00:00:00.1");
+        assert!(text("TIME", 0, Value::Date(0)).is_err());
         let day = Temporal::Date.value(1.0).unwrap();
         assert_eq!(text("DDMMYYD", 0, day).unwrap(), "02-01-1960");
         let moment = Temporal::DateTime.value(100.0).unwrap();
@@ -448,7 +469,7 @@ mod tests {
             "01Jan1960:00:01:40.00"
         );
         let epoch = Temporal::Date.value(3653.0).unwrap();
-        assert_eq!(text("DATE", 0, epoch).unwrap(), "");
+        assert_eq!(text("DATE", 0, epoch).unwrap(), "01Jan1970");
         assert!(text("QTR", 0, Temporal::Date.value(1.0).unwrap()).is_err());
     }
 

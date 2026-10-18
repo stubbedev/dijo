@@ -40,6 +40,33 @@ fn reads_data_sets_as_parso_does() {
     assert_eq!(metadata["Content-Encoding"], ["windows-1252"]);
 }
 
+/// The fixture's page as a mixed page with deletion markers, the fourth of its rows marked
+/// deleted: the page type at 16 of the page, at 1024, and the first byte of the markers, which
+/// its pointer at 12 places 2432 bytes on, past the subheader pointers and the rows.
+fn with_fourth_row_deleted() -> Vec<u8> {
+    let mut bytes = FIXTURE.to_vec();
+    let page = 1024;
+    bytes[page + 16..page + 18].copy_from_slice(&640i16.to_le_bytes());
+    let pointer = i32::from_le_bytes(bytes[page + 12..page + 16].try_into().unwrap());
+    let markers = page + usize::try_from(pointer).unwrap() + 2432;
+    assert_eq!(bytes[markers], 0);
+    bytes[markers] = 0b0001_0000;
+    bytes
+}
+
+#[test]
+fn reads_the_rows_after_a_deleted_one() {
+    let (xml, metadata) = extract(&with_fourth_row_deleted());
+    assert_eq!(xml.matches("<tr>").count(), 11, "{xml}");
+    assert!(!xml.contains("<td>3</td>"), "{xml}");
+    assert!(xml.contains("<td>2</td>"), "{xml}");
+    assert!(
+        xml.contains("<td>10</td>\t<td>This is row           10 of           10</td>"),
+        "{xml}"
+    );
+    assert_eq!(metadata["database:row-count"], ["11"]);
+}
+
 /// The fixture cut at several lengths, with a page length beyond parso's limit and a negative
 /// one, which parso throws on, and with more rows than it holds.
 #[cfg(feature = "tika")]
