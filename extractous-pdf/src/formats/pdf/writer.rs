@@ -72,8 +72,8 @@ pub(super) struct PageWriter<'p, 'r> {
     pub(super) tagged: Option<Tagged<'p>>,
     /// The text of the current page's `div`, while it is kept for the page's assessment.
     layer_text: Option<String>,
-    /// Whether the current page's `div` holds files an annotation embeds.
-    embeds: bool,
+    /// Whether the current page's `div` holds files an annotation embeds, or images.
+    pub(super) embeds: bool,
 }
 
 impl PageWriter<'_, '_> {
@@ -239,10 +239,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             extracted: HashSet::new(),
             images: match settings.images {
                 ImageExtraction::Off => None,
-                ImageExtraction::On {
-                    unique_only,
-                    assessed_with_ocr,
-                } => Some(Images::new(unique_only, assessed_with_ocr)),
+                ImageExtraction::On { unique_only } => Some(Images::new(unique_only)),
             },
         }
     }

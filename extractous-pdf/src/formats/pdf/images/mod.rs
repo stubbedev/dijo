@@ -95,9 +95,6 @@ impl From<Unported> for Unwritten {
 /// The images of a document being extracted: those numbered so far, by the image XObject.
 pub(super) struct Images {
     unique_only: bool,
-    /// Whether our `TextLayerCheckingPdfParser` weighs the text of each page, the text OCR
-    /// reads in its images included.
-    assessed_with_ocr: bool,
     /// `processedInlineImages`.
     processed: HashMap<Identity, usize>,
     /// `inlineImageCounter`.
@@ -105,10 +102,9 @@ pub(super) struct Images {
 }
 
 impl Images {
-    pub(super) fn new(unique_only: bool, assessed_with_ocr: bool) -> Self {
+    pub(super) fn new(unique_only: bool) -> Self {
         Self {
             unique_only,
-            assessed_with_ocr,
             processed: HashMap::new(),
             counter: 0,
         }
@@ -163,14 +159,6 @@ impl Images {
         page_number: usize,
         writer: &mut PageWriter,
     ) -> Result<(), WriteFailure> {
-        if self.assessed_with_ocr {
-            return Err(Unported(
-                "an image our TextLayerCheckingPdfParser weighs the OCR text of with its \
-                 page's text"
-                    .to_owned(),
-            )
-            .into());
-        }
         let mut metadata = TikaMetadata::new();
         let (extension, content_type) = match image.suffix() {
             _ if image.has_masks() => ("png", "image/png"),
@@ -195,7 +183,10 @@ impl Images {
             xmp_metadata(pdf, image.metadata(), &mut metadata)?;
         }
         match write_to_buffer(image, extension) {
-            Ok(data) => writer.out.embedded(EmbeddedFile { metadata, data })?,
+            Ok(data) => {
+                writer.embeds = true;
+                writer.out.embedded(EmbeddedFile { metadata, data })?;
+            }
             Err(Unwritten::Stream(thrown)) => {
                 writer
                     .out

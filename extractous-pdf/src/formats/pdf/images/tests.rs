@@ -1,3 +1,4 @@
+#[cfg(feature = "tika")]
 use std::io::Write as _;
 #[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use crate::formats::parity::{
 use crate::formats::Parser;
 
 /// The JDK's own sRGB profile, whose header names no device model.
+#[cfg(feature = "tika")]
 const JDK_SRGB: &[u8] = include_bytes!("../../../../../extractous-image/models/jdk-srgb.icc");
 
 /// Images extracted, pages never read by OCR, and the images read by OCR as Tika reads them.
@@ -68,6 +70,7 @@ fn hex(data: &[u8]) -> String {
     data.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(feature = "tika")]
 fn zlib(data: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(data).unwrap();
@@ -149,6 +152,7 @@ fn jpeg() -> Vec<u8> {
 }
 
 /// An ICC colour space of the JDK's sRGB profile, named an sRGB device's when `srgb`.
+#[cfg(feature = "tika")]
 fn icc(srgb: bool) -> String {
     let mut profile = JDK_SRGB.to_vec();
     if srgb {
@@ -158,6 +162,7 @@ fn icc(srgb: bool) -> String {
 }
 
 /// Images in each colour space and sample depth the port reads, and with each kind of mask.
+#[cfg(feature = "tika")]
 fn sampled_images() -> Vec<u8> {
     let lookup = hex(&[255, 0, 0, 0, 128, 255, 20, 200, 30, 250, 250, 250]);
     let rgb = |seed, extra: &str| {
@@ -572,20 +577,29 @@ fn defers_images_the_port_does_not_write() {
     );
 }
 
-#[test]
-fn defers_images_whose_ocr_text_our_page_check_weighs() {
-    if !crate::ocr::tesseract_runs() {
-        return;
-    }
-    let configs = ParserConfigs {
+/// Images extracted while our `TextLayerCheckingPdfParser` weighs each page's text, the text OCR
+/// reads in its images with it.
+#[cfg(feature = "tika")]
+fn weighing_pages() -> ParserConfigs {
+    ParserConfigs {
         pdf: PdfParserConfig::new().set_extract_inline_images(true),
         ..ParserConfigs::default()
-    };
-    let deferred = deferral(&sampled_images(), &configs).unwrap_or_default();
-    assert!(
-        deferred.starts_with("an image our TextLayerCheckingPdfParser"),
-        "{deferred}"
-    );
+    }
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn weighs_the_ocr_text_of_images_with_their_page_as_tikas_path_does() {
+    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
+    let configs = weighing_pages();
+    let scratch = Scratch::new("pdf-images-weighed");
+    let sampled = scratch.write("sampled.pdf", &sampled_images());
+    let scanned = PathBuf::from("../test_files/documents/deu-ocr.pdf");
+    for path in [&sampled, &scanned] {
+        let input = std::fs::read(path).unwrap();
+        assert_eq!(deferral(&input, &configs), None, "{}", path.display());
+    }
+    assert_same(&[sampled, scanned], &configs);
 }
 
 #[cfg(feature = "tika")]

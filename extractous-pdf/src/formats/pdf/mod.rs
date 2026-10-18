@@ -196,9 +196,6 @@ enum ImageExtraction {
     On {
         /// `setExtractUniqueInlineImagesOnly`.
         unique_only: bool,
-        /// Whether our `TextLayerCheckingPdfParser` weighs each page's text with what OCR
-        /// reads in its images.
-        assessed_with_ocr: bool,
     },
 }
 
@@ -212,7 +209,6 @@ impl Settings {
             true if ocr.reads_only_ocr() => ImageExtraction::Off,
             true => ImageExtraction::On {
                 unique_only: config.extracts_unique_inline_images_only(),
-                assessed_with_ocr: ocr.holds_pages() && !configs.ocr.skips_ocr(),
             },
         };
         Ok(Self {
