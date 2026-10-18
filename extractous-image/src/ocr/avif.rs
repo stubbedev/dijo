@@ -1,14 +1,17 @@
 //! AVIF images decoded for OCR as libheif decodes them for our Java `HeifDecoder`: the primary
-//! item of the HEIF container (ISO/IEC 23008-12), an AV1 image or a grid of them, decoded by
-//! rav1d, cropped, rotated and mirrored as its transformative properties say, its colours
-//! converted with its matrix coefficients and drawn in grey as Java2D draws them.
+//! item of the HEIF container (ISO/IEC 23008-12), an AV1 image or a grid of them, its data in
+//! the file, in the `idat` box or constructed from other items, decoded by rav1d, its colours
+//! converted with its matrix coefficients, and cropped, rotated and mirrored as its
+//! transformative properties say. A file whose primary image is coded otherwise is left to
+//! libheif.
 
 use std::collections::BTreeMap;
 
-use image::GrayImage;
+use image::{DynamicImage, GrayImage, ImageBuffer, Pixel, RgbImage};
 
 use super::av1::{self, Chroma, Picture};
-use super::decode::{luma, within_limits};
+use super::bitmap::Bitmap;
+use super::decode::decodable;
 
 /// A box's or an item's type.
 type Kind = [u8; 4];
@@ -108,11 +111,31 @@ fn fourcc(kind: Kind) -> String {
     String::from_utf8_lossy(&kind).into_owned()
 }
 
-/// Where an item's data is: extents of the file, or of the `idat` box.
+/// Where an item's data comes from, as `iloc` constructs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Construction {
+    /// Extents of the file (method 0).
+    File,
+    /// Extents of the `idat` box (method 1).
+    Idat,
+    /// Extents of the data of the items its `iloc` references name (method 2).
+    Items,
+}
+
+/// An extent of an item's data: which of the items it refers to it is of, counted from 1, for
+/// the construction from items, its offset there, and its length, 0 for all that follows.
+#[derive(Debug, Clone, Copy)]
+struct Extent {
+    index: u64,
+    offset: u64,
+    length: u64,
+}
+
+/// Where an item's data is.
 #[derive(Debug, Clone)]
 struct Location {
-    in_idat: bool,
-    extents: Vec<(u64, u64)>,
+    construction: Construction,
+    extents: Vec<Extent>,
 }
 
 /// A transformative property, in the order the item lists it.
@@ -133,11 +156,20 @@ enum Transform {
     Mirror { top_to_bottom: bool },
 }
 
+/// A colour description, of an `nclx` `colr` property or of an AV1 sequence header: the colour
+/// primaries and the matrix coefficients as ISO/IEC 23091-2 numbers them, and whether samples
+/// span the full range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Colour {
+    primaries: u16,
+    matrix: u16,
+    full_range: bool,
+}
+
 /// The properties of an item the decoding reads.
 #[derive(Debug, Clone, Default)]
 struct Properties {
-    /// `colr` of type `nclx`: the matrix coefficients and whether samples span the full range.
-    colour: Option<(u16, bool)>,
+    colour: Option<Colour>,
     transforms: Vec<Transform>,
 }
 
@@ -149,12 +181,22 @@ struct Items<'a> {
     locations: BTreeMap<u32, Location>,
     /// Each item's `dimg` references, the images it is derived from, in order.
     derived_from: BTreeMap<u32, Vec<u32>>,
+    /// Each item's `iloc` references, the items its data is constructed from, in order.
+    constructed_from: BTreeMap<u32, Vec<u32>>,
     properties: BTreeMap<u32, Properties>,
     idat: &'a [u8],
 }
 
-/// Decodes the primary image of an AVIF file in grey.
-pub(crate) fn decode(input: &[u8]) -> Result<GrayImage, String> {
+/// An AVIF file's primary image, or that it is coded with codecs other than AV1.
+pub(crate) enum Avif {
+    Decoded(Bitmap),
+    /// Its primary image, or a tile of it, is no AV1 image, such as one coded with HEVC or
+    /// JPEG, which libheif decodes for Tika's path.
+    OfOtherCodecs,
+}
+
+/// Decodes the primary image of an AVIF file.
+pub(crate) fn decode(input: &[u8]) -> Result<Avif, String> {
     let meta = Reader::new(input)
         .boxes()?
         .into_iter()
@@ -164,18 +206,22 @@ pub(crate) fn decode(input: &[u8]) -> Result<GrayImage, String> {
     let primary = items.primary.ok_or("the AVIF names no primary item")?;
     let properties = items.properties.get(&primary).cloned().unwrap_or_default();
     let picture = match items.types.get(&primary) {
-        Some(b"av01") => picture_grey(
+        Some(b"av01") => picture(
             &av1::decode(&item_data(input, &items, primary)?)?,
             properties.colour,
         )?,
-        Some(b"grid") => grid(input, &items, primary, properties.colour)?,
-        Some(kind) => return Err(format!("a primary item of type {}", fourcc(*kind))),
+        Some(b"grid") => match grid(input, &items, primary, properties.colour)? {
+            Some(canvas) => canvas,
+            None => return Ok(Avif::OfOtherCodecs),
+        },
+        Some(_) => return Ok(Avif::OfOtherCodecs),
         None => return Err(format!("no item {primary}, which pitm names")),
     };
     properties
         .transforms
         .iter()
         .try_fold(picture, |image, transform| transformed(image, *transform))
+        .map(Avif::Decoded)
 }
 
 /// Reads the boxes of the meta box the decoding needs.
@@ -231,8 +277,14 @@ fn items(meta: &[u8]) -> Result<Items<'_>, String> {
                     let to = (0..count)
                         .map(|_| id(&mut ids))
                         .collect::<Result<Vec<_>, _>>()?;
-                    if &reference.kind == b"dimg" {
-                        items.derived_from.insert(from, to);
+                    match &reference.kind {
+                        b"dimg" => {
+                            items.derived_from.insert(from, to);
+                        }
+                        b"iloc" => {
+                            items.constructed_from.insert(from, to);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -281,22 +333,36 @@ fn locations(body: &mut Reader) -> Result<BTreeMap<u32, Location>, String> {
             0 => 0,
             _ => body.u16("iloc")? & 0xF,
         };
+        let construction = match method {
+            0 => Construction::File,
+            1 => Construction::Idat,
+            2 => Construction::Items,
+            other => return Err(format!("item {id} is built by construction method {other}")),
+        };
         body.u16("iloc")?;
         let base = body.uint(base_size, "iloc")?;
         let extent_count = body.u16("iloc")?;
         let mut extents = Vec::with_capacity(usize::from(extent_count));
         for _ in 0..extent_count {
-            body.uint(index_size, "iloc")?;
+            let index = match index_size {
+                0 => 1,
+                _ => body.uint(index_size, "iloc")?,
+            };
             let offset = body.uint(offset_size, "iloc")?;
             let length = body.uint(length_size, "iloc")?;
-            extents.push((base.saturating_add(offset), length));
+            extents.push(Extent {
+                index,
+                offset: base.saturating_add(offset),
+                length,
+            });
         }
-        let in_idat = match method {
-            0 => false,
-            1 => true,
-            other => return Err(format!("item {id} is built by construction method {other}")),
-        };
-        locations.insert(id, Location { in_idat, extents });
+        locations.insert(
+            id,
+            Location {
+                construction,
+                extents,
+            },
+        );
     }
     Ok(locations)
 }
@@ -335,11 +401,15 @@ fn property_of(property: &Bmff, item: &mut Properties) -> Result<(), String> {
     match &property.kind {
         b"colr" => {
             if body.bytes(4, "colr")? == b"nclx" {
-                body.u16("colr")?;
+                let primaries = body.u16("colr")?;
                 body.u16("colr")?;
                 let matrix = body.u16("colr")?;
                 let full_range = body.u8("colr")? & 0x80 != 0;
-                item.colour = Some((matrix, full_range));
+                item.colour = Some(Colour {
+                    primaries,
+                    matrix,
+                    full_range,
+                });
             }
         }
         b"irot" => item
@@ -367,33 +437,76 @@ fn property_of(property: &Bmff, item: &mut Properties) -> Result<(), String> {
     Ok(())
 }
 
-/// An item's data, its extents joined.
+/// An item's data, its extents joined: of the file, of the `idat` box, or of the items it is
+/// constructed from.
 fn item_data(input: &[u8], items: &Items, id: u32) -> Result<Vec<u8>, String> {
+    constructed(input, items, id, &mut Vec::new())
+}
+
+/// An item's data, constructed while the items in `constructing` are, which it cannot be
+/// constructed from.
+fn constructed(
+    input: &[u8],
+    items: &Items,
+    id: u32,
+    constructing: &mut Vec<u32>,
+) -> Result<Vec<u8>, String> {
+    if constructing.contains(&id) {
+        return Err(format!("item {id} is constructed from itself"));
+    }
     let location = items
         .locations
         .get(&id)
         .ok_or_else(|| format!("item {id} has no location"))?;
-    let source = if location.in_idat { items.idat } else { input };
-    let mut data = Vec::new();
-    for &(offset, length) in &location.extents {
-        let extent = usize::try_from(offset)
-            .ok()
-            .zip(usize::try_from(length).ok())
-            .and_then(|(offset, length)| source.get(offset..offset.checked_add(length)?))
-            .ok_or_else(|| format!("item {id} lies past the end of the file"))?;
-        data.extend_from_slice(extent);
+    constructing.push(id);
+    let mut sources: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+    if location.construction == Construction::Items {
+        for extent in &location.extents {
+            if let std::collections::btree_map::Entry::Vacant(source) = sources.entry(extent.index)
+            {
+                let referenced = usize::try_from(extent.index)
+                    .ok()
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| items.constructed_from.get(&id)?.get(index).copied())
+                    .ok_or_else(|| {
+                        format!(
+                            "item {id} is constructed from its item reference {}, which it lacks",
+                            extent.index
+                        )
+                    })?;
+                source.insert(constructed(input, items, referenced, constructing)?);
+            }
+        }
     }
+    let mut data = Vec::new();
+    for extent in &location.extents {
+        let source: &[u8] = match location.construction {
+            Construction::File => input,
+            Construction::Idat => items.idat,
+            Construction::Items => &sources[&extent.index],
+        };
+        let extent_bytes = usize::try_from(extent.offset)
+            .ok()
+            .and_then(|offset| match extent.length {
+                0 => source.get(offset..),
+                length => source.get(offset..offset.checked_add(usize::try_from(length).ok()?)?),
+            })
+            .ok_or_else(|| format!("item {id} lies past the end of its data"))?;
+        data.extend_from_slice(extent_bytes);
+    }
+    constructing.pop();
     Ok(data)
 }
 
 /// A grid item (ISO/IEC 23008-12, 6.6.2.3): its tiles, the images it is derived from, laid
-/// out in rows on a canvas of its output size, each in the colours of its own properties.
+/// out in rows on a canvas of its output size, each in the colours of its own properties; or
+/// none when a tile is no AV1 image.
 fn grid(
     input: &[u8],
     items: &Items,
     id: u32,
-    colour: Option<(u16, bool)>,
-) -> Result<GrayImage, String> {
+    colour: Option<Colour>,
+) -> Result<Option<Bitmap>, String> {
     let data = item_data(input, items, id)?;
     let mut body = Reader::new(&data);
     body.u8("the grid")?;
@@ -403,7 +516,7 @@ fn grid(
     let size = if flags & 1 == 1 { 4 } else { 2 };
     let width = body.uint(size, "the grid")? as u32;
     let height = body.uint(size, "the grid")? as u32;
-    within_limits(width, height)?;
+    decodable(width, height)?;
     let tiles = items
         .derived_from
         .get(&id)
@@ -414,31 +527,63 @@ fn grid(
             tiles.len()
         ));
     }
-    let mut canvas = GrayImage::new(width, height);
-    let mut tile_size = None;
-    for (index, &tile) in tiles.iter().enumerate() {
-        if items.types.get(&tile) != Some(b"av01") {
-            return Err(format!("the grid's tile {tile} is no AV1 image"));
-        }
-        let tile_colour = items
-            .properties
-            .get(&tile)
-            .and_then(|properties| properties.colour)
-            .or(colour);
-        let decoded = picture_grey(&av1::decode(&item_data(input, items, tile)?)?, tile_colour)?;
-        let (tile_width, tile_height) = *tile_size.get_or_insert(decoded.dimensions());
-        let x = index as u32 % columns * tile_width;
-        let y = index as u32 / columns * tile_height;
-        for (tile_x, tile_y, pixel) in decoded.enumerate_pixels() {
-            if x + tile_x < width && y + tile_y < height {
-                canvas.put_pixel(x + tile_x, y + tile_y, *pixel);
-            }
-        }
+    if tiles
+        .iter()
+        .any(|tile| items.types.get(tile) != Some(b"av01"))
+    {
+        return Ok(None);
     }
-    Ok(canvas)
+    let decoded = tiles
+        .iter()
+        .map(|&tile| {
+            let tile_colour = items
+                .properties
+                .get(&tile)
+                .and_then(|properties| properties.colour)
+                .or(colour);
+            picture(&av1::decode(&item_data(input, items, tile)?)?, tile_colour)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let tile_size = decoded[0].dimensions();
+    let place = |index: usize| {
+        (
+            index as u32 % columns * tile_size.0,
+            index as u32 / columns * tile_size.1,
+        )
+    };
+    if decoded.iter().all(|tile| matches!(tile, Bitmap::Gray(_))) {
+        let mut canvas = GrayImage::new(width, height);
+        for (index, tile) in decoded.iter().enumerate() {
+            paste(&mut canvas, &tile.gray(), place(index));
+        }
+        return Ok(Some(Bitmap::Gray(canvas)));
+    }
+    let mut canvas = RgbImage::new(width, height);
+    for (index, tile) in decoded.into_iter().enumerate() {
+        let tile = match tile {
+            Bitmap::Gray(gray) => DynamicImage::ImageLuma8(gray).to_rgb8(),
+            Bitmap::Rgb(rgb) => rgb,
+            Bitmap::Rgba(rgba) => DynamicImage::ImageRgba8(rgba).to_rgb8(),
+        };
+        paste(&mut canvas, &tile, place(index));
+    }
+    Ok(Some(Bitmap::Rgb(canvas)))
 }
 
-/// The colour matrix samples are coded with, as ISO/IEC 23091-2 numbers them.
+/// Lays a tile on a canvas at `(x, y)`, cut at the canvas's edges.
+fn paste<P: Pixel>(
+    canvas: &mut ImageBuffer<P, Vec<P::Subpixel>>,
+    tile: &ImageBuffer<P, Vec<P::Subpixel>>,
+    (x, y): (u32, u32),
+) {
+    for (tile_x, tile_y, pixel) in tile.enumerate_pixels() {
+        if x + tile_x < canvas.width() && y + tile_y < canvas.height() {
+            canvas.put_pixel(x + tile_x, y + tile_y, *pixel);
+        }
+    }
+}
+
+/// The colour matrix samples are coded with, as libheif converts it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Matrix {
     /// Green, blue and red in the three planes.
@@ -449,22 +594,90 @@ enum Matrix {
         blue: f64,
     },
     YCgCo,
+    /// A matrix with no linear conversion to red, green and blue, SMPTE ST 2085's Y'D'zD'x
+    /// (11) and ICtCp (14), whose first plane holds the brightness, read alone in grey. libheif
+    /// refuses them.
+    Brightness,
 }
 
+/// The weights of red and blue in luma of BT.601, which libheif converts with when the matrix
+/// coefficients name no weights of their own.
+const BT_601: (f64, f64) = (0.299, 0.114);
+
 impl Matrix {
-    fn of(code: u16) -> Result<Self, String> {
-        let weighted = |red, blue| Self::Weighted { red, blue };
+    /// The matrix of the matrix coefficients `code`, its weights derived from the colour
+    /// primaries `primaries` for codes 12 and 13, as libheif's `get_Kr_Kb` takes them.
+    fn of(code: u16, primaries: u16) -> Result<Self, String> {
+        let weighted = |(red, blue)| Self::Weighted { red, blue };
         Ok(match code {
             0 => Self::Identity,
-            1 => weighted(0.2126, 0.0722),
-            2 | 5 | 6 => weighted(0.299, 0.114),
-            4 => weighted(0.30, 0.11),
-            7 => weighted(0.212, 0.087),
+            1 => weighted((0.2126, 0.0722)),
+            4 => weighted((0.30, 0.11)),
+            7 => weighted((0.212, 0.087)),
             8 => Self::YCgCo,
-            9 | 10 => weighted(0.2627, 0.0593),
-            other => return Err(format!("the matrix coefficients {other}")),
+            9 | 10 => weighted((0.2627, 0.0593)),
+            11 | 14 => Self::Brightness,
+            12 | 13 => weighted(chromaticity_weights(primaries).unwrap_or(BT_601)),
+            16 | 17 => {
+                return Err(format!(
+                    "the matrix coefficients {code} (YCgCo-R), which AV1 does not code"
+                ))
+            }
+            _ => weighted(BT_601),
         })
     }
+}
+
+/// The chromaticities of the red, green, blue and white of colour primaries, as x and y, as
+/// libheif's `get_colour_primaries` lists them, or none for primaries it does not know.
+fn chromaticities(primaries: u16) -> Option<[(f64, f64); 4]> {
+    const D65: (f64, f64) = (0.3127, 0.3290);
+    Some(match primaries {
+        1 => [(0.640, 0.330), (0.300, 0.600), (0.150, 0.060), D65],
+        4 => [(0.67, 0.33), (0.21, 0.71), (0.14, 0.08), (0.310, 0.316)],
+        5 => [(0.64, 0.33), (0.29, 0.60), (0.15, 0.06), D65],
+        6 | 7 => [(0.630, 0.340), (0.310, 0.595), (0.155, 0.070), D65],
+        8 => [
+            (0.681, 0.319),
+            (0.243, 0.692),
+            (0.145, 0.049),
+            (0.310, 0.316),
+        ],
+        9 => [(0.708, 0.292), (0.170, 0.797), (0.131, 0.046), D65],
+        10 => [(1.0, 0.0), (0.0, 1.0), (0.0, 0.0), (0.333333, 0.33333)],
+        11 => [
+            (0.680, 0.320),
+            (0.265, 0.690),
+            (0.150, 0.060),
+            (0.314, 0.351),
+        ],
+        12 => [(0.680, 0.320), (0.265, 0.690), (0.150, 0.060), D65],
+        22 => [(0.630, 0.340), (0.295, 0.605), (0.155, 0.077), D65],
+        _ => return None,
+    })
+}
+
+/// The weights of red and blue in luma derived from colour primaries (ITU-T H.273, equations
+/// 39 and 40), or none for primaries without them.
+fn chromaticity_weights(primaries: u16) -> Option<(f64, f64)> {
+    let [(xr, yr), (xg, yg), (xb, yb), (xw, yw)] = chromaticities(primaries)?;
+    let (zr, zg, zb, zw) = (
+        1.0 - (xr + yr),
+        1.0 - (xg + yg),
+        1.0 - (xb + yb),
+        1.0 - (xw + yw),
+    );
+    let denominator =
+        yw * (xr * (yg * zb - yb * zg) + xg * (yb * zr - yr * zb) + xb * (yr * zg - yg * zr));
+    if denominator == 0.0 {
+        return None;
+    }
+    let red = yr * (xw * (yg * zb - yb * zg) + yw * (xb * zg - xg * zb) + zw * (xg * yb - xb * yg))
+        / denominator;
+    let blue = yb
+        * (xw * (yr * zg - yg * zr) + yw * (xg * zr - xr * zg) + zw * (xr * yg - xg * yr))
+        / denominator;
+    Some((red, blue))
 }
 
 /// How samples of a bit depth map to the unit range: luma to 0 to 1, colour differences to
@@ -507,28 +720,38 @@ fn level(value: f64) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// A picture in grey: its samples converted to red, green and blue with the matrix and range
-/// of the item's colour property, or else of the picture's sequence header, and drawn as
-/// Java2D draws them.
-fn picture_grey(picture: &Picture, colour: Option<(u16, bool)>) -> Result<GrayImage, String> {
-    let (matrix, full_range) = colour.unwrap_or((picture.matrix, picture.full_range));
-    let matrix = Matrix::of(matrix)?;
-    let range = Range::new(picture.depth, full_range);
+/// A picture's samples converted to red, green and blue with the colour description of the
+/// item's property, or else of the picture's sequence header: in grey for a picture of luma
+/// alone or a matrix of brightness, and else in colour.
+fn picture(picture: &Picture, colour: Option<Colour>) -> Result<Bitmap, String> {
+    let colour = colour.unwrap_or(Colour {
+        primaries: picture.primaries,
+        matrix: picture.matrix,
+        full_range: picture.full_range,
+    });
+    let matrix = Matrix::of(colour.matrix, colour.primaries)?;
+    let range = Range::new(picture.depth, colour.full_range);
     let luma_plane = &picture.planes[0];
     let (width, height) = (luma_plane.width, luma_plane.height);
-    let mut gray = Vec::with_capacity(width * height);
+    let short = || "the picture holds fewer samples than its size".to_owned();
+    let shifts = match picture.chroma {
+        Chroma::Subsampled { x, y } if matrix != Matrix::Brightness => (x, y),
+        _ => {
+            let levels = luma_plane
+                .samples
+                .iter()
+                .map(|&sample| level(range.luma(sample)))
+                .collect();
+            return GrayImage::from_raw(width as u32, height as u32, levels)
+                .map(Bitmap::Gray)
+                .ok_or_else(short);
+        }
+    };
+    let mut samples = Vec::with_capacity(width * height * 3);
     for y in 0..height {
         for x in 0..width {
             let brightness = range.luma(luma_plane.at(x, y));
-            let Chroma::Subsampled {
-                x: shift_x,
-                y: shift_y,
-            } = picture.chroma
-            else {
-                gray.push(level(brightness));
-                continue;
-            };
-            let (chroma_x, chroma_y) = (x >> shift_x, y >> shift_y);
+            let (chroma_x, chroma_y) = (x >> shifts.0, y >> shifts.1);
             let blue = picture.planes[1].at(chroma_x, chroma_y);
             let red = picture.planes[2].at(chroma_x, chroma_y);
             let (r, g, b) = match matrix {
@@ -549,16 +772,29 @@ fn picture_grey(picture: &Picture, colour: Option<(u16, bool)>) -> Result<GrayIm
                         / (1.0 - red_weight - blue_weight);
                     (r, g, b)
                 }
+                Matrix::Brightness => unreachable!("brightness is read in grey"),
             };
-            gray.push(luma(level(r), level(g), level(b)));
+            samples.extend([level(r), level(g), level(b)]);
         }
     }
-    GrayImage::from_raw(width as u32, height as u32, gray)
-        .ok_or_else(|| "the picture holds fewer samples than its size".to_owned())
+    RgbImage::from_raw(width as u32, height as u32, samples)
+        .map(Bitmap::Rgb)
+        .ok_or_else(short)
 }
 
 /// An image after a transformative property.
-fn transformed(image: GrayImage, transform: Transform) -> Result<GrayImage, String> {
+fn transformed(image: Bitmap, transform: Transform) -> Result<Bitmap, String> {
+    Ok(match image {
+        Bitmap::Gray(gray) => Bitmap::Gray(transformed_buffer(gray, transform)?),
+        Bitmap::Rgb(rgb) => Bitmap::Rgb(transformed_buffer(rgb, transform)?),
+        Bitmap::Rgba(rgba) => Bitmap::Rgba(transformed_buffer(rgba, transform)?),
+    })
+}
+
+fn transformed_buffer<P: Pixel + 'static>(
+    image: ImageBuffer<P, Vec<P::Subpixel>>,
+    transform: Transform,
+) -> Result<ImageBuffer<P, Vec<P::Subpixel>>, String> {
     Ok(match transform {
         Transform::Rotate(0) => image,
         Transform::Rotate(1) => image::imageops::rotate270(&image),
@@ -581,13 +817,13 @@ fn transformed(image: GrayImage, transform: Transform) -> Result<GrayImage, Stri
 
 /// The clean aperture of an image, as libheif rounds its edges: the centre's offset added to
 /// the image's centre, half the aperture each side, the left and top rounded down.
-fn crop(
-    image: GrayImage,
+fn crop<P: Pixel + 'static>(
+    image: ImageBuffer<P, Vec<P::Subpixel>>,
     width: (u32, u32),
     height: (u32, u32),
     horizontal: (i32, u32),
     vertical: (i32, u32),
-) -> Result<GrayImage, String> {
+) -> Result<ImageBuffer<P, Vec<P::Subpixel>>, String> {
     let fraction = |(numerator, denominator): (f64, u32)| -> Result<f64, String> {
         match denominator {
             0 => Err("a clean aperture with a zero denominator".to_owned()),
@@ -631,14 +867,17 @@ fn crop(
 mod tests {
     use super::*;
 
-    /// The images Tika's path decodes with libheif, `heif-dec` in the development shell.
-    fn libheif(input: &[u8]) -> GrayImage {
-        super::super::heif::decode(input, None).unwrap()
+    fn decoded(input: &[u8]) -> Result<Bitmap, String> {
+        match decode(input)? {
+            Avif::Decoded(bitmap) => Ok(bitmap),
+            Avif::OfOtherCodecs => Err("of other codecs".to_owned()),
+        }
     }
 
     /// The test cards of `tests/fixtures/avif`, coded with each layout, range, depth, matrix and
     /// transformative property the decoder reads, and the corpus's scan decode as libheif
-    /// decodes them for Tika's path, but for the rounding of a colour's grey.
+    /// decodes them for Tika's path, `heif-dec` in the development shell, but for the rounding
+    /// of a colour's grey; colour cards in colour.
     #[test]
     fn decodes_as_libheif_does() {
         let fixtures = std::fs::read_dir("tests/fixtures/avif")
@@ -653,8 +892,9 @@ mod tests {
         paths.push("../quality/corpus/prose-scan.avif".into());
         for path in paths {
             let input = std::fs::read(&path).unwrap();
-            let ours = decode(&input).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            let theirs = libheif(&input);
+            let ours = decoded(&input).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let theirs = super::super::heif::decode(&input, None).unwrap();
+            let (ours, theirs) = (ours.gray(), theirs.gray());
             assert_eq!(ours.dimensions(), theirs.dimensions(), "{}", path.display());
             let largest = ours
                 .pixels()
@@ -664,5 +904,89 @@ mod tests {
                 .unwrap_or_default();
             assert!(largest <= 1, "{}: {largest} levels off", path.display());
         }
+        let card = decoded(&std::fs::read("tests/fixtures/avif/limited-709-420.avif").unwrap());
+        assert!(matches!(card, Ok(Bitmap::Rgb(_))));
+    }
+
+    /// Weights derived from the primaries match those the standards name: BT.709's and
+    /// BT.2020's.
+    #[test]
+    fn derives_luma_weights_from_primaries() {
+        for (primaries, (red, blue)) in [(1, (0.2126, 0.0722)), (9, (0.2627, 0.0593))] {
+            let (derived_red, derived_blue) = chromaticity_weights(primaries).unwrap();
+            assert!(
+                (derived_red - red).abs() < 0.0005,
+                "{primaries}: {derived_red}"
+            );
+            assert!(
+                (derived_blue - blue).abs() < 0.0005,
+                "{primaries}: {derived_blue}"
+            );
+        }
+        assert_eq!(
+            Matrix::of(12, 2).unwrap(),
+            Matrix::Weighted {
+                red: 0.299,
+                blue: 0.114
+            }
+        );
+        assert_eq!(Matrix::of(14, 9).unwrap(), Matrix::Brightness);
+        assert!(Matrix::of(16, 1).is_err());
+    }
+
+    /// An item of construction method 2 is the extents of the items its `iloc` references name.
+    #[test]
+    fn constructs_items_from_items() {
+        let input = b"..abcdef..ghij";
+        let extent = |index, offset, length| Extent {
+            index,
+            offset,
+            length,
+        };
+        let items = Items {
+            locations: BTreeMap::from([
+                (
+                    1,
+                    Location {
+                        construction: Construction::File,
+                        extents: vec![extent(1, 2, 6)],
+                    },
+                ),
+                (
+                    2,
+                    Location {
+                        construction: Construction::File,
+                        extents: vec![extent(1, 10, 0)],
+                    },
+                ),
+                (
+                    3,
+                    Location {
+                        construction: Construction::Items,
+                        extents: vec![extent(2, 1, 2), extent(1, 4, 0)],
+                    },
+                ),
+                (
+                    4,
+                    Location {
+                        construction: Construction::Items,
+                        extents: vec![extent(1, 0, 0)],
+                    },
+                ),
+            ]),
+            constructed_from: BTreeMap::from([(3, vec![1, 2]), (4, vec![4])]),
+            ..Items::default()
+        };
+        assert_eq!(item_data(input, &items, 3).unwrap(), b"hief");
+        assert!(item_data(input, &items, 4)
+            .unwrap_err()
+            .contains("from itself"));
+    }
+
+    /// A file whose primary image is coded with HEVC is left to libheif.
+    #[test]
+    fn leaves_other_codecs_to_libheif() {
+        let heic = std::fs::read("../quality/corpus/prose-scan.heic").unwrap();
+        assert!(matches!(decode(&heic), Ok(Avif::OfOtherCodecs)));
     }
 }
