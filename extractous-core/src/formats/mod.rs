@@ -463,12 +463,8 @@ fn run<'h>(
         Xhtml::write(&mut secure, metadata, context, taken.prepared);
     record.finish(&mut metadata, parser.name());
     #[cfg(not(feature = "tika"))]
-    if let Some(Difference(difference)) = taken.difference {
-        let warning = format!(
-            "{} read the document differently from Tika: {difference}",
-            parser.name()
-        );
-        embedded::record_exception(&mut metadata, &warning);
+    if let Some(difference) = taken.difference {
+        embedded::record_exception(&mut metadata, &difference.warning(parser.name()));
     }
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
     if result.is_ok() {

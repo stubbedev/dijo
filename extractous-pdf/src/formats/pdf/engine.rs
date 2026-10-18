@@ -17,6 +17,7 @@ use super::matrix::Matrix;
 use super::position::{GlyphText, TextPosition};
 use super::structure::Label;
 use super::Unported;
+use crate::formats::Difference;
 
 /// How deep forms may draw forms before PDFBox skips them.
 const MAX_FORM_LEVEL: i32 = 50;
@@ -134,7 +135,7 @@ impl<'p> Engine<'p> {
     }
 
     /// `PDFTextStripper.processPage` up to `writePage`: the page's glyphs by article.
-    pub(super) fn process_page(&mut self, page: Page<'p>) -> Result<PageContent, Unported> {
+    pub(super) fn process_page(&mut self, page: Page<'p>) -> PageContent {
         let pdf = self.pdf;
         let crop = page.crop_box(pdf);
         let translate = (!jfloat::same(crop[0], 0.0) || !jfloat::same(crop[1], 0.0))
@@ -164,11 +165,15 @@ impl<'p> Engine<'p> {
             beads,
         };
         if page.has_contents(pdf) {
-            let data = page.contents(pdf)?;
             let resources = page.resources(pdf);
-            run.process_stream(&data, resources, Matrix::default(), true)?;
+            let processed = page
+                .contents(pdf)
+                .and_then(|data| run.process_stream(&data, resources, Matrix::default(), true));
+            if let Err(unported) = processed {
+                differ_past(pdf, "a page's content", unported);
+            }
         }
-        Ok(run.content)
+        run.content
     }
 
     /// The font a resource names, created once per font dictionary as PDFBox's resource cache
@@ -239,6 +244,12 @@ fn number(object: &Object) -> Option<f32> {
     float_value(object)
 }
 
+/// Notes that `pdf` is read otherwise than Tika's path, where the port leaves out `what` of a
+/// page for the reason `unported`, on which PDFBox throws or which the port does not read.
+pub(super) fn differ_past(pdf: &Pdf, what: &str, Unported(reason): Unported) {
+    pdf.differ(Difference(format!("the port leaves out {what}: {reason}")));
+}
+
 impl<'p> Run<'p, '_> {
     fn state(&mut self) -> &mut GraphicsState {
         self.stack
@@ -274,20 +285,32 @@ impl<'p> Run<'p, '_> {
         result
     }
 
+    /// The operators of a content stream. Where PDFBox throws on one, or the port does not
+    /// read it, the port goes on past it, and where it throws on the stream itself, the port
+    /// stops there, noting that it reads the page otherwise than Tika's path.
     fn process_operators(&mut self, data: &[u8]) -> Result<(), Unported> {
         let mut lexer = Lexer::new(data);
         let mut operands: Vec<Object> = Vec::new();
-        while let Some(token) = lexer.next_token()? {
+        loop {
+            let token = match lexer.next_token() {
+                Ok(Some(token)) => token,
+                Ok(None) => return Ok(()),
+                Err(unported) => {
+                    differ_past(self.pdf, "the rest of a content stream", unported);
+                    return Ok(());
+                }
+            };
             match token {
                 Token::Operand(operand) => operands.push(operand),
                 Token::Operator(operator) => {
-                    self.operator(&operator, &operands)?;
+                    if let Err(unported) = self.operator(&operator, &operands) {
+                        differ_past(self.pdf, &format!("the operator {operator}"), unported);
+                    }
                     operands.clear();
                 }
                 Token::InlineImage(_) => operands.clear(),
             }
         }
-        Ok(())
     }
 
     /// `processOperator`: an operator text extraction handles, with what PDFBox does on its

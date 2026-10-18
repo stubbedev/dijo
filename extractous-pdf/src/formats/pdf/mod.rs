@@ -52,7 +52,10 @@ use crate::config::{MarkedContentStrategy, ParserConfigs, Password};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{crypt, Decline, Failure, Footprint, Parser, Prepared, PASSWORD_USED};
+use crate::formats::{
+    crypt, unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared,
+    PASSWORD_USED,
+};
 use crate::input::{Pages, Paging};
 
 use cos::Pdf;
@@ -156,30 +159,40 @@ fn prepare<'a>(
     configs: &'a ParserConfigs,
     limit: usize,
 ) -> Result<Prepared<'a>, Decline<'a>> {
-    match record(input, pages, metadata, configs, limit)? {
+    let (recorded, difference) = record(input, pages, metadata, configs, limit)?;
+    let reading: Prepared<'a> = match recorded {
         Recorded::Whole {
             mut recording,
             page_ocr,
             ocr_pages,
-        } => Ok(Box::new(move |xhtml| {
+        } => Box::new(move |xhtml| {
             let written = match page_ocr {
                 None => recording.flush(xhtml, None),
                 Some(page_ocr) => write_read(&page_ocr, &mut recording, xhtml, configs),
             };
             ended(xhtml, written, ocr_pages)
-        })),
+        }),
         Recorded::Large(loaded, settings) => {
             let metadata = metadata.clone();
-            Ok(Box::new(move |xhtml| {
+            let known = difference.is_some();
+            Box::new(move |xhtml| {
                 let ocr_pages = match settings.ocr.dispatches_every_page() {
                     true => loaded.pdf.pages().map_err(late)?.len(),
                     false => 0,
                 };
-                let written = stream(&loaded, input, settings, metadata, configs, xhtml);
+                let streamed = Streamed {
+                    loaded: &loaded,
+                    input,
+                    settings,
+                    configs,
+                    known,
+                };
+                let written = streamed.write(metadata, xhtml);
                 ended(xhtml, written, ocr_pages)
-            }))
+            })
         }
-    }
+    };
+    unless_different(reading, difference)
 }
 
 /// The document `written` to `xhtml`, with the count of pages Tika's `PDFParser` handed its OCR
@@ -269,19 +282,19 @@ fn new_recording(metadata: TikaMetadata, configs: &ParserConfigs) -> Recording {
 }
 
 /// The document's extraction, recorded from `metadata`, and the OCR of the pages our
-/// `TextLayerCheckingPdfParser` reads, unless the document is left to Tika: for a setting the
-/// port does not read, something in the document it does not do, or a page Tika would OCR whose
-/// OCR the port does not run. The document is read once, into the recording, which holds no
-/// more of it than its output and the files it embeds. A recording that grows past `limit`
-/// bytes while no page is read by OCR ends there, what it saw decided as a whole
-/// recording's is, and the document is streamed.
+/// `TextLayerCheckingPdfParser` reads, with the first detail it reads otherwise than Tika's
+/// path, unless the document is left to Tika: for a setting the port does not read, something
+/// in the document it does not do, or a page Tika would OCR whose OCR the port does not run.
+/// The document is read once, into the recording, which holds no more of it than its output
+/// and the files it embeds. A recording that grows past `limit` bytes while no page is read by
+/// OCR ends there, what it saw decided as a whole recording's is, and the document is streamed.
 fn record<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     metadata: &TikaMetadata,
     configs: &ParserConfigs,
     limit: usize,
-) -> Result<Recorded<'a>, Decline<'static>> {
+) -> Result<(Recorded<'a>, Option<Difference>), Decline<'static>> {
     let deferred = |Unported(reason)| Decline::Deferred(reason);
     let settings = Settings::of(configs).map_err(deferred)?;
     let loaded = load(input, pages, configs)?;
@@ -308,11 +321,9 @@ fn record<'a>(
     if let Err(failure @ Decline::Fails(_)) = recorded {
         return Err(failure);
     }
-    if let Some(reason) = unread_objects(&loaded).map_err(deferred)? {
-        return Err(Decline::Deferred(reason));
-    }
+    let difference = difference(&loaded.pdf);
     if recorded?.is_break() {
-        return Ok(Recorded::Large(Box::new(loaded), settings));
+        return Ok((Recorded::Large(Box::new(loaded), settings), difference));
     }
     let page_count = loaded.pdf.pages().map_err(deferred)?.len();
     let page_ocr = PageOcr::of(
@@ -323,31 +334,38 @@ fn record<'a>(
         configs,
     )
     .map_err(deferred)?;
-    Ok(Recorded::Whole {
+    let whole = Recorded::Whole {
         recording: Box::new(recording),
         page_ocr,
         ocr_pages: match settings.ocr.dispatches_every_page() {
             true => page_count,
             false => 0,
         },
-    })
+    };
+    Ok((whole, difference))
 }
 
-/// An object the extraction needed that the port could not read, or that the cross-reference
-/// table does not list and PDFBox finds, if any.
-fn unread_objects(loaded: &Loaded) -> Result<Option<String>, Unported> {
-    if let Some(((number, generation), Unported(reason))) = loaded.pdf.unread_object_needed() {
-        return Ok(Some(format!(
-            "object {number} {generation}, which the port cannot read: {reason}"
+/// The first detail in which the extraction of `pdf` so far read it otherwise than Tika's path:
+/// one it noted, else an object it needed and could not read, or that the cross-reference table
+/// does not list and PDFBox finds, which it took for `null`.
+fn difference(pdf: &Pdf) -> Option<Difference> {
+    if let Some(difference) = pdf.difference() {
+        return Some(difference);
+    }
+    if let Some(((number, generation), Unported(reason))) = pdf.unread_object_needed() {
+        return Some(Difference(format!(
+            "object {number} {generation}, which the port cannot read and takes for null: \
+             {reason}"
         )));
     }
-    let unlisted = loaded.pdf.unlisted_objects_needed();
-    Ok(loaded.pdf.first_found(&unlisted)?.map(|(number, _)| {
-        format!(
+    match pdf.first_found(&pdf.unlisted_objects_needed()) {
+        Ok(None) => None,
+        Ok(Some((number, _))) => Some(Difference(format!(
             "object {number}, which the cross-reference table does not list and PDFBox finds \
-             by searching the document"
-        )
-    }))
+             by searching the document, taken for null"
+        ))),
+        Err(Unported(reason)) => Some(Difference(reason)),
+    }
 }
 
 /// Writes `recording` to `xhtml`, with the pages `page_ocr` reads read side by side, the script
@@ -369,44 +387,73 @@ fn write_read(
     written
 }
 
-/// Extracts a document too large to record into `xhtml` page by page, as it is read from its
-/// start once more. What would leave the document to Tika is decided for its first pages,
-/// which the recording held; met on a later page, it fails the extraction, the pages before it
-/// written.
-fn stream(
-    loaded: &Loaded,
-    input: &[u8],
+/// A document too large to record, extracted page by page as it is read from its start once
+/// more. What would leave the document to Tika is decided for its first pages, which the
+/// recording held; met on a later page, it fails the extraction, the pages before it written.
+struct Streamed<'s, 'a> {
+    loaded: &'s Loaded<'a>,
+    input: &'a [u8],
     settings: Settings,
-    metadata: TikaMetadata,
-    configs: &ParserConfigs,
-    xhtml: &mut Xhtml,
-) -> Result<(), Failure> {
-    let page_count = loaded.pdf.pages().map_err(late)?.len();
-    let pages = StreamedPages {
-        input,
-        page_count,
-        check: settings.ocr,
-        configs,
-    };
-    let mut recording = new_recording(metadata, configs);
-    let mut flushed = Ok(());
-    let written = extract(loaded, input, settings, &mut recording, &mut |recording| {
-        flushed = pages.flush(recording, xhtml);
-        match flushed {
-            Ok(()) => ControlFlow::Continue(()),
-            Err(_) => ControlFlow::Break(()),
+    configs: &'a ParserConfigs,
+    /// Whether the recording of its first pages read it otherwise than Tika's path.
+    known: bool,
+}
+
+impl Streamed<'_, '_> {
+    /// Extracts the document from `metadata` into `xhtml`.
+    fn write(&self, metadata: TikaMetadata, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        let page_count = self.loaded.pdf.pages().map_err(late)?.len();
+        let pages = StreamedPages {
+            input: self.input,
+            page_count,
+            check: self.settings.ocr,
+            configs: self.configs,
+        };
+        let mut recording = new_recording(metadata, self.configs);
+        let mut flushed = Ok(());
+        let written = extract(
+            self.loaded,
+            self.input,
+            self.settings,
+            &mut recording,
+            &mut |recording| {
+                flushed = pages.flush(recording, xhtml);
+                match flushed {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(_) => ControlFlow::Break(()),
+                }
+            },
+        );
+        flushed?;
+        match written {
+            Ok(_) => {}
+            Err(WriteFailure::Stop(stop)) => return Err(Failure::Stopped(stop)),
+            Err(WriteFailure::Unported(unported)) => return Err(late(unported)),
         }
-    });
-    flushed?;
-    match written {
-        Ok(_) => {}
-        Err(WriteFailure::Stop(stop)) => return Err(Failure::Stopped(stop)),
-        Err(WriteFailure::Unported(unported)) => return Err(late(unported)),
+        if !self.known {
+            if let Some(difference) = difference(&self.loaded.pdf) {
+                late_difference(xhtml, difference)?;
+            }
+        }
+        pages.flush(&mut recording, xhtml)
     }
-    if let Some(reason) = unread_objects(loaded).map_err(late)? {
-        return Err(late(Unported(reason)));
-    }
-    pages.flush(&mut recording, xhtml)
+}
+
+/// A detail in which a streamed document is read otherwise than Tika's path, met after its
+/// first pages were written: a failure where Tika's path would have taken the document.
+#[cfg(feature = "tika")]
+fn late_difference(_: &mut Xhtml, Difference(reason): Difference) -> Result<(), Failure> {
+    Err(late(Unported(reason)))
+}
+
+/// A detail in which a streamed document is read otherwise than Tika's path, met after its
+/// first pages were written: recorded as the difference of a document read so from the start
+/// is, where there is no Tika.
+#[cfg(not(feature = "tika"))]
+fn late_difference(xhtml: &mut Xhtml, difference: Difference) -> Result<(), Failure> {
+    let warning = difference.warning(PdfParser.name());
+    crate::formats::embedded::record_exception(xhtml.metadata_mut(), &warning);
+    Ok(())
 }
 
 /// The failure of a streamed document on what leaves a document to Tika.
@@ -810,6 +857,58 @@ mod tests {
             .unwrap()
     }
 
+    /// Where the native parser reads a document otherwise than Tika's path, and the XHTML of
+    /// its reading, which a build without Tika takes.
+    pub(super) fn differing_reading(input: &[u8], configs: &ParserConfigs) -> (Difference, String) {
+        let (reading, difference) = match PdfParser.prepare(input, &TikaMetadata::new(), configs) {
+            Err(Decline::Differs {
+                reading,
+                difference,
+            }) => (reading, difference),
+            Ok(_) => panic!("the document is read as Tika's path reads it"),
+            Err(declined) => panic!("the document is declined: {declined:?}"),
+        };
+        let mut out = crate::formats::StringOut::default();
+        let chain = crate::formats::Chain::Stream {
+            output: crate::formats::Output::Xml,
+            encoding: "UTF-8",
+        };
+        let (_, _, written) = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &crate::formats::embedded::ParseContext::new(configs),
+                reading,
+            )
+        });
+        if let Err(failure) = written {
+            panic!("the reading fails: {failure:?}");
+        }
+        (difference, out.0)
+    }
+
+    #[test]
+    fn reads_past_an_operator_pdfbox_throws_on_noting_the_difference() {
+        let content = "BT /F1 12 Tf 72 720 Td (Before the state) Tj /GS1 gs \
+                       0 -14 Td (After the state) Tj ET";
+        let mut objects = page_objects(content);
+        objects[2] = objects[2].replace(
+            "/Resources << /Font << /F1 5 0 R >> >>",
+            "/Resources << /Font << /F1 5 0 R >> /ExtGState << /GS1 << /Font [5 0 R 6 0 R] >> >> >>",
+        );
+        objects.push("12".to_owned());
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert_eq!(
+            difference,
+            "the port leaves out the operator gs: a graphics state font without a direct size, \
+             which PDFBox fails on"
+        );
+        assert!(xhtml.contains("Before the state"), "{xhtml}");
+        assert!(xhtml.contains("After the state"), "{xhtml}");
+    }
+
     const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
@@ -879,10 +978,13 @@ mod tests {
             assert!(
                 matches!(
                     recorded,
-                    Ok(Recorded::Whole {
-                        page_ocr: Some(_),
-                        ..
-                    })
+                    Ok((
+                        Recorded::Whole {
+                            page_ocr: Some(_),
+                            ..
+                        },
+                        _
+                    ))
                 ),
                 "the scan is not read by OCR with {language}"
             );
@@ -931,7 +1033,7 @@ mod tests {
             let routed = crate::formats::parity::route_file(path).unwrap();
             let input = &routed.input;
             let recorded = record(input, input.pages(), &TikaMetadata::new(), &configs, 0);
-            streamed += usize::from(matches!(recorded, Ok(Recorded::Large(..))));
+            streamed += usize::from(matches!(recorded, Ok((Recorded::Large(..), _))));
             for output in [crate::formats::Output::Text, crate::formats::Output::Xml] {
                 for limit in [200, usize::MAX >> 1] {
                     let extract = |parser: &dyn Parser| {
@@ -1646,20 +1748,23 @@ mod tests {
     }
 
     #[test]
-    fn defers_a_needed_object_the_port_cannot_read() {
+    fn takes_a_needed_object_the_port_cannot_read_for_null_noting_the_difference() {
         let mut objects = page_objects(TEXT);
         objects[3] = format!("<< /Length 5 /X 4294967296 0 R >>\nstream\n{TEXT}\nendstream");
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
+        let configs = ParserConfigs {
+            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+            ..ParserConfigs::default()
+        };
+        let (Difference(difference), xhtml) = differing_reading(&input, &configs);
         assert_eq!(
-            PdfParser
-                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(
-                "object 4 0, which the port cannot read: a reference to object 4294967296 0, \
-                 which lopdf cannot hold"
-            )
+            difference,
+            "object 4 0, which the port cannot read and takes for null: a reference to object \
+             4294967296 0, which lopdf cannot hold"
         );
+        assert!(xhtml.contains("<div class=\"page\">"), "{xhtml}");
+        assert!(!xhtml.contains("konge"), "{xhtml}");
     }
 
     #[cfg(feature = "tika")]
@@ -1690,21 +1795,18 @@ mod tests {
     }
 
     #[test]
-    fn defers_a_needed_object_the_table_does_not_list_but_pdfbox_finds() {
+    fn takes_a_needed_object_the_table_does_not_list_but_pdfbox_finds_for_null() {
         let objects = page_objects(TEXT);
         let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
         let input = document(&objects, b"", &[]);
         let font = find(&input, b"5 0 obj");
         let entry = format!("{font:010} 00000 n \n");
         let input = replace(&input, entry.as_bytes(), b"0000000000 65535 f \n");
+        let (Difference(difference), _) = differing_reading(&input, &ParserConfigs::default());
         assert_eq!(
-            PdfParser
-                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(
-                "object 5, which the cross-reference table does not list and PDFBox finds by \
-                 searching the document"
-            )
+            difference,
+            "object 5, which the cross-reference table does not list and PDFBox finds by \
+             searching the document, taken for null"
         );
     }
 

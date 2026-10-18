@@ -12,6 +12,7 @@ use lopdf::{Dictionary, Object, Stream};
 use super::super::content::{InlineImage, Lexer, Token};
 use super::super::cos::{as_dict, int_value, Identity, Pdf};
 use super::super::document::Page;
+use super::super::engine::differ_past;
 use super::super::font::Font;
 use super::super::writer::WriteFailure;
 use super::super::Unported;
@@ -118,8 +119,11 @@ pub(super) fn run<'p>(
         found,
     };
     if page.has_contents(pdf) {
-        let data = page.contents(pdf)?;
-        engine.process_stream(&data, page.resources(pdf), Content::Stream)?;
+        let processed = match page.contents(pdf) {
+            Ok(data) => engine.process_stream(&data, page.resources(pdf), Content::Stream),
+            Err(unported) => Err(unported.into()),
+        };
+        gone_past(pdf, "a page's content", processed)?;
     }
     let Some(resources) = page.resources(pdf) else {
         return Ok(());
@@ -141,9 +145,25 @@ pub(super) fn run<'p>(
         engine.stack.push(State::new());
         let processed = engine.process_group(group);
         engine.stack.pop();
-        processed?;
+        gone_past(pdf, "a soft mask's transparency group", processed)?;
     }
     Ok(())
+}
+
+/// What `processed` of a page left: where the port did not read `what`, it goes on past it
+/// ([`differ_past`]).
+fn gone_past(
+    pdf: &Pdf,
+    what: &str,
+    processed: Result<(), WriteFailure>,
+) -> Result<(), WriteFailure> {
+    match processed {
+        Err(WriteFailure::Unported(unported)) => {
+            differ_past(pdf, what, unported);
+            Ok(())
+        }
+        processed => processed,
+    }
 }
 
 /// The stream of a form whose group is a transparency group, as `PDXObject.createXObject`
@@ -182,14 +202,14 @@ impl<'p> Engine<'p, '_> {
         content: Content,
         state: Option<State<'p>>,
     ) -> Result<(), WriteFailure> {
-        self.nesting += 1;
-        if self.nesting > MAX_NESTING {
+        if self.nesting == MAX_NESTING {
             return Err(Unported(format!(
                 "content streams painting with content streams deeper than {MAX_NESTING}, \
                  which PDFBox follows until its stack overflows"
             ))
             .into());
         }
+        self.nesting += 1;
         let parent = self.resources;
         self.resources = resources
             .or(parent)
@@ -222,23 +242,37 @@ impl<'p> Engine<'p, '_> {
         self.process_stream(&data, resources, Content::Stream)
     }
 
+    /// The operators of a content stream, gone on past as the text engine goes on past them
+    /// ([`differ_past`]).
     fn process_operators(&mut self, data: &[u8]) -> Result<(), WriteFailure> {
         let mut lexer = Lexer::new(data);
         let mut operands: Vec<Object> = Vec::new();
-        while let Some(token) = lexer.next_token()? {
-            match token {
-                Token::Operand(operand) => operands.push(operand),
+        loop {
+            let token = match lexer.next_token() {
+                Ok(Some(token)) => token,
+                Ok(None) => return Ok(()),
+                Err(unported) => {
+                    differ_past(self.pdf, "the rest of a content stream", unported);
+                    return Ok(());
+                }
+            };
+            let (what, processed) = match token {
+                Token::Operand(operand) => {
+                    operands.push(operand);
+                    continue;
+                }
                 Token::Operator(operator) => {
-                    self.operator(&operator, &operands)?;
-                    operands.clear();
+                    let processed = self.operator(&operator, &operands);
+                    (format!("the operator {operator}"), processed)
                 }
                 Token::InlineImage(image) => {
-                    self.inline_image(*image)?;
-                    operands.clear();
+                    let processed = self.inline_image(*image);
+                    ("an inline image".to_owned(), processed)
                 }
-            }
+            };
+            operands.clear();
+            gone_past(self.pdf, &what, processed)?;
         }
-        Ok(())
     }
 
     fn operator(&mut self, name: &str, operands: &[Object]) -> Result<(), WriteFailure> {

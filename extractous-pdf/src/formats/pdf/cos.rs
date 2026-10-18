@@ -14,6 +14,7 @@ use lopdf::{Dictionary, Document, EncryptionState, Object, ObjectId, Stream};
 use super::content::Lexer;
 use super::xref::{self, java_trim, Placement, Read, Resolution, Source, Thrown};
 use super::Unported;
+use crate::formats::Difference;
 use crate::input::Paging;
 use crate::text::charset::Charset;
 
@@ -75,6 +76,8 @@ pub(super) struct Pdf<'d> {
     unread: RefCell<Option<(ObjectId, Unported)>>,
     /// The objects the extraction asked for that the table does not list.
     unlisted_needed: RefCell<BTreeSet<ObjectId>>,
+    /// The first detail in which the extraction read the document otherwise than Tika's path.
+    difference: RefCell<Option<Difference>>,
     /// Whether the document's bytes spell `Filespec`, as a file specification outside an
     /// object stream must.
     pub(super) spells_filespec: bool,
@@ -124,6 +127,7 @@ impl<'d> Pdf<'d> {
             loading: RefCell::new(HashSet::new()),
             unread: RefCell::new(None),
             unlisted_needed: RefCell::new(BTreeSet::new()),
+            difference: RefCell::new(None),
             spells_filespec,
         };
         pdf.release_pages();
@@ -190,6 +194,17 @@ impl<'d> Pdf<'d> {
     /// PDFBox makes of it is not known.
     pub(super) fn unread_object_needed(&self) -> Option<(ObjectId, Unported)> {
         self.unread.borrow().clone()
+    }
+
+    /// Notes that the extraction reads the document otherwise than Tika's path, in
+    /// `difference`, the first one noted kept.
+    pub(super) fn differ(&self, difference: Difference) {
+        self.difference.borrow_mut().get_or_insert(difference);
+    }
+
+    /// The first detail in which the extraction read the document otherwise than Tika's path.
+    pub(super) fn difference(&self) -> Option<Difference> {
+        self.difference.borrow().clone()
     }
 
     /// The objects the extraction asked for that the table does not list, which PDFBox

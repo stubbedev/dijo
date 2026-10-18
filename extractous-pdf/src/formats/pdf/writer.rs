@@ -282,7 +282,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             return self.close_page(page, 0, 0);
         }
         self.start_page()?;
-        let mut content = self.engine.process_page(page)?;
+        let mut content = self.engine.process_page(page);
         if self.page.tagged.is_none() && self.settings.reading_order {
             for article in content.articles.iter_mut() {
                 reading_order::arrange(article);
