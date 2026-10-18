@@ -34,6 +34,7 @@ pub(crate) use extractous_odf::formats::epub;
 pub(crate) use extractous_odf::formats::odf;
 pub(crate) use extractous_office::formats::access;
 pub(crate) use extractous_office::formats::compound;
+pub(crate) use extractous_office::formats::dgn;
 pub(crate) use extractous_office::formats::doc;
 pub(crate) use extractous_office::formats::msg;
 pub(crate) use extractous_office::formats::ppt;
@@ -68,6 +69,7 @@ pub(crate) use extractous_small::formats::idml;
 pub(crate) use extractous_small::formats::iwork;
 pub(crate) use extractous_small::formats::iwork_package;
 pub(crate) use extractous_small::formats::markdown;
+pub(crate) use extractous_small::formats::mat;
 pub(crate) use extractous_small::formats::mif;
 pub(crate) use extractous_small::formats::mobi;
 pub(crate) use extractous_small::formats::ms_owner;
@@ -76,6 +78,7 @@ pub(crate) use extractous_small::formats::onenote;
 pub(crate) use extractous_small::formats::open_pgp;
 pub(crate) use extractous_small::formats::plist;
 pub(crate) use extractous_small::formats::prt;
+pub(crate) use extractous_small::formats::sas;
 pub(crate) use extractous_small::formats::source_code;
 pub(crate) use extractous_small::formats::subtitle;
 pub(crate) use extractous_small::formats::translation;
@@ -119,6 +122,7 @@ static PARSERS: &[&dyn Parser] = &[
     &cms::CmsParser,
     &compound::CompoundDocumentParser,
     &dc_xml::DcXmlParser,
+    &dgn::Dgn8Parser,
     &doc::DocParser,
     &docx::DocxParser,
     &dwg::DwgParser,
@@ -146,6 +150,7 @@ static PARSERS: &[&dyn Parser] = &[
     &metafile::WmfParser,
     &mail::MboxParser,
     &markdown::MarkdownParser,
+    &mat::MatParser,
     &media::FlacParser,
     &media::OpusParser,
     &media::VorbisParser,
@@ -183,6 +188,7 @@ static PARSERS: &[&dyn Parser] = &[
     &publisher::PublisherParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
+    &sas::Sas7bdatParser,
     &source_code::SourceCodeParser,
     #[cfg(not(feature = "static-image"))]
     &sqlite::Sqlite3Parser,
@@ -195,6 +201,7 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,
+    &wordperfect::OldQuattroProParser,
     &wordperfect::QuattroProParser,
     &wordperfect::WordPerfectParser,
     &xls::OldExcelParser,
@@ -1740,29 +1747,29 @@ mod tests {
     #[cfg(not(feature = "tika"))]
     #[test]
     fn fails_documents_no_native_parser_reads_with_why() {
-        let matlab = [b"MATLAB 5.0 MAT-file".as_slice(), &[b' '; 109]].concat();
-        let no_parser = Unsupported::Format("application/x-matlab-data".to_owned());
+        let hwp = crate::ole2::tests::compound(&["\u{5}HwpSummaryInformation"], b"");
+        let no_parser = Unsupported::Format("application/x-hwp-v5".to_owned());
         let extractor = crate::Extractor::new();
-        let failed = extractor.extract_bytes_to_string(&matlab).unwrap_err();
+        let failed = extractor.extract_bytes_to_string(&hwp).unwrap_err();
         assert!(
             matches!(&failed, Error::Unsupported(why) if *why == no_parser),
             "{failed:?}"
         );
-        let streamed = extractor.extract_bytes(&matlab).map(|_| ()).unwrap_err();
+        let streamed = extractor.extract_bytes(&hwp).map(|_| ()).unwrap_err();
         assert!(
             matches!(&streamed, Error::Unsupported(why) if *why == no_parser),
             "{streamed:?}"
         );
         let archive = crate::compress::zip::file::tests::zip(&[
             ("notes.txt", b"Plain text."),
-            ("data.mat", &matlab),
+            ("data.hwp", &hwp),
         ]);
         let (text, metadata) = extractor.extract_bytes_to_string(&archive).unwrap();
         assert!(text.contains("Plain text."), "{text}");
         assert_eq!(
             metadata["tk:exception:embedded-exception"],
             [format!(
-                "extractous could not parse the embedded document \"data.mat\": {no_parser}"
+                "extractous could not parse the embedded document \"data.hwp\": {no_parser}"
             )]
         );
     }

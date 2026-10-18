@@ -8,6 +8,15 @@ pub fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
     read_whole(flate2::bufread::ZlibDecoder::new(data))
 }
 
+/// The content of the zlib stream `data` starts with, as [`decode`] gives it, and how many bytes
+/// of `data` the stream takes.
+pub fn decode_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), Undecoded> {
+    let mut decoder = flate2::bufread::ZlibDecoder::new(data);
+    let content = read_whole(&mut decoder)?;
+    let taken = usize::try_from(decoder.total_in()).expect("a stream takes at most its input");
+    Ok((content, taken))
+}
+
 #[cfg(any(test, feature = "testing"))]
 pub mod tests {
     use std::io::Write;
@@ -31,5 +40,9 @@ pub mod tests {
         let checksum = corrupt.len() - 6;
         corrupt[checksum] ^= 1;
         assert!(decode(&corrupt).is_err());
+        assert_eq!(
+            decode_prefix(&data).unwrap(),
+            (b"Test d'indexation de Txt".to_vec(), data.len() - 5)
+        );
     }
 }

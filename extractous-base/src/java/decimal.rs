@@ -157,7 +157,7 @@ impl BigDecimal {
 
     /// `new BigDecimal(double)`: the double's exact value, or `None` for an infinity or NaN,
     /// where it throws.
-    pub(crate) fn from_f64(value: f64) -> Option<Self> {
+    pub fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
         }
@@ -258,6 +258,20 @@ impl BigDecimal {
             increment(&mut kept);
         }
         Self::new(self.negative, kept, self.scale - count as i64)
+    }
+
+    /// `setScale(scale, mode)`: the value at `scale`, rounded by `mode` where that drops digits.
+    pub fn set_scale(&self, scale: i64, mode: Rounding) -> Self {
+        if scale >= self.scale {
+            let mut digits = self.digits.clone();
+            if !digits.is_empty() {
+                let zeros = usize::try_from(scale - self.scale).expect("a scale difference fits");
+                digits.extend(std::iter::repeat_n(0, zeros));
+            }
+            return Self::new(self.negative, digits, scale);
+        }
+        let dropped = usize::try_from(self.scale - scale).expect("a scale difference fits");
+        self.drop_digits(dropped, mode)
     }
 
     /// `round(new MathContext(precision, mode))`.
@@ -418,6 +432,18 @@ mod tests {
         assert_eq!(BigDecimal::parse("-2.75").unwrap().integer_string(), "-2");
         assert_eq!(BigDecimal::parse("1E3").unwrap().integer_string(), "1000");
         assert!(BigDecimal::parse("1.2.3").is_none());
+        let value = BigDecimal::parse("-2.675").unwrap();
+        assert_eq!(text(&value.set_scale(2, Rounding::HalfUp)), "-268e-2");
+        assert_eq!(text(&value.set_scale(5, Rounding::HalfUp)), "-267500e-5");
+        assert_eq!(text(&value.set_scale(0, Rounding::HalfUp)), "-3e0");
+        assert_eq!(
+            text(
+                &BigDecimal::parse("96")
+                    .unwrap()
+                    .set_scale(-2, Rounding::HalfUp)
+            ),
+            "1e2"
+        );
         assert!(BigDecimal::value_of(f64::NAN).is_none());
         assert_eq!(text(&BigDecimal::value_of(0.1).unwrap()), "1e-1");
         assert_eq!(

@@ -7,7 +7,7 @@
 mod charsets;
 mod quattro;
 
-pub use quattro::QuattroProParser;
+pub use quattro::{OldQuattroProParser, QuattroProParser};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;

@@ -235,7 +235,7 @@ mod tests {
             formats::parser_for("text/x-matlab").unwrap().name(),
             formats::parser_for("text/plain").unwrap().name()
         );
-        assert!(formats::parser_for("application/x-matlab-data").is_err());
+        assert!(formats::parser_for("application/x-hwp-v5").is_err());
         assert!(TIKA_PARSERS.is_sorted());
     }
 }

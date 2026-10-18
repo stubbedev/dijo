@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_same_as_tika, conformance_corpus, differing_reading, documents, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, differing_reading, documents,
+    Scratch,
 };
 #[cfg(feature = "tika")]
 use crate::formats::Difference;
@@ -102,26 +103,62 @@ fn extracts_markdown_as_tikas_path_does() {
             .map(|character| u8::try_from(character).unwrap())
             .collect::<Vec<u8>>(),
     );
-    let data = scratch.write("data.md", b"![x](data:text/plain;base64,SGVq)\n");
+    let data = scratch.write("data.md", DATA_URIS.as_bytes());
+    let windows = scratch.write(
+        "windows.md",
+        b"[x](data:text/plain;charset=windows-1252,K\xf8benhavn)\n",
+    );
     let lenient = scratch.write("lenient.md", b"a | b\n- | - | -\n1 | 2 | 3\n");
     let deep = scratch.write("deep.md", "> ".repeat(70).as_bytes());
+    let failing = scratch.write("failing.md", b"[tekst](data:,hej)\n");
     let (parsed, deferred) = documents(&MarkdownParser, &[scratch.directory()]);
-    assert_eq!(deferred, [data.clone(), deep.clone(), lenient.clone()]);
+    assert_eq!(deferred, [deep.clone(), lenient.clone(), windows.clone()]);
     for (path, difference) in [
-        (&data, "a data URI"),
         (&deep, "blocks nested as deep"),
         (&lenient, "the delimiter row on line 2"),
+        (&windows, "a data URI of text in windows-1252"),
     ] {
         let (Difference(reason), _) = differing_reading(&MarkdownParser, path);
         assert!(reason.starts_with(difference), "{path:?}: {reason}");
     }
     let (_, text) = differing_reading(&MarkdownParser, &lenient);
     assert!(text.contains("1 | 2 | 3"), "{text}");
-    assert_eq!(parsed, [latin.clone(), notes.clone()]);
+    assert_eq!(
+        parsed,
+        [data.clone(), failing.clone(), latin.clone(), notes.clone()]
+    );
     assert_same_as_tika(
-        &[notes.as_path(), latin.as_path()],
+        &[notes.as_path(), latin.as_path(), data.as_path()],
         MarkdownParser.tika_name(),
     );
+    assert_fails_as_tika(&[failing.as_path()]);
+}
+
+/// Data URIs where Tika's Markdown parser embeds their documents: a link's, an image's, one in
+/// inline HTML and two in an HTML block, of text and of an image, and one an image holds.
+#[cfg(feature = "tika")]
+const DATA_URIS: &str = r#"# Indlejrede dokumenter
+
+En [hilsen](data:text/plain;charset=UTF-8,Hej%20med%20dig) og ![prik](data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7 "Titel").
+
+Inline <a href="data:text/plain;base64,S8O4YmVuaGF2bg==">html</a> og ![ydre [indre](data:text/plain,x) alt](billede.png).
+
+<div>
+<img src='data:text/plain;charset=US-ASCII,Aarhus'>
+<img src="data:text/plain;base64,w4ZyZXPDuA==">
+</div>
+"#;
+
+#[test]
+fn embeds_the_documents_of_data_uris() {
+    let markdown = "[a](data:text/plain;base64,SGVq) <b title=\"data:text/plain,Hallo\">b</b>\n";
+    let scratch = crate::formats::parity::Scratch::new("markdown-data");
+    let path = scratch.write("data.md", markdown.as_bytes());
+    let (text, _) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    assert!(text.contains("Hej\n"), "{text:?}");
+    assert!(text.contains("Hallo\n"), "{text:?}");
 }
 
 #[cfg(feature = "tika")]
@@ -129,12 +166,8 @@ fn extracts_markdown_as_tikas_path_does() {
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {
     let (parsed, deferred) = documents(&MarkdownParser, &[&conformance_corpus()]);
-    assert_eq!(deferred.len(), 1, "{deferred:?}");
-    assert!(deferred[0].ends_with("testMARKDOWN_dataURI.md"));
-    let (Difference(reason), text) = differing_reading(&MarkdownParser, &deferred[0]);
-    assert!(reason.starts_with("a data URI"), "{reason}");
-    assert!(text.contains("Embedded resources"), "{text}");
-    assert_eq!(parsed.len(), 1, "{parsed:?}");
+    assert!(deferred.is_empty(), "{deferred:?}");
+    assert_eq!(parsed.len(), 2, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika(&paths, MarkdownParser.tika_name());
 }
