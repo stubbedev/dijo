@@ -256,9 +256,10 @@ impl<'a> Unpack<'a> {
         self.dest_unp_size = size;
     }
 
-    /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on.
-    pub(super) fn start_entry(&mut self, start: u64, packed: i64) {
-        self.input.io.start(start, packed);
+    /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on, which
+    /// unpacks into the `unpacked` bytes its header declares.
+    pub(super) fn start_entry(&mut self, start: u64, packed: i64, unpacked: Option<u64>) {
+        self.input.io.start(start, packed, unpacked);
     }
 
     /// The CRC-32 of what the entry wrote.

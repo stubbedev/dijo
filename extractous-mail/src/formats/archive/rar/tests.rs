@@ -329,7 +329,7 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
 fn spools_an_entry_too_large_to_read_whole_one_entry_at_a_time() {
     use std::io::Read;
 
-    use super::super::large::{Binary, END, SPOOLING_BUDGET};
+    use super::super::large::{Binary, BUDGET, END};
     use crate::input::MAX_READ_WHOLE;
     use extractous_core::large::LargeFile;
 
@@ -348,6 +348,6 @@ fn spools_an_entry_too_large_to_read_whole_one_entry_at_a_time() {
     let file = LargeFile::written("large.rar", |out| out.write_all(&archive));
     drop(archive);
     let extractor = extractous_core::Extractor::new();
-    let (text, _) = file.extract_with(&extractor, SPOOLING_BUDGET, "extractous::RarParser");
+    let (text, _) = file.extract_with(&extractor, BUDGET, "extractous::RarParser");
     assert!(text.contains(END), "{text}");
 }

@@ -10,6 +10,7 @@ pub(crate) fn decode_xz(data: &[u8]) -> Result<Limited<Input<'static>>, Undecode
     spool_limited(
         lzma_rust2::XzReader::new_mem_limit(data, false, MEMORY_LIMIT_KIB),
         data.len(),
+        None,
     )
 }
 
@@ -17,7 +18,14 @@ pub(crate) fn decode_xz(data: &[u8]) -> Result<Limited<Input<'static>>, Undecode
 pub(crate) fn decode_lzma(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
     let reader = lzma_rust2::LzmaReader::new_mem_limit(data, MEMORY_LIMIT_KIB, None)
         .map_err(decoder_failure)?;
-    spool_limited(reader, data.len())
+    spool_limited(reader, data.len(), lzma_declared_size(data))
+}
+
+/// The uncompressed size the header of the `.lzma` file `data` declares, unless it declares it
+/// unknown.
+fn lzma_declared_size(data: &[u8]) -> Option<u64> {
+    let size = u64::from_le_bytes(data.get(5..13)?.try_into().expect("eight bytes"));
+    (size != u64::MAX).then_some(size)
 }
 
 #[cfg(any(test, feature = "testing"))]

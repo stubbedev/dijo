@@ -8,7 +8,7 @@ use crate::input::Input;
 
 /// The content of the framed Snappy stream `data`, or why it is not decoded natively.
 pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
-    spool_limited(snap::read::FrameDecoder::new(data), data.len())
+    spool_limited(snap::read::FrameDecoder::new(data), data.len(), None)
 }
 
 #[cfg(any(test, feature = "testing"))]

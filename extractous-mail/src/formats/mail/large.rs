@@ -1,12 +1,13 @@
 //! Messages and mailboxes too large to read whole, extracted under a memory budget far below
-//! their size: a part's body is decoded a chunk at a time to a spool.
+//! their size: a part's body is decoded a chunk at a time to a spool, straight to a file where
+//! its encoded length says it is too large to hold in memory.
 
 use std::io::{self, Write};
 
 use extractous_core::large::{write_base64, LargeFile};
 use extractous_core::Extractor;
 
-use crate::formats::archive::large::{Binary, END, SPOOLING_BUDGET};
+use crate::formats::archive::large::{Binary, BUDGET, END};
 use crate::input::MAX_READ_WHOLE;
 
 /// Writes to `out` a message whose first part is a binary attachment of `large` bytes in
@@ -31,11 +32,7 @@ fn decodes_an_attachment_too_large_to_read_whole_to_a_spool() {
     let file = LargeFile::written("large.eml", |out| {
         message_of_large_attachment(out, MAX_READ_WHOLE)
     });
-    let (text, _) = file.extract_with(
-        &Extractor::new(),
-        SPOOLING_BUDGET,
-        "extractous::RFC822Parser",
-    );
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, "extractous::RFC822Parser");
     assert!(text.contains(END), "{text}");
 }
 
@@ -45,6 +42,6 @@ fn reads_a_mailbox_too_large_to_read_whole_a_message_at_a_time() {
         out.write_all(b"From a@example.com Mon Jan  1 00:00:00 2024\n")?;
         message_of_large_attachment(out, MAX_READ_WHOLE)
     });
-    let (text, _) = file.extract_with(&Extractor::new(), SPOOLING_BUDGET, "extractous::MboxParser");
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, "extractous::MboxParser");
     assert!(text.contains(END), "{text}");
 }

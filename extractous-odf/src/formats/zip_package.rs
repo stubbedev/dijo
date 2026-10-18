@@ -6,7 +6,6 @@
 //! in place, a compressed one decoded to a spool, which keeps as much in memory as a file read
 //! whole and the rest in a mapped temporary file.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::compress::decode_limit;
@@ -31,7 +30,7 @@ const DEFERS: bool = cfg!(feature = "tika");
 /// The bytes of the archive a parser reads, the document's own or those salvaged from it, and
 /// the entries read ahead that spooled to files of their own, for their writing to take.
 pub(crate) struct ZipPackage<'a> {
-    data: Cow<'a, [u8]>,
+    data: Input<'a>,
     /// The pages of the document's bytes, which an entry stored in place keeps for its reading
     /// to release.
     pages: Pages<'a>,
@@ -53,16 +52,19 @@ impl<'a> ZipPackage<'a> {
         tika_name: &str,
     ) -> Result<Self, Decline<'static>> {
         if ZipFile::open(input).is_ok() {
-            return Ok(Self::of(Cow::Borrowed(input), pages));
+            return Ok(Self::of(Input::Borrowed(input), pages));
         }
         if metadata.get(Key::Salvaged.name()) == Some("true") {
             match salvage(input) {
-                Ok(salvaged) => return Ok(Self::of(Cow::Owned(salvaged), Pages::IN_MEMORY)),
+                Ok(salvaged) => return Ok(Self::of(salvaged, Pages::IN_MEMORY)),
                 Err(Unsalvaged::Unported(reason)) => {
                     return Err(Decline::Deferred(format!(
                         "Tika's ZIP detector salvaged its archive, which the port does not \
                          salvage, for {reason}"
                     )))
+                }
+                Err(Unsalvaged::Unspooled(reason)) => {
+                    return Err(Decline::Fails(Error::IoError(reason)))
                 }
                 Err(Unsalvaged::Thrown) => {}
             }
@@ -83,7 +85,7 @@ impl<'a> ZipPackage<'a> {
         ))
     }
 
-    fn of(data: Cow<'a, [u8]>, pages: Pages<'a>) -> Self {
+    fn of(data: Input<'a>, pages: Pages<'a>) -> Self {
         Self {
             data,
             pages,

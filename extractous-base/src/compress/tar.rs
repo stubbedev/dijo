@@ -62,7 +62,7 @@ pub fn files<'a>(
         let content = if directory {
             Limited::Whole(Input::Borrowed(&[]))
         } else if kind.is_gnu_sparse() {
-            let mut decoding = Decoding::spooled(data.len());
+            let mut decoding = Decoding::spooled(data.len(), Some(entry.size()));
             decoding.read_from(&mut entry)?;
             let content = decoding.finish()?;
             if matches!(&content, Limited::Whole(content) if content.len() as u64 != entry.size()) {
