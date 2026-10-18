@@ -8,7 +8,9 @@
 //! table, an assay's table as `ISArchiveParser` writes it.
 //!
 //! A heading whose identifier the investigation does not give is written without it, where
-//! `ISArchiveParser` writes `null`.
+//! `ISArchiveParser` writes `null`. Each study is given its own fields alone, and a study field
+//! with no value is read as empty, where `ISArchiveParser` carries an earlier study's fields over
+//! into the study read and fails on a field with no value (#183).
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -173,7 +175,7 @@ fn study(file: File, xhtml: &mut Xhtml) -> Result<(), Failure> {
             let chars = reader.text.chars();
             for record in Records::new(chars, TabDelimited) {
                 let record = record.map_err(|reason| malformed("investigation", reason))?;
-                if fields.read(&record, xhtml.metadata_mut())? == Read::Ended {
+                if fields.read(&record, xhtml.metadata_mut()) == Read::Ended {
                     break;
                 }
             }
@@ -213,7 +215,7 @@ fn investigation(file: File, xhtml: &mut Xhtml) -> Result<(), Failure> {
     xhtml.start_element("tbody")?;
     for record in records {
         let record = record.map_err(|reason| malformed("investigation", reason))?;
-        fields.read(&record, xhtml.metadata_mut())?;
+        fields.read(&record, xhtml.metadata_mut());
         row(xhtml, &record)?;
     }
     xhtml.end_element("tbody")?;
@@ -343,7 +345,7 @@ struct Fields<'s> {
     investigation_section: bool,
     study_section: bool,
     study_target: bool,
-    /// The fields of the study sections read, the last value of each name: a `HashMap` in Tika.
+    /// The fields of the study section read, the last value of each name.
     pending: Vec<(String, String)>,
 }
 
@@ -358,31 +360,30 @@ impl<'s> Fields<'s> {
         }
     }
 
-    fn read(&mut self, record: &[String], metadata: &mut TikaMetadata) -> Result<Read, Failure> {
+    fn read(&mut self, record: &[String], metadata: &mut TikaMetadata) -> Read {
         let Some(field) = record.first() else {
-            return Ok(Read::Continues);
+            return Read::Continues;
         };
         if java::to_upper_case(field) == *field && record.len() == 1 {
             self.investigation_section = SECTIONS.contains(&field.as_str());
             self.study_section = self.study.is_some() && field == STUDY_SECTION;
-            return Ok(Read::Continues);
+            if self.study_section {
+                self.pending.clear();
+            }
+            return Read::Continues;
         }
         if self.investigation_section {
             add(field, record, metadata);
         } else if self.study_section {
             if self.study_target {
-                return Ok(Read::Ended);
+                return Read::Ended;
             }
-            let value = record.get(1).ok_or_else(|| {
-                Failure::Malformed(format!(
-                    "the ISA-Tab investigation: study field {field} has no value"
-                ))
-            })?;
+            let value = record.get(1).map_or("", String::as_str);
             match self.pending.iter_mut().find(|(name, _)| name == field) {
-                Some((_, pending)) => pending.clone_from(value),
-                None => self.pending.push((field.clone(), value.clone())),
+                Some((_, pending)) => value.clone_into(pending),
+                None => self.pending.push((field.clone(), value.to_owned())),
             }
-            self.study_target = field == STUDY_FILE_NAME && Some(value.as_str()) == self.study;
+            self.study_target = field == STUDY_FILE_NAME && Some(value) == self.study;
             if self.study_target {
                 for (name, value) in &self.pending {
                     metadata.add_prefixed(ISATAB, name, value.as_str());
@@ -392,7 +393,7 @@ impl<'s> Fields<'s> {
         } else if self.study_target {
             add(field, record, metadata);
         }
-        Ok(Read::Continues)
+        Read::Continues
     }
 }
 

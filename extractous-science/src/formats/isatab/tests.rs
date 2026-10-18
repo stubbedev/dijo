@@ -27,6 +27,24 @@ const STUDY_FILE: &str = "\"Source Name\"\t\"Characteristics[organism]\"\t\"Samp
 
 const ASSAY_FILE: &str = "\"Sample Name\"\t\"Assay Name\"\n\"C-0.07-aliquot1\"\t\"JC_A1\"\n";
 
+#[cfg(feature = "tika")]
+const STUDY_FIELDS_OF_THEIR_OWN: &str = "the native parser gives each study its own fields \
+                                         alone and reads a study field with no value as empty, \
+                                         where ISArchiveParser carries an earlier study's fields \
+                                         over and fails on an empty one (#183)";
+
+/// The metadata of the study file `study` of the investigation `investigation`, read from a
+/// directory of their own.
+fn study_metadata(scratch: &str, investigation: &str, study: &str) -> crate::extracted::Metadata {
+    let scratch = Scratch::new(scratch);
+    scratch.write("i_investigation.txt", investigation.as_bytes());
+    let study = scratch.write(study, STUDY_FILE.as_bytes());
+    let (_, metadata) = crate::Extractor::new()
+        .extract_file_to_string(study.to_str().unwrap())
+        .unwrap();
+    metadata
+}
+
 #[test]
 fn reads_a_study_with_its_investigation_and_assays() {
     let scratch = Scratch::new("isatab");
@@ -79,6 +97,42 @@ fn fails_on_text_after_a_closing_quote() {
         .is_err());
 }
 
+/// A study has only its own fields, none an earlier study of the investigation has (#183).
+#[test]
+fn gives_a_study_none_of_an_earlier_studys_fields() {
+    let investigation = "INVESTIGATION\n\
+        Investigation Identifier\t\"BII-I-1\"\n\
+        STUDY\n\
+        Study Identifier\t\"BII-S-1\"\n\
+        Study Description\t\"Gær i kemostat\"\n\
+        Study File Name\t\"s_first.txt\"\n\
+        STUDY\n\
+        Study Identifier\t\"BII-S-2\"\n\
+        Study File Name\t\"s_second.txt\"\n";
+    let metadata = study_metadata("isatab-own-fields", investigation, "s_second.txt");
+    assert_eq!(metadata["isatab:Study Identifier"], ["BII-S-2"]);
+    assert_eq!(metadata["isatab:Study File Name"], ["s_second.txt"]);
+    assert!(
+        !metadata.contains_key("isatab:Study Description"),
+        "{metadata:?}"
+    );
+}
+
+/// A study field with no value is read as empty, and the rest of the study as ever (#183).
+#[test]
+fn reads_a_study_field_with_no_value_as_empty() {
+    let investigation = "INVESTIGATION\n\
+        Investigation Identifier\t\"BII-I-1\"\n\
+        STUDY\n\
+        Study Identifier\t\"BII-S-1\"\n\
+        Study Description\n\
+        Study File Name\t\"s_study.txt\"\n";
+    let metadata = study_metadata("isatab-empty-field", investigation, "s_study.txt");
+    assert_eq!(metadata["isatab:Study Description"], [""]);
+    assert_eq!(metadata["isatab:Study Identifier"], ["BII-S-1"]);
+    assert_eq!(metadata["isatab:Investigation Identifier"], ["BII-I-1"]);
+}
+
 #[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
@@ -87,7 +141,10 @@ fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 8, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(std::path::PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(&paths, WITHOUT_SCIENTIFIC_MODULE);
+    assert_read_where_tika_reads_nothing(
+        &paths,
+        &[WITHOUT_SCIENTIFIC_MODULE, STUDY_FIELDS_OF_THEIR_OWN],
+    );
 }
 
 /// An assay too large to read whole is read a piece at a time, every row written.

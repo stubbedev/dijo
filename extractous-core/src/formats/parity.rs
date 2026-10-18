@@ -2430,10 +2430,11 @@ pub fn assert_read_where_tika_fails_with(
 }
 
 /// Asserts that Tika's path parses each document with `EmptyParser` and writes no text of it,
-/// where the native parser reads it on purpose, for the reason `departure` gives: the native
+/// where the native parser reads it on purpose, for the reasons `departures` give: the native
 /// text is not empty. The parser's own tests check what it reads.
 #[cfg(feature = "tika")]
-pub fn assert_read_where_tika_reads_nothing(documents: &[&Path], departure: &str) {
+pub fn assert_read_where_tika_reads_nothing(documents: &[&Path], departures: &[&str]) {
+    let departure = departures.join("; ");
     for document in documents {
         let path = document.to_str().unwrap();
         let tika = tika_string(path, &ParserConfigs::default(), Output::Text)

@@ -75,5 +75,5 @@ fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 2, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(&paths, WITHOUT_SCIENTIFIC_MODULE);
+    assert_read_where_tika_reads_nothing(&paths, &[WITHOUT_SCIENTIFIC_MODULE]);
 }
