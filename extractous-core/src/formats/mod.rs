@@ -34,6 +34,7 @@ pub(crate) use extractous_odf::formats::epub;
 pub(crate) use extractous_odf::formats::odf;
 pub(crate) use extractous_office::formats::access;
 pub(crate) use extractous_office::formats::compound;
+pub(crate) use extractous_office::formats::dgn;
 pub(crate) use extractous_office::formats::doc;
 pub(crate) use extractous_office::formats::msg;
 pub(crate) use extractous_office::formats::ppt;
@@ -120,6 +121,7 @@ static PARSERS: &[&dyn Parser] = &[
     &cms::CmsParser,
     &compound::CompoundDocumentParser,
     &dc_xml::DcXmlParser,
+    &dgn::Dgn8Parser,
     &doc::DocParser,
     &docx::DocxParser,
     &dwg::DwgParser,
