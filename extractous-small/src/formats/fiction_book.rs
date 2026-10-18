@@ -7,7 +7,8 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java::strip;
 
 const MAX_HEADING_LEVEL: usize = 6;
@@ -28,13 +29,27 @@ impl Parser for FictionBookParser {
         &["application/x-fictionbook+xml"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        Ok(Box::new(move |xhtml| read_book(input, xhtml)))
+        Ok(Box::new(move |xhtml| read_book(input, pages, xhtml)))
     }
 }
 
@@ -182,13 +197,14 @@ impl SaxHandler for Reading<'_, '_> {
     }
 }
 
-/// Writes the book's blocks as its XML is read, and its metadata.
-fn read_book(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// Writes the book's blocks as its XML is read, its `pages` released as they are, and its
+/// metadata.
+fn read_book(input: &[u8], pages: Pages<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let mut reading = Reading {
         book: Book::default(),
         xhtml,
     };
-    xml::parse_sax(input, WHAT, &mut reading)
+    xml::parse_paged(input, pages, WHAT, &mut reading)
 }
 
 #[cfg(test)]
@@ -210,28 +226,33 @@ mod tests {
         assert_same_as_tika(&paths, "ai.yobix.FictionBookParser");
     }
 
-    /// A book too large to read whole, read mapped by the build without Tika, is written a
-    /// block at a time. The parser stays of proportional memory, as the XML reader holds the
-    /// text of a document in another encoding than UTF-8 or with carriage returns decoded whole,
-    /// so a build with Tika leaves the file to Tika.
-    #[cfg(not(feature = "tika"))]
+    /// A book too large to read whole, in windows-1251 with CRLF line ends as many are, is
+    /// decoded a window at a time and written a block at a time, in either build, under a
+    /// memory budget far below its size.
     #[test]
     fn writes_books_too_large_to_read_whole_a_block_at_a_time() {
-        let paragraph = |index: u64| format!("<p>Afsnit {index}</p>\n").into_bytes();
+        let chapter = "\u{413}\u{43b}\u{430}\u{432}\u{430}";
+        let paragraph = |index: u64| {
+            [
+                &b"<p>\xc3\xeb\xe0\xe2\xe0 "[..],
+                index.to_string().as_bytes(),
+                b"</p>\r\n",
+            ]
+            .concat()
+        };
         let count = extractous_core::large::bodies_past_limit(paragraph(1_000_000).len());
         let file = extractous_core::large::LargeFile::new(
             "long.fb2",
-            br#"<?xml version="1.0" encoding="UTF-8"?>
-<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><body><section>
-"#,
+            b"<?xml version=\"1.0\" encoding=\"windows-1251\"?>\r\n\
+<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\"><body><section>\r\n",
             count,
             paragraph,
-            b"</section></body></FictionBook>\n",
+            b"</section></body></FictionBook>\r\n",
         );
         let mut paragraphs = 0;
         file.extract_lines(FictionBookParser.name(), |line| {
             if !line.is_empty() {
-                assert_eq!(line, format!("Afsnit {paragraphs}"));
+                assert_eq!(line, format!("{chapter} {paragraphs}"));
                 paragraphs += 1;
             }
         });

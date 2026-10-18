@@ -2,7 +2,8 @@
 //! text as `dif:` metadata named by its path, and the title and the bounding box of the spatial
 //! coverage written to the content handler Tika was given, around its own XHTML.
 //!
-//! Each element keeps its own text. Tika's `DIFContentHandler` keeps one stack of every piece
+//! A leaf keeps its own text; the text of an element with elements in it, which no leaf takes,
+//! is not kept. Tika's `DIFContentHandler` keeps one stack of every piece
 //! of text, popping one per end tag, so a leaf may take the text of another element, an
 //! element whose text comes in pieces (around an entity, say) yields its last piece and a
 //! title one heading per piece, and an empty leaf may fail on the empty stack (#118).
@@ -12,6 +13,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::input::Pages;
 
 /// `DIF`: the prefix of the metadata of each leaf element.
 const PREFIX: &str = "dif:";
@@ -41,6 +43,16 @@ impl Parser for DifParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -56,9 +68,10 @@ impl Parser for DifParser {
             let mut handler = Dif {
                 xhtml: &mut *xhtml,
                 open: Vec::new(),
+                text: String::new(),
                 leaf: false,
             };
-            let parsed = xml::parse_sax(input, "the DIF record", &mut handler);
+            let parsed = xml::parse_paged(input, pages, "the DIF record", &mut handler);
             xhtml.end_element("p")?;
             xhtml.end_document()?;
             parsed.map_err(|failure| match failure {
@@ -71,11 +84,12 @@ impl Parser for DifParser {
     }
 }
 
-/// `DIFContentHandler`: the open elements, each with its text so far, and whether the last
-/// one opened has no element in it yet.
+/// `DIFContentHandler`: the names of the open elements, whether the last one opened has no
+/// element in it yet, and its text so far while it has none.
 struct Dif<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
-    open: Vec<(String, String)>,
+    open: Vec<String>,
+    text: String,
     leaf: bool,
 }
 
@@ -122,7 +136,8 @@ impl SaxHandler for Dif<'_, '_> {
             self.xhtml.raw_characters("\t")?;
             self.xhtml.raw_start_element("table")?;
         }
-        self.open.push((local_name.to_owned(), String::new()));
+        self.open.push(local_name.to_owned());
+        self.text.clear();
         Ok(())
     }
 
@@ -134,8 +149,12 @@ impl SaxHandler for Dif<'_, '_> {
         }
         if self.leaf {
             self.leaf = false;
-            let (element, text) = self.open.last().expect("the element ending is open");
-            let (element, text) = (element.clone(), text.clone());
+            let element = self
+                .open
+                .last()
+                .expect("the element ending is open")
+                .clone();
+            let text = std::mem::take(&mut self.text);
             if element == "Entry_Title" {
                 self.heading(&format!("Title: {text}"))?;
             }
@@ -143,10 +162,9 @@ impl SaxHandler for Dif<'_, '_> {
                 self.bound(&element, &text)?;
             }
             if !text.is_empty() {
-                let path: Vec<&str> = self.open.iter().map(|(name, _)| name.as_str()).collect();
                 self.xhtml
                     .metadata_mut()
-                    .add_prefixed(PREFIX, &path.join("-"), text.as_str());
+                    .add_prefixed(PREFIX, &self.open.join("-"), text);
             }
         }
         self.open.pop();
@@ -154,8 +172,8 @@ impl SaxHandler for Dif<'_, '_> {
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
-        if let Some((_, own)) = self.open.last_mut() {
-            own.push_str(text);
+        if self.leaf {
+            self.text.push_str(text);
         }
         Ok(())
     }
