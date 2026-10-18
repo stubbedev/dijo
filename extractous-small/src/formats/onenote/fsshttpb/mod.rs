@@ -39,7 +39,7 @@ impl From<Thrown> for Failure {
 /// `AlternativePackaging.doDeserializeFromByteArray` and `MSOneStoreParser.parse` of the whole
 /// file: the package, or the exception the reading throws, or why the port leaves the file to
 /// Tika.
-pub(super) fn read(input: &[u8]) -> Result<Result<Package, Thrown>, Unported> {
+pub(super) fn read(input: &[u8]) -> Result<Result<Package<'_>, Thrown>, Unported> {
     match stream::package(input).and_then(|elements| store::parse(&elements)) {
         Ok(package) => Ok(Ok(package)),
         Err(Failure::Thrown(thrown)) => Ok(Err(thrown)),
@@ -49,7 +49,7 @@ pub(super) fn read(input: &[u8]) -> Result<Result<Package, Thrown>, Unported> {
 
 /// `MSOneStorePackage.walkTree` of the package: what the walk wrote, or the exception that ends
 /// it, after which Tika falls back to the legacy dump.
-pub(super) fn walk(package: &Package, xhtml: &mut Xhtml) -> Walked {
+pub(super) fn walk(package: &Package<'_>, xhtml: &mut Xhtml) -> Walked {
     walk::walk(package, xhtml)
 }
 
@@ -360,7 +360,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// `BinaryItem`: its length, then as many bytes.
-    fn binary(&mut self) -> Result<Vec<u8>, Thrown> {
+    fn binary(&mut self) -> Result<&'a [u8], Thrown> {
         let length = self.compact()?;
         let end = usize::try_from(length)
             .ok()
@@ -368,7 +368,7 @@ impl<'a> Cursor<'a> {
         match end.and_then(|end| self.data.get(self.index..end)) {
             Some(bytes) => {
                 self.index += bytes.len();
-                Ok(bytes.to_vec())
+                Ok(bytes)
             }
             None => Err(out_of_bounds(
                 self.data.len().max(self.index),

@@ -3,17 +3,22 @@
 //! `CMSTimeStampedDataParser` streams it, up to where the input ends. Of an envelope cut off
 //! inside its content, every byte of the content there is is kept, where Tika's copy loses the
 //! read Bouncy Castle throws in, up to 8192 bytes, and two bytes it reads ahead for each open
-//! element of indefinite length (#132).
+//! element of indefinite length (#132). The content is handed on in place where the envelope
+//! holds it in one piece, and else read again, piece by piece, into a spool.
 //!
 //! `TSDParser` also reads the time stamps, but writes them into the metadata of the embedded
 //! document, which neither the document nor its spooled copy shows, so the port does not read
 //! them. An envelope Bouncy Castle cannot read its content from leaves the document empty, as
 //! `TSDParser` logs the failure and goes on.
 
+use std::io::Write;
+
 use crate::config::ParserConfigs;
+use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Spool};
 
 /// 1.2.840.113549.1.9.16.1.31, `id-ct-timestampedData`.
 const TIMESTAMPED_DATA: &[u8] = &[
@@ -142,14 +147,14 @@ impl<'a> Stream<'a> {
         Ok(())
     }
 
-    /// Adds the octets of the OCTET STRING of `header`, primitive or constructed, to `content`,
-    /// as its octet stream hands them on, up to where the input ends or the octets stop being
-    /// an OCTET STRING's. Whether it was read whole.
-    fn octets(&mut self, header: Header, content: &mut Vec<u8>) -> bool {
+    /// Hands `each` the octets of the OCTET STRING of `header`, primitive or constructed, as its
+    /// octet stream hands them on, a piece of the input at a time, up to where the input ends or
+    /// the octets stop being an OCTET STRING's. Whether it was read whole.
+    fn octets(&mut self, header: Header, each: &mut dyn FnMut(&'a [u8])) -> bool {
         match (header.constructed, header.length) {
             (false, Length::Definite(length)) => {
                 let end = self.at.saturating_add(length).min(self.bytes.len());
-                content.extend_from_slice(&self.bytes[self.at..end]);
+                each(&self.bytes[self.at..end]);
                 let whole = end - self.at == length;
                 self.at = end;
                 whole
@@ -169,7 +174,7 @@ impl<'a> Stream<'a> {
                         return false;
                     };
                     if !inner.is(CLASS_UNIVERSAL, UNIVERSAL_OCTET_STRING)
-                        || !self.octets(inner, content)
+                        || !self.octets(inner, each)
                     {
                         return false;
                     }
@@ -181,14 +186,15 @@ impl<'a> Stream<'a> {
 
 /// `CMSTimeStampedDataParser(stream).getContent()` as `parseTSDContent` copies it: the
 /// `ContentInfo` of time-stamped data, the version of its `TimeStampedData`, its data URI and
-/// metadata if it has them, then the octets of its content, all there are of them. `None` where
-/// Bouncy Castle throws before the content, or the envelope has none.
-fn content(input: &[u8]) -> Option<Vec<u8>> {
+/// metadata if it has them, then the octets of its content, all there are of them, each piece
+/// handed to `each`. Whether there is content: none where Bouncy Castle throws before it, or
+/// the envelope has none.
+fn content<'a>(input: &'a [u8], each: &mut dyn FnMut(&'a [u8])) -> bool {
     let mut stream = Stream {
         bytes: input,
         at: 0,
     };
-    let mut read = || -> Result<Option<Vec<u8>>, Thrown> {
+    let mut read = || -> Result<bool, Thrown> {
         let info = stream.header()?;
         if !info.is(CLASS_UNIVERSAL, UNIVERSAL_SEQUENCE) || !info.constructed {
             return Err(Thrown);
@@ -226,13 +232,65 @@ fn content(input: &[u8]) -> Option<Vec<u8>> {
             next = stream.header()?;
         }
         if !next.is(CLASS_UNIVERSAL, UNIVERSAL_OCTET_STRING) {
-            return Ok(None);
+            return Ok(false);
         }
-        let mut content = Vec::new();
-        stream.octets(next, &mut content);
-        Ok(Some(content))
+        stream.octets(next, each);
+        Ok(true)
     };
-    read().ok().flatten()
+    read().unwrap_or(false)
+}
+
+/// The content of an envelope as [`content`] finds it.
+enum Content<'a> {
+    None,
+    /// In one piece of the input, or none.
+    Whole(&'a [u8]),
+    /// In pieces this many bytes long together.
+    Pieces(u64),
+}
+
+impl<'a> Content<'a> {
+    fn of(input: &'a [u8]) -> Self {
+        let mut pieces: Vec<&'a [u8]> = Vec::with_capacity(2);
+        let mut length = 0u64;
+        let found = content(input, &mut |piece| {
+            length += piece.len() as u64;
+            if pieces.len() < 2 {
+                pieces.push(piece);
+            }
+        });
+        match pieces.as_slice() {
+            _ if !found => Content::None,
+            [] => Content::Whole(&[]),
+            [piece] => Content::Whole(piece),
+            _ => Content::Pieces(length),
+        }
+    }
+
+    /// The content of `input`, whose pages are `pages`: in place, or read again into a spool.
+    fn read(self, input: &'a [u8], pages: Pages<'a>) -> Result<Option<Input<'a>>, Failure> {
+        match self {
+            Content::None => Ok(None),
+            Content::Whole(piece) => Ok(Some(Input::Within(piece, pages))),
+            Content::Pieces(length) => {
+                let mut spool = Spool::new(Some(length));
+                let mut written = Ok(());
+                content(input, &mut |piece| {
+                    if written.is_ok() {
+                        written = spool.write_all(piece);
+                    }
+                });
+                written
+                    .and_then(|()| spool.finish())
+                    .map(Some)
+                    .map_err(|error| {
+                        Failure::Extraction(Error::IoError(format!(
+                            "spooling the content of the time-stamped data fails: {error}"
+                        )))
+                    })
+            }
+        }
+    }
 }
 
 /// For the parity tests: the content of a cut envelope, which the parser spools whole where
@@ -256,16 +314,34 @@ impl Parser for TsdParser {
         &["application/timestamped-data"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _: &TikaMetadata,
         _: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let content = content(input);
+        let content = Content::of(input);
         Ok(Box::new(move |xhtml| {
-            if let Some(content) = content {
-                xhtml.parse_embedded(&content, &TikaMetadata::new(), Wrapping::PackageEntry)?;
+            if let Some(content) = content.read(input, pages)? {
+                xhtml.parse_embedded_input(
+                    &content,
+                    &TikaMetadata::new(),
+                    Wrapping::PackageEntry,
+                )?;
             }
             Ok(())
         }))
@@ -293,6 +369,33 @@ mod tests {
         bytes.extend_from_slice(content);
         bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
         bytes
+    }
+
+    /// The content of `input`, all its pieces joined.
+    fn content(input: &[u8]) -> Option<Vec<u8>> {
+        let mut joined = Vec::new();
+        super::content(input, &mut |piece| joined.extend_from_slice(piece)).then_some(joined)
+    }
+
+    /// An envelope too large to read whole, whose content comes in pieces past what a spool
+    /// holds in memory: they are read again into a spool, under a budget far below them.
+    #[test]
+    fn spools_the_content_of_envelopes_too_large_to_read_whole() {
+        use extractous_core::large::{bodies_past_limit, LargeFile, SPOOLING_BUDGET};
+
+        let mut head = vec![0x30, 0x80, 0x06, 0x0B];
+        head.extend_from_slice(TIMESTAMPED_DATA);
+        head.extend_from_slice(&[0xA0, 0x80, 0x30, 0x80, 0x02, 0x01, 0x01, 0x24, 0x80]);
+        let piece = |index: u64| {
+            let text = format!("Linje {index:08}\n").repeat(1 << 12).into_bytes();
+            let length = u32::try_from(text.len()).unwrap().to_be_bytes();
+            [&[0x04, 0x83][..], &length[1..], &text].concat()
+        };
+        let count = bodies_past_limit(piece(0).len());
+        let file = LargeFile::new("large.tsd", &head, count, piece, &[0; 8]);
+        let (text, _) =
+            file.extract_with(&crate::Extractor::new(), SPOOLING_BUDGET, TsdParser.name());
+        assert!(text.trim_start().starts_with("Linje 00000000"), "{text}");
     }
 
     #[test]

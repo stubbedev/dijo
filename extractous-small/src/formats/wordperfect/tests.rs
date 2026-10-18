@@ -313,6 +313,96 @@ fn reads_quattro_pro_for_dos_cells() {
     assert_eq!(xml.matches("<tr>").count(), 3, "{xml}");
 }
 
+/// A spreadsheet too large to read whole, its cells in the order of their addresses: they are
+/// written as their records are read again, under a budget far below an index of them.
+#[test]
+fn writes_quattro_pro_spreadsheets_too_large_to_read_whole_in_order() {
+    const COLUMNS: u16 = 256;
+    let row = |index: u64| {
+        let row = u16::try_from(index).unwrap();
+        (0..COLUMNS)
+            .flat_map(|column| {
+                let mut body = vec![0x80];
+                body.extend(column.to_le_bytes());
+                body.extend(row.to_le_bytes());
+                body.extend([b'\'', 1, b'Q']);
+                record(0x000F, &body)
+            })
+            .collect::<Vec<u8>>()
+    };
+    let count = extractous_core::large::bodies_past_limit(row(0).len());
+    assert!(count < 1 << 16, "{count} rows fit a sheet");
+    let file = extractous_core::large::LargeFile::new(
+        "large.wq1",
+        &record(0x0000, &0x5120u16.to_le_bytes()),
+        count,
+        row,
+        &record(0x0001, &[]),
+    );
+    let mut cells = 0u64;
+    file.extract_each(OldQuattroProParser.name(), |text| {
+        cells += text.matches('Q').count() as u64;
+    });
+    assert_eq!(cells, count * u64::from(COLUMNS));
+}
+
+/// A Quattro Pro 9 workbook too large to read whole, its record stream read in place in the
+/// compound document, under a budget far below it.
+#[test]
+fn reads_quattro_pro_workbooks_too_large_to_read_whole_in_place() {
+    use crate::input::MAX_READ_WHOLE;
+
+    let label = {
+        let text = b"Q".repeat(255);
+        let mut body = vec![0; 6];
+        body.extend(254u16.to_le_bytes());
+        body.push(0);
+        body.extend(&text);
+        record(0x0c02, &body)
+    };
+    let count = MAX_READ_WHOLE as usize / label.len() + 1;
+    let mut records = record(0x0001, &[0; 14]);
+    records.extend(label.repeat(count));
+    let workbook = crate::ole2::tests::compound(&["NativeContent_MAIN"], &records);
+    drop(records);
+    let file =
+        extractous_core::large::LargeFile::written("large.qpw", |out| out.write_all(&workbook));
+    drop(workbook);
+    let mut letters = 0usize;
+    file.extract_each(QuattroProParser.name(), |text| {
+        letters += text.matches('Q').count();
+    });
+    assert_eq!(letters, count * 255);
+}
+
+#[test]
+fn indexes_cells_out_of_the_order_of_their_addresses() {
+    fn cell(column: u16, row: u16, text: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x80];
+        body.extend(column.to_le_bytes());
+        body.extend(row.to_le_bytes());
+        body.push(b'\'');
+        body.push(u8::try_from(text.len()).unwrap());
+        body.extend(text);
+        record(0x000F, &body)
+    }
+    let sheet = [
+        record(0x0000, &0x5120u16.to_le_bytes()),
+        cell(1, 1, b"d"),
+        cell(0, 0, b"a"),
+        cell(1, 0, b"x"),
+        cell(0, 1, b"c"),
+        cell(1, 0, b"b"),
+        record(0x0001, &[]),
+    ]
+    .concat();
+    let xml = extract_xml(&sheet);
+    assert!(
+        xml.contains("<tr>\t<td>a</td>\t<td>b</td></tr>\n<tr>\t<td>c</td>\t<td>d</td></tr>"),
+        "{xml}"
+    );
+}
+
 #[test]
 fn reads_quattro_pro_for_windows_pages() {
     let xml = extract_xml(&quattro_windows());

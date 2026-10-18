@@ -2,7 +2,8 @@
 //! `geogebra_macro.xml` and each slide's `geogebra.xml`, in the order the slides'
 //! `structure.json` gives and else by number, read by its `GeoGebraXMLHandler` into the
 //! document's metadata and paragraphs of the construction's texts; then the thumbnail and every
-//! other entry handed to the embedded document extractor.
+//! other entry handed to the embedded document extractor. Each entry is spooled as it is read,
+//! ahead of the writing to check it, and again as it is written, one at a time.
 
 mod json;
 
@@ -11,14 +12,15 @@ use std::collections::HashMap;
 use json::{Json, Unread};
 
 use crate::compress::zip::file::{ZipEntry, ZipFile};
-use crate::compress::zip::Content;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::{self, ResourceType, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
+use crate::formats::jdk_zip::{Archive, Checked, Refusal};
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Opened, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 use crate::mime::Detected;
 
@@ -70,9 +72,23 @@ impl Parser for GeoGebraParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -81,23 +97,25 @@ impl Parser for GeoGebraParser {
                 "commons-compress's ZipFile cannot open the GeoGebra archive".to_owned(),
             ))
         })?;
-        let book =
-            Book::read(&zip).map_err(|Unread(reason)| Decline::Deferred(reason.to_owned()))?;
-        Ok(Box::new(move |xhtml| book.write(xhtml)))
+        let archive = Archive::new(zip, pages);
+        let book = Book::read(&archive).map_err(|refusal| match refusal {
+            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
+            refusal => Decline::from(refusal),
+        })?;
+        Ok(Box::new(move |xhtml| book.write(&archive, xhtml)))
     }
 }
 
-/// What the parse reads of an entry: its data, or why commons-compress cannot read it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What the parse reads of an entry: its data read ahead, or why commons-compress cannot read
+/// it.
 enum Data {
-    Read(Vec<u8>),
+    Read(Box<Checked>),
     /// `canReadEntryData` is false: an encrypted entry, or one compressed a way commons-compress
     /// does not read.
     Unsupported,
 }
 
 /// An XML document of the archive, read by `GeoGebraXMLHandler`.
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct Xml {
     name: String,
     data: Data,
@@ -105,7 +123,6 @@ struct Xml {
 
 /// An entry handed to the embedded document extractor, with its resource type where the parser
 /// names it and its slide's page.
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct Attachment {
     name: String,
     data: Data,
@@ -114,7 +131,6 @@ struct Attachment {
 }
 
 /// The archive, read as far as the parse needs it.
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct Book {
     root: Option<Xml>,
     tool: Option<Xml>,
@@ -123,41 +139,42 @@ struct Book {
     others: Vec<Attachment>,
 }
 
-/// The data of an entry, or why the port leaves the archive to Tika.
-fn data(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Data, Unread> {
+/// The data of an entry read ahead, or why the port leaves the archive to Tika.
+fn data(archive: &Archive<'_>, entry: &ZipEntry) -> Result<Data, Refusal> {
     if !entry.can_read() {
         return Ok(Data::Unsupported);
     }
-    match zip.read(entry) {
-        Some(Content::Complete(data)) => Ok(Data::Read(data.into_owned())),
-        _ => Err(Unread("an entry the port does not decompress whole")),
-    }
+    Ok(Data::Read(Box::new(archive.check(entry)?)))
 }
 
 /// The XML document named `name`, checked for being well-formed: Tika records the exception of
 /// one that is not, which only its path can tell.
-fn xml(zip: &ZipFile<'_>, name: &str) -> Result<Option<Xml>, Unread> {
-    let Some(entry) = zip.entry(name) else {
+fn xml(archive: &Archive<'_>, name: &str) -> Result<Option<Xml>, Refusal> {
+    let Some(entry) = archive.zip().entry(name) else {
         return Ok(None);
     };
-    let data = data(zip, entry)?;
-    if let Data::Read(bytes) = &data {
-        let mut handler = Handler {
-            xhtml: None,
-            document_metadata: false,
-            depth: 0,
-            icons: Vec::new(),
-        };
-        xml::parse_sax(bytes, "the GeoGebra XML", &mut handler).map_err(|_| {
-            Unread(
-                "XML Tika's parser fails on, or a text's JSON serde_json does not read, of \
-                     which Tika records the exception or which Jackson may read",
-            )
-        })?;
+    if !entry.can_read() {
+        return Ok(Some(Xml {
+            name: name.to_owned(),
+            data: Data::Unsupported,
+        }));
     }
+    let bytes = archive.spool(entry)?;
+    let mut handler = Handler {
+        xhtml: None,
+        document_metadata: false,
+        depth: 0,
+        icons: Vec::new(),
+    };
+    xml::parse_part(&bytes, "the GeoGebra XML", &mut handler).map_err(|_| {
+        Refusal::Unread(
+            "XML Tika's parser fails on, or a text's JSON serde_json does not read, of which \
+             Tika records the exception or which Jackson may read",
+        )
+    })?;
     Ok(Some(Xml {
         name: name.to_owned(),
-        data,
+        data: Data::Read(Box::new(Archive::keep(entry, bytes))),
     }))
 }
 
@@ -187,21 +204,23 @@ fn slide_id(name: &str) -> Option<&str> {
 }
 
 impl Book {
-    fn read(zip: &ZipFile<'_>) -> Result<Self, Unread> {
-        let slide_ids = slide_ids(zip)?;
-        let root = xml(zip, GEOGEBRA_XML)?;
-        let tool = xml(zip, MACRO_XML)?;
+    fn read(archive: &Archive<'_>) -> Result<Self, Refusal> {
+        let zip = archive.zip();
+        let slide_ids = slide_ids(archive)?;
+        let root = xml(archive, GEOGEBRA_XML)?;
+        let tool = xml(archive, MACRO_XML)?;
         let icons = match &tool {
             Some(Xml {
                 data: Data::Read(bytes),
                 ..
-            }) => icon_files(bytes),
+            }) => icon_files(&archive.read(bytes)?),
             _ => Vec::new(),
         };
         let mut slides = Vec::with_capacity(slide_ids.len());
         for id in &slide_ids {
             slides.push(
-                xml(zip, &format!("{id}/{GEOGEBRA_XML}"))?.expect("a slide is named by its entry"),
+                xml(archive, &format!("{id}/{GEOGEBRA_XML}"))?
+                    .expect("a slide is named by its entry"),
             );
         }
         let thumbnail_entry = zip
@@ -213,10 +232,10 @@ impl Book {
             })
             .or_else(|| icons.iter().find_map(|icon| zip.entry(icon)));
         let thumbnail = thumbnail_entry
-            .map(|entry| -> Result<Attachment, Unread> {
+            .map(|entry| -> Result<Attachment, Refusal> {
                 Ok(Attachment {
                     name: entry.name.clone(),
-                    data: data(zip, entry)?,
+                    data: data(archive, entry)?,
                     kind: Some(ResourceType::Thumbnail),
                     page: None,
                 })
@@ -248,7 +267,7 @@ impl Book {
             let kind = (known && base == JAVASCRIPT_JS).then_some(ResourceType::Macro);
             others.push(Attachment {
                 name: name.to_owned(),
-                data: data(zip, entry)?,
+                data: data(archive, entry)?,
                 kind,
                 page: pages.get(directory).copied(),
             });
@@ -262,15 +281,15 @@ impl Book {
         })
     }
 
-    /// `parse` once the archive is open.
-    fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    /// `parse` once `archive` is open, each entry read again as it is written.
+    fn write(&self, archive: &Archive<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
         let mut pending = true;
         if let Some(root) = &self.root {
             pending = false;
-            parse_xml(root, xhtml, true)?;
+            parse_xml(archive, root, xhtml, true)?;
         }
         if let Some(tool) = &self.tool {
-            parse_xml(tool, xhtml, pending)?;
+            parse_xml(archive, tool, xhtml, pending)?;
             pending = false;
         }
         if !self.slides.is_empty() {
@@ -279,24 +298,25 @@ impl Book {
                 .set(name::N_PAGES, self.slides.len().to_string());
             for slide in &self.slides {
                 xhtml.start_element_with("div", &[("class", "slide")])?;
-                let parsed = parse_xml(slide, xhtml, pending);
+                let parsed = parse_xml(archive, slide, xhtml, pending);
                 pending = false;
                 xhtml.end_element("div")?;
                 parsed?;
             }
         }
         if let Some(thumbnail) = &self.thumbnail {
-            embed(thumbnail, xhtml)?;
+            embed(archive, thumbnail, xhtml)?;
         }
         for other in &self.others {
-            embed(other, xhtml)?;
+            embed(archive, other, xhtml)?;
         }
         Ok(())
     }
 }
 
 /// `getSlideIds`: the slides by number, those `structure.json` lists first in its order.
-fn slide_ids(zip: &ZipFile<'_>) -> Result<Vec<String>, Unread> {
+fn slide_ids(archive: &Archive<'_>) -> Result<Vec<String>, Refusal> {
+    let zip = archive.zip();
     let mut numbered: Vec<String> = zip
         .entries()
         .iter()
@@ -309,14 +329,12 @@ fn slide_ids(zip: &ZipFile<'_>) -> Result<Vec<String>, Unread> {
     numbered.sort_by(|a, b| compare_slides(a, b));
     let mut ordered: Vec<String> = Vec::new();
     if let Some(entry) = zip.entry(STRUCTURE_JSON).filter(|entry| entry.can_read()) {
-        let Data::Read(bytes) = data(zip, entry)? else {
-            unreachable!("a readable entry is read");
-        };
+        let bytes = archive.spool(entry)?;
         if bytes.len() > MAX_STRUCTURE_LENGTH {
-            return Err(Unread("a structure.json Jackson reads cut short"));
+            return Err(Refusal::Unread("a structure.json Jackson reads cut short"));
         }
         if !bytes.iter().all(u8::is_ascii_whitespace) {
-            let root = json::read(&bytes)?;
+            let root = json::read(&bytes).map_err(|Unread(reason)| Refusal::Unread(reason))?;
             let chapters = root.member("chapters").into_iter().flat_map(Json::children);
             for chapter in chapters {
                 let pages = chapter.member("pages").into_iter().flat_map(Json::children);
@@ -355,18 +373,24 @@ fn icon_files(xml: &[u8]) -> Vec<String> {
 
 /// `parseGeoGebraXml`: an entry the parser cannot read recorded, else its XML read by
 /// `GeoGebraXMLHandler`.
-fn parse_xml(entry: &Xml, xhtml: &mut Xhtml, document_metadata: bool) -> Result<(), Failure> {
+fn parse_xml(
+    archive: &Archive<'_>,
+    entry: &Xml,
+    xhtml: &mut Xhtml,
+    document_metadata: bool,
+) -> Result<(), Failure> {
     let Data::Read(bytes) = &entry.data else {
         unsupported(&entry.name, xhtml.metadata_mut());
         return Ok(());
     };
+    let bytes = archive.read(bytes)?;
     let mut handler = Handler {
         xhtml: Some(&mut *xhtml),
         document_metadata,
         depth: 0,
         icons: Vec::new(),
     };
-    xml::parse_sax(bytes, "the GeoGebra XML", &mut handler)
+    xml::parse_part(&bytes, "the GeoGebra XML", &mut handler)
 }
 
 /// What Tika records of an entry `canReadEntryData` refuses.
@@ -379,11 +403,12 @@ fn unsupported(name: &str, metadata: &mut TikaMetadata) {
 
 /// `handleEmbedded`: an entry handed to the embedded document extractor bare, named by its path,
 /// with its slide's page; one without a resource type detected first, and an image of it inline.
-fn embed(attachment: &Attachment, xhtml: &mut Xhtml) -> Result<(), Failure> {
+fn embed(archive: &Archive<'_>, attachment: &Attachment, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let Data::Read(data) = &attachment.data else {
         unsupported(&attachment.name, xhtml.metadata_mut());
         return Ok(());
     };
+    let data = archive.read(data)?;
     let mut metadata = TikaMetadata::new();
     metadata.set(RESOURCE_NAME, attachment.name.as_str());
     metadata.set(INTERNAL_PATH, attachment.name.as_str());
@@ -394,7 +419,7 @@ fn embed(attachment: &Attachment, xhtml: &mut Xhtml) -> Result<(), Failure> {
         Some(kind) => kind,
         None => {
             let detected =
-                Detected::detect_embedded(data, &metadata, Opened::Alone).map_err(|_| {
+                Detected::detect_embedded(&data, &metadata, Opened::Alone).map_err(|_| {
                     Failure::Malformed(format!(
                         "Tika's detection throws on the entry {}",
                         attachment.name
@@ -410,7 +435,7 @@ fn embed(attachment: &Attachment, xhtml: &mut Xhtml) -> Result<(), Failure> {
         }
     };
     kind.set(&mut metadata);
-    xhtml.parse_embedded_opened(data, &metadata, Wrapping::Bare, Opened::Alone)
+    xhtml.parse_embedded_input_opened(&data, &metadata, Wrapping::Bare, Opened::Alone)
 }
 
 /// `GeoGebraXMLHandler`: the document's metadata from the root element and its own construction,

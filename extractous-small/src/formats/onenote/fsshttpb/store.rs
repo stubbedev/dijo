@@ -63,39 +63,39 @@ impl Warnings {
 
 /// `MSOneStorePackage` as the parser leaves it.
 #[derive(Debug)]
-pub(crate) struct Package {
+pub(crate) struct Package<'a> {
     /// The cells other than the header and the data root, in the order of the storage index.
-    pub(super) cells: Vec<Cell>,
-    pub(super) data_root: Cell,
+    pub(super) cells: Vec<Cell<'a>>,
+    pub(super) data_root: Cell<'a>,
     pub(super) warnings: Warnings,
 }
 
 /// `RevisionStoreCell`.
 #[derive(Debug)]
-pub(super) struct Cell {
+pub(super) struct Cell<'a> {
     pub(super) id: CellId,
     /// The objects of its object groups, in order.
-    pub(super) groups: Vec<Vec<Rc<Object>>>,
+    pub(super) groups: Vec<Vec<Rc<Object<'a>>>>,
     /// The objects its revisions declare as roots, each root once, last declaration winning.
     pub(super) roots: Vec<ExGuid>,
 }
 
 /// `RevisionStoreObject`.
 #[derive(Debug, Default)]
-pub(super) struct Object {
+pub(super) struct Object<'a> {
     pub(super) id: Option<ExGuid>,
-    pub(super) property_set: Option<PropertySet>,
+    pub(super) property_set: Option<PropertySet<'a>>,
     /// `referencedObjectID`, `referencedObjectSpacesID`.
     pub(super) references: Vec<ExGuid>,
     pub(super) space_references: Vec<CellId>,
     /// The data of its file data object, if it has one: `None` where the BLOB is missing.
-    pub(super) file_data: Option<Option<Vec<u8>>>,
+    pub(super) file_data: Option<Option<&'a [u8]>>,
 }
 
 /// `PropertySet`: the IDs of its properties, each with its value.
 #[derive(Debug)]
-pub(super) struct PropertySet {
-    pub(super) properties: Vec<(PropertyId, Property)>,
+pub(super) struct PropertySet<'a> {
+    pub(super) properties: Vec<(PropertyId, Property<'a>)>,
 }
 
 /// `PropertyID`: the property's type and its whole 32-bit ID.
@@ -107,15 +107,15 @@ pub(super) struct PropertyId {
 
 /// The value of a property, as the reader its type names reads it.
 #[derive(Debug)]
-pub(super) enum Property {
+pub(super) enum Property<'a> {
     NoData,
     /// `ArrayNumber`: how many references it takes.
     ArrayNumber(i32),
     Fixed(Vec<u8>),
     /// `PrtFourBytesOfLengthFollowedByData`.
-    Data(Vec<u8>),
-    Values(Vec<PropertySet>),
-    Set(PropertySet),
+    Data(&'a [u8]),
+    Values(Vec<PropertySet<'a>>),
+    Set(PropertySet<'a>),
 }
 
 /// The property types of `PropertyType`.
@@ -139,7 +139,7 @@ pub(super) mod kind {
 
 /// `ObjectSpaceObjectPropSet.doDeserializeFromByteArray` of an object's data: its streams of
 /// object, object space and context IDs, read to be passed over, then its property set.
-fn property_set_object(data: &[u8]) -> Result<PropertySet, Failure> {
+fn property_set_object(data: &[u8]) -> Result<PropertySet<'_>, Failure> {
     let mut index = 0;
     let (length, oids) = id_stream(data, index, "ObjectSpaceObjectStreamOfOIDs")?;
     index += length;
@@ -189,7 +189,11 @@ fn id_stream(data: &[u8], index: usize, name: &str) -> Result<(usize, StreamFlag
 
 /// `PropertySet.doDeserializeFromByteArray` at `index`, `depth` sets deep: the set and the bytes
 /// it takes.
-fn property_set(data: &[u8], index: usize, depth: usize) -> Result<(PropertySet, usize), Failure> {
+fn property_set(
+    data: &[u8],
+    index: usize,
+    depth: usize,
+) -> Result<(PropertySet<'_>, usize), Failure> {
     if depth > MAX_PROPERTY_NESTING {
         return Err(thrown(
             IO_EXCEPTION,
@@ -231,8 +235,8 @@ fn property(
     index: usize,
     id: PropertyId,
     depth: usize,
-) -> Result<(Property, usize), Failure> {
-    let fixed = |length: usize| -> Result<(Property, usize), Failure> {
+) -> Result<(Property<'_>, usize), Failure> {
+    let fixed = |length: usize| -> Result<(Property<'_>, usize), Failure> {
         if index > data.len() {
             return Err(Failure::Unported(
                 "a copy of a byte array from past its end, whose exception the port does not \
@@ -284,10 +288,7 @@ fn property(
                 .into());
             }
             let end = start + length as usize;
-            (
-                Property::Data(data[start..end].to_vec()),
-                4 + length as usize,
-            )
+            (Property::Data(&data[start..end]), 4 + length as usize)
         }
         kind::ARRAY_OF_PROPERTY_VALUES => {
             let count = int32(data, index)?;
@@ -328,16 +329,16 @@ fn property(
 
 /// The data elements of the package by type, and the maps the parser looks them up in, each
 /// keeping the first element of an ID.
-struct Elements<'e> {
+struct Elements<'e, 'a> {
     cell_manifests: HashMap<GuidKey, ExGuid>,
     revision_manifests: HashMap<GuidKey, &'e RevisionManifest>,
-    object_groups: HashMap<GuidKey, (ExGuid, &'e ObjectGroup)>,
-    blobs: HashMap<GuidKey, &'e [u8]>,
+    object_groups: HashMap<GuidKey, (ExGuid, &'e ObjectGroup<'a>)>,
+    blobs: HashMap<GuidKey, &'a [u8]>,
     cell_mappings: HashMap<CellKey, ExGuid>,
     revision_mappings: HashMap<GuidKey, ExGuid>,
 }
 
-impl<'e> Elements<'e> {
+impl<'e> Elements<'e, '_> {
     /// The revision manifest the storage index maps `revision` to, if any.
     fn revision_manifest(&self, revision: ExGuid) -> Option<&'e RevisionManifest> {
         self.revision_mappings
@@ -347,7 +348,7 @@ impl<'e> Elements<'e> {
 }
 
 /// `MSOneStoreParser.parse` of the data elements of a package.
-pub(super) fn parse(elements: &[DataElement]) -> Result<Package, Failure> {
+pub(super) fn parse<'a>(elements: &[DataElement<'a>]) -> Result<Package<'a>, Failure> {
     let mut storage_index = None;
     let mut storage_manifest = None;
     let mut found = Elements {
@@ -380,7 +381,7 @@ pub(super) fn parse(elements: &[DataElement]) -> Result<Package, Failure> {
                     .or_insert((element.id, group));
             }
             ElementData::ObjectDataBlob(data) => {
-                found.blobs.entry(key).or_insert(data.as_slice());
+                found.blobs.entry(key).or_insert(data);
             }
         }
     }
@@ -456,7 +457,7 @@ fn header_cell(found: &Elements, header: CellId) -> Result<(), Failure> {
     for (index, declaration) in group.declarations.iter().enumerate() {
         if declaration.partition == 1 {
             let data = object_data(group, index)?;
-            property_set_object(&data.data)?;
+            property_set_object(data.data)?;
             break;
         }
     }
@@ -464,7 +465,10 @@ fn header_cell(found: &Elements, header: CellId) -> Result<(), Failure> {
 }
 
 /// `objectGroupObjectDataList.get(index)`.
-fn object_data(group: &ObjectGroup, index: usize) -> Result<&ObjectData, Failure> {
+fn object_data<'g, 'a>(
+    group: &'g ObjectGroup<'a>,
+    index: usize,
+) -> Result<&'g ObjectData<'a>, Failure> {
     group.objects.get(index).ok_or_else(|| {
         thrown(
             "java.lang.IndexOutOfBoundsException",
@@ -479,16 +483,16 @@ fn object_data(group: &ObjectGroup, index: usize) -> Result<&ObjectData, Failure
 
 /// The object groups made once each, by the data element that holds them and whether its
 /// revision is encrypted.
-type GroupCache = HashMap<(GuidKey, bool), Rc<Vec<Rc<Object>>>>;
+type GroupCache<'a> = HashMap<(GuidKey, bool), Rc<Vec<Rc<Object<'a>>>>>;
 
 /// `parseCell`: the cell's objects, or none, with a warning, where the storage index does not
 /// lead to its revision manifest.
-fn cell(
-    found: &Elements,
+fn cell<'a>(
+    found: &Elements<'_, 'a>,
     id: CellId,
     warnings: &mut Warnings,
-    cache: &mut GroupCache,
-) -> Result<Option<Cell>, Failure> {
+    cache: &mut GroupCache<'a>,
+) -> Result<Option<Cell<'a>>, Failure> {
     let mut skip = |reason: &str| {
         let warning = format!("Skipping OneNote cell {id}: {reason}");
         warnings.record(&warning.clone(), warning);
@@ -525,7 +529,7 @@ fn cell(
     chain.reverse();
     let mut seen_groups = HashSet::new();
     let mut roots: Vec<(ExGuid, ExGuid)> = Vec::new();
-    let mut groups: Vec<Vec<Rc<Object>>> = Vec::new();
+    let mut groups: Vec<Vec<Rc<Object<'a>>>> = Vec::new();
     for manifest in chain {
         let encrypted = manifest
             .roots
@@ -572,13 +576,13 @@ fn cell(
 /// `RevisionStoreObjectGroup.createInstance`: the objects an object group declares, each once
 /// in the order first declared, its property set or JCID and its file data object filled in;
 /// none of an encrypted revision.
-fn objects(
-    group: &ObjectGroup,
+fn objects<'a>(
+    group: &ObjectGroup<'a>,
     encrypted: bool,
-    blobs: &HashMap<GuidKey, &[u8]>,
-) -> Result<Vec<Rc<Object>>, Failure> {
+    blobs: &HashMap<GuidKey, &'a [u8]>,
+) -> Result<Vec<Rc<Object<'a>>>, Failure> {
     let mut order: Vec<GuidKey> = Vec::new();
-    let mut objects: HashMap<GuidKey, Object> = HashMap::new();
+    let mut objects: HashMap<GuidKey, Object<'a>> = HashMap::new();
     if encrypted {
         for index in 0..group.declarations.len() {
             missing_data(group, index)?;
@@ -598,10 +602,10 @@ fn objects(
         });
         match declaration.partition {
             4 => {
-                Bits::new(&data.data, 0).read(32)?;
+                Bits::new(data.data, 0).read(32)?;
             }
             1 => {
-                object.property_set = Some(property_set_object(&data.data)?);
+                object.property_set = Some(property_set_object(data.data)?);
                 object.references = data.objects.clone();
                 object.space_references = data.spaces.clone();
             }
@@ -623,7 +627,7 @@ fn objects(
         });
         if declaration.partition == 2 {
             object.id = Some(declaration.id);
-            object.file_data = Some(blobs.get(&blob.key()).map(|data| data.to_vec()));
+            object.file_data = Some(blobs.get(&blob.key()).copied());
         }
     }
     Ok(order
@@ -633,7 +637,7 @@ fn objects(
 }
 
 /// The exception of an object declaration without its object's data.
-fn missing_data(group: &ObjectGroup, index: usize) -> Result<(), Failure> {
+fn missing_data(group: &ObjectGroup<'_>, index: usize) -> Result<(), Failure> {
     if index >= group.objects.len() {
         return Err(thrown(
             IO_EXCEPTION,
@@ -646,7 +650,7 @@ fn missing_data(group: &ObjectGroup, index: usize) -> Result<(), Failure> {
 
 /// `removeSupersededObjects`: an object declared again in a later group takes the place of the
 /// earlier one there, and leaves the later group.
-fn remove_superseded(groups: &mut [Vec<Rc<Object>>]) {
+fn remove_superseded(groups: &mut [Vec<Rc<Object<'_>>>]) {
     let mut places: HashMap<GuidKey, (usize, usize)> = HashMap::new();
     for group in 0..groups.len() {
         let mut index = 0;

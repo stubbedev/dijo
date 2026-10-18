@@ -1016,6 +1016,7 @@ dependencies = [
  "extractous-core",
  "extractous-html",
  "extractous-mime",
+ "flate2",
  "lzxd",
  "md-5",
  "memchr",

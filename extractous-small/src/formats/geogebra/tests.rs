@@ -164,3 +164,47 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika(&paths, GeoGebraParser.tika_name());
 }
+
+/// A GeoGebra file too large to read whole, after its worksheet an entry stored past what is
+/// read whole and one deflated past what a spool holds in memory: each entry is read in place
+/// or spooled as it is handed on, under a budget far below them.
+#[test]
+fn reads_files_too_large_to_read_whole_an_entry_at_a_time() {
+    use extractous_core::large::{Binary, LargeFile, SPOOLING_BUDGET};
+    use zip::CompressionMethod::{Deflated, Stored};
+
+    use crate::formats::large::{bytes, zip_archive, END, LARGE};
+    use crate::input::MAX_READ_WHOLE;
+
+    let worksheet = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><geogebra format="5.0"><construction title="{END}"><element type="text"><caption val="{END}"/></element></construction></geogebra>"#
+    );
+    let file = LargeFile::written("large.ggb", |out| {
+        zip_archive(
+            out,
+            vec![
+                ("geogebra.xml", Deflated, bytes(worksheet.as_bytes())),
+                (
+                    "stored.bin",
+                    Stored,
+                    Box::new(|out| {
+                        std::io::copy(&mut Binary::new(MAX_READ_WHOLE + (8 << 20)), out).map(drop)
+                    }),
+                ),
+                (
+                    "deflated.bin",
+                    Deflated,
+                    Box::new(|out| std::io::copy(&mut Binary::new(LARGE), out).map(drop)),
+                ),
+            ],
+        )
+    });
+    assert!(std::fs::metadata(file.path()).unwrap().len() > MAX_READ_WHOLE);
+    let (text, metadata) = file.extract_with(
+        &crate::Extractor::new(),
+        SPOOLING_BUDGET,
+        GeoGebraParser.name(),
+    );
+    assert!(text.contains(END), "{text}");
+    assert_eq!(metadata["dc:title"], [END]);
+}

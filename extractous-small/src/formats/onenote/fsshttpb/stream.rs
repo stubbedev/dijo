@@ -160,23 +160,23 @@ fn header_32(data: &[u8], index: usize) -> Result<Option<Header>, Thrown> {
 
 /// A data element of the package, by its ID, with what it holds.
 #[derive(Debug)]
-pub(super) struct DataElement {
+pub(super) struct DataElement<'a> {
     pub(super) id: ExGuid,
-    pub(super) data: ElementData,
+    pub(super) data: ElementData<'a>,
 }
 
 /// What a data element holds, by its type.
 #[derive(Debug)]
-pub(super) enum ElementData {
+pub(super) enum ElementData<'a> {
     StorageIndex(StorageIndex),
     /// The cells its root declarations name, in order.
     StorageManifest(Vec<CellId>),
     /// Its current revision.
     CellManifest(ExGuid),
     RevisionManifest(RevisionManifest),
-    ObjectGroup(ObjectGroup),
+    ObjectGroup(ObjectGroup<'a>),
     /// The data of its BLOB.
-    ObjectDataBlob(Vec<u8>),
+    ObjectDataBlob(&'a [u8]),
 }
 
 /// `StorageIndexDataElementData`.
@@ -201,10 +201,10 @@ pub(super) struct RevisionManifest {
 
 /// `ObjectGroupDataElementData`.
 #[derive(Debug, Default)]
-pub(super) struct ObjectGroup {
+pub(super) struct ObjectGroup<'a> {
     pub(super) declarations: Vec<Declaration>,
     pub(super) blob_declarations: Vec<Declaration>,
-    pub(super) objects: Vec<ObjectData>,
+    pub(super) objects: Vec<ObjectData<'a>>,
     /// The BLOB each BLOB declaration's object references.
     pub(super) blob_references: Vec<ExGuid>,
 }
@@ -218,10 +218,10 @@ pub(super) struct Declaration {
 
 /// `ObjectGroupObjectData`: the objects and object spaces an object references, and its data.
 #[derive(Debug)]
-pub(super) struct ObjectData {
+pub(super) struct ObjectData<'a> {
     pub(super) objects: Vec<ExGuid>,
     pub(super) spaces: Vec<CellId>,
-    pub(super) data: Vec<u8>,
+    pub(super) data: &'a [u8],
 }
 
 /// The stream object at a cursor, read once its header is known.
@@ -402,7 +402,7 @@ impl<'a> Reader<'a> {
     }
 
     /// `DataElement`'s items: its ID, serial number and type, then its data.
-    fn data_element(&self, index: &mut usize, length: usize) -> Result<DataElement, Failure> {
+    fn data_element(&self, index: &mut usize, length: usize) -> Result<DataElement<'a>, Failure> {
         let start = *index;
         let mut cursor = Cursor::new(self.data, start);
         let header = (|| -> Result<(ExGuid, u64), Thrown> {
@@ -436,7 +436,11 @@ impl<'a> Reader<'a> {
         Ok(DataElement { id, data })
     }
 
-    fn element_data(&self, index: &mut usize, element_type: i32) -> Result<ElementData, Failure> {
+    fn element_data(
+        &self,
+        index: &mut usize,
+        element_type: i32,
+    ) -> Result<ElementData<'a>, Failure> {
         Ok(match element_type {
             1 => ElementData::StorageIndex(self.storage_index(index)?),
             2 => ElementData::StorageManifest(self.storage_manifest(index)?),
@@ -597,7 +601,7 @@ impl<'a> Reader<'a> {
         Ok(manifest)
     }
 
-    fn object_group(&self, index: &mut usize) -> Result<ObjectGroup, Failure> {
+    fn object_group(&self, index: &mut usize) -> Result<ObjectGroup<'a>, Failure> {
         self.try_current(index, kind::DATA_ELEMENT_HASH, |reader, index, length| {
             reader.items(index, length, |cursor| {
                 cursor.compact()?;
@@ -705,7 +709,7 @@ impl<'a> Reader<'a> {
         &self,
         index: &mut usize,
         length: usize,
-    ) -> Result<(Vec<ObjectData>, Vec<ExGuid>), Failure> {
+    ) -> Result<(Vec<ObjectData<'a>>, Vec<ExGuid>), Failure> {
         if length != 0 {
             return Err(over_parse());
         }
@@ -749,7 +753,7 @@ impl<'a> Reader<'a> {
 
 /// `AlternativePackaging.doDeserializeFromByteArray`: the data elements of the package, in
 /// order, or why Tika's reading of it throws.
-pub(super) fn package(data: &[u8]) -> Result<Vec<DataElement>, Failure> {
+pub(super) fn package(data: &[u8]) -> Result<Vec<DataElement<'_>>, Failure> {
     for at in [0, 16, 32, 48] {
         read_guid(data, at)?;
     }

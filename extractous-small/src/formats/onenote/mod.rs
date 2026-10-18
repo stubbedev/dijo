@@ -27,7 +27,8 @@ use crate::formats::metadata::TikaMetadata;
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 use crate::formats::parity::{Departure, Departures};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 
 const STRUCTURE_FAILED: &str = "OneNote parse failed; falling back to legacy text dump";
 const PACKAGE_FAILED: &str = "OneNote FSSHTTPB parse failed; falling back to legacy text dump";
@@ -49,9 +50,23 @@ impl Parser for OneNoteParser {
         &["application/onenote; format=one"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -74,9 +89,11 @@ impl Parser for OneNoteParser {
                             xhtml
                                 .metadata_mut()
                                 .add(embedded::EXCEPTION_WARNING, PACKAGE_EMPTY);
-                            Ok(legacy::dump(input, xhtml)?)
+                            Ok(legacy::dump(input, pages, xhtml)?)
                         }
-                        Walked::Thrown(cause) => fall_back(input, PACKAGE_FAILED, cause, xhtml),
+                        Walked::Thrown(cause) => {
+                            fall_back(input, pages, PACKAGE_FAILED, cause, xhtml)
+                        }
                         Walked::Failed(failure) => Err(failure),
                     }
                 }));
@@ -102,7 +119,7 @@ impl Parser for OneNoteParser {
                 }
                 Err(thrown) => thrown,
             };
-            fall_back(input, STRUCTURE_FAILED, cause, xhtml)
+            fall_back(input, pages, STRUCTURE_FAILED, cause, xhtml)
         }))
     }
 }
@@ -110,6 +127,7 @@ impl Parser for OneNoteParser {
 /// `legacyFallbackDump`: the warning and the exception recorded, then the legacy dump.
 fn fall_back(
     input: &[u8],
+    pages: Pages,
     warning: &str,
     Thrown(cause): Thrown,
     xhtml: &mut Xhtml,
@@ -117,7 +135,7 @@ fn fall_back(
     let metadata = xhtml.metadata_mut();
     metadata.add(embedded::EXCEPTION_WARNING, warning);
     embedded::record_exception(metadata, &cause);
-    legacy::dump(input, xhtml)?;
+    legacy::dump(input, pages, xhtml)?;
     Ok(())
 }
 

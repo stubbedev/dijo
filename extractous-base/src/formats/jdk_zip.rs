@@ -4,15 +4,23 @@
 //! The port opens an archive with the port of commons-compress's `ZipFile`, failing where the
 //! JDK refuses to open it (encrypted entries, methods other than stored and deflated, names
 //! that are not UTF-8), and reads local headers with the CRC and size checks `ZipInputStream`
-//! makes. What the JDK might read differently (duplicate names, names commons-compress takes
+//! makes. An entry is read as a document of its own ([`Archive::spool`]): a stored one in place,
+//! a deflated one decoded to a spool, which keeps as much in memory as a file read whole and the
+//! rest in a mapped temporary file. What the JDK might read differently (duplicate names, names commons-compress takes
 //! from elsewhere, ZIP64 sizes, data descriptors, damaged data) is left to Tika's path.
 
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::ops::Range;
 
+#[cfg(doc)]
+use crate::compress::decode_limit;
 use crate::compress::zip::file::{ZipEntry, ZipFile};
-use crate::compress::zip::{u16_at, u32_at, Content, DEFLATED, LFH_SIG, STORED};
-use crate::compress::{crc32, MAX_DECODED};
+use crate::compress::zip::{u16_at, u32_at, Content, Decoded, DEFLATED, LFH_SIG, STORED};
+use crate::compress::MAX_DECODED;
+use crate::errors::Error;
+use crate::formats::{Decline, Failure};
+use crate::input::{Input, Pages, Paging, Spool};
 
 const LOCAL_HEADER_BYTES: usize = 30;
 const ENCRYPTED: u16 = 0x0001;
@@ -20,11 +28,36 @@ const DATA_DESCRIPTOR: u16 = 0x0008;
 const ZIP64_SIZE: i64 = 0xFFFF_FFFF;
 
 /// Why a port stops reading: Tika's path is left to read the document, or the Java parser
-/// fails on it, for the reason given.
+/// fails on it, for the reason given, or spooling an entry fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     Unread(&'static str),
     Failed(String),
+    /// Spooling what an entry decodes to a temporary file fails, as this says.
+    Unspooled(String),
+}
+
+impl From<Refusal> for Decline<'_> {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Unread(why) => Decline::Deferred(why.to_owned()),
+            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
+            Refusal::Unspooled(reason) => Decline::Fails(Error::IoError(reason)),
+        }
+    }
+}
+
+/// The failure of a writing that reads again an entry its check read.
+impl From<Refusal> for Failure {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Unread(why) => {
+                Failure::Malformed(format!("an entry its check read is not read again: {why}"))
+            }
+            Refusal::Failed(reason) => Failure::Malformed(reason),
+            Refusal::Unspooled(reason) => Failure::Extraction(Error::IoError(reason)),
+        }
+    }
 }
 
 pub fn failed(reason: impl Into<String>) -> Refusal {
@@ -79,6 +112,104 @@ pub fn read_whole(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusa
     }
 }
 
+/// An archive opened as [`open`] opens it, from bytes whose pages are `pages`, whose entries are
+/// read as documents of their own, the pages of their compressed data released as it is
+/// decoded.
+pub struct Archive<'a> {
+    zip: ZipFile<'a>,
+    pages: Pages<'a>,
+    paging: Paging<'a>,
+}
+
+/// An entry an [`Archive`] read to its end ahead of its writing: kept where it spooled to a
+/// file, which holds no memory, else read again as it is written.
+pub struct Checked {
+    entry: ZipEntry,
+    kept: Option<Input<'static>>,
+}
+
+impl<'a> Archive<'a> {
+    /// `new ZipFile(file)` of `input`, whose pages are `pages`.
+    pub fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Refusal> {
+        Ok(Self::new(open(input)?, pages))
+    }
+
+    /// The archive `zip`, opened otherwise, of bytes whose pages are `pages`.
+    pub fn new(zip: ZipFile<'a>, pages: Pages<'a>) -> Self {
+        Self {
+            zip,
+            pages,
+            paging: Paging::new(pages),
+        }
+    }
+
+    pub fn zip(&self) -> &ZipFile<'a> {
+        &self.zip
+    }
+
+    /// `zip.getInputStream(entry)` read to its end as a document of its own: a stored entry in
+    /// place, whose reading releases the archive's pages, a deflated one decoded to a spool, up
+    /// to [`decode_limit`] bytes of its compressed data, past which it is left to Tika's path,
+    /// which streams it.
+    pub fn spool(&self, entry: &ZipEntry) -> Result<Input<'a>, Refusal> {
+        match self.decode(entry)? {
+            Decoded::Complete(input) => Ok(input),
+            Decoded::Oversized(_) => Err(Refusal::Unread("an entry larger than the port reads")),
+            Decoded::Truncated(_) => Err(Refusal::Unread("a damaged entry")),
+        }
+    }
+
+    /// The data of `entry` as [`Archive::spool`] reads it, whether read whole, cut short, or
+    /// cut at the limit.
+    pub fn decode(&self, entry: &ZipEntry) -> Result<Decoded<Input<'a>>, Refusal> {
+        let spooled = self.zip.spool(entry, self.pages);
+        if entry.method != STORED {
+            self.paging
+                .read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
+        }
+        match spooled {
+            Some(Ok(decoded)) => Ok(decoded),
+            None => Err(Refusal::Unread("a damaged entry")),
+            Some(Err(undecoded)) => Err(Refusal::Unspooled(format!(
+                "reading the entry {} fails: {undecoded}",
+                entry.name
+            ))),
+        }
+    }
+
+    /// [`Archive::spool`] of `entry` ahead of its writing, which [`Archive::read`] reads.
+    pub fn check(&self, entry: &ZipEntry) -> Result<Checked, Refusal> {
+        Ok(Self::keep(entry, self.spool(entry)?))
+    }
+
+    /// `entry` read ahead into `data`, as [`Archive::spool`] reads it, for [`Archive::read`] to
+    /// read: the data kept where it spooled to a file, else let go of.
+    pub fn keep(entry: &ZipEntry, data: Input<'_>) -> Checked {
+        let kept = match data {
+            Input::Mapped(map) => Some(Input::Mapped(map)),
+            _ => None,
+        };
+        Checked {
+            entry: entry.clone(),
+            kept,
+        }
+    }
+
+    /// The data of the entry `checked` read ahead: what it kept, or read again.
+    pub fn read(&self, checked: &Checked) -> Result<Input<'a>, Refusal> {
+        match &checked.kept {
+            Some(kept) => Ok(kept.clone()),
+            None => self.spool(&checked.entry),
+        }
+    }
+}
+
+impl Checked {
+    pub fn entry(&self) -> &ZipEntry {
+        &self.entry
+    }
+}
+
 /// `zip.getEntry(name)`: the entry of that name, or else the directory of it, which the port
 /// leaves to Tika's path.
 pub fn entry<'z>(zip: &'z ZipFile<'_>, name: &str) -> Result<Option<&'z ZipEntry>, Refusal> {
@@ -91,9 +222,24 @@ pub fn entry<'z>(zip: &'z ZipFile<'_>, name: &str) -> Result<Option<&'z ZipEntry
     Ok(None)
 }
 
-/// The entries `ZipInputStream` reads from `data`, with their content, front to back until a
-/// header that is not a local file header.
-pub fn local_entries(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
+/// An entry `ZipInputStream` reads from an archive front to back: its name, and where its data
+/// lies in the archive, with how it is compressed and what its local header says of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalEntry {
+    pub name: String,
+    method: u16,
+    raw: Range<usize>,
+    size: i64,
+    crc: i64,
+}
+
+fn unread_locally() -> Refusal {
+    Refusal::Unread("a ZIP entry ZipInputStream may read otherwise")
+}
+
+/// The entries `ZipInputStream` reads from `data`, front to back until a header that is not a
+/// local file header, by their local headers.
+pub fn local_entries(data: &[u8]) -> Result<Vec<LocalEntry>, Refusal> {
     let mut entries = Vec::new();
     let mut at = 0;
     while let Some(header) = data.get(at..at + LOCAL_HEADER_BYTES) {
@@ -115,40 +261,75 @@ pub fn local_entries(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
                 "a ZIP entry encrypted, with a data descriptor or with ZIP64 sizes",
             ));
         }
-        let unread = || Refusal::Unread("a ZIP entry ZipInputStream may read otherwise");
         let name_at = at + LOCAL_HEADER_BYTES;
         let name = data
             .get(name_at..name_at + name_length)
             .and_then(|name| std::str::from_utf8(name).ok())
-            .ok_or_else(unread)?;
+            .ok_or_else(unread_locally)?;
         let data_at = name_at + name_length + extra_length;
-        let compressed_size = usize::try_from(compressed_size).map_err(|_| unread())?;
-        let raw = data
-            .get(data_at..data_at + compressed_size)
-            .ok_or_else(unread)?;
-        let content = match method {
-            STORED => raw.to_vec(),
-            DEFLATED => inflate_exactly(raw).ok_or_else(unread)?,
-            _ => return Err(unread()),
-        };
-        if i64::try_from(content.len()) != Ok(size) || i64::from(crc32(&content)) != crc {
-            return Err(unread());
+        let compressed_size = usize::try_from(compressed_size).map_err(|_| unread_locally())?;
+        let raw = data_at..data_at + compressed_size;
+        if data.get(raw.clone()).is_none() || ![STORED, DEFLATED].contains(&method) {
+            return Err(unread_locally());
         }
-        entries.push((name.to_owned(), content));
-        at = data_at + compressed_size;
+        at = raw.end;
+        entries.push(LocalEntry {
+            name: name.to_owned(),
+            method,
+            raw,
+            size,
+            crc,
+        });
     }
     Ok(entries)
 }
 
-/// Raw deflate data that inflates to its end, within [`MAX_DECODED`] bytes, using every byte
-/// of it.
-fn inflate_exactly(raw: &[u8]) -> Option<Vec<u8>> {
-    let mut inflater = flate2::bufread::DeflateDecoder::new(raw);
-    let mut content = Vec::new();
-    inflater
-        .by_ref()
-        .take(MAX_DECODED as u64 + 1)
-        .read_to_end(&mut content)
-        .ok()?;
-    (inflater.total_in() == raw.len() as u64 && content.len() <= MAX_DECODED).then_some(content)
+/// The content `ZipInputStream` reads of `entry` of `data`, whose pages are `pages`, checked
+/// against the size and CRC of its local header: stored data in place, deflated data that
+/// inflates to its end, within [`MAX_DECODED`] bytes, using every byte of it, spooled.
+pub fn local_content<'a>(
+    data: &'a [u8],
+    pages: Pages<'a>,
+    entry: &LocalEntry,
+) -> Result<Input<'a>, Refusal> {
+    let raw = &data[entry.raw.clone()];
+    let mut crc = flate2::Crc::new();
+    let content = match entry.method {
+        STORED => {
+            crc.update(raw);
+            Input::Within(raw, pages)
+        }
+        _ => {
+            let mut inflater = flate2::bufread::DeflateDecoder::new(raw);
+            let mut spool = Spool::new(u64::try_from(entry.size).ok());
+            let mut chunk = vec![0; 64 << 10];
+            let mut length = 0;
+            loop {
+                let read = inflater.read(&mut chunk).map_err(|_| unread_locally())?;
+                if read == 0 {
+                    break;
+                }
+                length += read;
+                if length > MAX_DECODED {
+                    return Err(unread_locally());
+                }
+                crc.update(&chunk[..read]);
+                spool
+                    .write_all(&chunk[..read])
+                    .map_err(|error| unspooled(entry, &error))?;
+            }
+            if inflater.total_in() != raw.len() as u64 {
+                return Err(unread_locally());
+            }
+            spool.finish().map_err(|error| unspooled(entry, &error))?
+        }
+    };
+    if i64::try_from(content.len()) != Ok(entry.size) || i64::from(crc.sum()) != entry.crc {
+        return Err(unread_locally());
+    }
+    Ok(content)
+}
+
+fn unspooled(entry: &LocalEntry, error: &std::io::Error) -> Refusal {
+    Refusal::Unspooled(format!("reading the entry {} fails: {error}", entry.name))
 }

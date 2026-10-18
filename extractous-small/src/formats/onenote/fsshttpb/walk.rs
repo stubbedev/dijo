@@ -108,18 +108,18 @@ struct ResourceInfo {
 /// `PropertyAction`: a property of an object's property sets, flattened, with the object or
 /// object space it references.
 #[derive(Debug, Clone)]
-struct Action {
+struct Action<'a> {
     id: PropertyId,
-    property: Rc<PropertyValue>,
+    property: Rc<PropertyValue<'a>>,
     child: Option<Option<ExGuid>>,
     space: Option<CellId>,
 }
 
 /// A property's value, kept for the actions that read it.
 #[derive(Debug)]
-enum PropertyValue {
+enum PropertyValue<'a> {
     /// `PrtFourBytesOfLengthFollowedByData`.
-    Data(Vec<u8>),
+    Data(&'a [u8]),
     /// `FourBytesOfData` or `EightBytesOfData`, as `getScalar` reads it.
     Scalar(i64),
     /// Of another class, which `getScalar` names as it throws.
@@ -143,11 +143,11 @@ fn class_of(kind: u32) -> &'static str {
 }
 
 /// The walk of a package's cells.
-struct Walker<'p, 'x, 'h> {
+struct Walker<'p, 'a, 'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
     warnings: Warnings,
     hyperlink: Regex,
-    actions: HashMap<*const Object, Rc<Vec<Action>>>,
+    actions: HashMap<*const Object<'a>, Rc<Vec<Action<'a>>>>,
     authors: HashSet<String>,
     most_recent_authors: HashSet<String>,
     original_authors: HashSet<String>,
@@ -156,20 +156,20 @@ struct Walker<'p, 'x, 'h> {
     creation_timestamp: i64,
     last_modified: i64,
     content: bool,
-    package: &'p Package,
+    package: &'p Package<'a>,
 }
 
 /// The objects of a cell by their IDs, as `indexObjectsById` indexes them, the last of an ID kept
 /// in the place of its first.
-struct Objects {
-    by_id: HashMap<GuidKey, Rc<Object>>,
+struct Objects<'a> {
+    by_id: HashMap<GuidKey, Rc<Object<'a>>>,
     /// The IDs in the order the cell declares them, where Tika iterates them in its `HashMap`'s
     /// order (#129).
     order: Vec<GuidKey>,
 }
 
-impl Objects {
-    fn of(groups: &[Vec<Rc<Object>>]) -> Self {
+impl<'a> Objects<'a> {
+    fn of(groups: &[Vec<Rc<Object<'a>>>]) -> Self {
         let mut by_id = HashMap::new();
         let mut order = Vec::new();
         for object in groups.iter().flatten() {
@@ -182,14 +182,14 @@ impl Objects {
         Objects { by_id, order }
     }
 
-    fn get(&self, id: ExGuid) -> Option<&Rc<Object>> {
+    fn get(&self, id: ExGuid) -> Option<&Rc<Object<'a>>> {
         self.by_id.get(&id.key())
     }
 }
 
 /// `walkTree`: the parse warnings, the page cells in div elements, the other cells, then the
 /// authors.
-pub(super) fn walk(package: &Package, xhtml: &mut Xhtml) -> Walked {
+pub(super) fn walk(package: &Package<'_>, xhtml: &mut Xhtml) -> Walked {
     let mut walker = Walker {
         xhtml,
         warnings: Warnings::default(),
@@ -213,7 +213,7 @@ pub(super) fn walk(package: &Package, xhtml: &mut Xhtml) -> Walked {
     }
 }
 
-impl<'p> Walker<'p, '_, '_> {
+impl<'p, 'a> Walker<'p, 'a, '_, '_> {
     fn walk(&mut self) -> Result<(), Ended> {
         self.warnings = self.package.warnings.clone();
         self.flush_warnings();
@@ -269,13 +269,13 @@ impl<'p> Walker<'p, '_, '_> {
 
     /// `splitCells`: the cells the section references, in the order it does, then the cells it
     /// does not, but for those of an object space it references.
-    fn split_cells(&mut self) -> (Vec<&'p Cell>, Vec<&'p Cell>) {
+    fn split_cells(&mut self) -> (Vec<&'p Cell<'a>>, Vec<&'p Cell<'a>>) {
         let package = self.package;
         let ordered = self.section_cells();
         if ordered.is_empty() {
             return (Vec::new(), package.cells.iter().collect());
         }
-        let mut remaining: Vec<Option<&'p Cell>> = package.cells.iter().map(Some).collect();
+        let mut remaining: Vec<Option<&'p Cell<'a>>> = package.cells.iter().map(Some).collect();
         let mut pages = Vec::new();
         let mut covered = HashSet::new();
         for id in ordered {
@@ -316,8 +316,8 @@ impl<'p> Walker<'p, '_, '_> {
 
     fn collect_cells(
         &mut self,
-        object: Option<&Object>,
-        objects: &Objects,
+        object: Option<&Object<'a>>,
+        objects: &Objects<'a>,
         visited: &mut HashSet<GuidKey>,
         cells: &mut Vec<CellId>,
         depth: usize,
@@ -353,7 +353,7 @@ impl<'p> Walker<'p, '_, '_> {
 
     /// `walkCell`: the objects of a cell from its roots, or all of them where it declares none
     /// or none of its roots that hold properties is found.
-    fn walk_cell(&mut self, cell: &Cell) -> Result<(), Ended> {
+    fn walk_cell(&mut self, cell: &Cell<'a>) -> Result<(), Ended> {
         let objects = Objects::of(&cell.groups);
         let mut visited = HashSet::new();
         let (mut resolved_content_root, mut unresolved_root) = (false, false);
@@ -400,8 +400,8 @@ impl<'p> Walker<'p, '_, '_> {
 
     fn walk_object(
         &mut self,
-        object: Option<&Object>,
-        objects: &Objects,
+        object: Option<&Object<'a>>,
+        objects: &Objects<'a>,
         visited: &mut HashSet<GuidKey>,
         role: AuthorRole,
         depth: usize,
@@ -469,7 +469,7 @@ impl<'p> Walker<'p, '_, '_> {
     fn has_usable_picture(
         &mut self,
         id: ExGuid,
-        objects: &Objects,
+        objects: &Objects<'a>,
         visited: &mut HashSet<GuidKey>,
         depth: usize,
     ) -> bool {
@@ -505,7 +505,7 @@ impl<'p> Walker<'p, '_, '_> {
     fn info_from_referencing_object(
         &mut self,
         target: ExGuid,
-        objects: &Objects,
+        objects: &Objects<'a>,
         depth: usize,
     ) -> Option<ResourceInfo> {
         if depth >= MAX_DEPTH {
@@ -543,8 +543,8 @@ impl<'p> Walker<'p, '_, '_> {
     }
 
     /// `collectObjectActions`, once for each object.
-    fn object_actions(&mut self, object: &Object) -> Rc<Vec<Action>> {
-        let identity: *const Object = object;
+    fn object_actions(&mut self, object: &Object<'a>) -> Rc<Vec<Action<'a>>> {
+        let identity: *const Object<'a> = object;
         if let Some(actions) = self.actions.get(&identity) {
             return actions.clone();
         }
@@ -562,10 +562,10 @@ impl<'p> Walker<'p, '_, '_> {
 
     fn collect_actions(
         &mut self,
-        set: &PropertySet,
-        object: &Object,
+        set: &PropertySet<'a>,
+        object: &Object<'a>,
         cursors: &mut (usize, usize),
-        actions: &mut Vec<Action>,
+        actions: &mut Vec<Action<'a>>,
         depth: usize,
     ) {
         if depth >= MAX_DEPTH {
@@ -683,8 +683,8 @@ impl<'p> Walker<'p, '_, '_> {
 
     fn process(
         &mut self,
-        action: &Action,
-        objects: &Objects,
+        action: &Action<'a>,
+        objects: &Objects<'a>,
         visited: &mut HashSet<GuidKey>,
         role: AuthorRole,
         depth: usize,
@@ -719,7 +719,7 @@ impl<'p> Walker<'p, '_, '_> {
     }
 
     /// `processPrimitiveProperty`.
-    fn process_primitive(&mut self, action: &Action, role: AuthorRole) -> Result<(), Ended> {
+    fn process_primitive(&mut self, action: &Action<'a>, role: AuthorRole) -> Result<(), Ended> {
         let id = action.id.value;
         match id {
             property::LAST_MODIFIED_TIME_STAMP => {
@@ -794,7 +794,7 @@ impl<'p> Walker<'p, '_, '_> {
     }
 
     /// `recordAuthors`: the authors an object visited again names.
-    fn record_authors(&mut self, object: &Object, role: AuthorRole) {
+    fn record_authors(&mut self, object: &Object<'a>, role: AuthorRole) {
         if object.property_set.is_none() {
             return;
         }
@@ -880,14 +880,14 @@ impl<'p> Walker<'p, '_, '_> {
     }
 }
 
-fn action(
+fn action<'a>(
     id: PropertyId,
-    value: &Property,
+    value: &Property<'a>,
     child: Option<Option<ExGuid>>,
     space: Option<CellId>,
-) -> Action {
+) -> Action<'a> {
     let property = match value {
-        Property::Data(bytes) => PropertyValue::Data(bytes.clone()),
+        Property::Data(bytes) => PropertyValue::Data(bytes),
         Property::Fixed(bytes) if id.kind == kind::FOUR_BYTES => PropertyValue::Scalar(i64::from(
             i32::from_le_bytes(bytes[..4].try_into().expect("four bytes")),
         )),

@@ -1,14 +1,15 @@
 //! Tika's `QuattroProParser`: the records of a Quattro Pro 9 workbook's `NativeContent_MAIN`
 //! stream, read by its `QPWTextExtractor` into metadata and the text of its labels, links,
-//! sheet names, headers, footers and comments, in one paragraph.
+//! sheet names, headers, footers and comments, in one paragraph. The stream is read in place in
+//! the compound document.
 
 use super::Stream;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
-use crate::ole2::{Ole2, Unreadable};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::ole2::{Content, Ole2, Unreadable};
 
 /// `OLE_DOCUMENT_NAME`, the stream of the workbook's records.
 const DOCUMENT: &str = "NativeContent_MAIN";
@@ -28,6 +29,10 @@ impl Parser for QuattroProParser {
         &["application/x-quattro-pro; version=9"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -39,7 +44,7 @@ impl Parser for QuattroProParser {
             xhtml.start_element("p")?;
             Records {
                 xhtml: &mut *xhtml,
-                stream: Stream::new(&records),
+                stream: Stream::entry(records),
             }
             .extract()?;
             xhtml.end_element("p")?;
@@ -48,9 +53,9 @@ impl Parser for QuattroProParser {
     }
 }
 
-/// The workbook's record stream, read whole as `POIFSFileSystem` reads it from a stream, or
-/// what POI or Tika throw on the compound document.
-fn records(input: &[u8]) -> Result<Vec<u8>, Error> {
+/// The workbook's record stream, in place, as `POIFSFileSystem` reads it from a stream, or what
+/// POI or Tika throw on the compound document.
+fn records(input: &[u8]) -> Result<Content<'_>, Error> {
     let ole = Ole2::open_stream(input).map_err(|Unreadable(reason)| {
         Error::IoError(format!("POI cannot read the compound document: {reason}"))
     })?;
@@ -61,7 +66,7 @@ fn records(input: &[u8]) -> Result<Vec<u8>, Error> {
             ole.top_level_names()
         )));
     }
-    ole.root_document(DOCUMENT).map_err(Error::IoError)
+    ole.root_content(DOCUMENT).map_err(Error::IoError)
 }
 
 /// `QPWTextExtractor.extract`'s loop over the records, with the context its extractors share.
@@ -72,7 +77,7 @@ struct Records<'x, 'h, 's> {
 
 impl Records<'_, '_, '_> {
     fn extract(mut self) -> Result<(), Failure> {
-        while self.stream.at < self.stream.data.len() {
+        while !self.stream.ended() {
             let kind = self.stream.short()?;
             let length = self.stream.short()?;
             self.record(kind, length)?;
