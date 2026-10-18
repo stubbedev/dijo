@@ -3,10 +3,10 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{LargeFile, BUDGET};
+use extractous_core::large::LargeFile;
 use extractous_core::Extractor;
 
-use crate::formats::archive::large::{Binary, END, LARGE, SPOOLING_BUDGET};
+use crate::formats::archive::large::{Binary, BUDGET, END, LARGE};
 use crate::input::MAX_READ_WHOLE;
 
 /// Writes to `out` a response record of `id` whose payload of `length` bytes and `content_type`
@@ -61,6 +61,6 @@ fn inflates_a_gzipped_archive_past_the_memory_limit_to_a_spool() {
         archive_of_large_payload(&mut gzip, LARGE)?;
         gzip.finish()?.flush()
     });
-    let (text, _) = file.extract_with(&Extractor::new(), SPOOLING_BUDGET, "extractous::WARCParser");
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, "extractous::WARCParser");
     assert!(text.contains(END), "{text}");
 }

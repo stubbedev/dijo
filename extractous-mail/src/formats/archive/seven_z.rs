@@ -75,9 +75,12 @@ impl Parser for SevenZParser {
             }
             Limited::Whole(())
         } else {
-            let whole = seven_z::visit(input, password, Decoding::discarded, |_, _| {
-                Ok::<(), Infallible>(())
-            })
+            let whole = seven_z::visit(
+                input,
+                password,
+                |compressed, _| Decoding::discarded(compressed),
+                |_, _| Ok::<(), Infallible>(()),
+            )
             .map_err(declined)?
             .unwrap_or_else(|never| match never {});
             if whole {

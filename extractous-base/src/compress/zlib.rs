@@ -6,7 +6,7 @@ use crate::input::Input;
 
 /// The content of the zlib stream `data`, or why it is not decoded natively.
 pub fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
-    spool_limited(flate2::bufread::ZlibDecoder::new(data), data.len())
+    spool_limited(flate2::bufread::ZlibDecoder::new(data), data.len(), None)
 }
 
 /// The content of the zlib stream `data` starts with, decoded into memory, up to

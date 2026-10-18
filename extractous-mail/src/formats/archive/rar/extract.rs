@@ -64,7 +64,11 @@ fn extract_file(unpack: &mut Unpack, header: &FileHeader) -> Extracted {
                 .to_owned(),
         );
     }
-    unpack.start_entry(start, header.full_pack_size);
+    unpack.start_entry(
+        start,
+        header.full_pack_size,
+        u64::try_from(header.full_unpack_size).ok(),
+    );
     let unpacked = if header.unp_method == STORED {
         unpack.unstore(header.full_unpack_size)
     } else {

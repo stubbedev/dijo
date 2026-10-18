@@ -895,6 +895,7 @@ dependencies = [
  "extractous-mime",
  "extractous-small",
  "flate2",
+ "memchr",
  "regex",
  "rusqlite",
  "tar",

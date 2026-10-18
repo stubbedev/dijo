@@ -272,8 +272,10 @@ pub struct Decoding<W> {
 
 impl Decoding<Spool> {
     /// The decoding of a stream of `compressed` bytes to a spool, up to [`decode_limit`] bytes.
-    pub fn spooled(compressed: usize) -> Self {
-        Self::new(Spool::new(None), decode_limit(compressed))
+    /// `declared` is what its container says it decodes into, if it says: a hint, not a limit,
+    /// which sends a stream declared too large to hold in memory to a file from the first.
+    pub fn spooled(compressed: usize, declared: Option<u64>) -> Self {
+        Self::new(Spool::new(declared), decode_limit(compressed))
     }
 }
 
@@ -353,13 +355,15 @@ fn unspooled(error: io::Error) -> Undecoded {
     Undecoded::Unspooled(error.to_string())
 }
 
-/// What `reader`, a crate's decoder of a stream of `compressed` bytes, gives up to its end or
-/// [`decode_limit`] bytes, spooled, failing where it fails.
+/// What `reader`, a crate's decoder of a stream of `compressed` bytes that declares it decodes
+/// into `declared`, if it does, gives up to its end or [`decode_limit`] bytes, spooled, failing
+/// where it fails.
 fn spool_limited(
     reader: impl Read,
     compressed: usize,
+    declared: Option<u64>,
 ) -> Result<Limited<Input<'static>>, Undecoded> {
-    let mut decoding = Decoding::spooled(compressed);
+    let mut decoding = Decoding::spooled(compressed, declared);
     decoding.read_from(reader)?;
     decoding.finish()
 }
@@ -452,8 +456,9 @@ pub(crate) mod tests {
     #[test]
     fn stops_decoding_past_the_limit_into_a_mapped_spool() {
         let small = deflated_zeros(3);
-        let inflate =
-            |data: &[u8]| spool_limited(flate2::bufread::DeflateDecoder::new(data), data.len());
+        let inflate = |data: &[u8]| {
+            spool_limited(flate2::bufread::DeflateDecoder::new(data), data.len(), None)
+        };
         assert_eq!(
             inflate(&small),
             Ok(Limited::Whole(Input::Borrowed(&[0; 775])))
