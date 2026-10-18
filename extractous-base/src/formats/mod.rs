@@ -203,8 +203,9 @@ pub fn unless_different(
 /// How the memory a native parser takes grows with its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Footprint {
-    /// With the input: it reads all of it into structures of its own. A file larger than
-    /// [`input::MAX_READ_WHOLE`] is left to Tika, which streams it.
+    /// With the input: it reads all of it into structures of its own. In a build with Tika, a
+    /// file larger than [`input::MAX_READ_WHOLE`] is left to Tika, which streams it; a build
+    /// without Tika reads it mapped, under the extraction's memory budget.
     Proportional,
     /// Bounded whatever the input's size: it reads only bounded parts of its input, such as
     /// headers and indexes, in place, and skips the rest. It reads a file of any size, mapped.
