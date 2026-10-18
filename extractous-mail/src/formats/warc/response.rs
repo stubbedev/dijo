@@ -6,7 +6,8 @@ use super::http::{self, Unread};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Difference, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Footprint, Opened, Parser, Prepared};
+use crate::input::{Input, Pages};
 use crate::java;
 
 /// Tika's `HttpParser`.
@@ -24,9 +25,24 @@ impl Parser for HttpParser {
         &["application/x-httpresponse"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the head, and hands the payload on in place, with the pages of the input.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -34,8 +50,8 @@ impl Parser for HttpParser {
         let cut = matches!(payload, Payload::Cut(_));
         let reading: Prepared<'a> = Box::new(move |xhtml| {
             let embed = |xhtml: &mut crate::formats::xhtml::Xhtml, payload| {
-                xhtml.parse_embedded_opened(
-                    payload,
+                xhtml.parse_embedded_input_opened(
+                    &Input::Within(payload, pages),
                     &TikaMetadata::new(),
                     Wrapping::PackageEntry,
                     Opened::Alone,
